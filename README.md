@@ -33,6 +33,7 @@ make status      # what is running, and where to open it
 make egress      # prove the fences: of the factory's own pods, only the gateway and the GitHub worker leave the cluster
 make stop-the-line   # agents stop, workers take nothing new, a canary in flight aborts
 make start-the-line  # the line takes work again
+make guardrails  # take every guardrail's proof from a clean main, and record each where the console shows it
 make down        # delete the cluster; nothing is left behind but the local certificate authority
 ```
 

@@ -369,10 +369,12 @@ if (import.meta.main) {
     },
     answers: CASES.map((c) => ask(context, read, c)),
   };
-  const out = join(import.meta.dirname, '..', 'deploy', 'test', 'flag-stages-refusals.json');
+  // REFUSALS_OUT writes the record elsewhere, as `make guardrails` takes it, and leaves deploy/test/ as it is.
+  const elsewhere = process.env.REFUSALS_OUT;
+  const out = elsewhere || join(import.meta.dirname, '..', 'deploy', 'test', 'flag-stages-refusals.json');
   writeFileSync(out, `${JSON.stringify(record, null, 2)}\n`);
   // As `make check` would have it.
-  execFileSync('pnpm', ['exec', 'biome', 'format', '--write', out], { stdio: 'ignore' });
+  if (!elsewhere) execFileSync('pnpm', ['exec', 'biome', 'format', '--write', out], { stdio: 'ignore' });
   for (const a of record.answers)
     console.log(`${a.outcome}  ${a.case}${a.as === ADMIN ? '' : ` (as ${a.as})`}: ${a.message}`);
 }

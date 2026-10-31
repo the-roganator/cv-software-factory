@@ -49,7 +49,7 @@ secret = $(call namespace,$(1)) && \
 	{ $(KUBECTL) -n $(1) get secret $(2) >/dev/null 2>&1 || $(KUBECTL) -n $(1) create secret generic $(2) $(3); }
 
 .DEFAULT_GOAL := help
-.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol
+.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -335,6 +335,17 @@ stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing 
 
 start-the-line: node_modules ## Start the line again; workers take what waited in the inbox (REASON="...")
 	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason "$(REASON)"))
+
+# The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
+# its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,
+# clean; the drill asks first; nothing runs on a schedule (apps/factory/src/commands/guardrails.ts).
+guardrails: node_modules ## Take every guardrail's proof but the attacks, and record each in the store, from a clean main (PROOFS="egress bypass" for some)
+	@secret() { $(KUBECTL) -n factory get secret "$$1" -o jsonpath='{.data.password}' | base64 -d; }; \
+	password="$$(secret postgres-proofs)" && [ -n "$$password" ] || { echo "No postgres-proofs Secret: run make up." >&2; exit 2; }; \
+	{ $(KUBECTL) -n factory port-forward svc/postgres 15433:5432 >/dev/null 2>&1 & forward=$$!; \
+	trap 'kill $$forward' EXIT; sleep 2; \
+	PGHOST=127.0.0.1 PGPORT=15433 PGDATABASE=factory PGUSER=factory_proofs PGPASSWORD="$$password" KUBE_CONTEXT=$(CONTEXT) \
+		node apps/factory/src/cli.ts guardrails $(foreach proof,$(PROOFS),--only $(proof)); }
 
 enrol: node_modules ## Print a one-time code to enrol a passkey on the console (REVOKE_OTHERS=1: revoke every passkey and session first)
 	@$(call as-martin,enrol,node apps/factory/src/cli.ts admin enrol $(if $(REVOKE_OTHERS),--revoke-others))

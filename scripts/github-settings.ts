@@ -5,12 +5,19 @@
  *     node scripts/github-settings.ts                  # every repository below
  *     node scripts/github-settings.ts <owner/repo>     # one of them
  *     node scripts/github-settings.ts --check          # change nothing: say where the live settings differ
+ *     node scripts/github-settings.ts --check --see-bypass   # and fail on what it could not see
  *
  * `--check` reads each repository's rulesets and environments and compares them with the ones here, and names any
  * ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
  * drift-check.yml runs it weekly. GitHub shows who may bypass a ruleset only to a reader who may change it: with a
  * token that cannot, such as the drift check App's, `--check` warns that it did not compare that list, and compares
- * the rest; with an admin's `gh`, it compares that too, and fails if anyone may bypass.
+ * the rest; with an admin's `gh`, it compares that too, and fails if anyone may bypass. `--see-bypass` fails on what
+ * it could not see as on drift: `make guardrails` checks so with Martin's `gh`, so its proof cannot pass unread.
+ *
+ * It also reads each repository's record of the rulesets' verdicts on pushes (rule suites) for the last week, and
+ * fails on any push that bypassed a ruleset: anyone the list once named, or who bypassed before it named nobody,
+ * shows there. A reader with Administration read may see it, the drift check App among them; one that cannot is
+ * warned, as for the list.
  *
  * Needs the GitHub CLI, signed in as an admin of the repository. `--check` changes nothing, so it needs only a read:
  * `GH_TOKEN` set to an installation token of the drift check App (`APPS.driftCheck`) is enough, and is how the
@@ -243,6 +250,9 @@ function check(requiredChecks: string[]): Findings {
     problems.push(...findings.problems);
     unseen.push(...findings.unseen);
   }
+  const used = bypassesUsed(readable(() => JSON.parse(gh('GET', `/rulesets/rule-suites?${BYPASSES_USED}`))));
+  problems.push(...used.problems);
+  unseen.push(...used.unseen);
   return { problems: [...problems, ...(ENVIRONMENTS[repo] ?? []).flatMap(checkEnvironment)], unseen };
 }
 
@@ -263,9 +273,42 @@ export function rulesetProblems(live: unknown, wanted: ReturnType<typeof rules>)
   const unseen = seesBypass
     ? []
     : [
-        `ruleset "${wanted.name}": this token cannot see who may bypass it, which GitHub shows only to those who may change it, so that was not compared; an admin's \`--check\` compares it, as \`make guardrails\` (milestone 7 task 21) is to`,
+        `ruleset "${wanted.name}": this token cannot see who may bypass it, which GitHub shows only to those who may change it, so that was not compared; an admin's \`--check\` compares it, as \`make guardrails\` does`,
       ];
   return { problems, unseen };
+}
+
+/** The rule suites asked for: the last week's pushes that bypassed a ruleset, as many as one page holds. */
+const PAGE = 100;
+const BYPASSES_USED = `time_period=week&rule_suite_result=bypass&per_page=${PAGE}`;
+
+/**
+ * What the record of the rulesets' verdicts says of bypasses: each push that bypassed a ruleset is drift. A reader
+ * that may not read the record (undefined) has not seen it, and is never read as no bypass at all.
+ */
+export function bypassesUsed(suites: unknown): Findings {
+  if (suites === undefined) {
+    return {
+      problems: [],
+      unseen: [
+        "this token cannot read the rulesets' record of pushes (rule suites), so no bypass used in the last week was looked for",
+      ],
+    };
+  }
+  if (!Array.isArray(suites)) return { problems: ["the rulesets' record of pushes is not a list"], unseen: [] };
+  const bypassed = suites.filter((suite) => suite?.result === 'bypass') as Record<string, unknown>[];
+  const latest = bypassed
+    .map((suite) => ({ suite, at: Date.parse(String(suite.pushed_at)) }))
+    .sort((a, b) => b.at - a.at)[0]?.suite;
+  if (!latest) return { problems: [], unseen: [] };
+  const { actor_name: who, ref, pushed_at: at, after_sha: to } = latest;
+  // One page is read: a full one says "at least", and its latest is the latest on the page GitHub sends first.
+  const count =
+    bypassed.length === 1 ? 'a push' : `${suites.length >= PAGE ? 'at least ' : ''}${bypassed.length} pushes`;
+  const problems = [
+    `${count} bypassed a ruleset in the last week, the latest ${JSON.stringify(String(who ?? 'someone'))} pushing ${String(to ?? '').slice(0, 12)} to ${String(ref)} at ${String(at)}`,
+  ];
+  return { problems, unseen: [] };
 }
 
 /**
@@ -318,6 +361,16 @@ function found<T>(read: () => T): T | undefined {
   }
 }
 
+/** What a read answers, or undefined when GitHub says this reader may not see it, or there is no such thing. */
+function readable<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch (error) {
+    if (/HTTP 40[34]/.test(String((error as { stderr?: unknown }).stderr ?? error))) return undefined;
+    throw error;
+  }
+}
+
 /** Whether an environment holds its App's key, by name: GitHub never shows a secret's value. */
 function hasKey(wanted: KeyEnvironment): boolean {
   const secrets = found(
@@ -343,6 +396,7 @@ export function environmentProblems(name: string, live: unknown, policies: unkno
 
 function main(args: string[]): number {
   const checking = args.includes('--check');
+  const seeBypass = args.includes('--see-bypass');
   const only = args.find((a) => !a.startsWith('--'));
   if (only && !REPOSITORIES[only]) {
     console.error(`${only} is not one of ours. Choose from: ${Object.keys(REPOSITORIES).join(', ')}`);
@@ -353,7 +407,9 @@ function main(args: string[]): number {
     if (only && name !== only) continue;
     repo = name;
     if (checking) {
-      const findings = check(requiredChecks);
+      const seen = check(requiredChecks);
+      // What it could not see fails it too, when asked to see everything.
+      const findings = seeBypass ? { problems: [...seen.problems, ...seen.unseen], unseen: [] } : seen;
       for (const line of reportLines(repo, findings, process.env.GITHUB_ACTIONS === 'true')) console.log(line);
       drift ||= findings.problems.length > 0;
       continue;

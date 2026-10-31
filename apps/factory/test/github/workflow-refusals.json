@@ -1,26 +1,28 @@
 [
   {
-    "repo": "mrogan/cv-software-factory",
-    "at": "2026-10-04T17:56:13.549Z",
+    "repo": "the-roganator/cv-software-factory",
+    "at": "2026-10-31T21:17:31.567Z",
     "attempted": "a signed commit (createCommitOnBranch) adding .github/workflows/factory-refusal.yml on factory/workflow-refusal",
     "control": {
       "path": "factory-refusal-control.txt",
-      "commit": "41b9b0b81d256bc648fd8f8f8de7e00c10fdd4e4"
+      "commit": "4d13e7fd34832884aeca899e5acd21d741a4f19a"
     },
     "outcome": "refused",
     "kind": "refused",
+    "status": 403,
     "message": "Resource not accessible by integration"
   },
   {
-    "repo": "mrogan/cv-worlds-worst-website",
-    "at": "2026-10-04T17:56:18.739Z",
+    "repo": "the-roganator/cv-worlds-worst-website",
+    "at": "2026-10-31T21:17:37.020Z",
     "attempted": "a signed commit (createCommitOnBranch) adding .github/workflows/factory-refusal.yml on factory/workflow-refusal",
     "control": {
       "path": "factory-refusal-control.txt",
-      "commit": "fadc76ddf7b10c596dec698f7d13c7224800168e"
+      "commit": "cb97f8ba9a512fe36289245edb772acdf595d284"
     },
     "outcome": "refused",
     "kind": "refused",
+    "status": 403,
     "message": "Resource not accessible by integration"
   }
 ]

@@ -4,6 +4,7 @@ import { REVIEW_CHECK as REVIEWER_CHECK } from '../apps/factory/src/line/review.
 import {
   APPS,
   branchPolicies,
+  bypassesUsed,
   DRIFT_CHECK_ENVIRONMENT,
   ENVIRONMENTS,
   environment,
@@ -116,6 +117,39 @@ describe('who may bypass a live ruleset', () => {
     expect(unseen[0]).toMatch(/make guardrails/);
     parametersOf(live as typeof wanted, 'pull_request').allowed_merge_methods = ['merge'];
     expect(rulesetProblems(live, wanted)).toEqual({ problems: ['ruleset "main" differs from this script\'s'], unseen });
+  });
+});
+
+describe('the bypasses used, from the rulesets’ record of pushes', () => {
+  const suite = {
+    actor_name: 'mrogan',
+    ref: 'refs/heads/main',
+    after_sha: '22bcfa0c64f8702b2f2ae4a2443103589be54707',
+    pushed_at: '2026-10-25T22:22:39+00:00',
+    result: 'bypass',
+  };
+
+  it('fails on any push that bypassed a ruleset, naming how many, and the latest: who, what and when', () => {
+    expect(bypassesUsed([suite, { ...suite, result: 'pass' }])).toEqual({
+      problems: [
+        'a push bypassed a ruleset in the last week, the latest "mrogan" pushing 22bcfa0c64f8 to refs/heads/main at 2026-10-25T22:22:39+00:00',
+      ],
+      unseen: [],
+    });
+    const earlier = { ...suite, actor_name: 'other', pushed_at: '2026-10-24T21:10:57+01:00' };
+    expect(bypassesUsed([earlier, suite]).problems).toEqual([
+      '2 pushes bypassed a ruleset in the last week, the latest "mrogan" pushing 22bcfa0c64f8 to refs/heads/main at 2026-10-25T22:22:39+00:00',
+    ]);
+    expect(bypassesUsed([])).toEqual({ problems: [], unseen: [] });
+    // One page is read: a full one is at least that many.
+    expect(bypassesUsed(Array.from({ length: 100 }, () => suite)).problems[0]).toMatch(/^at least 100 pushes bypassed/);
+  });
+
+  it('is unseen, never read as no bypass, when the reader may not read the record', () => {
+    const { problems, unseen } = bypassesUsed(undefined);
+    expect(problems).toEqual([]);
+    expect(unseen[0]).toMatch(/cannot read the rulesets' record/);
+    expect(bypassesUsed({ message: 'odd' }).problems).toHaveLength(1);
   });
 });
 

@@ -31,7 +31,8 @@ set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 kubectl=(kubectl --context "$context")
-out="$(dirname "$0")/../deploy/test/share-key-refusals.json"
+# REFUSALS_OUT writes the record elsewhere, as `make guardrails` takes it, and leaves deploy/test/ as it is.
+out="${REFUSALS_OUT:-$(dirname "$0")/../deploy/test/share-key-refusals.json}"
 policy="ValidatingAdmissionPolicy 'website-share-key'"
 # The policies as the cluster runs them, or nothing asked (scripts/policy-hash.ts).
 taken=$(node "$(dirname "$0")/policy-hash.ts" share-key-refusals)
@@ -97,5 +98,5 @@ live=$(jq -n --argjson held "$held" --arg public "$public" \
 
 jq -n --argjson taken "$taken" --slurpfile cases "$answers" --argjson live "$live" '$taken + {cases: $cases, live: $live}' >"$out"
 # As `make check` would have it.
-pnpm exec biome format --write "$out" >/dev/null
+[ -n "${REFUSALS_OUT:-}" ] || pnpm exec biome format --write "$out" >/dev/null
 jq -r '(.cases[] | "\(.outcome)  \(.case): \(.message)"), "share-key holds \(.live.keys | join(", ")); the public half of the Secret: \(.live.matchesSecret)"' "$out"

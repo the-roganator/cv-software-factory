@@ -11,6 +11,7 @@ import * as events from './commands/events.ts';
 import * as gate from './commands/gate.ts';
 import * as gateway from './commands/gateway.ts';
 import * as github from './commands/github.ts';
+import * as guardrails from './commands/guardrails.ts';
 import * as intake from './commands/intake.ts';
 import * as line from './commands/line.ts';
 import * as logs from './commands/logs.ts';
@@ -32,6 +33,7 @@ const GROUPS: Record<string, Group> = {
   gate,
   gateway,
   github,
+  guardrails,
   intake,
   line,
   logs,

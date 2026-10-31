@@ -36,7 +36,8 @@ set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 here=$(dirname "$0")
-out="$here/../deploy/test/admission-refusals.json"
+# REFUSALS_OUT writes the record elsewhere, as `make guardrails` takes it, and leaves deploy/test/ as it is.
+out="${REFUSALS_OUT:-$here/../deploy/test/admission-refusals.json}"
 # The policies as the cluster runs them, or nothing asked.
 taken=$(node "$here/policy-hash.ts" admission-refusals)
 
@@ -127,5 +128,5 @@ answers="$work/answers"
 } >"$answers"
 jq -s --argjson taken "$taken" '$taken + {cases: .}' "$answers" >"$out"
 # As `make check` would have it.
-pnpm exec biome format --write "$out" >/dev/null
+[ -n "${REFUSALS_OUT:-}" ] || pnpm exec biome format --write "$out" >/dev/null
 jq -r '.cases[] | "\(.outcome)  \(.namespace)  \(.case): \(.message)"' "$out"

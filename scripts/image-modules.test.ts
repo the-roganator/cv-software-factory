@@ -46,8 +46,8 @@ const IMAGES: Record<string, Image> = {
     dockerfile: 'apps/factory/Dockerfile',
     stages: ['base', 'server'],
     entries: ['apps/factory/src/cli.ts', 'apps/factory/src/telemetry.ts'],
-    // `factory line bench`'s runner steps, which the factory never runs in the cluster.
-    hostOnly: ['apps/runner/src/agent.ts', 'apps/runner/src/prepare.ts'],
+    // `factory line bench`'s runner steps, and `factory guardrails`, which run on the Mac alone, never in the cluster.
+    hostOnly: ['apps/runner/src/agent.ts', 'apps/runner/src/prepare.ts', 'apps/factory/src/guardrails/command.ts'],
     // The line's worker, which `factory line serve` imports only once it runs.
     reaches: ['apps/factory/src/line/worker.ts', 'packages/events/src/schemas.ts'],
   },

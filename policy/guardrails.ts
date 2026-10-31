@@ -33,14 +33,15 @@ export const PROOFS = {
   },
   'app-permissions': {
     for:
-      "Each installation's permissions, read live, against the Apps' declared in `scripts/github-settings.ts`: none " +
-      'writes Variables, Administration or Workflows.',
+      'Each App installed in the organisation, read live, against the Apps declared in `scripts/github-settings.ts`: ' +
+      'only those, each with exactly its declared permissions, and none writing Variables, Administration, Workflows, ' +
+      'secrets or environments.',
     mechanism: 'token-permission',
   },
   bypass: {
     for:
-      "`scripts/github-settings.ts --check` with Martin's `gh`, which sees each ruleset's bypass list: it fails if a " +
-      'list is unseen or names anyone.',
+      "`scripts/github-settings.ts --check --see-bypass` with Martin's `gh`, which sees each ruleset's bypass list: " +
+      'it fails if a list is unseen or names anyone, or a push bypassed a ruleset in the last week.',
     mechanism: 'ruleset',
   },
   'ci:gates-deterministic': {
@@ -93,6 +94,55 @@ export const PROOFS = {
   },
 } as const satisfies Record<string, Proof>;
 export type ProofId = keyof typeof PROOFS;
+
+/** A proof read from CI. */
+export type CiProofId = Extract<ProofId, `ci:${string}`>;
+
+/** Where a proof read from CI is found, and what it is of. */
+export interface CiProof {
+  /** The workflow whose merge-group runs on `main` it reads. */
+  workflow: string;
+  /** The job that runs its tests: every part of it, when it runs in parts. */
+  job: string;
+  /** The test files that prove it, each of which the job runs (guardrails.test.ts checks that it does). */
+  tests: readonly string[];
+}
+
+const CHECK = '.github/workflows/check.yml';
+
+/**
+ * Which job proves each guardrail read from CI, and by which tests. `make guardrails` reads the job in the newest
+ * merge-group run of its workflow on `main`'s first-parent history that ran it, and the proof holds only if every part
+ * of the job passed there, and that commit reached `main` no more than a day before `main`'s head did. A run from a
+ * pull request, or from a fork, never counts.
+ */
+export const CI_PROOFS = {
+  'ci:gates-deterministic': {
+    workflow: CHECK,
+    job: 'tests',
+    tests: ['scripts/github-settings.test.ts', 'scripts/merge-decisions.test.ts', 'scripts/review-gate.test.ts'],
+  },
+  'ci:one-gateway': {
+    workflow: CHECK,
+    job: 'tests',
+    tests: ['apps/factory/test/credentials.test.ts', 'apps/factory/test/runner-fences.test.ts'],
+  },
+  'ci:spend-caps': {
+    workflow: CHECK,
+    job: 'tests',
+    tests: ['apps/factory/test/gateway/gateway.test.ts', 'apps/factory/test/gateway/agents.test.ts'],
+  },
+  'ci:public-hostile': {
+    workflow: CHECK,
+    job: 'tests',
+    tests: ['scripts/workflows.test.ts', 'apps/factory/test/github/issues.test.ts', 'scripts/review-gate.test.ts'],
+  },
+  'ci:scope-fence': {
+    workflow: CHECK,
+    job: 'tests',
+    tests: ['apps/factory/test/runners.test.ts', 'apps/factory/test/line/coder.test.ts'],
+  },
+} as const satisfies Record<CiProofId, CiProof>;
 
 export interface Guardrail {
   /** Its number in spec 6. */

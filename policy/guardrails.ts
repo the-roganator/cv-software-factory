@@ -33,14 +33,15 @@ export const PROOFS = {
   },
   'app-permissions': {
     for:
-      "Each installation's permissions, read live, against the Apps' declared in `scripts/github-settings.ts`: none " +
-      'writes Variables, Administration or Workflows.',
+      'Each App installed in the organisation, read live, against the Apps declared in `scripts/github-settings.ts`: ' +
+      'only those, each with exactly its declared permissions, and none writing Variables, Administration, Workflows, ' +
+      'secrets or environments.',
     mechanism: 'token-permission',
   },
   bypass: {
     for:
-      "`scripts/github-settings.ts --check` with Martin's `gh`, which sees each ruleset's bypass list: it fails if a " +
-      'list is unseen or names anyone.',
+      "`scripts/github-settings.ts --check --see-bypass` with Martin's `gh`, which sees each ruleset's bypass list: " +
+      'it fails if a list is unseen or names anyone, or a push bypassed a ruleset in the last week.',
     mechanism: 'ruleset',
   },
   'ci:gates-deterministic': {

@@ -10,8 +10,8 @@
  * not record a proof as held. Before each append it checks the checkout is still that commit, clean, so a script that changed it stops the run.
  *
  * Each proof is taken in turn (`guardrails/proofs.ts`), what it runs shown as it goes, and recorded as soon as it is
- * taken: held or not, with its output verbatim (at most 4000 characters), the hash of the policies and Roles it was
- * taken against, and for one read from CI, its run. A proof that throws did not hold, and is recorded so, with why. A
+ * taken: held or not, with its output verbatim (at most 4000 characters), for one taken against the cluster's
+ * policies and Roles their hash, and for one read from CI, its run. A proof that throws did not hold, and is recorded so, with why. A
  * proof that did not hold fails the command, which names it, and the line's count of security events pages Martin
  * (`guardrail-not-held`). Two are not recorded, and fail the command too: the stop-the-line drill, when Martin does not
  * say yes at its prompt; and a proof read from CI that finds no run to read.

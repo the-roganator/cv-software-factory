@@ -5,7 +5,9 @@
  * the `flagd-flag-stages` admission policy (deploy/base/admission/flagd/flag-stages.yaml) let through.
  * apps/factory/test/flag-fences.test.ts holds each answer to what its case must get, and the flags each admitted case
  * sent to what policy/flags.ts renders now, and the policy the cluster answered with to the one in deploy/, so the
- * shapes, the policy and the record cannot drift apart.
+ * shapes, the policy and the record cannot drift apart. The record keeps the hash of the Roles and the policy it was
+ * taken against (scripts/policy-hash.ts), which stops the script first unless the cluster runs them as deploy/ renders
+ * them here, and which apps/factory/test/refusal-records.test.ts holds to deploy/.
  *
  *     node scripts/flag-stages-refusals.ts
  *
@@ -284,8 +286,14 @@ export interface Answer {
   flags?: Flags;
 }
 
-/** The record: the policy as the cluster answered with it, and each answer. */
+/**
+ * The record: the hash of the Roles and the policy it was taken against (scripts/policy-hash.ts), the policy as the
+ * cluster answered with it, and each answer.
+ */
 export interface FlagStagesRecord {
+  policyHash: string;
+  policies: string[];
+  revision: string;
   policy: { matchConditions: unknown; variables: unknown; validations: unknown };
   answers: Answer[];
 }
@@ -335,6 +343,13 @@ function ask(context: string, read: FeatureFlag, c: Case): Answer {
 
 if (import.meta.main) {
   const context = process.env.KUBE_CONTEXT ?? 'k3d-software-factory';
+  // The Roles and the policy as the cluster runs them, or nothing asked.
+  const taken = JSON.parse(
+    execFileSync('node', [join(import.meta.dirname, 'policy-hash.ts'), 'flag-stages-refusals'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+    }),
+  ) as Pick<FlagStagesRecord, 'policyHash' | 'policies' | 'revision'>;
   // Read as the admin service reads it, which its Role must allow.
   const read = JSON.parse(
     execFileSync('kubectl', ['--context', context, '--as', ADMIN, 'get', '--raw', PATH], { encoding: 'utf-8' }),
@@ -346,6 +361,7 @@ if (import.meta.main) {
   ) as { spec: Record<string, unknown> };
   // Every case answers before the record is written, so a script that stops leaves it as it was.
   const record: FlagStagesRecord = {
+    ...taken,
     policy: {
       matchConditions: policy.spec.matchConditions,
       variables: policy.spec.variables,

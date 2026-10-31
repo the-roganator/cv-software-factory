@@ -421,11 +421,15 @@ describe('flags', () => {
   });
 
   it('was answered by the cluster as the policy says (scripts/flags-refusals.sh)', async () => {
-    const kept = JSON.parse(await readFile(join(DEPLOY, 'test', 'flags-refusals.json'), 'utf-8')) as {
-      case: string;
-      outcome: string;
-      message: string;
-    }[];
+    const kept = (
+      JSON.parse(await readFile(join(DEPLOY, 'test', 'flags-refusals.json'), 'utf-8')) as {
+        cases: {
+          case: string;
+          outcome: string;
+          message: string;
+        }[];
+      }
+    ).cases;
     expect(Object.fromEntries(kept.map((k) => [k.case, k.outcome]))).toEqual({
       second: 'refused',
       delete: 'refused',

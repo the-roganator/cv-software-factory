@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { DEPLOY, manifests as deployManifests } from './deploy.ts';
+import { DEPLOY, manifests as deployManifests, type LabelSelector, selects } from './deploy.ts';
 
 /**
  * The admin service's fences as deploy/ declares them (milestone 7): the browser reaches it under /admin/ on the
@@ -18,7 +18,7 @@ interface Manifest {
   spec?: {
     rules?: { host?: string; http?: { paths?: { path?: string; backend?: Backend }[] } }[];
     headers?: { customRequestHeaders?: Record<string, string> };
-    podSelector?: Selector;
+    podSelector?: LabelSelector;
     ingress?: { from?: unknown[]; ports?: unknown[] }[];
     egress?: { to?: unknown[]; ports?: unknown[] }[];
     template?: {
@@ -37,27 +37,8 @@ interface Manifest {
   };
 }
 
-interface Selector {
-  matchLabels?: Record<string, string>;
-  matchExpressions?: { key: string; operator: string; values?: string[] }[];
-}
-
 const manifests = () => deployManifests<Manifest>();
 
-/** Whether a label selector picks a pod with these labels, for the operators deploy/ uses; any other throws. */
-function selects(selector: Selector, labels: Record<string, string>): boolean {
-  const byLabel = Object.entries(selector.matchLabels ?? {}).every(([key, value]) => labels[key] === value);
-  return (
-    byLabel &&
-    (selector.matchExpressions ?? []).every(({ key, operator, values = [] }) => {
-      if (operator === 'In') return values.includes(labels[key] ?? '');
-      if (operator === 'NotIn') return !values.includes(labels[key] ?? '');
-      if (operator === 'Exists') return key in labels;
-      if (operator === 'DoesNotExist') return !(key in labels);
-      throw new Error(`The selector simulation does not know ${operator}`);
-    })
-  );
-}
 const MIDDLEWARES = 'traefik.ingress.kubernetes.io/router.middlewares';
 const TRAEFIK = {
   namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
@@ -281,11 +262,15 @@ describe('the app’s routes', () => {
   });
 
   it('were refused by the cluster on any host but the app’s (scripts/route-refusals.sh)', async () => {
-    const kept = JSON.parse(await readFile(join(DEPLOY, 'test', 'route-refusals.json'), 'utf-8')) as {
-      case: string;
-      outcome: string;
-      message: string;
-    }[];
+    const kept = (
+      JSON.parse(await readFile(join(DEPLOY, 'test', 'route-refusals.json'), 'utf-8')) as {
+        cases: {
+          case: string;
+          outcome: string;
+          message: string;
+        }[];
+      }
+    ).cases;
     const outcomes = Object.fromEntries(kept.map((k) => [k.case, k.outcome]));
     expect(outcomes).toEqual({
       app: 'admitted',

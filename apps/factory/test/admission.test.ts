@@ -105,10 +105,34 @@ async function thirdParty(dirs: string[], files: string[]) {
   return [...images].filter((i) => (i.includes('/') || i.includes('@')) && !i.startsWith(OURS)).sort();
 }
 
+/** Who signed each kept case's image, as scripts/signed-by.ts read it. */
+const SIGNED: Record<string, string> = { unsigned: 'none', 'other-identity': 'other', misplaced: 'pipeline' };
+
+/** Whether the image policy's `matchImageReferences` take in an image: Kyverno verifies the signatures of these alone. */
+const GLOBS = (() => {
+  const globs = (
+    parse(readFileSync(join(DEPLOY, 'base/admission/images/policy.yaml'), 'utf-8')) as {
+      spec: { matchImageReferences: { glob: string }[] };
+    }
+  ).spec.matchImageReferences.map(({ glob }) => glob);
+  const escaped = (part: string) => part.replace(/[.+?^$()|[\]{}\\/]/g, '\\$&');
+  return globs.map((glob) => new RegExp(`^${glob.split('*').map(escaped).join('.*')}$`));
+})();
+function globbed(image: string) {
+  return GLOBS.some((pattern) => pattern.test(image));
+}
+
+const copies = async () => [
+  await copy('factory'),
+  await copy('website'),
+  await copy('scoreboard'),
+  await copy('flagd'),
+];
+
 /** Which of the policy's checks refuses each kept case. */
 const REFUSED_BY: Record<string, string> = {
   unsigned: 'images must be signed by build.yml on main of the repository that builds them: ',
-  'other-identity': "images must come from this project's GHCR, or be named by digest in the policy: ",
+  'other-identity': 'images must be signed by build.yml on main of the repository that builds them: ',
   misplaced: "images from this project's GHCR must be ones this namespace runs: ",
   'other-digest': "images must come from this project's GHCR, or be named by digest in the policy: ",
 };
@@ -278,19 +302,21 @@ describe('admission control', () => {
   });
 
   it("kept Kyverno's refusals in every guarded namespace (scripts/admission-refusals.sh)", async () => {
-    const kept = JSON.parse(await read('test/admission-refusals.json')) as {
-      namespace: string;
-      case: string;
-      image: string;
-      outcome: string;
-      message: string;
-    }[];
-    for (const { policy: name, namespaces } of [
-      await copy('factory'),
-      await copy('website'),
-      await copy('scoreboard'),
-      await copy('flagd'),
-    ]) {
+    const kept = (
+      JSON.parse(await read('test/admission-refusals.json')) as {
+        cases: {
+          namespace: string;
+          case: string;
+          image: string;
+          outcome: string;
+          message: string;
+          signature?: 'pipeline' | 'none' | 'other';
+          signedBy?: string[];
+        }[];
+      }
+    ).cases;
+    const all = await copies();
+    for (const { policy: name, namespaces } of all) {
       for (const namespace of namespaces) {
         const refusals = kept.filter((r) => r.namespace === namespace);
         // No image of ours runs in `flagd`, so one unsigned would be refused as misplaced: flagd's own image at
@@ -301,10 +327,33 @@ describe('admission control', () => {
             : ['misplaced', 'other-identity', 'unsigned'],
         );
         for (const refusal of refusals) {
-          expect(refusal.outcome).toBe('refused');
-          // A refusal names the policy, the check that refused it and the image.
-          expect(refusal.message).toContain(`Policy ${name} failed: ${REFUSED_BY[refusal.case]}`);
-          expect(refusal.message).toContain(refusal.image);
+          const at = `${namespace} ${refusal.case}`;
+          expect(refusal.outcome, at).toBe('refused');
+          // A refusal names the policy, the check that refused it and the image. In `flagd`, where no image of ours
+          // runs, one signed by another is refused for its place before its signature is looked at.
+          const by = namespace === 'flagd' && refusal.case === 'other-identity' ? 'misplaced' : refusal.case;
+          expect(refusal.message, at).toContain(`Policy ${name} failed: ${REFUSED_BY[by]}`);
+          expect(refusal.message, at).toContain(refusal.image);
+          // Every image of ours is one the policy verifies, by its globs, as Kyverno verifies no other's signature.
+          // So one refused for its signature was looked at, and refused for the signature it has.
+          const ours = refusal.case !== 'other-digest';
+          expect(globbed(refusal.image), at).toBe(ours);
+          expect(refusal.signature, at).toBe(ours ? SIGNED[refusal.case] : undefined);
+        }
+        // An image signed by someone else, which the namespace runs: past the checks of its registry and place, and
+        // refused by its signature alone, which is not build.yml's on main.
+        const other = refusals.find((r) => r.case === 'other-identity');
+        expect(other?.signedBy?.length, namespace).toBeGreaterThan(0);
+        for (const identity of other?.signedBy ?? []) {
+          expect(
+            REPOSITORIES.map((repo) => pipeline(repo).identity),
+            namespace,
+          ).not.toContain(identity);
+        }
+        if (namespace !== 'flagd') {
+          const runs = all.find((c) => c.namespaces.includes(namespace));
+          const repository = other?.image.split('@')[0];
+          expect([...(runs?.factory ?? []), ...(runs?.website ?? [])], namespace).toContain(repository);
         }
       }
     }

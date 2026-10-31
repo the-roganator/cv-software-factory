@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseAllDocuments } from 'yaml';
 import { HEADERS } from '../src/traffic/share.ts';
-import { DEPLOY, manifests as deployManifests } from './deploy.ts';
+import { DEPLOY, manifests as deployManifests, type LabelSelector, selects } from './deploy.ts';
 
 /**
  * The fences around a share's signed ids as deploy/ declares them (milestone 7): the generator's private key in a
@@ -44,7 +44,7 @@ interface Manifest {
       };
     };
     // A NetworkPolicy's
-    podSelector?: { matchLabels?: Record<string, string> };
+    podSelector?: LabelSelector;
     policyTypes?: string[];
     ingress?: NetworkRule[];
     egress?: NetworkRule[];
@@ -104,9 +104,6 @@ describe('the generator’s signing key', () => {
 });
 
 describe('the generator’s requests', () => {
-  /** Whether a NetworkPolicy's pod selector, by labels alone, selects pods with these labels. */
-  const selects = (policy: Manifest, labels: Record<string, string>) =>
-    Object.entries(policy.spec?.podSelector?.matchLabels ?? {}).every(([k, v]) => labels[k] === v);
   const describePeer = (peer: Peer) =>
     peer.ipBlock
       ? peer.ipBlock.cidr
@@ -125,7 +122,7 @@ describe('the generator’s requests', () => {
     const labels = pod.metadata?.labels ?? {};
     const policies = (await manifests()).filter(
       ({ manifest, namespace }) =>
-        manifest.kind === 'NetworkPolicy' && namespace === 'factory' && selects(manifest, labels),
+        manifest.kind === 'NetworkPolicy' && namespace === 'factory' && selects(manifest.spec?.podSelector, labels),
     );
     expect(policies.map(({ manifest }) => manifest.metadata?.name).sort()).toEqual([
       'allow-dns',

@@ -1,50 +1,53 @@
 {
+  "policyHash": "f6221d95517d1a10840a6c4a3d0e6e7597686f9a290743eeb7753daa7ad39b79",
+  "policies": ["ValidatingAdmissionPolicy website-share-key", "ValidatingAdmissionPolicyBinding website-share-key"],
+  "revision": "2d3de66370e1419660ff13328c14b6e967fb66d7",
   "cases": [
     {
       "case": "admin-change",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "admitted",
       "message": "configmap/share-key"
     },
     {
       "case": "admin-delete",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "admitted",
       "message": "configmap \"share-key\" deleted from website namespace (server dry run)"
     },
     {
       "case": "argocd-create",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "refused",
       "message": "The configmaps \"share-key\" is invalid: : ValidatingAdmissionPolicy 'website-share-key' with binding 'website-share-key' denied request: share-key holds the traffic generator's public key, and only make share-key writes it, as the cluster's administrator (system:admin)"
     },
     {
       "case": "argocd-change",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "refused",
       "message": "The configmaps \"share-key\" is invalid: : ValidatingAdmissionPolicy 'website-share-key' with binding 'website-share-key' denied request: share-key holds the traffic generator's public key, and only make share-key writes it, as the cluster's administrator (system:admin)"
     },
     {
       "case": "argocd-delete",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "refused",
       "message": "The configmaps \"share-key\" is invalid: : ValidatingAdmissionPolicy 'website-share-key' with binding 'website-share-key' denied request: share-key holds the traffic generator's public key, and only make share-key writes it, as the cluster's administrator (system:admin)"
     },
     {
       "case": "argocd-other",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "admitted",
       "message": "configmap/share-key-refusal"
     },
     {
       "case": "master-change",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:17Z",
       "outcome": "refused",
       "message": "The configmaps \"share-key\" is invalid: : ValidatingAdmissionPolicy 'website-share-key' with binding 'website-share-key' denied request: share-key holds the traffic generator's public key, and only make share-key writes it, as the cluster's administrator (system:admin)"
     },
     {
       "case": "master-delete",
-      "at": "2026-10-25T16:51:03Z",
+      "at": "2026-10-31T20:44:18Z",
       "outcome": "refused",
       "message": "The configmaps \"share-key\" is invalid: : ValidatingAdmissionPolicy 'website-share-key' with binding 'website-share-key' denied request: share-key holds the traffic generator's public key, and only make share-key writes it, as the cluster's administrator (system:admin)"
     }

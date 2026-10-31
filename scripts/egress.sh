@@ -86,10 +86,21 @@
 #
 # The controls matter: if the gateway could not reach TypeSafe either, the pod's failure would prove only that the
 # network was down.
+#
+#     scripts/egress.sh [record.json]
+#
+# Given a file, it also writes there a record of every check, for `make guardrails` to read: the hash of the fences
+# and Roles it was taken against (scripts/policy-hash.ts, which stops it first unless the cluster runs them as deploy/
+# renders them here), when, whether all held, and each check's group, what was tried, from where, what it wanted and
+# what it got. The checks of the readers of telemetry, which show a reader can query and cannot write, are tagged
+# `read-only-telemetry`, for the proof that nothing of ours writes to production but what may.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 kubectl=(kubectl --context "$context" -n factory)
+record=${1:-}
+taken=null
+if [ -n "$record" ]; then taken=$(node "$(dirname "$0")/policy-hash.ts" egress); fi
 pod=egress-intruder
 
 image=$("${kubectl[@]}" get deployment gateway -o jsonpath='{.spec.template.spec.containers[0].image}')
@@ -130,7 +141,7 @@ if ! kubectl --context "$context" -n pod-logs rollout status daemonset/pod-logs-
   exit 1
 fi
 cleanup() {
-  rm -f "${exec_errors:-}"
+  rm -f "${exec_errors:-}" "${checks:-}"
   # Each delete goes on whether the one before failed, so no probe pod is left behind.
   "${kubectl[@]}" delete pod "$pod" egress-postgres-exporter --ignore-not-found --wait=false >/dev/null || true
   "${runners[@]}" delete pod egress-agent egress-prepare --ignore-not-found --wait=false >/dev/null || true
@@ -149,6 +160,8 @@ cleanup() {
 trap cleanup EXIT
 # What a failed exec said, for its FAIL line.
 exec_errors=$(mktemp)
+# Each check as a JSON line, for the record.
+checks=$(mktemp)
 
 # What a pod runs to try an address: prints the HTTP status, or why it could not connect. A server's certificate is
 # not checked: the Kubernetes API's is the cluster's own, and reaching it at all is what counts. Given a host as well,
@@ -342,6 +355,20 @@ sleep 5
 stranger_ip=$(kubectl --context "$context" -n telemetry get pod egress-stranger -o jsonpath='{.status.podIP}')
 
 failed=0
+group='' tag=''
+# A group of checks: its heading, printed, and given to each check after it. $1: the heading; $2: a tag for its checks.
+group() {
+  group=$1 tag=${2:-}
+  echo "$1:"
+}
+# One check, for the record. $1: what was tried; $2: where from; $3: the address; $4: what it wanted; $5: what it got;
+# $6: ok or fail.
+note() {
+  jq -cn --arg group "$group" --arg tag "$tag" --arg check "$1" --arg from "$2" --arg address "$3" --arg wanted "$4" \
+    --arg got "$5" --arg result "$6" \
+    '{group: $group, check: $check, from: $from, address: $address, wanted: $wanted, got: $got, result: $result}
+      + if $tag == "" then {} else {tag: $tag} end' >>"$checks"
+}
 # $1: what is being tried; $2: where from (the pod); $3: the address; $4: blocked or reached, as it must be; $5: the
 # host to name, if any.
 expect() {
@@ -361,14 +388,19 @@ expect() {
     why=$(tail -n 1 "$exec_errors")
     if [ "$status" = 137 ]; then why="killed${why:+; $why}"; fi
     printf '  FAIL  %-62s kubectl exec into %s exited %s%s (wanted %s)\n' "$1" "$2" "$status" "${why:+: $why}" "$4"
+    note "$1" "$2" "$3" "$4" "kubectl exec exited $status${why:+: $why}" fail
     failed=1
-  elif [[ "$result" == "$4"* ]]; then printf '  ok    %-62s %s\n' "$1" "$result"; else
+  elif [[ "$result" == "$4"* ]]; then
+    printf '  ok    %-62s %s\n' "$1" "$result"
+    note "$1" "$2" "$3" "$4" "$result" ok
+  else
     printf '  FAIL  %-62s %s (wanted %s)\n' "$1" "$result" "$4"
+    note "$1" "$2" "$3" "$4" "$result" fail
     failed=1
   fi
 }
 
-echo "A pod labelled like a worker (${pod}), the gateway and the GitHub worker:"
+group "A pod labelled like a worker (${pod}), the gateway and the GitHub worker"
 expect "the gateway reaches TypeSafe" egress-gateway https://api.typesafe.ai reached
 expect "the worker cannot reach TypeSafe" "$pod" https://api.typesafe.ai blocked
 expect "the worker cannot reach GitHub" "$pod" https://api.github.com blocked
@@ -387,7 +419,7 @@ expect "the intake cannot reach the gateway" egress-intake http://gateway:8080/h
 expect "the worker cannot reach the probes" "$pod" http://probes:8080/health blocked
 expect "the worker cannot reach the probes' verification" "$pod" http://probes:8081/health blocked
 
-echo "The line:"
+group "The line"
 expect "the line reaches the Kubernetes API" egress-line "https://$api_ip/version" reached
 expect "the line reaches the API server on the node" egress-line "https://$node_ip:6443/version" reached
 expect "the line reaches the probes' verification" egress-line http://probes:8081/health reached
@@ -434,7 +466,7 @@ reads_telemetry() {
   done
 }
 
-echo "The readers of telemetry, through the read-only proxy, and Prometheus itself:"
+group "The readers of telemetry, through the read-only proxy, and Prometheus itself" read-only-telemetry
 # The control: the stranger answers on each port, so a reader's "blocked" there is the policy's doing.
 for port in 9090 3100 3200; do
   expect "the stranger in telemetry answers on $port" telemetry:egress-stranger "http://$stranger_ip:$port" reached
@@ -452,7 +484,7 @@ reads_telemetry "the log watcher" egress-logs tempo
 reads_telemetry "the line" egress-line tempo
 expect "the worker cannot reach the proxy" "$pod" http://query.telemetry:9090/-/healthy blocked
 
-echo "Pods labelled like a runner's agent pod and prepare pod:"
+group "Pods labelled like a runner's agent pod and prepare pod"
 expect "the agent pod reaches the gateway" runners:egress-agent http://gateway.factory.svc:8080/health reached
 expect "the agent pod reaches the handback" runners:egress-agent http://line.factory.svc:8081/health reached
 expect "the agent pod cannot reach the line's step API" runners:egress-agent http://line.factory.svc:8080/health blocked
@@ -475,7 +507,7 @@ expect "the prepare pod cannot reach the metadata address" runners:egress-prepar
 expect "the prepare pod cannot reach Postgres" runners:egress-prepare "http://$postgres_ip:5432" blocked
 expect "the prepare pod cannot reach the line's handback" runners:egress-prepare http://line.factory.svc:8081/health blocked
 
-echo "The traffic generator, and a pod made like the canary's analysis Job (egress-journeys):"
+group "The traffic generator, and a pod made like the canary's analysis Job (egress-journeys)"
 expect "the traffic generator reaches Traefik" egress-traffic http://traefik.kube-system reached
 expect "the traffic generator cannot reach the app but through it" egress-traffic http://website.website blocked
 expect "the traffic generator cannot reach the canary but through it" egress-traffic http://website-canary.website blocked
@@ -491,7 +523,7 @@ expect "the analysis cannot reach the gateway" website:egress-journeys "http://$
 expect "the analysis cannot reach the Kubernetes API" website:egress-journeys "https://$api_ip/version" blocked
 expect "the analysis cannot reach a public address" website:egress-journeys https://1.1.1.1 blocked
 
-echo "A pod labelled like the app (egress-app), and who reaches the app:"
+group "A pod labelled like the app (egress-app), and who reaches the app"
 expect "the app reaches the collector, by its name" website:egress-app http://otel-collector.telemetry:4318 reached
 expect "the app cannot reach the collector on another port" website:egress-app http://otel-collector.telemetry:4317 blocked
 expect "the app cannot reach Prometheus" website:egress-app http://prometheus-server.telemetry/-/healthy blocked
@@ -524,7 +556,7 @@ expect "a pod beside the app cannot reach flagd's management port" website:egres
 expect "a pod beside the app cannot reach it" website:egress-stranger "http://$website_ip" blocked
 expect "a pod beside the app cannot reach a public address" website:egress-stranger https://1.1.1.1 blocked
 
-echo "A pod labelled like the Argo Rollouts controller (egress-rollouts):"
+group "A pod labelled like the Argo Rollouts controller (egress-rollouts)"
 expect "the controller reaches the Kubernetes API" argo-rollouts:egress-rollouts "https://$api_ip/version" reached
 expect "the controller reaches Prometheus" argo-rollouts:egress-rollouts http://prometheus-server.telemetry/-/healthy reached
 expect "the controller cannot reach GitHub" argo-rollouts:egress-rollouts https://api.github.com blocked
@@ -533,7 +565,7 @@ expect "the controller cannot reach the app" argo-rollouts:egress-rollouts http:
 expect "the controller cannot reach Loki" argo-rollouts:egress-rollouts http://loki.telemetry:3100/ready blocked
 expect "the controller cannot reach Postgres" argo-rollouts:egress-rollouts "http://$postgres_ip:5432" blocked
 
-echo "A pod labelled like the pod log collector (egress-pod-logs):"
+group "A pod labelled like the pod log collector (egress-pod-logs)"
 expect "the collector reaches Loki's intake" pod-logs:egress-pod-logs http://loki.telemetry:3100/ready reached
 expect "the collector cannot reach Prometheus" pod-logs:egress-pod-logs http://prometheus-server.telemetry/-/healthy blocked
 expect "the collector cannot reach Tempo" pod-logs:egress-pod-logs http://tempo.telemetry:3200/ready blocked
@@ -543,7 +575,7 @@ expect "the collector cannot reach the app" pod-logs:egress-pod-logs http://webs
 expect "the collector cannot reach the Kubernetes API" pod-logs:egress-pod-logs "https://$api_ip/version" blocked
 expect "the collector cannot reach a public address" pod-logs:egress-pod-logs https://1.1.1.1 blocked
 
-echo "Pods labelled like Kyverno's admission controller (egress-admission) and its reports controller (egress-kyverno):"
+group "Pods labelled like Kyverno's admission controller (egress-admission) and its reports controller (egress-kyverno)"
 expect "the admission controller reaches GHCR" kyverno:egress-admission https://ghcr.io/v2/ reached
 expect "the admission controller reaches GHCR's storage" kyverno:egress-admission https://pkg-containers.githubusercontent.com reached
 expect "the admission controller reaches Sigstore's trust root" kyverno:egress-admission https://tuf-repo-cdn.sigstore.dev/root.json reached
@@ -565,7 +597,7 @@ scrapes() {
   expect "another pod in telemetry cannot reach $1" telemetry:egress-stranger "$2" blocked
 }
 
-echo "A pod labelled like Prometheus's server (egress-prometheus), and the platform's metrics:"
+group "A pod labelled like Prometheus's server (egress-prometheus), and the platform's metrics"
 scrapes "Kyverno's admission controller" http://kyverno-svc-metrics.kyverno:8000/metrics
 scrapes "Kyverno's reports controller" http://kyverno-reports-controller-metrics.kyverno:8000/metrics
 scrapes "Argo Rollouts' controller" "http://$rollouts_ip:8090/metrics"
@@ -573,7 +605,7 @@ scrapes "the Postgres exporter" "http://$exporter_ip:9187/metrics"
 scrapes "the pod log collector" "http://$pod_logs_ip:8888/metrics"
 expect "a worker beside the exporter cannot reach it" "$pod" "http://$exporter_ip:9187/metrics" blocked
 
-echo "A pod labelled like the Postgres exporter (egress-postgres-exporter):"
+group "A pod labelled like the Postgres exporter (egress-postgres-exporter)"
 expect "the exporter reaches Postgres" egress-postgres-exporter tcp://postgres:5432 reached
 expect "the exporter cannot reach the collector" egress-postgres-exporter http://otel-collector.telemetry:4318 blocked
 expect "the exporter cannot reach the gateway" egress-postgres-exporter http://gateway:8080/health blocked
@@ -581,7 +613,7 @@ expect "the exporter cannot reach the app" egress-postgres-exporter http://websi
 expect "the exporter cannot reach the Kubernetes API" egress-postgres-exporter "https://$api_ip/version" blocked
 expect "the exporter cannot reach a public address" egress-postgres-exporter https://1.1.1.1 blocked
 
-echo "A pod labelled like Alertmanager (egress-alertmanager), and who reaches Alertmanager:"
+group "A pod labelled like Alertmanager (egress-alertmanager), and who reaches Alertmanager"
 alertmanager=http://prometheus-alertmanager.telemetry:9093/-/healthy
 expect "Alertmanager reaches the intake" telemetry:egress-alertmanager http://intake.factory:8080/health "reached, HTTP 200"
 expect "Alertmanager reaches Pushover" telemetry:egress-alertmanager https://api.pushover.net/1/messages.json reached
@@ -599,7 +631,7 @@ expect "Prometheus's server reaches Alertmanager" telemetry:egress-prometheus "$
 expect "the stranger in telemetry cannot reach Alertmanager" telemetry:egress-stranger "$alertmanager" blocked
 expect "the worker cannot reach Alertmanager" "$pod" "$alertmanager" blocked
 
-echo "The admin service:"
+group "The admin service"
 expect "the admin service reaches Postgres" egress-admin tcp://postgres:5432 reached
 expect "the admin service reaches the collector" egress-admin http://otel-collector.telemetry:4318 reached
 expect "the admin service cannot reach the gateway" egress-admin http://gateway:8080/health blocked
@@ -616,7 +648,7 @@ expect "the scoreboard cannot reach the admin service" scoreboard:egress-scorebo
 expect "the stranger in telemetry cannot reach the admin service" telemetry:egress-stranger \
   "http://$admin_ip:8080/admin/health" blocked
 
-echo "The scoreboard:"
+group "The scoreboard"
 expect "the scoreboard reaches Postgres" scoreboard:egress-scoreboard tcp://postgres.factory:5432 reached
 expect "the scoreboard cannot reach the collector" scoreboard:egress-scoreboard http://otel-collector.telemetry:4318 blocked
 expect "the scoreboard cannot reach the gateway" scoreboard:egress-scoreboard http://gateway.factory:8080/health blocked
@@ -663,7 +695,7 @@ rights+=("bind roles.rbac.authorization.k8s.io" "escalate roles.rbac.authorizati
 rollouts_needs=" get secrets | list secrets | watch secrets | update pods | create replicasets.apps |
   patch replicasets.apps | update replicasets.apps | update deployments.apps | create jobs.batch | patch jobs.batch |
   update jobs.batch "
-echo "The scoreboard's Secrets:"
+group "The scoreboard's Secrets"
 asks=()
 for ns in factory runners website scoreboard flagd telemetry pod-logs argo-rollouts kyverno; do
   for account in $(kubectl --context "$context" -n "$ns" get serviceaccounts -o jsonpath='{.items[*].metadata.name}'); do
@@ -683,8 +715,14 @@ answers=$(printf '%s\n' "${asks[@]}" | xargs -P 16 -L 1 bash -c '
     --as "system:serviceaccount:$1:$2" 2>/dev/null) || true
   if [ "$answer" != no ]; then printf "  FAIL  %-62s %s\n" "$1/$2 may $3 $4 in scoreboard" "${answer:-no answer}"; fi
 ' "$context")
-if [ -n "$answers" ]; then echo "$answers"; failed=1; else
-  printf '  ok    %s\n' "no service account may reach them, and Argo Rollouts' controller only as its canaries need"
+secrets="no service account may reach them, and Argo Rollouts' controller only as its canaries need"
+if [ -n "$answers" ]; then
+  echo "$answers"
+  note "$secrets" "the API server" "kubectl auth can-i, in scoreboard" no "$answers" fail
+  failed=1
+else
+  printf '  ok    %s\n' "$secrets"
+  note "$secrets" "the API server" "kubectl auth can-i, in scoreboard" no "no, to each of ${#asks[@]}" ok
 fi
 
 if [ "$failed" = 0 ]; then
@@ -693,4 +731,8 @@ if [ "$failed" = 0 ]; then
   echo "metrics; a stranger cannot reach Alertmanager; the runners, the release, the traffic, the app, the Postgres exporter"
   echo "and the scoreboard are fenced."
 else echo "The network policies do not hold."; fi
+if [ -n "$record" ]; then
+  jq -s --argjson taken "$taken" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson held "$([ "$failed" = 0 ] && echo true || echo false)" \
+    '$taken + {at: $at, held: $held, checks: .}' "$checks" >"$record"
+fi
 exit "$failed"

@@ -158,3 +158,5 @@ It has controls, which must reach what they reach:
 - Alertmanager reaches the intake and Pushover, and Prometheus's server reaches Alertmanager;
 - Traefik, the probes, the crawler and the admin service still reach the app, the admin service each of its pods at its own address, which the pod in `telemetry` below, whose own egress is open, does not;
 - the app reaches flagd's sync port.
+
+Given a file (`scripts/egress.sh <record.json>`), it also writes there a record of every check, for `make guardrails`: the hash of the fences and Roles it was taken against (`scripts/policy-hash.ts`, which stops it first unless the cluster runs them as `deploy/` renders them), when, whether all held, and each check's group, what was tried, from where, what it wanted and what it got. The readers of telemetry's checks are tagged `read-only-telemetry`.

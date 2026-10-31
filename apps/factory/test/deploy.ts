@@ -99,3 +99,28 @@ export function rendered<M extends Manifest = Manifest>(): { overlay: string; ma
       .map((manifest) => ({ overlay, manifest })),
   );
 }
+
+/** A Kubernetes label selector, as a NetworkPolicy's pod and namespace selectors have it. */
+export interface LabelSelector {
+  matchLabels?: Record<string, string>;
+  matchExpressions?: { key: string; operator: string; values?: string[] }[];
+}
+
+/**
+ * Whether a label selector picks out something with these labels, as Kubernetes reads one: every label it names, and
+ * every expression. An empty selector, or none, picks out everything. An operator Kubernetes does not have throws, so
+ * a selector this cannot read is never taken for one that selects, or one that does not.
+ */
+export function selects(selector: LabelSelector | undefined, labels: Record<string, string>): boolean {
+  const byLabel = Object.entries(selector?.matchLabels ?? {}).every(([key, value]) => labels[key] === value);
+  return (
+    byLabel &&
+    (selector?.matchExpressions ?? []).every(({ key, operator, values = [] }) => {
+      if (operator === 'In') return key in labels && values.includes(labels[key] as string);
+      if (operator === 'NotIn') return !(key in labels) || !values.includes(labels[key] as string);
+      if (operator === 'Exists') return key in labels;
+      if (operator === 'DoesNotExist') return !(key in labels);
+      throw new Error(`A label selector has no operator ${operator}`);
+    })
+  );
+}

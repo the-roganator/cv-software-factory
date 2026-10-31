@@ -1,4 +1,18 @@
 {
+  "policyHash": "6dbbdd62095f563ed63c7ab416e49e80b1517d72748f035547de096209bf5684",
+  "policies": [
+    "Role flagd/admin-stages-flags",
+    "Role flagd/flagd-reads-flags",
+    "Role flagd/line-reads-admission",
+    "Role flagd/line-reads-flags",
+    "RoleBinding flagd/admin-stages-flags",
+    "RoleBinding flagd/flagd-reads-flags",
+    "RoleBinding flagd/line-reads-admission",
+    "RoleBinding flagd/line-reads-flags",
+    "ValidatingAdmissionPolicy flagd-flag-stages",
+    "ValidatingAdmissionPolicyBinding flagd-flag-stages"
+  ],
+  "revision": "2d3de66370e1419660ff13328c14b6e967fb66d7",
   "policy": {
     "matchConditions": [
       {
@@ -59,7 +73,7 @@
     {
       "case": "off",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -83,7 +97,7 @@
     {
       "case": "checks",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -121,7 +135,7 @@
     {
       "case": "preview",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -168,7 +182,7 @@
     {
       "case": "share-10",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -226,7 +240,7 @@
     {
       "case": "share-25",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -284,7 +298,7 @@
     {
       "case": "share-50",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -342,7 +356,7 @@
     {
       "case": "everyone",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -366,7 +380,7 @@
     {
       "case": "every-stage",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "admitted",
       "message": "admitted",
       "flags": {
@@ -493,154 +507,154 @@
     {
       "case": "unknown-key",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "share-30",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "other-variable",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "other-flag-previewed",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:21Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "unsigned-share",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "other-value",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "disabled",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: each feature flag in flags must be at one stage, in its fixed shape: off, checks, preview, a share of 10, 25 or 50, or everyone"
     },
     {
       "case": "bad-name",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: a feature flag's name is lower-case letters and digits, in words joined by hyphens"
     },
     {
       "case": "no-revision",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: flags must name its revision, flag-set-revision, with one string variant, revision: visible ASCII of 1 to 128 characters, and never none, stale or invalid"
     },
     {
       "case": "revision-none",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: flags must name its revision, flag-set-revision, with one string variant, revision: visible ASCII of 1 to 128 characters, and never none, stale or invalid"
     },
     {
       "case": "revision-stale",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: flags must name its revision, flag-set-revision, with one string variant, revision: visible ASCII of 1 to 128 characters, and never none, stale or invalid"
     },
     {
       "case": "revision-invalid",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: flags must name its revision, flag-set-revision, with one string variant, revision: visible ASCII of 1 to 128 characters, and never none, stale or invalid"
     },
     {
       "case": "revision-targeted",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: flags must name its revision, flag-set-revision, with one string variant, revision: visible ASCII of 1 to 128 characters, and never none, stale or invalid"
     },
     {
       "case": "revision-staged",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: flags must name its revision, flag-set-revision, with one string variant, revision: visible ASCII of 1 to 128 characters, and never none, stale or invalid"
     },
     {
       "case": "flag-set-metadata",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: the admin service may change only the flags of flags, not its $evaluators or the flag set's metadata"
     },
     {
       "case": "evaluators",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:30Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: the admin service may change only the flags of flags, not its $evaluators or the flag set's metadata"
     },
     {
       "case": "label",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flag-stages' with binding 'flagd-flag-stages' denied request: the admin service may not change the labels, annotations, finalizers or owners of flags"
     },
     {
       "case": "second",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "featureflags.core.openfeature.dev is forbidden: User \"system:serviceaccount:factory:admin\" cannot create resource \"featureflags\" in API group \"core.openfeature.dev\" in the namespace \"flagd\""
     },
     {
       "case": "patch",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "featureflags.core.openfeature.dev \"flags\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot patch resource \"featureflags\" in API group \"core.openfeature.dev\" in the namespace \"flagd\""
     },
     {
       "case": "status",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "featureflags.core.openfeature.dev \"flags\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot update resource \"featureflags/status\" in API group \"core.openfeature.dev\" in the namespace \"flagd\""
     },
     {
       "case": "delete",
       "as": "system:serviceaccount:factory:admin",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "featureflags.core.openfeature.dev \"flags\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot delete resource \"featureflags\" in API group \"core.openfeature.dev\" in the namespace \"flagd\""
     },
     {
       "case": "as-line",
       "as": "system:serviceaccount:factory:line",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "featureflags.core.openfeature.dev \"flags\" is forbidden: User \"system:serviceaccount:factory:line\" cannot update resource \"featureflags\" in API group \"core.openfeature.dev\" in the namespace \"flagd\"",
       "flags": {
@@ -678,7 +692,7 @@
     {
       "case": "as-flagd",
       "as": "system:serviceaccount:flagd:flagd",
-      "at": "2026-10-26T22:04:31Z",
+      "at": "2026-10-31T20:44:22Z",
       "outcome": "refused",
       "message": "featureflags.core.openfeature.dev \"flags\" is forbidden: User \"system:serviceaccount:flagd:flagd\" cannot update resource \"featureflags\" in API group \"core.openfeature.dev\" in the namespace \"flagd\"",
       "flags": {

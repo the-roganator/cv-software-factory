@@ -13,12 +13,18 @@
 #   second   another FeatureFlag in flagd, which flagd's watch would read too            refused
 #   delete   flags deleted, which would leave flagd serving the last flags it read        refused
 #   change   a flag added to flags, as the console will                                   admitted
+#
+# The record keeps the hash of the policy it was taken against (scripts/policy-hash.ts), which stops the script first
+# unless the cluster runs it as deploy/ renders it here, and which apps/factory/test/refusal-records.test.ts holds to
+# deploy/, so a change to it fails `make check` until this is run again.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 kubectl=(kubectl --context "$context" -n flagd)
 out="$(dirname "$0")/../deploy/test/flags-refusals.json"
 policy="ValidatingAdmissionPolicy 'flagd-flags'"
+# The policies as the cluster runs them, or nothing asked (scripts/policy-hash.ts).
+taken=$(node "$(dirname "$0")/policy-hash.ts" flags-refusals)
 
 try() { # case command...: one JSON line, admitted on success, refused only by the policy
   local kind=$1 answer outcome
@@ -55,5 +61,7 @@ trap 'rm -f "$answers"' EXIT
   try change "${kubectl[@]}" patch featureflag flags --type merge --dry-run=server -o name -p \
     '{"spec":{"flagSpec":{"flags":{"flags-refusal":{"state":"ENABLED","variants":{"on":true,"off":false},"defaultVariant":"off"}}}}}'
 } >"$answers"
-jq -s . "$answers" >"$out"
-jq -r '.[] | "\(.outcome)  \(.case): \(.message)"' "$out"
+jq -s --argjson taken "$taken" '$taken + {cases: .}' "$answers" >"$out"
+# As `make check` would have it.
+pnpm exec biome format --write "$out" >/dev/null
+jq -r '.cases[] | "\(.outcome)  \(.case): \(.message)"' "$out"

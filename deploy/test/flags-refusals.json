@@ -1,20 +1,25 @@
-[
-  {
-    "case": "second",
-    "at": "2026-10-25T13:54:47Z",
-    "outcome": "refused",
-    "message": "The featureflags \"flags-refusal\" is invalid: : ValidatingAdmissionPolicy 'flagd-flags' with binding 'flagd-flags' denied request: flags is the only FeatureFlag in flagd"
-  },
-  {
-    "case": "delete",
-    "at": "2026-10-25T13:54:47Z",
-    "outcome": "refused",
-    "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flags' with binding 'flagd-flags' denied request: flags is never deleted: flagd would keep serving the last flags it read. To turn a flag off, change it in flags"
-  },
-  {
-    "case": "change",
-    "at": "2026-10-25T13:54:47Z",
-    "outcome": "admitted",
-    "message": "featureflag.core.openfeature.dev/flags"
-  }
-]
+{
+  "policyHash": "41e9aa987c5b13d6dca88cbb0497e32e8be971cce2bc051f9fabe74b53f1df08",
+  "policies": ["ValidatingAdmissionPolicy flagd-flags", "ValidatingAdmissionPolicyBinding flagd-flags"],
+  "revision": "2d3de66370e1419660ff13328c14b6e967fb66d7",
+  "cases": [
+    {
+      "case": "second",
+      "at": "2026-10-31T20:44:17Z",
+      "outcome": "refused",
+      "message": "The featureflags \"flags-refusal\" is invalid: : ValidatingAdmissionPolicy 'flagd-flags' with binding 'flagd-flags' denied request: flags is the only FeatureFlag in flagd"
+    },
+    {
+      "case": "delete",
+      "at": "2026-10-31T20:44:17Z",
+      "outcome": "refused",
+      "message": "The featureflags \"flags\" is invalid: : ValidatingAdmissionPolicy 'flagd-flags' with binding 'flagd-flags' denied request: flags is never deleted: flagd would keep serving the last flags it read. To turn a flag off, change it in flags"
+    },
+    {
+      "case": "change",
+      "at": "2026-10-31T20:44:17Z",
+      "outcome": "admitted",
+      "message": "featureflag.core.openfeature.dev/flags"
+    }
+  ]
+}

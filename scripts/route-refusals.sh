@@ -16,11 +16,17 @@
 #   or-console        the app's host, or the console's                              refused
 #   host-regexp       any host, by pattern                                          refused
 #   console-and-app   the console's host first, then the app's                      refused
+#
+# The record keeps the hash of the policy it was taken against (scripts/policy-hash.ts), which stops the script first
+# unless the cluster runs it as deploy/ renders it here, and which apps/factory/test/refusal-records.test.ts holds to
+# deploy/, so a change to it fails `make check` until this is run again.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 out="$(dirname "$0")/../deploy/test/route-refusals.json"
 policy="Policy website-routes failed"
+# The policies as the cluster runs them, or nothing asked (scripts/policy-hash.ts).
+taken=$(node "$(dirname "$0")/policy-hash.ts" route-refusals)
 
 try() { # case match: one JSON line, what was asked and what the cluster answered
   local kind=$1 match=$2 answer outcome
@@ -66,5 +72,7 @@ trap 'rm -f "$answers"' EXIT
   try host-regexp 'HostRegexp(`.+`)'
   try console-and-app 'Host(`console.localhost`) && Host(`website.localhost`)'
 } >"$answers"
-jq -s . "$answers" >"$out"
-jq -r '.[] | "\(.outcome)  \(.case): \(.message)"' "$out"
+jq -s --argjson taken "$taken" '$taken + {cases: .}' "$answers" >"$out"
+# As `make check` would have it.
+pnpm exec biome format --write "$out" >/dev/null
+jq -r '.cases[] | "\(.outcome)  \(.case): \(.message)"' "$out"

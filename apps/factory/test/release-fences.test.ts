@@ -142,11 +142,15 @@ describe('changing a release is Martin’s: the admin service’s, for his contr
   });
 
   it('was answered by the cluster as the Role and the policy say (scripts/rollout-refusals.sh)', async () => {
-    const kept = JSON.parse(await readFile(join(DEPLOY, 'test', 'rollout-refusals.json'), 'utf-8')) as {
-      case: string;
-      outcome: string;
-      message: string;
-    }[];
+    const kept = (
+      JSON.parse(await readFile(join(DEPLOY, 'test', 'rollout-refusals.json'), 'utf-8')) as {
+        cases: {
+          case: string;
+          outcome: string;
+          message: string;
+        }[];
+      }
+    ).cases;
     expect(Object.fromEntries(kept.map((k) => [k.case, k.outcome]))).toEqual({
       pause: 'admitted',
       resume: 'admitted',

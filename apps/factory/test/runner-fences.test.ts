@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Step } from '../../runner/src/step.ts';
 import { agentJob, prepareJob } from '../src/runners/jobs.ts';
-import { type Manifest, rendered } from './deploy.ts';
+import { type LabelSelector, type Manifest, rendered, selects } from './deploy.ts';
 
 /**
  * The runners' fences as each profile renders them (ADR 0008, spec 6 guardrail 6): everything in `runners` is denied
@@ -11,10 +11,7 @@ import { type Manifest, rendered } from './deploy.ts';
  * (runners/jobs.ts). `make egress` shows the same on the cluster.
  */
 type Labels = Record<string, string>;
-interface Selector {
-  matchLabels?: Labels;
-  matchExpressions?: unknown[];
-}
+type Selector = LabelSelector;
 interface Peer {
   namespaceSelector?: Selector;
   podSelector?: Selector;
@@ -42,12 +39,6 @@ const NAMES = { job: 'coder-1-1-1', workItem: '1' };
 const SETTINGS = { image: 'runner', deadlineSeconds: 60, gatewayUrl: '', handbackUrl: '', token: '', hosts: [] };
 const AGENT = agentJob(NAMES, STEP, SETTINGS).spec.template.metadata.labels as Labels;
 const PREPARE = prepareJob(NAMES, STEP, SETTINGS).spec.template.metadata.labels as Labels;
-
-/** Whether a selector picks out labels; one this test cannot read is refused rather than guessed at. */
-function selects(selector: Selector | undefined, labels: Labels): boolean {
-  if (selector?.matchExpressions?.length) throw new Error('This test reads matchLabels alone');
-  return Object.entries(selector?.matchLabels ?? {}).every(([key, value]) => labels[key] === value);
-}
 
 const NAMESPACE = 'kubernetes.io/metadata.name';
 
@@ -192,11 +183,27 @@ describe('the runners’ fences, in every profile', () => {
 });
 
 describe('reading a fence', () => {
-  it('selects by every label a selector names, and refuses an expression', () => {
+  it('selects by every label and every expression a selector names, and refuses an operator it does not know', () => {
+    const runner = 'factory.mrogan.dev/runner';
     expect(selects({}, AGENT)).toBe(true);
-    expect(selects({ matchLabels: { 'factory.mrogan.dev/runner': 'agent' } }, AGENT)).toBe(true);
-    expect(selects({ matchLabels: { 'factory.mrogan.dev/runner': 'agent' } }, PREPARE)).toBe(false);
-    expect(() => selects({ matchExpressions: [{ key: 'a', operator: 'Exists' }] }, AGENT)).toThrow();
+    expect(selects(undefined, AGENT)).toBe(true);
+    expect(selects({ matchLabels: { [runner]: 'agent' } }, AGENT)).toBe(true);
+    expect(selects({ matchLabels: { [runner]: 'agent' } }, PREPARE)).toBe(false);
+    const expression = (operator: string, values?: string[]) => ({
+      matchExpressions: [{ key: runner, operator, ...(values && { values }) }],
+    });
+    expect(selects(expression('In', ['agent', 'x']), AGENT)).toBe(true);
+    expect(selects(expression('In', ['x']), AGENT)).toBe(false);
+    expect(selects(expression('NotIn', ['agent']), AGENT)).toBe(false);
+    expect(selects(expression('NotIn', ['agent']), PREPARE)).toBe(true);
+    expect(selects(expression('Exists'), AGENT)).toBe(true);
+    expect(selects(expression('DoesNotExist'), AGENT)).toBe(false);
+    // A key the labels lack: In never selects it, even when its values hold an empty string; NotIn always does.
+    expect(selects({ matchExpressions: [{ key: 'absent', operator: 'In', values: [''] }] }, AGENT)).toBe(false);
+    expect(selects({ matchExpressions: [{ key: 'absent', operator: 'NotIn', values: ['x'] }] }, AGENT)).toBe(true);
+    // Labels and expressions together: both must hold.
+    expect(selects({ matchLabels: { [runner]: 'agent' }, ...expression('NotIn', ['agent']) }, AGENT)).toBe(false);
+    expect(() => selects(expression('Gt', ['1']), AGENT)).toThrow();
   });
 
   it('reads a rule with no peers as anywhere, and no ports as every port, and refuses a range', () => {

@@ -31,12 +31,18 @@
 #   pause-condition   a pause added                                                    refused
 #   delete            the Rollout deleted                                              refused (by the Role)
 #   traffic           the TraefikService's weights, directly                           refused (by the Role)
+#
+# The record keeps the hash of the Roles and the policy it was taken against (scripts/policy-hash.ts), which stops the script first
+# unless the cluster runs them as deploy/ renders them here, and which apps/factory/test/refusal-records.test.ts holds
+# to deploy/, so a change to them fails `make check` until this is run again.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 as=system:serviceaccount:factory:admin
 out="$(dirname "$0")/../deploy/test/rollout-refusals.json"
 rollout=/apis/argoproj.io/v1alpha1/namespaces/website/rollouts/website
+# The policies as the cluster runs them, or nothing asked (scripts/policy-hash.ts).
+taken=$(node "$(dirname "$0")/policy-hash.ts" rollout-refusals)
 
 at=$(kubectl --context "$context" -n website get rollout website -o jsonpath='{.status.currentStepIndex}')
 at=${at:-0}
@@ -102,5 +108,7 @@ try() { # case subresource patch: the patch made conditional on the Rollout as i
   send traffic PATCH /apis/traefik.io/v1alpha1/namespaces/website/traefikservices/website \
     '{"spec":{"weighted":{"services":[]}}}'
 } >"$work/answers"
-jq -s . "$work/answers" >"$out"
-jq -r '.[] | "\(.outcome)  \(.case): \(.message)"' "$out"
+jq -s --argjson taken "$taken" '$taken + {cases: .}' "$work/answers" >"$out"
+# As `make check` would have it.
+pnpm exec biome format --write "$out" >/dev/null
+jq -r '.cases[] | "\(.outcome)  \(.case): \(.message)"' "$out"

@@ -7,6 +7,11 @@
 #
 # A pod is fenced a moment after it starts, so the agent pod checks its own fence before it runs the agent
 # (apps/runner/src/agent.ts). `make egress` shows the fences hold.
+#
+# From the other side, Kyverno's admission controller lets in 9443 from every private range
+# (deploy/base/admission/network-policies.yaml), runners' pods' addresses among them, as the API server that calls its
+# webhook runs on the node and has no pod to select. So it is these fences alone that keep a runner from Kyverno's
+# webhook: neither pod's egress names 9443 or a private range.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

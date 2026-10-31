@@ -44,12 +44,18 @@
 #
 # Then each IngressRoute, TraefikService and Middleware already in `website`, sent back unchanged as an update, which
 # the policy must admit: it holds what is made and changed, so this shows that what was there before it holds too.
+#
+# The record keeps the hash of the policy it was taken against (scripts/policy-hash.ts), which stops the script first
+# unless the cluster runs it as deploy/ renders it here, and which apps/factory/test/refusal-records.test.ts holds to
+# deploy/, so a change to it fails `make check` until this is run again.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 kubectl=(kubectl --context "$context")
 out="$(dirname "$0")/../deploy/test/mark-refusals.json"
 policy="Policy website-mark failed"
+# The policies as the cluster runs them, or nothing asked (scripts/policy-hash.ts).
+taken=$(node "$(dirname "$0")/policy-hash.ts" mark-refusals)
 
 try() { # case command...: one JSON line, admitted on success, refused only by the policy
   local kind=$1 answer outcome
@@ -183,8 +189,10 @@ traefik=$("${kubectl[@]}" -n kube-system get deployment traefik -o json |
 k3s=$("${kubectl[@]}" version -o json | jq -r .serverVersion.gitVersion)
 configs=$("${kubectl[@]}" get helmchartconfigs.helm.cattle.io -A -o json | jq '[.items[].metadata | "\(.namespace)/\(.name)"]')
 
-jq -n --arg k3s "$k3s" --argjson traefik "$traefik" --argjson configs "$configs" \
+jq -n --argjson taken "$taken" --arg k3s "$k3s" --argjson traefik "$traefik" --argjson configs "$configs" \
   --slurpfile cases "$answers" --slurpfile live "$live" \
-  '{k3s: $k3s, helmChartConfigs: $configs, traefik: $traefik, cases: $cases, live: $live}' >"$out"
+  '$taken + {k3s: $k3s, helmChartConfigs: $configs, traefik: $traefik, cases: $cases, live: $live}' >"$out"
+# As `make check` would have it.
+pnpm exec biome format --write "$out" >/dev/null
 jq -r '"k3s \(.k3s), Traefik \(.traefik.image)", (.traefik.providers[] | "  \(.)"),
   (.cases[], .live[] | "\(.outcome)  \(.case): \(.message)")' "$out"

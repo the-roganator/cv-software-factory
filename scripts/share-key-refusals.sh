@@ -23,12 +23,18 @@
 #
 # Then what share-key holds: its keys, and whether its public key is the public half of the generator's Secret, so
 # the record shows `make share-key` wrote it. The private key goes through a pipe and is never printed or kept.
+#
+# The record keeps the hash of the policy it was taken against (scripts/policy-hash.ts), which stops the script first
+# unless the cluster runs it as deploy/ renders it here, and which apps/factory/test/refusal-records.test.ts holds to
+# deploy/, so a change to it fails `make check` until this is run again.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"
 kubectl=(kubectl --context "$context")
 out="$(dirname "$0")/../deploy/test/share-key-refusals.json"
 policy="ValidatingAdmissionPolicy 'website-share-key'"
+# The policies as the cluster runs them, or nothing asked (scripts/policy-hash.ts).
+taken=$(node "$(dirname "$0")/policy-hash.ts" share-key-refusals)
 argocd=(--as=system:serviceaccount:argocd:argocd-application-controller)
 master=(--as=share-key-refusal --as-group=system:masters)
 
@@ -89,5 +95,7 @@ public=$("${kubectl[@]}" -n factory get secret share-signing-key -o jsonpath='{.
 live=$(jq -n --argjson held "$held" --arg public "$public" \
   '{keys: ($held.data // {} | keys), matchesSecret: ($held.data["public-key"] == $public + "\n")}')
 
-jq -n --slurpfile cases "$answers" --argjson live "$live" '{cases: $cases, live: $live}' >"$out"
+jq -n --argjson taken "$taken" --slurpfile cases "$answers" --argjson live "$live" '$taken + {cases: $cases, live: $live}' >"$out"
+# As `make check` would have it.
+pnpm exec biome format --write "$out" >/dev/null
 jq -r '(.cases[] | "\(.outcome)  \(.case): \(.message)"), "share-key holds \(.live.keys | join(", ")); the public half of the Secret: \(.live.matchesSecret)"' "$out"

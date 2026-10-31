@@ -1,104 +1,116 @@
-[
-  {
-    "case": "pause",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "admitted",
-    "message": "HTTP 200"
-  },
-  {
-    "case": "resume",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "admitted",
-    "message": "HTTP 200"
-  },
-  {
-    "case": "abort",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "admitted",
-    "message": "HTTP 200"
-  },
-  {
-    "case": "retry",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "admitted",
-    "message": "HTTP 200"
-  },
-  {
-    "case": "promote",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "admitted",
-    "message": "HTTP 200"
-  },
-  {
-    "case": "promote-fully",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "admitted",
-    "message": "HTTP 200"
-  },
-  {
-    "case": "image",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only spec.paused of the app's Rollout"
-  },
-  {
-    "case": "steps",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only spec.paused of the app's Rollout"
-  },
-  {
-    "case": "replicas",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only spec.paused of the app's Rollout"
-  },
-  {
-    "case": "label",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may not change the app's Rollout's labels, annotations, finalizers or owners"
-  },
-  {
-    "case": "step-back",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may move the canary forward only, to a step it has, or past the last"
-  },
-  {
-    "case": "step-dropped",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may move the canary forward only, to a step it has, or past the last"
-  },
-  {
-    "case": "stable",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only status.abort, status.currentStepIndex, status.pauseConditions, status.controllerPause and status.promoteFull of the app's Rollout"
-  },
-  {
-    "case": "weights",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only status.abort, status.currentStepIndex, status.pauseConditions, status.controllerPause and status.promoteFull of the app's Rollout"
-  },
-  {
-    "case": "pause-condition",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may clear the canary's pauses, never add one"
-  },
-  {
-    "case": "delete",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "rollouts.argoproj.io \"website\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot delete resource \"rollouts\" in API group \"argoproj.io\" in the namespace \"website\""
-  },
-  {
-    "case": "traffic",
-    "at": "2026-10-23T18:27:25Z",
-    "outcome": "refused",
-    "message": "traefikservices.traefik.io \"website\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot patch resource \"traefikservices\" in API group \"traefik.io\" in the namespace \"website\""
-  }
-]
+{
+  "policyHash": "70a2b253c77f879c4ad5918e2fca4211f98a90a4edfdbf5e3060779c8dcdb88e",
+  "policies": [
+    "Role website/admin-controls-release",
+    "Role website/admin-finds-app-pods",
+    "RoleBinding website/admin-controls-release",
+    "RoleBinding website/admin-finds-app-pods",
+    "ValidatingAdmissionPolicy website-rollout-controls",
+    "ValidatingAdmissionPolicyBinding website-rollout-controls"
+  ],
+  "revision": "2d3de66370e1419660ff13328c14b6e967fb66d7",
+  "cases": [
+    {
+      "case": "pause",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "admitted",
+      "message": "HTTP 200"
+    },
+    {
+      "case": "resume",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "admitted",
+      "message": "HTTP 200"
+    },
+    {
+      "case": "abort",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "admitted",
+      "message": "HTTP 200"
+    },
+    {
+      "case": "retry",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "admitted",
+      "message": "HTTP 200"
+    },
+    {
+      "case": "promote",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "admitted",
+      "message": "HTTP 200"
+    },
+    {
+      "case": "promote-fully",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "admitted",
+      "message": "HTTP 200"
+    },
+    {
+      "case": "image",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only spec.paused of the app's Rollout"
+    },
+    {
+      "case": "steps",
+      "at": "2026-10-31T20:44:20Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only spec.paused of the app's Rollout"
+    },
+    {
+      "case": "replicas",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only spec.paused of the app's Rollout"
+    },
+    {
+      "case": "label",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may not change the app's Rollout's labels, annotations, finalizers or owners"
+    },
+    {
+      "case": "step-back",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may move the canary forward only, to a step it has, or past the last"
+    },
+    {
+      "case": "step-dropped",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may move the canary forward only, to a step it has, or past the last"
+    },
+    {
+      "case": "stable",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only status.abort, status.currentStepIndex, status.pauseConditions, status.controllerPause and status.promoteFull of the app's Rollout"
+    },
+    {
+      "case": "weights",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may change only status.abort, status.currentStepIndex, status.pauseConditions, status.controllerPause and status.promoteFull of the app's Rollout"
+    },
+    {
+      "case": "pause-condition",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: ValidatingAdmissionPolicy 'website-rollout-controls' with binding 'website-rollout-controls' denied request: the admin service may clear the canary's pauses, never add one"
+    },
+    {
+      "case": "delete",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "rollouts.argoproj.io \"website\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot delete resource \"rollouts\" in API group \"argoproj.io\" in the namespace \"website\""
+    },
+    {
+      "case": "traffic",
+      "at": "2026-10-31T20:44:21Z",
+      "outcome": "refused",
+      "message": "traefikservices.traefik.io \"website\" is forbidden: User \"system:serviceaccount:factory:admin\" cannot patch resource \"traefikservices\" in API group \"traefik.io\" in the namespace \"website\""
+    }
+  ]
+}

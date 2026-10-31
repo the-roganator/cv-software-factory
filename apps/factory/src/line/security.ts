@@ -55,12 +55,13 @@ import { GUARDRAIL_HOLDS } from '../../../../policy/access.ts';
 import { type FlagAction, flagAction } from '../../../../policy/flag-moves.ts';
 import type { Stage } from '../../../../policy/flags.ts';
 import { type ControlAction, type ControlChange, controlAction, controlsInForce } from '../../../../policy/line.ts';
+import type { STORE_GRANTS } from '../../../../policy/store-grants.ts';
 import type { Logger } from '../log.ts';
 
 const meter = metrics.getMeter('factory-line');
 
 /** The one role whose proofs are trusted (0043_guardrail-proofs.sql). */
-const PROOFS_ROLE = 'factory_proofs';
+const PROOFS_ROLE = 'factory_proofs' satisfies keyof typeof STORE_GRANTS;
 
 /** Every kind of security event counted, as its `kind` label. */
 export const SECURITY_KINDS = [

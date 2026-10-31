@@ -124,6 +124,8 @@ export const PUBLIC_VIEWS = {
   'spend.capped': redacted,
   'spend.cleared': redacted,
   'score.updated': redacted,
+  // A proof's output is a script's or a check's own words, through the redactor, as a refusal's is.
+  'guardrail.proved': redacted,
   // Martin's own: that he did it, never with which passkey, from where or in which browser.
   'admin.signed-in': (event) => ({ ...event, summary: 'Martin signed in with a passkey', payload: {} }),
   'admin.signed-out': redacted,

@@ -70,6 +70,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(call secret,factory,postgres-console,--from-literal=password="$$(openssl rand -hex 24)")
 	@$(call secret,factory,postgres-metrics,--from-literal=password="$$(openssl rand -hex 24)")
 	@$(call secret,factory,postgres-admin,--from-literal=password="$$(openssl rand -hex 24)")
+	@# The proofs' role, which `make guardrails` connects as from the Mac; the migrate Job sets it.
+	@$(call secret,factory,postgres-proofs,--from-literal=password="$$(openssl rand -hex 24)")
 	@$(MAKE) --no-print-directory worker-secrets
 	@$(MAKE) --no-print-directory gateway-key
 	@$(MAKE) --no-print-directory github-key

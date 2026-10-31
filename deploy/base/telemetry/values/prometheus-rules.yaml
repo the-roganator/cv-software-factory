@@ -255,6 +255,15 @@ serverFiles:
             annotations:
               summary: "Alerts no longer reach your phone"
               description: "Alerts to your phone were switched off in the console: none reaches it until they are switched on again. Grafana's Alerts dashboard still shows every alert."
+          - alert: SecurityEvent
+            expr: "max(increase(line_security_events_total{kind=\"guardrail-not-held\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "page"
+              kind: "guardrail-not-held"
+            annotations:
+              summary: "A guardrail did not hold"
+              description: "A proof make guardrails took did not hold, so its guardrail may not be holding. make guardrails said which, and why, and the audit log records it."
           - alert: SecurityEventsUncounted
             expr: "(count(last_over_time(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[6h])) unless count(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"})) or max(line_security_events_counting{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}) == 0"
             for: 5m

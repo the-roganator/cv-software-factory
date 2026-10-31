@@ -572,6 +572,68 @@ describe('the alerts on the factory’s health, releases and spend', () => {
   });
 });
 
+describe('the alert that a guardrail’s proof did not hold', () => {
+  const rule = martinRules().find((r) => r.alert === 'SecurityEvent' && r.labels.kind === 'guardrail-not-held');
+  const fires = { exp_labels: rule?.labels, exp_annotations: rule?.annotations };
+  const counted = (kind: string, values: string, pod = 'line-1') => ({
+    series: line('line_security_events_total', `kind="${kind}", pod="${pod}"`),
+    values,
+  });
+  const at = (eval_time: string, exp_alerts: unknown[]) => ({ eval_time, alertname: 'SecurityEvent', exp_alerts });
+
+  it('pages Martin', () => {
+    expect(rule?.labels).toEqual({ level: LEVELS.page, kind: 'guardrail-not-held' });
+  });
+
+  it('pages on the first proof that did not hold, and each after, and not for the count standing still', () => {
+    expectPasses(
+      promtool(
+        [
+          {
+            interval: '1m',
+            input_series: [counted('guardrail-not-held', each(0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2))],
+            alert_rule_test: [at('1m', []), at('2m', [fires]), at('5m', [fires]), at('6m', []), at('10m', [fires])],
+          },
+        ],
+        'martin',
+      ),
+    );
+  });
+
+  it('pages for no series: a line from before the kind, which sends none, or a count first seen standing', () => {
+    // Its rule may merge before the image that sends its series: the old line's other kinds page nothing here.
+    expectPasses(
+      promtool(
+        [
+          {
+            interval: '1m',
+            input_series: [counted('sign-in', each(0, 0, 0, 0, 0, 0))],
+            alert_rule_test: [at('1m', []), at('5m', [])],
+          },
+          {
+            // The line counting a store whose failed proofs it has already counted, as one restarted does.
+            interval: '1m',
+            input_series: [counted('guardrail-not-held', each('_', '_', 3, 3, 3, 3), 'line-2')],
+            alert_rule_test: [at('2m', []), at('5m', [])],
+          },
+          {
+            // Nor for another worker's word.
+            interval: '1m',
+            input_series: [
+              {
+                series: other('line_security_events_total', 'kind="guardrail-not-held", pod="triage-1"'),
+                values: each(0, 1, 2),
+              },
+            ],
+            alert_rule_test: [at('2m', [])],
+          },
+        ],
+        'martin',
+      ),
+    );
+  });
+});
+
 describe('the alert that alerts do not reach the phone', () => {
   const rule = martinRules().find((r) => r.alert === PHONE_OFF);
   const fires = { exp_labels: {}, exp_annotations: rule?.annotations };

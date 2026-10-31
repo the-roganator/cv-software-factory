@@ -13,6 +13,7 @@ import {
   type InboxSignal,
   LINE_ONLY_TYPES,
   type NewEvent,
+  PROOFS_ONLY_TYPES,
   REFUSAL_MECHANISMS,
   type RefusalMechanism,
   VERSIONS,
@@ -21,7 +22,7 @@ import type { JSONValue, Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ENROLMENT_CODE, PASSKEYS, SESSION } from '../../../policy/access.ts';
 import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../policy/refusals.ts';
-import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
+import { MARTINS_ROLES, PROOFS_ONLY_ROWS, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
@@ -188,6 +189,7 @@ describe('the grants', () => {
       factory_admin: true,
       factory_operator: true,
       factory_enrol: true,
+      factory_proofs: true,
     });
     for (const worker of WORKERS) {
       const [me] = await db.as[worker]<{ me: string }[]>`select current_user as me`;
@@ -544,6 +546,132 @@ describe("the line's record of a release", () => {
   });
 });
 
+describe("a guardrail's proof", () => {
+  /** An event of a type, inserted as it stands, real or a sample, as any client could try. */
+  const insert = (sql: Sql, type: string, sample: boolean, payload: object = {}) => sql`
+    insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+    values (${crypto.randomUUID()}, now(), null, ${type}, 1, 'martin', 'A proof', ${sql.json(payload as JSONValue)},
+            '[]', '{}', ${sample})`;
+  const proved = (held = true): NewEvent<'guardrail.proved'> => ({
+    id: crypto.randomUUID(),
+    ts: new Date().toISOString(),
+    work_item: null,
+    type: 'guardrail.proved',
+    version: VERSIONS['guardrail.proved'],
+    actor: 'martin',
+    summary: held ? 'The egress proof held' : 'The egress proof did not hold',
+    payload: {
+      guardrails: [5],
+      proof: 'egress',
+      mechanism: 'egress-policy',
+      held,
+      output: 'PASS  a runner reaches the gateway',
+      commit: 'a'.repeat(40),
+    },
+    artifacts: [],
+  });
+
+  it('is the type the store holds to the proofs', () => {
+    expect([...PROOFS_ONLY_TYPES]).toEqual(['guardrail.proved']);
+  });
+
+  it('is appended by the proofs alone, and by no other role, in a real store; and the proofs append nothing else', async () => {
+    const real = await freshDatabase('proofs_only');
+    try {
+      const roles: [string, Sql][] = [
+        ...Object.entries(real.as).map(([name, sql]): [string, Sql] => [`factory_${name}`, sql]),
+        ['factory_admin', real.admin],
+        ['factory_operator', real.operator],
+        ['factory_enrol', real.enrol],
+        ['scoreboard_writer', real.scoreboard],
+        ['console_reader', real.reader],
+        ['metrics_reader', real.metrics],
+      ];
+      for (const [role, sql] of roles) {
+        await expect(insert(sql, 'guardrail.proved', false), role).rejects.toThrow(
+          /row-level security|permission denied|the scoreboard appends its own figures/,
+        );
+      }
+      await insert(real.proofs, 'guardrail.proved', false);
+      for (const type of EVENT_TYPES.filter((type) => !PROOFS_ONLY_TYPES.includes(type))) {
+        await expect(insert(real.proofs, type, false), type).rejects.toThrow('row-level security');
+      }
+      expect(await real.owner`select type, appended_by from events order by seq`).toEqual([
+        { type: 'guardrail.proved', appended_by: 'factory_proofs' },
+      ]);
+      // Nor may another role take the proofs' name.
+      await expect(real.as.line`set role factory_proofs`).rejects.toThrow('permission denied');
+      await expect(real.admin`set role factory_proofs`).rejects.toThrow('permission denied');
+    } finally {
+      await real.end();
+    }
+  });
+
+  it("is appended as a sample by Martin's command line too, for `make samples`, and by no other role", async () => {
+    await insert(db.operator, 'guardrail.proved', true);
+    await insert(db.proofs, 'guardrail.proved', true);
+    await expect(insert(db.as.line, 'guardrail.proved', true)).rejects.toThrow('row-level security');
+    await expect(insert(db.admin, 'guardrail.proved', true)).rejects.toThrow('row-level security');
+  });
+
+  it('is appended through the store’s writer, and an append retried is stored once', async () => {
+    const event = proved(false);
+    const [first] = await writer(db.proofs).append(event);
+    const [again] = await writer(db.proofs).append(event);
+    expect(again?.seq).toBe(first?.seq);
+    expect(await db.owner`select appended_by from events where id = ${event.id}`).toEqual([
+      { appended_by: 'factory_proofs' },
+    ]);
+  });
+
+  it('is read by the proofs with only what their proofs read, each from the role that alone appends it', async () => {
+    const real = await freshDatabase('proofs_read');
+    try {
+      const refused = (mechanism: string) => ({
+        mechanism,
+        action: 'Call a model',
+        output: 'Refused.',
+        guardrails: mechanism === 'gateway' ? [9] : [11],
+      });
+      const appended = async (sql: Sql, type: string, payload: object = {}) => {
+        const [row] = await sql<{ seq: string }[]>`
+          insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+          values (${crypto.randomUUID()}, now(), null, ${type}, ${type === 'action.refused' ? 3 : 1}, 'martin', 'An event',
+                  ${sql.json(payload as JSONValue)}, '[]',
+                  ${sql.json({ payload } as JSONValue)}, false)
+          returning seq`;
+        return row?.seq;
+      };
+      const read = [
+        await appended(real.proofs, 'guardrail.proved'),
+        await appended(real.operator, 'line.stopped'),
+        await appended(real.admin, 'line.started'),
+        await appended(real.as.gateway, 'action.refused', refused('gateway')),
+        await appended(real.as.line, 'release.aborted'),
+        await appended(real.as.line, 'release.rolled-back'),
+      ];
+      // What no proof reads, and what another role appended that no proof trusts.
+      await appended(real.as.line, 'action.refused', refused('scope-fence'));
+      await appended(real.as.triage, 'work-item.summarised');
+      await appended(real.as.line, 'release.started');
+      await appended(real.as.line, 'canary.stepped');
+      await appended(real.admin, 'settings.changed');
+      await appended(real.operator, 'work-item.summarised');
+      const seen = await real.proofs<{ seq: string }[]>`select seq from events order by seq`;
+      expect(seen.map((row) => row.seq)).toEqual(read);
+      // When each work item was taken onto the line, and nothing more of it, nor of any other table.
+      await real.as.line`insert into line (work_item, stage) values ('1001', 'plan')`;
+      expect(await real.proofs`select work_item from line where taken_at <= now()`).toEqual([{ work_item: '1001' }]);
+      await expect(real.proofs`select held_by from line`).rejects.toThrow('permission denied');
+      for (const table of ['inbox', 'job_tokens', 'model_calls', 'step_logs', 'sessions', 'passkeys']) {
+        await expect(real.proofs.unsafe(`select 1 from ${table}`), table).rejects.toThrow('permission denied');
+      }
+    } finally {
+      await real.end();
+    }
+  });
+});
+
 describe('a refusal', () => {
   /** The guardrails a mechanism shows, or the repository's for one that is no mechanism. */
   const shown = (mechanism: string): number[] =>
@@ -614,6 +742,13 @@ describe('a refusal', () => {
         .replace(/\s+/g, ' ')
         .replace(/^\((.*)\)$/, '$1');
     expect(restrictive.map((policy) => ({ ...policy, check: check(policy.check) }))).toEqual([
+      {
+        name: 'events_proved_by_the_proofs',
+        table: 'events',
+        command: 'insert',
+        roles: ['public'],
+        check: PROOFS_ONLY_ROWS,
+      },
       {
         name: 'events_refused_as_it_reads',
         table: 'events',

@@ -85,7 +85,7 @@ The intake (`factory intake`) answers `POST /v1/alerts`:
 
 ## Security events
 
-Martin is alerted to each of his security events, at its kind's level, counted from the stored events by the line (`apps/factory/src/line/security.ts`), not by the admin service, which appends most of them: a compromised admin service cannot keep its own actions quiet, as it can neither reach the line nor change an event once stored. Each is told from the stored event alone, and counted whatever role appended it, as row security keeps any but Martin's roles from appending these types:
+Martin is alerted to each of his security events, at its kind's level, counted from the stored events by the line (`apps/factory/src/line/security.ts`), not by the admin service, which appends most of them: a compromised admin service cannot keep its own actions quiet, as it can neither reach the line nor change an event once stored. Each is told from the stored event alone, and counted whatever role appended it, as row security keeps any but Martin's roles from appending these types, but a guardrail's proof, which is counted only from the proofs' role, the one row security lets append it:
 
 | Kind | The stored event | Level |
 |---|---|---|
@@ -105,12 +105,13 @@ Martin is alerted to each of his security events, at its kind's level, counted f
 | `flag-widened`, `flag-narrowed`, `flag-off` | `flag.staged` that widens a feature flag (to Checks too, and turning one back on for everyone), narrows it, or turns it off | Notify, Inform, Inform |
 | `improvement-requested` | every `improvement.requested`, from the console's "+" | Notify |
 | `improvement-approved` | `hold.answered` approving a `spec` hold, read from the hold it answers, on a work item opened as an improvement | Notify |
+| `guardrail-not-held` | `guardrail.proved` that did not hold, appended by `factory_proofs` (`make guardrails`); one that held, like a refusal, is the guardrail working, and alerts no one | Page |
 
 Giving the passkey again (`admin.stepped-up`) alerts no one, though the audit log keeps it: every action that needs it alerts as its own kind, and the sign-in before it informs him.
 
 Every change of the line's controls alerts him, each told from the stored change's before and after alone (`policy/line.ts`), as every change of the settings does, and every move of a feature flag, from its stages before and after alone (`policy/flag-moves.ts`).
 
-- **Each kind has its level** (`SECURITY_LEVELS` in `apps/factory/src/alerts/rules.ts`, typed so a new kind cannot go without one). What loosens a guardrail, changes who can sign in, or keeps alerts from his phone, pages him; what widens what the line does (asking for an improvement, or approving its spec, sets it building something new), or acts on a release, notifies him; what tightens, or only records his own use, informs him, but for tightening autonomy, which notifies him. Every kind still reaches his phone: only how loudly differs.
+- **Each kind has its level** (`SECURITY_LEVELS` in `apps/factory/src/alerts/rules.ts`, typed so a new kind cannot go without one). What loosens a guardrail, a proof that one did not hold, what changes who can sign in, and what keeps alerts from his phone, page him; what widens what the line does (asking for an improvement, or approving its spec, sets it building something new), or acts on a release, notifies him; what tightens, or only records his own use, informs him, but for tightening autonomy, which notifies him. Every kind still reaches his phone: only how loudly differs.
 - **One rule for each kind** alerts when its count rises: the first of a kind too, as each count starts at 0. Several of a kind within five minutes are one message.
 - **Another pages when the count is missing or stale:** gone for ten minutes after being there in the six hours before, or the line unable to read the store for five. Meanwhile no security event would reach him.
 - **A silence pages,** while Alertmanager has one in place, active or pending, from its own `alertmanager_silences`. Nothing here makes one, and only Prometheus and Grafana reach Alertmanager.

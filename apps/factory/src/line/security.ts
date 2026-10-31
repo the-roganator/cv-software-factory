@@ -3,8 +3,9 @@
  * his phone (docs/COMPONENTS/ALERTING.md). The line counts them, not the admin service, which appends most of them: a
  * compromised admin service cannot keep its own actions quiet, as it can neither reach the line nor change an event
  * once stored. Each is told from the stored event alone, never from anything the admin service says of it, and counted
- * whatever role appended it: row security keeps any role but Martin's from appending his commands, and a refused
- * append is no event.
+ * whatever role appended it, but a guardrail's proof: row security keeps any role but Martin's from appending his
+ * commands, and a refused append is no event. A proof is counted only from the proofs' role, which row security holds
+ * it to as well, so a hole in that policy is not the only lock.
  *
  * The security events, each a `kind`:
  * - `sign-in`: `admin.signed-in`;
@@ -30,7 +31,10 @@
  * - every move of a feature flag's stage (`flag.staged`), as the access table's action it is, told from the stored
  *   stages before and after alone (`policy/flag-moves.ts`): `flag-widened` for every widening (Off to Checks, past it,
  *   a larger share, and turning a flag back on for everyone), `flag-narrowed`, and `flag-off`;
- * - every switch of alerts to the phone (`alerts.switched`), by whether they reach it now: `phone-on` and `phone-off`.
+ * - every switch of alerts to the phone (`alerts.switched`), by whether they reach it now: `phone-on` and `phone-off`;
+ * - `guardrail-not-held`: every guardrail's proof that did not hold (`guardrail.proved`, `held: false`) that the
+ *   proofs' role appended, which alone may (`make guardrails`). One that held is not counted: a refusal or a proof
+ *   holding is the guardrail working, and tells Martin nothing.
  *
  * And every hold started, by its cause, whoever started it.
  *
@@ -51,9 +55,13 @@ import { GUARDRAIL_HOLDS } from '../../../../policy/access.ts';
 import { type FlagAction, flagAction } from '../../../../policy/flag-moves.ts';
 import type { Stage } from '../../../../policy/flags.ts';
 import { type ControlAction, type ControlChange, controlAction, controlsInForce } from '../../../../policy/line.ts';
+import type { STORE_GRANTS } from '../../../../policy/store-grants.ts';
 import type { Logger } from '../log.ts';
 
 const meter = metrics.getMeter('factory-line');
+
+/** The one role whose proofs are trusted (0043_guardrail-proofs.sql). */
+const PROOFS_ROLE = 'factory_proofs' satisfies keyof typeof STORE_GRANTS;
 
 /** Every kind of security event counted, as its `kind` label. */
 export const SECURITY_KINDS = [
@@ -82,6 +90,7 @@ export const SECURITY_KINDS = [
   'improvement-approved',
   'phone-on',
   'phone-off',
+  'guardrail-not-held',
 ] as const;
 export type SecurityKind = (typeof SECURITY_KINDS)[number];
 
@@ -105,6 +114,7 @@ const TYPES = [
   'flag.staged',
   'improvement.requested',
   'alerts.switched',
+  'guardrail.proved',
   'hold.started',
 ] as const;
 
@@ -127,6 +137,10 @@ export interface Stored {
   phone?: unknown;
   /** A change of the line's controls: whether auto-rollback is on after it, as stored. */
   autoRollback?: unknown;
+  /** A guardrail's proof: whether it held. */
+  held?: unknown;
+  /** The role that appended it, as the store recorded it. */
+  appendedBy?: string | null;
 }
 
 /** The kind each move of a flag's stage counts as, by the access table's action it is. */
@@ -227,6 +241,10 @@ export function countAs(event: Stored): { kind: SecurityKind } | { hold: HoldCau
       return { kind: 'improvement-requested' };
     case 'alerts.switched':
       return typeof event.phone === 'boolean' ? { kind: event.phone ? 'phone-on' : 'phone-off' } : null;
+    // Only the proofs' role may append a proof, and only theirs is trusted: one any other role appended, which only a
+    // failure of row security would let happen, is no proof.
+    case 'guardrail.proved':
+      return event.held === false && event.appendedBy === PROOFS_ROLE ? { kind: 'guardrail-not-held' } : null;
     case 'hold.answered':
       if (event.decision !== 'approved') return null;
       if ((GUARDRAIL_HOLDS as readonly string[]).includes(event.cause ?? '')) return { kind: 'guardrail-approved' };
@@ -276,6 +294,8 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
       improvement: boolean | null;
       phone: unknown;
       auto_rollback: unknown;
+      held: unknown;
+      appended_by: string | null;
       in_force: boolean | null;
       hold_version: number | null;
       hold_payload: Record<string, unknown> | null;
@@ -284,6 +304,7 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
     with upto as (select max(seq) as last from events)
     select upto.last::text as last, e.type, e.payload->>'action' as action, e.payload->>'decision' as decision,
            e.payload->'change' as change, e.payload->'phone' as phone, e.payload->'autoRollback' as auto_rollback,
+           e.payload->'held' as held, e.appended_by,
            e.type = 'controls.changed' and ${fromMartin(sql, 'e')} as in_force,
            case when e.type = 'flag.staged' then jsonb_build_object('from', e.payload->'from', 'to', e.payload->'to')
            end as staged,
@@ -317,6 +338,8 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
       improvement: row.improvement,
       phone: row.phone,
       autoRollback: row.auto_rollback,
+      held: row.held,
+      appendedBy: row.appended_by,
       cause: causeOf(row),
     };
     const counted = countAs(stored);

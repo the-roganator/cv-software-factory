@@ -32,6 +32,8 @@ export interface Database {
   admin: Sql;
   /** `factory admin enrol`'s. */
   enrol: Sql;
+  /** The proofs', `make guardrails`'s. */
+  proofs: Sql;
   /** A connection as each worker's own role. */
   as: Record<Worker, Sql>;
   end(): Promise<void>;
@@ -282,6 +284,7 @@ export async function createDatabase(
   const operator = as('factory_operator', 'operator-test');
   const service = as('factory_admin', PASSWORDS.admin);
   const enrol = as(UNSET.enrol, 'enrol-test');
+  const proofs = as('factory_proofs', PASSWORDS.proofs);
   const workers = Object.fromEntries(WORKERS.map((w) => [w, as(ROLES[w].role, PASSWORDS[w])])) as Record<Worker, Sql>;
   return {
     name: database,
@@ -292,9 +295,10 @@ export async function createDatabase(
     operator,
     admin: service,
     enrol,
+    proofs,
     as: workers,
     end: async () => {
-      const all = [owner, reader, scoreboard, metrics, operator, service, enrol, ...Object.values(workers)];
+      const all = [owner, reader, scoreboard, metrics, operator, service, enrol, proofs, ...Object.values(workers)];
       await Promise.all(all.map((c) => c.end()));
     },
   };

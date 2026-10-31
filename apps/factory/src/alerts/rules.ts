@@ -95,10 +95,11 @@ export const LEVELS = { page: 'page', notify: 'notify', inform: 'inform' } as co
 export type Level = (typeof LEVELS)[keyof typeof LEVELS];
 
 /**
- * How loudly each kind of security event reaches Martin. What loosens a guardrail, or changes who can sign in, pages
- * him; what widens what the line does (asking for an improvement, or approving its spec, among those), acts on a
- * release, or widens a feature flag, notifies him; what tightens, or only records his own use, informs him, but for
- * tightening autonomy, which notifies him. Every kind still reaches his phone: only how loudly changes.
+ * How loudly each kind of security event reaches Martin. What loosens a guardrail, a guardrail's proof that did not
+ * hold, or what changes who can sign in, pages him; what widens what the line does (asking for an improvement, or
+ * approving its spec, among those), acts on a release, or widens a feature flag, notifies him; what tightens, or only
+ * records his own use, informs him, but for tightening autonomy, which notifies him. Every kind still reaches his
+ * phone: only how loudly changes.
  */
 export const SECURITY_LEVELS: Record<SecurityKind, Level> = {
   'autonomy-loosened': LEVELS.page,
@@ -117,6 +118,8 @@ export const SECURITY_LEVELS: Record<SecurityKind, Level> = {
   // Off overrides a guardrail: a canary the analysis judges bad no longer rolls back by itself.
   'auto-rollback-off': LEVELS.page,
   'auto-rollback-on': LEVELS.inform,
+  // A guardrail's proof that did not hold: the guardrail may not be holding. One that holds tells him nothing.
+  'guardrail-not-held': LEVELS.page,
   'release-control': LEVELS.notify,
   'setting-changed': LEVELS.notify,
   'line-started': LEVELS.notify,
@@ -219,6 +222,11 @@ const SECURITY_WORDS: Record<SecurityKind, { summary: string; description: strin
     summary: 'Auto-rollback was turned on',
     description:
       'Auto-rollback was turned on in the console: a canary the analysis judges bad rolls back by itself. One already paused for you stays paused until you promote or abort it.',
+  },
+  'guardrail-not-held': {
+    summary: 'A guardrail did not hold',
+    description:
+      'A proof make guardrails took did not hold, so its guardrail may not be holding. make guardrails said which, and why, and the audit log records it.',
   },
 };
 

@@ -52,6 +52,8 @@ export const VERSIONS = {
   'spend.capped': 2,
   'spend.cleared': 2,
   'score.updated': 1,
+  // A guardrail's proof, taken by `make guardrails` from the Mac
+  'guardrail.proved': 1,
   // Martin signing in and out, and his passkeys (the admin service, and `factory admin enrol`)
   'admin.signed-in': 1,
   'admin.signed-out': 1,
@@ -86,6 +88,7 @@ export const LINE_TYPES: readonly EventType[] = [
   'spend.capped',
   'spend.cleared',
   'score.updated',
+  'guardrail.proved',
   'admin.signed-in',
   'admin.signed-out',
   'admin.stepped-up',
@@ -125,6 +128,14 @@ export const LINE_ONLY_TYPES: readonly EventType[] = [
   'release.aborted',
   'release.errored',
 ];
+
+/**
+ * The proofs' own record: the type only the proofs' role (`factory_proofs`, which `make guardrails` connects as) may
+ * append (row security on `events`, `0043_guardrail-proofs.sql`), save samples from Martin's command line. The line's
+ * count of what pages Martin and the Guardrails panel trust a proof for that, and also read only those that role
+ * appended.
+ */
+export const PROOFS_ONLY_TYPES: readonly EventType[] = ['guardrail.proved'];
 
 /**
  * Martin's commands: the types only his roles may append (row security on `events`, `0023_martins-commands.sql`), and

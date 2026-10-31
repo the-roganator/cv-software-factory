@@ -1100,6 +1100,50 @@ export const PAYLOADS = {
   /** The line stopped, from the console's Stop the line or `make stop-the-line`, with Martin's reason. */
   'line.stopped': z.strictObject({ reason: text(200) }),
   /**
+   * One of a guardrail's proofs, taken by `make guardrails` from a clean checkout of `main`: the catalogue's proof
+   * (`policy/guardrails.ts`), whether it held, and its output verbatim. Appended only by the proofs' role
+   * (`factory_proofs`), which row security holds it to (0043_guardrail-proofs.sql). A proof read from CI names the
+   * run it read, and its commit is that run's.
+   */
+  'guardrail.proved': z
+    .strictObject({
+      /** Spec 6's guardrails it proves. */
+      guardrails: z
+        .array(z.number().int().min(1).max(V.GUARDRAIL_COUNT))
+        .min(1)
+        .max(V.GUARDRAIL_COUNT)
+        .refine((guardrails) => new Set(guardrails).size === guardrails.length, 'each guardrail once'),
+      /** Its id in the catalogue, such as `egress`, or `ci:scope-fence` for one read from CI. */
+      proof: z.string().regex(/^(ci:)?[a-z][a-z0-9-]{0,62}$/, 'a proof id, such as egress or ci:scope-fence'),
+      /** What it was taken against, as the catalogue names it: `ci-tests` for a proof read from CI. */
+      mechanism: slug.max(63),
+      held: z.boolean(),
+      /** What the proof printed, verbatim. */
+      output: z.string().min(1).max(4000),
+      /** The commit its scripts ran from (`main`'s head, clean), or the CI run's. */
+      commit,
+      /** The hash of the policies and Roles it was taken against (`policyHash`), as SHA-256 in lower-case hex. */
+      policyHash: sha256.optional(),
+      /** A proof read from CI: the run it read, and when that run finished. */
+      run: z
+        .strictObject({
+          url: z
+            .string()
+            .max(300)
+            .regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+(\/attempts\/\d+)?$/, 'a GitHub run'),
+          at: timestamp,
+        })
+        .optional(),
+    })
+    .refine((proved) => proved.proof.startsWith('ci:') === (proved.mechanism === 'ci-tests'), {
+      message: 'a proof read from CI, and only one, is by its tests (ci-tests)',
+      path: ['mechanism'],
+    })
+    .refine((proved) => proved.proof.startsWith('ci:') === (proved.run !== undefined), {
+      message: 'a proof read from CI, and only one, names its run',
+      path: ['run'],
+    }),
+  /**
    * Model calls wait (guardrail 7). Either the factory's own day or month cap is reached, and the gateway refuses
    * calls until it resets; or a provider refuses for a cap the factory does not own (the account's credit is spent,
    * the workspace's limit is reached, or the local model is not running), and agent calls wait until it answers.

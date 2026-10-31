@@ -1,7 +1,7 @@
 # Applies whatever migrations the store has not had, then sets the passwords of the console, the scoreboard, the
-# Postgres exporter, each worker and the admin service from their Secrets. A Sync hook in wave 1: after Postgres
-# (wave 0) is healthy, before the console (wave 2) starts. It runs the console's image, which carries the migrations,
-# so a new image brings its migrations with it.
+# Postgres exporter, each worker, the admin service and the proofs from their Secrets. A Sync hook in wave 1: after
+# Postgres (wave 0) is healthy, before the console (wave 2) starts. It runs the console's image, which carries the
+# migrations, so a new image brings its migrations with it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -107,6 +107,14 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: postgres-admin
+                  key: password
+                  optional: true
+            # The proofs', which `make guardrails` connects as from the Mac (0043_guardrail-proofs.sql), made by
+            # `make up`. Optional for the same reason.
+            - name: PROOFS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-proofs
                   key: password
                   optional: true
           resources:

@@ -14,6 +14,8 @@ const APPENDERS: Partial<Record<NewEvent['type'], string>> = {
   'spend.capped': 'factory_gateway',
   'spend.cleared': 'factory_gateway',
   'score.updated': 'scoreboard_writer',
+  // `make guardrails`'s, as only its role may append one.
+  'guardrail.proved': 'factory_proofs',
   // Martin's to launch from the console, as his commands are.
   'attack.launched': 'factory_admin',
 };

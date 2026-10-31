@@ -129,6 +129,10 @@ describe('the count of Martin’s security events', () => {
     await append(admin, 'alerts.switched', { phone: false });
     await append(admin, 'alerts.switched', { phone: true });
     await append(database.as.line, 'model.called', {});
+    // Each proof that did not hold, and none that did.
+    await append(database.proofs, 'guardrail.proved', { proof: 'egress', held: false });
+    await append(database.proofs, 'guardrail.proved', { proof: 'egress', held: true });
+    await append(database.proofs, 'guardrail.proved', { proof: 'rollback', held: false });
 
     const tally = await readOn(database.as.line, emptyTally());
     expect(tally.kinds).toEqual({
@@ -157,7 +161,21 @@ describe('the count of Martin’s security events', () => {
       'improvement-approved': 0,
       'phone-on': 2,
       'phone-off': 1,
+      'guardrail-not-held': 2,
     });
+  });
+
+  it('counts a proof that did not hold only from the proofs’ role, were row security to let another append one', async () => {
+    await database.owner`alter table events disable row level security`;
+    try {
+      await append(database.as.line, 'guardrail.proved', { proof: 'egress', held: false });
+      await append(database.operator, 'guardrail.proved', { proof: 'egress', held: false });
+    } finally {
+      await database.owner`alter table events enable row level security`;
+    }
+    expect((await readOn(database.as.line, emptyTally())).kinds['guardrail-not-held']).toBe(0);
+    await append(database.proofs, 'guardrail.proved', { proof: 'egress', held: false });
+    expect((await readOn(database.as.line, emptyTally())).kinds['guardrail-not-held']).toBe(1);
   });
 
   it('tells an improvement’s spec approved by the hold it answers and the kind its work item was opened as', async () => {
@@ -394,6 +412,18 @@ describe('what counts as a security event', () => {
     for (const kind of Object.values(counted)) {
       expect(SECURITY_KINDS).toContain(kind);
     }
+  });
+
+  it('counts a guardrail’s proof that did not hold, from the proofs’ role alone, and nothing it cannot read', () => {
+    const proved = (held: unknown, appendedBy: string | null = 'factory_proofs') =>
+      countAs({ type: 'guardrail.proved', held, appendedBy });
+    expect(proved(false)).toEqual({ kind: 'guardrail-not-held' });
+    expect(proved(true)).toBeNull();
+    expect(proved('false')).toBeNull();
+    expect(proved(undefined)).toBeNull();
+    expect(proved(false, 'factory_line')).toBeNull();
+    expect(proved(false, 'factory_operator')).toBeNull();
+    expect(proved(false, null)).toBeNull();
   });
 
   it('counts every switch of alerts to the phone by whether they reach it now, and nothing it cannot read', () => {

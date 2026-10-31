@@ -114,6 +114,7 @@ describe('migrations', () => {
       { version: 40, name: 'refusals-by-mechanism' },
       { version: 41, name: 'refusals-as-they-read' },
       { version: 42, name: 'refusals-before-guardrails' },
+      { version: 43, name: 'guardrail-proofs' },
     ]);
   });
 });

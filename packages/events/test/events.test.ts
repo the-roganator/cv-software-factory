@@ -1565,3 +1565,58 @@ describe('the title of Martin’s request', () => {
     expect(requestTitle('?')).toBe('?');
   });
 });
+
+describe('a guardrail’s proof', () => {
+  const proved = (payload: Record<string, unknown>, envelope: Record<string, unknown> = {}) =>
+    validate({
+      ...opened,
+      work_item: null,
+      ...envelope,
+      type: 'guardrail.proved',
+      version: VERSIONS['guardrail.proved'],
+      actor: 'martin',
+      summary: 'The egress proof held',
+      payload: {
+        guardrails: [5],
+        proof: 'egress',
+        mechanism: 'egress-policy',
+        held: true,
+        output: 'PASS  a runner reaches the gateway\nPASS  a runner cannot reach example.com',
+        commit: 'a'.repeat(40),
+        policyHash: 'b'.repeat(64),
+        ...payload,
+      },
+    } as NewEvent);
+  const run = { url: 'https://github.com/the-roganator/cv-software-factory/actions/runs/123456', at: opened.ts };
+
+  it('names the guardrails it proves, each once, of spec 6’s eleven, and is the line’s, on no work item', () => {
+    expect(proved({})).toEqual({ ok: true });
+    expect(proved({ guardrails: [9, 4], held: false })).toEqual({ ok: true });
+    for (const guardrails of [undefined, [], [0], [12], [5, 5]]) {
+      expect(proved({ guardrails }).ok, JSON.stringify(guardrails)).toBe(false);
+    }
+    expect(proved({}, { work_item: '1288' }).ok).toBe(false);
+  });
+
+  it('keeps its output verbatim to 4000 characters, from a full commit, with a policy hash if it has one', () => {
+    expect(proved({ output: 'x'.repeat(4000) })).toEqual({ ok: true });
+    expect(proved({ output: 'x'.repeat(4001) }).ok).toBe(false);
+    expect(proved({ output: '' }).ok).toBe(false);
+    expect(proved({ commit: 'abc1234' }).ok).toBe(false);
+    expect(proved({ policyHash: undefined })).toEqual({ ok: true });
+    expect(proved({ policyHash: `sha256:${'b'.repeat(64)}` }).ok).toBe(false);
+    expect(proved({ held: 'yes' }).ok).toBe(false);
+    expect(proved({ proof: 'Egress' }).ok).toBe(false);
+  });
+
+  it('is by CI’s tests, with the run it read, when it is read from CI, and only then', () => {
+    expect(proved({ proof: 'ci:scope-fence', guardrails: [11], mechanism: 'ci-tests', run })).toEqual({ ok: true });
+    expect(proved({ proof: 'ci:scope-fence', mechanism: 'ci-tests' }).ok).toBe(false);
+    expect(proved({ proof: 'ci:scope-fence', mechanism: 'scope-fence', run }).ok).toBe(false);
+    expect(proved({ mechanism: 'ci-tests', run }).ok).toBe(false);
+    expect(proved({ run }).ok).toBe(false);
+    for (const url of ['https://example.com/actions/runs/1', 'http://github.com/a/b/actions/runs/1']) {
+      expect(proved({ proof: 'ci:spend-caps', mechanism: 'ci-tests', run: { ...run, url } }).ok, url).toBe(false);
+    }
+  });
+});

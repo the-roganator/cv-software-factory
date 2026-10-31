@@ -7,6 +7,7 @@ import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { LOG } from '../src/captures.ts';
 import { publicSamples } from '../src/export.ts';
 import { sampleEvents } from '../src/index.ts';
+import { appenderOf } from '../src/roles.ts';
 
 const events = sampleEvents();
 const published = publicSamples();
@@ -178,6 +179,13 @@ describe('the samples', () => {
       'factory_line',
     ]);
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
+  });
+
+  it("give a guardrail's proof to the proofs' role, the only one that may append it", () => {
+    const proof = { type: 'guardrail.proved', actor: 'factory', payload: {} } as unknown as Parameters<
+      typeof appenderOf
+    >[0];
+    expect(appenderOf(proof)).toBe('factory_proofs');
   });
 
   it('publish nothing a visitor may not see: no keys, no report text', () => {

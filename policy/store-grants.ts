@@ -195,6 +195,27 @@ export const STORE_GRANTS = {
     },
     rows: { events: { select: "type = 'passkey.revoked'", insert: "type = 'passkey.revoked'" } },
   },
+  factory_proofs: {
+    for:
+      "`make guardrails`, from the Mac: appends a guardrail's proof (`guardrail.proved`) and nothing else, which no " +
+      'other role may append (0043_guardrail-proofs.sql). It reads only what its proofs read, each from the role that ' +
+      "alone appends it: its own proofs; Martin's stops and starts of the line; the gateway's refusals; the line's " +
+      'record of a canary aborted or rolled back; and when each work item was taken onto the line. No pod holds its ' +
+      'password but the migrate Job, which sets it.',
+    on: { events: ['select', 'insert'], store: ['select', 'insert'], line: ['select (work_item, taken_at)'] },
+    rows: {
+      events: {
+        select:
+          "((type = 'guardrail.proved') AND (appended_by = 'factory_proofs')) OR " +
+          "((type in ('line.stopped', 'line.started')) AND " +
+          "(appended_by in ('factory_admin', 'factory_operator', 'factory_enrol'))) OR " +
+          "((type = 'action.refused') AND ((payload ->> 'mechanism') = 'gateway') AND " +
+          "(appended_by = 'factory_gateway')) OR " +
+          "((type in ('release.aborted', 'release.rolled-back')) AND (appended_by = 'factory_line'))",
+        insert: "type = 'guardrail.proved'",
+      },
+    },
+  },
   console_reader: {
     for:
       "The console's server: public views of events, with the role that appended each (0040_refusals-by-mechanism.sql), " +
@@ -221,6 +242,15 @@ export const STORE_GRANTS = {
     on: {},
   },
 } as const satisfies Record<string, RoleGrants>;
+
+/**
+ * The restrictive insert policy on `events` that holds a guardrail's proof to the proofs' role
+ * (`0043_guardrail-proofs.sql`), as the grants test reads it from the store: every role's insert must meet it as well as
+ * its own. Martin's command line appends one only as a sample.
+ */
+export const PROOFS_ONLY_ROWS =
+  "(type <> 'guardrail.proved') OR (CURRENT_USER = 'factory_proofs'::name) OR " +
+  "((CURRENT_USER = 'factory_operator'::name) AND sample)";
 
 /**
  * Martin's roles: the only ones that may append his commands or open an improvement, and the only ones the factory

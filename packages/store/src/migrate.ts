@@ -7,9 +7,10 @@
  *
  * Each of the variables in `PASSWORDS`, when set, becomes the password of its role: CONSOLE_PASSWORD the console's
  * reader's, SCOREBOARD_PASSWORD the scoreboard's writer's, METRICS_PASSWORD the Postgres exporter's reader's,
- * TRIAGE_PASSWORD, LINE_PASSWORD and the like each worker's own, and ADMIN_PASSWORD the admin service's. Martin's
- * command line's and the enrolment's are set by the make targets that use them (`operator.ts`), so no pod holds them.
- * It connects as the database's owner, the only role that may change its schema.
+ * TRIAGE_PASSWORD, LINE_PASSWORD and the like each worker's own, ADMIN_PASSWORD the admin service's, and
+ * PROOFS_PASSWORD the proofs' (`make guardrails`). Martin's command line's and the enrolment's are set by the make
+ * targets that use them (`operator.ts`), so no pod holds them. It connects as the database's owner, the only role that
+ * may change its schema.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +60,8 @@ export const PASSWORDS = {
   logs: { role: 'factory_logs', variable: 'LOGS_PASSWORD' },
   // The admin service's (0023_martins-commands.sql).
   admin: { role: 'factory_admin', variable: 'ADMIN_PASSWORD' },
+  // The proofs', which `make guardrails` connects as from the Mac (0043_guardrail-proofs.sql).
+  proofs: { role: 'factory_proofs', variable: 'PROOFS_PASSWORD' },
 } as const;
 
 export type Passwords = { [name in keyof typeof PASSWORDS]?: string | undefined };

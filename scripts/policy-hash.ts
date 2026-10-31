@@ -16,15 +16,20 @@
  * (refusal-records.test.ts).
  *
  * The script's check is what makes the hash the cluster's as well as deploy/'s. Each object must be there, with every
- * field deploy/ gives it as deploy/ gives it; no one but Argo CD may have written any of its fields (its
- * managedFields), but the status and, a ClusterRole's labels apart, the metadata; Argo CD's root Application must
- * report it Synced; and deploy/ at the revision root is synced to must render it as this checkout does. The first
- * catches a field changed by hand on the cluster; the second a field added by hand, which the first cannot see and
- * Argo CD does not count as a difference; the last a checkout whose policies differ from those the cluster was synced
+ * field deploy/ gives it as deploy/ gives it; no one but Argo CD may have written a field deploy/ does not give it
+ * (its managedFields), but the status and, a ClusterRole's labels apart, the metadata; deploy/'s fields applied over
+ * it, as a server-side dry run, must leave it as it is; Argo CD's root Application must report it Synced; and deploy/
+ * at the revision root is synced to must render it as this checkout does. The first catches a field changed by hand
+ * on the cluster; the second a field added by hand, which the first cannot see and Argo CD does not count as a
+ * difference; the third a change by hand inside a field the API server keeps whole, such as a selector or a list of
+ * rules, which managedFields name only as the whole field; the last a checkout whose policies differ from those the cluster was synced
  * to, whose hash would name policies the answers were not given by. A record that names every NetworkPolicy (egress)
  * also stops on one the cluster holds that deploy/ does not render, which could close a fence deploy/ leaves open;
  * only Argo CD's own, from `make up`'s chart, are let be. A change elsewhere in deploy/, such as a comment, is no
  * difference.
+ *
+ * These catch a change made by mistake or by hand, not one hidden on purpose by an administrator of the cluster, who
+ * could write as Argo CD's manager; that is admission's and RBAC's to keep from them, not this check's.
  * `KUBE_CONTEXT` names the cluster (`k3d-software-factory` by default).
  */
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -281,6 +286,9 @@ function renderAt(commit: string): Resource[] | string {
   }
 }
 
+/** Every field but the metadata and status, as a dry run's answer is compared with the live object. */
+const fieldsOf = ({ metadata: _metadata, status: _status, ...fields }: Resource) => fields;
+
 /** Argo CD's own fences, which `make up` installs with its chart, and deploy/ does not render. */
 const argoCdsOwn = (o: Resource) => {
   const labels = (o.metadata?.labels ?? {}) as Record<string, string>;
@@ -311,6 +319,34 @@ function unlike(context: string, record: RecordName, objects: Resource[]): { pro
     else {
       for (const d of differences(canonical(o), held)) problems.push(`${nameOf(o)}: ${d}`);
       for (const w of writers(held, o)) problems.push(`${nameOf(o)}: ${w}`);
+    }
+  }
+
+  // Each object as it would be were deploy/'s fields applied over it, a server-side dry run that writes nothing: the
+  // API server defaults them and replaces each field it keeps whole (a selector, a list of rules) by deploy/'s, so
+  // one changed inside by hand, which managedFields name only as the whole field, differs from the live object.
+  const applied = kubectl(
+    [
+      'apply',
+      '--server-side',
+      '--dry-run=server',
+      '--force-conflicts',
+      '--field-manager=policy-hash',
+      '-o',
+      'json',
+      '-f',
+      '-',
+    ],
+    objects.map((o) => stringify(o)).join('---\n'),
+  );
+  if (applied.status !== 0) problems.push(`the cluster could not apply them as a dry run: ${applied.stderr.trim()}`);
+  else {
+    const out = JSON.parse(applied.stdout) as Resource & { items?: Resource[] };
+    for (const o of out.items ?? [out]) {
+      const held = live.get(nameOf(o));
+      if (held && JSON.stringify(sorted(fieldsOf(held))) !== JSON.stringify(sorted(fieldsOf(o)))) {
+        problems.push(`${nameOf(o)}: differs from deploy/'s within a field kept whole, as an edit by hand would`);
+      }
     }
   }
 

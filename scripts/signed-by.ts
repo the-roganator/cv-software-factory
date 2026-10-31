@@ -35,8 +35,9 @@ export async function signedBy(reference: string, signatures: Pick<Signatures, '
   } catch (error) {
     if (!(error instanceof UnsignedError)) throw error;
     if (error.kind === 'unsigned') return { signature: 'none', by: [], message: error.message };
-    // Refused with no identity named is a signature broken, or over another digest, or with no bundle: not one by
-    // someone else, which only a signature that verified, by an identity Fulcio certified, can show.
+    // Refused with no identity named is a signature that did not verify, or a referrer with no bundle: not one by
+    // someone else, which only a signature that verified, by an identity Fulcio certified, can show. (The identity is
+    // read before the image the signature names, so an identity named is of a signature, not always of this image.)
     const by = identities(error.message);
     if (!by.length) throw new Error(`${reference} carries a signature that does not verify: ${error.message}`);
     return { signature: 'other', by, message: error.message };

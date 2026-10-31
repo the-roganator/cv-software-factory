@@ -20,7 +20,13 @@ const kept = (name: string) =>
 
 describe('a refusal record taken again', () => {
   it('holds when it was taken against the same policies, and the cluster answered each case as the record says', () => {
-    for (const name of ['route-refusals', 'flag-stages-refusals', 'admission-refusals']) {
+    for (const name of [
+      'route-refusals',
+      'flag-stages-refusals',
+      'admission-refusals',
+      'mark-refusals',
+      'share-key-refusals',
+    ]) {
       const record = kept(name);
       const judged = judgeRecord(record, structuredClone(record));
       expect(judged.held, name).toBe(true);
@@ -45,6 +51,22 @@ describe('a refusal record taken again', () => {
     expect(judgeRecord(record, fewer).lines).toContain(`✗ ${record.cases?.[0]?.case}: not asked now`);
     const more = { ...structuredClone(record), cases: [...(record.cases ?? []), { case: 'new', outcome: 'refused' }] };
     expect(judgeRecord(record, more).lines).toContain('✗ new: not in deploy/test/');
+  });
+
+  it('does not hold when what it read of the live objects differs: a route of the app refused, a key not its Secret', () => {
+    const mark = kept('mark-refusals');
+    const fresh = structuredClone(mark);
+    const live = fresh.live as { case: string; outcome: string }[];
+    const route = live[0];
+    if (!route) throw new Error('no live case');
+    route.outcome = 'refused';
+    expect(judgeRecord(mark, fresh).lines).toContain(`✗ ${route.case}: refused now, admitted in deploy/test/`);
+
+    const share = kept('share-key-refusals');
+    const mismatched = { ...structuredClone(share), live: { ...share.live, matchesSecret: false } };
+    const judged = judgeRecord(share, mismatched);
+    expect(judged.held).toBe(false);
+    expect(judged.lines.some((l) => /^✗ live: .*"matchesSecret":false/.test(l))).toBe(true);
   });
 
   it('does not hold when taken against other policies, or against a record with no hash or no refusal', () => {

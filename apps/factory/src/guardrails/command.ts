@@ -13,7 +13,7 @@ import { type NewEvent, VERSIONS } from '@software-factory/events';
 import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
 import { guardrailsProvedBy, PROOFS, type ProofId } from '../../../../policy/guardrails.ts';
 import { type Resource, render } from '../../../../scripts/policy-hash.ts';
-import { type Context, ORDER, type Ran, TAKERS, type Taken } from './proofs.ts';
+import { type Context, ORDER, type Ran, TAKERS, type Taken, text } from './proofs.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
 const exec = promisify(execFile);
@@ -22,8 +22,21 @@ const exec = promisify(execFile);
 export async function notMain(root = ROOT): Promise<string | undefined> {
   const git = async (...args: string[]) => (await exec('git', ['-C', root, ...args])).stdout.trimEnd();
   await git('fetch', '--quiet', 'origin', 'main');
-  const [head, main] = await Promise.all([git('rev-parse', 'HEAD'), git('rev-parse', 'origin/main')]);
-  if (head !== main) return `HEAD is ${head}, not origin/main's head ${main}: check out main, and pull`;
+  return notAt(await git('rev-parse', 'origin/main'), root, "origin/main's head");
+}
+
+/**
+ * Why this checkout is not the commit given, clean, or nothing when it is. Checked before each append: main may move on
+ * meanwhile, as a deploy's pin merges, and the proofs taken are still of the commit the run began at.
+ */
+export async function notAt(
+  commit: string,
+  root = ROOT,
+  what = 'the commit the run began at',
+): Promise<string | undefined> {
+  const git = async (...args: string[]) => (await exec('git', ['-C', root, ...args])).stdout.trimEnd();
+  const head = await git('rev-parse', 'HEAD');
+  if (head !== commit) return `HEAD is ${head}, not ${what} ${commit}: check out main, and pull`;
   const status = await git('status', '--porcelain', '--untracked-files=all');
   if (status) return `the tree is not clean:\n${status}`;
   // A file marked so that git status no longer looks at it (skip-worktree, assume-unchanged) could hide a change.
@@ -170,7 +183,7 @@ export async function run(args: string[]): Promise<number> {
         // A proof that could not be taken did not hold: it is never read as held.
         taken = {
           held: false,
-          output: `It could not be taken: ${error instanceof Error ? error.message : String(error)}`.slice(0, 4000),
+          output: text(`It could not be taken: ${error instanceof Error ? error.message : String(error)}`),
         };
       }
       if ('notTaken' in taken) {
@@ -180,7 +193,7 @@ export async function run(args: string[]): Promise<number> {
       }
       console.error(`${proof}: ${taken.held ? 'held' : 'DID NOT HOLD'}\n${taken.output}`);
       if (recording) {
-        const why = await notMain();
+        const why = await notAt(commit);
         if (why) {
           console.error(`The checkout changed while the proofs ran, so nothing more is recorded: ${why}`);
           return 2;

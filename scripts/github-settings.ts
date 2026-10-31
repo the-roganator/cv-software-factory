@@ -279,7 +279,8 @@ export function rulesetProblems(live: unknown, wanted: ReturnType<typeof rules>)
 }
 
 /** The rule suites asked for: the last week's pushes that bypassed a ruleset, as many as one page holds. */
-const BYPASSES_USED = 'time_period=week&rule_suite_result=bypass&per_page=100';
+const PAGE = 100;
+const BYPASSES_USED = `time_period=week&rule_suite_result=bypass&per_page=${PAGE}`;
 
 /**
  * What the record of the rulesets' verdicts says of bypasses: each push that bypassed a ruleset is drift. A reader
@@ -301,8 +302,11 @@ export function bypassesUsed(suites: unknown): Findings {
     .sort((a, b) => b.at - a.at)[0]?.suite;
   if (!latest) return { problems: [], unseen: [] };
   const { actor_name: who, ref, pushed_at: at, after_sha: to } = latest;
+  // One page is read: a full one says "at least", and its latest is the latest on the page GitHub sends first.
+  const count =
+    bypassed.length === 1 ? 'a push' : `${suites.length >= PAGE ? 'at least ' : ''}${bypassed.length} pushes`;
   const problems = [
-    `${bypassed.length === 1 ? 'a push' : `${bypassed.length} pushes`} bypassed a ruleset in the last week, the latest ${JSON.stringify(String(who ?? 'someone'))} pushing ${String(to ?? '').slice(0, 12)} to ${String(ref)} at ${String(at)}`,
+    `${count} bypassed a ruleset in the last week, the latest ${JSON.stringify(String(who ?? 'someone'))} pushing ${String(to ?? '').slice(0, 12)} to ${String(ref)} at ${String(at)}`,
   ];
   return { problems, unseen: [] };
 }

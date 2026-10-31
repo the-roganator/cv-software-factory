@@ -141,6 +141,8 @@ describe('the bypasses used, from the rulesets’ record of pushes', () => {
       '2 pushes bypassed a ruleset in the last week, the latest "mrogan" pushing 22bcfa0c64f8 to refs/heads/main at 2026-10-25T22:22:39+00:00',
     ]);
     expect(bypassesUsed([])).toEqual({ problems: [], unseen: [] });
+    // One page is read: a full one is at least that many.
+    expect(bypassesUsed(Array.from({ length: 100 }, () => suite)).problems[0]).toMatch(/^at least 100 pushes bypassed/);
   });
 
   it('is unseen, never read as no bypass, when the reader may not read the record', () => {

@@ -124,8 +124,9 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     return { declined: 'Martin did not say yes: the drill was not taken, and nothing is recorded for it.' };
   }
 
-  const [clock] = await sql<{ at: Date }[]>`select clock_timestamp() as at`;
-  const from = clock?.at ?? drill.now();
+  // The store's clock, which stamps what the drill reads, not the Mac's, which may differ from it.
+  const storeNow = async () => (await sql<{ at: Date }[]>`select clock_timestamp() as at`)[0]?.at ?? drill.now();
+  const from = await storeNow();
   const lines: string[] = [];
   let held = true;
   const fail = (line: string) => {
@@ -152,42 +153,45 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     else lines.push(`✓ The line stopped at ${stop.appended_at.toISOString()}, recorded by ${stop.appended_by}.`);
     const at = stop?.appended_at ?? from;
 
+    // Listed again once stopped, so a pod started after the prompt is seen, and an agent then running is waited for.
+    const atStop = await drill.runnerPods();
+    const seen = new Map([...before, ...atStop].map((p) => [p.name, p]));
+    const agentsSeen = [...seen.values()].filter((p) => p.part === 'agent');
     // The runners' pods go, and the gateway refuses an agent's call, side by side.
     const started = drill.now().getTime();
-    let left = before;
+    let left = atStop;
     let refusal: { output: string; appended_at: Date } | undefined;
     while (drill.now().getTime() - started < PODS_GONE_MS) {
       if (left.length) left = await drill.runnerPods();
-      if (!refusal && agents.length && drill.now().getTime() - started < REFUSED_MS) {
+      if (!refusal && agentsSeen.length && drill.now().getTime() - started < REFUSED_MS) {
         [refusal] = await sql<{ output: string; appended_at: Date }[]>`
           select payload->>'output' as output, appended_at from events
           where type = 'action.refused' and appended_by = 'factory_gateway' and payload->>'mechanism' = 'gateway'
             and payload->'guardrails' @> '[9]'::jsonb and appended_at >= ${at}
           order by seq limit 1`;
       }
-      const waitingForRefusal = !refusal && agents.length > 0 && drill.now().getTime() - started < REFUSED_MS;
+      const waitingForRefusal = !refusal && agentsSeen.length > 0 && drill.now().getTime() - started < REFUSED_MS;
       if (!left.length && !waitingForRefusal) break;
       await drill.sleep(POLL_MS);
     }
     if (left.length) fail(`pods still in runners: ${left.map((p) => p.name).join(', ')}`);
-    else lines.push(`✓ No pod is left in runners (${before.length} were running at the stop).`);
+    else lines.push(`✓ No pod is left in runners (${seen.size} were running at the prompt or the stop).`);
     if (refusal) {
       lines.push(`✓ The gateway refused an agent's call at ${refusal.appended_at.toISOString()}: ${refusal.output}`);
-    } else if (agents.length) fail(`the gateway recorded no refusal of an agent's call within ${REFUSED_MS / 1000}s`);
+    } else if (agentsSeen.length)
+      fail(`the gateway recorded no refusal of an agent's call within ${REFUSED_MS / 1000}s`);
     else
       fail(
         'no agent was running at the stop, so none called the gateway to be refused: take the drill again while one runs',
       );
 
-    const waited = drill.now().getTime() - at.getTime();
+    const waited = (await storeNow()).getTime() - at.getTime();
     if (waited < STOPPED_MS) await drill.sleep(STOPPED_MS - waited);
+    const stoppedFor = (await storeNow()).getTime() - at.getTime();
     const taken = await sql<{ work_item: string; taken_at: Date }[]>`
       select work_item, taken_at from line where taken_at >= ${at} order by taken_at`;
     if (taken.length) fail(`work items taken while the line was stopped: ${taken.map((t) => t.work_item).join(', ')}`);
-    else
-      lines.push(
-        `✓ No work item was taken in the ${Math.round((drill.now().getTime() - at.getTime()) / 1000)}s the line was stopped.`,
-      );
+    else lines.push(`✓ No work item was taken in the ${Math.round(stoppedFor / 1000)}s the line was stopped.`);
   } finally {
     process.off('SIGINT', interrupted);
     process.off('SIGTERM', interrupted);

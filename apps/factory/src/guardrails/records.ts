@@ -20,6 +20,11 @@ export interface RefusalRecord {
   policyHash?: string;
   cases?: Case[];
   answers?: Case[];
+  /**
+   * What the script read of the live objects beside its cases: the mark's routes admitted as they are (cases, judged
+   * as the rest), or the share key's public half matching its Secret (judged as the kept record has it).
+   */
+  live?: Case[] | Record<string, unknown>;
 }
 
 export interface Judged {
@@ -29,7 +34,9 @@ export interface Judged {
 }
 
 export const casesOf = (record: RefusalRecord | Case[]): Case[] =>
-  Array.isArray(record) ? record : (record.cases ?? record.answers ?? []);
+  Array.isArray(record)
+    ? record
+    : [...(record.cases ?? record.answers ?? []), ...(Array.isArray(record.live) ? record.live : [])];
 
 /** How a case is named: its namespace, its name, and whom it asked as, as far as it has each. */
 const nameOf = (c: Case) => [c.namespace, c.case, c.as && `(as ${c.as})`].filter(Boolean).join(' ');
@@ -52,6 +59,10 @@ export function judgeRecord(kept: RefusalRecord | Case[], fresh: RefusalRecord):
     if (!answer) problems.push(`${nameOf(c)}: not asked now`);
     else if (answer.outcome !== c.outcome)
       problems.push(`${nameOf(c)}: ${answer.outcome} now, ${c.outcome} in deploy/test/`);
+  }
+  const keptLive = Array.isArray(kept) ? undefined : kept.live;
+  if (keptLive && !Array.isArray(keptLive) && JSON.stringify(fresh.live) !== JSON.stringify(keptLive)) {
+    problems.push(`live: ${JSON.stringify(fresh.live ?? null)} now, ${JSON.stringify(keptLive)} in deploy/test/`);
   }
   const keptNames = new Set(before.map(nameOf));
   for (const c of now) if (!keptNames.has(nameOf(c))) problems.push(`${nameOf(c)}: not in deploy/test/`);

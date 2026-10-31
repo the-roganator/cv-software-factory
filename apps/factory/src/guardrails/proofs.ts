@@ -69,7 +69,8 @@ export type Proof = (context: Context) => Promise<Taken | NotTaken>;
 
 /** The most of a proof's output an event keeps. */
 const OUTPUT = 4000;
-const text = (...parts: string[]) => cutTo(parts.filter(Boolean).join('\n').trim() || '(nothing printed)', OUTPUT);
+export const text = (...parts: string[]) =>
+  cutTo(parts.filter(Boolean).join('\n').trim() || '(nothing printed)', OUTPUT);
 
 /** The repository the CI proofs are read from: this one. */
 export const REPOSITORY = 'the-roganator/cv-software-factory';
@@ -122,13 +123,19 @@ const fromCi =
   (id: CiProofId): Proof =>
   async (context) => {
     const proof = CI_PROOFS[id];
-    const taken = await readCiProof({
-      repo: REPOSITORY,
-      proof,
-      workflow: await readFile(join(context.root, proof.workflow), 'utf-8'),
-      firstParent: await context.firstParent(),
-      read: context.gh,
-    });
+    let taken: Awaited<ReturnType<typeof readCiProof>>;
+    try {
+      taken = await readCiProof({
+        repo: REPOSITORY,
+        proof,
+        workflow: await readFile(join(context.root, proof.workflow), 'utf-8'),
+        firstParent: await context.firstParent(),
+        read: context.gh,
+      });
+    } catch (error) {
+      // No run read, so none to name: not taken, as with no run at all, and the command fails.
+      return { notTaken: `CI could not be read: ${error instanceof Error ? error.message : String(error)}` };
+    }
     // A proof read from CI names its run: with none to read there is nothing to record, and the command fails.
     if (!taken.run || !taken.commit) return { notTaken: taken.output };
     return { held: taken.held, output: text(taken.output), commit: taken.commit, run: taken.run };

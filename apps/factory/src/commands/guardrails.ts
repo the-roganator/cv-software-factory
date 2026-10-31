@@ -7,7 +7,7 @@
  *
  * It refuses to run unless the checkout's HEAD is `origin/main`'s head and its tree is clean, as `git status` shows it,
  * untracked files included and none hidden from it (skip-worktree, assume-unchanged), and records that commit with each proof: a loosened script in a branch or a worktree must
- * not record a proof as held. It checks the tree again before each append, so a script that changed it stops the run.
+ * not record a proof as held. Before each append it checks the checkout is still that commit, clean, so a script that changed it stops the run.
  *
  * Each proof is taken in turn (`guardrails/proofs.ts`), what it runs shown as it goes, and recorded as soon as it is
  * taken: held or not, with its output verbatim (at most 4000 characters), the hash of the policies and Roles it was

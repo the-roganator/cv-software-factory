@@ -122,7 +122,7 @@ describe('the stop-the-line drill', () => {
     expect(taken).toMatchObject({ held: true });
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✓ The line stopped at .+, recorded by factory_operator\./);
-    expect(output).toMatch(/✓ No pod is left in runners \(1 were running at the stop\)\./);
+    expect(output).toMatch(/✓ No pod is left in runners \(1 were running at the prompt or the stop\)\./);
     expect(output).toMatch(/✓ The gateway refused an agent's call at .+: The line is stopped/);
     expect(output).toMatch(/✓ No work item was taken/);
     expect(output).toMatch(/✓ The line started again\./);
@@ -165,6 +165,15 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(/✗ the gateway recorded no refusal of an agent's call within 60s/);
     expect(output).toMatch(/✗ work items taken while the line was stopped: 1001/);
     expect(output).toMatch(/✗ No canary in flight has been aborted by Stop the line/);
+  });
+
+  it('lists the runners again once stopped, so a pod started after the prompt is seen, and its refusal waited for', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const { d } = drill({ pods: [[], [{ name: 'late-agent', part: 'agent' }]] });
+    const taken = await stopTheLine(d);
+    const output = 'output' in taken ? taken.output : '';
+    expect(output).toMatch(/✗ pods still in runners: late-agent/);
+    expect(output).toMatch(/✓ The gateway refused an agent's call/);
   });
 
   it('cannot show the gateway’s refusal with no agent running, and says so before Martin says yes', async () => {

@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { notMain } from '../../src/guardrails/command.ts';
+import { notAt, notMain } from '../../src/guardrails/command.ts';
 
 let dir: string;
 const git = (cwd: string, ...args: string[]) =>
@@ -31,6 +31,21 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe('the checkout make guardrails records from', () => {
   it('is main’s head, clean', async () => {
     expect(await notMain(join(dir, 'checkout'))).toBeUndefined();
+  });
+
+  it('is checked again against the commit the run began at, so main moving on meanwhile does not stop it', async () => {
+    const checkout = join(dir, 'checkout');
+    const began = git(checkout, 'rev-parse', 'HEAD');
+    git(dir, 'clone', '--quiet', 'origin.git', 'other');
+    const other = join(dir, 'other');
+    writeFileSync(join(other, 'pin.txt'), 'pin\n');
+    git(other, 'add', 'pin.txt');
+    git(other, 'commit', '--quiet', '-m', 'pin');
+    git(other, 'push', '--quiet', 'origin', 'HEAD:main');
+    expect(await notMain(checkout)).toMatch(/not origin\/main's head/);
+    expect(await notAt(began, checkout)).toBeUndefined();
+    writeFileSync(join(checkout, 'a.txt'), 'loosened\n');
+    expect(await notAt(began, checkout)).toMatch(/the tree is not clean/);
   });
 
   it('is not a commit of a branch, nor main with a change or a file not committed', async () => {

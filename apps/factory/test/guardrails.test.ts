@@ -19,7 +19,7 @@ import {
 import { RECORDS } from '../../../scripts/policy-hash.ts';
 import vitest from '../../../vitest.config.ts';
 import { jobNames } from '../src/guardrails/ci.ts';
-import { ORDER, PRODUCTION_WRITES, TAKERS } from '../src/guardrails/proofs.ts';
+import { type Context, ORDER, PRODUCTION_WRITES, TAKERS } from '../src/guardrails/proofs.ts';
 
 const SPEC = new URL('../../../docs/SPECIFICATION.md', import.meta.url);
 const ROOT = new URL('../../../', import.meta.url);
@@ -93,6 +93,21 @@ describe('what takes each proof', () => {
     expect(new Set(ORDER).size).toBe(ORDER.length);
     // The drill, which asks Martin and stops the line, comes last, after every read and script.
     expect(ORDER.at(-1)).toBe('stop-the-line');
+  });
+
+  it('takes a proof read from CI as not taken when GitHub cannot be read, since its record must name a run', async () => {
+    const context = {
+      root: new URL('.', ROOT).pathname,
+      firstParent: async () => ['a'.repeat(40)],
+      gh: async () => {
+        throw new Error('HTTP 502');
+      },
+    } as unknown as Context;
+    for (const id of Object.keys(CI_PROOFS) as (keyof typeof CI_PROOFS)[]) {
+      expect(await TAKERS[id](context), id).toEqual({
+        notTaken: expect.stringMatching(/CI could not be read: HTTP 502/),
+      });
+    }
   });
 
   it('takes again every refusal record the hash names, each in a proof: admission, production-writes or egress', () => {

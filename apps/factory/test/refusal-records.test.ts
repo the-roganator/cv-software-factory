@@ -2,9 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  ASKS,
+  type Binding,
   beyond,
   canonical,
   differences,
+  grants,
   named,
   nameOf,
   PROFILE,
@@ -30,7 +33,11 @@ const profile = () =>
     .map((r) => r.manifest);
 const files = () => readdirSync(join(DEPLOY, 'test')).filter((f) => f.endsWith('.json'));
 const record = (file: string) =>
-  JSON.parse(readFileSync(join(DEPLOY, 'test', file), 'utf-8')) as { policyHash?: string; policies?: string[] };
+  JSON.parse(readFileSync(join(DEPLOY, 'test', file), 'utf-8')) as {
+    policyHash?: string;
+    policies?: string[];
+    revision?: string;
+  };
 
 describe('each refusal record', () => {
   const manifests = profile();
@@ -58,22 +65,13 @@ describe('each refusal record', () => {
         `${file} was taken against other policies: run its script again, against a cluster that runs these`,
       ).toBe(now.policyHash);
       expect(kept.policyHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(kept.revision, 'the commit Argo CD had synced when it was taken').toMatch(/^[0-9a-f]{40}$/);
     });
   }
 
   it('names every Role bound to an account it asks as, in the namespace it asks in', () => {
-    // As whom each record's script asks, and where; RBAC grants what any Role bound to the account does.
-    const asks: Partial<Record<RecordName, { namespace: string; accounts: string[] }>> = {
-      'rollout-refusals': { namespace: 'website', accounts: ['factory/admin'] },
-      'flag-stages-refusals': { namespace: 'flagd', accounts: ['factory/admin', 'factory/line', 'flagd/flagd'] },
-    };
-    type Binding = Resource & {
-      roleRef: { kind: string; name: string };
-      subjects?: { kind: string; name: string; namespace?: string }[];
-    };
-    for (const [name, { namespace, accounts }] of Object.entries(asks)) {
-      const binds = (b: Binding) =>
-        b.subjects?.some((s) => s.kind === 'ServiceAccount' && accounts.includes(`${s.namespace}/${s.name}`));
+    for (const [name, { namespace, accounts }] of Object.entries(ASKS)) {
+      const binds = (b: Binding) => grants(b, accounts);
       const bindings = (manifests as Binding[]).filter(
         (m) =>
           (m.kind === 'RoleBinding' && m.metadata?.namespace === namespace && binds(m)) ||
@@ -254,5 +252,29 @@ describe('telling a field added by hand from what deploy/ gives', () => {
       "/f:metadata/f:labels, written by kubectl-label, not deploy/'s",
     ]);
     expect(writers(live(labelled), fence)).toEqual([]);
+  });
+});
+
+describe('a grant to an account a record asks as', () => {
+  const binding = (subjects: Binding['subjects']): Binding => ({
+    kind: 'RoleBinding',
+    metadata: { name: 'b', namespace: 'website' },
+    roleRef: { kind: 'Role', name: 'r' },
+    ...(subjects && { subjects }),
+  });
+
+  it('is one to the account by name, or to a group every service account, or every one of its namespace, is in', () => {
+    const accounts = ['factory/admin'];
+    expect(grants(binding([{ kind: 'ServiceAccount', namespace: 'factory', name: 'admin' }]), accounts)).toBe(true);
+    for (const group of ['system:authenticated', 'system:serviceaccounts', 'system:serviceaccounts:factory']) {
+      expect(grants(binding([{ kind: 'Group', name: group }]), accounts), group).toBe(true);
+    }
+  });
+
+  it('is not one to another account, or another namespace’s', () => {
+    const accounts = ['factory/admin'];
+    expect(grants(binding([{ kind: 'ServiceAccount', namespace: 'factory', name: 'line' }]), accounts)).toBe(false);
+    expect(grants(binding([{ kind: 'Group', name: 'system:serviceaccounts:website' }]), accounts)).toBe(false);
+    expect(grants(binding(undefined), accounts)).toBe(false);
   });
 });

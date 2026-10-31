@@ -25,8 +25,9 @@
  * rules, which managedFields name only as the whole field; the last a checkout whose policies differ from those the cluster was synced
  * to, whose hash would name policies the answers were not given by. A record that names every NetworkPolicy (egress)
  * also stops on one the cluster holds that deploy/ does not render, which could close a fence deploy/ leaves open;
- * only Argo CD's own, from `make up`'s chart, are let be. A change elsewhere in deploy/, such as a comment, is no
- * difference.
+ * only Argo CD's own, from `make up`'s chart, are let be. One that asks as a service account (`ASKS`) stops on a
+ * binding to it, or to a group it is in, that deploy/ does not render, which would grant what the record's Roles do
+ * not; only Kubernetes' own defaults are let be. A change elsewhere in deploy/, such as a comment, is no difference.
  *
  * These catch a change made by mistake or by hand, not one hidden on purpose by an administrator of the cluster, who
  * could write as Argo CD's manager; that is admission's and RBAC's to keep from them, not this check's.
@@ -103,6 +104,35 @@ export const RECORDS = {
 } satisfies Record<string, Named[]>;
 
 export type RecordName = keyof typeof RECORDS;
+
+/**
+ * As whom each record's script asks, besides the local kubeconfig's user, Argo CD and `system:masters`, and in which
+ * namespace: RBAC grants such an account what every Role bound to it there does, and every ClusterRole bound to it.
+ */
+export const ASKS: Partial<Record<RecordName, { namespace: string; accounts: string[] }>> = {
+  'rollout-refusals': { namespace: 'website', accounts: ['factory/admin'] },
+  'flag-stages-refusals': { namespace: 'flagd', accounts: ['factory/admin', 'factory/line', 'flagd/flagd'] },
+};
+
+/** A RoleBinding or ClusterRoleBinding. */
+export type Binding = Resource & {
+  roleRef: { kind: string; name: string };
+  subjects?: { kind: string; name: string; namespace?: string }[];
+};
+
+/** Whether a binding grants to one of these accounts (`<namespace>/<name>`), by name or by a group it is in. */
+export function grants(binding: Binding, accounts: string[]): boolean {
+  const groups = new Set([
+    'system:authenticated',
+    'system:serviceaccounts',
+    ...accounts.map((a) => `system:serviceaccounts:${a.split('/')[0]}`),
+  ]);
+  return (binding.subjects ?? []).some(
+    (s) =>
+      (s.kind === 'ServiceAccount' && accounts.includes(`${s.namespace}/${s.name}`)) ||
+      (s.kind === 'Group' && groups.has(s.name)),
+  );
+}
 
 /** How an object is named in a record: `Role website/admin-controls-release`, `ValidatingPolicy website-routes`. */
 export const nameOf = (o: Resource) =>
@@ -341,11 +371,40 @@ function unlike(context: string, record: RecordName, objects: Resource[]): { pro
   );
   if (applied.status !== 0) problems.push(`the cluster could not apply them as a dry run: ${applied.stderr.trim()}`);
   else {
-    const out = JSON.parse(applied.stdout) as Resource & { items?: Resource[] };
-    for (const o of out.items ?? [out]) {
+    // One List, as kubectl prints several; or a document for each, as an older one might.
+    const out = parseAllDocuments(applied.stdout).flatMap((doc) => {
+      const o = doc.toJS() as (Resource & { items?: Resource[] }) | null;
+      return o ? (o.items ?? [o]) : [];
+    });
+    for (const o of out) {
       const held = live.get(nameOf(o));
       if (held && JSON.stringify(sorted(fieldsOf(held))) !== JSON.stringify(sorted(fieldsOf(o)))) {
         problems.push(`${nameOf(o)}: differs from deploy/'s within a field kept whole, as an edit by hand would`);
+      }
+    }
+  }
+
+  // A grant the cluster holds to an account the record asks as, that deploy/ does not render: the record's Roles
+  // would not be all its answers came from. Kubernetes' own defaults, to every account, are let be.
+  const asks = ASKS[record];
+  if (asks) {
+    const ours = new Set(objects.map(nameOf));
+    for (const args of [
+      ['-n', asks.namespace, 'get', 'rolebindings'],
+      ['get', 'clusterrolebindings'],
+    ]) {
+      const got = kubectl([...args, '-o', 'json']);
+      if (got.status !== 0) {
+        problems.push(`the cluster could not list its bindings: ${got.stderr.trim()}`);
+        continue;
+      }
+      for (const b of (JSON.parse(got.stdout) as { items: Binding[] }).items) {
+        const kind = b.metadata?.namespace ? 'RoleBinding' : 'ClusterRoleBinding';
+        const name = nameOf({ ...b, kind });
+        const defaults = (b.metadata?.labels as Record<string, string> | undefined)?.['kubernetes.io/bootstrapping'];
+        if (grants(b, asks.accounts) && !ours.has(name) && defaults !== 'rbac-defaults') {
+          problems.push(`${name}: grants ${b.roleRef.kind} ${b.roleRef.name} to an account asked as, not in deploy/`);
+        }
       }
     }
   }
@@ -402,7 +461,7 @@ function unlike(context: string, record: RecordName, objects: Resource[]): { pro
 
 if (import.meta.main) {
   const record = process.argv[2] as RecordName;
-  if (!(record in RECORDS)) {
+  if (!Object.hasOwn(RECORDS, record)) {
     console.error(`usage: node scripts/policy-hash.ts <${Object.keys(RECORDS).join(' | ')}>`);
     process.exit(2);
   }

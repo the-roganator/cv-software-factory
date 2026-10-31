@@ -139,9 +139,23 @@ describe('the admin service’s role', () => {
   });
 });
 
-/** No Deployment's pod reads this Secret. */
-async function expectNoPodReads(secret: string) {
+describe('the proofs’ role', () => {
+  it('has its password from a Secret `make up` makes, which the migrate Job alone reads and sets', async () => {
+    const makefile = await readFile(join(DEPLOY, '../Makefile'), 'utf-8');
+    expect(makefile).toMatch(/^\t@\$\(call secret,factory,postgres-proofs,/m);
+    expect((await migrateJob()).find((e) => e.name === 'PROOFS_PASSWORD')?.valueFrom?.secretKeyRef).toEqual({
+      name: 'postgres-proofs',
+      key: 'password',
+      optional: true,
+    });
+    await expectNoPodReads('postgres-proofs', 'migrate');
+  });
+});
+
+/** No Deployment's pod reads this Secret, nor any other workload's but the one named. */
+async function expectNoPodReads(secret: string, except?: string) {
   for (const { manifest } of await manifests<Deployment>()) {
+    if (except !== undefined && manifest.metadata?.name === except) continue;
     const pod = manifest.spec?.template?.spec;
     for (const e of [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])].flatMap((c) => c.env ?? [])) {
       expect(e.valueFrom?.secretKeyRef?.name, manifest.metadata?.name).not.toBe(secret);

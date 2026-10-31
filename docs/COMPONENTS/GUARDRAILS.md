@@ -8,7 +8,7 @@ Spec 6's eleven guardrails, each with the mechanism that holds it, its proofs an
 
 `make guardrails` runs `factory guardrails` from the Mac, with the local kubeconfig and Martin's `gh`, as the proofs' store role, `factory_proofs`, through a port-forward to Postgres of its own (15433). The role may append `guardrail.proved` and nothing else, and no other role may append that type ([event store](EVENT-STORE.md)); its password is in the Secret `postgres-proofs`, which `make up` makes.
 
-- **From a clean `main` only.** It refuses to run unless the checkout's `HEAD` is `origin/main`'s head and the tree is clean, untracked files included, and records that commit with each proof. It checks again before each append, so a script that changed the tree stops the run. A loosened script in a branch or a worktree cannot record a proof as held.
+- **From a clean `main` only.** It refuses to run unless the checkout's `HEAD` is `origin/main`'s head and the tree is clean, untracked files included and no file hidden from `git status` (skip-worktree, assume-unchanged), and records that commit with each proof. It checks again before each append, so a script that changed the tree stops the run. A loosened script in a branch or a worktree cannot record a proof as held.
 - **Each proof is recorded as it is taken**, held or not: the guardrails that list it, its mechanism, its output verbatim (at most 4000 characters), the commit, the hash of the policies and Roles it was taken against (`scripts/policy-hash.ts`), and for a proof read from CI, its run.
 - **A proof that did not hold fails the command**, which names it, and pages Martin: the line counts a `guardrail.proved` held false, appended by `factory_proofs`, as the security kind `guardrail-not-held` ([alerting](ALERTING.md)). A proof that throws did not hold, and is recorded so, with why.
 - **Two are not recorded**, and fail the command too: the stop-the-line drill, when Martin does not say yes at its prompt; and a proof read from CI that finds no run to read, since a CI proof's record must name its run.
@@ -40,6 +40,6 @@ Stop the line cannot be drilled on a dry run's canary, as a dry run's releases m
 
 1. `make stop-the-line`, as Martin's operator role.
 2. The line's stop is recorded by one of Martin's roles; every pod in `runners` is gone within three minutes; the gateway refused an agent's call because the line had stopped (an `action.refused` by `factory_gateway`, mechanism `gateway`, guardrail 9) within a minute; and, after at least 45 seconds stopped, no work item was taken onto the line.
-3. `make start-the-line`, whatever happened, and the command says so if it could not.
+3. `make start-the-line`, whatever happened, and the command says so if it could not. Interrupted during the drill, it says the line may still be stopped as it ends.
 
 The gateway refuses only a call from an agent whose step is running, so with no agent running at the stop, nothing calls it to be refused, and the drill does not hold: take it while a step runs. Every reader filters by the role that appended what it reads, so a hole in row security is not the only lock.

@@ -6,7 +6,7 @@
  *     factory guardrails [--only <proof>]... [--no-record]
  *
  * It refuses to run unless the checkout's HEAD is `origin/main`'s head and its tree is clean, as `git status` shows it,
- * untracked files included, and records that commit with each proof: a loosened script in a branch or a worktree must
+ * untracked files included and none hidden from it (skip-worktree, assume-unchanged), and records that commit with each proof: a loosened script in a branch or a worktree must
  * not record a proof as held. It checks the tree again before each append, so a script that changed it stops the run.
  *
  * Each proof is taken in turn (`guardrails/proofs.ts`), what it runs shown as it goes, and recorded as soon as it is

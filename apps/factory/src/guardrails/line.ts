@@ -132,6 +132,13 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     held = false;
     lines.push(`✗ ${line}`);
   };
+  // Interrupted from here on, the process ends before the finally below starts the line again: say so, as it ends.
+  const interrupted = (signal: NodeJS.Signals) => {
+    drill.say(`Interrupted (${signal}) during the drill: the line may still be stopped; run make start-the-line.`);
+    process.exit(130);
+  };
+  process.once('SIGINT', interrupted);
+  process.once('SIGTERM', interrupted);
   try {
     if (!(await drill.make('stop-the-line', 'make guardrails: the stop-the-line drill'))) {
       fail('make stop-the-line failed');
@@ -182,6 +189,8 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
         `✓ No work item was taken in the ${Math.round((drill.now().getTime() - at.getTime()) / 1000)}s the line was stopped.`,
       );
   } finally {
+    process.off('SIGINT', interrupted);
+    process.off('SIGTERM', interrupted);
     if (await drill.make('start-the-line', 'make guardrails: the stop-the-line drill is over')) {
       lines.push('✓ The line started again.');
     } else {

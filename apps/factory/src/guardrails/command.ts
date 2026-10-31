@@ -26,6 +26,12 @@ export async function notMain(root = ROOT): Promise<string | undefined> {
   if (head !== main) return `HEAD is ${head}, not origin/main's head ${main}: check out main, and pull`;
   const status = await git('status', '--porcelain', '--untracked-files=all');
   if (status) return `the tree is not clean:\n${status}`;
+  // A file marked so that git status no longer looks at it (skip-worktree, assume-unchanged) could hide a change.
+  const hidden = (await git('ls-files', '-v'))
+    .split('\n')
+    .filter((line) => /^(S|[a-z]) /.test(line))
+    .map((line) => line.slice(2));
+  if (hidden.length) return `git status does not look at ${hidden.join(', ')} (skip-worktree or assume-unchanged)`;
   return undefined;
 }
 

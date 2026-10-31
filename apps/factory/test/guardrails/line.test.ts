@@ -5,7 +5,7 @@
 import { VERSIONS } from '@software-factory/events';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import type { Sql } from 'postgres';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { proved } from '../../src/guardrails/command.ts';
 import { abortedByStop, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
@@ -127,6 +127,26 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(/✓ No work item was taken/);
     expect(output).toMatch(/✓ The line started again\./);
     expect(output).toMatch(/✓ Release r-2: the canary of version 1\.3\.0 aborted by Stop the line/);
+  });
+
+  it('says the line may still be stopped when interrupted during the drill, and listens for that only while it runs', async () => {
+    const before = process.listenerCount('SIGINT');
+    const { d, said } = drill({});
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      const make = d.make;
+      d.make = async (target, reason) => {
+        const ok = await make(target, reason);
+        if (target === 'stop-the-line') process.emit('SIGINT', 'SIGINT');
+        return ok;
+      };
+      await stopTheLine(d);
+      expect(said).toContainEqual(expect.stringMatching(/Interrupted \(SIGINT\).*run make start-the-line/));
+      expect(exit).toHaveBeenCalledWith(130);
+    } finally {
+      exit.mockRestore();
+    }
+    expect(process.listenerCount('SIGINT')).toBe(before);
   });
 
   it('takes nothing, and records nothing, unless Martin says yes', async () => {

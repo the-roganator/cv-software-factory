@@ -40,6 +40,15 @@ describe('the checkout make guardrails records from', () => {
     git(checkout, 'checkout', '--quiet', '--', 'a.txt');
     writeFileSync(join(checkout, 'b.sh'), 'exit 0\n');
     expect(await notMain(checkout)).toMatch(/\?\? b\.sh/);
+    rmSync(join(checkout, 'b.sh'));
+    for (const flag of ['--skip-worktree', '--assume-unchanged']) {
+      git(checkout, 'update-index', flag, 'a.txt');
+      writeFileSync(join(checkout, 'a.txt'), 'loosened\n');
+      expect(await notMain(checkout)).toMatch(/git status does not look at a\.txt/);
+      git(checkout, 'update-index', flag.replace('--', '--no-'), 'a.txt');
+      git(checkout, 'checkout', '--quiet', '--', 'a.txt');
+    }
+    writeFileSync(join(checkout, 'b.sh'), 'exit 0\n');
     git(checkout, 'add', 'b.sh');
     git(checkout, 'commit', '--quiet', '-m', 'b');
     expect(await notMain(checkout)).toMatch(/^HEAD is [0-9a-f]{40}, not origin\/main's head/);

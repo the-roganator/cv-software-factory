@@ -6,7 +6,8 @@
  *
  *     node scripts/signed-by.ts ghcr.io/<owner>/<repository>[/<name>]@sha256:<digest>
  *
- * prints {"signature": "pipeline" | "none" | "other", "by": [identity...], "message"}. It reads GHCR anonymously and
+ * prints {"signature": "pipeline" | "none" | "other", "by": [identity...], "message"}, and fails on a signature that does
+ * not verify for anyone, which is neither ours nor another's. It reads GHCR anonymously and
  * Sigstore's trust root through TUF, and writes nothing.
  */
 import { Registry } from '../apps/factory/src/github/registry.ts';
@@ -34,7 +35,11 @@ export async function signedBy(reference: string, signatures: Pick<Signatures, '
   } catch (error) {
     if (!(error instanceof UnsignedError)) throw error;
     if (error.kind === 'unsigned') return { signature: 'none', by: [], message: error.message };
-    return { signature: 'other', by: identities(error.message), message: error.message };
+    // Refused with no identity named is a signature broken, or over another digest, or with no bundle: not one by
+    // someone else, which only a signature that verified, by an identity Fulcio certified, can show.
+    const by = identities(error.message);
+    if (!by.length) throw new Error(`${reference} carries a signature that does not verify: ${error.message}`);
+    return { signature: 'other', by, message: error.message };
   }
 }
 

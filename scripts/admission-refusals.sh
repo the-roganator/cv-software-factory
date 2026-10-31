@@ -31,7 +31,7 @@
 # Before it asks, it reads who signed each image of ours (scripts/signed-by.ts, as the deploy watch reads it), and
 # stops unless the unsigned ones carry no signature, the other-identity ones only another's, and the misplaced ones
 # build.yml's on main; each answer keeps what it found. The record keeps the hash of the four copies of the policy it
-# was taken against (scripts/policy-hash.ts), which apps/factory/test/admission.test.ts holds to deploy/.
+# was taken against (scripts/policy-hash.ts), which apps/factory/test/refusal-records.test.ts holds to deploy/.
 set -euo pipefail
 
 context="${KUBE_CONTEXT:-k3d-software-factory}"

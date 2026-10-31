@@ -109,15 +109,17 @@ async function thirdParty(dirs: string[], files: string[]) {
 const SIGNED: Record<string, string> = { unsigned: 'none', 'other-identity': 'other', misplaced: 'pipeline' };
 
 /** Whether the image policy's `matchImageReferences` take in an image: Kyverno verifies the signatures of these alone. */
-function globbed(image: string) {
+const GLOBS = (() => {
   const globs = (
     parse(readFileSync(join(DEPLOY, 'base/admission/images/policy.yaml'), 'utf-8')) as {
       spec: { matchImageReferences: { glob: string }[] };
     }
   ).spec.matchImageReferences.map(({ glob }) => glob);
   const escaped = (part: string) => part.replace(/[.+?^$()|[\]{}\\/]/g, '\\$&');
-  const pattern = (glob: string) => new RegExp(`^${glob.split('*').map(escaped).join('.*')}$`);
-  return globs.some((glob) => pattern(glob).test(image));
+  return globs.map((glob) => new RegExp(`^${glob.split('*').map(escaped).join('.*')}$`));
+})();
+function globbed(image: string) {
+  return GLOBS.some((pattern) => pattern.test(image));
 }
 
 const copies = async () => [
@@ -313,12 +315,8 @@ describe('admission control', () => {
         }[];
       }
     ).cases;
-    for (const { policy: name, namespaces } of [
-      await copy('factory'),
-      await copy('website'),
-      await copy('scoreboard'),
-      await copy('flagd'),
-    ]) {
+    const all = await copies();
+    for (const { policy: name, namespaces } of all) {
       for (const namespace of namespaces) {
         const refusals = kept.filter((r) => r.namespace === namespace);
         // No image of ours runs in `flagd`, so one unsigned would be refused as misplaced: flagd's own image at
@@ -353,7 +351,7 @@ describe('admission control', () => {
           ).not.toContain(identity);
         }
         if (namespace !== 'flagd') {
-          const runs = (await copies()).find((c) => c.namespaces.includes(namespace));
+          const runs = all.find((c) => c.namespaces.includes(namespace));
           const repository = other?.image.split('@')[0];
           expect([...(runs?.factory ?? []), ...(runs?.website ?? [])], namespace).toContain(repository);
         }

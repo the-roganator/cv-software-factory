@@ -88,10 +88,10 @@ describe('the stop-the-line drill', () => {
       sql: database.proofs,
       runnerPods: async () => (pods.length > 1 ? (pods.shift() ?? []) : (pods[0] ?? [])),
       ask: async () => o.yes ?? true,
-      make: async (target) => {
+      make: async (target, reason) => {
         made.push(target);
         if (target === 'stop-the-line') {
-          await append(database.operator, 'line.stopped', { reason: 'drill' });
+          await append(database.operator, 'line.stopped', { reason });
           if (o.refuse ?? true) {
             await append(database.as.gateway, 'action.refused', {
               mechanism: 'gateway',
@@ -129,10 +129,17 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(/✓ Release r-2: the canary of version 1\.3\.0 aborted by Stop the line/);
   });
 
-  it('says the line may still be stopped when interrupted during the drill, and listens for that only while it runs', async () => {
+  it('starts the line again before it ends when interrupted during the drill, and listens only while it runs', async () => {
     const before = process.listenerCount('SIGINT');
-    const { d, said } = drill({});
-    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const { d, made, said } = drill({});
+    let exited: () => void = () => undefined;
+    const exit = new Promise<void>((resolve) => {
+      exited = resolve;
+    });
+    const spy = vi.spyOn(process, 'exit').mockImplementation(((code: number) => {
+      expect(code).toBe(130);
+      exited();
+    }) as never);
     try {
       const make = d.make;
       d.make = async (target, reason) => {
@@ -141,12 +148,29 @@ describe('the stop-the-line drill', () => {
         return ok;
       };
       await stopTheLine(d);
-      expect(said).toContainEqual(expect.stringMatching(/Interrupted \(SIGINT\).*run make start-the-line/));
-      expect(exit).toHaveBeenCalledWith(130);
+      await exit;
+      // Started once, by the interrupt, before the process ends; the drill's own end did not start it twice.
+      expect(made).toEqual(['stop-the-line', 'start-the-line']);
+      expect(said).toContainEqual(
+        expect.stringMatching(/Interrupted \(SIGINT\) during the drill: starting the line again/),
+      );
+      expect(said).toContain('The line started again.');
     } finally {
-      exit.mockRestore();
+      spy.mockRestore();
     }
     expect(process.listenerCount('SIGINT')).toBe(before);
+  });
+
+  it('counts its own stop alone, not one Martin made meanwhile for another reason', async () => {
+    const { d } = drill({});
+    d.make = async (target) => {
+      if (target === 'stop-the-line') await append(database.operator, 'line.stopped', { reason: 'by hand' });
+      return true;
+    };
+    const taken = await stopTheLine(d);
+    expect('output' in taken && taken.output).toMatch(
+      /✗ no line\.stopped by Martin’s roles was recorded for this drill/,
+    );
   });
 
   it('takes nothing, and records nothing, unless Martin says yes', async () => {
@@ -197,7 +221,9 @@ describe('the stop-the-line drill', () => {
       return true;
     };
     const taken = await stopTheLine(d);
-    expect('output' in taken && taken.output).toMatch(/✗ no line\.stopped by Martin’s roles was recorded/);
+    expect('output' in taken && taken.output).toMatch(
+      /✗ no line\.stopped by Martin’s roles was recorded for this drill/,
+    );
     expect('output' in taken && taken.output).not.toMatch(/forged/);
   });
 });

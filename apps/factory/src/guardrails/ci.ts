@@ -118,7 +118,13 @@ export async function readCiProof({ repo, proof, workflow, firstParent, read }: 
     for (const run of bySha.get(sha) ?? []) {
       const { jobs } = await read<{ jobs: Job[] }>(`/repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`);
       const parts = names.map((name) => ({ name, job: jobs.find((j) => j.name === name) }));
-      if (parts.every(({ job }) => !job || job.conclusion === 'skipped')) {
+      // A deploy's run skips the tests: GitHub then lists the job once, by its own name, unexpanded, or each part, every
+      // one completed and skipped. A part missing otherwise is a run not done yet, which is this proof's run, unpassed.
+      const skippedJob = (job?: Job) => job?.status === 'completed' && job.conclusion === 'skipped';
+      const whole = jobs.find((j) => j.name === proof.job);
+      const skippedRun =
+        parts.every(({ job }) => skippedJob(job)) || (parts.every(({ job }) => !job) && skippedJob(whole));
+      if (skippedRun) {
         passedOver.push(`${short(sha)} (${run.html_url}): ${proof.job} skipped`);
         continue;
       }

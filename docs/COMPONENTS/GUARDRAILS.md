@@ -38,8 +38,8 @@ A refusal record taken again holds when it was taken against the policies its re
 
 Stop the line cannot be drilled on a dry run's canary, as a dry run's releases make no Rollout. So the drill runs against the line as it is, after Martin says yes at a prompt that says how many agents are running. Stopping loses the step in hand, which runs again from its last event when the line starts.
 
-1. `make stop-the-line`, as Martin's operator role.
-2. The line's stop is recorded by one of Martin's roles; every pod in `runners` is gone within three minutes; the gateway refused an agent's call because the line had stopped (an `action.refused` by `factory_gateway`, mechanism `gateway`, guardrail 9) within a minute; and, after at least 45 seconds stopped, no work item was taken onto the line.
-3. `make start-the-line`, whatever happened, and the command says so if it could not. Interrupted during the drill, it says the line may still be stopped as it ends.
+1. `make stop-the-line`, as Martin's operator role, on the cluster the command was given, with a reason of the drill's own.
+2. The line's stop, with that reason, is recorded by one of Martin's roles; every pod in `runners` is gone within three minutes; the gateway refused an agent's call because the line had stopped (an `action.refused` by `factory_gateway`, mechanism `gateway`, guardrail 9) within a minute; and, after at least 45 seconds stopped, no work item was taken onto the line.
+3. `make start-the-line`, whatever happened, and the command says so if it could not. Interrupted during the drill (Ctrl-C), it starts the line again before it ends.
 
 The gateway refuses only a call from an agent whose step is running, so with no agent running at the stop, nothing calls it to be refused, and the drill does not hold: take it while a step runs. Every reader filters by the role that appended what it reads, so a hole in row security is not the only lock.

@@ -14,7 +14,9 @@
  * The gateway refuses a call only from an agent whose step is running, so the drill can show its refusal only when an
  * agent is running as the line stops: Martin is told how many are before he says yes.
  */
+import { randomUUID } from 'node:crypto';
 import { upcast } from '@software-factory/events';
+import { storeClock } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 
@@ -44,11 +46,11 @@ async function byTheLine(sql: Sql, type: string): Promise<(Row & { payload: Reco
 
 /** How long ago, in the largest whole unit that fits. */
 export function age(at: Date, now: Date): string {
-  const minutes = Math.max(0, Math.round((now.getTime() - at.getTime()) / 60_000));
+  const minutes = Math.max(0, Math.floor((now.getTime() - at.getTime()) / 60_000));
   if (minutes < 120) return `${minutes} minutes ago`;
-  const hours = Math.round(minutes / 60);
+  const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours} hours ago`;
-  return `${Math.round(hours / 24)} days ago`;
+  return `${Math.floor(hours / 24)} days ago`;
 }
 
 export async function rollback(sql: Sql, now: Date): Promise<Taken> {
@@ -124,34 +126,51 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     return { declined: 'Martin did not say yes: the drill was not taken, and nothing is recorded for it.' };
   }
 
-  // The store's clock, which stamps what the drill reads, not the Mac's, which may differ from it.
-  const storeNow = async () => (await sql<{ at: Date }[]>`select clock_timestamp() as at`)[0]?.at ?? drill.now();
+  // The store's clock, which stamps what the drill reads, not the Mac's, which may differ from it: as its text, to the
+  // microsecond, for the bounds the queries compare, as Date would cut it to the millisecond.
+  const storeNow = () => storeClock(sql);
   const from = await storeNow();
+  // This drill's own stop, told from any other by its reason.
+  const reason = `make guardrails: the stop-the-line drill ${randomUUID().slice(0, 8)}`;
   const lines: string[] = [];
   let held = true;
   const fail = (line: string) => {
     held = false;
     lines.push(`✗ ${line}`);
   };
-  // Interrupted from here on, the process ends before the finally below starts the line again: say so, as it ends.
-  const interrupted = (signal: NodeJS.Signals) => {
-    drill.say(`Interrupted (${signal}) during the drill: the line may still be stopped; run make start-the-line.`);
+  // The line is started again once, whether the drill ends or is interrupted.
+  let starting: Promise<boolean> | undefined;
+  const start = () => {
+    starting ??= drill.make('start-the-line', 'make guardrails: the stop-the-line drill is over');
+    return starting;
+  };
+  // Interrupted from here on, the process would end before the finally below: start the line first, then end.
+  const interrupted = async (signal: NodeJS.Signals) => {
+    drill.say(`Interrupted (${signal}) during the drill: starting the line again.`);
+    drill.say(
+      (await start().catch(() => false))
+        ? 'The line started again.'
+        : 'make start-the-line failed: the line is still stopped; run make start-the-line.',
+    );
     process.exit(130);
   };
   process.once('SIGINT', interrupted);
   process.once('SIGTERM', interrupted);
   try {
-    if (!(await drill.make('stop-the-line', 'make guardrails: the stop-the-line drill'))) {
+    if (!(await drill.make('stop-the-line', reason))) {
       fail('make stop-the-line failed');
     }
-    const stops = await sql<{ seq: string; appended_at: Date; appended_by: string }[]>`
-      select seq, appended_at, appended_by from events
-      where type = 'line.stopped' and appended_by = any(${MARTINS_ROLES}) and appended_at >= ${from}
+    const stops = await sql<{ seq: string; at: string; appended_by: string }[]>`
+      select seq, to_char(appended_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at, appended_by
+      from events
+      where type = 'line.stopped' and appended_by = any(${MARTINS_ROLES}) and appended_at >= ${from}::timestamptz
+        and payload->>'reason' = ${reason}
       order by seq limit 1`;
     const stop = stops[0];
-    if (!stop) fail('no line.stopped by Martin’s roles was recorded');
-    else lines.push(`✓ The line stopped at ${stop.appended_at.toISOString()}, recorded by ${stop.appended_by}.`);
-    const at = stop?.appended_at ?? from;
+    if (!stop) fail('no line.stopped by Martin’s roles was recorded for this drill');
+    else lines.push(`✓ The line stopped at ${stop.at}, recorded by ${stop.appended_by}.`);
+    const at = stop?.at ?? from;
+    const since = (to: string) => Date.parse(to) - Date.parse(at);
 
     // Listed again once stopped, so a pod started after the prompt is seen, and an agent then running is waited for.
     const atStop = await drill.runnerPods();
@@ -167,7 +186,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
         [refusal] = await sql<{ output: string; appended_at: Date }[]>`
           select payload->>'output' as output, appended_at from events
           where type = 'action.refused' and appended_by = 'factory_gateway' and payload->>'mechanism' = 'gateway'
-            and payload->'guardrails' @> '[9]'::jsonb and appended_at >= ${at}
+            and payload->'guardrails' @> '[9]'::jsonb and appended_at >= ${at}::timestamptz
           order by seq limit 1`;
       }
       const waitingForRefusal = !refusal && agentsSeen.length > 0 && drill.now().getTime() - started < REFUSED_MS;
@@ -185,17 +204,17 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
         'no agent was running at the stop, so none called the gateway to be refused: take the drill again while one runs',
       );
 
-    const waited = (await storeNow()).getTime() - at.getTime();
+    const waited = since(await storeNow());
     if (waited < STOPPED_MS) await drill.sleep(STOPPED_MS - waited);
-    const stoppedFor = (await storeNow()).getTime() - at.getTime();
+    const stoppedFor = since(await storeNow());
     const taken = await sql<{ work_item: string; taken_at: Date }[]>`
-      select work_item, taken_at from line where taken_at >= ${at} order by taken_at`;
+      select work_item, taken_at from line where taken_at >= ${at}::timestamptz order by taken_at`;
     if (taken.length) fail(`work items taken while the line was stopped: ${taken.map((t) => t.work_item).join(', ')}`);
     else lines.push(`✓ No work item was taken in the ${Math.round(stoppedFor / 1000)}s the line was stopped.`);
   } finally {
     process.off('SIGINT', interrupted);
     process.off('SIGTERM', interrupted);
-    if (await drill.make('start-the-line', 'make guardrails: the stop-the-line drill is over')) {
+    if (await start()) {
       lines.push('✓ The line started again.');
     } else {
       fail('make start-the-line failed: the line is still stopped; run make start-the-line');

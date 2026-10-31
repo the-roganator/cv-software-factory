@@ -64,7 +64,11 @@ describe('a CI proof’s run', () => {
     const skipped = (name: string): Job => ({ name, status: 'completed', conclusion: 'skipped' });
     const { read } = github(
       [runOf(1, '2026-10-31T10:00:00Z'), runOf(2, '2026-10-31T11:00:00Z')],
-      { 1: [passed('tests (1/2)'), passed('tests (2/2)')], 2: [skipped('tests (1/2)'), skipped('tests (2/2)')] },
+      // A skipped matrix job is listed once, by the job's own name, as GitHub lists a deploy's run.
+      {
+        1: [passed('tests (1/2)'), passed('tests (2/2)')],
+        2: [skipped('tests')],
+      },
       { [sha(1)]: '2026-10-31T10:20:00Z', [sha(2)]: '2026-10-31T11:20:00Z' },
     );
     const taken = await readCiProof({ repo: REPO, proof, workflow: WORKFLOW, firstParent: [sha(2), sha(1)], read });
@@ -111,12 +115,14 @@ describe('a CI proof’s run', () => {
       {},
     );
     const partial = github([runOf(1, at)], { 1: [passed('tests (1/2)')] }, {});
-    for (const { read } of [failed, partial]) {
+    // A run whose parts GitHub has not listed yet is not passed over for an older one: it is the run, not done.
+    const notYet = github([runOf(1, at)], { 1: [] }, {});
+    for (const { read } of [failed, partial, notYet]) {
       const merged = github([], {}, { [sha(1)]: at });
       const both = <T>(path: string) => (path.includes('/pulls') ? merged.read<T>(path) : read<T>(path));
       const taken = await readCiProof({ repo: REPO, proof, workflow: WORKFLOW, firstParent: [sha(1)], read: both });
       expect(taken.held).toBe(false);
-      expect(taken.output).toMatch(/✗ tests \(2\/2\) did not pass/);
+      expect(taken.output).toMatch(/✗ (tests \(1\/2\), )?tests \(2\/2\) did not pass/);
     }
 
     const old = github(

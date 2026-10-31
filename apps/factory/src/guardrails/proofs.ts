@@ -42,6 +42,8 @@ export interface Context {
   rendered(): Resource[];
   /** The store, as the proofs' role. */
   sql: Sql;
+  /** The cluster's kubeconfig context, which the drill's `make` targets are given as `CONTEXT`. */
+  kubeContext: string;
   /** The drill's needs of the cluster and of Martin. */
   runnerPods(): Promise<{ name: string; part?: string }[]>;
   ask(question: string): Promise<boolean>;
@@ -158,6 +160,9 @@ export const TAKERS = {
     const ran = await context.run('node', ['apps/factory/src/cli.ts', 'github', 'workflow-refusal', '--out', out], {
       GITHUB_APP_CLIENT_ID: APPS.factory.clientId,
       GITHUB_APP_PRIVATE_KEY: await context.appKey(),
+      // GitHub itself, for real, whatever the shell says: a dry run or another API proves nothing of the fence.
+      GITHUB_DRY_RUN: 'false',
+      GITHUB_API_URL: '',
     });
     const refusals = await readFile(out, 'utf-8').then(
       (t) => JSON.parse(t) as Refusal[],
@@ -245,7 +250,14 @@ export const TAKERS = {
       runnerPods: () => context.runnerPods(),
       ask: (q) => context.ask(q),
       make: async (target, reason) =>
-        (await context.run('make', ['--no-print-directory', target, `REASON=${reason}`])).status === 0,
+        (
+          await context.run('make', [
+            '--no-print-directory',
+            target,
+            `CONTEXT=${context.kubeContext}`,
+            `REASON=${reason}`,
+          ])
+        ).status === 0,
       now: () => context.now(),
       sleep: (ms) => context.sleep(ms),
       say: (line) => context.say(line),

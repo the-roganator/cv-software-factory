@@ -145,6 +145,7 @@ export async function run(args: string[]): Promise<number> {
       return manifests;
     },
     sql,
+    kubeContext: context_,
     runnerPods: async () => {
       const { stdout } = await exec('kubectl', ['--context', context_, '-n', 'runners', 'get', 'pods', '-o', 'json']);
       const { items } = JSON.parse(stdout) as {

@@ -110,6 +110,37 @@ describe('what takes each proof', () => {
     }
   });
 
+  it('takes the workflow refusal from GitHub itself, and the drill on the cluster the command was given', async () => {
+    const ran: { command: string; args: string[]; env?: Record<string, string> }[] = [];
+    // A store that answers its clock, and nothing else.
+    const sql = (async (strings: TemplateStringsArray) =>
+      strings.join('').includes('clock_timestamp') ? [{ now: '2026-10-31T00:00:00.000000Z' }] : []) as unknown;
+    const context = {
+      root: new URL('.', ROOT).pathname,
+      tmp: '/nonexistent',
+      kubeContext: 'k3d-elsewhere',
+      sql,
+      appKey: async () => 'key',
+      run: async (command: string, args: string[], env?: Record<string, string>) => {
+        ran.push({ command, args, ...(env && { env }) });
+        return { status: 0, stdout: '', stderr: '' };
+      },
+      runnerPods: async () => [],
+      ask: async () => true,
+      now: () => new Date(),
+      sleep: async () => undefined,
+      say: () => undefined,
+    } as unknown as Context;
+    await TAKERS['workflow-refusal'](context);
+    expect(ran[0]?.env).toMatchObject({ GITHUB_DRY_RUN: 'false', GITHUB_API_URL: '' });
+    await TAKERS['stop-the-line'](context);
+    const made = ran.filter((r) => r.command === 'make');
+    expect(made.map((r) => r.args.slice(1, 3))).toEqual([
+      ['stop-the-line', 'CONTEXT=k3d-elsewhere'],
+      ['start-the-line', 'CONTEXT=k3d-elsewhere'],
+    ]);
+  });
+
   it('takes again every refusal record the hash names, each in a proof: admission, production-writes or egress', () => {
     expect([...PRODUCTION_WRITES, 'admission-refusals', 'egress'].sort()).toEqual(Object.keys(RECORDS).sort());
     for (const record of Object.keys(RECORDS)) {

@@ -9,16 +9,27 @@
  *
  * `policyHash()` is sha256 over a canonical form of the objects: each as deploy/ renders it for the profile the
  * cluster runs (`kustomize build deploy/overlays/local`), its kind, name and namespace and every field but its
- * metadata and status, keys sorted, objects in order of kind, namespace and name. What the API server and Argo CD add
- * (defaults, uid, resourceVersion, managedFields, Argo CD's tracking annotation, status) is not deploy/'s, and does not
- * count. The tests compute it from the rendered manifests and hold each record to it (refusal-records.test.ts).
+ * metadata and status, keys sorted, objects in order of kind, namespace and name; a ClusterRole keeps its labels too,
+ * as an `aggregate-to-*` label grants its rules to every holder of the role it names. What the API server and Argo CD
+ * add (defaults, uid, resourceVersion, managedFields, Argo CD's tracking annotation, status) is not deploy/'s, and
+ * does not count. The tests compute it from the rendered manifests and hold each record to it
+ * (refusal-records.test.ts).
  *
  * The script's check is what makes the hash the cluster's as well as deploy/'s. Each object must be there, with every
- * field deploy/ gives it as deploy/ gives it; Argo CD's root Application must report it Synced; and deploy/ at the
- * revision root is synced to must render it as this checkout does. The first catches an object changed by hand on the
- * cluster; the second a field added by hand, which the first cannot see; the third a checkout whose policies differ
- * from those the cluster was synced to, whose hash would name policies the answers were not given by. A change
- * elsewhere in deploy/, such as a comment, is no difference.
+ * field deploy/ gives it as deploy/ gives it; no one but Argo CD may have written a field deploy/ does not give it
+ * (its managedFields), but the status and, a ClusterRole's labels apart, the metadata; deploy/'s fields applied over
+ * it, as a server-side dry run, must leave it as it is; Argo CD's root Application must report it Synced; and deploy/
+ * at the revision root is synced to must render it as this checkout does. The first catches a field changed by hand
+ * on the cluster; the second a field added by hand, which the first cannot see and Argo CD does not count as a
+ * difference; the third a change by hand inside a field the API server keeps whole, such as a selector or a list of
+ * rules, which managedFields name only as the whole field; the last a checkout whose policies differ from those the cluster was synced
+ * to, whose hash would name policies the answers were not given by. A record that names every NetworkPolicy (egress)
+ * also stops on one the cluster holds that deploy/ does not render, which could close a fence deploy/ leaves open;
+ * only Argo CD's own, from `make up`'s chart, are let be. A change elsewhere in deploy/, such as a comment, is no
+ * difference.
+ *
+ * These catch a change made by mistake or by hand, not one hidden on purpose by an administrator of the cluster, who
+ * could write as Argo CD's manager; that is admission's and RBAC's to keep from them, not this check's.
  * `KUBE_CONTEXT` names the cluster (`k3d-software-factory` by default).
  */
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -68,8 +79,9 @@ export const RECORDS = {
   'admission-refusals': ['factory', 'website', 'scoreboard', 'flagd'].map((copy) =>
     policy('ImageValidatingPolicy', `${copy}-images`),
   ),
-  'route-refusals': [policy('ValidatingPolicy', 'website-routes')],
-  'mark-refusals': [policy('ValidatingPolicy', 'website-mark')],
+  // Each judges the IngressRoutes the other's script sends, so both records name both.
+  'route-refusals': [policy('ValidatingPolicy', 'website-routes'), policy('ValidatingPolicy', 'website-mark')],
+  'mark-refusals': [policy('ValidatingPolicy', 'website-routes'), policy('ValidatingPolicy', 'website-mark')],
   'rollout-refusals': [
     ...admission('website-rollout-controls'),
     ...role('website', 'admin-controls-release'),
@@ -132,11 +144,79 @@ function sorted(value: unknown): unknown {
   return value;
 }
 
-/** An object as the hash reads it: its kind, name and namespace, and every field but its metadata and status. */
+/**
+ * An object as the hash reads it: its kind, name and namespace, and every field but its metadata and status; and a
+ * ClusterRole's labels, which aggregate its rules into another's.
+ */
 export function canonical(o: Resource): Resource {
   const { metadata, status: _status, ...fields } = o;
-  const { name, namespace } = metadata ?? {};
-  return sorted({ ...fields, metadata: { name, ...(namespace ? { namespace } : {}) } }) as Resource;
+  const { name, namespace, labels } = metadata ?? {};
+  const kept = { name, ...(namespace ? { namespace } : {}), ...(o.kind === 'ClusterRole' && labels ? { labels } : {}) };
+  return sorted({ ...fields, metadata: kept }) as Resource;
+}
+
+/** Argo CD's writers: its application controller, by the name each version of it gives. */
+const ARGO_CD = new Set(['argocd-controller', 'argocd-application-controller']);
+
+/** A managedFields entry, as the API server keeps one. */
+interface Managed {
+  manager?: string;
+  subresource?: string;
+  fieldsV1?: Record<string, unknown>;
+}
+
+/**
+ * The fields under a managedFields entry's `fieldsV1` that `want` does not give, each as its path: `f:<name>` a field,
+ * `k:{...}` the item of a list with those keys, `v:<value>` the item of a set, `.` the item itself.
+ */
+export function beyond(fields: unknown, want: unknown, at = ''): string[] {
+  if (!fields || typeof fields !== 'object') return [];
+  return Object.entries(fields).flatMap(([key, inner]) => {
+    if (key === '.') return [];
+    const path = `${at}/${key}`;
+    let next: unknown;
+    if (key.startsWith('f:')) {
+      next =
+        want && typeof want === 'object' && !Array.isArray(want)
+          ? (want as Record<string, unknown>)[key.slice(2)]
+          : undefined;
+    } else if (key.startsWith('k:') && Array.isArray(want)) {
+      const keys = JSON.parse(key.slice(2)) as Record<string, unknown>;
+      next = want.find(
+        (item) =>
+          item &&
+          typeof item === 'object' &&
+          Object.entries(keys).every(([k, v]) => (item as Record<string, unknown>)[k] === v),
+      );
+    } else if (key.startsWith('v:') && Array.isArray(want)) {
+      const value = JSON.parse(key.slice(2)) as unknown;
+      next = want.find((item) => JSON.stringify(item) === JSON.stringify(value));
+    }
+    if (next === undefined) return [path];
+    return beyond(inner, next, path);
+  });
+}
+
+/**
+ * What a writer other than Argo CD holds of the live object that deploy/ does not give it: a field added by hand,
+ * which comparing the fields deploy/ gives cannot see, and Argo CD does not count as a difference. A field deploy/
+ * gives is held to deploy/'s value by `differences()`, whoever wrote it last, as on a cluster once applied by hand. The
+ * status, a subresource, is its controller's; the metadata is not read, but a ClusterRole's labels.
+ */
+export function writers(live: Resource, want: Resource): string[] {
+  const { metadata, ...form } = canonical(want);
+  return ((live.metadata?.managedFields ?? []) as Managed[])
+    .filter((m) => !m.subresource && !ARGO_CD.has(m.manager ?? ''))
+    .flatMap((m) => {
+      const { 'f:metadata': meta, ...fields } = m.fieldsV1 ?? {};
+      const added = beyond(fields, form);
+      if (live.kind === 'ClusterRole' && meta && typeof meta === 'object' && 'f:labels' in meta) {
+        added.push(...beyond({ 'f:labels': (meta as Record<string, unknown>)['f:labels'] }, metadata, '/f:metadata'));
+      }
+      return added.length
+        ? [`${added.join(', ')}, written by ${m.manager ?? 'an unnamed manager'}, not deploy/'s`]
+        : [];
+    });
 }
 
 /** sha256 over the canonical form of these objects, in the canonical order, as 64 lower-case hex digits. */
@@ -206,21 +286,82 @@ function renderAt(commit: string): Resource[] | string {
   }
 }
 
+/** Every field but the metadata and status, as a dry run's answer is compared with the live object. */
+const fieldsOf = ({ metadata: _metadata, status: _status, ...fields }: Resource) => fields;
+
+/** Argo CD's own fences, which `make up` installs with its chart, and deploy/ does not render. */
+const argoCdsOwn = (o: Resource) => {
+  const labels = (o.metadata?.labels ?? {}) as Record<string, string>;
+  return (
+    o.metadata?.namespace === 'argocd' &&
+    labels['app.kubernetes.io/managed-by'] === 'Helm' &&
+    labels['app.kubernetes.io/instance'] === 'argocd'
+  );
+};
+
 /** Why the cluster does not run these objects as this checkout renders them: nothing, if it does. */
 function unlike(context: string, record: RecordName, objects: Resource[]): { problems: string[]; revision?: string } {
   const kubectl = (args: string[], input?: string) =>
     spawnSync('kubectl', ['--context', context, ...args], { input, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
   const problems: string[] = [];
 
-  // Each object as the cluster holds it, read at the version deploy/ writes it in.
-  const got = kubectl(['get', '-f', '-', '-o', 'json'], objects.map((o) => stringify(o)).join('---\n'));
+  // Each object as the cluster holds it, read at the version deploy/ writes it in, with who wrote each field.
+  const got = kubectl(
+    ['get', '-f', '-', '-o', 'json', '--ignore-not-found', '--show-managed-fields'],
+    objects.map((o) => stringify(o)).join('---\n'),
+  );
   if (got.status !== 0) return { problems: [`the cluster could not give them: ${got.stderr.trim()}`] };
-  const read = JSON.parse(got.stdout) as Resource & { items?: Resource[] };
+  const read = (got.stdout.trim() ? JSON.parse(got.stdout) : { items: [] }) as Resource & { items?: Resource[] };
   const live = new Map((read.items ?? [read]).map((o) => [nameOf(o), o]));
   for (const o of objects) {
     const held = live.get(nameOf(o));
     if (!held) problems.push(`${nameOf(o)}: not on the cluster`);
-    else for (const d of differences(canonical(o), held)) problems.push(`${nameOf(o)}: ${d}`);
+    else {
+      for (const d of differences(canonical(o), held)) problems.push(`${nameOf(o)}: ${d}`);
+      for (const w of writers(held, o)) problems.push(`${nameOf(o)}: ${w}`);
+    }
+  }
+
+  // Each object as it would be were deploy/'s fields applied over it, a server-side dry run that writes nothing: the
+  // API server defaults them and replaces each field it keeps whole (a selector, a list of rules) by deploy/'s, so
+  // one changed inside by hand, which managedFields name only as the whole field, differs from the live object.
+  const applied = kubectl(
+    [
+      'apply',
+      '--server-side',
+      '--dry-run=server',
+      '--force-conflicts',
+      '--field-manager=policy-hash',
+      '-o',
+      'json',
+      '-f',
+      '-',
+    ],
+    objects.map((o) => stringify(o)).join('---\n'),
+  );
+  if (applied.status !== 0) problems.push(`the cluster could not apply them as a dry run: ${applied.stderr.trim()}`);
+  else {
+    const out = JSON.parse(applied.stdout) as Resource & { items?: Resource[] };
+    for (const o of out.items ?? [out]) {
+      const held = live.get(nameOf(o));
+      if (held && JSON.stringify(sorted(fieldsOf(held))) !== JSON.stringify(sorted(fieldsOf(o)))) {
+        problems.push(`${nameOf(o)}: differs from deploy/'s within a field kept whole, as an edit by hand would`);
+      }
+    }
+  }
+
+  // A fence the cluster holds that deploy/ does not render, for a record that names them all.
+  if ((RECORDS[record] as Named[]).some((n) => n.kind === 'NetworkPolicy' && n.name === undefined)) {
+    const all = kubectl(['get', 'networkpolicies', '-A', '-o', 'json']);
+    if (all.status !== 0) problems.push(`the cluster could not list its NetworkPolicies: ${all.stderr.trim()}`);
+    else {
+      const ours = new Set(objects.filter((o) => o.kind === 'NetworkPolicy').map(nameOf));
+      for (const o of (JSON.parse(all.stdout) as { items: Resource[] }).items) {
+        if (!ours.has(nameOf({ ...o, kind: 'NetworkPolicy' })) && !argoCdsOwn(o)) {
+          problems.push(`NetworkPolicy ${o.metadata?.namespace}/${o.metadata?.name}: on the cluster, not in deploy/`);
+        }
+      }
+    }
   }
 
   // Argo CD's word that nothing was added to them, at a revision whose deploy/ is this checkout's.
@@ -243,8 +384,17 @@ function unlike(context: string, record: RecordName, objects: Resource[]): { pro
   else {
     const synced = renderAt(revision);
     if (typeof synced === 'string') problems.push(synced);
-    else if (policyHash(named(record, synced)) !== policyHash(objects)) {
-      problems.push(`deploy/ here renders them otherwise than ${revision} does, which Argo CD's root is synced to`);
+    else {
+      let there: Resource[] | string;
+      try {
+        there = named(record, synced);
+      } catch (error) {
+        there = (error as Error).message;
+      }
+      if (typeof there === 'string') problems.push(`${revision}, which Argo CD's root is synced to, renders ${there}`);
+      else if (policyHash(there) !== policyHash(objects)) {
+        problems.push(`deploy/ here renders them otherwise than ${revision} does, which Argo CD's root is synced to`);
+      }
     }
   }
   return { problems, ...(revision && { revision }) };

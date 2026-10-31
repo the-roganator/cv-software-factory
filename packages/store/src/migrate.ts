@@ -8,9 +8,9 @@
  * Each of the variables in `PASSWORDS`, when set, becomes the password of its role: CONSOLE_PASSWORD the console's
  * reader's, SCOREBOARD_PASSWORD the scoreboard's writer's, METRICS_PASSWORD the Postgres exporter's reader's,
  * TRIAGE_PASSWORD, LINE_PASSWORD and the like each worker's own, ADMIN_PASSWORD the admin service's, and
- * PROOFS_PASSWORD the proofs' (`make guardrails`). Martin's
- * command line's and the enrolment's are set by the make targets that use them (`operator.ts`), so no pod holds them.
- * It connects as the database's owner, the only role that may change its schema.
+ * PROOFS_PASSWORD the proofs' (`make guardrails`). Martin's command line's and the enrolment's are set by the make
+ * targets that use them (`operator.ts`), so no pod holds them. It connects as the database's owner, the only role that
+ * may change its schema.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

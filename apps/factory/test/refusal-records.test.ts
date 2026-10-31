@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  beyond,
   canonical,
   differences,
   named,
@@ -12,6 +13,7 @@ import {
   type RecordName,
   type Resource,
   taken,
+  writers,
 } from '../../../scripts/policy-hash.ts';
 import { DEPLOY, rendered } from './deploy.ts';
 
@@ -146,6 +148,17 @@ describe('the hash of a record’s policies', () => {
     expect(policyHash([policy])).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('reads a ClusterRole’s labels, which aggregate its rules into another role', () => {
+    const role: Resource = { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'r' } };
+    const aggregated = {
+      ...role,
+      metadata: { name: 'r', labels: { 'rbac.authorization.k8s.io/aggregate-to-view': 'true' } },
+    };
+    expect(policyHash([aggregated])).not.toBe(policyHash([role]));
+    const labelled = { ...policy, metadata: { name: 'p', labels: { team: 'x' } } };
+    expect(policyHash([labelled])).toBe(policyHash([policy]));
+  });
+
   it('names a missing object rather than hashing without it', () => {
     expect(() => named('route-refusals', [policy])).toThrow(/ValidatingPolicy website-routes: 0 found/);
   });
@@ -170,5 +183,76 @@ describe('telling the live object from what deploy/ gives it', () => {
       '/spec/list: [{"b":"x"},{"b":"y"}]',
     ]);
     expect(differences(want, { ...want, spec: { a: 1, list: [] } })).toEqual(['/spec/list: []']);
+  });
+});
+
+describe('telling a field added by hand from what deploy/ gives', () => {
+  const fence: Resource = {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: { name: 'f', namespace: 'n' },
+    spec: {
+      podSelector: { matchLabels: { app: 'a' } },
+      policyTypes: ['Egress'],
+      egress: [{ ports: [{ port: 53, protocol: 'UDP' }] }],
+    },
+  };
+  const live = (managedFields: unknown[]): Resource => ({
+    ...fence,
+    metadata: { ...fence.metadata, managedFields },
+  });
+  const deploys = {
+    'f:spec': { 'f:podSelector': {}, 'f:policyTypes': {}, 'f:egress': {} },
+  };
+
+  it('lets be a field deploy/ gives, whoever wrote it, and whatever Argo CD and a status writer hold', () => {
+    const fields = [
+      {
+        manager: 'kubectl-client-side-apply',
+        operation: 'Update',
+        fieldsV1: { 'f:metadata': { 'f:annotations': {} }, ...deploys },
+      },
+      { manager: 'argocd-controller', operation: 'Update', fieldsV1: { 'f:spec': { 'f:ingress': {} } } },
+      { manager: 'kyverno', operation: 'Update', subresource: 'status', fieldsV1: { 'f:status': {} } },
+    ];
+    expect(writers(live(fields), fence)).toEqual([]);
+  });
+
+  it('names a field deploy/ does not give that another wrote', () => {
+    const fields = [
+      {
+        manager: 'kubectl-edit',
+        operation: 'Update',
+        fieldsV1: { 'f:spec': { 'f:ingress': {}, 'f:podSelector': {} } },
+      },
+    ];
+    expect(writers(live(fields), fence)).toEqual(["/f:spec/f:ingress, written by kubectl-edit, not deploy/'s"]);
+  });
+
+  it('follows a list’s items by their keys, and a set’s by their values', () => {
+    const rule = { apiGroups: [''], resources: ['secrets'], verbs: ['get'] };
+    const want = { rules: [rule], subjects: [{ kind: 'ServiceAccount', name: 's', namespace: 'n' }], set: ['a'] };
+    const sa = 'k:{"kind":"ServiceAccount","name":"s","namespace":"n"}';
+    expect(beyond({ 'f:subjects': { [sa]: { '.': {}, 'f:name': {} } }, 'f:set': { 'v:"a"': {} } }, want)).toEqual([]);
+    expect(
+      beyond({ 'f:subjects': { 'k:{"kind":"ServiceAccount","name":"t","namespace":"n"}': { '.': {} } } }, want),
+    ).toEqual(['/f:subjects/k:{"kind":"ServiceAccount","name":"t","namespace":"n"}']);
+    expect(beyond({ 'f:set': { 'v:"b"': {} } }, want)).toEqual(['/f:set/v:"b"']);
+    expect(beyond({ 'f:subjects': { [sa]: { 'f:apiGroup': {} } } }, want)).toEqual([`/f:subjects/${sa}/f:apiGroup`]);
+  });
+
+  it('reads a ClusterRole’s labels written by hand, and no other object’s', () => {
+    const role: Resource = { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', metadata: { name: 'r' } };
+    const labelled = [
+      {
+        manager: 'kubectl-label',
+        operation: 'Update',
+        fieldsV1: { 'f:metadata': { 'f:labels': { 'f:rbac.authorization.k8s.io/aggregate-to-view': {} } } },
+      },
+    ];
+    expect(writers({ ...role, metadata: { name: 'r', managedFields: labelled } }, role)).toEqual([
+      "/f:metadata/f:labels, written by kubectl-label, not deploy/'s",
+    ]);
+    expect(writers(live(labelled), fence)).toEqual([]);
   });
 });

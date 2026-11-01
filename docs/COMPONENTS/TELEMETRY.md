@@ -320,6 +320,7 @@ The gateway counts every call it takes, a judgement's or an agent's, over OTLP (
 | `gateway_cap_refusals_total` | counter | `cap`: `day`, `month`, `work-item`, or `provider` (one the factory does not own) |
 | `gateway_cap_spent_usd` | gauge | `cap` (`day`, `month`) and `profile` |
 | `gateway_cap_limit_usd` | gauge | `cap` (`day`, `month`, `work-item`) and `profile`; -1 for a month with no cap |
+| `gateway_judgements_unauthorized_total` | counter | nothing, not even the `agent`: judgements answered 401, without triage's token, of which the gateway knows only that ([its alert](ALERTING.md)) |
 
 - **Never a work item or a job,** which would make a series of each. A work item's spend against its cap is the audit log's (`model_calls`); the gauge gives the cap alone, and a refusal at it is counted.
 - **Spend against a cap is two gauges,** what the day's or the month's window has spent and the profile's cap, so `gateway_cap_spent_usd / on (cap, profile) gateway_cap_limit_usd` is how near each is. They are what the gateway last counted from the store, which it does after each paid call and once a minute, one count at a time, so a window that has just reset reads its old spend for up to a minute, and a restarted gateway carries on from the store. A month with no cap reads -1 (`NO_CAP`), a figure no cap can be, which the alert and the dashboards leave out (`>= 0`): every cap is reported each time, so one lifted reads as none at once, where a series no longer reported would go on being sent at its last figure by the SDK, and page for a cap that is gone.

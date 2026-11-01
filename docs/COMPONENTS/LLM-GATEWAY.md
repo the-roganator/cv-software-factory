@@ -7,7 +7,7 @@ Credentials, budgets, logging, redaction and model routing, with live, record an
 
 ```mermaid
 flowchart LR
-  triage[Triage] -- judgements --> gateway[LLM gateway]
+  triage[Triage] -- "judgements,<br>triage's token" --> gateway[LLM gateway]
   runners[Agent runners] -- "Messages API,<br>job token" --> gateway
   gateway --> jev[TypeSafe Jev]
   gateway --> anthropic[Anthropic]
@@ -22,6 +22,8 @@ flowchart LR
 
 `POST /v1/judgements` takes an agent, a work item, a question set, a pinned model, the state and the questions, and returns the answers with their cost and cassette key.
 
+- **Triage's alone.** A request carries triage's caller token as `authorization: Bearer <token>`. The network policy lets runners' agent pods reach the gateway on the same port, for their own calls, so the token is what keeps an agent from asking Jev in triage's name, outside its work item's cap. `make judgements-token` (and so `make up`) makes it once, through stdin, and again only if the Secret holds none it would make: the Secret `judgements-token` in `factory`, which only triage and the gateway name (`apps/factory/test/judgements-fences.test.ts`), as `JUDGEMENTS_TOKEN`. Each reads it as it starts, and a new one restarts both. Triage's pod needs it to start; the gateway's takes it if it is there, so the runners' calls go on without it. On a cluster made before it, run it once, before the deploy that needs it: until then triage's pod does not start (`CreateContainerConfigError`).
+- **Without it, 401.** A request with no token, or another, is answered 401 before its body is read; the token is compared in constant time. That is no guardrail's refusal, and is not recorded as one ([below](#refusals)), but the gateway counts it (`gateway_judgements_unauthorized_total`), which pages Martin (`JudgementsUnauthorized`): either triage's token is not the gateway's, or something else asked. A gateway with no token answers every judgement 401, and says so in its log as it starts: the route is never open to any caller. Triage waits a 401 out as it waits out a gateway it cannot reach, so no report spends its attempts on it, and logs each at error: only Martin can end it.
 - It holds the TypeSafe key and calls Jev with `fetch`, with a timeout and retries with backoff, honouring `Retry-After`.
 - It checks every response with Zod.
 
@@ -115,7 +117,7 @@ Each refusal of a guardrail is recorded as `action.refused`, mechanism `gateway`
 - **Its policy on agents and models** (guardrail 6): an agent that calls no model through the Messages API, or a judgement asking for a model that is not pinned or has no price.
 - **The line stopped** (guardrail 9): any agent's call while it is.
 
-An agent's refusal is on the work item its job token names. A judgement's is on none, since no job token names one: the work item the request names is the caller's word. What was refused names only the agent, so a caller with no token cannot open a new fold with each request by varying the rest. A token that is no running job's, a request the gateway cannot read (a body or beta it does not take), and a replay with no cassette refuse no guardrail, and are not recorded.
+An agent's refusal is on the work item its job token names. A judgement's is on none, since no job token names one: the work item the request names is triage's word. What was refused names only the agent, so a caller cannot open a new fold with each request by varying the rest. A token that is no running job's, a judgement without triage's token, a request the gateway cannot read (a body or beta it does not take), and a replay with no cassette refuse no guardrail, and are not recorded.
 
 Repeats of one refusal (its cause, work item and action, which names the cap reached) within a minute fold into one event with how many and when the last was (`apps/factory/src/refusals.ts`): the first is appended at once, the rest of its minute once the minute is up, and what is still held as the gateway stops. So a runner retrying in a loop is at most two events a minute. Appends run behind the answer, one at a time: one the store will not take is logged, and the answer is the same.
 

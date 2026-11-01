@@ -1,5 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
@@ -9,7 +10,7 @@ import { type Database, freshDatabase } from '../../../../packages/store/test/da
 import type { SpendPolicy } from '../../../../policy/spend.ts';
 import { Cassettes } from '../../src/gateway/cassettes.ts';
 import { GatewayClient } from '../../src/gateway/client.ts';
-import { configFromEnv } from '../../src/gateway/config.ts';
+import { configFromEnv, judgementsToken } from '../../src/gateway/config.ts';
 import {
   BadRequest,
   CassetteMissing,
@@ -29,6 +30,8 @@ let server: Server;
 let url: string;
 let client: GatewayClient;
 const captured = capturingLog();
+/** Triage's caller token, as `make judgements-token` makes one. */
+const TOKEN = 'a'.repeat(64);
 
 const start = async (mode: Mode, policy: SpendPolicy = { dayUsd: 20, monthUsd: 100, workItemUsd: 0.04 }) => {
   // A database of its own, so one test's spend is not another's.
@@ -50,9 +53,9 @@ const start = async (mode: Mode, policy: SpendPolicy = { dayUsd: 20, monthUsd: 1
     }),
     log: captured.log,
   });
-  server = createGatewayServer({ gateway, spend, log: captured.log });
+  server = createGatewayServer({ gateway, spend, judgementsToken: TOKEN, log: captured.log });
   url = (await listenLocal(server)).url;
-  client = new GatewayClient({ url });
+  client = new GatewayClient({ url, token: TOKEN });
 };
 
 beforeAll(async () => {
@@ -69,7 +72,12 @@ const stop = async () => {
   database = undefined;
 };
 
-const post = (body: string) => fetch(`${url}/v1/judgements`, { method: 'POST', body });
+const post = (body: string, token: string | null = TOKEN) =>
+  fetch(`${url}/v1/judgements`, {
+    method: 'POST',
+    body,
+    ...(token === null ? {} : { headers: { authorization: `Bearer ${token}` } }),
+  });
 
 describe('the gateway over HTTP', () => {
   it('serves a judgement to the client, and a cassette replays it', async () => {
@@ -188,9 +196,14 @@ describe('the gateway over HTTP', () => {
   it('answers 500 with nothing of what went wrong, and the client calls it unavailable', async () => {
     const gateway = { mode: 'replay', judge: async () => Promise.reject(new Error(`boom ${SECRET}`)) };
     const spend = { report: async () => ({}) };
-    server = createGatewayServer({ gateway: gateway as never, spend: spend as never, log: captured.log });
+    server = createGatewayServer({
+      gateway: gateway as never,
+      spend: spend as never,
+      judgementsToken: TOKEN,
+      log: captured.log,
+    });
     url = (await listenLocal(server)).url;
-    client = new GatewayClient({ url });
+    client = new GatewayClient({ url, token: TOKEN });
     const raw = await post(JSON.stringify(request()));
     expect(raw.status).toBe(500);
     expect(await raw.text()).not.toContain(SECRET);
@@ -201,6 +214,97 @@ describe('the gateway over HTTP', () => {
   it('is unavailable to a client with no gateway to reach', async () => {
     const lost = new GatewayClient({ url: 'http://127.0.0.1:1', timeoutMs: 500 });
     expect(await lost.judge(request()).catch((e: unknown) => e)).toBeInstanceOf(GatewayUnavailable);
+  });
+});
+
+describe('judgements, which take triage’s token', () => {
+  it('answer 401 to a request without it, or with another, before reading it, and record nothing', async () => {
+    await start('record');
+    const wrong = [null, 'b'.repeat(64), TOKEN.slice(1), `${TOKEN}a`, ''];
+    for (const token of wrong) {
+      const raw = await post(JSON.stringify(request()), token);
+      expect(raw.status, String(token)).toBe(401);
+      expect(raw.headers.get('www-authenticate')).toBe('Bearer');
+      expect(await raw.json()).toEqual({
+        error: 'unauthorized',
+        message: 'Judgements take triage’s token, and this request did not carry it.',
+      });
+    }
+    // The token where a job token would go, or not as a bearer's, is not it either.
+    for (const headers of [{ 'x-api-key': TOKEN }, { authorization: TOKEN }, { authorization: `Basic ${TOKEN}` }]) {
+      const raw = await fetch(`${url}/v1/judgements`, { method: 'POST', body: JSON.stringify(request()), headers });
+      expect(raw.status).toBe(401);
+    }
+    // Nothing reached Jev, nothing was spent, and no refusal was appended: a wrong token is no guardrail's.
+    expect(fake.requests).toHaveLength(0);
+    const sql = database?.as.gateway;
+    if (!sql) throw new Error('no database');
+    expect(await sql`select 1 from model_calls`).toHaveLength(0);
+    expect(await sql`select 1 from events`).toHaveLength(0);
+    await stop();
+  });
+
+  it('close the connection once they answer 401, so a caller cannot hold it by sending the body slowly', async () => {
+    await start('record');
+    const { port } = new URL(url);
+    const socket = connect(Number(port), '127.0.0.1');
+    let answer = '';
+    socket.on('data', (chunk: Buffer) => {
+      answer += chunk.toString();
+    });
+    const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+    // A body announced as large, of which only a little is ever sent.
+    socket.write('POST /v1/judgements HTTP/1.1\r\nhost: gateway\r\ncontent-length: 100000\r\n\r\n{"state":');
+    await closed;
+    expect(answer).toMatch(/^HTTP\/1\.1 401 /);
+    expect(answer.toLowerCase()).toContain('connection: close');
+    await stop();
+  });
+
+  it('turn a 401 into GatewayUnavailable for a client without it, which triage waits out', async () => {
+    await start('record');
+    const without = new GatewayClient({ url });
+    const error = await without.judge(request()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GatewayUnavailable);
+    expect(error).toMatchObject({ status: 401, message: expect.stringContaining('triage’s token') });
+    expect(fake.requests).toHaveLength(0);
+    await stop();
+  });
+
+  it('are all 401 with no token configured, and the gateway says so once as it starts', async () => {
+    const warned = captured.lines.length;
+    const gateway = { mode: 'replay', judge: async () => Promise.reject(new Error('never asked')) };
+    const spend = { report: async () => ({}) };
+    server = createGatewayServer({
+      gateway: gateway as never,
+      spend: spend as never,
+      judgementsToken: undefined,
+      log: captured.log,
+    });
+    url = (await listenLocal(server)).url;
+    expect(captured.lines.slice(warned).filter((line) => line.includes('JUDGEMENTS_TOKEN'))).toHaveLength(1);
+    for (const token of [null, '', TOKEN, 'undefined']) {
+      expect((await post(JSON.stringify(request()), token)).status).toBe(401);
+    }
+    // The routes that take no token stay open.
+    expect((await fetch(`${url}/health`)).status).toBe(200);
+    await stop();
+  });
+
+  it('send the token with judgements alone', async () => {
+    const seen: { path: string; authorization: string | null }[] = [];
+    const recording: typeof fetch = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      seen.push({ path: new URL(String(input)).pathname, authorization: headers.get('authorization') });
+      return new Response('{}', { status: 500 });
+    };
+    const spy = new GatewayClient({ url: 'http://gateway', token: TOKEN, fetch: recording });
+    await spy.judge(request()).catch(() => {});
+    await spy.spend().catch(() => {});
+    expect(seen).toEqual([
+      { path: '/v1/judgements', authorization: `Bearer ${TOKEN}` },
+      { path: '/v1/spend', authorization: null },
+    ]);
   });
 });
 
@@ -220,6 +324,18 @@ describe('the gateway’s settings', () => {
         PORT: '9000',
       }),
     ).toMatchObject({ mode: 'record', cassettesDir: '/data', cassettesRead: ['/a', '/b'], profile: 'do', port: 9000 });
+  });
+
+  it('read triage’s token, and refuse one short enough to guess', () => {
+    expect(configFromEnv({}).judgementsToken).toBeUndefined();
+    expect(configFromEnv({ JUDGEMENTS_TOKEN: TOKEN }).judgementsToken).toBe(TOKEN);
+    expect(() => configFromEnv({ JUDGEMENTS_TOKEN: 'triage' })).toThrow('JUDGEMENTS_TOKEN');
+    // As triage reads it too: a token with whitespace, as a stray newline would leave, is not sent as written.
+    expect(judgementsToken(undefined)).toBeUndefined();
+    expect(judgementsToken(TOKEN)).toBe(TOKEN);
+    expect(() => judgementsToken(`${TOKEN}\n`)).toThrow('whitespace');
+    expect(() => judgementsToken(` ${TOKEN}`)).toThrow('whitespace');
+    expect(() => judgementsToken('a'.repeat(31))).toThrow('32 characters');
   });
 
   it('refuse a mode or profile that does not exist, and recording nowhere', () => {

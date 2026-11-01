@@ -646,6 +646,15 @@ serverFiles:
             annotations:
               summary: "The {{ $labels.cap }}'s spend cap is reached"
               description: "The gateway refuses every model call until the cap clears, when its window ends or you raise it in the console, and the line starts no step meanwhile."
+          - alert: JudgementsUnauthorized
+            expr: "max(increase(gateway_judgements_unauthorized_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"gateway\"}[5m])) > 0"
+            for: 0s
+            keep_firing_for: 10m
+            labels:
+              level: "page"
+            annotations:
+              summary: "A judgement came without triage's token"
+              description: "The gateway answered a judgement 401. If triage's log says the gateway refused its token, triage judges no report until it has the gateway's: run make judgements-token. If not, something else in the cluster asked Jev, which only triage may."
           - alert: ReleaseRolledBack
             expr: "max by (outcome) (increase(line_releases_total{outcome=~\"rolled-back\", dry_run=\"false\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
             for: 0s

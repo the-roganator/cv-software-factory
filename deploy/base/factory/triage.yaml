@@ -62,6 +62,13 @@ spec:
                   key: password
             - name: GATEWAY_URL
               value: http://gateway:8080
+            # The caller token the gateway takes judgements with, from the Secret only triage and the gateway name
+            # (`make judgements-token`). Required: with no Secret the pod does not start.
+            - name: JUDGEMENTS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: judgements-token
+                  key: token
             - name: PAGES_URL
               value: http://probes:8080
             - name: PROMETHEUS_URL

@@ -12,6 +12,7 @@
  *     ANTHROPIC_URL     Anthropic's address, for a stand-in (default https://api.anthropic.com)
  *     LOCAL_MODELS_URL  LM Studio's address, where the profile has a local model (default http://127.0.0.1:1234)
  *     ALL_LOCAL         true: every agent to the profile's local model, whatever the settings say, for unattended runs
+ *     JUDGEMENTS_TOKEN  triage's caller token, which every judgement must carry; without it, every judgement is 401
  *     PORT              default 8080
  *     DATABASE_URL, or the PG* variables, for the store
  */
@@ -31,6 +32,23 @@ export interface GatewayConfig {
   anthropicUrl: string | undefined;
   localModelsUrl: string;
   allLocal: boolean;
+  judgementsToken: string | undefined;
+}
+
+/** `make judgements-token` makes 64 hex characters; anything much shorter could be guessed. */
+const SHORTEST_TOKEN = 32;
+
+/**
+ * Triage's caller token for judgements, as the gateway and triage both read it from `JUDGEMENTS_TOKEN`: undefined when
+ * unset, and refused when it is short enough to guess or holds whitespace, which a header would not carry as written.
+ */
+export function judgementsToken(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (/\s/.test(value)) throw new Error('JUDGEMENTS_TOKEN holds whitespace: make one with openssl rand -hex 32.');
+  if (value.length < SHORTEST_TOKEN) {
+    throw new Error(`JUDGEMENTS_TOKEN is under ${SHORTEST_TOKEN} characters: make one with openssl rand -hex 32.`);
+  }
+  return value;
 }
 
 const oneOf = <T extends string>(name: string, value: string, allowed: readonly T[]): T => {
@@ -54,6 +72,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
     anthropicUrl: env.ANTHROPIC_URL || undefined,
     localModelsUrl: env.LOCAL_MODELS_URL || 'http://127.0.0.1:1234',
     allLocal: env.ALL_LOCAL === 'true',
+    judgementsToken: judgementsToken(env.JUDGEMENTS_TOKEN),
   };
   if (config.allLocal && !MODELS[config.profile].local) {
     throw new Error(`ALL_LOCAL sends every agent to the local model, and the ${config.profile} profile has none.`);

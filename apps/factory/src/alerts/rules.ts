@@ -739,7 +739,8 @@ const byWorker = (selector: string) =>
  * - **pages** when the console or the app stops answering the probes, or the probes say nothing, so neither could be
  *   told; when the line is stuck, carrying a work item past its stage's limit in force, or a lease is held five minutes
  *   past its expiry; when the store stops answering, or nothing can say whether it does; when a pod in `factory`
- *   crash-loops; and when the day's or the month's spend cap is reached;
+ *   crash-loops; when the day's or the month's spend cap is reached; and when the gateway answers a judgement without
+ *   triage's token, which is triage's token not being the gateway's, or another caller asking;
  * - **notifies** when a release ends rolled back or aborted, or in error, and when an Argo CD application stays
  *   Degraded or OutOfSync for half an hour. A dry run's releases, which never shipped, are not counted.
  *
@@ -858,6 +859,18 @@ export function factoryRules(): Rule[] {
         summary: "The {{ $labels.cap }}'s spend cap is reached",
         description:
           'The gateway refuses every model call until the cap clears, when its window ends or you raise it in the console, and the line starts no step meanwhile.',
+      },
+    },
+    {
+      alert: 'JudgementsUnauthorized',
+      // The highest of any gateway's, so another can only page Martin more, never less.
+      expr: `max(increase(gateway_judgements_unauthorized_total{${METRICS_FROM_THE_GATEWAY}}[${RECENT}])) > 0`,
+      ...health,
+      labels: { level: LEVELS.page },
+      annotations: {
+        summary: "A judgement came without triage's token",
+        description:
+          "The gateway answered a judgement 401. If triage's log says the gateway refused its token, triage judges no report until it has the gateway's: run make judgements-token. If not, something else in the cluster asked Jev, which only triage may.",
       },
     },
     {

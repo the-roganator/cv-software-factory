@@ -49,7 +49,7 @@ secret = $(call namespace,$(1)) && \
 	{ $(KUBECTL) -n $(1) get secret $(2) >/dev/null 2>&1 || $(KUBECTL) -n $(1) create secret generic $(2) $(3); }
 
 .DEFAULT_GOAL := help
-.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
+.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -79,6 +79,7 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory scoreboard-secrets
 	@$(MAKE) --no-print-directory share-key
 	@$(MAKE) --no-print-directory refusal-key
+	@$(MAKE) --no-print-directory judgements-token
 	@$(call secret,telemetry,grafana-admin,--from-literal=admin-user=admin --from-literal=admin-password="$$(openssl rand -hex 24)")
 	@$(MAKE) --no-print-directory local-tls
 	sed 's|targetRevision: main|targetRevision: $(REVISION)|' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
@@ -222,6 +223,23 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 	elif [ "$$was" != "$$public" ]; then \
 		$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=line --ignore-not-found >/dev/null && \
 		echo "  refusal-key was missing or not the GitHub worker's, so the line starts again with the right one."; fi
+
+# Triage's caller token for the gateway's judgements (docs/COMPONENTS/LLM-GATEWAY.md#judgements): 32 random bytes in hex,
+# in the Secret judgements-token in `factory`, which only triage and the gateway name, through stdin and never a file or
+# a command line. Made once, and made again only when the Secret holds no token this target would make (none, or one
+# shorter than 32 hex characters); any failure to read it stops here, and keeps it. Both read it when they start, so a
+# new one restarts both: triage needs it to start, and the gateway answers every judgement 401 until it has it.
+# Restarting the gateway cuts any agent's call in flight; it happens only when the token is made.
+judgements-token: ## Give triage and the gateway the token judgements take, made once
+	@$(call namespace,factory)
+	@held="$$($(KUBECTL) -n factory get secret judgements-token -o jsonpath='{.data.token}' --ignore-not-found)" || exit 1; \
+	bytes="$$(printf %s "$$held" | base64 -d | wc -c)" && others="$$(printf %s "$$held" | base64 -d | tr -d 0-9a-f | wc -c)" || exit 1; \
+	if [ "$$bytes" -lt 32 ] || [ "$$others" -ne 0 ]; then \
+		token="$$(openssl rand -hex 32)" && printf %s "$$token" | \
+			$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
+			$(KUBECTL) apply -f - >/dev/null && \
+		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (gateway,triage)' --ignore-not-found >/dev/null && \
+		echo "  Triage and the gateway have a new judgements token, so triage's judgements are taken and no one else's."; fi
 
 # A password for each worker's own role in the store, in a Secret of its own, made once: the migrate Job sets each role's
 # password from it as Argo CD syncs. Each goes through stdin, never on a command line. On a cluster made before the

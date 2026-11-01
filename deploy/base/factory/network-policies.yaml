@@ -262,9 +262,10 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
 ---
-# The gateway is called by triage and by runners' agent pods, and may leave the cluster for its providers: TypeSafe and
-# Anthropic, over TLS. Addresses inside the cluster, on the local network and of the host are excepted, so this opens the
-# internet and nothing else; the local profile adds LM Studio on the host (deploy/overlays/local/local-models.yaml).
+# The gateway is called by triage and by runners' agent pods, on one port: judgements take triage's token, and agents'
+# calls a job token (docs/COMPONENTS/LLM-GATEWAY.md). It may leave the cluster for its providers: TypeSafe and Anthropic,
+# over TLS. Addresses inside the cluster, on the local network and of the host are excepted, so this opens the internet
+# and nothing else; the local profile adds LM Studio on the host (deploy/overlays/local/local-models.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

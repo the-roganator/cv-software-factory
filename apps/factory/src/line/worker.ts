@@ -1339,12 +1339,14 @@ export class Line {
         and opener.payload->>'sense' = ${first.sense} and opener.payload->>'symptom' = ${first.symptom}
         and ${lastEnd(sql, 't.work_item')} is distinct from 'work-item.closed'
         and not exists (select 1 from line l where l.work_item = t.work_item)
-      order by t.seq limit ${BESIDE_A_FIX}`;
+      order by t.seq limit ${BESIDE_A_FIX * 5}`;
     const stable = { release: promotion.release, version: promotion.version, due: true };
+    let looked = 0;
     for (const { work_item: other } of rows) {
-      if (signal.aborted) return;
+      if (signal.aborted || looked >= BESIDE_A_FIX) return;
       const before = fold((await this.#events(other)).events);
       if (!atTake(before) || !lookDue(before, stable)) continue;
+      looked += 1;
       this.#beside.add(other);
       try {
         await inSpan('recheck', { [A.workItem]: other }, () => this.#recheck(other, 'fix', before, signal));
@@ -1391,29 +1393,37 @@ export class Line {
 
   /**
    * What a look again at `promotion` credits: the work items, but this one, carried by every real release promoted
-   * after the ticket's signal was first recorded on the version it was last seen on, up to and with that one, oldest first, each with the pull request it
-   * merged, and the version the signal was last seen on. Its own release, if it had one, carried its fix: not another's.
+   * since the version the ticket's signal was last seen on became the stable one, up to and with that one, oldest
+   * first, each with the pull request it merged, and that version. It goes by the versions, not by when triage
+   * recorded the signal, which may be late: after a promotion, on the version before it. A version the line never
+   * saw promoted counts from the first release that replaced it, or, with none, from the first signal on it. Its own release, if it had one, carried its fix: not another's.
    */
   async #carriedSince(
     workItem: string,
     promotion: Promotion,
   ): Promise<Pick<PayloadOf<'signal.rechecked'>, 'carried' | 'since' | 'merged'>> {
     const { sql } = this.#o;
-    // From the first signal on the version last seen: triage records a signal late, on the version before a
-    // promotion, which says nothing of the releases since that version.
-    const [seen] = await sql<{ seq: string; version: string }[]>`
+    const [seen] = await sql<{ version: string; from: string }[]>`
       with last as (
         select payload->>'version' as version from events
         where work_item = ${workItem} and type = 'signal.received' order by seq desc limit 1
       )
-      select min(e.seq)::text as seq, last.version from events e join last on e.payload->>'version' = last.version
-      where e.work_item = ${workItem} and e.type = 'signal.received'
-      group by last.version`;
+      select last.version, coalesce(
+        (select max(p.seq) from events p
+         where p.type = 'release.promoted' and (p.payload->>'dryRun')::boolean is not true and p.seq <= ${promotion.seq}
+           and (starts_with(p.payload->>'version', last.version) or starts_with(last.version, p.payload->>'version'))),
+        (select min(p.seq) - 1 from events p
+         where p.type = 'release.promoted' and (p.payload->>'dryRun')::boolean is not true and p.seq <= ${promotion.seq}
+           and (starts_with(p.payload->>'previous', last.version) or starts_with(last.version, p.payload->>'previous'))),
+        (select min(e.seq) from events e
+         where e.work_item = ${workItem} and e.type = 'signal.received' and e.payload->>'version' = last.version)
+      )::text as from
+      from last`;
     const rows = await sql<{ work_item: string; pull_request: number | null }[]>`
       with releases as (
         select distinct payload->>'release' as release from events
         where type = 'release.promoted' and (payload->>'dryRun')::boolean is not true
-          and seq > ${seen?.seq ?? '0'} and seq <= ${promotion.seq}
+          and seq > ${seen?.from ?? '0'} and seq <= ${promotion.seq}
       ), carried as (
         select distinct s.work_item from events s join releases r on s.payload->>'release' = r.release
         where s.type = 'release.started' and s.work_item is not null and s.work_item <> ${workItem}
@@ -2129,7 +2139,7 @@ const CLEARED_ON_LOOK: Record<PayloadOf<'signal.rechecked'>['for'], string> = {
   fix: 'Verified beside another work item’s fix, and closed',
 };
 
-/** The most open tickets the sense looks at again beside one verified fix. */
+/** The most open tickets the sense looks at again beside one verified fix, of five times as many it reads. */
 const BESIDE_A_FIX = 10;
 
 /** A ticket the line has not taken, as closing it reads it: no row, so no issue, step or pull request. */

@@ -626,6 +626,16 @@ describe('an open ticket a release since already fixed', () => {
     ]);
   });
 
+  it('credits the fix to a ticket whose only signal triage recorded after the release, on the version before', async () => {
+    const { line: it } = line(new FakeProbes(CLEARED));
+    const fixer = await fixed();
+    const ticket = await ticketed('/products');
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([
+      { for: 'take', outcome: 'cleared', since: OLD, carried: [fixer] },
+    ]);
+  });
+
   it('goes on to Plan at once when the sense cannot tell, unsure', async () => {
     const probes = new FakeProbes({ outcome: 'unsure', version: NEW, runs: ['errored'] } as unknown as VerifyAnswer);
     const { line: it, github } = line(probes);

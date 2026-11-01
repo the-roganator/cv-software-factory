@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { protectedWords } from '../../src/github/paths.ts';
-import { type CoderInput, coder, coderInputAfterRefusal, fenceFor } from '../../src/line/agents/coder.ts';
+import { type CoderInput, coder, coderInputAfterRefusal } from '../../src/line/agents/coder.ts';
 import { FIXTURES } from '../../src/line/bench/fixtures.ts';
 
 const input: CoderInput =
@@ -272,14 +272,6 @@ describe('the coder', () => {
     );
     const back = coderInputAfterRefusal({ ...input, answer: 'Use the money helper' }, FENCED, 's');
     expect(coder.prompt(back)).toContain('Martin answered: Use the money helper');
-  });
-
-  it('fences its patch to the scope and to the protected paths it was given', () => {
-    const patch = (path: string) =>
-      `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new\n`;
-    expect(fenceFor(patch('src/money.ts'), input).ok).toBe(true);
-    const owned = fenceFor(patch('src/money.ts'), { ...input, protectedPaths: ['src/money.ts'] });
-    expect(owned).toMatchObject({ ok: false, outside: ['src/money.ts'] });
   });
 
   describe('for an improvement', () => {

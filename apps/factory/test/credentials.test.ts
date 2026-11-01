@@ -9,7 +9,7 @@ import { type Manifest, rendered } from './deploy.ts';
  * come under its provider's variable name, from any Secret or written in. Both are recognised by name, so a key under a
  * name of no provider's is not seen here. No role deploy/ makes may read Secrets (scoreboard-fences.test.ts), so a pod
  * cannot read a key it does not name. The runners' pods, which the line makes as it runs, are tested in
- * runners.test.ts.
+ * proofs/one-gateway.runners.test.ts.
  */
 interface Container {
   name: string;

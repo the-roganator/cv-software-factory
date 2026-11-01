@@ -25,7 +25,10 @@ import {
   SHA,
 } from './fake.ts';
 
-/** A guard for which every issue and pull request is the App's, as `issues.test.ts` tests the guard itself. */
+/**
+ * A guard for which every issue and pull request is the App's, as `proofs/public-hostile.issues.test.ts` tests the
+ * guard itself.
+ */
 const appsOwn = () => new IssueGuard({ openedBy: async () => ({ by: APP_USER, pullRequest: false }) });
 /** GitHub's answer for an issue the App opened, as the guard reads it. */
 const BY_APP = { user: { id: APP_USER } };

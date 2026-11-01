@@ -35,6 +35,19 @@
 /scripts/merge-decisions.test.ts         @mrogan
 /scripts/review-gate.test.ts             @mrogan
 /scripts/workflows.test.ts               @mrogan
+# and the helpers they import from the test folders, which could make a proof hold of itself
+/apps/factory/test/deploy.ts                    @mrogan
+/apps/factory/test/runners-harness.ts           @mrogan
+/apps/factory/test/settings-events.ts           @mrogan
+/apps/factory/test/gateway/agents-harness.ts    @mrogan
+/apps/factory/test/gateway/judge-harness.ts     @mrogan
+/apps/factory/test/gateway/helpers.ts           @mrogan
+/apps/factory/test/github/fake.ts               @mrogan
+/apps/factory/test/github/issues-harness.ts     @mrogan
+/apps/factory/test/line/fakes.ts                @mrogan
+/apps/factory/test/line/harness.ts              @mrogan
+/packages/store/test/database.ts                @mrogan
+/packages/store/test/postgres.ts                @mrogan
 
 # Intent, specification and reference material
 /docs/INTENT.md              @mrogan

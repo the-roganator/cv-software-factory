@@ -3,7 +3,7 @@
  * attack against one guardrail.
  */
 import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
-import { matchesGlob } from 'node:path';
+import { matchesGlob, posix } from 'node:path';
 import { GUARDRAIL_COUNT } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -25,6 +25,45 @@ import { type Context, ORDER, PRODUCTION_WRITES, TAKERS } from '../src/guardrail
 const SPEC = new URL('../../../docs/SPECIFICATION.md', import.meta.url);
 const ROOT = new URL('../../../', import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, ROOT), 'utf-8');
+
+/**
+ * CODEOWNERS' entries, each its path and its owners. As GitHub reads it, the last entry that matches a path names its
+ * owners; each is read as the scope fence reads it, which is GitHub's reading of an entry from the root with no `?`, as
+ * a test below holds every entry to.
+ */
+const CODEOWNERS = read('.github/CODEOWNERS')
+  .split('\n')
+  .map((line) => line.replace(/#.*/, '').trim().split(/\s+/))
+  .filter(([pattern]) => pattern);
+const ownersOf = (file: string) =>
+  CODEOWNERS.findLast(([pattern]) => inScope(file, ownedPaths(pattern ?? '')))?.slice(1) ?? [];
+
+/** The folders whose files only the tests run: what a proof's tests reach there could make a proof hold of itself. */
+const TEST_FOLDERS = [/^apps\/[^/]+\/test\//, /^packages\/[^/]+\/test\//, /^scripts\/.*\.test\.ts$/];
+
+const readIfThere = (file: string) => (existsSync(new URL(file, ROOT)) ? read(file) : undefined);
+
+/**
+ * The files a proof's tests reach in the test folders, by their imports and re-exports of values, from the root: the
+ * starts, then each file found, in the order found. A type-only import runs nothing, and the code under test, outside
+ * those folders, is what the proof is of.
+ */
+function reachedFrom(starts: readonly string[], source: (file: string) => string | undefined): string[] {
+  const reached = new Set<string>();
+  const queue = [...starts];
+  for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+    const text = reached.has(file) ? undefined : source(file);
+    if (text === undefined) continue;
+    reached.add(file);
+    for (const [, type, specifier] of text.matchAll(
+      /\b(?:import|export)\s+(type\s+)?[^'";]*?\bfrom\s+['"](\.[^'"]+)['"]/g,
+    )) {
+      const next = posix.normalize(posix.join(posix.dirname(file), specifier ?? ''));
+      if (!type && TEST_FOLDERS.some((folder) => folder.test(next))) queue.push(next);
+    }
+  }
+  return [...reached];
+}
 
 /** Spec 6's guardrails, by number, as its list writes each. */
 function specified(): Map<number, string> {
@@ -200,21 +239,43 @@ describe('what takes each proof', () => {
     }
   });
 
-  it('reads each proof from CI from tests CODEOWNERS gives Martin, so a change to one is put to him', () => {
-    // As GitHub reads CODEOWNERS: the last entry that matches a path names its owners. Each entry is read as the scope
-    // fence reads it, which is GitHub's reading of an entry from the root with no `?`, as every entry there is.
-    const entries = read('.github/CODEOWNERS')
-      .split('\n')
-      .map((line) => line.replace(/#.*/, '').trim().split(/\s+/))
-      .filter(([pattern]) => pattern);
-    for (const [pattern] of entries) expect(pattern, pattern).toMatch(/^\/[^?]*$/);
-    const ownersOf = (file: string) =>
-      entries.findLast(([pattern]) => inScope(file, ownedPaths(pattern ?? '')))?.slice(1) ?? [];
-    for (const [id, proof] of Object.entries(CI_PROOFS)) {
-      for (const test of proof.tests) expect(ownersOf(test), `${id}: ${test}`).toEqual(['@mrogan']);
-    }
+  it('reads each proof from CI from tests CODEOWNERS gives Martin, and every helper they reach, so a change to one is put to him', () => {
+    for (const [pattern] of CODEOWNERS) expect(pattern, pattern).toMatch(/^\/[^?]*$/);
+    const starts = Object.values(CI_PROOFS).flatMap((proof) => proof.tests);
+    const reached = reachedFrom(starts, readIfThere);
+    for (const file of reached) expect(ownersOf(file), file).toEqual(['@mrogan']);
+    // The proofs' harnesses and fakes are among them, though no proof names them.
+    expect(reached).toEqual(
+      expect.arrayContaining(['apps/factory/test/runners-harness.ts', 'apps/factory/test/line/fakes.ts']),
+    );
     // And this test, which holds them to it; but not a file no entry names.
     expect(ownersOf('apps/factory/test/guardrails.test.ts')).toEqual(['@mrogan']);
     expect(ownersOf('apps/factory/test/no-entry-names-this.test.ts')).toEqual([]);
+  });
+
+  it('follows a proof’s imports through the test folders, and no further', () => {
+    const files: Record<string, string> = {
+      'apps/factory/test/proofs/made-up.test.ts': [
+        "import { helper } from '../made-up-helper.ts';",
+        "import { fence } from '../../src/runners/scope.ts';",
+        "import { listenLocal } from '@software-factory/testing';",
+      ].join('\n'),
+      'apps/factory/test/made-up-helper.ts': [
+        "import type { Shape } from './made-up-types.ts';",
+        "export { database } from '../../../packages/store/test/made-up-store.ts';",
+      ].join('\n'),
+      'packages/store/test/made-up-store.ts': "import { migrate } from '../src/migrate.ts';",
+      'apps/factory/test/made-up-types.ts': '',
+    };
+    const reached = reachedFrom(['apps/factory/test/proofs/made-up.test.ts'], (file) => files[file]);
+    // A helper, and what it re-exports from another test folder, but not a type-only import, the code under test or
+    // a package.
+    expect(reached).toEqual([
+      'apps/factory/test/proofs/made-up.test.ts',
+      'apps/factory/test/made-up-helper.ts',
+      'packages/store/test/made-up-store.ts',
+    ]);
+    // A helper no entry names fails the test above.
+    expect(ownersOf('apps/factory/test/made-up-helper.ts')).toEqual([]);
   });
 });

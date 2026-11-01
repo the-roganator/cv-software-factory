@@ -65,7 +65,9 @@ export const PROOFS = {
     mechanism: 'egress-policy',
   },
   'ci:one-gateway': {
-    for: 'The tests that only the gateway holds a model key, and every model call goes through it.',
+    for:
+      "The tests that only the gateway holds a model provider's key, in every profile's manifests, and that an agent's " +
+      'pod holds its job token in its place and reaches the gateway and the line alone.',
     mechanism: 'ci-tests',
   },
   'ci:spend-caps': {

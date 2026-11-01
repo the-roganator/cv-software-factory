@@ -372,7 +372,7 @@ Then:
 
 - [x] An improvement goes from the "+" to everyone through each stage, its spec approved by Martin before any code, and no worker's role can request one or stage a flag.
 - [x] Verify compared its flag's two sides at the share stage, on the generator's requests alone.
-- [ ] The share stage was refused while a canary was in flight (never yet shown on the cluster: task 25 shows it).
+- [x] The share stage was refused while a canary was in flight, naming the canary: shown at task 25's drill on local images, Martin narrowing a flag to Preview during its canary and trying Share (2026-10-31).
 - [x] Its kill switch turned it off for everyone within seconds, with no deploy or rollback, and the admin service confirmed the app had it; every flag fails off a minute after flagd stops.
 - [x] Neither a visitor nor the app's own code can make the mark or join the share: the mark is ignored through Traefik, a bad, old or missing signature is out of the share, and the flag context is code-owned.
 - [x] The admission refusals for `flags`, `share-key`, the app's routes and its Middlewares are recorded, and the fences' tests hold flagd to reading `featureflags` in its own namespace.
@@ -452,6 +452,7 @@ The review gate becomes the approval-routing check, as "Autonomy (Part C)" decid
 - **The line:** reads the autonomy level and the auto-merge switch (nothing reads them today), and adds its own pull request to the merge queue (`enqueuePullRequest`) only when auto-merge is on, `review` has passed, and the rule that passed it is allowed at the store's level (at Guarded, low-risk or an exact pin; at Lights-out, also Lights-out's), and never a release, an improvement or a work item whose spec carried `out-of-scope`; otherwise the merge is held in Needs you with the gate's reasons and a link to the pull request. It reads the merge queue's own checks, so a failure there is an event and not an unexplained wait (carried), and holds a pull request that conflicts with `main`, saying so (carried). #702, approving a held review, is checked at the first real escalation (carried).
 - **Docs:** spec 4.3 and 6 (Lights-out's rule, and who reads which signal), ADR 0014 amended for the routing rule and the variable, `COMPONENTS/APPROVAL-ROUTING.md`, `GITHUB-APP.md`, and `AGENTS.md` for setting `AUTONOMY`.
 - **Proved,** on the local cluster with GitHub for real: first a soak at Guarded in dry run, the line recording what it would enqueue; then Guarded for real, an untagged fix merging, released and verified with nobody touching it; a risk-tagged fix (a dependency or a loosened test) waiting in Needs you until Martin approves its head, and a push after his approval failing the check; Lights-out once, with the variable, then back. Martin's part is one sitting.
+- **Part C's retrospective,** in this file, as Part A's and Part B's: what was learned, and where each lesson lives.
 
 ### 25. Auto-rollback's switch
 
@@ -493,6 +494,7 @@ Three pull requests, a stack: the rules, the phone's switch, and the admin servi
 - [ ] With auto-rollback off, a failed canary waits for Martin, and switching it off took the passkey again and paged him.
 - [ ] An outside issue gets the polite reply and leads to no work.
 - [ ] The factory's health, releases and spend alert at their levels, and a change by the admin service with no event behind it alerts too.
+- [ ] Part C's retrospective is written in this file, each lesson with its home.
 
 ## Part D: patching
 
@@ -595,9 +597,9 @@ Then each finding open when task 30 lands is fixed or excepted: Dependabot's pul
   - a Critical fix bundled with an unrelated bump;
   - a fix rated Critical by its publisher and High by the scanner.
 - **34. The factory's and the platform's findings.** A finding opens or updates the issue here, with its deadline, and notifies Martin, at task 11's Notify level.
-- **35. The run and its documentation.** At Guarded, a Critical fix for the app from the scan to verified with nobody touching it, and a routine update waiting in Needs you at the merge. `COMPONENTS/` (security scanning, the senses), the spec's senses and gates, and `AGENTS.md` for the scan, the exceptions and the issue.
+- **35. The run and its documentation.** At Guarded, a Critical fix for the app from the scan to verified with nobody touching it, and a routine update waiting in Needs you at the merge. `COMPONENTS/` (security scanning, the senses), the spec's senses and gates, and `AGENTS.md` for the scan, the exceptions and the issue. Part D's retrospective, in this file, as Parts A, B and C's, and the milestone's own after it.
 
-**Done when:** every lockfile, image of ours, third-party image and platform image is scanned every day, a test fails when a deployed image is not, and no finding is past its deadline unexcepted; a security release or fixable vulnerability in what the app runs becomes a ticket within a day of being published, goes down the line ahead of waiting work and is verified in production, merging without Martin when its scans show it fixes a Critical one; a routine update follows behind and waits for him; and a finding in the factory or the platform opens an issue and notifies Martin's phone.
+**Done when:** every lockfile, image of ours, third-party image and platform image is scanned every day, a test fails when a deployed image is not, and no finding is past its deadline unexcepted; a security release or fixable vulnerability in what the app runs becomes a ticket within a day of being published, goes down the line ahead of waiting work and is verified in production, merging without Martin when its scans show it fixes a Critical one; a routine update follows behind and waits for him; a finding in the factory or the platform opens an issue and notifies Martin's phone; and Part D's retrospective and the milestone's are written in this file, each lesson with its home.
 
 ## Exit criteria
 
@@ -657,3 +659,38 @@ Written as Part A's pull requests (#498 to #590) merged, with the fixes its runs
 - Database tests queued behind one migration lock, so a loaded `make check` timed out where CI passed, and workers lost time to it: each run migrates once and gives each test a copy (#586, #588).
 
 **Left open:** Martin's use of the console from a phone waits for a public profile, so that box stays open; the stuck alert is Part C's (task 27).
+
+### Part B
+
+Written after Part B's pull requests (#592 to #707, and the app's from #108) merged, and its last box was shown in Part C. What Part B taught, and where each lesson now lives.
+
+**Learned on the cluster**
+
+- Proving each task on the cluster found what review did not:
+  - flagd took the `FLAGD_PORT` that its Service's links put in its pod for its own `--port`, and read it as 0, so its evaluation service listened on a random port and egress's check that the app cannot reach 8013 proved nothing (`enableServiceLinks: false`, #601; reported upstream as open-feature/flagd#2105).
+  - flagd's readiness follows its first read and never clears, so a watch broken after start leaves it ready, serving the last flags it took. The admin service asks every pod of the app for the revision it holds every 60 seconds, and `FlagsDiffer` and `FlagsNotTaken` alert Martin (task 16; `FEATURE-FLAGS.md` "Readiness", `ALERTING.md`; upstream, open-feature/flagd#2104 and a comment on #2017).
+  - `website` had no default deny, so a pod the app's repository labelled otherwise was open to the whole cluster (#612).
+  - A settings test took its instants from the host's clock, and the Postgres container's runs 0.1 to 4.8 ms ahead of it (#614: the store's clock, as Part A's lesson on time already said).
+  - Verify pictured a flag's pages in light only, so dark mode's pictures off and on were the same (#704: light and dark, always).
+  - #704's own first try found two faults no review had: the console's image did not hold a module it imports at run time, and the line's client refused the probes' new field. `scripts/image-modules.test.ts` now walks every Node image's entry points, and an end-to-end test runs the probes' real check through the line's own client (#704).
+- flagd's own evaluation service puts 15 to 49 of the generator's 101 ids on another side than `@openfeature/flagd-core` 5.0.0, which the app runs in-process. Verify works out the sides with flagd-core, and a recorded fixture holds it to the pinned image (#658; `FEATURE-FLAGS.md` "Which side an id is on").
+- The first real improvement found what the planned proof did not. Task 18's proof, a dry run on Claude, took the happy path. Dark mode (work item #1082, task 19) found that the coder could not ask for a file outside its scope (#692: it names the files it needs, and the line holds `scope` at once), and that a replan planned from the pull request's head and renamed the flag (#698: it plans from the base, told its last spec and why it came back). Bench fixtures for a replan came with #700.
+- Every runner's prepare failed from #664's image, which held only this repository's pnpm, so corepack tried to fetch the app's own pin into a read-only home, until task 18's proof ran one; nothing had said so in between, since the line took no work. The runner now runs this repository's pnpm, checked against `mise.lock`, and its prepare logs both versions (#684; `AGENT-RUNNERS.md`). A step that fails twice holds `failures`, which notifies Martin (`ALERTING.md` "Holds"), but only once the line runs one: nothing runs a step on a runner image as it is pinned.
+- A proof that needs a coincidence slips. Share refused while a canary is in flight needed an app release while a flag was at Preview; it was missed at work item #1009's canary, carried to Part C, and shown only once task 25's drill made the canary (2026-10-31). A done-when that needs an event the factory does not control now names the drill that makes it (`docs/PLAN/README.md`).
+
+**How the run worked**
+
+- Review came before the try. #692 and #698 each had a full review before the line ran them, and the replan's fault showed only once #692 was pinned. Work that changes what runs on the cluster is now built to branches, tried on local images, and reviewed once, after (`/implement`'s "Try before review", #700).
+- Pull requests went through several rounds of review (#634 four; #642, #692 and app #108 three each), with meta-reviews after they were open, while task 17's stack merged with no meta-review, the session having paused. Review is now answered across a stack once, its findings gathered and each fixed in its branch in one pass (`/implement`'s Stacks, #721).
+- Before stacks, dependent pull requests were retargeted as each merged, and conflicted (#642, #644, #646). Task 17's four merged as one stack (#657 to #660), and stacks are now how dependent work goes (ADR 0014, `AGENTS.md`).
+- Designs drawn in a session with Martin, in one pull request whose merge is his agreement (task 15, #635), were quick, and tasks 16 and 18 were built from them. Part C's were made the same way (#739).
+- From 2026-10-25 Martin tried only what needs a person, a passkey above all, in one short sitting, and the orchestrator ran and reported the checks on the cluster itself (`/implement`'s "Try before review").
+- The run kept its state in files in `scratch/`, which grew too big to read again each session. Part C keeps it on a board outside this repository.
+- "Finish, don't file" had no place for what was not the task's own. Part B ended with items carried into Part C, which #720 placed each in its task, marked "carried", and four left to Martin to place as issues (#548, #597, #628, #631).
+- The console's JavaScript budget was raised nine times in Part B, from 109.7 to 128.0 kB, each "Martin's call at merge", and has risen since (`apps/console/budget.json`). Why it grows, and what would bring it down, are #751 to #755: a budget that counts code the first view never loads, names kept in several places, eight ways of writing to the admin service, stylesheets that restate the same recipes, and every view rebuilt on each tick.
+- The orchestrator once tried to add a pull request to the merge queue (app #108). Merging is Martin's (`AGENTS.md`).
+- An earlier try's `kubectl set env` without `-c` wrote every container, the line's `runner-image` init container among them, and left fields Argo CD never removes, which failed `make admission-ready`. Each try keeps an undo list, and every `set env` names its container (`try-the-line`, #601).
+
+**What Part C changed because of it:** it tries before review and answers a stack's review in one pass; its designs were agreed in one pull request before any was built (#739); its state is on the board; and the share stage's refusal was shown at a drill's canary rather than waited for.
+
+**Left open:** none of Part B's boxes. What it carried is in Part C's tasks (#720). Nothing yet runs a step on a newly pinned runner image, so a broken one is found only when the line next takes work.

@@ -80,7 +80,7 @@ A worker skips what needs an image pinned first, a migration with an ordered rol
 - **A proof or drill on the local cluster**: run with `try-the-line`, time-boxed, on the built branches' images before the pull requests open; one that needs the deployed version runs after the deploy, and says why. Log what it showed; until then it is in the summary.
 - **Trying it with Martin**: as soon as the work runs on the cluster (synced and healthy), not all at the end, give him a short list of what to try and what to look for, a few at a time. A fault in the item goes back to it; anything else is held to [Finishing the work](#finishing-the-work-not-filing-it).
 
-A pull request of your own gets everything a worker's does; brief a worker for it when you can: the reviews, by fresh sub-agents invoking the skills as [worker.md](worker.md)'s step 4 says, `/visual-pr`, Copilot's threads and summary, and `verify.sh`. Small is no reason to skip a step.
+A pull request of your own gets everything a worker's does; brief a worker for it when you can: the reviews, by fresh sub-agents invoking the skills as [worker.md](worker.md#steps)'s step 4 says, `/visual-pr`, Copilot's threads and summary, and `verify.sh`. Small is no reason to skip a step.
 
 ## After the last work item
 

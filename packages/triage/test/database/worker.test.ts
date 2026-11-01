@@ -1277,6 +1277,17 @@ describe('triage', () => {
       expect(await triage().takeOne()).toBe('evidence');
     });
 
+    it('counts a ticket the sense opened and then found again in another version as one problem', async () => {
+      await liveAnHourAgo('a07efd8');
+      await sendSignal(database.owner, page(1));
+      expect(await triage().takeOne()).toBe('opened');
+      // With the ticket on /burst/1 once, these are five problems: as many as a sense opens without a hold.
+      await sendSignal(database.owner, page(2));
+      await sendSignal(database.owner, page(1, { version: 'a07efd8' }));
+      for (const n of [3, 4, 5]) await sendSignal(database.owner, page(n));
+      expect(await takeAll()).toEqual(['opened', 'evidence', 'opened', 'opened', 'opened']);
+    });
+
     it('lets a release that restores a version explain the sightings in it', async () => {
       await openOn(every);
       await liveAnHourAgo('e05efd8');

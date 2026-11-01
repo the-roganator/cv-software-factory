@@ -548,7 +548,8 @@ export class Triage {
 
   /**
    * What a sense's signal makes, given the open tickets, with its events' ids from `seed`. One taken from the inbox
-   * (`taken`) may be held instead of opening or reopening a ticket; one held, as Martin lets it through, may not.
+   * (`taken`) may be held instead of opening or reopening a ticket, or adding to an open one; one held, as Martin lets
+   * it through, may not.
    */
   async #sense(signal: Seen, seed: string, tickets: Ticket[], taken?: Taken): Promise<Made> {
     const { sql } = this.#o;
@@ -660,13 +661,14 @@ export class Triage {
       if (!live.has(version)) live.set(version, await liveSince(sql, version));
       return explainedBy(live.get(version), at);
     };
-    let opened = 0;
-    // The problems found again on open tickets, and the new ones waiting, each fingerprint once.
+    // The tickets the sense opened, the problems found again on open tickets, and the new ones waiting, each fingerprint
+    // once: a ticket it opened and then found again in another version is one problem.
+    const opened = new Set<string>();
     const again = new Set<string>();
     const fresh = new Map<string, { route: string; class: SymptomClass }>();
     for (const row of near) {
       const found = { route: row.route, class: row.symptom };
-      if (row.outcome === 'opened') opened++;
+      if (row.outcome === 'opened') opened.add(row.fingerprint);
       else if (row.outcome === 'evidence') {
         if (!(await explains(row.version, row.received_at))) again.add(row.fingerprint);
       } else {
@@ -683,11 +685,11 @@ export class Triage {
       }
     }
     // A waiting signal that a verified ticket has exactly would reopen it, which never counts.
-    let ahead = again.size;
+    let ahead = [...again].filter((key) => !opened.has(key)).length;
     for (const [key, found] of fresh) {
-      if (!again.has(key) && !(await verifiedTicket(sql, found, signal.sense))) ahead++;
+      if (!again.has(key) && !opened.has(key) && !(await verifiedTicket(sql, found, signal.sense))) ahead++;
     }
-    const found = 1 + opened + ahead;
+    const found = 1 + opened.size + ahead;
     if (found <= BURST.tickets) return undefined;
     const workItem = await nextWorkItem(sql);
     return { outcome: 'held', workItem, events: burstEvents(signal, taken.id, workItem, found, now) };
@@ -714,7 +716,7 @@ const explainedBy = (live: Date | undefined, at: Date) =>
 
 /**
  * When a version of the app last went live: when its canary started, when it was promoted, or when a release rolled
- * back or aborted restored it, as the line recorded; or, for a release the line did not watch, when a sense first saw
+ * back, aborted or errored restored it, as the line recorded; or, for a release the line did not watch, when a sense first saw
  * it, if that was later.
  */
 async function liveSince(sql: Sql, version: string): Promise<Date | undefined> {
@@ -722,7 +724,8 @@ async function liveSince(sql: Sql, version: string): Promise<Date | undefined> {
     select greatest(
       (select max(ts) from events
        where (type in ('release.started', 'release.promoted') and payload->>'version' = ${version})
-          or (type in ('release.rolled-back', 'release.aborted') and payload->>'restored' = ${version})),
+          or (type in ('release.rolled-back', 'release.aborted', 'release.errored')
+              and payload->>'restored' = ${version})),
       least((select min(received_at) from inbox where signal->>'version' = ${version}),
             (select min(ts) from events where type = 'signal.received' and payload->>'version' = ${version}))
     ) as live`;

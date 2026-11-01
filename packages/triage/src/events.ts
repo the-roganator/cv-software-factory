@@ -240,7 +240,7 @@ export function burstEvents(signal: Seen, signalId: string, workItem: string, fo
     stage: 'triage',
     kind: 'held',
     cause: 'burst',
-    reason: `${sense} found ${found} new problems within ${BURST.minutes} minutes, more than ${BURST.tickets} at once, open tickets' seen again too: it may be what it reads that is at fault. None reaches a ticket until Martin looks. Approving opens or adds to a ticket for each; rejecting closes them all.`,
+    reason: `${sense} found ${found} new problems within ${BURST.minutes} minutes, more than ${BURST.tickets} at once, counting open tickets' problems it saw again: it may be what it reads that is at fault. None reaches a ticket until Martin looks. Approving opens a ticket or adds to one for each; rejecting closes them all.`,
   });
   return summarise(writer, {
     title,

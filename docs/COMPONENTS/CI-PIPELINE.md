@@ -14,7 +14,8 @@ Deterministic gates (spec 4.1). Part of the [GitHub plane](README.md#github-plan
 - the manifests rendered;
 - the app's gates ([shared gates](SHARED-GATES.md)), the journeys among them;
 - the console's browser tests, in the pinned Playwright image, its visual snapshots among them, and its first meaningful view timed, within two seconds on a throttled phone, on a runner of its own;
-- ZAP's baseline scan of the console signed in as Martin.
+- ZAP's baseline scan of the console signed in as Martin;
+- each image built, and a runner's prepare step run in the runner image ([agent runners](AGENT-RUNNERS.md#trying-a-runner)).
 
 ## ZAP's baseline scan
 

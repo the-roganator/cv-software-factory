@@ -36,7 +36,7 @@ What it lacks is telemetry: OpenTelemetry instruments `pg` and not postgres.js, 
 | Martin's command line (`factory_operator`) | Append any event, his commands among them, and read them: `make stop-the-line`, `make start-the-line` and `make samples` |
 | The admin service's (`factory_admin`) | Append Martin's commands and nothing else but the opening of an improvement he asks for, numbered from the work items' sequence, read the full events, and keep the tables of signing in ([admin service](ADMIN-SERVICE.md)) |
 | The enrolment's (`factory_enrol`) | Add an enrolment code, revoke passkeys and their sessions, and append the revocations; nothing else, and of the events it reads only those |
-| The proofs' (`factory_proofs`) | Append a guardrail's proof (`guardrail.proved`) and nothing else, for `make guardrails`; read its own proofs, Martin's stops and starts of the line, the gateway's refusals, the line's record of a canary aborted or rolled back, and when each work item was taken onto the line, each from the role that alone appends it, and nothing more |
+| The proofs' (`factory_proofs`) | Append a guardrail's proof (`guardrail.proved`) and nothing else, for `make guardrails`; read its own proofs, Martin's stops and starts of the line, the line's record of a canary aborted or rolled back, and when each work item was taken onto the line, each from the role that alone appends it, and nothing more |
 | The console's reader | See public views only |
 | The Postgres exporter's reader | Read the statistics any role may read, and nothing of the store |
 

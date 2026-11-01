@@ -199,9 +199,9 @@ export const STORE_GRANTS = {
     for:
       "`make guardrails`, from the Mac: appends a guardrail's proof (`guardrail.proved`) and nothing else, which no " +
       'other role may append (0043_guardrail-proofs.sql). It reads only what its proofs read, each from the role that ' +
-      "alone appends it: its own proofs; Martin's stops and starts of the line; the gateway's refusals; the line's " +
-      'record of a canary aborted or rolled back; and when each work item was taken onto the line. No pod holds its ' +
-      'password but the migrate Job, which sets it.',
+      "alone appends it: its own proofs; Martin's stops and starts of the line; the line's record of a canary aborted " +
+      'or rolled back; and when each work item was taken onto the line. It reads no refusal, as no proof reads one ' +
+      '(0044_proofs-read-no-refusals.sql). No pod holds its password but the migrate Job, which sets it.',
     on: { events: ['select', 'insert'], store: ['select', 'insert'], line: ['select (work_item, taken_at)'] },
     rows: {
       events: {
@@ -209,8 +209,6 @@ export const STORE_GRANTS = {
           "((type = 'guardrail.proved') AND (appended_by = 'factory_proofs')) OR " +
           "((type in ('line.stopped', 'line.started')) AND " +
           "(appended_by in ('factory_admin', 'factory_operator', 'factory_enrol'))) OR " +
-          "((type = 'action.refused') AND ((payload ->> 'mechanism') = 'gateway') AND " +
-          "(appended_by = 'factory_gateway')) OR " +
           "((type in ('release.aborted', 'release.rolled-back')) AND (appended_by = 'factory_line'))",
         insert: "type = 'guardrail.proved'",
       },

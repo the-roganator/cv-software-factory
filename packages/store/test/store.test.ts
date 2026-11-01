@@ -115,6 +115,7 @@ describe('migrations', () => {
       { version: 41, name: 'refusals-as-they-read' },
       { version: 42, name: 'refusals-before-guardrails' },
       { version: 43, name: 'guardrail-proofs' },
+      { version: 44, name: 'proofs-read-no-refusals' },
     ]);
   });
 });

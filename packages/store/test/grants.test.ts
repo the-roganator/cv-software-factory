@@ -646,11 +646,12 @@ describe("a guardrail's proof", () => {
         await appended(real.proofs, 'guardrail.proved'),
         await appended(real.operator, 'line.stopped'),
         await appended(real.admin, 'line.started'),
-        await appended(real.as.gateway, 'action.refused', refused('gateway')),
         await appended(real.as.line, 'release.aborted'),
         await appended(real.as.line, 'release.rolled-back'),
       ];
-      // What no proof reads, and what another role appended that no proof trusts.
+      // What no proof reads, and what another role appended that no proof trusts. No proof reads a refusal, the
+      // gateway's included: its refusal of a stopped line is proved from CI.
+      await appended(real.as.gateway, 'action.refused', refused('gateway'));
       await appended(real.as.line, 'action.refused', refused('scope-fence'));
       await appended(real.as.triage, 'work-item.summarised');
       await appended(real.as.line, 'release.started');
@@ -659,6 +660,8 @@ describe("a guardrail's proof", () => {
       await appended(real.operator, 'work-item.summarised');
       const seen = await real.proofs<{ seq: string }[]>`select seq from events order by seq`;
       expect(seen.map((row) => row.seq)).toEqual(read);
+      // As the line above shows, said plainly: the role sees no refusal at all.
+      expect(await real.proofs`select seq from events where type = 'action.refused'`).toEqual([]);
       // When each work item was taken onto the line, and nothing more of it, nor of any other table.
       await real.as.line`insert into line (work_item, stage) values ('1001', 'plan')`;
       expect(await real.proofs`select work_item from line where taken_at <= now()`).toEqual([{ work_item: '1001' }]);

@@ -25,10 +25,9 @@ import {
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
-import { APP_REPO, clock, duration, money, shortVersion } from '../format.ts';
+import { APP_REPO, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
-import { deployWaitsForMartin, type ItemState } from './items.ts';
-import { startOfDay } from './line.ts';
+import { deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
 
 /** The one piece of evidence that explains a hold: a check's or the fence's own output, a question, or words. */
@@ -125,7 +124,17 @@ const STAGE_NAME: Record<Stage, string> = {
 /** The agent that works at a stage, for a question it asks. */
 const ASKS: Partial<Record<Stage, string>> = { plan: 'planner', build: 'coder', review: 'reviewer' };
 
-/** What a hold is, in Martin's words, for its card's kicker. */
+/** The signal that opened a work item, which says who opened it. */
+const openerOf = (item: ItemState) =>
+  item.events.find((event) => event.type === 'signal.received')?.payload as PayloadOf<'signal.received'> | undefined;
+
+/**
+ * What a work item's hold is, in Martin's words: its card's kicker, and the note on its row at a station, so the two
+ * say the same thing. Closed over every cause, so a new one does not type-check until it has its words.
+ */
+export const holdKicker = (item: ItemState, hold: Hold) =>
+  kickerOf(hold.cause, hold.stage, openerOf(item)?.sense, item.kind === 'improvement');
+
 function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, improvement: boolean): string {
   switch (cause) {
     case 'suggestion':
@@ -368,9 +377,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       const hold = item.hold;
       // A canary's hold is the release's card, drawn from its events once, not one per work item it carries.
       if (!hold || item.closedAt !== undefined || hold.cause === 'canary') return [];
-      const opener = item.events.find((event) => event.type === 'signal.received')?.payload as
-        | PayloadOf<'signal.received'>
-        | undefined;
+      const opener = openerOf(item);
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(hold.cause);
       // Approving an improvement's spec sets the line building something new, so it asks for the passkey too, by the
       // work item's kind, as the admin service decides.
@@ -387,7 +394,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           kicker:
             hold.cause === 'deploy' && !deployWaitsForMartin(item)
               ? deployWords(item.deploy).kicker
-              : kickerOf(hold.cause, hold.stage, opener?.sense, improvement),
+              : holdKicker(item, hold),
           stage: hold.stage,
           waited: waited(t - since),
           since,

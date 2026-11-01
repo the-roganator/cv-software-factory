@@ -5,9 +5,11 @@
 import type { Autonomy, PayloadOf, PublicEvent, Sense, Stage } from '@software-factory/events';
 import { isSense, returnWords, SENSES, STAGES } from '@software-factory/events';
 import { DEFAULT_CONTROLS } from '../../../../../policy/line.ts';
+import { shortVersion, startOfDay } from '../format.ts';
 import { deployWords, endedSinceMerge } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
-import { clearanceWords, type ItemState } from './items.ts';
+import type { ItemState } from './items.ts';
+import { holdKicker } from './needs.ts';
 import { endedWords, inFlight, type Release, SIGNALLED, stopWait, stopWords } from './release.ts';
 
 export type Status = 'idle' | 'working' | 'returning' | 'passing' | 'blocked' | 'failed';
@@ -237,13 +239,6 @@ const NOUNS: Record<Stage, [one: string, many: string]> = {
 
 const count = (n: number, [one, many]: [string, string]) => `${n} ${n === 1 ? one : many}`;
 
-/** The start of the day t falls in, where the viewer is. */
-export function startOfDay(t: number): number {
-  const day = new Date(t);
-  day.setHours(0, 0, 0, 0);
-  return day.getTime();
-}
-
 /**
  * A station's state at t, by the first rule that matches (the design system's README, "From events to a station's
  * status"), and its beacon. Under Stop the line, every station needs you.
@@ -365,13 +360,20 @@ const deploying = (item: ItemState) => item.outcome === 'deploying';
 
 /**
  * A row's note for an item in a stage now: what it waits for, or the last thing that happened to it there. `behind`
- * is whether open tickets wait at Plan, which an improvement Martin asked for waits behind.
+ * is whether open tickets wait at Plan, which an improvement Martin asked for waits behind. A held item whose signal a
+ * look again found cleared says on which version; the sheet says the rest.
  */
 function noteOf(item: ItemState, stage: Stage, behind = false): string {
   const note = holdNote(item, stage, behind);
-  const cleared = clearanceWords(item);
-  return cleared ? `${note}. ${cleared}` : note;
+  const cleared = item.hold && item.cleared;
+  return cleared ? `${note} · cleared on ${shortVersion(cleared.version ?? '')}` : note;
 }
+
+/**
+ * A kicker after "Needs you · ", in lower case but for the one that opens with a station's name: "held by a gate",
+ * "Verify asks you". The line's tests hold that one to its capital.
+ */
+const midSentence = (words: string) => (words.startsWith('Verify') ? words : words[0]?.toLowerCase() + words.slice(1));
 
 /** Whether a work item waits on Martin where it is: a hold, or an improvement's flag waiting for him to widen it. */
 const waitsOnMartin = (item: ItemState) => item.hold !== undefined || item.outcome === 'needs-you';
@@ -396,11 +398,8 @@ function holdNote(item: ItemState, stage: Stage, behind: boolean): string {
     if (!ended.stopped) return 'Needs you · rolled back, waiting for Martin’s retry or next deploy';
     return `Needs you · ${stopWords(ended.stopped)}, ${stopWait(ended.stopped)}`;
   }
-  // Only Martin asks for improvements, so a visitor's suggestion waits for Martin, as does whatever the planner
-  // noticed. A report that became a ticket and is held later, at Gates say, shows that hold's own reason.
-  if (item.hold?.stage === 'triage' && (item.kind === 'visitor-report' || item.kind === 'planner-finding'))
-    return 'Needs you · parked for Martin';
-  if (item.hold) return item.hold.reason;
+  // Every other hold in its card's words, never the agent's own: those are on its sheet and its card.
+  if (item.hold) return `Needs you · ${midSentence(holdKicker(item, item.hold))}`;
   // An improvement out behind its flag, waiting for Martin to widen it.
   const flag = item.outcome === 'needs-you' ? itemFlag(item) : undefined;
   if (flag?.now.stage) return `Needs you · flag at ${STAGE_NAME[flag.now.stage.stage]} · waiting for Martin to widen`;

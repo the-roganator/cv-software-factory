@@ -149,7 +149,7 @@ test.describe('fixing', () => {
     await page.getByRole('button', { name: /^Review:/ }).click();
     const rows = page.getByRole('dialog', { name: 'Review' }).getByRole('button', { name: /^#1323 / });
     await expect(rows).toHaveCount(1);
-    await expect(rows).toHaveAccessibleName(/^#1323 .+: earlier sent back · Review asked for changes.* Open$/);
+    await expect(rows).toHaveAccessibleName(/^#1323 .+: earlier sent back · Needs you · held by review.* Open$/);
     await expect(rows.locator('s')).toHaveText('sent back');
   });
 

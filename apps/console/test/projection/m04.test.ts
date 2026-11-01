@@ -39,7 +39,7 @@ describe('the line, with tickets waiting for the planner', () => {
   it('says Triage needs you from the moment a suggestion is parked', () => {
     expect(station('triage')).toMatchObject({ status: 'blocked', figure: '1 waiting' });
     const row = view.panels.triage.rows.find((r) => r.item === '1008');
-    expect(row).toMatchObject({ note: 'Needs you · parked for Martin', tone: 'attn' });
+    expect(row).toMatchObject({ note: 'Needs you · a visitor suggests', tone: 'attn' });
   });
 
   it('lists what waits in Plan’s panel, and what left Sense’s, newest first by work-item number', () => {
@@ -134,9 +134,9 @@ describe('a report that became a ticket, later on the line', () => {
     ).not.toBe('judgement');
   });
 
-  it('shows a later hold’s own reason, not the park', () => {
+  it('shows the later hold, not the park', () => {
     const row = project(events, AFTERNOON).panels.gates.rows.find((r) => r.item === '1010');
-    expect(row?.note).toBe('A test was removed');
+    expect(row?.note).toBe('Needs you · held by a gate');
   });
 });
 

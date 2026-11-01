@@ -32,9 +32,8 @@ import {
   SETTINGS_STEP_UP,
   STEP_UP,
 } from '../access.ts';
-import { changeWords, clock, dayLabel, modelTitle, money, tokens } from '../format.ts';
+import { changeWords, clock, dayLabel, modelTitle, money, startOfDay, tokens } from '../format.ts';
 import { changeAction } from './controls.ts';
-import { startOfDay } from './line.ts';
 import { SENSE_NAME } from './sheet.ts';
 
 /** An admin action (a person), an agent's or a system's action (the arrows), or a model call (a chip). */

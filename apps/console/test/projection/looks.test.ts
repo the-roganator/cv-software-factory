@@ -81,6 +81,12 @@ describe('a held work item looked at again', () => {
     expect(sheet?.chapters.map((c) => c.label)).toContain('CLEARED');
   });
 
+  it('says on its row only on which version its signal cleared, the rest on its sheet', () => {
+    const item = held('gates').add(40, 'signal.rechecked', 'probe', look('cleared'));
+    const row = project(item.events, item.at(41)).panels.gates.rows.find((r) => r.item === '1');
+    expect(row?.note).toBe('Needs you · held by a gate · cleared on d728dbe');
+  });
+
   it('forgets the clearance once a signal is seen on that version, or a later look sees it', () => {
     const cleared = held('merge').add(40, 'signal.rechecked', 'probe', look('cleared'));
     const again = foldItem(

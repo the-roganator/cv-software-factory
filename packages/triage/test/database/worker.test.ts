@@ -1288,6 +1288,22 @@ describe('triage', () => {
       expect(await takeAll()).toEqual(['opened', 'evidence', 'opened', 'opened', 'opened']);
     });
 
+    it('counts an open ticket on every route found again on several routes as one problem', async () => {
+      const headers = { symptom: 'missing-header', check: 'security headers' } as const;
+      await liveAnHourAgo('f12efd8');
+      await sendSignal(database.owner, page(0, { route: '*', ...headers }));
+      expect(await triage().takeOne()).toBe('opened');
+      await database.owner`update inbox set received_at = received_at - interval '1 hour'`;
+      const [every = ''] = await ticketsOf('*');
+      for (const n of [1, 2, 3, 4, 5, 6]) {
+        await sendSignal(database.owner, page(n, { version: 'f12efd8', ...headers }));
+      }
+      // The first adds its evidence to the ticket; the rest see what it has in that version.
+      expect(await takeAll()).toEqual(['evidence', ...Array(5).fill('counted')]);
+      expect(await ticketsOf('/burst/%')).toEqual([]);
+      expect((await types(every)).filter((type) => type === 'signal.received')).toHaveLength(2);
+    });
+
     /** The line's record of a release, `minutesAgo` before now. */
     const released = (type: 'release.promoted' | 'release.rolled-back', payload: object, minutesAgo: number) =>
       new EventWriter(database.as.line, { kind: 'real', artifacts }).append({

@@ -595,7 +595,7 @@ export class Triage {
     const held =
       taken &&
       !(await released(sql, live, signal.version, taken.received_at)) &&
-      (await this.#hold(signal, taken, tickets, 'add', live));
+      (await this.#hold(signal, taken, tickets, 'add', live, ticket.workItem));
     if (held) return held;
     return {
       outcome: 'evidence',
@@ -619,6 +619,8 @@ export class Triage {
     tickets: Ticket[],
     would: 'open' | 'reopen' | 'add',
     live: LiveTimes = new Map(),
+    /** The open ticket a signal that would add to one would add to. */
+    onto?: string,
   ): Promise<Made | undefined> {
     const { sql } = this.#o;
     const now = this.#o.now();
@@ -644,13 +646,14 @@ export class Triage {
       {
         fingerprint: string;
         outcome: string | null;
+        work_item: string | null;
         route: string;
         symptom: SymptomClass;
         version: string;
         received_at: Date;
       }[]
     >`
-      select fingerprint, outcome, signal->>'route' as route, signal->>'symptom' as symptom,
+      select fingerprint, outcome, work_item, signal->>'route' as route, signal->>'symptom' as symptom,
              signal->>'version' as version, received_at
       from inbox
       where sense = ${taken.sense} and id <> ${taken.id} and fingerprint is distinct from ${fingerprint}
@@ -658,16 +661,17 @@ export class Triage {
                             and ${taken.received_at}::timestamptz + make_interval(mins => ${BURST.minutes})
         and (outcome in ('opened', 'evidence') or (triaged_at is null and attempts < ${INBOX.attempts}))`;
     const explains = (version: string, at: Date) => released(sql, live, version, at);
-    // The tickets the sense opened, the problems found again on open tickets, and the new ones waiting, each fingerprint
-    // once: a ticket it opened and then found again in another version is one problem.
+    // The tickets the sense opened and the open tickets it found problems on again, each ticket once, and the new
+    // problems waiting, each fingerprint once. A ticket it opened and then found again in another version is one
+    // problem, as is a ticket on every route found again on several routes, and the ticket this signal would add to.
     const opened = new Set<string>();
     const again = new Set<string>();
     const fresh = new Map<string, { route: string; class: SymptomClass }>();
     for (const row of near) {
       const found = { route: row.route, class: row.symptom };
-      if (row.outcome === 'opened') opened.add(row.fingerprint);
+      if (row.outcome === 'opened') opened.add(row.work_item ?? row.fingerprint);
       else if (row.outcome === 'evidence') {
-        if (!(await explains(row.version, row.received_at))) again.add(row.fingerprint);
+        if (!(await explains(row.version, row.received_at))) again.add(row.work_item ?? row.fingerprint);
       } else {
         const open = tickets.find((ticket) =>
           sameFingerprint(ticket.fingerprint, found, { open: ticket.sense, found: signal.sense }),
@@ -677,15 +681,17 @@ export class Triage {
           !(await seenIn(sql, open.workItem, signal.sense, row.version)) &&
           !(await explains(row.version, row.received_at))
         ) {
-          again.add(row.fingerprint);
+          again.add(open.workItem);
         }
       }
     }
     // A waiting signal that a verified ticket has exactly would reopen it, which never counts.
-    let ahead = [...again].filter((key) => !opened.has(key)).length;
-    for (const [key, found] of fresh) {
-      if (!again.has(key) && !opened.has(key) && !(await verifiedTicket(sql, found, signal.sense))) ahead++;
+    if (onto) {
+      opened.delete(onto);
+      again.delete(onto);
     }
+    let ahead = [...again].filter((ticket) => !opened.has(ticket)).length;
+    for (const found of fresh.values()) if (!(await verifiedTicket(sql, found, signal.sense))) ahead++;
     const found = 1 + opened.size + ahead;
     if (found <= BURST.tickets) return undefined;
     const workItem = await nextWorkItem(sql);

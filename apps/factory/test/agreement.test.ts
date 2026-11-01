@@ -9,8 +9,10 @@ import {
   count,
   judge,
   logSilent,
+  metricsWrongEverywhere,
   type RouteCounts,
   requestsBetween,
+  signalForDisagreement,
   signalForSilentLog,
   TOLERANCE,
 } from '../src/logs/agreement.ts';
@@ -342,6 +344,120 @@ describe('a log silent for every route', () => {
 
   it('is nothing when the metrics do not say which version served the requests', () => {
     expect(signalForSilentLog([{ ...entry('/a', 40, 0), version: undefined }], end)).toBeUndefined();
+  });
+});
+
+describe('metrics wrong on every route', () => {
+  it.each([
+    ['every route’s metrics count too many', [entry('/a', 90, 30, 30), entry('/b', 60, 20, 20)], true],
+    ['one route’s metrics wrong, another’s right', [entry('/a', 90, 30, 30), entry('/b', 20, 20, 20)], false],
+    ['one route’s metrics wrong, another’s log missing', [entry('/a', 90, 30, 30), entry('/b', 20, 0, 20)], false],
+    ['only one route judged', [entry('/a', 90, 30, 30), entry('/b', 3, 1, 1)], false],
+    [
+      'a route too thin to judge stands in no way',
+      [entry('/a', 90, 30, 30), entry('/b', 60, 20, 20), entry('/c', 4, 4, 4)],
+      true,
+    ],
+    [
+      'a route whose metrics had a gap stands in no way, nor counts',
+      [entry('/a', 90, 30, 30), entry('/b', 60, 20, 20), { ...entry('/c', 20, 20, 20), gap: true }],
+      true,
+    ],
+    [
+      'a path whose metrics had a gap is left out, and its route judged on the rest',
+      [
+        entry('/p/x', 90, 30, 30, '/p/:slug'),
+        { ...entry('/p/y', 20, 20, 20, '/p/:slug'), gap: true },
+        entry('/b', 60, 20, 20),
+      ],
+      true,
+    ],
+    [
+      'one route and a gap are one route',
+      [entry('/a', 90, 30, 30), { ...entry('/b', 4000, 20, 20), gap: true }],
+      false,
+    ],
+    ['without the traces nothing says the metrics are wrong', [entry('/a', 90, 30), entry('/b', 60, 20)], false],
+    [
+      'two paths of one route are one route',
+      [entry('/p/x', 90, 30, 30, '/p/:slug'), entry('/p/y', 60, 20, 20, '/p/:slug')],
+      false,
+    ],
+  ] as const)('%s: %s', (_what, entries, expected) => {
+    expect(metricsWrongEverywhere([...entries]) !== undefined).toBe(expected);
+  });
+
+  it('sums the wrong routes’ counts on every route, with the version that served most of them', () => {
+    const other = 'v0.9.3';
+    const everywhere = metricsWrongEverywhere([
+      entry('/a', 90, 30, 30),
+      { ...entry('/b', 60, 20, 20), version: other },
+      entry('/c', 30, 10, 10),
+      { ...entry('/d', 20, 20, 20), gap: true },
+    ]);
+    expect(everywhere).toEqual({ path: '*', route: '*', version: VERSION, metrics: 180, logs: 60, traces: 60 });
+  });
+
+  it('is one signal, its picture every route’s requests, its name the summed counts', async () => {
+    const queries: string[] = [];
+    const prometheus = {
+      range: async (query: string, start: Date) => {
+        queries.push(query);
+        return { start, stepSeconds: 60, values: [3, 4, 5] };
+      },
+    } as unknown as Parameters<typeof signalForDisagreement>[2]['prometheus'];
+    const everywhere = metricsWrongEverywhere([entry('/a', 90, 30, 30), entry('/b', 60, 20, 20)]) as RouteCounts;
+    const signal = (await signalForDisagreement(
+      'wrong-metric',
+      everywhere,
+      { objectives, prometheus },
+      at(35),
+      at(45),
+    )) as InboxSignal;
+    expect(validateSignal(signal)).toEqual({ ok: true });
+    expect(signal).toMatchObject({ sense: 'logs', route: '*', symptom: 'wrong-metric', version: VERSION });
+    expect(signal.evidence).toMatchObject([
+      { kind: 'metric', name: 'Requests a minute. In 10 minutes: metrics 150, logs 50, traces 50' },
+    ]);
+    expect(queries[0]).toContain('http_route!=""');
+    expect(queries[0]).not.toContain('service_version');
+    // Counts of one version's requests alone are pictured with that version's series alone.
+    await signalForDisagreement('wrong-metric', everywhere, { objectives, prometheus }, at(35), at(45), VERSION);
+    expect(queries[1]).toContain(`service_version="${VERSION}"`);
+  });
+
+  it('is told once by the watcher, and no route on its own', async () => {
+    const sent: InboxSignal[] = [];
+    const watcher = new Watcher(
+      {
+        objectives,
+        prometheus: {
+          instant: async () =>
+            ['/about', '/privacy'].map((path) => ({
+              labels: { http_route: path, service_version: VERSION },
+              value: 30,
+            })),
+          range: async () => undefined,
+        },
+        loki: {
+          instant: async (query: string) =>
+            query.includes('[24h]')
+              ? []
+              : ['/about', '/privacy'].map((path) => ({ labels: { path, route: path }, value: 10 })),
+        },
+        tempo: {
+          requestsByRoute: async () => ({
+            routes: ['/about', '/privacy'].map((route) => ({ route, requests: 10 })),
+            complete: true,
+          }),
+        },
+        outbox: { send: async (signal: InboxSignal) => void sent.push(signal) },
+        log: { info: () => {}, warn: () => {} },
+      } as unknown as Backends,
+      { errors: new Date(0), reports: new Date(0) },
+    );
+    for (const minutes of [44, 49, 54, 59]) await watcher.checkAgreement(at(minutes));
+    expect(sent.map((s) => [s.route, s.symptom])).toEqual([['*', 'wrong-metric']]);
   });
 });
 

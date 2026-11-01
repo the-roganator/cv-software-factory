@@ -14,7 +14,8 @@
  *   requests in the metrics, the log and the traces, for a window after the promotion (`logs/agreement.ts`). The
  *   records agree on every one of the route's paths, and it has cleared; the one the ticket named is the odd one out
  *   again on any, and it persists. A log silent for every route (`*`) persists while it is silent, and clears once it
- *   counts the requests again for every route.
+ *   counts the requests again for every route; metrics wrong on every route (`*`) persist while they are wrong on
+ *   any route, and clear once every route judged has its three records agree.
  * - The canary: the release that carries the fix, or a later one that carries it too, was promoted with the measure
  *   that failed passing at its last step. A promoted release passed every step, so this clears at once, saying so; a
  *   release found live, which no analysis judged, holds for Martin.
@@ -46,11 +47,14 @@ import { measureOfCheck } from '../intake/alerts.ts';
 import {
   AGREEMENT_CHECK,
   agree,
+  type Counts,
   combine,
   count,
   type Disagreement,
   judge,
+  judgedRoutes,
   logSilent,
+  onEveryRoute,
   type RouteCounts,
   signalForDisagreement,
   signalForSilentLog,
@@ -422,6 +426,36 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
   }
   const tolerance = { ...TOLERANCE, minRequests };
 
+  if (signal.route === '*' && disagreement === 'wrong-metric') {
+    // Every route judged, as the watcher judges them, a path with a gap left out. Any route still wrong persists: the
+    // ticket on every route takes the signals of each route (triage), so no ticket of its own would hold it.
+    const judged = judgedRoutes(all, tolerance);
+    const wrong = judged.filter((route) => route.finding === 'wrong-metric');
+    if (wrong.length) {
+      const prometheus = c.prometheus;
+      const everywhere = onEveryRoute(wrong);
+      const told = await signalForDisagreement(
+        disagreement,
+        everywhere,
+        { objectives: c.objectives, prometheus },
+        start,
+        end,
+        target.version,
+      );
+      return finished(signal, target, 'persists', told?.evidence?.[0]);
+    }
+    if (!judged.length) {
+      if (all.some((entry) => entry.gap)) return { kind: 'wait', why: 'the metrics had a gap' };
+      return { kind: 'wait', why: `no route had ${minRequests} requests on the new version` };
+    }
+    if (judged.some((route) => route.counts.traces === undefined)) {
+      return { kind: 'wait', why: 'Tempo did not have every trace of the window' };
+    }
+    // As on a silent log's `*`, the routes left once a gap is left out are judged.
+    if (judged.every((route) => recordsAgree(route.counts))) return finished(signal, target, 'cleared');
+    return { kind: 'wait', why: 'the routes’ records disagree, and none of them has wrong metrics' };
+  }
+
   if (signal.route === '*') {
     // As the watcher judges a silent log, over the windows together: a gap of a few minutes is not the log silent.
     if (logSilent(all, tolerance)) {
@@ -457,7 +491,14 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
       : undefined);
   if (worst) {
     const prometheus = c.prometheus;
-    const told = await signalForDisagreement(disagreement, worst, { objectives: c.objectives, prometheus }, start, end);
+    const told = await signalForDisagreement(
+      disagreement,
+      worst,
+      { objectives: c.objectives, prometheus },
+      start,
+      end,
+      target.version,
+    );
     return finished(signal, target, 'persists', told?.evidence?.[0]);
   }
   if (paths.length < onIt.length) return { kind: 'wait', why: 'the metrics had a gap' };
@@ -468,11 +509,16 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
   if (disagreement === 'wrong-metric' && sum.traces === undefined) {
     return { kind: 'wait', why: 'Tempo did not have every trace of the window' };
   }
-  const agrees =
-    agree(sum.logs, sum.metrics, TOLERANCE) &&
-    (sum.traces === undefined || (agree(sum.logs, sum.traces, TOLERANCE) && agree(sum.metrics, sum.traces, TOLERANCE)));
-  if (agrees) return finished(signal, target, 'cleared');
+  if (recordsAgree(sum)) return finished(signal, target, 'cleared');
   return { kind: 'wait', why: 'the route’s records disagree, and none of them is the odd one out the ticket named' };
+}
+
+/** Whether the records' counts agree with each other: the metrics and the log, and the traces too when known. */
+function recordsAgree({ metrics, logs, traces }: Counts): boolean {
+  return (
+    agree(logs, metrics, TOLERANCE) &&
+    (traces === undefined || (agree(logs, traces, TOLERANCE) && agree(metrics, traces, TOLERANCE)))
+  );
 }
 
 /** What cleared a work item, in a sentence for its issue and its closing: the verification, or Martin's word. */

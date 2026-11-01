@@ -25,6 +25,7 @@ import {
   count,
   judge,
   logSilent,
+  metricsWrongEverywhere,
   type RouteCounts,
   signalForDisagreement,
   signalForSilentLog,
@@ -268,6 +269,20 @@ export class Watcher {
     if (logSilent(both) || logSilent(before.routes) || logSilent(routes)) {
       const sent = (await this.tell('* missing-log', end, async () => signalForSilentLog(both, end))) ? 1 : 0;
       log.info({ routes: routes.length, gaps, signals: sent }, 'agreement checked: the log is silent for every route');
+      return sent;
+    }
+    // Metrics wrong on every route judged are one finding about the metrics, as a silent log is about the log.
+    const everywhere = metricsWrongEverywhere(both);
+    if (everywhere) {
+      const sent = (await this.tell('* wrong-metric', end, () =>
+        signalForDisagreement('wrong-metric', everywhere, { objectives, prometheus }, before.start, end),
+      ))
+        ? 1
+        : 0;
+      log.info(
+        { routes: routes.length, gaps, signals: sent },
+        'agreement checked: the metrics are wrong on every route',
+      );
       return sent;
     }
     let wrong = 0;

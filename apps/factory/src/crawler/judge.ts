@@ -19,7 +19,7 @@ import type { Evidence, SymptomClass } from '@software-factory/events';
 import type { Check } from '../capture.ts';
 import { type Exchange, exchange, type RequestHeaders } from '../senses/http.ts';
 import type { Finding } from '../senses/types.ts';
-import { type Crawl, isStatic, type Resource } from './crawl.ts';
+import { type Crawl, cachingJudged, type Resource } from './crawl.ts';
 
 /** An answer slower than this, in milliseconds, is slow. It is generous: the check is for answers that hurt. */
 export const SLOW = 2_000;
@@ -86,6 +86,7 @@ export function judge({ crawl, errors, secure, version, template, slow = SLOW }:
   const trouble: Trouble[] = [];
   const byPath = new Map(crawl.resources.map((r) => [r.path, r]));
   const pageRoutes = new Set(crawl.pages.map((page) => template(page.path)));
+  const browsedPaths = new Set(crawl.pages.map((page) => page.path));
   /** A link that led to no page, on a route where no page was opened: what a page would show there is not known. */
   const noPage = (path: string, why: string) => {
     if (pageRoutes.has(template(path))) return;
@@ -164,14 +165,17 @@ export function judge({ crawl, errors, secure, version, template, slow = SLOW }:
         evidence: [answer.evidence],
       });
     }
-    if (status === 200 && !isPage && isStatic(resource)) {
+    if (cachingJudged(resource, browsedPaths)) {
       // Judged on the answer a visitor gets: the crawl's own requests carry the mark, which the app answers no-store.
-      const visitor = resource.visitor ?? answer;
-      if (visitor.status !== 200) {
+      const { visitor } = resource;
+      if (visitor?.status !== 200) {
+        const why = !visitor
+          ? 'was not asked for as a visitor asks'
+          : `answered ${visitor.failure ?? visitor.status ?? 'nothing'}${visitor.landed !== path ? ` at ${visitor.landed}` : ''} when asked for as a visitor asks`;
         trouble.push({
           route: target,
           symptoms: ['not-cached'],
-          message: `${path} answered ${visitor.status ?? 'nothing'} when asked for as a visitor asks, so whether it may be kept is not known.`,
+          message: `${path} ${why}, so whether it may be kept is not known.`,
         });
       } else if (!cached(visitor)) {
         issues.push({

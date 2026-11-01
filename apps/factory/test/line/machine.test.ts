@@ -9,6 +9,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import {
   acceptedFindings,
+  atTake,
   closesWhenCleared,
   decide,
   dryRunLeft,
@@ -1624,7 +1625,7 @@ const signal = (version = 'c'.repeat(7)): LineEvent => ({
 const look = (
   outcome: PayloadOf<'signal.rechecked'>['outcome'],
   release = 'r2',
-  occasion: 'release' | 'wait' = 'release',
+  occasion: PayloadOf<'signal.rechecked'>['for'] = 'release',
 ): LineEvent => ({
   type: 'signal.rechecked',
   payload: {
@@ -1641,6 +1642,61 @@ const look = (
 });
 const holdOf = (cause: HoldCause, stage: PayloadOf<'hold.started'>['stage'] = 'build') => held(cause, stage);
 const stable = { release: 'r2', version: 'd728dbe', due: true };
+
+describe('an open ticket looked at again as the line takes it', () => {
+  const opened = [ticket, signal()];
+  const fresh = { ...facts, issue: null };
+
+  it('looks before its issue opens or the planner starts, when its signal is not seen on the stable version', () => {
+    expect(decide(opened, { ...fresh, stable })).toEqual({ stage: 'plan', next: { do: 'recheck', for: 'take' } });
+    expect(decide(opened, { ...facts, stable }).next).toEqual({ do: 'recheck', for: 'take' });
+    // Seen on that version, or with no release known, it goes on to Plan as it did.
+    expect(decide([...opened, signal('d728dbe')], { ...fresh, stable }).next).toEqual({ do: 'open-issue' });
+    expect(decide(opened, fresh).next).toEqual({ do: 'open-issue' });
+    // A visitor's report alone has no sense to look again.
+    const report: LineEvent = {
+      type: 'signal.received',
+      payload: { sense: 'report', check: 'search answers', route: '/search', version: 'c'.repeat(7) },
+    };
+    expect(decide([ticket, report], { ...fresh, stable }).next).toEqual({ do: 'open-issue' });
+  });
+
+  it('closes as verified, with no issue opened, when its signal cleared', () => {
+    const decision = decide([...opened, look('cleared', 'r2', 'take')], { ...fresh, stable });
+    expect(decision.stage).toBe('plan');
+    expect(decision.next).toMatchObject({ do: 'verified', verification: undefined, rechecked: { for: 'take' } });
+  });
+
+  it('goes on to Plan once the look still sees it or cannot tell, and does not look at that release again', () => {
+    for (const outcome of ['persists', 'unsure'] as const) {
+      expect(decide([...opened, look(outcome, 'r2', 'take')], { ...fresh, stable }).next).toEqual({
+        do: 'open-issue',
+      });
+      expect(decide([...opened, look(outcome, 'r2', 'take')], { ...facts, stable }).next).toMatchObject({
+        do: 'step',
+        agent: 'planner',
+      });
+    }
+  });
+
+  it('never looks at a ticket planned before, reopened, held or waiting as a take', () => {
+    const reopened: LineEvent = {
+      type: 'work-item.reopened',
+      payload: {
+        sense: 'probe',
+        check: 'search answers',
+        route: '/search',
+        version: 'c'.repeat(7),
+        reason: 'Back',
+        dryRun: false,
+      },
+    };
+    expect(atTake(fold(opened))).toBe(true);
+    expect(atTake({ ...fold(opened), lastSpec: fold([spec]).spec })).toBe(false);
+    expect(atTake(fold([...opened, holdOf('failures', 'plan')]))).toBe(false);
+    expect(decide([...opened, reopened], { ...facts, stable }).next).not.toMatchObject({ do: 'recheck' });
+  });
+});
 
 describe('a held work item looked at again', () => {
   const opened = [ticket, signal()];

@@ -616,6 +616,35 @@ describe('what cleared a work item, on its issue', () => {
     );
   });
 
+  it('credits the fixes released since the signal was last seen, with their pull requests, for a ticket at take', () => {
+    const looked = {
+      for: 'take' as const,
+      outcome: 'cleared' as const,
+      sense: 'crawler' as const,
+      check: 'missing-alt',
+      release: '57b795d748-28',
+      version: 'f484bc0',
+      against: '9621066',
+      carried: ['1009', '1012'],
+      since: 'f5c6b9c',
+      merged: [{ workItem: '1009', pullRequest: 120 }],
+    };
+    expect(whatClearedOnLook(looked)).toBe(
+      'The crawler’s check “missing-alt” passed twice in a row on f484bc0, a version released since f5c6b9c, where its signal was last seen, with the fixes of work items #1009 (pull request #120) and #1012',
+    );
+    expect(whatClearedOnLook({ ...looked, carried: ['1009'] })).toMatch(
+      /, with the fix of work item #1009 \(pull request #120\)$/,
+    );
+    // A held work item's look says too that none of them was its own fix.
+    expect(whatClearedOnLook({ ...looked, for: 'release', carried: ['1009'] })).toMatch(
+      /\(pull request #120\), not this one’s$/,
+    );
+    // Only when the releases since carried no work item at all does it say none of the factory's fixes.
+    expect(whatClearedOnLook({ ...looked, carried: [], merged: undefined })).toMatch(
+      /, a version released since f5c6b9c, where its signal was last seen, with none of the factory’s fixes$/,
+    );
+  });
+
   it('says where it came back: a canary’s every route is routes it could not narrow to one', () => {
     const reopened = {
       sense: 'canary' as const,

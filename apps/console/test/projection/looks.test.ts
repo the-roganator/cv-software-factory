@@ -112,6 +112,47 @@ describe('a held work item looked at again', () => {
   });
 });
 
+describe('an open ticket looked at as the line took it', () => {
+  const taken = (payload: PayloadOf<'signal.rechecked'>) =>
+    work('3').open().add(1, 'signal.received', 'probe', payloads.signal).add(30, 'signal.rechecked', 'probe', payload);
+  const atTake = {
+    ...look('cleared'),
+    for: 'take',
+    carried: ['1009', '1012'],
+    since: 'f5c6b9c',
+    merged: [{ workItem: '1009', pullRequest: 120 }],
+  } satisfies PayloadOf<'signal.rechecked'>;
+
+  it('ends the story of one closed by it, naming the fixes released since its signal was last seen', () => {
+    const events = taken(atTake).add(31, 'work-item.closed', 'factory', {
+      outcome: 'verified',
+      reason: 'Cleared as the line took it',
+    }).events;
+    const sheet = projectSheet(events, '3', Date.parse('2026-10-03T10:00:00Z'));
+    expect(sheet?.closing).toBe(
+      'It was verified on d728dbe by the probe’s check “products journey”, on a version released since f5c6b9c, where its signal was last seen, with the fixes of work items #1009 (pull request #120) and #1012, and closed.',
+    );
+    expect(sheet?.chapters.map((c) => c.label)).toContain('CLEARED');
+  });
+
+  it('says so when the releases since carried none of the factory’s fixes', () => {
+    const events = taken({ ...atTake, carried: [], merged: undefined }).add(31, 'work-item.closed', 'factory', {
+      outcome: 'verified',
+      reason: 'Cleared as the line took it',
+    }).events;
+    expect(projectSheet(events, '3', Date.parse('2026-10-03T10:00:00Z'))?.closing).toBe(
+      'It was verified on d728dbe by the probe’s check “products journey”, on a version released since f5c6b9c, where its signal was last seen, with none of the factory’s fixes, and closed.',
+    );
+  });
+
+  it('marks a look that could not tell as unsure, as the work goes on to Plan', () => {
+    const { why: _, ...cleared } = atTake;
+    const unsure = { ...cleared, outcome: 'unsure', why: 'the check could not tell' } as const;
+    const sheet = projectSheet(taken(unsure).events, '3', Date.parse('2026-10-03T10:00:00Z'));
+    expect(sheet?.chapters.map((c) => c.label)).toContain('UNSURE');
+  });
+});
+
 describe('a spec on a card', () => {
   const spec = {
     outcome: 'Every product loads',

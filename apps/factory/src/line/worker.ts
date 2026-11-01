@@ -46,6 +46,11 @@
  *   a waiting work item, closes it as verified: its issue as completed, and its pull request, if it has one open,
  *   unmerged, each saying what cleared it and on which release. A hold that waits on Martin's judgement records the
  *   look and stays; his closing its pull request while the clearance stands closes it as verified.
+ * - As it takes a ticket whose signal was last seen on a version before the one the stable Service runs, before its
+ *   issue opens and the planner starts, the sense looks again the same way (`atTake`); and as Verify clears a fix, at
+ *   each open ticket it has not taken of the same sense and symptom (`#besideFix`; not with `only`). A cleared signal
+ *   closes the ticket as verified, with no issue opened and nothing spent, naming the fixes the releases since its
+ *   signal carried (`#carriedSince`), which every look again credits.
  * - After Plan, a work item whose spec's scope shares a file with the spec of another in flight waits, at its own
  *   stage, until each it waits on is verified or closed; then its sense looks again, and it closes as verified or goes
  *   on to Build. It holds up no other ticket. Not with `only`: a queue of one sees nothing else.
@@ -154,6 +159,7 @@ import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
 import { closeIssue } from './issues.ts';
 import {
   acceptedFindings,
+  atTake,
   closesWhenCleared,
   decide,
   dryRunLeft,
@@ -162,6 +168,7 @@ import {
   LIMITS,
   type LineAgent,
   type LineEvent,
+  lookDue,
   type Next,
   STAGE_OF,
   type WorkItemState,
@@ -328,6 +335,8 @@ export class Line {
   >();
   /** When each work item whose last look, at Verify or again, could not tell may be looked at again. */
   readonly #lookAgainAt = new Map<string, number>();
+  /** The open tickets the sense is looking at again beside a verified fix, which no other look or step may take up. */
+  readonly #beside = new Set<string>();
   /** The latest real promotion, read once a pass; undefined until it is read. */
   #promotion: Promise<Promotion | undefined> | undefined;
   /** The work items in flight, with their specs' scopes and what each waits on, read once a pass, or after a wait. */
@@ -695,6 +704,8 @@ export class Line {
     let item: QueueItem | undefined = first;
     // A few quick actions in a row (open the issue, then start the planner), never a loop without end.
     for (let actions = 0; item && actions < 5; actions++) {
+      // A ticket the line took while the sense looked at it beside another's fix: the look's to finish first.
+      if (this.#beside.has(item.workItem)) return;
       const { events, last } = await this.#events(item.workItem);
       const { stage, next } = decide(events, await this.#facts(item, events));
       if (fold(events).merged) await this.#dropVolume(item.workItem);
@@ -1057,7 +1068,7 @@ export class Line {
           );
         }
         const summary = rechecked
-          ? 'Verified on a release that did not carry its fix, and closed'
+          ? CLEARED_ON_LOOK[rechecked.for]
           : next.verification?.dryRun
             ? 'Verified by the dry run’s word, and closed'
             : 'Verified, and closed';
@@ -1167,6 +1178,7 @@ export class Line {
         this.#lookAgainAt.delete(workItem);
         await this.#queue.moved(workItem);
         this.#o.log.info({ workItem, outcome: v.outcome, sense: v.sense, version: v.version }, 'verified a release');
+        if (v.outcome === 'cleared' && !v.dryRun) await this.#besideFix(workItem, first, signal);
         return;
       }
     }
@@ -1227,14 +1239,16 @@ export class Line {
   }
 
   /**
-   * One look again at a held or waiting work item's signal, by the sense of the ticket's first signal, at the version
-   * the stable Service runs, which did not carry its fix (`look`, as at Verify, with no pictures). What it found is
-   * appended, unless the line stopped meanwhile or a release came between. A look that cannot tell is tried again
-   * later; at the end of a wait, after the policy's wait it is recorded as unsure, and the work item goes on to Build.
+   * One look again at a work item's signal, by the sense of the ticket's first signal, at the version the stable
+   * Service runs, which did not carry its fix (`look`, as at Verify, with no pictures). What it found is appended,
+   * unless the line stopped meanwhile or a release came between. A look that cannot tell is tried again later; at the
+   * end of a wait, or as the line takes a ticket, after the policy's wait from the wait's end or the release it looked
+   * at, it is recorded as unsure, and the work item goes on, to Build or Plan. Beside another's verified fix (`fix`),
+   * only what cleared or persists is recorded: a ticket the sense could not tell of is looked at again as it is taken.
    */
   async #recheck(
     workItem: string,
-    occasion: 'release' | 'wait',
+    occasion: PayloadOf<'signal.rechecked'>['for'],
     state: WorkItemState,
     signal: AbortSignal,
   ): Promise<void> {
@@ -1248,7 +1262,7 @@ export class Line {
     };
     const promotion = await this.#latestPromotion();
     if (!promotion) {
-      if (occasion === 'release') return;
+      if (occasion !== 'wait') return;
       const why = 'no release of the app has been recorded';
       return this.#rechecked(workItem, { ...base, outcome: 'unsure', carried: [], why });
     }
@@ -1266,11 +1280,12 @@ export class Line {
       this.#o.log.info({ workItem, looked: promotion.version }, 'a release came between');
       return;
     }
+    if (occasion === 'fix' && found.kind !== 'finished') return;
     const looked = {
       release: promotion.release,
       version: promotion.version,
       against: promotion.previous,
-      carried: await this.#carriedBy(promotion.release, workItem),
+      ...(await this.#carriedSince(workItem, promotion)),
     };
     switch (found.kind) {
       case 'finished': {
@@ -1283,8 +1298,10 @@ export class Line {
       case 'hold':
         return this.#rechecked(workItem, { ...base, ...looked, outcome: 'unsure', why: cutTo(found.reason, 200) });
       case 'wait': {
-        // A wait goes on for no longer than the policy's after the work it waited on ended; a hold's look stops there.
-        const ended = occasion === 'wait' ? await this.#waitEnded(state) : undefined;
+        // A wait goes on for no longer than the policy's after the work it waited on ended, and a take's after the
+        // release it looked at; a hold's look stops there.
+        const ended =
+          occasion === 'wait' ? await this.#waitEnded(state) : occasion === 'take' ? promotion.at.getTime() : undefined;
         if (ended === undefined || now.getTime() - ended < this.#o.verifyWaitMs) {
           this.#lookAgainAt.set(workItem, now.getTime() + this.#o.verifyEveryMs);
           this.#o.log.info({ workItem, version: target.version, why: found.why }, 'a look again cannot tell yet');
@@ -1293,6 +1310,50 @@ export class Line {
         const hours = this.#o.verifyWaitMs / 3_600_000;
         const said = cutTo(`the sense could not tell in ${hours} hours: ${found.why}`, 200);
         return this.#rechecked(workItem, { ...base, ...looked, outcome: 'unsure', why: said });
+      }
+    }
+  }
+
+  /**
+   * As Verify clears a fix, the sense looks again at each open ticket of the same sense and symptom that the line has
+   * not taken, whose signal was last seen on a version before the one it verified: a fix may clear more than its own
+   * ticket, as one change can fix one defect on several pages. One that cleared closes as verified, naming the fixes
+   * the releases since carried; one still seen waits to be taken, and is not looked at again for that release.
+   */
+  async #besideFix(workItem: string, first: FirstSignal | undefined, signal: AbortSignal): Promise<void> {
+    // A line of one leaves every other work item as it is.
+    if (this.#only !== null || !first?.symptom || first.sense === 'report' || first.sense === 'planner') return;
+    const promotion = await this.#latestPromotion();
+    if (!promotion) return;
+    const { sql } = this.#o;
+    const rows = await sql<{ work_item: string }[]>`
+      select t.work_item from events t
+      cross join lateral (
+        select s.payload from events s
+        where s.work_item = t.work_item and s.type = 'signal.received' order by s.seq limit 1
+      ) opener
+      where t.type = 'ticket.opened' and not t.sample and t.work_item <> ${workItem}
+        and opener.payload->>'sense' = ${first.sense} and opener.payload->>'symptom' = ${first.symptom}
+        and ${lastEnd(sql, 't.work_item')} is distinct from 'work-item.closed'
+        and not exists (select 1 from line l where l.work_item = t.work_item)
+      order by t.seq limit ${BESIDE_A_FIX}`;
+    const stable = { release: promotion.release, version: promotion.version, due: true };
+    for (const { work_item: other } of rows) {
+      if (signal.aborted) return;
+      const before = fold((await this.#events(other)).events);
+      if (!atTake(before) || !lookDue(before, stable)) continue;
+      this.#beside.add(other);
+      try {
+        await inSpan('recheck', { [A.workItem]: other }, () => this.#recheck(other, 'fix', before, signal));
+        const after = fold((await this.#events(other)).events);
+        // Taken meanwhile, the line closes it on the clearance as it comes to it.
+        if (!after.cleared || after.closed || (await this.#queue.get(other))) continue;
+        await this.#act(untaken(other), { do: 'verified', verification: undefined, rechecked: after.cleared }, after);
+        this.#o.log.info({ workItem, also: other }, 'a ticket beside a verified fix cleared too');
+      } catch (error) {
+        this.#o.log.warn({ workItem, other, err: error }, 'could not look again at a ticket beside a verified fix');
+      } finally {
+        this.#beside.delete(other);
       }
     }
   }
@@ -1323,6 +1384,43 @@ export class Line {
         and work_item <> ${workItem}
       order by number limit 20`;
     return rows.map((row) => row.work_item);
+  }
+
+  /**
+   * What a look again at `promotion` credits: the work items, but this one, carried by every real release promoted
+   * after the ticket's signal was last recorded, up to and with that one, oldest first, each with the pull request it
+   * merged, and the version the signal was last seen on. Its own release, if it had one, carried its fix: not another's.
+   */
+  async #carriedSince(
+    workItem: string,
+    promotion: Promotion,
+  ): Promise<Pick<PayloadOf<'signal.rechecked'>, 'carried' | 'since' | 'merged'>> {
+    const { sql } = this.#o;
+    const [seen] = await sql<{ seq: string; version: string }[]>`
+      select seq, payload->>'version' as version from events
+      where work_item = ${workItem} and type = 'signal.received' order by seq desc limit 1`;
+    const rows = await sql<{ work_item: string; pull_request: number | null }[]>`
+      with releases as (
+        select distinct payload->>'release' as release from events
+        where type = 'release.promoted' and (payload->>'dryRun')::boolean is not true
+          and seq > ${seen?.seq ?? '0'} and seq <= ${promotion.seq}
+      ), carried as (
+        select distinct s.work_item from events s join releases r on s.payload->>'release' = r.release
+        where s.type = 'release.started' and s.work_item is not null and s.work_item <> ${workItem}
+      )
+      select c.work_item, (
+        select (m.payload->>'number')::int from events m
+        where m.work_item = c.work_item and m.type = 'pull-request.merged' order by m.seq desc limit 1
+      ) as pull_request
+      from carried c order by c.work_item::bigint limit 20`;
+    const merged = rows.flatMap((row) =>
+      row.pull_request === null ? [] : [{ workItem: row.work_item, pullRequest: row.pull_request }],
+    );
+    return {
+      carried: rows.map((row) => row.work_item),
+      ...(seen ? { since: seen.version } : {}),
+      ...(merged.length ? { merged } : {}),
+    };
   }
 
   /** When the last of the work items a work item waited on closed, or undefined while one is open. */
@@ -1903,14 +2001,18 @@ export class Line {
     const s = fold(events);
     if (s.closed) return facts;
     const waits = !s.hold && s.waiting !== undefined && !s.waiting.ended;
-    if ((s.hold && !WORDS_LEAVE_HELD.includes(s.hold.cause)) || waits) {
+    // A ticket just taken, before its issue or the planner: not once a step has failed or handed back work.
+    const taken = !s.spec && atTake(s) && item.failures === 0 && item.effects === null;
+    if ((s.hold && !WORDS_LEAVE_HELD.includes(s.hold.cause)) || waits || taken) {
       this.#promotion ??= this.#latestPromotion().catch((error: unknown) => {
         // A read that failed is read again, not kept for the pass.
         this.#promotion = undefined;
         throw error;
       });
       const promotion = await this.#promotion;
-      if (promotion) {
+      if (promotion && taken) {
+        facts.stable = { release: promotion.release, version: promotion.version, due: true };
+      } else if (promotion) {
         const [started] = await this.#o.sql<{ ts: Date }[]>`
           select ts from events where work_item = ${item.workItem} and type = ${s.hold ? 'hold.started' : 'wait.started'}
           order by seq desc limit 1`;
@@ -2009,6 +2111,29 @@ export class Line {
   }
 }
 
+/** How a work item a look again cleared closes, by when the sense looked, as its event's summary says it. */
+const CLEARED_ON_LOOK: Record<PayloadOf<'signal.rechecked'>['for'], string> = {
+  release: 'Verified on a release that did not carry its fix, and closed',
+  wait: 'Verified on a release that did not carry its fix, and closed',
+  take: 'Verified as the line took it, on a release since its signal, and closed',
+  fix: 'Verified beside another work item’s fix, and closed',
+};
+
+/** The most open tickets the sense looks at again beside one verified fix. */
+const BESIDE_A_FIX = 10;
+
+/** A ticket the line has not taken, as closing it reads it: no row, so no issue, step or pull request. */
+const untaken = (workItem: string): QueueItem => ({
+  workItem,
+  stage: 'plan',
+  steps: 0,
+  failures: 0,
+  failure: null,
+  issue: null,
+  session: null,
+  effects: null,
+});
+
 /** A real release's promotion, as a look reads it: the latest is what the stable Service runs. */
 interface Promotion {
   release: string;
@@ -2061,6 +2186,15 @@ export function handOverComment(workItem: string, flag: string | undefined, vers
 function recheckedLine(r: PayloadOf<'signal.rechecked'>): string {
   const on = r.version ? ` on ${r.version.slice(0, 7)}` : '';
   const by = r.sense ? `, by the ${r.sense}` : '';
+  if (r.for === 'take') {
+    if (r.outcome === 'cleared') return `Gone${on} as the line took it${by}`;
+    if (r.outcome === 'persists') return `Still seen${on} as the line took it${by}: on to Plan`;
+    return `As the line took it, the sense could not tell${on}: on to Plan`;
+  }
+  if (r.for === 'fix') {
+    const fixes = r.carried.length ? ` beside the fix of ${workItemsWords(r.carried, '')}` : '';
+    return r.outcome === 'cleared' ? `Cleared${on}${fixes}${by}` : `Still seen${on}${fixes}${by}`;
+  }
   if (r.for === 'wait') {
     if (r.outcome === 'cleared') return `Its wait over, cleared${on}${by}`;
     if (r.outcome === 'persists') return `Its wait over, still seen${on}${by}: on to Build`;

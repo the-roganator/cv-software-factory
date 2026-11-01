@@ -338,9 +338,9 @@ function closing(item: ItemState): string | undefined {
     // of its pull request; not when he answered the hold since, whose words the close's reason gives.
     const answered = after.slice(last + 1).some((event) => event.type === 'hold.answered');
     if (verification?.type === 'signal.rechecked' && verification.payload.outcome === 'cleared' && !answered) {
-      const { sense, check, version, carried } = verification.payload;
+      const { sense, check, version } = verification.payload;
       const on = version ? ` on ${shortVersion(version)}` : '';
-      return `It was verified${on} by ${sense ? CHECK_OF[sense] : 'the check'} “${check}”, on ${clearedOnWords(carried)}, and closed.`;
+      return `It was verified${on} by ${sense ? CHECK_OF[sense] : 'the check'} “${check}”, on ${clearedOnWords(verification.payload)}, and closed.`;
     }
     const held = after.slice(last + 1).some((event) => event.type === 'hold.started');
     if (verification?.type !== 'verification.finished' || verification.payload.outcome !== 'cleared' || held) {
@@ -394,12 +394,14 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return { label: 'SPEC', tone: 'signal' };
     case 'wait.started':
       return { label: 'WAITS', tone: 'faint' };
-    // A look again moves the work item nowhere: it cleared, it is still seen, or, at the end of a wait, it could not
-    // tell, and the work went on.
+    // A look again moves the work item nowhere: it cleared, it is still seen, or, at the end of a wait or as the line
+    // took the ticket, it could not tell, and the work went on. The look at a take reads as one by its summary.
     case 'signal.rechecked':
       if (event.payload.outcome === 'cleared') return { label: 'CLEARED', tone: 'ok' };
       if (event.payload.outcome === 'persists') return { label: 'STILL SEEN', tone: 'faint' };
-      return event.payload.for === 'wait' ? { label: 'UNSURE', tone: 'faint' } : undefined;
+      return event.payload.for === 'wait' || event.payload.for === 'take'
+        ? { label: 'UNSURE', tone: 'faint' }
+        : undefined;
     case 'hold.started':
       return { label: { approval: 'WAITING', question: 'QUESTION', held: 'HELD' }[event.payload.kind], tone: 'attn' };
     case 'hold.answered':

@@ -699,7 +699,7 @@ export function clearanceWords(item: ItemState): string | undefined {
   if (!cleared || !item.hold) return undefined;
   const sense = SENSES.find((one) => one === cleared.sense);
   const by = sense ? `the ${sense} saw “${cleared.check}” pass there` : `“${cleared.check}” cleared there`;
-  const on = `Its signal cleared on ${shortVersion(cleared.version ?? '')}, ${clearedOnWords(cleared.carried)}: ${by}.`;
+  const on = `Its signal cleared on ${shortVersion(cleared.version ?? '')}, ${clearedOnWords(cleared)}: ${by}.`;
   const open =
     item.pullRequest !== undefined &&
     !item.events.some((e) => e.type === 'pull-request.merged' && e.payload.number === item.pullRequest);

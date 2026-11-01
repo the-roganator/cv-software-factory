@@ -39,7 +39,7 @@ export const VERSIONS = {
   'release.aborted': 1,
   'release.errored': 1,
   'verification.finished': 4,
-  'signal.rechecked': 1,
+  'signal.rechecked': 2,
   // Anywhere on the line
   'work.returned': 3,
   'hold.started': 10,

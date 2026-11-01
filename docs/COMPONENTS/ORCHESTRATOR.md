@@ -52,6 +52,7 @@ Each stage can also hold for Martin (see [Holds](#holds-and-martins-answers)).
 - An [improvement Martin asked for](#an-improvement) waits behind every open ticket not yet taken, and the oldest goes first.
 - It runs one step at a time in each of Plan, Build and Review.
 - It runs one step at a time on the local model, whatever its stage, since LM Studio answers one prediction at a time. A step whose agent the settings in force send there ([below](#settings); every agent, under `ALL_LOCAL`) waits while another such step runs, and the line tries again on its next pass. A step on Claude never waits for one on the local model, so a mixed profile keeps its pace.
+- As a ticket enters Plan, before anything else, the sense that saw it looks again if its signal was last seen on a version before the one the stable Service runs, since a release since may have fixed it ([Verify](RELEASE-AND-VERIFY.md#open-tickets-a-release-may-have-fixed)): cleared, it closes as verified, with no issue opened and no planner, and the line takes the next ticket at once.
 - As a ticket enters Plan, it opens the ticket's issue through the App, from the ticket's public view. The fix's pull request refers to that issue. An improvement's issue has its title and Martin's words, from their public views.
 - After Martin's merge, it carries the work item through Release and Verify until it closes.
 

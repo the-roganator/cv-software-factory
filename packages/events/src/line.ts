@@ -5,6 +5,7 @@
  * copies of a rule drift apart. Plain values, so the browser can import them.
  */
 import { cutTo } from './text.ts';
+import type { PayloadOf } from './types.ts';
 import type { HoldAnswer, HoldCause, Stage } from './vocabulary.ts';
 
 /** How far the line lets a work item go round before it holds for Martin. */
@@ -384,13 +385,32 @@ export function workItemsWords(items: readonly string[], none: string): string {
 }
 
 /**
- * The release a look again found a held or waiting work item's signal cleared on, in words: what it carried, and that
- * it was not this one's fix. The line's comments and closes, and the console, say it the same way.
+ * The release a look again found a work item's signal cleared on, in words: the fixes of the releases since its signal
+ * was last seen, each with its pull request, and, for a held or waiting work item, that none was this one's. The line's
+ * comments and closes, and the console, say it the same way. Only when those releases carried no work item does it
+ * say they carried none of the factory's fixes. A version 1 look named the release looked at's alone, with no `since`.
  */
-export const clearedOnWords = (carried: readonly string[]) =>
-  carried.length
-    ? `a release that carried ${workItemsWords(carried, '')}, not this one’s fix`
-    : 'a release that carried none of the factory’s fixes';
+export function clearedOnWords(
+  look: Pick<PayloadOf<'signal.rechecked'>, 'for' | 'carried' | 'since' | 'merged'>,
+): string {
+  const { carried, since } = look;
+  const own = look.for === 'release' || look.for === 'wait' ? ', not this one’s' : '';
+  if (since === undefined) {
+    return carried.length
+      ? `a release that carried ${workItemsWords(carried, '')}${own ? `${own} fix` : ''}`
+      : 'a release that carried none of the factory’s fixes';
+  }
+  const after = `a version released since ${shortCommit(since)}, where its signal was last seen`;
+  if (!carried.length) return `${after}, with none of the factory’s fixes`;
+  const pulls = new Map((look.merged ?? []).map((m) => [m.workItem, m.pullRequest]));
+  const named = carried.map((n) => (pulls.has(n) ? `#${n} (pull request #${pulls.get(n)})` : `#${n}`));
+  const listed = named.length > 1 ? `${named.slice(0, -1).join(', ')} and ${named.at(-1)}` : named[0];
+  const fixes = named.length > 1 ? 'the fixes of work items' : 'the fix of work item';
+  return `${after}, with ${fixes} ${listed}${own}`;
+}
+
+/** A commit shortened as the line writes it, or any other version as it is. */
+const shortCommit = (version: string) => (/^[0-9a-f]{8,40}$/.test(version) ? version.slice(0, 7) : version);
 
 /** The same version of the app, whether either names its commit in full or shortened. */
 export const sameVersion = (a: string, b: string) =>

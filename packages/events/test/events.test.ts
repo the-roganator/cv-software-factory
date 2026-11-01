@@ -531,7 +531,7 @@ describe('validation', () => {
   });
 
   it('takes a look again that says why only when it could not tell, and names the version when it could', () => {
-    const looked = { ...opened, type: 'signal.rechecked', version: 1, actor: 'probe' };
+    const looked = { ...opened, type: 'signal.rechecked', version: 2, actor: 'probe' };
     const payload = {
       for: 'release',
       outcome: 'cleared',
@@ -555,6 +555,26 @@ describe('validation', () => {
     expect(validate({ ...looked, actor: 'factory', payload: none })).toEqual({ ok: true });
     const { version: _, ...unnamed } = payload;
     expect(validate({ ...looked, payload: unnamed }).ok).toBe(false);
+  });
+
+  it('takes a look as the line takes a ticket, or beside a verified fix, crediting the fixes since its signal', () => {
+    const looked = { ...opened, type: 'signal.rechecked', version: 2, actor: 'crawler' };
+    const payload = {
+      for: 'take',
+      outcome: 'cleared',
+      sense: 'crawler',
+      check: 'missing-alt',
+      release: '57b795d748-28',
+      version: 'f484bc0',
+      against: '9621066',
+      carried: ['1009'],
+      since: 'f5c6b9c',
+      merged: [{ workItem: '1009', pullRequest: 120 }],
+    };
+    expect(validate({ ...looked, payload })).toEqual({ ok: true });
+    expect(validate({ ...looked, payload: { ...payload, for: 'fix' } })).toEqual({ ok: true });
+    expect(validate({ ...looked, payload: { ...payload, since: 'yesterday' } }).ok).toBe(false);
+    expect(validate({ ...looked, payload: { ...payload, merged: [{ workItem: '1009' }] } }).ok).toBe(false);
   });
 });
 

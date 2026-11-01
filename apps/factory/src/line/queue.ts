@@ -26,8 +26,8 @@
  *   have come onto the line since the limit was set (`since`; LINE_TAKE counts every one there has ever been), and
  *   then no more, while those on it go on to their end. It counts the line's own rows, which are never deleted, by
  *   when each was taken, under the same lock: a restart, or a second worker, takes none beyond the limit. A ticket
- *   whose signal was gone as the line took it, and that closed on that look with no step started (`closedAtTake`), is
- *   one the line looked at, not one it worked on, and counts for neither limit.
+ *   whose signal was gone as the line took it, and that closed on that look before its issue opened or any step
+ *   started (`closedAtTake`), is one the line looked at, not one it worked on, and counts for neither limit.
  *
  * A work item that closed as verified and reopened (triage reopens it when its signal comes back, and a line running
  * live one a dry run verified) is taken back into Plan for a fresh pass (`revive`), whatever else is on the line and
@@ -116,16 +116,13 @@ const reopenedSince = (sql: Sql) =>
                                       where r.work_item = l.work_item and r.type = 'work-item.reopened'), false)`;
 
 /**
- * A row (`l`) whose work item the line only looked at: the sense found its signal gone as the line took it (a
- * `signal.rechecked` for the take, cleared), it closed on that look, and no agent's step ever started for it. A limit
- * does not count it. One still seen as it was taken, or that the sense could not tell, went on to the planner, and
- * counts.
+ * A row (`l`) whose work item the line only looked at: it ended before its issue opened, with no agent's step ever
+ * started, as a ticket does that closes on the look as the line takes it (its signal gone, `signal.rechecked` for the
+ * take or beside a fix, cleared). A limit does not count it. One still seen as it was taken, or that the sense could not
+ * tell, has its issue opened and goes on to the planner, and counts; so does one that reopens and is taken back, while
+ * it is on the line again. The row says it all, so the count reads no event.
  */
-const closedAtTake = (sql: Sql | TransactionSql) =>
-  sql`(l.steps = 0 and ${lastEnd(sql, 'l.work_item')} = 'work-item.closed'
-       and exists (select 1 from events r
-                   where r.work_item = l.work_item and r.type = 'signal.rechecked'
-                     and r.payload->>'for' = 'take' and r.payload->>'outcome' = 'cleared'))`;
+const closedAtTake = (sql: Sql | TransactionSql) => sql`(l.stage = 'ended' and l.steps = 0 and l.issue is null)`;
 
 /** A row (`l`) under nobody's lease. */
 const unheld = (sql: Sql) => sql`(l.held_until is null or l.held_until < clock_timestamp())`;

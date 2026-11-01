@@ -19,25 +19,26 @@ const writer = () =>
     artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
   });
 
+/** An event of a work item's, as its actor appends it. */
+const event = (workItem: string, actor: string, type: NewEvent['type'], payload: object) =>
+  ({
+    id: crypto.randomUUID(),
+    ts: new Date().toISOString(),
+    work_item: workItem,
+    type,
+    version: VERSIONS[type],
+    actor,
+    summary: `${type} for the test`,
+    payload,
+    artifacts: [],
+  }) as NewEvent;
+
 /** A ticket as triage opens one, with its severity. */
 async function ticket(severity: 'broken' | 'degraded' | 'cosmetic', route: string): Promise<string> {
-  const events = writer();
   const workItem = await nextWorkItem(database.as.triage);
-  const event = (type: 'work-item.opened' | 'ticket.opened', payload: object) =>
-    ({
-      id: crypto.randomUUID(),
-      ts: new Date().toISOString(),
-      work_item: workItem,
-      type,
-      version: VERSIONS[type],
-      actor: 'triage',
-      summary: `${type} for the test`,
-      payload,
-      artifacts: [],
-    }) as NewEvent;
-  await events.append([
-    event('work-item.opened', { kind: 'defect-fix', title: 'Server errors', sample: false }),
-    event('ticket.opened', {
+  await writer().append([
+    event(workItem, 'triage', 'work-item.opened', { kind: 'defect-fix', title: 'Server errors', sample: false }),
+    event(workItem, 'triage', 'ticket.opened', {
       title: `Server errors on ${route}`,
       category: 'errors',
       severity,
@@ -48,22 +49,15 @@ async function ticket(severity: 'broken' | 'degraded' | 'cosmetic', route: strin
   return workItem;
 }
 
-const end = (workItem: string) => database.as.line`update line set stage = 'ended' where work_item = ${workItem}`;
+/** A work item the line worked on, ended: a step of it had started. */
+const end = (workItem: string) =>
+  database.as.line`update line set stage = 'ended', steps = greatest(steps, 1) where work_item = ${workItem}`;
 
-/** The line's look at a ticket as it took it, and, if the signal was gone, its close on that look, as the line ends it. */
+/**
+ * The line's look at a ticket as it took it: gone, it closes on that look, and its row ends; otherwise its issue opens,
+ * for the planner.
+ */
 async function lookedAtTake(workItem: string, outcome: 'cleared' | 'persists' | 'unsure'): Promise<void> {
-  const event = (type: 'signal.rechecked' | 'work-item.closed', payload: object) =>
-    ({
-      id: crypto.randomUUID(),
-      ts: new Date().toISOString(),
-      work_item: workItem,
-      type,
-      version: VERSIONS[type],
-      actor: 'factory',
-      summary: `${type} for the test`,
-      payload,
-      artifacts: [],
-    }) as NewEvent;
   const look = {
     for: 'take',
     outcome,
@@ -71,13 +65,13 @@ async function lookedAtTake(workItem: string, outcome: 'cleared' | 'persists' | 
     carried: [],
     ...(outcome === 'unsure' ? { why: 'the sense could not be asked' } : { version: 'a'.repeat(40) }),
   };
+  const closed = { outcome: 'verified', reason: 'Gone as the line took it.' };
   await writer().append([
-    event('signal.rechecked', look),
-    ...(outcome === 'cleared'
-      ? [event('work-item.closed', { outcome: 'verified', reason: 'Gone as the line took it.' })]
-      : []),
+    event(workItem, 'factory', 'signal.rechecked', look),
+    ...(outcome === 'cleared' ? [event(workItem, 'factory', 'work-item.closed', closed)] : []),
   ]);
-  if (outcome === 'cleared') await end(workItem);
+  if (outcome === 'cleared') await database.as.line`update line set stage = 'ended' where work_item = ${workItem}`;
+  else await new Queue(database.as.line, 'test').setIssue(workItem, 40 + Number(workItem.slice(-2)));
 }
 
 const pending: Pending = {
@@ -191,11 +185,23 @@ describe('a queue with a limit', () => {
     await two.startStep(degraded);
     await end(degraded);
     expect(await two.admit()).toBe(cosmetic);
-    // The sense could not tell: on to Plan, and it counts, its step started or not.
+    // The sense could not tell: on to Plan, with its issue, and it counts, its step started or not.
     await lookedAtTake(cosmetic, 'unsure');
     await end(cosmetic);
     expect(await two.admit()).toBeUndefined();
     expect(await new Queue(database.as.line, 'all').admit()).toBe(unsure);
+  });
+
+  it('counts a ticket that has not ended, though its look at take cleared', async () => {
+    const broken = await ticket('broken', '/search');
+    await ticket('degraded', '/products');
+    const one = new Queue(database.as.line, 'test', { take: 1 });
+    expect(await one.admit()).toBe(broken);
+    // Gone as it was taken, but held before it closed on that look or its issue opened: it has not ended, and counts.
+    const look = { for: 'take', outcome: 'cleared', check: 'errors on /search', carried: [], version: 'a'.repeat(40) };
+    await writer().append([event(broken, 'factory', 'signal.rechecked', look)]);
+    await database.as.line`update line set stage = 'held' where work_item = ${broken}`;
+    expect(await one.admit()).toBeUndefined();
   });
 
   it('counts a ticket the look cleared once a step had started for it', async () => {
@@ -211,7 +217,7 @@ describe('a queue with a limit', () => {
   it('counts the work items already on the line, and takes none at all with a limit of none', async () => {
     await ticket('broken', '/search');
     expect(await new Queue(database.as.line, 'test', { take: 0 }).admit()).toBeUndefined();
-    await database.as.line`insert into line (work_item, stage) values ('1001', 'ended')`;
+    await database.owner`insert into line (work_item, stage, steps) values ('1001', 'ended', 1)`;
     expect(await new Queue(database.as.line, 'test', { take: 1 }).admit()).toBeUndefined();
     expect(await new Queue(database.as.line, 'test', { take: 2 }).admit()).toBeDefined();
   });
@@ -219,7 +225,7 @@ describe('a queue with a limit', () => {
 
 describe('a queue set to take what Martin chose', () => {
   it('counts the next few from when he chose them, and takes from then on whatever was taken before', async () => {
-    await database.as.line`insert into line (work_item, stage) values ('9001', 'ended'), ('9002', 'ended')`;
+    await database.owner`insert into line (work_item, stage, steps) values ('9001', 'ended', 1), ('9002', 'ended', 1)`;
     // As the admin service stamps it, to the microsecond; the two ended came onto the line the microsecond before.
     const since = await storeClock(database.owner);
     await database.owner`update line set taken_at = ${since}::text::timestamptz - interval '1 microsecond'`;
@@ -231,9 +237,7 @@ describe('a queue set to take what Martin chose', () => {
     expect(await queue.admit()).toBeUndefined();
     queue.takes({ only: null, take: { most: 1, since } });
     expect(await queue.admit()).toBe(broken);
-    await end(broken);
-    expect(await queue.admit()).toBeUndefined();
-    // Had it closed on the look as it was taken, it would not have been one of his few.
+    // It closed on the look as it was taken: not one of his few.
     await lookedAtTake(broken, 'cleared');
     expect(await queue.admit()).toBe(degraded);
     await end(degraded);

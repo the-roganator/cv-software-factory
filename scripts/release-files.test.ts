@@ -40,6 +40,9 @@ describe('the files a release changes', () => {
     expect(readers).toEqual([
       // flagd's evaluation library's own package.json, for the version the sides were recorded with.
       'apps/factory/test/line/compare.test.ts',
+      // package.json's packageManager, for another pnpm of its major, and a package.json of its own, written for a
+      // scratch repository to run the runner image's prepare step on.
+      'apps/runner/scripts/image-check.sh',
       // A checkout's packageManager, for the pnpm it asks for, and not its version line.
       'apps/runner/src/prepare.ts',
       // package.json's packageManager, beside mise.lock's pnpm, and not its version line.

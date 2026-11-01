@@ -82,6 +82,13 @@ The line deletes a step's Jobs as the step ends, so it reads their pods' logs fi
 
 ## Trying a runner
 
+- **The image, in CI.** Every pull request that builds images runs the prepare step in the amd64 runner image it built (`check.yml`'s `image builds`, `apps/runner/scripts/image-check.sh`) as the prepare pod runs it: user 65532, a read-only root, every capability dropped, `/work`, `/tmp` and `/prepare` writable, and the pod's environment, but no network, so it depends on nothing outside and does not show the image can fetch over HTTPS. Its checkout is a small repository made for it and cloned by path: a step that reads a change, with a base to fetch and a dry run's commit to make on it, in a package that names a pnpm of the image's major but another version, as the app's does, and whose one dependency is a folder of its own, so it installs offline. It fails unless the step exits 0 and leaves the dry run's commit on the step's, the base named and that dependency installed, so an image whose prepare cannot run fails its pull request before it is pinned. The arm64 image `build.yml` also builds is not run, nor the agent step: past its fence it needs the gateway and the handback. On the Mac, after a change to the image:
+
+  ```sh
+  docker build --file apps/runner/Dockerfile --tag factory-runner:try .
+  apps/runner/scripts/image-check.sh factory-runner:try
+  ```
+
 - **The smoke run.** `POST /v1/smoke` on the line's port-forwarded API runs a coder on an off-by-one seeded in a scratch copy of the app, with the GitHub worker in a dry run.
 - **The bench.** `factory line bench <agent> <fixture>` runs one agent's step on a developer's machine, on a fixture of invented work (`line/bench/fixtures.ts`), against a gateway on the host. It runs the runner's own two steps, with no network fence, and:
   - fences a coder's patch as the line does, sending one it refuses back;

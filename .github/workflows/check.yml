@@ -437,6 +437,7 @@ jobs:
           build-contexts: ${{ steps.bases.outputs.browser }}
           push: false
           cache-from: type=gha,scope=factory-browser-amd64
+      # The runner image is kept, to run below.
       - if: env.BUILD == 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -444,4 +445,11 @@ jobs:
           file: apps/runner/Dockerfile
           build-contexts: ${{ steps.bases.outputs.runner }}
           push: false
+          load: true
+          tags: factory-runner:check
           cache-from: type=gha,scope=factory-runner-amd64
+      # A runner's prepare step, in that image, as the line's prepare pod runs it but with no network, on a checkout
+      # made here: a broken image fails here rather than at the line's next step, once it is pinned.
+      - name: Run the prepare step in the runner image
+        if: env.BUILD == 'true'
+        run: apps/runner/scripts/image-check.sh factory-runner:check

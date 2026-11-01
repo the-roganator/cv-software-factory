@@ -11,5 +11,5 @@
       "react-dom/client": ["../node_modules/preact/compat/client.d.ts"]
     }
   },
-  "include": ["src", "../../../docs/design/system/station.ts"]
+  "include": ["src", "test", "../../../docs/design/system/station.ts"]
 }

@@ -4,9 +4,9 @@
  */
 
 import { SHARES } from '@software-factory/policy/flags';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { FLAG_STEP_UP } from '../access.ts';
-import { type Answer, said, write } from '../admin.ts';
+import { type Answer, said } from '../admin.ts';
 import {
   type FlagRow,
   type FlagStage,
@@ -20,10 +20,8 @@ import {
 import { Dialog } from './Dialog.tsx';
 import { stageWords } from './Flags.tsx';
 import { Glyph } from './Glyph.tsx';
-import { useStepUp } from './StepUp.tsx';
-
-/** The most a reason may be, as `flag.staged` takes it. */
-const REASON = 200;
+import { ReasonField, Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 
 /**
  * What the admin service said when it did not make the move, in its own words, and what that means here: Kubernetes
@@ -74,20 +72,12 @@ export function FlagDialog({
   onClose: () => void;
   onMoved?: (() => void) | undefined;
 }) {
-  const stepUp = useStepUp();
   const id = useId();
   const field = useRef<HTMLTextAreaElement>(null);
   const [share, setShare] = useState<Share>(to.stage === 'share' ? to.share : 50);
   const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
-  const live = useRef(true);
-  useEffect(
-    () => () => {
-      live.current = false;
-    },
-    [],
-  );
+  const writes = useWrite(token);
+  const { busy, fresh } = writes;
   const chosen = stageAt(to.stage, share);
   const move = moveTo(row.moves, chosen) ?? { to: chosen, action: undefined };
   const { title, button } = moveWords(row, move);
@@ -98,39 +88,26 @@ export function FlagDialog({
   const act = async () => {
     const why = reason.trim();
     if (off && !why) return field.current?.focus();
-    if (busy) return;
-    setBusy(true);
-    setRefusal(undefined);
-    let refused: string | undefined;
-    const prove = async () => {
-      refused = await stepUp.prove(() => live.current);
-      return refused === undefined && live.current;
-    };
     const body = { from: row.stage, to: chosen, ...(off && { reason: why }) };
-    const got = await write(
-      `/admin/flags/${encodeURIComponent(row.name)}/stage`,
-      body,
-      token,
-      keyed ? prove : undefined,
-    );
-    // Closed while it asked: nothing more is sent, and nothing to say.
-    if (!live.current) return;
-    setBusy(false);
-    if (got.status !== 200) {
-      // Kubernetes's answer was lost, and the service could not read `flags` back: the move may have been made. The
-      // page asks again soon whether the app holds the flags, and the slider moves if its event arrives.
-      if (got.status === 504) onMoved?.();
-      return setRefusal(refused ?? refusalWords(got));
-    }
-    onMoved?.();
-    onClose();
+    const written = await writes.send(`/admin/flags/${encodeURIComponent(row.name)}/stage`, body, {
+      passkey: keyed ? 'prove' : undefined,
+      words: refusalWords,
+      done: () => {
+        onMoved?.();
+        onClose();
+        return undefined;
+      },
+    });
+    // Kubernetes's answer was lost, and the service could not read `flags` back: the move may have been made. The
+    // page asks again soon whether the app holds the flags, and the slider moves if its event arrives.
+    if (written.kind === 'refused' && written.got.status === 504) onMoved?.();
   };
 
   return (
     <Dialog
       title={title}
       kicker={
-        keyed && !stepUp.fresh ? (
+        keyed && !fresh ? (
           <>
             <Glyph name="key" className="glyph key" />
             <span className="label">Your passkey, again</span>
@@ -139,26 +116,17 @@ export function FlagDialog({
       }
       onClose={onClose}
       actions={
-        move.refused || move.action === undefined ? (
-          <button type="button" className="btn" onClick={onClose}>
-            Close
+        move.refused || move.action === undefined ? undefined : (
+          <button
+            type="button"
+            className={`btn ${off ? 'attn' : 'primary'}`}
+            disabled={off && !reason.trim()}
+            aria-disabled={busy || undefined}
+            onClick={() => void act()}
+          >
+            {button}
+            {keyed && !fresh && <Glyph name="key" className="glyph key" />}
           </button>
-        ) : (
-          <>
-            <button type="button" className="btn" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className={`btn ${off ? 'attn' : 'primary'}`}
-              disabled={off && !reason.trim()}
-              aria-disabled={busy || undefined}
-              onClick={() => void act()}
-            >
-              {button}
-              {keyed && !stepUp.fresh && <Glyph name="key" className="glyph key" />}
-            </button>
-          </>
         )
       }
     >
@@ -204,26 +172,16 @@ export function FlagDialog({
       )}
       {!move.refused && off && (
         <div className="reason">
-          <label className="label" htmlFor={`${id}-reason`}>
-            Reason
-          </label>
-          <textarea
-            ref={field}
+          <ReasonField
             id={`${id}-reason`}
-            className="field"
-            maxLength={REASON}
-            rows={2}
+            label="Reason"
             required
             value={reason}
+            onChange={setReason}
             placeholder="Why, for the audit log and the work item"
-            onChange={(event) => setReason(event.currentTarget.value)}
+            help="Visitors see your reason, with anything shaped like a secret left out."
+            field={field}
           />
-          <span className="help">
-            Visitors see your reason, with anything shaped like a secret left out.{' '}
-            <span className="chars">
-              {reason.length} / {REASON}
-            </span>
-          </span>
         </div>
       )}
       {!move.refused && move.action === 'flag.narrow' && (
@@ -238,14 +196,10 @@ export function FlagDialog({
       {!move.refused && move.action !== undefined && !off && move.action !== 'flag.narrow' && (
         <p className="help">
           The admin service then checks the app has it.
-          {keyed && !stepUp.fresh && ' Widening shows a change to more people, so it asks for your passkey again.'}
+          {keyed && !fresh && ' Widening shows a change to more people, so it asks for your passkey again.'}
         </p>
       )}
-      {refusal && (
-        <p className="dialog-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={writes.refusal} />
     </Dialog>
   );
 }

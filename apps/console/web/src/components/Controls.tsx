@@ -24,13 +24,15 @@ import { phoneInForce } from '@software-factory/policy/phone';
 import type { Profile } from '@software-factory/policy/spend';
 import { type ReactNode, useId, useState } from 'react';
 import { CONTROL_STEP_UP, PHONE_STEP_UP } from '../access.ts';
-import { type Admin, said, write } from '../admin.ts';
+import type { Admin } from '../admin.ts';
 import { AUTONOMY, money, shortWhen } from '../format.ts';
 import type { HeldAnswer } from '../held.ts';
 import type { ControlsView, FlagsView, Meter, SpendView } from '../projection/index.ts';
 import { FlagsGroup } from './Flags.tsx';
 import { Glyph } from './Glyph.tsx';
-import { type Asked, Key, useStepUp } from './StepUp.tsx';
+import { type Asked, Key } from './StepUp.tsx';
+import { Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 
 function SpendMeter({ label, meter, note }: { label: string; meter: Meter; note?: string }) {
   const share = meter.capUsd ? Math.min(100, (meter.spentUsd / meter.capUsd) * 100) : 0;
@@ -159,43 +161,24 @@ type Where = 'autonomy' | 'switches' | 'take' | 'alerts';
 
 /** Martin's writes from Controls: each change, its passkey asked for when the service asks, and a refusal kept. */
 function useChange(admin: Admin) {
-  const stepUp = useStepUp();
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<{ where: Where; text: string } | undefined>(undefined);
+  const writes = useWrite(admin.kind === 'martin' ? admin.session.token : undefined);
+  // Where the last change was pressed, so what the service said of it shows there.
+  const [pressed, setPressed] = useState<Where | undefined>(undefined);
   const change = async (where: Where, body: Change, asked: Asked): Promise<boolean> => {
-    if (admin.kind !== 'martin' || busy) return false;
-    setBusy(true);
-    setRefusal(undefined);
-    let cancelled = false;
-    const ask = async () => {
-      cancelled = !(await stepUp.ask(asked));
-      return !cancelled;
-    };
+    if (admin.kind !== 'martin' || writes.busy) return false;
+    setPressed(where);
     const path = where === 'alerts' ? '/admin/alerts/phone' : '/admin/line/controls';
-    const got = await write(path, body, admin.session.token, ask);
-    setBusy(false);
-    // Cancelled at the passkey: nothing changed, and nothing to say.
-    if (cancelled) return false;
-    if (got.status === 200) return true;
-    setRefusal({ where, text: said(got) });
-    return false;
+    return (await writes.send(path, body, { passkey: asked })).kind === 'done';
   };
-  return { busy, refusal, change, fresh: stepUp.fresh };
+  /** What the service said of the last change, if it was pressed in this group. */
+  const said = (where: Where) => (pressed === where ? writes.refusal : undefined);
+  return { busy: writes.busy, said, change, fresh: writes.fresh };
 }
 
 type Changer = ReturnType<typeof useChange>;
 
 /** Whether a change asks for the passkey again, as the access table says of the action it is. */
 const asks = (change: ControlChange) => CONTROL_STEP_UP[controlAction(change)];
-
-function Refusal({ changer, where }: { changer: Changer; where: Where }) {
-  if (changer.refusal?.where !== where) return null;
-  return (
-    <p className="controls-refusal" role="alert">
-      {changer.refusal.text}
-    </p>
-  );
-}
 
 function AutonomyGroup({ controls, viewer, changer }: { controls: ControlsView; viewer: Viewer; changer: Changer }) {
   const id = useId();
@@ -254,7 +237,7 @@ function AutonomyGroup({ controls, viewer, changer }: { controls: ControlsView; 
           </span>
         ))}
       </p>
-      <Refusal changer={changer} where="autonomy" />
+      <Refusal text={changer.said('autonomy')} />
     </div>
   );
 }
@@ -428,7 +411,7 @@ function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; 
           }
         />
       </div>
-      <Refusal changer={changer} where="switches" />
+      <Refusal text={changer.said('switches')} />
     </div>
   );
 }
@@ -458,7 +441,7 @@ function AlertsGroup({ on, viewer, changer }: { on: boolean; viewer: Viewer; cha
           }
         />
       </div>
-      <Refusal changer={changer} where="alerts" />
+      <Refusal text={changer.said('alerts')} />
     </div>
   );
 }
@@ -620,7 +603,7 @@ function TakeGroup({ controls, viewer, changer }: { controls: ControlsView; view
           )}
         </form>
       )}
-      <Refusal changer={changer} where="take" />
+      <Refusal text={changer.said('take')} />
     </div>
   );
 }

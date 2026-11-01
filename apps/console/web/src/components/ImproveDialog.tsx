@@ -13,14 +13,16 @@
  * he asked, and only Close.
  */
 import { REQUEST_WORDS, requestTitle } from '@software-factory/events';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { IMPROVEMENT_STEP_UP } from '../access.ts';
-import { type Admin, said, write } from '../admin.ts';
+import type { Admin } from '../admin.ts';
 import { when } from '../format.ts';
 import type { ImproveView } from '../projection/index.ts';
 import { Dialog } from './Dialog.tsx';
 import { Glyph } from './Glyph.tsx';
-import { Key, useStepUp } from './StepUp.tsx';
+import { Key } from './StepUp.tsx';
+import { ReasonField, Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 
 const KICKER = (
   <>
@@ -69,41 +71,30 @@ export function ImproveDialog({
 
 function MartinsForm({ token, improve, onClose }: { token: string; improve: ImproveView; onClose: () => void }) {
   const id = useId();
-  const stepUp = useStepUp();
   // One id for these words, however many times they are sent: the service opens one work item for them, and refuses
   // the id again (409) once it has. Words changed are another request, with an id of their own.
   const [request, setRequest] = useState(() => crypto.randomUUID());
   const [words, setWords] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
-  const live = useRef(true);
-  useEffect(
-    () => () => {
-      live.current = false;
-    },
-    [],
-  );
+  const writes = useWrite(token);
   const asked = words.trim();
-  const keyed = IMPROVEMENT_STEP_UP['improvement.request'] && !stepUp.fresh;
+  const keyed = IMPROVEMENT_STEP_UP['improvement.request'] && !writes.fresh;
 
   const send = async () => {
-    if (!asked || busy) return;
-    setBusy(true);
-    setRefusal(undefined);
-    let refused: string | undefined;
-    const prove = async () => {
-      refused = await stepUp.prove(() => live.current);
-      return refused === undefined && live.current;
-    };
-    const got = await write('/admin/improvements', { id: request, words: asked }, token, prove);
-    // Closed while it asked: nothing more is sent, and nothing to say.
-    if (!live.current) return;
-    setBusy(false);
-    // Made already: the answer to an earlier press was lost, and these words opened their work item then.
-    const made = got.status === 409 && got.body?.refused === 'request';
-    if (got.status !== 200 && !made) return setRefusal(refused ?? said(got));
-    // Asked: its row at Plan and its card on the reel arrive with its events. Nothing else announces it.
-    onClose();
+    if (!asked) return;
+    await writes.send(
+      '/admin/improvements',
+      { id: request, words: asked },
+      {
+        passkey: 'prove',
+        // Made already: the answer to an earlier press was lost, and these words opened their work item then.
+        accept: (got) => got.status === 200 || (got.status === 409 && got.body?.refused === 'request'),
+        // Asked: its row at Plan and its card on the reel arrive with its events. Nothing else announces it.
+        done: () => {
+          onClose();
+          return undefined;
+        },
+      },
+    );
   };
 
   return (
@@ -112,21 +103,16 @@ function MartinsForm({ token, improve, onClose }: { token: string; improve: Impr
       kicker={KICKER}
       onClose={onClose}
       actions={
-        <>
-          <button type="button" className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn primary"
-            disabled={!asked}
-            aria-disabled={busy || undefined}
-            onClick={() => void send()}
-          >
-            Request
-            {keyed && <Key />}
-          </button>
-        </>
+        <button
+          type="button"
+          className="btn primary"
+          disabled={!asked}
+          aria-disabled={writes.busy || undefined}
+          onClick={() => void send()}
+        >
+          Request
+          {keyed && <Key />}
+        </button>
       }
     >
       <p>
@@ -134,32 +120,27 @@ function MartinsForm({ token, improve, onClose }: { token: string; improve: Impr
         is written.
       </p>
       <div className="reason">
-        <label className="label" htmlFor={`${id}-words`}>
-          What you want
-        </label>
-        <textarea
+        <ReasonField
           id={`${id}-words`}
-          maxLength={REQUEST_WORDS}
+          label="What you want"
+          limit={REQUEST_WORDS}
           rows={4}
           required
           value={words}
-          placeholder="What should change, for whom, and why"
-          aria-describedby={`${id}-title`}
-          onChange={(event) => {
-            setWords(event.currentTarget.value);
+          onChange={(value) => {
+            setWords(value);
             setRequest(crypto.randomUUID());
           }}
+          placeholder="What should change, for whom, and why"
+          help={
+            asked ? (
+              <>Titled “{requestTitle(asked)}” until the planner names it in the spec.</>
+            ) : (
+              'Its first sentence titles it until the planner names it in the spec.'
+            )
+          }
+          helpId={`${id}-title`}
         />
-        <span className="help" id={`${id}-title`}>
-          {asked ? (
-            <>Titled “{requestTitle(asked)}” until the planner names it in the spec.</>
-          ) : (
-            'Its first sentence titles it until the planner names it in the spec.'
-          )}{' '}
-          <span className="chars">
-            {words.length} / {REQUEST_WORDS}
-          </span>
-        </span>
       </div>
       <Facts improve={improve} martin />
       <p className="help">
@@ -167,11 +148,7 @@ function MartinsForm({ token, improve, onClose }: { token: string; improve: Impr
           ? 'Requesting widens what the line does, so it asks for your passkey again, and tells your phone.'
           : 'Requesting widens what the line does, so it tells your phone.'}
       </p>
-      {refusal && (
-        <p className="dialog-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={writes.refusal} />
     </Dialog>
   );
 }
@@ -180,16 +157,7 @@ function HowMartinAsks({ improve, onClose }: { improve: ImproveView; onClose: ()
   const id = useId();
   const { latest } = improve;
   return (
-    <Dialog
-      title="How Martin asks"
-      kicker={KICKER}
-      onClose={onClose}
-      actions={
-        <button type="button" className="btn" onClick={onClose}>
-          Close
-        </button>
-      }
-    >
+    <Dialog title="How Martin asks" kicker={KICKER} onClose={onClose}>
       <p>
         Martin asks here, in his own words. The planner turns it into a spec, which waits for him before any code is
         written.

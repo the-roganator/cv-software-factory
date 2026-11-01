@@ -211,7 +211,7 @@ table.agents {
   display: flex;
   gap: 8px;
 }
-.save-bar .dialog-refusal {
+.save-bar .write-refusal {
   flex-basis: 100%;
 }
 

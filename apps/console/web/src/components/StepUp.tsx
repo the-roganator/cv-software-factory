@@ -14,6 +14,7 @@ import { FRESH_MINUTES } from '../access.ts';
 import { post, type Session, said } from '../admin.ts';
 import { Dialog } from './Dialog.tsx';
 import { Glyph } from './Glyph.tsx';
+import { Refusal } from './Words.tsx';
 
 /** What the step-up dialog says of an action: its name, what will happen, and why it asks ("Promoting ships to everyone"). */
 export interface Asked {
@@ -185,14 +186,9 @@ function StepUpDialog({ asked, token, onAnswer }: { asked: Asked; token: string;
       }
       onClose={() => onAnswer(false)}
       actions={
-        <>
-          <button type="button" className="btn" onClick={() => onAnswer(false)}>
-            Cancel
-          </button>
-          <button type="button" className="btn primary" disabled={busy} onClick={() => void give()}>
-            Use your passkey
-          </button>
-        </>
+        <button type="button" className="btn primary" disabled={busy} onClick={() => void give()}>
+          Use your passkey
+        </button>
       }
     >
       <div className="what">{asked.what}</div>
@@ -200,11 +196,7 @@ function StepUpDialog({ asked, token, onAnswer }: { asked: Asked; token: string;
         {asked.why}, so it needs your passkey again. Once given, it stays fresh for five minutes, for this and anything
         else that asks.
       </p>
-      {refusal && (
-        <p className="dialog-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={refusal} />
     </Dialog>
   );
 }

@@ -1,0 +1,174 @@
+import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * The Makefile makes each password the cluster keeps (the store's roles, Grafana's admin) once, and never again while
+ * the Secret holds one. So a password it stored empty would be kept by every later run, and the role it is for could
+ * not log in until someone deleted the Secret by hand. It stores one only once it has it, through stdin, never on a
+ * command line, and makes again a Secret that holds an empty one.
+ *
+ * Every Secret it renders and applies, those included, it applies server-side: a client-side apply keeps a copy of the
+ * Secret's data in its last-applied annotation, where the Anthropic key or the answer key would show wherever the Secret
+ * is printed. The signing keys, made once, it creates outright, which keeps no copy either.
+ */
+
+const MAKEFILE = join(import.meta.dirname, '../Makefile');
+
+type Cluster = 'holds one' | 'holds an empty one' | 'has none' | 'cannot be read';
+
+/** The Makefile's `password` helper, run by make itself against a kubectl that logs each call and an openssl stub. */
+async function password(cluster: Cluster, { openssl = 'works', call = 'factory,postgres-console' } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'password-'));
+  const log = join(dir, 'calls');
+  const stdin = join(dir, 'stdin');
+  const applied = join(dir, 'applied');
+  const held = { 'holds one': 'c2VjcmV0', 'holds an empty one': '', 'has none': '', 'cannot be read': '' }[cluster];
+  const kubectl = join(dir, 'kubectl');
+  await writeFile(
+    kubectl,
+    `#!/usr/bin/env bash
+# An apply reads its Secret from the create before it, so it is logged once that create has finished.
+[ "$1" = apply ] && cat > ${JSON.stringify(applied)}
+echo "$*" >> ${JSON.stringify(log)}
+case "$1 $2 $3 $4" in
+  "get namespace"*) echo namespace/factory ;;
+  *"get secret"*) ${cluster === 'cannot be read' ? 'echo "Unable to connect to the server" >&2; exit 1' : `printf %s '${held}'`} ;;
+  *"create secret"*) cat > ${JSON.stringify(stdin)}; echo 'kind: Secret' ;;
+esac
+`,
+  );
+  await writeFile(
+    join(dir, 'openssl'),
+    `#!/usr/bin/env bash\n${{ works: 'echo 0123456789abcdef0123456789abcdef0123456789abcdef', fails: 'exit 1', 'says nothing': 'exit 0' }[openssl]}\n`,
+  );
+  await chmod(kubectl, 0o755);
+  await chmod(join(dir, 'openssl'), 0o755);
+  const makefile = join(dir, 'Makefile');
+  await writeFile(makefile, `include ${MAKEFILE}\npw:\n\t@$(call password,${call})\n`);
+  // Not the outer make's flags (`make check` runs the tests), which would have this one talk about directories and jobs.
+  const { MAKEFLAGS, MFLAGS, MAKELEVEL, ...env } = process.env;
+  try {
+    const result = await promisify(execFile)('make', ['-s', '-f', makefile, `KUBECTL=${kubectl}`, 'pw'], {
+      // From the repository, where the Makefile's own commands (`node scripts/local-ca.ts dir`) are found.
+      cwd: join(import.meta.dirname, '..'),
+      env: { ...env, PATH: `${dir}:${env.PATH}` },
+    }).then(
+      ({ stdout, stderr }) => ({ code: 0, out: stdout + stderr }),
+      (e: { code: number | string; stdout?: string; stderr?: string }) => {
+        if (typeof e.code === 'string') throw e; // make itself did not run
+        return { code: e.code, out: `${e.stdout}${e.stderr}` };
+      },
+    );
+    const calls = (await readFile(log, 'utf-8')).trim().split('\n');
+    const stored = await readFile(stdin, 'utf-8').catch(() => undefined);
+    const apply = await readFile(applied, 'utf-8').catch(() => undefined);
+    // What the create renders is what the apply is given, and nothing is applied that was not rendered.
+    expect(apply).toBe(stored === undefined ? undefined : 'kind: Secret\n');
+    return { ...result, calls, stored };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const read = 'get secret postgres-console -o jsonpath={.data.password} --ignore-not-found';
+const made = [
+  'get namespace factory -o name --ignore-not-found',
+  `-n factory ${read}`,
+  '-n factory create secret generic postgres-console --from-file=password=/dev/stdin --dry-run=client -o yaml',
+  'apply --server-side --field-manager=make --force-conflicts -f -',
+];
+
+describe('making a password from the Makefile', () => {
+  it('leaves a Secret that holds one alone', async () => {
+    expect(await password('holds one')).toEqual({
+      code: 0,
+      out: '',
+      calls: made.slice(0, 2),
+      stored: undefined,
+    });
+  });
+
+  it.each(['has none', 'holds an empty one'] as const)(
+    'makes one when the cluster %s, through stdin',
+    async (cluster) => {
+      expect(await password(cluster)).toEqual({
+        code: 0,
+        out: '',
+        calls: made,
+        stored: '0123456789abcdef0123456789abcdef0123456789abcdef',
+      });
+    },
+  );
+
+  it.each(['fails', 'says nothing'] as const)('stores nothing, and fails, when openssl %s', async (openssl) => {
+    const result = await password('has none', { openssl });
+    expect(result.code).not.toBe(0);
+    expect(result.calls).toEqual(made.slice(0, 2));
+    expect(result.stored).toBeUndefined();
+  });
+
+  it('stops when the Secret cannot be read, and stores nothing', async () => {
+    const result = await password('cannot be read');
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain('Unable to connect to the server');
+    expect(result.calls).toEqual(made.slice(0, 2));
+  });
+
+  it('keeps the password under the key named, beside any more data', async () => {
+    const result = await password('has none', {
+      call: 'telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin',
+    });
+    expect(result.calls.slice(1)).toEqual([
+      '-n telemetry get secret grafana-admin -o jsonpath={.data.admin-password} --ignore-not-found',
+      '-n telemetry create secret generic grafana-admin --from-file=admin-password=/dev/stdin --from-literal=admin-user=admin --dry-run=client -o yaml',
+      'apply --server-side --field-manager=make --force-conflicts -f -',
+    ]);
+    expect(result.stored).toBe('0123456789abcdef0123456789abcdef0123456789abcdef');
+  });
+});
+
+describe('every Secret the Makefile writes', () => {
+  // Each recipe's lines, with a backslash's continuation joined on, so a create and the apply it is piped to are one.
+  const commands = readFileSync(MAKEFILE, 'utf-8').replaceAll('\\\n', ' ').split('\n');
+
+  it('is created outright or applied server-side, never applied client-side', () => {
+    const writes = commands.flatMap((line) =>
+      [...line.matchAll(/create secret (?:generic|tls) (\S+)([^|]*)(?:\|([^|]*))?/g)].map(([, name, flags, next]) => ({
+        name,
+        rendered: /--dry-run/.test(flags ?? ''),
+        next: (next ?? '').trim(),
+      })),
+    );
+    // Each Secret the Makefile writes, so one moved out of it, or a new one, is seen here.
+    expect([...new Set(writes.map(({ name }) => name))].sort()).toEqual(
+      [
+        '$(2)',
+        'answer-key',
+        'anthropic',
+        'console-tls',
+        'github-app',
+        'judgements-token',
+        'postgres',
+        'pushover',
+        'refusal-signing-key',
+        'share-signing-key',
+        'typesafe',
+      ].sort(),
+    );
+    for (const write of writes) {
+      if (write.rendered) expect(write.next, write.name).toMatch(/^\$\(apply-secret\)(\s|$)/);
+      else expect(write.next, write.name).not.toMatch(/\bapply\b/);
+    }
+  });
+
+  it('applies server-side, taking over the fields a client-side apply wrote', () => {
+    expect(readFileSync(MAKEFILE, 'utf-8')).toMatch(
+      /^apply-secret = \$\(KUBECTL\) apply --server-side --field-manager=make --force-conflicts -f -$/m,
+    );
+  });
+});

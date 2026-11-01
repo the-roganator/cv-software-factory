@@ -22,10 +22,10 @@ LOCAL_CA = $(or $(shell node scripts/local-ca.ts dir),$(error node cannot say wh
 # $(call as-martin,role,command): run a command on the host as one of Martin's own roles in the store, through a
 # port-forward to Postgres: `operator` for his commands, which only his roles may append
 # (packages/store/migrations/0023_martins-commands.sql), and `enrol` for `factory admin enrol`. Its password is in a
-# Secret no pod reads, made here if it is not there, and set on the role here as the database's owner
+# Secret no pod reads, made here if it holds none, and set on the role here as the database's owner
 # (packages/store/src/operator.ts), so it works on any cluster as soon as it is made. A store not yet migrated has no
 # operator, and the owner appends there; it cannot enrol at all.
-as-martin = $(call secret,factory,postgres-$(1),--from-literal=password="$$(openssl rand -hex 24)") && \
+as-martin = $(call password,factory,postgres-$(1)) && \
 	{ $(KUBECTL) -n factory port-forward svc/postgres 15432:5432 >/dev/null 2>&1 & forward=$$!; \
 	trap 'kill $$forward' EXIT; sleep 2; \
 	secret() { $(KUBECTL) -n factory get secret "$$1" -o jsonpath='{.data.password}' | base64 -d; }; \
@@ -44,9 +44,20 @@ as-operator = $(call as-martin,operator,$(1))
 namespace = { made="$$($(KUBECTL) get namespace $(1) -o name --ignore-not-found)" && \
 	{ [ -n "$$made" ] || $(KUBECTL) create namespace $(1) >/dev/null; }; }
 
-# $(call secret,namespace,name,data): create a Secret unless it exists.
-secret = $(call namespace,$(1)) && \
-	{ $(KUBECTL) -n $(1) get secret $(2) >/dev/null 2>&1 || $(KUBECTL) -n $(1) create secret generic $(2) $(3); }
+# $(apply-secret): apply the Secret on stdin, server-side, which keeps its data in the Secret alone: a client-side apply
+# keeps a copy in the Secret's last-applied annotation too, and a server-side apply over one takes that copy away.
+apply-secret = $(KUBECTL) apply --server-side --field-manager=make --force-conflicts -f -
+
+# $(call password,namespace,name[,key[,more]]): give a Secret a random password under key (`password` unless named), made
+# once, with any more data. Made only when the cluster says the Secret holds none there: a Secret with an empty one, or
+# none, is made again, and any other failure to read it stops here. The password goes through stdin, never a command
+# line, and is checked before it is stored, so a failed openssl stops here rather than store an empty one that each
+# later run would keep.
+password = $(call namespace,$(1)) && \
+	{ held="$$($(KUBECTL) -n $(1) get secret $(2) -o jsonpath='{.data.$(or $(3),password)}' --ignore-not-found)" && \
+	{ [ -n "$$held" ] || { fresh="$$(openssl rand -hex 24)" && [ -n "$$fresh" ] && printf %s "$$fresh" | \
+		$(KUBECTL) -n $(1) create secret generic $(2) --from-file=$(or $(3),password)=/dev/stdin $(4) --dry-run=client -o yaml | \
+		$(apply-secret) >/dev/null; }; }; }
 
 .DEFAULT_GOAL := help
 .PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
@@ -66,12 +77,12 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 		--kube-context $(CONTEXT) --namespace argocd --create-namespace \
 		--values deploy/argocd/values.yaml --wait --timeout 5m --hide-notes
 	@# Passwords live only in the cluster: made here once, never committed.
-	@$(call secret,factory,postgres,--from-literal=password="$$(openssl rand -hex 24)")
-	@$(call secret,factory,postgres-console,--from-literal=password="$$(openssl rand -hex 24)")
-	@$(call secret,factory,postgres-metrics,--from-literal=password="$$(openssl rand -hex 24)")
-	@$(call secret,factory,postgres-admin,--from-literal=password="$$(openssl rand -hex 24)")
+	@$(call password,factory,postgres)
+	@$(call password,factory,postgres-console)
+	@$(call password,factory,postgres-metrics)
+	@$(call password,factory,postgres-admin)
 	@# The proofs' role, which `make guardrails` connects as from the Mac; the migrate Job sets it.
-	@$(call secret,factory,postgres-proofs,--from-literal=password="$$(openssl rand -hex 24)")
+	@$(call password,factory,postgres-proofs)
 	@$(MAKE) --no-print-directory worker-secrets
 	@$(MAKE) --no-print-directory gateway-key
 	@$(MAKE) --no-print-directory github-key
@@ -80,7 +91,7 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory share-key
 	@$(MAKE) --no-print-directory refusal-key
 	@$(MAKE) --no-print-directory judgements-token
-	@$(call secret,telemetry,grafana-admin,--from-literal=admin-user=admin --from-literal=admin-password="$$(openssl rand -hex 24)")
+	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
 	sed 's|targetRevision: main|targetRevision: $(REVISION)|' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
 	@echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
@@ -107,7 +118,7 @@ local-tls: ## Make the console's certificate (and its local authority) if due, h
 	@node scripts/local-ca.ts trust
 	@$(call namespace,factory)
 	@$(KUBECTL) -n factory create secret tls console-tls --cert="$(LOCAL_CA)/tls.crt" --key="$(LOCAL_CA)/tls.key" \
-		--dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
+		--dry-run=client -o yaml | $(apply-secret) >/dev/null
 
 untrust-ca: ## Stop the Mac trusting the local certificate authority, and delete it; the next `make up` makes another
 	@node scripts/local-ca.ts untrust
@@ -120,12 +131,12 @@ gateway-key:
 	@key="$${TYPESAFE_API_KEY:-$$(security find-generic-password -s typesafe-api-key -w 2>/dev/null)}"; \
 		if [ -n "$$key" ]; then \
 			printf %s "$$key" | $(KUBECTL) -n factory create secret generic typesafe --from-file=api-key=/dev/stdin --dry-run=client -o yaml | \
-				$(KUBECTL) apply -f - >/dev/null && echo "  The gateway has the TypeSafe key, so it records what Jev answers."; \
+				$(apply-secret) >/dev/null && echo "  The gateway has the TypeSafe key, so it records what Jev answers."; \
 		else echo "  No TypeSafe key (TYPESAFE_API_KEY, or the Keychain's typesafe-api-key): the gateway replays cassettes only."; fi
 	@key="$${ANTHROPIC_API_KEY:-$$(security find-generic-password -s anthropic-api-key -w 2>/dev/null)}"; \
 		if [ -n "$$key" ]; then \
 			printf %s "$$key" | $(KUBECTL) -n factory create secret generic anthropic --from-file=api-key=/dev/stdin --dry-run=client -o yaml | \
-				$(KUBECTL) apply -f - >/dev/null && echo "  The gateway has the Anthropic key, so agents' calls reach Claude."; \
+				$(apply-secret) >/dev/null && echo "  The gateway has the Anthropic key, so agents' calls reach Claude."; \
 		else echo "  No Anthropic key (ANTHROPIC_API_KEY, or the Keychain's anthropic-api-key): agents' calls to Claude replay only."; fi
 
 # The factory's GitHub App key, from the macOS Keychain (base64, because the Keychain prints a value with newlines as
@@ -135,7 +146,7 @@ github-key:
 	@if security find-generic-password -s factory-github-app-key >/dev/null 2>&1; then \
 			security find-generic-password -s factory-github-app-key -w | base64 -d | \
 				$(KUBECTL) -n factory create secret generic github-app --from-file=private-key=/dev/stdin --dry-run=client -o yaml | \
-				$(KUBECTL) apply -f - >/dev/null && echo "  The GitHub worker has the App's key, so it acts as the factory in GitHub."; \
+				$(apply-secret) >/dev/null && echo "  The GitHub worker has the App's key, so it acts as the factory in GitHub."; \
 		else echo "  No App key (the Keychain's factory-github-app-key): the GitHub worker reads and writes nothing."; fi
 
 # Pushover's application token and Martin's user key, from the macOS Keychain, go to Alertmanager the same way: through
@@ -149,7 +160,7 @@ pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-a
 			$(call namespace,telemetry) && \
 			printf 'app-token=%s\nuser-key=%s\n' "$$token" "$$user" | \
 				$(KUBECTL) -n telemetry create secret generic pushover --from-env-file=/dev/stdin --dry-run=client -o yaml | \
-				$(KUBECTL) apply -f - >/dev/null && echo "  Alertmanager has Pushover's keys, so pages and notifications reach Martin's phone."; \
+				$(apply-secret) >/dev/null && echo "  Alertmanager has Pushover's keys, so pages and notifications reach Martin's phone."; \
 		else $(KUBECTL) -n telemetry delete secret pushover --ignore-not-found >/dev/null || \
 				echo "  Could not delete the old pushover Secret: Alertmanager may still page with the keys it had."; \
 			echo "  No Pushover keys (the Keychain's pushover-app-token and pushover-user-key): nothing reaches Martin's phone."; fi
@@ -162,17 +173,15 @@ pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-a
 # when Argo CD next syncs, so on a cluster made before the scoreboard, run this before the deploy that brings it.
 scoreboard-secrets: node_modules ## Give the scoreboard its password, and the answer key from the private checkout (PRIVATE_DIR)
 	@$(call namespace,scoreboard)
-	@$(KUBECTL) -n factory get secret postgres-scoreboard >/dev/null 2>&1 || \
-		printf %s "$$(openssl rand -hex 24)" | \
-		$(KUBECTL) -n factory create secret generic postgres-scoreboard --from-file=password=/dev/stdin >/dev/null
+	@$(call password,factory,postgres-scoreboard)
 	@password="$$($(KUBECTL) -n factory get secret postgres-scoreboard -o jsonpath='{.data.password}' | base64 -d)" && \
 		[ -n "$$password" ] && printf %s "$$password" | \
 		$(KUBECTL) -n scoreboard create secret generic postgres --from-file=password=/dev/stdin --dry-run=client -o yaml | \
-		$(KUBECTL) apply -f - >/dev/null
+		$(apply-secret) >/dev/null
 	@if [ -d "$(PRIVATE_DIR)/defects" ]; then \
 			key="$$(node scripts/answer-key.ts "$(PRIVATE_DIR)")" && printf %s "$$key" | \
 				$(KUBECTL) -n scoreboard create secret generic answer-key --from-file=key.json=/dev/stdin --dry-run=client -o yaml | \
-				$(KUBECTL) apply -f - >/dev/null && echo "  The scoreboard has the answer key, so it counts the tickets."; \
+				$(apply-secret) >/dev/null && echo "  The scoreboard has the answer key, so it counts the tickets."; \
 		else $(KUBECTL) -n scoreboard delete secret answer-key --ignore-not-found >/dev/null && \
 			echo "  No private checkout at $(PRIVATE_DIR): no answer key, and the scoreboard is off."; fi
 	@$(KUBECTL) -n scoreboard delete pod -l app.kubernetes.io/name=scoreboard --ignore-not-found >/dev/null
@@ -188,7 +197,7 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the key.
 	@made="$$($(KUBECTL) -n factory get secret share-signing-key -o name --ignore-not-found)" || exit 1; \
 	if [ -z "$$made" ]; then \
-		key="$$(node scripts/share-key.ts new)" && printf '%s\n' "$$key" | \
+		key="$$(node scripts/share-key.ts new)" && [ -n "$$key" ] && printf '%s\n' "$$key" | \
 			$(KUBECTL) -n factory create secret generic share-signing-key --from-file=private-key=/dev/stdin >/dev/null && \
 		$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=traffic --ignore-not-found >/dev/null && \
 		echo "  The traffic generator has a new signing key, so it signs an id on each request."; fi
@@ -209,7 +218,7 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the key.
 	@made="$$($(KUBECTL) -n factory get secret refusal-signing-key -o name --ignore-not-found)" || exit 1; \
 	if [ -z "$$made" ]; then \
-		key="$$(node scripts/share-key.ts new)" && printf '%s\n' "$$key" | \
+		key="$$(node scripts/share-key.ts new)" && [ -n "$$key" ] && printf '%s\n' "$$key" | \
 			$(KUBECTL) -n factory create secret generic refusal-signing-key --from-file=private-key=/dev/stdin >/dev/null || exit 1; \
 	fi; \
 	was="$$($(KUBECTL) -n factory get configmap refusal-key -o jsonpath='{.data.public-key}' --ignore-not-found)" || exit 1; \
@@ -229,15 +238,18 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 # a command line. Made once, and made again only when the Secret holds no token this target would make (none, or one
 # shorter than 32 hex characters); any failure to read it stops here, and keeps it. Both read it when they start, so a
 # new one restarts both: triage needs it to start, and the gateway answers every judgement 401 until it has it.
-# Restarting the gateway cuts any agent's call in flight; it happens only when the token is made.
+# Restarting the gateway cuts any agent's call in flight; it happens only when the token is made. A token kept is applied
+# again as it is, which takes away any copy of it an earlier client-side apply left in the Secret's annotation.
 judgements-token: ## Give triage and the gateway the token judgements take, made once
 	@$(call namespace,factory)
 	@held="$$($(KUBECTL) -n factory get secret judgements-token -o jsonpath='{.data.token}' --ignore-not-found)" || exit 1; \
 	bytes="$$(printf %s "$$held" | base64 -d | wc -c)" && others="$$(printf %s "$$held" | base64 -d | tr -d 0-9a-f | wc -c)" || exit 1; \
-	if [ "$$bytes" -lt 32 ] || [ "$$others" -ne 0 ]; then \
-		token="$$(openssl rand -hex 32)" && printf %s "$$token" | \
-			$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
-			$(KUBECTL) apply -f - >/dev/null && \
+	if [ "$$bytes" -lt 32 ] || [ "$$others" -ne 0 ]; then token="$$(openssl rand -hex 32)" && [ -n "$$token" ] || exit 1; new=1; \
+	else token="$$(printf %s "$$held" | base64 -d)"; new=; fi; \
+	printf %s "$$token" | \
+		$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
+		$(apply-secret) >/dev/null || exit 1; \
+	if [ -n "$$new" ]; then \
 		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (gateway,triage)' --ignore-not-found >/dev/null && \
 		echo "  Triage and the gateway have a new judgements token, so triage's judgements are taken and no one else's."; fi
 
@@ -246,12 +258,7 @@ judgements-token: ## Give triage and the gateway the token judgements take, made
 # workers had roles, run this before the deploy whose image brings their migration, or their roles have no password
 # until the sync after it.
 worker-secrets: ## Give each worker that uses the store a password for its own role
-	@for worker in $(STORE_WORKERS); do \
-		$(KUBECTL) -n factory get secret postgres-$$worker >/dev/null 2>&1 || \
-			printf %s "$$(openssl rand -hex 24)" | \
-			$(KUBECTL) -n factory create secret generic postgres-$$worker --from-file=password=/dev/stdin >/dev/null || \
-			exit 1; \
-	done
+	@for worker in $(STORE_WORKERS); do $(call password,factory,postgres-$$worker) || exit 1; done
 
 egress: ## Prove the fences: only the gateway, the GitHub worker and Kyverno leave the cluster; the scoreboard reaches Postgres alone, and no service account of ours may read its Secrets (needs the workers running)
 	scripts/egress.sh

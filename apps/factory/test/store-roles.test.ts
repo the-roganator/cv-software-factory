@@ -66,7 +66,7 @@ describe('the store’s passwords', () => {
     expect(makefile.match(/^STORE_WORKERS := (.+)$/m)?.[1]?.split(' ')).toEqual([...WORKERS]);
     expect(makefile).toMatch(/^up:[^\n]*\n(?:\t[^\n]*\n)*\t@\$\(MAKE\) --no-print-directory worker-secrets$/m);
     expect(makefile).toMatch(/^worker-secrets: .*## /m);
-    expect(makefile).toMatch(/create secret generic postgres-\$\$worker --from-file=password=\/dev\/stdin/);
+    expect(makefile).toMatch(/\$\(call password,factory,postgres-\$\$worker\)/);
   });
 });
 
@@ -109,7 +109,7 @@ describe("Martin's own role", () => {
 
   it('has its password from a Secret no pod reads, which the make targets make and set as the owner', async () => {
     const makefile = await readFile(join(DEPLOY, '../Makefile'), 'utf-8');
-    expect(makefile).toMatch(/^as-martin = \$\(call secret,factory,postgres-\$\(1\),/m);
+    expect(makefile).toMatch(/^as-martin = \$\(call password,factory,postgres-\$\(1\)\)/m);
     expect(makefile).toMatch(/^as-operator = \$\(call as-martin,operator,\$\(1\)\)$/m);
     expect(makefile).toMatch(
       /secret postgres-\$\(1\) \| PGUSER=factory .*\n.*node packages\/store\/src\/operator\.ts factory_\$\(1\)/,
@@ -130,7 +130,7 @@ describe('the enrolment’s role', () => {
 describe('the admin service’s role', () => {
   it('has its password from a Secret `make up` makes, which the migrate Job sets', async () => {
     const makefile = await readFile(join(DEPLOY, '../Makefile'), 'utf-8');
-    expect(makefile).toMatch(/^\t@\$\(call secret,factory,postgres-admin,/m);
+    expect(makefile).toMatch(/^\t@\$\(call password,factory,postgres-admin\)/m);
     expect((await migrateJob()).find((e) => e.name === 'ADMIN_PASSWORD')?.valueFrom?.secretKeyRef).toEqual({
       name: 'postgres-admin',
       key: 'password',
@@ -142,7 +142,7 @@ describe('the admin service’s role', () => {
 describe('the proofs’ role', () => {
   it('has its password from a Secret `make up` makes, which the migrate Job alone reads and sets', async () => {
     const makefile = await readFile(join(DEPLOY, '../Makefile'), 'utf-8');
-    expect(makefile).toMatch(/^\t@\$\(call secret,factory,postgres-proofs,/m);
+    expect(makefile).toMatch(/^\t@\$\(call password,factory,postgres-proofs\)/m);
     expect((await migrateJob()).find((e) => e.name === 'PROOFS_PASSWORD')?.valueFrom?.secretKeyRef).toEqual({
       name: 'postgres-proofs',
       key: 'password',

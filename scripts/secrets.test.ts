@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,9 @@ import { describe, expect, it } from 'vitest';
  * the Secret holds one. So a password it stored empty would be kept by every later run, and the role it is for could
  * not log in until someone deleted the Secret by hand. It stores one only once it has it, through stdin, never on a
  * command line, and makes again a Secret that holds an empty one.
+ *
+ * Every Secret it writes, those included, it applies server-side: a client-side apply keeps a copy of the Secret's data
+ * in its last-applied annotation, where the Anthropic key or the answer key would show wherever the Secret is printed.
  */
 
 type Cluster = 'holds one' | 'holds an empty one' | 'has none' | 'cannot be read';
@@ -19,16 +23,19 @@ async function password(cluster: Cluster, { openssl = 'works', call = 'factory,p
   const dir = await mkdtemp(join(tmpdir(), 'password-'));
   const log = join(dir, 'calls');
   const stdin = join(dir, 'stdin');
+  const applied = join(dir, 'applied');
   const held = { 'holds one': 'c2VjcmV0', 'holds an empty one': '', 'has none': '', 'cannot be read': '' }[cluster];
   const kubectl = join(dir, 'kubectl');
   await writeFile(
     kubectl,
     `#!/usr/bin/env bash
+# An apply reads its Secret from the create before it, so it is logged once that create has finished.
+[ "$1" = apply ] && cat > ${JSON.stringify(applied)}
 echo "$*" >> ${JSON.stringify(log)}
 case "$1 $2 $3 $4" in
   "get namespace"*) echo namespace/factory ;;
   *"get secret"*) ${cluster === 'cannot be read' ? 'echo "Unable to connect to the server" >&2; exit 1' : `printf %s '${held}'`} ;;
-  *"create secret"*) cat > ${JSON.stringify(stdin)} ;;
+  *"create secret"*) cat > ${JSON.stringify(stdin)}; echo 'kind: Secret' ;;
 esac
 `,
   );
@@ -54,6 +61,9 @@ esac
     );
     const calls = (await readFile(log, 'utf-8')).trim().split('\n');
     const stored = await readFile(stdin, 'utf-8').catch(() => undefined);
+    const apply = await readFile(applied, 'utf-8').catch(() => undefined);
+    // What the create renders is what the apply is given, and nothing is applied that was not rendered.
+    expect(apply).toBe(stored === undefined ? undefined : 'kind: Secret\n');
     return { ...result, calls, stored };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -64,8 +74,8 @@ const read = 'get secret postgres-console -o jsonpath={.data.password} --ignore-
 const made = [
   'get namespace factory -o name --ignore-not-found',
   `-n factory ${read}`,
-  '-n factory delete secret postgres-console --ignore-not-found',
-  '-n factory create secret generic postgres-console --from-file=password=/dev/stdin',
+  '-n factory create secret generic postgres-console --from-file=password=/dev/stdin --dry-run=client -o yaml',
+  'apply --server-side --field-manager=make --force-conflicts -f -',
 ];
 
 describe('making a password from the Makefile', () => {
@@ -110,9 +120,30 @@ describe('making a password from the Makefile', () => {
     });
     expect(result.calls.slice(1)).toEqual([
       '-n telemetry get secret grafana-admin -o jsonpath={.data.admin-password} --ignore-not-found',
-      '-n telemetry delete secret grafana-admin --ignore-not-found',
-      '-n telemetry create secret generic grafana-admin --from-file=admin-password=/dev/stdin --from-literal=admin-user=admin',
+      '-n telemetry create secret generic grafana-admin --from-file=admin-password=/dev/stdin --from-literal=admin-user=admin --dry-run=client -o yaml',
+      'apply --server-side --field-manager=make --force-conflicts -f -',
     ]);
     expect(result.stored).toBe('0123456789abcdef0123456789abcdef0123456789abcdef');
+  });
+});
+
+describe('every Secret the Makefile writes', () => {
+  // Each recipe's lines, with a backslash's continuation joined on, so a create and the apply it is piped to are one.
+  const commands = readFileSync('Makefile', 'utf-8').replaceAll('\\\n', ' ').split('\n');
+  const creates = commands.filter((line) => /create secret/.test(line));
+
+  it('is created outright or applied server-side, never applied client-side', () => {
+    expect(creates.length).toBeGreaterThan(8);
+    for (const line of creates) {
+      const rendered = /create secret[^|]*--dry-run=client -o yaml\s*\|\s*(\S+)/.exec(line);
+      if (rendered) expect(rendered[1], line).toBe('$(apply-secret)');
+      else expect(line, line).not.toMatch(/create secret[^|]*\|\s*\$\(KUBECTL\) apply/);
+    }
+  });
+
+  it('applies server-side, taking over the fields a client-side apply wrote', () => {
+    expect(readFileSync('Makefile', 'utf-8')).toMatch(
+      /^apply-secret = \$\(KUBECTL\) apply --server-side --field-manager=make --force-conflicts -f -$/m,
+    );
   });
 });

@@ -267,10 +267,10 @@ export class Watcher {
       log.info({ routes: routes.length, signals: sent }, 'agreement checked: the log is silent for every route');
       return sent;
     }
-    // A route whose metrics had a gap in either window is not judged: its series came back with a running total, which
+    // A path whose metrics had a gap in either window is not judged: its series came back with a running total, which
     // cannot say what it counted in the windows. It is judged again once a pair of windows has no gap.
     const gaps = both.filter((entry) => entry.gap).length;
-    if (gaps) log.warn({ routes: gaps }, 'agreement not judged on routes whose metrics had a gap');
+    if (gaps) log.warn({ paths: gaps }, 'agreement not judged on paths whose metrics had a gap');
     // Metrics wrong on every route judged are one finding about the metrics, as a silent log is about the log.
     const everywhere = metricsWrongEverywhere(both);
     if (everywhere) {

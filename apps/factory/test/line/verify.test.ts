@@ -337,6 +337,7 @@ const missingLog: FirstSignal = {
 };
 const wrongMetric: FirstSignal = { ...missingLog, check: 'metrics against logs and traces', symptom: 'wrong-metric' };
 const silentLog: FirstSignal = { ...missingLog, route: '*' };
+const wrongEverywhere: FirstSignal = { ...wrongMetric, route: '*' };
 
 describe('Verify by the log watcher’s agreement check', () => {
   const logged = { metrics: 10, logs: 10, traces: 10, route: '/products/:slug' };
@@ -435,6 +436,55 @@ describe('Verify by the log watcher’s agreement check', () => {
     });
     const back = records({ '/products/glove-left': logged, '/about': { ...logged, route: '/about' } });
     expect(await look(silentLog, target, options(back))).toMatchObject({ verification: { outcome: 'cleared' } });
+  });
+
+  it('persists on metrics wrong on every route, and clears once every route’s records agree again', async () => {
+    const about = { ...logged, route: '/about' };
+    const wrong = records({
+      '/products/glove-left': { ...logged, metrics: 30 },
+      '/about': { ...about, metrics: 30 },
+    });
+    expect(await look(wrongEverywhere, target, options(wrong))).toMatchObject({
+      verification: { outcome: 'persists', check: 'metrics against logs and traces' },
+    });
+    // Never judged as a silent log: the log counts every request.
+    const back = records({ '/products/glove-left': logged, '/about': about });
+    const cleared = await look(wrongEverywhere, target, options(back));
+    expect(cleared).toMatchObject({ verification: { outcome: 'cleared' } });
+    expect(cleared.kind === 'finished' && whatCleared(cleared.verification)).toBe(
+      'The metrics of bbbbbbb counted the requests its log and traces did, for 30 minutes',
+    );
+    // A route too thin to judge stands in neither’s way.
+    const thin = records({
+      '/products/glove-left': logged,
+      '/about': about,
+      '/thin': { metrics: 1, logs: 0, traces: 0, route: '/thin' },
+    });
+    expect(await look(wrongEverywhere, target, options(thin))).toMatchObject({ verification: { outcome: 'cleared' } });
+  });
+
+  it('waits on metrics wrong on some routes and not others, a gap, too few requests or traces', async () => {
+    const about = { ...logged, route: '/about' };
+    const some = records({ '/products/glove-left': { ...logged, metrics: 30 }, '/about': about });
+    expect(await look(wrongEverywhere, target, options(some))).toEqual({
+      kind: 'wait',
+      why: 'the records disagree on some routes and not others, so the metrics are not wrong on every one',
+    });
+    const gapped = records({ '/products/glove-left': logged, '/about': { ...about, gap: true } });
+    expect(await look(wrongEverywhere, target, options(gapped))).toEqual({
+      kind: 'wait',
+      why: 'the metrics had a gap',
+    });
+    const thin = records({ '/products/glove-left': { metrics: 1, logs: 1, traces: 1 } });
+    expect(await look(wrongEverywhere, target, options(thin))).toEqual({
+      kind: 'wait',
+      why: 'no route had 20 requests on the new version',
+    });
+    const late = records({ '/products/glove-left': logged, '/about': about }, { complete: false });
+    expect(await look(wrongEverywhere, target, options(late))).toEqual({
+      kind: 'wait',
+      why: 'Tempo did not have every trace of the window',
+    });
   });
 
   it('waits while the metrics of the route had a gap, whichever way they read', async () => {

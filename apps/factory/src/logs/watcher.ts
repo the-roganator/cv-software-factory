@@ -25,6 +25,7 @@ import {
   count,
   judge,
   logSilent,
+  metricsWrongEverywhere,
   type RouteCounts,
   signalForDisagreement,
   signalForSilentLog,
@@ -266,12 +267,26 @@ export class Watcher {
       log.info({ routes: routes.length, signals: sent }, 'agreement checked: the log is silent for every route');
       return sent;
     }
-    let wrong = 0;
-    let sent = 0;
     // A route whose metrics had a gap in either window is not judged: its series came back with a running total, which
     // cannot say what it counted in the windows. It is judged again once a pair of windows has no gap.
     const gaps = both.filter((entry) => entry.gap).length;
     if (gaps) log.warn({ routes: gaps }, 'agreement not judged on routes whose metrics had a gap');
+    // Metrics wrong on every route judged are one finding about the metrics, as a silent log is about the log.
+    const everywhere = metricsWrongEverywhere(both);
+    if (everywhere) {
+      const sent = (await this.tell('* wrong-metric', end, () =>
+        signalForDisagreement('wrong-metric', everywhere, { objectives, prometheus }, before.start, end),
+      ))
+        ? 1
+        : 0;
+      log.info(
+        { routes: routes.length, gaps, signals: sent },
+        'agreement checked: the metrics are wrong on every route',
+      );
+      return sent;
+    }
+    let wrong = 0;
+    let sent = 0;
     for (const entry of both) {
       const finding = judge(entry);
       if (!finding) continue;

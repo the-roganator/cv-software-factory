@@ -203,11 +203,49 @@ export async function count(
  * judged here with their paths' counts together, so that a route spread thin over many pages still counts.
  */
 export function logSilent(entries: RouteCounts[], tolerance: Tolerance = TOLERANCE): boolean {
-  const byRoute = new Map<string, RouteCounts[]>();
-  for (const entry of entries) byRoute.set(entry.route, [...(byRoute.get(entry.route) ?? []), entry]);
-  const unlogged = [...byRoute.values()].filter((paths) => judge(total(paths), tolerance) === 'missing-log').length;
+  const unlogged = [...byRoute(entries).values()].filter(
+    (paths) => judge(total(paths), tolerance) === 'missing-log',
+  ).length;
   const logged = entries.reduce((sum, entry) => sum + entry.logs, 0);
   return unlogged >= 2 && agree(logged, 0, tolerance);
+}
+
+/** The paths' counts of each route, by the route the log gives them. */
+export function byRoute(entries: readonly RouteCounts[]): Map<string, RouteCounts[]> {
+  const routes = new Map<string, RouteCounts[]>();
+  for (const entry of entries) routes.set(entry.route, [...(routes.get(entry.route) ?? []), entry]);
+  return routes;
+}
+
+/**
+ * The metrics wrong on every route at once, rather than on some: more than one route is judged, and every route
+ * judged, with its paths' counts together as in `logSilent`, has metrics that count something other than its log and
+ * traces both saw. That is one finding about the metrics, not one per route: the app counts every request wrongly.
+ * A route with too few requests to judge, or whose metrics had a gap, is not judged, and neither counts towards it
+ * nor stands in its way; any other route judged otherwise, its records agreeing among them, does.
+ *
+ * Its counts are the wrong routes' summed, on every route (`*`), with the version that served most of them; nothing
+ * when the metrics are not wrong everywhere, or do not say which version served the requests.
+ */
+export function metricsWrongEverywhere(
+  entries: readonly RouteCounts[],
+  tolerance: Tolerance = TOLERANCE,
+): RouteCounts | undefined {
+  const wrong: RouteCounts[] = [];
+  let routes = 0;
+  for (const paths of byRoute(entries).values()) {
+    const counts = total(paths);
+    if (counts.gap || Math.max(counts.metrics, counts.logs, counts.traces ?? 0) < tolerance.minRequests) continue;
+    if (judge(counts, tolerance) !== 'wrong-metric') return undefined;
+    routes += 1;
+    wrong.push(...paths);
+  }
+  if (routes < 2) return undefined;
+  const versions = new Map<string, number>();
+  for (const entry of wrong) {
+    if (entry.version) versions.set(entry.version, (versions.get(entry.version) ?? 0) + entry.metrics);
+  }
+  return { path: '*', route: '*', version: busiest(versions), ...total(wrong) };
 }
 
 /**
@@ -284,7 +322,8 @@ function busiest(counts: Map<string, number>): string | undefined {
 /**
  * The signal for a route whose records disagree, or nothing if the metrics do not say which version served it.
  * A missing log is shown as the log it should have been: none at all beside the requests counted elsewhere. Wrong
- * metrics are shown as the series they report, with what the other records counted in its name.
+ * metrics are shown as the series they report, with what the other records counted in its name: on every route
+ * (`*`, from `metricsWrongEverywhere`), the series of every route summed, and the wrong routes' counts summed.
  */
 export async function signalForDisagreement(
   disagreement: Disagreement,
@@ -315,7 +354,7 @@ export async function signalForDisagreement(
   const minutes = Math.round((end.getTime() - start.getTime()) / 60_000);
   const job = appSeries(backends.objectives);
   const picture = await backends.prometheus.range(
-    `sum (increase(http_server_request_duration_seconds_count{${job}, http_route=${quoted(entry.path)}}[1m]))`,
+    `sum (increase(http_server_request_duration_seconds_count{${job}, ${entry.path === '*' ? 'http_route!=""' : `http_route=${quoted(entry.path)}`}}[1m]))`,
     new Date(end.getTime() - 3600_000),
     end,
     60,

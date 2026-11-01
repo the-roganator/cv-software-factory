@@ -14,7 +14,8 @@
  *   requests in the metrics, the log and the traces, for a window after the promotion (`logs/agreement.ts`). The
  *   records agree on every one of the route's paths, and it has cleared; the one the ticket named is the odd one out
  *   again on any, and it persists. A log silent for every route (`*`) persists while it is silent, and clears once it
- *   counts the requests again for every route.
+ *   counts the requests again for every route; metrics wrong on every route (`*`) persist while they are, and clear
+ *   once every route judged has its three records agree.
  * - The canary: the release that carries the fix, or a later one that carries it too, was promoted with the measure
  *   that failed passing at its last step. A promoted release passed every step, so this clears at once, saying so; a
  *   release found live, which no analysis judged, holds for Martin.
@@ -46,11 +47,14 @@ import { measureOfCheck } from '../intake/alerts.ts';
 import {
   AGREEMENT_CHECK,
   agree,
+  byRoute,
+  type Counts,
   combine,
   count,
   type Disagreement,
   judge,
   logSilent,
+  metricsWrongEverywhere,
   type RouteCounts,
   signalForDisagreement,
   signalForSilentLog,
@@ -422,6 +426,35 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
   }
   const tolerance = { ...TOLERANCE, minRequests };
 
+  if (signal.route === '*' && disagreement === 'wrong-metric') {
+    // As the watcher judges metrics wrong on every route, over the windows together.
+    const everywhere = metricsWrongEverywhere(all, tolerance);
+    if (everywhere) {
+      const prometheus = c.prometheus;
+      const told = await signalForDisagreement(
+        disagreement,
+        everywhere,
+        { objectives: c.objectives, prometheus },
+        start,
+        end,
+      );
+      return finished(signal, target, 'persists', told?.evidence?.[0]);
+    }
+    const routes = [...byRoute(all).values()].map(total);
+    if (routes.some((route) => route.gap)) return { kind: 'wait', why: 'the metrics had a gap' };
+    const judged = routes.filter((route) => Math.max(route.metrics, route.logs, route.traces ?? 0) >= minRequests);
+    if (!judged.length) return { kind: 'wait', why: `no route had ${minRequests} requests on the new version` };
+    if (judged.some((route) => route.traces === undefined)) {
+      return { kind: 'wait', why: 'Tempo did not have every trace of the window' };
+    }
+    if (judged.every(recordsAgree)) return finished(signal, target, 'cleared');
+    // A route whose metrics are still wrong, beside others that agree, is a ticket of its own, as the watcher finds it.
+    return {
+      kind: 'wait',
+      why: 'the records disagree on some routes and not others, so the metrics are not wrong on every one',
+    };
+  }
+
   if (signal.route === '*') {
     // As the watcher judges a silent log, over the windows together: a gap of a few minutes is not the log silent.
     if (logSilent(all, tolerance)) {
@@ -464,11 +497,16 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
   if (disagreement === 'wrong-metric' && sum.traces === undefined) {
     return { kind: 'wait', why: 'Tempo did not have every trace of the window' };
   }
-  const agrees =
-    agree(sum.logs, sum.metrics, TOLERANCE) &&
-    (sum.traces === undefined || (agree(sum.logs, sum.traces, TOLERANCE) && agree(sum.metrics, sum.traces, TOLERANCE)));
-  if (agrees) return finished(signal, target, 'cleared');
+  if (recordsAgree(sum)) return finished(signal, target, 'cleared');
   return { kind: 'wait', why: 'the route’s records disagree, and none of them is the odd one out the ticket named' };
+}
+
+/** Whether the records' counts agree with each other: the metrics and the log, and the traces too when known. */
+function recordsAgree({ metrics, logs, traces }: Counts): boolean {
+  return (
+    agree(logs, metrics, TOLERANCE) &&
+    (traces === undefined || (agree(logs, traces, TOLERANCE) && agree(metrics, traces, TOLERANCE)))
+  );
 }
 
 /** What cleared a work item, in a sentence for its issue and its closing: the verification, or Martin's word. */

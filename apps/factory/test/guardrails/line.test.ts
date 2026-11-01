@@ -195,6 +195,9 @@ describe('the stop-the-line drill', () => {
     const taken = await stopTheLine(d);
     expect(said[0]).toMatch(/0 agent pod\(s\) and 0 other pod\(s\) are running in runners now\.$/);
     expect(taken).toMatchObject({ held: true });
+    expect('output' in taken && taken.output).toMatch(
+      /✓ No pod is in runners: none was running at the prompt or the stop/,
+    );
     expect('output' in taken && taken.output).not.toMatch(/gateway/);
   });
 

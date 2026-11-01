@@ -177,7 +177,10 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       left = await drill.runnerPods();
     }
     if (left.length) fail(`pods still in runners: ${left.map((p) => p.name).join(', ')}`);
-    else lines.push(`✓ No pod is left in runners (${seen.size} were running at the prompt or the stop).`);
+    else if (seen.size)
+      lines.push(`✓ No pod is left in runners (${seen.size} were running at the prompt or the stop).`);
+    // Held, as the line's tests show it ends a step (ci:stopped-line), but this drill did not show a pod ended.
+    else lines.push('✓ No pod is in runners: none was running at the prompt or the stop, so no step was there to end.');
 
     const waited = since(await storeNow());
     if (waited < STOPPED_MS) await drill.sleep(STOPPED_MS - waited);

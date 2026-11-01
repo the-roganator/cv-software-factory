@@ -119,9 +119,9 @@ const reopenedSince = (sql: Sql) =>
  * A row (`l`) whose work item the line only looked at: it ended before its issue opened, with no agent's step ever
  * started, as a ticket does that closes on the look as the line takes it (its signal gone, a `signal.rechecked` for the
  * take, cleared), or that the line took while a look beside a fix cleared it, and closes on that clearance (one not
- * taken closes beside the fix with no row at all). A limit does not count it. One still seen as it was taken, or that the sense could not
- * tell, has its issue opened and goes on to the planner, and counts; so does one that reopens and is taken back, while
- * it is on the line again. The row says it all, so the count reads no event.
+ * taken closes beside the fix with no row at all). A limit does not count it. One still seen as it was taken, or that
+ * the sense could not tell, has its issue opened and goes on to the planner, and counts; so does one that reopens and
+ * is taken back, while it is on the line again. The row says it all, so the count reads no event.
  */
 const closedAtTake = (sql: Sql | TransactionSql) => sql`(l.stage = 'ended' and l.steps = 0 and l.issue is null)`;
 

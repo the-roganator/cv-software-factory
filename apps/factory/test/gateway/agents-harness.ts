@@ -236,7 +236,7 @@ export async function start({
     mode,
     log: captured.log,
   });
-  server = createGatewayServer({ gateway, agents, spend, log: captured.log });
+  server = createGatewayServer({ gateway, agents, spend, judgementsToken: undefined, log: captured.log });
   url = (await listenLocal(server)).url;
   const token = await issueJobToken(database.as.line, { job: 'coder-1001-1', workItem: '1001', agent: 'coder' });
   return { sql, token, events, refusals };

@@ -24,6 +24,7 @@ const body = z.discriminatedUnion('error', [
     status: z.number().int().optional(),
   }),
   z.object({ error: z.literal('bad-request'), message: z.string() }),
+  z.object({ error: z.literal('unauthorized'), message: z.string() }),
   z.object({ error: z.literal('internal'), message: z.string() }),
 ]);
 
@@ -78,6 +79,8 @@ export function errorFromResponse(status: number, json: unknown): Error {
       return new ProviderError(found.kind, found.message, found.status);
     case 'bad-request':
       return new BadRequest(found.message);
+    // A caller without the right token: a fault in how the caller was deployed, which waits as an outage does.
+    case 'unauthorized':
     case 'internal':
       return new GatewayUnavailable(found.message, status);
   }

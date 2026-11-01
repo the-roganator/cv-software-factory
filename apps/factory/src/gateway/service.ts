@@ -145,7 +145,7 @@ export async function startGateway(config: GatewayConfig, env: NodeJS.ProcessEnv
     const failed = stopped.find((result) => result.status === 'rejected');
     if (failed) throw failed.reason;
   };
-  const server = createGatewayServer({ gateway, agents, spend, log });
+  const server = createGatewayServer({ gateway, agents, spend, judgementsToken: config.judgementsToken, log });
   try {
     await listenOn(server, config.port);
   } catch (error) {
@@ -162,6 +162,7 @@ export async function startGateway(config: GatewayConfig, env: NodeJS.ProcessEnv
       profile: config.profile,
       agents: Object.keys(providers),
       allLocal: config.allLocal,
+      judgements: Boolean(config.judgementsToken),
     },
     `gateway listening on :${config.port}`,
   );

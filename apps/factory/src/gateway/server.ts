@@ -1,7 +1,8 @@
 /**
  * The gateway over HTTP, for the workers in the cluster.
  *
- *     POST /v1/judgements   a judgement request as JSON (`JudgeRequest`); the answers, cost and cassette key out
+ *     POST /v1/judgements   a judgement request as JSON (`JudgeRequest`), with triage's token; the answers, cost and
+ *                           cassette key out
  *     POST /v1/messages     Anthropic's Messages API, for runners with a job token (`agents.ts`)
  *     POST /v1/messages/count_tokens
  *     GET  /v1/spend        today's and this month's spend against the caps
@@ -10,7 +11,12 @@
  * The Messages API answers its errors in Anthropic's shape (`agents.ts`). The judgements' errors keep their meaning: a spend cap is 429 with the cap and when it resets (and `Retry-After`), a request
  * with no cassette in replay is 409, a provider that failed is 502, a request the gateway will not send is 400
  * (413 when it is too big). No error body echoes the request, which may hold a report's text.
+ *
+ * Judgements are triage's alone: a request without its token (`authorization: Bearer <token>`) is 401, before its body
+ * is read. That is no guardrail's refusal, and is not recorded, as a token that is no running job's is not. With no
+ * token configured, every judgement is 401: the route is never open to any caller the network policy lets in.
  */
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from '../log.ts';
 import { type AgentCalls, apiError, type Reply } from './agents.ts';
@@ -49,8 +55,21 @@ export interface ServerOptions {
   /** The Messages API for runners. Without it, those paths are not here. */
   agents?: AgentCalls | undefined;
   spend: Spend;
+  /** Triage's caller token for judgements (`JUDGEMENTS_TOKEN`). Without it, judgements are off. */
+  judgementsToken: string | undefined;
   log: Logger;
   clock?: () => Date;
+}
+
+/**
+ * Whether a request carries the token. Both sides are hashed first, so the comparison takes the same time whatever
+ * the length or content of what was sent.
+ */
+function carries(req: IncomingMessage, token: string): boolean {
+  const sent = /^Bearer (.+)$/i.exec(req.headers.authorization ?? '')?.[1];
+  if (sent === undefined) return false;
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(sent), digest(token));
 }
 
 /**
@@ -67,7 +86,15 @@ async function write(res: ServerResponse, reply: Reply): Promise<void> {
   res.end();
 }
 
-export function createGatewayServer({ gateway, agents, spend, log, clock = () => new Date() }: ServerOptions): Server {
+export function createGatewayServer({
+  gateway,
+  agents,
+  spend,
+  judgementsToken,
+  log,
+  clock = () => new Date(),
+}: ServerOptions): Server {
+  if (!judgementsToken) log.warn('no JUDGEMENTS_TOKEN: every judgement is answered 401, and triage judges nothing');
   async function agentCall(req: IncomingMessage, res: ServerResponse, call: 'messages' | 'countTokens') {
     if (!agents) return send(res, 404, { error: 'bad-request', message: 'This gateway serves no agents.' });
     // The body is read only once the token is good, and the call to the provider ends if the runner goes away.
@@ -92,6 +119,14 @@ export function createGatewayServer({ gateway, agents, spend, log, clock = () =>
   }
 
   async function judgements(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!judgementsToken || !carries(req, judgementsToken)) {
+      return send(
+        res,
+        401,
+        { error: 'unauthorized', message: 'Judgements take triage’s token, and this request did not carry it.' },
+        { 'www-authenticate': 'Bearer' },
+      );
+    }
     let input: unknown;
     try {
       input = JSON.parse(await readBody(req));

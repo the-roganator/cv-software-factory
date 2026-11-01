@@ -4,9 +4,10 @@
  *     factory triage
  *
  * Takes signals from the inbox until it is stopped. Settings come from the environment: GATEWAY_URL (the model
- * gateway), PAGES_URL (the probes' page reader, for a report's screenshot and the page's text; without it a report
- * is judged with neither), ARTIFACTS_DIR (where screenshots are), and DATABASE_URL or the PG* variables for the
- * store, which it connects to as its own role (`factory_triage`).
+ * gateway), JUDGEMENTS_TOKEN (the caller token the gateway takes judgements with: the same value the gateway is
+ * given), PAGES_URL (the probes' page reader, for a report's screenshot and the page's text; without it a report is
+ * judged with neither), ARTIFACTS_DIR (where screenshots are), and DATABASE_URL or the PG* variables for the store,
+ * which it connects to as its own role (`factory_triage`).
  *
  * PROMETHEUS_URL, LOKI_URL and TEMPO_URL are what the senses read besides the app, which triage looks at before it
  * trusts a sense's new problem (`ENVIRONMENT` in policy/triage.ts); the disk is read through Prometheus. Triage looks
@@ -43,9 +44,12 @@ export function zeroTriaged(triaged: Pick<Counter, 'add'>): void {
 }
 
 export async function run(args: string[]): Promise<number> {
-  const { GATEWAY_URL, PAGES_URL, ARTIFACTS_DIR, DATABASE_URL, PROMETHEUS_URL, LOKI_URL, TEMPO_URL } = process.env;
-  if (args.length || !GATEWAY_URL || !ARTIFACTS_DIR) {
-    console.log(`Usage:\n${USAGE}\n\nSet GATEWAY_URL and ARTIFACTS_DIR, and PAGES_URL to read the pages reports name.`);
+  const { GATEWAY_URL, JUDGEMENTS_TOKEN, PAGES_URL, ARTIFACTS_DIR, DATABASE_URL, PROMETHEUS_URL, LOKI_URL, TEMPO_URL } =
+    process.env;
+  if (args.length || !GATEWAY_URL || !JUDGEMENTS_TOKEN || !ARTIFACTS_DIR) {
+    console.log(
+      `Usage:\n${USAGE}\n\nSet GATEWAY_URL, JUDGEMENTS_TOKEN (the gateway's) and ARTIFACTS_DIR, and PAGES_URL to read the pages reports name.`,
+    );
     return 2;
   }
   // The instrumentation goes in before the modules it patches are imported.
@@ -62,7 +66,7 @@ export async function run(args: string[]): Promise<number> {
   const { Tempo } = await import('../clients/tempo.ts');
 
   const sql = connect(DATABASE_URL);
-  const gateway = new GatewayClient({ url: GATEWAY_URL });
+  const gateway = new GatewayClient({ url: GATEWAY_URL, token: JUDGEMENTS_TOKEN });
 
   const judge: Judge = async (request) => {
     try {

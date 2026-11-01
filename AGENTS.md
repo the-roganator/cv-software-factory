@@ -18,6 +18,7 @@ make up / make samples / make status / make down
 make enrol                     # a one-time code to enrol a passkey on the console
 make share-key                 # the traffic generator's signing key, made once, and its public half for the app
 make refusal-key               # the GitHub worker's key for signing its refusals, made once, and its public half for the line
+make judgements-token          # triage's token for the gateway's judgements, made once (on an older cluster, before the deploy that needs it)
 make guardrails                # every guardrail's proof but the attacks, recorded in the store, from a clean main (PROOFS="…" for some); the drill asks first
 ```
 
@@ -44,6 +45,9 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
     export PGUSER="factory_$1" PGPASSWORD="$(kubectl --context k3d-software-factory -n factory get secret "postgres-$1" -o jsonpath='{.data.password}' | base64 -d)"
     [ -n "$PGPASSWORD" ] || { echo "no password for $1: run make worker-secrets" >&2; return 1; }
   }
+  # Triage's token for judgements: one value, made here, for the gateway and triage on the host alike. Without it the
+  # gateway answers every judgement 401, and triage will not start.
+  export JUDGEMENTS_TOKEN="$(openssl rand -hex 32)"
   # The gateway, with the keys from the Keychain (leave one out to replay that provider only), on :8080. It reaches LM
   # Studio at 127.0.0.1:1234; ALL_LOCAL=true sends every agent there. Its cassettes hold whole prompts, reports and
   # tool output: keep them out of the repository (only eval cassettes, made from invented reports, are committed).

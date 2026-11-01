@@ -85,7 +85,7 @@ beforeAll(async () => {
     log: quiet,
   });
   const judge = new Gateway({ sql, spend, cassettes: new Cassettes({ record: cassettes }), mode: 'live', log: quiet });
-  gateway = createGatewayServer({ gateway: judge, agents, spend, log: quiet });
+  gateway = createGatewayServer({ gateway: judge, agents, spend, judgementsToken: undefined, log: quiet });
   gatewayUrl = (await listenLocal(gateway)).url;
 });
 afterAll(async () => {

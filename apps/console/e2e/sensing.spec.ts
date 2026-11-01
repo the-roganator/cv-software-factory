@@ -40,7 +40,7 @@ test.describe('sensing and triage', () => {
     await ready(page);
     await expect(centre(page).locator('.out')).toHaveText('Needs you');
     await page.getByRole('button', { name: /^Triage: needs you, 1 waiting/ }).click();
-    await expect(page.getByRole('dialog', { name: 'Triage' })).toContainText('Needs you · parked for Martin');
+    await expect(page.getByRole('dialog', { name: 'Triage' })).toContainText('Needs you · a visitor suggests');
   });
 
   test('a discarded report is closed with no ticket', async ({ page }) => {

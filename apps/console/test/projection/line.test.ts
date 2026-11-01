@@ -1,4 +1,4 @@
-import type { PayloadOf, PublicEvent } from '@software-factory/events';
+import { HOLD_CAUSES, type PayloadOf, type PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { project } from '../../web/src/projection/index.ts';
 import { PASSING_MS, RETURNING_MS, whileSending } from '../../web/src/projection/line.ts';
@@ -436,6 +436,29 @@ describe('a stage panel', () => {
       ['3', 'faint', 'waiting', undefined],
     ]);
     expect(rows[3]?.note).toBe('Waiting for the planner');
+  });
+
+  // Merge's and deploy's waits keep notes of their own, which say more; a canary's hold holds only with its release
+  // in flight.
+  const labelled = HOLD_CAUSES.filter((cause) => !['merge', 'deploy', 'canary'].includes(cause));
+  const reason = 'I can’t find a defect in this repo that would explain it: no test would fail at this commit.';
+
+  it.each(labelled)('notes a %s hold in its card’s words, never the agent’s own', (cause) => {
+    const item = ticket('1', 0).add(1, 'hold.started', 'factory', { stage: 'plan', kind: 'held', cause, reason });
+    const note = project(item.events, item.at(2)).panels.plan.rows[0]?.note;
+    expect(note).toMatch(/^Needs you · /);
+    expect(note).not.toContain('defect');
+    expect(note?.length).toBeLessThanOrEqual(40);
+  });
+
+  it.each([
+    ['ticket-rejected', 'plan', 'Needs you · the planner turned it down'],
+    ['gates', 'gates', 'Needs you · held by a gate'],
+    ['verify', 'verify', 'Needs you · Verify asks you'],
+    ['question', 'build', 'Needs you · the coder asks'],
+  ] as const)('notes a %s hold as “%s”', (cause, stage, note) => {
+    const item = ticket('1', 0).add(1, 'hold.started', 'factory', { stage, kind: 'held', cause, reason });
+    expect(project(item.events, item.at(2)).panels[stage].rows[0]?.note).toBe(note);
   });
 
   it('lists a work item closed at Verify with no change as passed, not verified', () => {

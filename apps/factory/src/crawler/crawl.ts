@@ -43,9 +43,12 @@ const STATIC = /\.(?:js|mjs|css|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf)$
 export const cachingJudged = ({ kind, path, answer }: Resource, pages: ReadonlySet<string>): boolean =>
   answer.status === 200 && !pages.has(path) && (kind !== 'link' || STATIC.test(path.split('?')[0] ?? ''));
 
+/** Whether a header's name is the mark's, in any casing. */
+const isTheMark = (name: string) => Object.hasOwn(UNMEASURED, name.toLowerCase());
+
 /** The headers a visitor sends of those the crawl sends: all but the mark. */
-const unmarked = (headers: RequestHeaders): RequestHeaders | undefined => {
-  const rest = Object.fromEntries(Object.entries(headers).filter(([name]) => !(name.toLowerCase() in UNMEASURED)));
+export const unmarked = (headers: RequestHeaders): RequestHeaders | undefined => {
+  const rest = Object.fromEntries(Object.entries(headers).filter(([name]) => !isTheMark(name)));
   return Object.keys(rest).length ? rest : undefined;
 };
 
@@ -181,7 +184,7 @@ export async function crawl({
     enqueue(browsed.references.assets, 'asset', next);
   }
   const pages = new Set(result.pages.map((page) => page.path));
-  const marked = headers !== undefined && Object.keys(headers).some((name) => name.toLowerCase() in UNMEASURED);
+  const marked = headers !== undefined && Object.keys(headers).some(isTheMark);
   for (const resource of result.resources) {
     if (!cachingJudged(resource, pages)) continue;
     resource.visitor = marked

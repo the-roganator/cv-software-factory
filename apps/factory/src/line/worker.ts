@@ -717,7 +717,8 @@ export class Line {
         await this.#queue.drop(item.workItem);
         item = { ...item, effects: null };
       }
-      const rechecking = [...this.#inFlight.values()].some((s) => s.stage === 'recheck');
+      // The looks beside a verified fix count too: one look again at a time across the line.
+      const rechecking = this.#beside.size > 0 || [...this.#inFlight.values()].some((s) => s.stage === 'recheck');
       if (
         next.do === 'wait' ||
         (next.do === 'verify' && !this.#lookDue(item.workItem)) ||
@@ -1242,8 +1243,8 @@ export class Line {
    * One look again at a work item's signal, by the sense of the ticket's first signal, at the version the stable
    * Service runs, which did not carry its fix (`look`, as at Verify, with no pictures). What it found is appended,
    * unless the line stopped meanwhile or a release came between. A look that cannot tell is tried again later; at the
-   * end of a wait, or as the line takes a ticket, after the policy's wait from the wait's end or the release it looked
-   * at, it is recorded as unsure, and the work item goes on, to Build or Plan. Beside another's verified fix (`fix`),
+   * end of a wait, after the policy's wait from the wait's end, it is recorded as unsure, and the work item goes on to
+   * Build. As the line takes a ticket, it is recorded as unsure at once, and the ticket goes on to Plan. Beside another's verified fix (`fix`),
    * only what cleared or persists is recorded: a ticket the sense could not tell of is looked at again as it is taken.
    */
   async #recheck(
@@ -1298,17 +1299,19 @@ export class Line {
       case 'hold':
         return this.#rechecked(workItem, { ...base, ...looked, outcome: 'unsure', why: cutTo(found.reason, 200) });
       case 'wait': {
-        // A wait goes on for no longer than the policy's after the work it waited on ended, and a take's after the
-        // release it looked at; a hold's look stops there.
-        const ended =
-          occasion === 'wait' ? await this.#waitEnded(state) : occasion === 'take' ? promotion.at.getTime() : undefined;
-        if (ended === undefined || now.getTime() - ended < this.#o.verifyWaitMs) {
+        // A wait goes on for no longer than the policy's after the work it waited on ended; a hold's look stops there.
+        // A ticket just taken waits for no sense: it goes on to Plan at once.
+        const ended = occasion === 'wait' ? await this.#waitEnded(state) : undefined;
+        if (occasion !== 'take' && (ended === undefined || now.getTime() - ended < this.#o.verifyWaitMs)) {
           this.#lookAgainAt.set(workItem, now.getTime() + this.#o.verifyEveryMs);
           this.#o.log.info({ workItem, version: target.version, why: found.why }, 'a look again cannot tell yet');
           return;
         }
         const hours = this.#o.verifyWaitMs / 3_600_000;
-        const said = cutTo(`the sense could not tell in ${hours} hours: ${found.why}`, 200);
+        const said =
+          occasion === 'take'
+            ? cutTo(`the sense could not tell: ${found.why}`, 200)
+            : cutTo(`the sense could not tell in ${hours} hours: ${found.why}`, 200);
         return this.#rechecked(workItem, { ...base, ...looked, outcome: 'unsure', why: said });
       }
     }
@@ -1388,7 +1391,7 @@ export class Line {
 
   /**
    * What a look again at `promotion` credits: the work items, but this one, carried by every real release promoted
-   * after the ticket's signal was last recorded, up to and with that one, oldest first, each with the pull request it
+   * after the ticket's signal was first recorded on the version it was last seen on, up to and with that one, oldest first, each with the pull request it
    * merged, and the version the signal was last seen on. Its own release, if it had one, carried its fix: not another's.
    */
   async #carriedSince(
@@ -1396,9 +1399,16 @@ export class Line {
     promotion: Promotion,
   ): Promise<Pick<PayloadOf<'signal.rechecked'>, 'carried' | 'since' | 'merged'>> {
     const { sql } = this.#o;
+    // From the first signal on the version last seen: triage records a signal late, on the version before a
+    // promotion, which says nothing of the releases since that version.
     const [seen] = await sql<{ seq: string; version: string }[]>`
-      select seq, payload->>'version' as version from events
-      where work_item = ${workItem} and type = 'signal.received' order by seq desc limit 1`;
+      with last as (
+        select payload->>'version' as version from events
+        where work_item = ${workItem} and type = 'signal.received' order by seq desc limit 1
+      )
+      select min(e.seq)::text as seq, last.version from events e join last on e.payload->>'version' = last.version
+      where e.work_item = ${workItem} and e.type = 'signal.received'
+      group by last.version`;
     const rows = await sql<{ work_item: string; pull_request: number | null }[]>`
       with releases as (
         select distinct payload->>'release' as release from events
@@ -2002,7 +2012,7 @@ export class Line {
     if (s.closed) return facts;
     const waits = !s.hold && s.waiting !== undefined && !s.waiting.ended;
     // A ticket just taken, before its issue or the planner: not once a step has failed or handed back work.
-    const taken = !s.spec && atTake(s) && item.failures === 0 && item.effects === null;
+    const taken = !s.spec && atTake(s) && item.issue === null && item.failures === 0 && item.effects === null;
     if ((s.hold && !WORDS_LEAVE_HELD.includes(s.hold.cause)) || waits || taken) {
       this.#promotion ??= this.#latestPromotion().catch((error: unknown) => {
         // A read that failed is read again, not kept for the pass.
@@ -2192,8 +2202,9 @@ function recheckedLine(r: PayloadOf<'signal.rechecked'>): string {
     return `As the line took it, the sense could not tell${on}: on to Plan`;
   }
   if (r.for === 'fix') {
-    const fixes = r.carried.length ? ` beside the fix of ${workItemsWords(r.carried, '')}` : '';
-    return r.outcome === 'cleared' ? `Cleared${on}${fixes}${by}` : `Still seen${on}${fixes}${by}`;
+    return r.outcome === 'cleared'
+      ? `Cleared${on} beside a verified fix${by}`
+      : `Still seen${on} beside a verified fix${by}`;
   }
   if (r.for === 'wait') {
     if (r.outcome === 'cleared') return `Its wait over, cleared${on}${by}`;

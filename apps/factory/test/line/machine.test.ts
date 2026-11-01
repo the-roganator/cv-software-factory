@@ -1649,7 +1649,8 @@ describe('an open ticket looked at again as the line takes it', () => {
 
   it('looks before its issue opens or the planner starts, when its signal is not seen on the stable version', () => {
     expect(decide(opened, { ...fresh, stable })).toEqual({ stage: 'plan', next: { do: 'recheck', for: 'take' } });
-    expect(decide(opened, { ...facts, stable }).next).toEqual({ do: 'recheck', for: 'take' });
+    // Once its issue is open, the planner's turn has come.
+    expect(decide(opened, { ...facts, stable }).next).toMatchObject({ do: 'step', agent: 'planner' });
     // Seen on that version, or with no release known, it goes on to Plan as it did.
     expect(decide([...opened, signal('d728dbe')], { ...fresh, stable }).next).toEqual({ do: 'open-issue' });
     expect(decide(opened, fresh).next).toEqual({ do: 'open-issue' });

@@ -879,7 +879,7 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   if (!s.spec) {
     // Before its issue opens and the planner starts: a ticket whose signal is gone from the stable version, which a
     // release since may have fixed, closes as verified, with nothing spent on it.
-    if (atTake(s)) {
+    if (atTake(s) && facts.issue === null) {
       if (s.cleared) return { stage: 'plan', next: { do: 'verified', verification: undefined, rechecked: s.cleared } };
       if (lookDue(s, facts.stable)) return { stage: 'plan', next: { do: 'recheck', for: 'take' } };
     }

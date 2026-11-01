@@ -607,6 +607,36 @@ describe('an open ticket a release since already fixed', () => {
     expect(probes.asked).toHaveLength(1);
   });
 
+  it('credits the fix though triage recorded a signal on the version before after the release', async () => {
+    const { line: it } = line(new FakeProbes(CLEARED));
+    const ticket = await ticketed('/products');
+    const fixer = await fixed();
+    // A late signal, on the version before the promotion: it says nothing of the release since.
+    await events.append([
+      event(
+        ticket,
+        'signal.received',
+        { sense: 'probe', check: '/products', route: '/products', version: OLD },
+        'probe',
+      ),
+    ]);
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([
+      { for: 'take', outcome: 'cleared', since: OLD, carried: [fixer] },
+    ]);
+  });
+
+  it('goes on to Plan at once when the sense cannot tell, unsure', async () => {
+    const probes = new FakeProbes({ outcome: 'unsure', version: NEW, runs: ['errored'] } as unknown as VerifyAnswer);
+    const { line: it, github } = line(probes);
+    const ticket = await ticketed('/products');
+    await fixed();
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([{ for: 'take', outcome: 'unsure' }]);
+    await pass(it);
+    expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
+  });
+
   it('is not looked at when its signal was seen on the stable version, or no release is known', async () => {
     const probes = new FakeProbes(CLEARED);
     const { line: it, github } = line(probes);

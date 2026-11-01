@@ -44,9 +44,10 @@ const TEST_FOLDERS = [/^apps\/[^/]+\/test\//, /^packages\/[^/]+\/test\//, /^scri
 const readIfThere = (file: string) => (existsSync(new URL(file, ROOT)) ? read(file) : undefined);
 
 /**
- * The files a proof's tests reach in the test folders, by their imports and re-exports of values, from the root: the
- * starts, then each file found, in the order found. A type-only import runs nothing, and the code under test, outside
- * those folders, is what the proof is of.
+ * The files a proof's tests reach in the test folders, by their imports and re-exports of values, their imports for
+ * effect alone and their dynamic imports of a path written out, from the root: the starts, then each file found, in
+ * the order found. A type-only import runs nothing, and the code under test, outside those folders, is what the proof
+ * is of.
  */
 function reachedFrom(starts: readonly string[], source: (file: string) => string | undefined): string[] {
   const reached = new Set<string>();
@@ -55,10 +56,10 @@ function reachedFrom(starts: readonly string[], source: (file: string) => string
     const text = reached.has(file) ? undefined : source(file);
     if (text === undefined) continue;
     reached.add(file);
-    for (const [, type, specifier] of text.matchAll(
-      /\b(?:import|export)\s+(type\s+)?[^'";]*?\bfrom\s+['"](\.[^'"]+)['"]/g,
+    for (const [, type, from, bare] of text.matchAll(
+      /\b(?:import|export)\s+(type\s+)?[^'";]*?\bfrom\s+['"](\.[^'"]+)['"]|\bimport\s*\(?\s*['"](\.[^'"]+)['"]/g,
     )) {
-      const next = posix.normalize(posix.join(posix.dirname(file), specifier ?? ''));
+      const next = posix.normalize(posix.join(posix.dirname(file), from ?? bare ?? ''));
       if (!type && TEST_FOLDERS.some((folder) => folder.test(next))) queue.push(next);
     }
   }
@@ -259,6 +260,8 @@ describe('what takes each proof', () => {
         "import { helper } from '../made-up-helper.ts';",
         "import { fence } from '../../src/runners/scope.ts';",
         "import { listenLocal } from '@software-factory/testing';",
+        "import '../made-up-setup.ts';",
+        "const { later } = await import('../line/made-up-later.ts');",
       ].join('\n'),
       'apps/factory/test/made-up-helper.ts': [
         "import type { Shape } from './made-up-types.ts';",
@@ -266,13 +269,17 @@ describe('what takes each proof', () => {
       ].join('\n'),
       'packages/store/test/made-up-store.ts': "import { migrate } from '../src/migrate.ts';",
       'apps/factory/test/made-up-types.ts': '',
+      'apps/factory/test/made-up-setup.ts': '',
+      'apps/factory/test/line/made-up-later.ts': '',
     };
     const reached = reachedFrom(['apps/factory/test/proofs/made-up.test.ts'], (file) => files[file]);
-    // A helper, and what it re-exports from another test folder, but not a type-only import, the code under test or
-    // a package.
+    // A helper, one imported for its effect alone or later, and what a helper re-exports from another test folder,
+    // but not a type-only import, the code under test or a package.
     expect(reached).toEqual([
       'apps/factory/test/proofs/made-up.test.ts',
       'apps/factory/test/made-up-helper.ts',
+      'apps/factory/test/made-up-setup.ts',
+      'apps/factory/test/line/made-up-later.ts',
       'packages/store/test/made-up-store.ts',
     ]);
     // A helper no entry names fails the test above.

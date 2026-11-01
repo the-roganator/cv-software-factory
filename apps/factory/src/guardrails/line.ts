@@ -189,6 +189,12 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       select work_item, taken_at from line where taken_at >= ${at}::timestamptz order by taken_at`;
     if (taken.length) fail(`work items taken while the line was stopped: ${taken.map((t) => t.work_item).join(', ')}`);
     else lines.push(`✓ No work item was taken in the ${Math.round(stoppedFor / 1000)}s the line was stopped.`);
+    // Listed once more before the start, so a step begun while stopped is seen, though the pods had gone.
+    if (!left.length) {
+      const late = await drill.runnerPods();
+      if (late.length)
+        fail(`pods started in runners while the line was stopped: ${late.map((p) => p.name).join(', ')}`);
+    }
   } finally {
     process.off('SIGINT', interrupted);
     process.off('SIGTERM', interrupted);

@@ -189,6 +189,20 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(/✗ pods still in runners: late-agent/);
   });
 
+  it('does not hold when a pod starts in runners while the line is stopped, after the others went', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const { d } = drill({});
+    const listed = d.runnerPods;
+    let calls = 0;
+    // At the prompt, at the stop (gone), then a step begun meanwhile.
+    d.runnerPods = async () => (++calls >= 3 ? [{ name: 'new-agent', part: 'agent' }] : listed());
+    const taken = await stopTheLine(d);
+    expect(taken).toMatchObject({ held: false });
+    expect('output' in taken && taken.output).toMatch(
+      /✗ pods started in runners while the line was stopped: new-agent/,
+    );
+  });
+
   it('holds with no agent running, and does not look for the gateway’s refusal, which CI proves', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
     const { d, said } = drill({ pods: [[]] });

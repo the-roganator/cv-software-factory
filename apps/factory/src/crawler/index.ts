@@ -10,7 +10,9 @@
  * into never passes. A class found on every page crawled is one finding on `*` instead of one on each route.
  *
  * Every request the crawl makes, from the browser and without it, carries `UNMEASURED`: a crawl is not a visit, and
- * must not weigh on the figures a canary or its baseline is judged on.
+ * must not weigh on the figures a canary or its baseline is judged on. The one exception is a second ask for each
+ * static asset, without it, whose caching is judged as a visitor's browser would read it (`crawl.ts`): the app answers
+ * every marked request `private, no-store`. Those few requests are counted as a visitor's.
  */
 import { cutAt, type Evidence, type SymptomClass } from '@software-factory/events';
 import type { ArtifactStore } from '@software-factory/store';

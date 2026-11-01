@@ -1,6 +1,7 @@
 /**
  * The senses' requests carry `UNMEASURED`, every one of them, pages, their images and scripts, and the requests made
- * without the browser alike, so none counts in the app's figures; a page a sense lends sends it when asked. Against
+ * without the browser alike, so none counts in the app's figures, but the crawler's one ask for each static asset as a
+ * visitor asks, for its caching; a page a sense lends sends it when asked. Against
  * the small shop made for the tests (shop.ts), which records what it was sent. These tests need Chromium, so they run
  * in the pinned Playwright image.
  */
@@ -41,7 +42,8 @@ describe('the senses', () => {
     try {
       await observeApp(shop.url, undefined, { store, log, limit: 50 });
       const { with: sent, without } = split(shop.requests);
-      expect(without).toEqual([]);
+      // But the crawler's one ask for each static asset as a visitor asks, whose caching the mark would hide.
+      expect(without).toEqual(['/assets/item.svg']);
       // The version asked for, the API the probes compare with, the pages the browser opened, and the error pages
       // the crawler asks for.
       expect(sent).toEqual(expect.arrayContaining(['/version', '/api/products?page=1', '/products', '/%E0%A4%A']));

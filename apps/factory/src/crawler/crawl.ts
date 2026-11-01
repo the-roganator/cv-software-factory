@@ -5,6 +5,10 @@
  * it holds once its scripts have run, and what axe finds wrong with it. A link that redirects is not opened: where
  * it lands is crawled as a link of its own, from the same page, so a page is always browsed at its own address.
  * This module gathers; judging is in `judge.ts`.
+ *
+ * Every request carries the headers the crawl is given (the mark, `UNMEASURED`), but one: each static asset that
+ * answered is asked for once more without them, as a visitor's browser asks, because the app answers every marked
+ * request `private, no-store` by its own rule, and only a visitor's answer says whether the asset may be kept.
  */
 
 import { AxeBuilder } from '@axe-core/playwright';
@@ -23,7 +27,18 @@ export interface Resource {
   /** The page that first led to it. The home page leads to itself. */
   from: string;
   answer: Exchange;
+  /**
+   * For a static asset that answered, when the crawl sends headers of its own: the answer to the same request without
+   * them, as a visitor is answered. Its caching is judged on this.
+   */
+  visitor?: Exchange;
 }
+
+const STATIC = /\.(?:js|mjs|css|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf)$/i;
+
+/** Whether a resource is a static asset, whose caching is judged: a script, stylesheet, icon or image, or a link to such a file. */
+export const isStatic = ({ kind, path }: Pick<Resource, 'kind' | 'path'>): boolean =>
+  kind !== 'link' || STATIC.test(path.split('?')[0] ?? '');
 
 export interface AccessibilityIssue {
   rule: string;
@@ -155,6 +170,13 @@ export async function crawl({
     enqueue(browsed.references.links, 'link', next);
     enqueue(browsed.references.images, 'image', next);
     enqueue(browsed.references.assets, 'asset', next);
+  }
+  if (headers) {
+    const pages = new Set(result.pages.map((page) => page.path));
+    for (const resource of result.resources) {
+      if (resource.answer.status !== 200 || pages.has(resource.path) || !isStatic(resource)) continue;
+      resource.visitor = await exchange(app, resource.path, { record });
+    }
   }
   return result;
 }

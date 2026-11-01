@@ -32,11 +32,12 @@ Run by the gates (the [journeys gate](CI-PIPELINE.md#journeys) and a canary's jo
 
 ### Not counted
 
-Every request the probes, the crawler and the page reader make sends `x-unmeasured`, from the browser and without it. The app keeps no record of them in its metrics, request log or traces ([whose requests are judged](PROGRESSIVE-DELIVERY.md#whose-requests-are-judged)):
+Every request the probes, the crawler and the page reader make sends `x-unmeasured`, from the browser and without it, but the crawler's ask for caching (below). The app keeps no record of them in its metrics, request log or traces ([whose requests are judged](PROGRESSIVE-DELIVERY.md#whose-requests-are-judged)):
 
 - **During a canary,** the baseline's figures hold none of their requests, nor anything their checks provoke, as the canary's hold none.
 - **The objectives** judge the visitors' requests and the [traffic generator](TRAFFIC-GENERATOR.md)'s alone. The senses look for what goes wrong on their own requests themselves.
 - **An error** one of their requests causes is still logged, so the [log watcher](LOG-WATCHER.md) sees it, with no trace.
+- **But for caching.** The app answers every request with the mark `private, no-store`, so a marked answer cannot say whether an asset may be kept. The crawler asks for each static asset that answered once more, without the mark, and judges its caching on that answer, as a visitor's browser reads it: a few requests a crawl, one for each asset, counted as a visitor's.
 - **Only on the Service.** The app's public route removes the header, so a sense run on the host through Traefik (`APP_URL=http://website.localhost:8080`) is counted like a visitor.
 
 ### The sense runner
@@ -144,7 +145,7 @@ then the rows whose images are all gone.
 - console errors;
 - accessibility with axe, only the rules that name a class: missing alt text, contrast, unlabelled fields;
 - the usual security headers;
-- caching of static assets;
+- caching of static assets, on the answer a visitor gets ([not counted](#not-counted));
 - response time;
 - whether the error pages, for a missing page and a malformed request, give away stack traces, paths or software versions.
 

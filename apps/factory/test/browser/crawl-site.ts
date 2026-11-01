@@ -1,7 +1,8 @@
 /**
  * A small site made for the crawler's tests: a home page, an about page and three items, with a stylesheet, a
  * script and an image. It is as any site should be, and each fault switches on one way it can go wrong, on one page
- * or on all of them.
+ * or on all of them. As the app does, it answers every request with the mark `private, no-store`, and lets a visitor
+ * keep its assets.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { listenLocal } from '@software-factory/testing';
@@ -25,6 +26,7 @@ export type Fault =
   | 'no-headers-home'
   | 'no-headers-all'
   | 'no-cache'
+  | 'visitor-unanswered'
   | 'slow-about'
   | 'slow-all'
   | 'page-hangs'
@@ -85,7 +87,12 @@ ${body}${throws ? '<script>throw new Error("boom")</script>' : ''}</main></body>
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const raw = req.url ?? '/';
     const path = raw.split('?')[0] as string;
-    const asset = { 'cache-control': has('no-cache') ? 'no-store' : 'public, max-age=3600' };
+    const marked = req.headers['x-unmeasured'] !== undefined;
+    if (has('visitor-unanswered') && !marked && path.startsWith('/static/'))
+      return send(res, 503, 'Busy', 'text/plain');
+    const asset = {
+      'cache-control': marked ? 'private, no-store' : has('no-cache') ? 'no-cache' : 'public, max-age=3600',
+    };
     if (path === '/version') return send(res, 200, JSON.stringify({ commit: 'c'.repeat(40) }), 'application/json');
     if (has('slow-all') && path !== '/version') await new Promise((resolve) => setTimeout(resolve, SLOW_ANSWER));
     if (path === '/reset') return req.socket.destroy();

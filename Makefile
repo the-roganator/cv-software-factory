@@ -22,7 +22,7 @@ LOCAL_CA = $(or $(shell node scripts/local-ca.ts dir),$(error node cannot say wh
 # $(call as-martin,role,command): run a command on the host as one of Martin's own roles in the store, through a
 # port-forward to Postgres: `operator` for his commands, which only his roles may append
 # (packages/store/migrations/0023_martins-commands.sql), and `enrol` for `factory admin enrol`. Its password is in a
-# Secret no pod reads, made here if it is not there, and set on the role here as the database's owner
+# Secret no pod reads, made here if it holds none, and set on the role here as the database's owner
 # (packages/store/src/operator.ts), so it works on any cluster as soon as it is made. A store not yet migrated has no
 # operator, and the owner appends there; it cannot enrol at all.
 as-martin = $(call password,factory,postgres-$(1)) && \
@@ -197,7 +197,7 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the key.
 	@made="$$($(KUBECTL) -n factory get secret share-signing-key -o name --ignore-not-found)" || exit 1; \
 	if [ -z "$$made" ]; then \
-		key="$$(node scripts/share-key.ts new)" && printf '%s\n' "$$key" | \
+		key="$$(node scripts/share-key.ts new)" && [ -n "$$key" ] && printf '%s\n' "$$key" | \
 			$(KUBECTL) -n factory create secret generic share-signing-key --from-file=private-key=/dev/stdin >/dev/null && \
 		$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=traffic --ignore-not-found >/dev/null && \
 		echo "  The traffic generator has a new signing key, so it signs an id on each request."; fi
@@ -218,7 +218,7 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the key.
 	@made="$$($(KUBECTL) -n factory get secret refusal-signing-key -o name --ignore-not-found)" || exit 1; \
 	if [ -z "$$made" ]; then \
-		key="$$(node scripts/share-key.ts new)" && printf '%s\n' "$$key" | \
+		key="$$(node scripts/share-key.ts new)" && [ -n "$$key" ] && printf '%s\n' "$$key" | \
 			$(KUBECTL) -n factory create secret generic refusal-signing-key --from-file=private-key=/dev/stdin >/dev/null || exit 1; \
 	fi; \
 	was="$$($(KUBECTL) -n factory get configmap refusal-key -o jsonpath='{.data.public-key}' --ignore-not-found)" || exit 1; \

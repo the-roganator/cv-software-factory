@@ -17,6 +17,8 @@ import { describe, expect, it } from 'vitest';
  * is printed. The signing keys, made once, it creates outright, which keeps no copy either.
  */
 
+const MAKEFILE = join(import.meta.dirname, '../Makefile');
+
 type Cluster = 'holds one' | 'holds an empty one' | 'has none' | 'cannot be read';
 
 /** The Makefile's `password` helper, run by make itself against a kubectl that logs each call and an openssl stub. */
@@ -47,11 +49,13 @@ esac
   await chmod(kubectl, 0o755);
   await chmod(join(dir, 'openssl'), 0o755);
   const makefile = join(dir, 'Makefile');
-  await writeFile(makefile, `include ${join(process.cwd(), 'Makefile')}\npw:\n\t@$(call password,${call})\n`);
+  await writeFile(makefile, `include ${MAKEFILE}\npw:\n\t@$(call password,${call})\n`);
   // Not the outer make's flags (`make check` runs the tests), which would have this one talk about directories and jobs.
   const { MAKEFLAGS, MFLAGS, MAKELEVEL, ...env } = process.env;
   try {
     const result = await promisify(execFile)('make', ['-s', '-f', makefile, `KUBECTL=${kubectl}`, 'pw'], {
+      // From the repository, where the Makefile's own commands (`node scripts/local-ca.ts dir`) are found.
+      cwd: join(import.meta.dirname, '..'),
       env: { ...env, PATH: `${dir}:${env.PATH}` },
     }).then(
       ({ stdout, stderr }) => ({ code: 0, out: stdout + stderr }),
@@ -130,7 +134,7 @@ describe('making a password from the Makefile', () => {
 
 describe('every Secret the Makefile writes', () => {
   // Each recipe's lines, with a backslash's continuation joined on, so a create and the apply it is piped to are one.
-  const commands = readFileSync('Makefile', 'utf-8').replaceAll('\\\n', ' ').split('\n');
+  const commands = readFileSync(MAKEFILE, 'utf-8').replaceAll('\\\n', ' ').split('\n');
 
   it('is created outright or applied server-side, never applied client-side', () => {
     const writes = commands.flatMap((line) =>
@@ -163,7 +167,7 @@ describe('every Secret the Makefile writes', () => {
   });
 
   it('applies server-side, taking over the fields a client-side apply wrote', () => {
-    expect(readFileSync('Makefile', 'utf-8')).toMatch(
+    expect(readFileSync(MAKEFILE, 'utf-8')).toMatch(
       /^apply-secret = \$\(KUBECTL\) apply --server-side --field-manager=make --force-conflicts -f -$/m,
     );
   });

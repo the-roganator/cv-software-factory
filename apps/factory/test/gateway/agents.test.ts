@@ -437,6 +437,35 @@ describe('agents through the gateway', () => {
     }
   });
 
+  it('tries again to listen until it can, and stops trying when it stops', async () => {
+    const unlisten = vi.fn(async () => {});
+    const listen = vi.fn().mockRejectedValueOnce(new Error('connection refused')).mockResolvedValue({ unlisten });
+    const agents = new AgentCalls({
+      sql: { listen },
+      log: captured.log,
+      relistenMs: 10,
+    } as unknown as AgentCallsOptions);
+    await agents.start();
+    await vi.waitFor(() =>
+      expect(captured.text()).toMatch(/listening for appends: a stop of the line is seen at once/),
+    );
+    expect(listen).toHaveBeenCalledTimes(2);
+    await agents.stop();
+    expect(unlisten).toHaveBeenCalledOnce();
+
+    // Stopped before it could listen, it tries no more.
+    const never = vi.fn().mockRejectedValue(new Error('connection refused'));
+    const stopping = new AgentCalls({
+      sql: { listen: never },
+      log: captured.log,
+      relistenMs: 10,
+    } as unknown as AgentCallsOptions);
+    await stopping.start();
+    await stopping.stop();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(never).toHaveBeenCalledOnce();
+  });
+
   it('ignores a stop that says it is Martin’s from any other role, and logs it', async () => {
     const { token, events } = await start();
     // Were row security on the events ever to fail, a worker could append one: the gateway still heeds it not.

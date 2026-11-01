@@ -106,12 +106,12 @@ describe('making a password from the Makefile', () => {
 
   it('keeps the password under the key named, beside any more data', async () => {
     const result = await password('has none', {
-      call: 'factory,grafana-admin,admin-password,--from-literal=admin-user=admin',
+      call: 'telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin',
     });
     expect(result.calls.slice(1)).toEqual([
-      '-n factory get secret grafana-admin -o jsonpath={.data.admin-password} --ignore-not-found',
-      '-n factory delete secret grafana-admin --ignore-not-found',
-      '-n factory create secret generic grafana-admin --from-file=admin-password=/dev/stdin --from-literal=admin-user=admin',
+      '-n telemetry get secret grafana-admin -o jsonpath={.data.admin-password} --ignore-not-found',
+      '-n telemetry delete secret grafana-admin --ignore-not-found',
+      '-n telemetry create secret generic grafana-admin --from-file=admin-password=/dev/stdin --from-literal=admin-user=admin',
     ]);
     expect(result.stored).toBe('0123456789abcdef0123456789abcdef0123456789abcdef');
   });

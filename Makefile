@@ -46,9 +46,9 @@ namespace = { made="$$($(KUBECTL) get namespace $(1) -o name --ignore-not-found)
 
 # $(call password,namespace,name[,key[,more]]): give a Secret a random password under key (`password` unless named), made
 # once, with any more data. Made only when the cluster says the Secret holds none there: a Secret with an empty one, or
-# none, is made again, and any other failure to read it stops here. The password goes through stdin, never a command
-# line, and is checked before it is stored, so a failed openssl stops here rather than store an empty one that each
-# later run would keep.
+# none, is deleted and made again (applying one would keep the password in its last-applied annotation too), and any
+# other failure to read it stops here. The password goes through stdin, never a command line, and is checked before it
+# is stored, so a failed openssl stops here rather than store an empty one that each later run would keep.
 password = $(call namespace,$(1)) && \
 	{ held="$$($(KUBECTL) -n $(1) get secret $(2) -o jsonpath='{.data.$(or $(3),password)}' --ignore-not-found)" && \
 	{ [ -n "$$held" ] || { fresh="$$(openssl rand -hex 24)" && [ -n "$$fresh" ] && \

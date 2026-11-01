@@ -5,7 +5,7 @@
 import type { Autonomy, PayloadOf, PublicEvent, Sense, Stage } from '@software-factory/events';
 import { isSense, returnWords, SENSES, STAGES } from '@software-factory/events';
 import { DEFAULT_CONTROLS } from '../../../../../policy/line.ts';
-import { shortVersion } from '../format.ts';
+import { shortVersion, startOfDay } from '../format.ts';
 import { deployWords, endedSinceMerge } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
 import type { ItemState } from './items.ts';
@@ -239,13 +239,6 @@ const NOUNS: Record<Stage, [one: string, many: string]> = {
 
 const count = (n: number, [one, many]: [string, string]) => `${n} ${n === 1 ? one : many}`;
 
-/** The start of the day t falls in, where the viewer is. */
-export function startOfDay(t: number): number {
-  const day = new Date(t);
-  day.setHours(0, 0, 0, 0);
-  return day.getTime();
-}
-
 /**
  * A station's state at t, by the first rule that matches (the design system's README, "From events to a station's
  * status"), and its beacon. Under Stop the line, every station needs you.
@@ -378,7 +371,7 @@ function noteOf(item: ItemState, stage: Stage, behind = false): string {
 
 /**
  * A kicker after "Needs you · ", in lower case but for the one that opens with a station's name: "held by a gate",
- * "Verify asks you". A test holds every cause to it.
+ * "Verify asks you". The line's tests hold that one to its capital.
  */
 const midSentence = (words: string) => (words.startsWith('Verify') ? words : words[0]?.toLowerCase() + words.slice(1));
 

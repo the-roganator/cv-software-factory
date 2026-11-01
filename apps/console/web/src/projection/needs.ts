@@ -25,10 +25,9 @@ import {
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
-import { APP_REPO, clock, duration, money, shortVersion } from '../format.ts';
+import { APP_REPO, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
-import { startOfDay } from './line.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
 
 /** The one piece of evidence that explains a hold: a check's or the fence's own output, a question, or words. */

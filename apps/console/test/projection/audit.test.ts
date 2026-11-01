@@ -17,9 +17,8 @@ import { publicView } from '@software-factory/events/public';
 import { describe, expect, it } from 'vitest';
 import { ACCESS } from '../../../../policy/access.ts';
 import { full, MARTINS_WORDS, REPORT_TEXT } from '../../e2e/full.ts';
-import { dayLabel } from '../../web/src/format.ts';
+import { dayLabel, startOfDay } from '../../web/src/format.ts';
 import { type AuditFilter, type AuditRow, auditRows, auditView, NO_FILTER } from '../../web/src/projection/audit.ts';
-import { startOfDay } from '../../web/src/projection/line.ts';
 import { END, SAMPLES } from './support.ts';
 
 const START = Date.parse('2026-10-05T12:00:00Z');

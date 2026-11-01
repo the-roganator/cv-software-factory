@@ -162,18 +162,18 @@ pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-a
 			echo "  No Pushover keys (the Keychain's pushover-app-token and pushover-user-key): nothing reaches Martin's phone."; fi
 
 # The scoreboard's Secrets (deploy/base/scoreboard). Its role's password, made once, is in two: `factory`'s, for the
-# migrations that set it, and the scoreboard's own, for its pod. The answer key, each entry's id and fingerprint and
-# nothing else, goes from the private checkout to the cluster through stdin, checked as the scoreboard checks it, never
-# written to a file. Without the checkout there is no key, and any key written before is deleted: the scoreboard is off.
+# migrations that set it, and the scoreboard's own, for its pod, made again from it each time rather than applied, which
+# would keep the password in an annotation too. The answer key, each entry's id and fingerprint and nothing else, goes
+# from the private checkout to the cluster through stdin, checked as the scoreboard checks it, never written to a file.
+# Without the checkout there is no key, and any key written before is deleted: the scoreboard is off.
 # It reads the key when it starts, so this restarts it. The migrations set the role's password from `factory`'s Secret
 # when Argo CD next syncs, so on a cluster made before the scoreboard, run this before the deploy that brings it.
 scoreboard-secrets: node_modules ## Give the scoreboard its password, and the answer key from the private checkout (PRIVATE_DIR)
 	@$(call namespace,scoreboard)
 	@$(call password,factory,postgres-scoreboard)
 	@password="$$($(KUBECTL) -n factory get secret postgres-scoreboard -o jsonpath='{.data.password}' | base64 -d)" && \
-		[ -n "$$password" ] && printf %s "$$password" | \
-		$(KUBECTL) -n scoreboard create secret generic postgres --from-file=password=/dev/stdin --dry-run=client -o yaml | \
-		$(KUBECTL) apply -f - >/dev/null
+		[ -n "$$password" ] && $(KUBECTL) -n scoreboard delete secret postgres --ignore-not-found >/dev/null && \
+		printf %s "$$password" | $(KUBECTL) -n scoreboard create secret generic postgres --from-file=password=/dev/stdin >/dev/null
 	@if [ -d "$(PRIVATE_DIR)/defects" ]; then \
 			key="$$(node scripts/answer-key.ts "$(PRIVATE_DIR)")" && printf %s "$$key" | \
 				$(KUBECTL) -n scoreboard create secret generic answer-key --from-file=key.json=/dev/stdin --dry-run=client -o yaml | \

@@ -440,6 +440,7 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
         { objectives: c.objectives, prometheus },
         start,
         end,
+        target.version,
       );
       return finished(signal, target, 'persists', told?.evidence?.[0]);
     }
@@ -490,7 +491,14 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
       : undefined);
   if (worst) {
     const prometheus = c.prometheus;
-    const told = await signalForDisagreement(disagreement, worst, { objectives: c.objectives, prometheus }, start, end);
+    const told = await signalForDisagreement(
+      disagreement,
+      worst,
+      { objectives: c.objectives, prometheus },
+      start,
+      end,
+      target.version,
+    );
     return finished(signal, target, 'persists', told?.evidence?.[0]);
   }
   if (paths.length < onIt.length) return { kind: 'wait', why: 'the metrics had a gap' };

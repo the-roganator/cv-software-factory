@@ -355,7 +355,8 @@ function busiest(counts: Map<string, number>): string | undefined {
  * The signal for a route whose records disagree, or nothing if the metrics do not say which version served it.
  * A missing log is shown as the log it should have been: none at all beside the requests counted elsewhere. Wrong
  * metrics are shown as the series they report, with what the other records counted in its name: on every route
- * (`*`, from `metricsWrongEverywhere`), the series of every route summed, and the wrong routes' counts summed.
+ * (`*`, from `metricsWrongEverywhere`), the series of every route summed, and the wrong routes' counts summed. With
+ * `only`, the version whose requests alone were counted (as `count` takes it), the series are that version's alone.
  */
 export async function signalForDisagreement(
   disagreement: Disagreement,
@@ -363,6 +364,7 @@ export async function signalForDisagreement(
   backends: { objectives: Objectives; prometheus: Prometheus },
   start: Date,
   end: Date,
+  only?: string,
 ): Promise<InboxSignal | undefined> {
   const { version, route } = entry;
   if (!version) return undefined;
@@ -384,9 +386,11 @@ export async function signalForDisagreement(
     };
   }
   const minutes = Math.round((end.getTime() - start.getTime()) / 60_000);
-  const job = appSeries(backends.objectives);
+  // The picture counts what the counts did: one version's requests alone, when only that version's were counted.
+  const job = `${appSeries(backends.objectives)}${only === undefined ? '' : `, service_version=${quoted(only)}`}`;
+  const routes = entry.path === '*' ? 'http_route!=""' : `http_route=${quoted(entry.path)}`;
   const picture = await backends.prometheus.range(
-    `sum (increase(http_server_request_duration_seconds_count{${job}, ${entry.path === '*' ? 'http_route!=""' : `http_route=${quoted(entry.path)}`}}[1m]))`,
+    `sum (increase(http_server_request_duration_seconds_count{${job}, ${routes}}[1m]))`,
     new Date(end.getTime() - 3600_000),
     end,
     60,

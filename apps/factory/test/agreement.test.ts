@@ -420,6 +420,10 @@ describe('metrics wrong on every route', () => {
       { kind: 'metric', name: 'Requests a minute. In 10 minutes: metrics 150, logs 50, traces 50' },
     ]);
     expect(queries[0]).toContain('http_route!=""');
+    expect(queries[0]).not.toContain('service_version');
+    // Counts of one version's requests alone are pictured with that version's series alone.
+    await signalForDisagreement('wrong-metric', everywhere, { objectives, prometheus }, at(35), at(45), VERSION);
+    expect(queries[1]).toContain(`service_version="${VERSION}"`);
   });
 
   it('is told once by the watcher, and no route on its own', async () => {

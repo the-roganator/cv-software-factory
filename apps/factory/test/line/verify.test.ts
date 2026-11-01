@@ -467,9 +467,20 @@ describe('Verify by the log watcher’s agreement check', () => {
     const about = { ...logged, route: '/about' };
     // The ticket on every route takes each route's signals, so a route still wrong is its own.
     const some = records({ '/products/glove-left': { ...logged, metrics: 30 }, '/about': about });
-    expect(await look(wrongEverywhere, target, options(some))).toMatchObject({
-      verification: { outcome: 'persists', check: 'metrics against logs and traces' },
+    const pictured: string[] = [];
+    const picture = {
+      ...some.prometheus,
+      range: async (query: string, start: Date) => {
+        pictured.push(query);
+        return { start, stepSeconds: 60, values: [1, 2] };
+      },
+    } as unknown as Prometheus;
+    expect(await look(wrongEverywhere, target, options({ ...some, prometheus: picture }))).toMatchObject({
+      verification: { outcome: 'persists', check: 'metrics against logs and traces', evidence: { kind: 'metric' } },
     });
+    // The picture is of the new version's requests alone, as the counts in its name are.
+    expect(pictured).toHaveLength(1);
+    expect(pictured[0]).toContain(`service_version="${VERSION}"`);
     const alone = records({ '/products/glove-left': { ...logged, metrics: 30 } });
     expect(await look(wrongEverywhere, target, options(alone))).toMatchObject({
       verification: { outcome: 'persists' },

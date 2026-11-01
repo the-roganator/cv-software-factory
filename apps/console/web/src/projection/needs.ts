@@ -40,7 +40,7 @@ export type Evidence =
   /** An improvement's spec: the flag it names, the pages it changes, and how many acceptance criteria it has. */
   | { kind: 'spec'; flag: string | undefined; pages: string[]; criteria: number };
 
-export interface AnswerRow {
+interface AnswerRow {
   answer: HoldAnswer;
   label: string;
   /** What it does, in a sentence. */
@@ -109,17 +109,6 @@ export interface NeedsView {
   /** Today's answers, the viewer's own day, newest first. */
   answered: Answered[];
 }
-
-const STAGE_NAME: Record<Stage, string> = {
-  sense: 'Sense',
-  triage: 'Triage',
-  plan: 'Plan',
-  build: 'Build',
-  gates: 'Gates',
-  review: 'Review',
-  release: 'Release',
-  verify: 'Verify',
-};
 
 /** The agent that works at a stage, for a question it asks. */
 const ASKS: Partial<Record<Stage, string>> = { plan: 'planner', build: 'coder', review: 'reviewer' };
@@ -349,7 +338,7 @@ function linkOf(item: ItemState, cause: HoldCause): Need['link'] {
 export const waited = (ms: number) => duration(Math.max(1000, ms)).split(/\s/)[0] ?? '';
 
 /** The card of a canary paused for Martin: the release in flight, when its analysis judged it bad. */
-export function canaryNeed(flight: Release | undefined, t: number): CanaryNeed | undefined {
+function canaryNeed(flight: Release | undefined, t: number): CanaryNeed | undefined {
   const judged = flight?.judgedBad;
   if (!flight || !judged) return undefined;
   const first = flight.items[0];
@@ -441,5 +430,3 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
   answered.sort((a, b) => b.at - a.at);
   return { holds, canary: canaryNeed(flight, t), answered };
 }
-
-export const stageName = (stage: Stage) => STAGE_NAME[stage];

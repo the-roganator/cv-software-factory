@@ -4,10 +4,10 @@
  * merged fix waits for Martin's deploy, that wait is the section's first block.
  */
 import { clock, clockSeconds, duration, isCommit, percent, shortVersion, shortWhen } from '../format.ts';
-import type { End, Release, Sheet as SheetData, Shipped, Verified } from '../projection/index.ts';
-import { marksNote, SENSE_NAME } from '../projection/index.ts';
-import { endedWords } from '../projection/release.ts';
-import { figureOf, phaseOf, rollouts, standing, VERDICT, Verdict } from './Canary.tsx';
+import type { Release, Sheet as SheetData, Shipped, Verified } from '../projection/index.ts';
+import { marksNote, SENSE } from '../projection/index.ts';
+import { endedAt, figureOf, phaseOf, rollouts, standing } from '../projection/release.ts';
+import { VERDICT, Verdict } from './Canary.tsx';
 import { Glyph } from './Glyph.tsx';
 import { ToolMark } from './Logos.tsx';
 import { Picture, Shot } from './Pictures.tsx';
@@ -190,13 +190,10 @@ function Steps({ r }: { r: Release }) {
   );
 }
 
-/** How an attempt ended, in a few words: "stopped with the line at 50%". */
-const endWords = (end: End) => (end.kind === 'promoted' ? 'promoted' : `${endedWords(end)} at ${end.weight}%`);
-
 /** How the release ended, or where it is now, and any earlier attempt a retry replaced. */
 function Ending({ r }: { r: Release }) {
   const { end } = r;
-  const before = r.retried.map((e) => `${endWords(e)} at ${clockSeconds(e.at)}`).join(', then ');
+  const before = r.retried.map((e) => `${endedAt(e)} at ${clockSeconds(e.at)}`).join(', then ');
   return (
     <>
       <p className="rel-end">
@@ -235,7 +232,7 @@ function Verify({ v }: { v: Verified }) {
     <div className="verify">
       <div className="rel-head">
         <span className="label">
-          Verify · {v.sense ? SENSE_NAME[v.sense] : 'the sense'} · {v.check}
+          Verify · {v.sense ? SENSE[v.sense].the : 'the sense'} · {v.check}
         </span>
         <span className={`v tone-${v.dryRun ? 'faint' : tone}`}>
           <Glyph name={glyph} />

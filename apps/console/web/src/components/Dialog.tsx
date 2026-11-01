@@ -7,7 +7,7 @@
  */
 import { type ReactNode, useEffect, useId, useRef } from 'react';
 
-export interface DialogProps {
+interface DialogProps {
   title: string;
   /** A line above the title: what kind of dialog it is. */
   kicker?: ReactNode;

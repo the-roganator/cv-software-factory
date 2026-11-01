@@ -75,7 +75,7 @@ export function OutcomeWord({ outcome }: { outcome: Outcome }) {
  * The version pill: what shipped, what it replaced when that was rolled back or stopped, what is still on the canary.
  * Before a release, the version a sense saw the problem on, or the page a visitor's report came from.
  */
-export function VersionPill({
+function VersionPill({
   versions,
   seenOn,
   from: page,

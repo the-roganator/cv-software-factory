@@ -8,9 +8,9 @@
  * progress shows here once it ends.
  */
 import type { PublicEvent } from '@software-factory/events';
-import { MODEL_AGENTS, type ModelAgent } from '../../../../../policy/models.ts';
-import { type InForce, inForce } from '../../../../../policy/settings.ts';
-import type { Profile } from '../../../../../policy/spend.ts';
+import { MODEL_AGENTS, type ModelAgent } from '@software-factory/policy/models';
+import { type InForce, inForce } from '@software-factory/policy/settings';
+import type { Profile } from '@software-factory/policy/spend';
 
 /** What the models have cost in a window, against its cap. */
 export interface Meter {

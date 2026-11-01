@@ -14,8 +14,9 @@
 import type { PayloadOf, PublicEvent, Stage } from '@software-factory/events';
 import { knownInScope, returnWords } from '@software-factory/events';
 import { RULES } from './app.ts';
-import { deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
+import { deployWaitsForMartin, type Hold, type ItemState, ofType, type ReleaseStop, stopsRelease } from './items.ts';
 import type { Ended, Picture } from './reel.ts';
+import { backWords, stopWait } from './release.ts';
 
 type Review = PayloadOf<'review.submitted'>;
 type GateRun = PayloadOf<'gate.finished'>;
@@ -44,7 +45,7 @@ export interface Attempt {
   returned: { from: Stage; detail: string; declined?: true } | undefined;
 }
 
-export interface AttemptGates {
+interface AttemptGates {
   state: 'running' | 'passed' | 'failed';
   /**
    * While a run on a newer commit of the same push runs (main merged in): whether the run before it passed. Those gates
@@ -61,7 +62,7 @@ export interface AttemptGates {
   runs: GateRun[];
 }
 
-export interface AttemptReview {
+interface AttemptReview {
   /** Which review it was: the first, or the second. */
   number: number;
   verdict: Review['verdict'];
@@ -95,7 +96,7 @@ export interface Finding {
 }
 
 /** The tests-first check, by the name its workflow gives it. It is a signal, not a required check. */
-export const isTestsFirst = (check: string) => /tests[ -]first$/i.test(check);
+const isTestsFirst = (check: string) => /tests[ -]first$/i.test(check);
 
 /** "2 of 2": the figure in a check's summary, where it gives one. */
 const figureIn = (summary: string | undefined) => summary?.match(/\d+ of \d+/)?.[0];
@@ -284,9 +285,6 @@ export function reviewThread(item: ItemState, spec: PayloadOf<'spec.written'> | 
   return reviews;
 }
 
-const ofType = <K extends PublicEvent['type']>(item: ItemState, type: K) =>
-  item.events.filter((event): event is PublicEvent<K> => event.type === type);
-
 const coderPushes = (item: ItemState) => ofType(item, 'pull-request.pushed').filter((event) => event.actor === 'coder');
 
 interface Refusal {
@@ -372,10 +370,10 @@ export function deployPicture(item: ItemState): Extract<Picture, { type: 'deploy
 }
 
 /** A deploy pull request that carries a held fix, as the line recorded it: what the console says of it. */
-export type DeployRecord = Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed'>;
+type DeployRecord = Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed'>;
 
 /** The checks that failed, in a few words: "e2e", "e2e and lint", "e2e, lint and 2 more". */
-export function failedWords(failed: readonly string[] | undefined): string {
+function failedWords(failed: readonly string[] | undefined): string {
   const [first, second, ...rest] = failed ?? [];
   if (!first) return 'a check';
   if (!second) return first;
@@ -481,16 +479,27 @@ export function deployWords(deploy: DeployRecord | undefined): {
 }
 
 /**
+ * A merged fix held for its deploy, as its row on the line and its picture caption it: what became of the merge, and
+ * what it waits for now, from the release that carried it and the deploy pull request (`DEPLOY_WORDS`).
+ */
+export function deployCaption(
+  ended: Ended | undefined,
+  deploy: DeployRecord | undefined,
+  waitsForMartin: boolean,
+): [done: string, waiting: string] {
+  const done = ended ? backWords(ended.stopped) : 'merged';
+  if (ended?.stopped) return [done, stopWait(ended.stopped)];
+  if (!waitsForMartin) return [done, deployWords(deploy).short];
+  return [done, ended ? 'waiting for Martin’s retry or next deploy' : 'waiting for Martin’s deploy'];
+}
+
+/**
  * The release that carried the last merge and ended without shipping, while the fix waits for the next deploy or
  * Martin's retry: when, its version, and what stopped it, if it was stopped rather than rolled back.
  */
 export function endedSinceMerge(item: ItemState): Ended | undefined {
   const merged = ofType(item, 'pull-request.merged').at(-1)?.ts ?? '';
-  const ended = item.events.findLast(
-    (e): e is PublicEvent<'release.rolled-back' | 'release.errored' | 'release.aborted'> =>
-      (e.type === 'release.rolled-back' || e.type === 'release.errored' || e.type === 'release.aborted') &&
-      e.ts >= merged,
-  );
+  const ended = item.events.findLast((e): e is ReleaseStop => stopsRelease(e) && e.ts >= merged);
   if (!ended) return undefined;
   if (ended.type === 'release.rolled-back')
     return { at: Date.parse(ended.ts), version: ended.payload.version, stopped: undefined };

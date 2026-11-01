@@ -12,13 +12,13 @@
  * whether saving asks for the passkey. The admin service checks the save against policy again, and the gateway and
  * the line again as they read it; the page's check only keeps Martin from asking for what would be refused.
  */
+import { EFFORTS, type Effort, MODEL_AGENTS, MODELS, type ModelAgent } from '@software-factory/policy/models';
+import { CAP_NAMES, CAPS, type CapField, changesBetween, inForce } from '@software-factory/policy/settings';
+import { CEILINGS } from '@software-factory/policy/spend';
 import { type ChangeEvent, useEffect, useMemo, useState } from 'react';
-import { EFFORTS, type Effort, MODEL_AGENTS, MODELS, type ModelAgent } from '../../../../../policy/models.ts';
-import { CAP_NAMES, CAPS, type CapField, changesBetween, inForce } from '../../../../../policy/settings.ts';
-import { CEILINGS } from '../../../../../policy/spend.ts';
 import { SETTINGS_STEP_UP } from '../access.ts';
 import { type Admin, doorHref, post, type Session, said, write } from '../admin.ts';
-import { changeWords, clock, dayLabel, modelTitle, money } from '../format.ts';
+import { capital, changeWords, clock, dayLabel, modelTitle, money, plural } from '../format.ts';
 import type { ControlsView, SettingsView } from '../projection/index.ts';
 import { KeyLegend, LineControls, SpendGroup } from './Controls.tsx';
 import { Key, useStepUp } from './StepUp.tsx';
@@ -155,7 +155,7 @@ export function Settings({
         title: 'Save the settings',
         what: (
           <>
-            <b>{capitalised(changes.map(changeWords).join('; '))}</b>, from each agent’s next step.
+            <b>{capital(changes.map(changeWords).join('; '))}</b>, from each agent’s next step.
           </>
         ),
         why: 'This raises spend',
@@ -363,7 +363,7 @@ export function Settings({
       <p>
         {badCaps.length
           ? 'Each cap is a figure in dollars above nothing, up to its ceiling.'
-          : `${changes.length} ${changes.length === 1 ? 'change' : 'changes'}: ${changes.map(changeWords).join('; ')}.${
+          : `${plural(changes.length, 'change')}: ${changes.map(changeWords).join('; ')}.${
               raises ? ' It raises spend, so saving asks for your passkey.' : ''
             }`}
       </p>
@@ -442,8 +442,6 @@ export function Settings({
 /** How long a session lasts, in minutes, from its own times: the store sets them, whatever this image was built with. */
 const lasts = (session: Session) =>
   Math.round((Date.parse(session.expiresAt) - Date.parse(session.signedInAt)) / 60_000);
-
-const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** What Martin last chose for an agent that policy does not allow now, in words; nothing when all of it is in force. */
 function outsideWords(view: SettingsView, agent: ModelAgent): string | undefined {

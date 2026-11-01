@@ -3,7 +3,7 @@
  * because that is what the models are billed in.
  */
 import type { Autonomy } from '@software-factory/events';
-import type { Change } from '../../../../policy/settings.ts';
+import type { Change } from '@software-factory/policy/settings';
 
 /** The autonomy levels by name, as the header and Controls say them. */
 export const AUTONOMY: Record<Autonomy, string> = {
@@ -115,8 +115,16 @@ export const money = (usd: number) => (usd > 0 && usd < 0.01 ? '<$0.01' : `$${us
 /** 540k, 12k, 900 */
 export const tokens = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(Math.round(n)));
 
-/** 4.6%, 0.0% */
-export const percent = (share: number) => `${(share * 100).toFixed(1)}%`;
+/** 4.6%, 0.0%; to two places for a rate the canary judges, 0.25%. Every percentage the console writes is one of these. */
+export const percent = (share: number, places = 1) => `${(share * 100).toFixed(places)}%`;
+
+/** A share of pixels changed: to a tenth of a point, a hundredth below one point, and never a change shown as none. */
+export const changedShare = (share: number) => (share < 0.0001 ? 'under 0.01%' : percent(share, share < 0.01 ? 2 : 1));
+
+const whole = new Intl.NumberFormat('en-GB');
+
+/** 1,500: a count, grouped in thousands. */
+export const count = (n: number) => whole.format(n);
 
 const significant = new Intl.NumberFormat('en-GB', { maximumSignificantDigits: 3 });
 
@@ -140,6 +148,13 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 
 /** Sentence case for a stage or other lower-case name. */
 export const capital = (word: string) => (word[0]?.toUpperCase() ?? '') + word.slice(1);
+
+/** A sentence's words in the middle of another: its first letter in lower case. */
+export const lower = (text: string) => (text[0]?.toLowerCase() ?? '') + text.slice(1);
+
+/** A list in words: "a, b and c". */
+export const listed = (words: readonly string[]) =>
+  words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : (words[0] ?? '');
 
 const SMALL = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
 

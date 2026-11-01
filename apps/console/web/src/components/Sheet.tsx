@@ -17,6 +17,7 @@ import {
   duration,
   inWords,
   isCommit,
+  listed,
   modelTitle,
   money,
   plural,
@@ -37,7 +38,7 @@ import type {
   Sighting,
   ThreadReview,
 } from '../projection/index.ts';
-import { deployWords, scrubbed, TARGET } from '../projection/index.ts';
+import { deployWords, SENSE, scrubbed, TARGET } from '../projection/index.ts';
 import { backWords } from '../projection/release.ts';
 import { REPORT_KEPT_DAYS } from '../projection/report.ts';
 import { kindName, ONGOING, OutcomeWord, spendWords } from './Card.tsx';
@@ -45,7 +46,7 @@ import { FlagSection } from './FlagSheet.tsx';
 import { CATEGORY_NAME, Glyph } from './Glyph.tsx';
 import { LogoMark, ToolMark, type ToolName } from './Logos.tsx';
 import { WaitsOnMartin } from './NeedsYou.tsx';
-import { Picture, Shot } from './Pictures.tsx';
+import { keyed, Picture, Shot, useMeasured } from './Pictures.tsx';
 import { ShippedSection } from './Shipped.tsx';
 
 const SOURCE: Record<PictureData['type'], string> = {
@@ -89,23 +90,14 @@ const TOOLS: Partial<Record<PictureData['type'], ToolName[]>> = {
 const ADMISSION_SOURCE =
   'Kyverno’s own refusal, stored with the event: it admits only an image whose Sigstore signature says the pipeline built it on main, or one of the few it names by digest.';
 
-const SENSE_NAME: Record<Sense, string> = {
-  probe: 'Probes',
-  crawler: 'Crawler',
-  metrics: 'Metrics',
-  logs: 'Logs',
-  canary: 'Canary',
-  report: 'Reports',
-};
-
-/** What each sense captures, for an evidence block's caption and its source line. */
-const CAPTURED: Record<Sense, [caption: string, source: string, tool?: ToolName]> = {
-  probe: ['Probe', 'Playwright', 'playwright'],
-  crawler: ['Crawler', 'the crawler’s request'],
-  metrics: ['Metrics · alert', 'the series behind Prometheus’s alert', 'prometheus'],
-  logs: ['Log watcher', 'Loki', 'loki'],
-  canary: ['Canary · analysis', 'Argo Rollouts’ analysis of the release', 'argo'],
-  report: ['Report', 'the widget'],
+/** What each sense captures, for an evidence block's caption (after the sense's name) and its source line. */
+const CAPTURED: Record<Sense, [what: string, source: string, tool?: ToolName]> = {
+  probe: ['', 'Playwright', 'playwright'],
+  crawler: ['', 'the crawler’s request'],
+  metrics: [' · alert', 'the series behind Prometheus’s alert', 'prometheus'],
+  logs: ['', 'Loki', 'loki'],
+  canary: [' · analysis', 'Argo Rollouts’ analysis of the release', 'argo'],
+  report: ['', 'the widget'],
 };
 
 const KIND_OF: Partial<Record<PictureData['type'], string>> = {
@@ -129,10 +121,6 @@ const PROVIDER: Record<AgentRow['provider'], string> = {
 /** "Jev 1.13.0 · TypeSafe", "Claude Opus 5.5 · Anthropic". */
 const modelName = (row: AgentRow) =>
   `${row.provider === 'typesafe' ? `Jev ${row.model.replace(/^jev-/, '')}` : modelTitle(row.model)} · ${PROVIDER[row.provider]}`;
-
-/** A list in words: "a, b and c". */
-const listed = (words: string[]) =>
-  words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : (words[0] ?? '');
 
 const SIDE_NAME: Record<string, string> = {
   broken: 'Signal',
@@ -341,6 +329,7 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
                         <Picture picture={block.picture} interactive={false} />
                         <figcaption>
                           <span>
+                            {SENSE[block.sense].name}
                             {CAPTURED[block.sense][0]}
                             {KIND_OF[block.picture.type] ? ` · ${KIND_OF[block.picture.type]}` : ''}
                           </span>
@@ -393,7 +382,7 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
                 sheet.files && (
                   <Section title="The change" help="What the pull request touched.">
                     <div className="files">
-                      {keyedByPath(sheet.files).map(({ key, item: file }) => (
+                      {keyed(sheet.files, (file) => file.path).map(({ key, value: file }) => (
                         <div key={key}>
                           <span>{file.path}</span>
                           <span className="plus">+{file.added}</span>
@@ -486,9 +475,7 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
                 <Fact name="Started">{when(card.startedAt)}</Fact>
                 <Fact name={ongoing ? 'So far' : 'Start to finish'}>{duration(card.durationMs)}</Fact>
                 <Fact name="Model spend">{card.calls ? spendWords(card) : 'none'}</Fact>
-                <Fact name="Code written by humans">
-                  {sheet.facts.humanLines} {sheet.facts.humanLines === 1 ? 'line' : 'lines'}
-                </Fact>
+                <Fact name="Code written by humans">{plural(sheet.facts.humanLines, 'line')}</Fact>
               </dl>
               {sheet.seenBy && <SeenBy rows={sheet.seenBy} />}
               <div className="side-card">
@@ -729,7 +716,7 @@ function SpecSection({ sheet }: { sheet: SheetData }) {
             </tr>
           </thead>
           <tbody>
-            {keyedByPath(scope.rows).map(({ key, item: row }) => (
+            {keyed(scope.rows, (row) => row.path).map(({ key, value: row }) => (
               <tr key={key} className={row.outside ? 'refused' : ''}>
                 <td className={`path ${row.added === undefined ? 'muted' : ''}`}>
                   {row.path}
@@ -1056,7 +1043,7 @@ function SeenBy({ rows }: { rows: Sighting[] }) {
       <ul>
         {rows.map((row) => (
           <li key={row.sense} className={row.at === undefined ? 'unseen' : ''}>
-            <span className="label">{SENSE_NAME[row.sense]}</span>
+            <span className="label">{SENSE[row.sense].group}</span>
             <span>
               {row.check ? capital(row.check) : 'None yet'}
               {(row.opened || row.added) && <small>{row.opened ? 'opened the ticket' : row.added}</small>}
@@ -1140,18 +1127,8 @@ function Replay({ chapters, motion }: { chapters: Chapter[]; motion: boolean }) 
   const [at, setAt] = useState(last);
   const [playing, setPlaying] = useState(false);
   const [all, setAll] = useState(false);
-  const scrub = useRef<HTMLDivElement>(null);
   // The scrubber's width decides how many chapters keep a target's width apart; it is measured when it changes.
-  const [width, setWidth] = useState(TARGET * 13);
-  useLayoutEffect(() => {
-    const el = scrub.current;
-    if (!el) return;
-    const measure = () => setWidth(el.getBoundingClientRect().width);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+  const [scrub, width] = useMeasured(TARGET * 13, (box) => box.width);
   const chapter = chapters[Math.min(at, last)];
   const start = chapters[0]?.at ?? 0;
 
@@ -1279,17 +1256,4 @@ function Replay({ chapters, motion }: { chapters: Chapter[]; motion: boolean }) 
       </div>
     </div>
   );
-}
-
-/**
- * Each item keyed by its path: two paths cut to what an event records (`recordedPath`) can read the same, so a path
- * seen again is keyed by how many times.
- */
-function keyedByPath<T extends { path: string }>(items: readonly T[]): { key: string; item: T }[] {
-  const seen = new Map<string, number>();
-  return items.map((item) => {
-    const n = (seen.get(item.path) ?? 0) + 1;
-    seen.set(item.path, n);
-    return { key: n > 1 ? `${item.path}#${n}` : item.path, item };
-  });
 }

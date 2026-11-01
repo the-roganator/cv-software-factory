@@ -1,0 +1,10 @@
+{
+  "name": "@software-factory/policy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The rules of the line: typed TypeScript files the factory, the console and the admin service import by name (README.md).",
+  "type": "module",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

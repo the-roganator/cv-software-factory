@@ -267,6 +267,9 @@ importers:
       '@software-factory/factory':
         specifier: workspace:*
         version: link:../factory
+      '@software-factory/policy':
+        specifier: workspace:*
+        version: link:../../policy
       '@software-factory/testing':
         specifier: workspace:*
         version: link:../../packages/testing
@@ -455,6 +458,8 @@ importers:
       '@software-factory/testing':
         specifier: workspace:*
         version: link:../testing
+
+  policy: {}
 
 packages:
 

@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { axis, countdown, duration, figure, isCommit, shortVersion, sinceStart } from '../web/src/format.ts';
+import {
+  axis,
+  changedShare,
+  count,
+  countdown,
+  duration,
+  figure,
+  isCommit,
+  listed,
+  lower,
+  percent,
+  shortVersion,
+  sinceStart,
+} from '../web/src/format.ts';
 
 describe('a chart’s axis', () => {
   it.each([
@@ -78,5 +91,37 @@ describe('the time since an item opened', () => {
 describe('the time left of a canary’s step, or until its next look', () => {
   it('counts down in minutes and seconds, a part second as a whole one, and never below nothing', () => {
     expect([151_000, 29_400, 60_000, 0, -5000].map(countdown)).toEqual(['2:31', '0:30', '1:00', '0:00', '0:00']);
+  });
+});
+
+describe('a percentage', () => {
+  it('writes a share to a tenth of a point, and a rate the canary judges to a hundredth', () => {
+    expect(percent(0.046)).toBe('4.6%');
+    expect(percent(0)).toBe('0.0%');
+    expect(percent(0.0025, 2)).toBe('0.25%');
+  });
+
+  it('writes the share of pixels a change touched without ever showing a change as none', () => {
+    expect(changedShare(0.123)).toBe('12.3%');
+    expect(changedShare(0.0042)).toBe('0.42%');
+    expect(changedShare(0.00001)).toBe('under 0.01%');
+  });
+});
+
+describe('words in a sentence', () => {
+  it('groups a count in thousands', () => {
+    expect(count(1500)).toBe('1,500');
+    expect(count(42)).toBe('42');
+  });
+
+  it('lists words with "and" before the last', () => {
+    expect(listed([])).toBe('');
+    expect(listed(['Playwright'])).toBe('Playwright');
+    expect(listed(['Playwright', 'Loki', 'the widget'])).toBe('Playwright, Loki and the widget');
+  });
+
+  it('puts a sentence in the middle of another', () => {
+    expect(lower('Waiting for Martin')).toBe('waiting for Martin');
+    expect(lower('')).toBe('');
   });
 });

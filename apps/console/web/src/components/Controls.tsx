@@ -19,10 +19,10 @@
  * its cap turns `attn`.
  */
 import { type Autonomy, AUTONOMY as LEVELS, TAKES as LOOSEST_FIRST, type TakeKind } from '@software-factory/events';
+import { type ControlChange, controlAction, TAKE, type Take } from '@software-factory/policy/line';
+import { phoneInForce } from '@software-factory/policy/phone';
+import type { Profile } from '@software-factory/policy/spend';
 import { type ReactNode, useId, useState } from 'react';
-import { type ControlChange, controlAction, TAKE, type Take } from '../../../../../policy/line.ts';
-import { phoneInForce } from '../../../../../policy/phone.ts';
-import type { Profile } from '../../../../../policy/spend.ts';
 import { CONTROL_STEP_UP, PHONE_STEP_UP } from '../access.ts';
 import { type Admin, said, write } from '../admin.ts';
 import { AUTONOMY, money, shortWhen } from '../format.ts';
@@ -652,7 +652,7 @@ export function KeyLegend() {
   );
 }
 
-export interface ControlsProps {
+interface ControlsProps {
   /** The page's profile, whose default says whether alerts reach the phone before Martin switches them. */
   profile: Profile;
   spend: SpendView;

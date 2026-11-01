@@ -1,9 +1,9 @@
 /**
- * The feature flags in Controls (milestone 7, task 16): a row per flag, with its name, its work item's link, the
- * preview eye from Preview up, and its stages as a slider of five stops, Off to Everyone. Martin sets a stage by
- * clicking a stop, or by dragging the handle and letting go on one; either opens one confirmation, which says the
- * move and who gets the flag on there, or why that stop can't be taken now. Under the flags, whether the app holds
- * them as set, from the admin service's last check of it.
+ * The feature flags in Controls: a row per flag, with its name, its work item's link, the preview eye from Preview up,
+ * and its stages as a slider of five stops, Off to Everyone. Martin sets a stage by clicking a stop, or by dragging the
+ * handle and letting go on one; either opens one confirmation, which says the move and who gets the flag on there, or
+ * why that stop can't be taken now. Under the flags, whether the app holds them as set, from the admin service's last
+ * check of it.
  *
  * Every stop is judged by `policy/flag-moves.ts`, the rules the admin service refuses a move by (`projection/flags.ts`),
  * but the service decides: it judges the move again from the stage `flags` holds, asks for the passkey again where the
@@ -13,9 +13,9 @@
  * changes only when the drag ends, as the reel's does (`renders.ts` counts, and a test reads the count). A visitor
  * sees every slider read-only, with no handle and nothing to press, and the same line about the app.
  */
+import { stageWords } from '@software-factory/policy/flag-moves';
+import { FLAGS_HELD } from '@software-factory/policy/flags';
 import { type CSSProperties, lazy, type PointerEvent, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { stageWords } from '../../../../../policy/flag-moves.ts';
-import { FLAGS_HELD } from '../../../../../policy/flags.ts';
 import type { Admin } from '../admin.ts';
 import { clock, duration } from '../format.ts';
 import { type HeldAnswer, heldFlags } from '../held.ts';
@@ -179,7 +179,7 @@ const HELD_WORDS: Record<string, string> = {
 };
 
 /** Under the flags, whether the app holds them as set, as the admin service last checked: nothing when it can't say. */
-export function HeldLine({ answer, martin, now }: { answer: HeldAnswer; martin: boolean; now: number }) {
+function HeldLine({ answer, martin, now }: { answer: HeldAnswer; martin: boolean; now: number }) {
   if (answer.kind === 'unknown') return null;
   const phone = martin ? 'your' : 'Martin’s';
   if (answer.kind === 'off') {

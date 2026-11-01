@@ -14,7 +14,7 @@ import {
   controlAction,
   controlsInForce,
   takeOf,
-} from '../../../../../policy/line.ts';
+} from '@software-factory/policy/line';
 
 export interface ControlsView extends ControlsInForce {
   /**

@@ -7,8 +7,8 @@ import { type KeyboardEvent, type PointerEvent, type ReactNode, useLayoutEffect,
 import { useArtifactUrl } from '../artifacts.ts';
 import { AGENT_NAME, axis, capital, clock, figure, inWords, money, plural, shortVersion, times } from '../format.ts';
 import type { Picture as PictureData, Source, Tag } from '../projection/index.ts';
-import { deployWords, QUARANTINE_AT } from '../projection/index.ts';
-import { stopWait, stopWords } from '../projection/release.ts';
+import { deployCaption, deployWords, QUARANTINE_AT, SENSE } from '../projection/index.ts';
+import { clamp } from './flight.ts';
 import { Glyph } from './Glyph.tsx';
 import { LogoMark, logoFor } from './Logos.tsx';
 
@@ -42,27 +42,34 @@ export interface Mark {
   n?: number | undefined;
 }
 
-const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
-
 /** A frame's height as a share of its width, until it is measured: a picture's frame is 16:10. */
 const FRAME = 10 / 16;
 
-/** A frame's height as a share of its width, measured when it is laid out and whenever it changes size. */
-function useFrame() {
-  const frame = useRef<HTMLDivElement>(null);
-  const [ratio, setRatio] = useState(FRAME);
+/**
+ * A figure read from an element's box when it is laid out and whenever it changes size, kept in state: the element's
+ * ref, and the figure. `read` may give back the figure before, for a change too small to draw again.
+ */
+export function useMeasured<T>(initial: T, read: (box: DOMRect, before: T) => T) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [value, setValue] = useState(initial);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `read` is a fixed rule, the same in every render
   useLayoutEffect(() => {
-    if (!frame.current) return;
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry?.contentRect ?? { width: 0, height: 0 };
-      // Only a change of shape renders the shot again, not every resize.
-      if (width) setRatio((ratio) => (Math.abs(ratio - height / width) < 1e-3 ? ratio : height / width));
-    });
-    observer.observe(frame.current);
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setValue((before) => read(el.getBoundingClientRect(), before));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  return [frame, ratio] as const;
+  return [ref, value] as const;
 }
+
+/** A frame's height as a share of its width: only a change of shape renders the shot again, not every resize. */
+const useFrame = () =>
+  useMeasured(FRAME, ({ width, height }, ratio) =>
+    !width || Math.abs(ratio - height / width) < 1e-3 ? ratio : height / width,
+  );
 
 /**
  * A screenshot of the app, with the probe's marks drawn where it looked. Several marks are numbered, keyed to a
@@ -152,8 +159,7 @@ export function Shot({
         ))}
       {!failed && outside > 0 && (
         <span className="fold" aria-hidden="true">
-          {above === outside ? '↑' : above ? '↕' : '↓'} {outside} more {outside === 1 ? 'mark' : 'marks'} outside the
-          frame
+          {above === outside ? '↑' : above ? '↕' : '↓'} {plural(outside, 'more mark')} outside the frame
         </span>
       )}
     </div>
@@ -164,7 +170,7 @@ export function Shot({
  * Where a wipe starts: between the two sides' marks when it can be, so both show; otherwise just left of the
  * after side's mark, so the change shows and the earlier state is a drag away.
  */
-export function startAt(before: Screenshot, after: Screenshot): number {
+function startAt(before: Screenshot, after: Screenshot): number {
   const right = Math.max(...before.boxes.map((b) => ((b.x + b.width) / before.width) * 100));
   const left = Math.min(...after.boxes.map((b) => (b.x / after.width) * 100));
   if (!before.boxes.length && !after.boxes.length) return 50;
@@ -505,7 +511,7 @@ function ScanPicture({ dependency, findings, unchanged }: Extract<PictureData, {
         <div className="sev">
           {SEVERITIES.map((s) => (
             <div className="sev-row" key={s}>
-              <span>{s[0]?.toUpperCase() + s.slice(1)}</span>
+              <span>{capital(s)}</span>
               <span className="bars" aria-hidden="true">
                 <i style={{ width: `${(findings.before[s] / most) * 100}%` }} />
                 {findings.after[s] ? (
@@ -569,9 +575,11 @@ function RollbackPicture({ dependency, weight, restored, series }: Extract<Pictu
   );
 }
 
-/** Lines of output, each with a key of its own, even where the same text repeats. */
-/** Items each with a key of their own, even where the same one repeats. */
-function keyed<T>(list: readonly T[], name: (value: T) => string): { value: T; key: string }[] {
+/**
+ * Items each with a key of their own, even where the same one repeats: a line of output, a hop, a path cut to what an
+ * event records (`recordedPath`), which can read the same as another.
+ */
+export function keyed<T>(list: readonly T[], name: (value: T) => string): { value: T; key: string }[] {
   const seen = new Map<string, number>();
   return list.map((value) => {
     const text = name(value);
@@ -581,14 +589,8 @@ function keyed<T>(list: readonly T[], name: (value: T) => string): { value: T; k
   });
 }
 
-function keyedLines(output: string): { text: string; key: string }[] {
-  const seen = new Map<string, number>();
-  return output.split('\n').map((text) => {
-    const count = (seen.get(text) ?? 0) + 1;
-    seen.set(text, count);
-    return { text, key: `${count}:${text}` };
-  });
-}
+/** Lines of output, each with a key of its own, even where the same text repeats. */
+const keyedLines = (output: string) => keyed(output.split('\n'), (text) => text);
 
 function RefusalPicture({ mechanism, output }: Extract<PictureData, { type: 'refusal' }>) {
   return (
@@ -599,7 +601,7 @@ function RefusalPicture({ mechanism, output }: Extract<PictureData, { type: 'ref
       </div>
       <pre className="term">
         {/* Shown verbatim; the lines that say no, in the alarm colour. */}
-        {keyedLines(output).map(({ text, key }) => (
+        {keyedLines(output).map(({ value: text, key }) => (
           <span
             key={key}
             className={/✕|denied|failed|blocked/.test(text) ? 't-bad' : text.startsWith('→') ? 't-dim' : ''}
@@ -794,21 +796,12 @@ function SuggestionPicture({ page, judgement }: Extract<PictureData, { type: 'su
   );
 }
 
-const SENSE_NAME: Record<Source['sense'], string> = {
-  probe: 'Probe',
-  crawler: 'Crawler',
-  metrics: 'Metrics',
-  logs: 'Log watcher',
-  canary: 'Canary',
-  report: 'Report',
-};
-
 /** Who captured it: the sense, its check, and the version, as a picture's cap. */
 function SourceCap({ source, children }: { source: Source; children?: ReactNode }) {
   return (
     <div className="row spread source-cap">
       <span className="cap">
-        {SENSE_NAME[source.sense]} · {source.every ? 'every page' : source.check} · {shortVersion(source.version)}
+        {SENSE[source.sense].name} · {source.every ? 'every page' : source.check} · {shortVersion(source.version)}
       </span>
       {children}
     </div>
@@ -911,7 +904,7 @@ function HttpPicture({ exchange, source }: Extract<PictureData, { type: 'http' }
               {cycle
                 ? `… and the same ${word(cycle)}, ${plural(rest, 'more time')}.`
                 : `… and ${plural(rest, 'more redirect')}.`}
-              {status === null && ` The ${SENSE_NAME[source.sense].toLowerCase()} gave up after ${redirects.length}.`}
+              {status === null && ` The ${SENSE[source.sense].name.toLowerCase()} gave up after ${redirects.length}.`}
             </p>
           )}
         </div>
@@ -1068,7 +1061,7 @@ function Tick({ ok, children, num }: { ok: boolean | undefined; children: ReactN
 
 /** Output printed as it came, each line toned by a test of its own: the lines that say no, in the alarm colour. */
 function Output({ lines, bad, dim }: { lines: string; bad: RegExp; dim?: RegExp }) {
-  return keyedLines(lines).map(({ text, key }) => (
+  return keyedLines(lines).map(({ value: text, key }) => (
     <span key={key} className={bad.test(text) ? 't-bad' : dim?.test(text) ? 't-dim' : ''}>
       {text}
       {'\n'}
@@ -1130,16 +1123,9 @@ function DeployPicture({
   deploy,
   waitsForMartin,
 }: Extract<PictureData, { type: 'deploy' }>) {
-  const by = ended?.stopped;
-  const stopped = by && stopWords(by);
+  const [done, waiting] = deployCaption(ended, deploy, waitsForMartin);
+  const caption = `${capital(done)} · ${waiting}`;
   const words = deployWords(deploy);
-  const caption = stopped
-    ? `${capital(stopped)} · ${stopWait(by)}`
-    : waitsForMartin
-      ? ended
-        ? 'Rolled back · waiting for Martin’s retry or next deploy'
-        : 'Merged · waiting for Martin’s deploy'
-      : `${ended ? 'Rolled back' : 'Merged'} · ${words.short}`;
   return (
     <div className="pad">
       <div className="waits">
@@ -1158,7 +1144,7 @@ function DeployPicture({
           )}
           {ended && (
             <Tick ok={false} num={shortVersion(ended.version)}>
-              The release that carried it {stopped ? `was ${stopped}` : 'rolled back'} at {clock(ended.at)}
+              The release that carried it {ended.stopped ? `was ${done}` : done} at {clock(ended.at)}
             </Tick>
           )}
           {deploy ? (

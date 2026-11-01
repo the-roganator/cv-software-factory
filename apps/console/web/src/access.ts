@@ -5,8 +5,8 @@
  * the table.
  */
 import type { HoldCause, ReleaseControl } from '@software-factory/events';
-import type { FlagAction } from '../../../../policy/flag-moves.ts';
-import type { ControlAction } from '../../../../policy/line.ts';
+import type { FlagAction } from '@software-factory/policy/flag-moves';
+import type { ControlAction } from '@software-factory/policy/line';
 
 /** How long a session lasts from sign-in, however busy: `SESSION.minutes`. */
 export const SESSION_MINUTES = 30;

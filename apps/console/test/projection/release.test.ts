@@ -8,8 +8,9 @@ import { ACCESS, STEP_UP as STEP_UP_POLICY } from '../../../../policy/access.ts'
 import { release as policy } from '../../../../policy/release.ts';
 import { DRAWN } from '../../../factory/src/release/read.ts';
 import { FRESH_MINUTES, STEP_UP } from '../../web/src/access.ts';
+import { deployCaption } from '../../web/src/projection/fixing.ts';
 import { project, projectSheet, upTo } from '../../web/src/projection/index.ts';
-import { foldItems } from '../../web/src/projection/items.ts';
+import { endsRelease, foldItems, stopsRelease } from '../../web/src/projection/items.ts';
 import { type Card, timeline } from '../../web/src/projection/reel.ts';
 import {
   BACKGROUND,
@@ -1078,5 +1079,41 @@ describe('Martin’s controls of the canary', () => {
       expect(stepUp, action).toBe(ACCESS[name as keyof typeof ACCESS].stepUp);
     }
     expect(FRESH_MINUTES).toBe(STEP_UP_POLICY.minutes);
+  });
+});
+
+describe('a release’s end', () => {
+  it('is one of four events, and all but a promotion stop the release short', () => {
+    const of = (type: string) => ({ type }) as Parameters<typeof endsRelease>[0];
+    const ends = ['release.promoted', 'release.rolled-back', 'release.errored', 'release.aborted'];
+    for (const type of ends) expect(endsRelease(of(type)), type).toBe(true);
+    for (const type of ['release.started', 'canary.stepped', 'canary.measuring']) {
+      expect(endsRelease(of(type)), type).toBe(false);
+      expect(stopsRelease(of(type)), type).toBe(false);
+    }
+    expect(ends.filter((type) => stopsRelease(of(type)))).toEqual(ends.slice(1));
+  });
+});
+
+describe('a merged fix held for its deploy', () => {
+  const ended = (stopped?: 'stop' | 'martin' | 'error') => ({ at: 0, version: 'v0.9.3', stopped });
+  const deploy = { pullRequest: 1412, state: 'checking' as const };
+
+  it('says what became of the merge and what it waits for, in one place for its row and its picture', () => {
+    expect(deployCaption(undefined, undefined, false)).toEqual(['merged', 'waiting for its deploy pull request']);
+    expect(deployCaption(ended(), deploy, false)).toEqual(['rolled back', 'deploy #1412’s checks running']);
+    expect(deployCaption(undefined, deploy, true)).toEqual(['merged', 'waiting for Martin’s deploy']);
+    expect(deployCaption(ended(), deploy, true)).toEqual(['rolled back', 'waiting for Martin’s retry or next deploy']);
+  });
+
+  it('names what stopped the release that carried it, whoever it waits for', () => {
+    expect(deployCaption(ended('martin'), deploy, false)).toEqual([
+      'aborted by Martin',
+      'waiting for his retry or next deploy',
+    ]);
+    expect(deployCaption(ended('stop'), deploy, true)).toEqual([
+      'stopped with the line',
+      'waiting for Martin’s retry or next deploy',
+    ]);
   });
 });

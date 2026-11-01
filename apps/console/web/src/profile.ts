@@ -5,7 +5,7 @@
  * reads as the defaults: `local`, not, and no address.
  */
 import { PAGE_PATH } from '@software-factory/events';
-import { PROFILES, type Profile } from '../../../../policy/spend.ts';
+import { PROFILES, type Profile } from '@software-factory/policy/spend';
 
 export interface Factory {
   profile: Profile;

@@ -8,6 +8,7 @@
  * and the bird hops for each, but a measure is never sour twice for the same measurement.
  */
 import { measurementOf, type PublicEvent } from '@software-factory/events';
+import { endsRelease } from './items.ts';
 
 export type Reaction =
   /** A release started: the bird leaves its cage for the Canary panel, as a paper bird for a dry run. */
@@ -48,15 +49,7 @@ export function hear(watch: Watch, event: PublicEvent): Reaction | undefined {
     Object.assign(watch, caged(), { release });
     return { kind: 'leave', paper: dryRun };
   }
-  if (
-    event.type !== 'canary.measuring' &&
-    event.type !== 'canary.stepped' &&
-    event.type !== 'release.promoted' &&
-    event.type !== 'release.rolled-back' &&
-    event.type !== 'release.aborted' &&
-    event.type !== 'release.errored'
-  )
-    return undefined;
+  if (event.type !== 'canary.measuring' && event.type !== 'canary.stepped' && !endsRelease(event)) return undefined;
   if (event.payload.release !== watch.release) return undefined;
   if (event.type === 'canary.measuring') {
     const heard = event.payload.measures.filter((m) => !watch.measured.has(measurementOf(m)));

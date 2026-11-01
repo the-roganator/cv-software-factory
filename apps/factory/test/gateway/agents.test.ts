@@ -128,6 +128,8 @@ interface Options {
   local?: string;
   /** Martin's settings from the store, read afresh at every look, in place of `policy`. */
   settings?: boolean;
+  /** The gateway's clock, for a test that moves it on. */
+  clock?: () => Date;
 }
 
 async function start({
@@ -136,6 +138,7 @@ async function start({
   allLocal = false,
   local,
   settings: fromStore = false,
+  clock,
 }: Options = {}) {
   database = await freshDatabase('agents');
   cassettesDir = mkdtempSync(join(tmpdir(), 'cassettes-'));
@@ -176,6 +179,7 @@ async function start({
     providers,
     log: captured.log,
     refusals,
+    ...(clock && { clock }),
   });
   const gateway = new Gateway({
     sql,
@@ -338,6 +342,20 @@ describe('agents through the gateway', () => {
     const { token } = await start();
     // Stopped by one of Martin's roles: the admin service's.
     await new EventWriter(database.admin, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) }).append(stop());
+    const response = await call(token, agentRequest());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
+  });
+
+  it('refuses the calls of an agent it already answered, once it has seen the line stop', async () => {
+    let offset = 0;
+    const { token } = await start({ clock: () => new Date(Date.now() + offset) });
+    const before = await call(token, agentRequest());
+    expect(before.status).toBe(200);
+    await before.text();
+    await new EventWriter(database.admin, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) }).append(stop());
+    // Past the few seconds the gateway keeps its view of the line (LINE_FRESH_MS), its cached "running" gone.
+    offset = 5_000;
     const response = await call(token, agentRequest());
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });

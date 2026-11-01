@@ -79,7 +79,7 @@ describe('the last canary a stop aborted', () => {
 
 describe('the stop-the-line drill', () => {
   /** A drill against the test's store: `make` appends Martin's stop and start; the rest is as each test says. */
-  function drill(o: { yes?: boolean; pods?: { name: string; part?: string }[][]; refuse?: boolean; take?: boolean }) {
+  function drill(o: { yes?: boolean; pods?: { name: string; part?: string }[][]; take?: boolean }) {
     let clock = Date.now();
     const pods = [...(o.pods ?? [[{ name: 'w-agent', part: 'agent' }], []])];
     const made: string[] = [];
@@ -92,14 +92,6 @@ describe('the stop-the-line drill', () => {
         made.push(target);
         if (target === 'stop-the-line') {
           await append(database.operator, 'line.stopped', { reason });
-          if (o.refuse ?? true) {
-            await append(database.as.gateway, 'action.refused', {
-              mechanism: 'gateway',
-              action: 'A model call by the coder agent',
-              output: 'The line is stopped: agents take no new calls until it starts again.',
-              guardrails: [9],
-            });
-          }
           if (o.take) await database.owner`insert into line (work_item, stage, issue) values ('1001', 'plan', 41)`;
         } else await append(database.operator, 'line.started', {});
         return true;
@@ -113,7 +105,7 @@ describe('the stop-the-line drill', () => {
     return { d, made, said };
   }
 
-  it('stops the line, sees it stopped, its pods gone, an agent refused and nothing taken, and starts it again', async () => {
+  it('stops the line, sees it stopped, its pods gone and nothing taken, and starts it again', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
     const { d, made, said } = drill({});
     const taken = await stopTheLine(d);
@@ -123,7 +115,6 @@ describe('the stop-the-line drill', () => {
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✓ The line stopped at .+, recorded by factory_operator\./);
     expect(output).toMatch(/✓ No pod is left in runners \(1 were running at the prompt or the stop\)\./);
-    expect(output).toMatch(/✓ The gateway refused an agent's call at .+: The line is stopped/);
     expect(output).toMatch(/✓ No work item was taken/);
     expect(output).toMatch(/✓ The line started again\./);
     expect(output).toMatch(/✓ Release r-2: the canary of version 1\.3\.0 aborted by Stop the line/);
@@ -179,52 +170,69 @@ describe('the stop-the-line drill', () => {
     expect(made).toEqual([]);
   });
 
-  it('does not hold when a pod is left, the gateway refused nothing, a work item was taken, or no stop aborted a canary', async () => {
-    const { d, made } = drill({ pods: [[{ name: 'w-agent', part: 'agent' }]], refuse: false, take: true });
+  it('does not hold when a pod is left, a work item was taken, or no stop aborted a canary', async () => {
+    const { d, made } = drill({ pods: [[{ name: 'w-agent', part: 'agent' }]], take: true });
     const taken = await stopTheLine(d);
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
     expect(taken).toMatchObject({ held: false });
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✗ pods still in runners: w-agent/);
-    expect(output).toMatch(/✗ the gateway recorded no refusal of an agent's call within 60s/);
     expect(output).toMatch(/✗ work items taken while the line was stopped: 1001/);
     expect(output).toMatch(/✗ No canary in flight has been aborted by Stop the line/);
   });
 
-  it('lists the runners again once stopped, so a pod started after the prompt is seen, and its refusal waited for', async () => {
+  it('lists the runners again once stopped, so a pod started after the prompt is seen and waited for', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
     const { d } = drill({ pods: [[], [{ name: 'late-agent', part: 'agent' }]] });
     const taken = await stopTheLine(d);
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✗ pods still in runners: late-agent/);
-    expect(output).toMatch(/✓ The gateway refused an agent's call/);
   });
 
-  it('cannot show the gateway’s refusal with no agent running, and says so before Martin says yes', async () => {
+  it('does not hold when a pod starts in runners while the line is stopped, after the others went', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const { d } = drill({});
+    const listed = d.runnerPods;
+    let calls = 0;
+    // At the prompt, at the stop (gone), then a step begun meanwhile.
+    d.runnerPods = async () => (++calls >= 3 ? [{ name: 'new-agent', part: 'agent' }] : listed());
+    const taken = await stopTheLine(d);
+    expect(taken).toMatchObject({ held: false });
+    expect('output' in taken && taken.output).toMatch(
+      /✗ pods started in runners while the line was stopped: new-agent/,
+    );
+  });
+
+  it('holds with no agent running, and does not look for the gateway’s refusal, which CI proves', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
     const { d, said } = drill({ pods: [[]] });
     const taken = await stopTheLine(d);
-    expect(said[0]).toMatch(/with no agent running, nothing calls the gateway to be refused/);
-    expect('output' in taken && taken.output).toMatch(/✗ no agent was running at the stop/);
+    expect(said[0]).toMatch(/0 agent pod\(s\) and 0 other pod\(s\) are running in runners now\.$/);
+    expect(taken).toMatchObject({ held: true });
+    expect('output' in taken && taken.output).toMatch(
+      /✓ No pod is in runners: none was running at the prompt or the stop/,
+    );
+    expect('output' in taken && taken.output).not.toMatch(/gateway/);
   });
 
-  it('does not count a stop or a refusal by a role that may not make one', async () => {
+  it('does not count a stop by a role that may not make one, even were row security to fail', async () => {
     const { d } = drill({});
-    d.make = async (target) => {
-      if (target === 'stop-the-line') {
-        await append(database.as.line, 'action.refused', {
-          mechanism: 'gateway',
-          action: 'x',
-          output: 'forged',
-          guardrails: [9],
-        }).catch(() => undefined);
-      }
+    d.make = async (target, reason) => {
+      // The drill's own reason, by a role that is not Martin's.
+      if (target === 'stop-the-line') await append(database.as.line, 'line.stopped', { reason });
       return true;
     };
-    const taken = await stopTheLine(d);
+    // With row security off, the drill's own filter by role is all that keeps it from counting the line's stop.
+    await database.owner`alter table events disable row level security`;
+    let taken: Awaited<ReturnType<typeof stopTheLine>>;
+    try {
+      taken = await stopTheLine(d);
+    } finally {
+      await database.owner`alter table events enable row level security`;
+    }
     expect('output' in taken && taken.output).toMatch(
       /✗ no line\.stopped by Martin’s roles was recorded for this drill/,
     );
-    expect('output' in taken && taken.output).not.toMatch(/forged/);
   });
 });
 

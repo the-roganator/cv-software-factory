@@ -53,6 +53,7 @@ describe('the guardrail catalogue', () => {
     expect([...listed].sort()).toEqual(Object.keys(PROOFS).sort());
     for (const proof of Object.keys(PROOFS) as ProofId[]) expect(guardrailsProvedBy(proof), proof).toHaveLength(1);
     expect(guardrailsProvedBy('stop-the-line')).toEqual([9]);
+    expect(guardrailsProvedBy('ci:stopped-line')).toEqual([9]);
     expect(guardrailsProvedBy('ci:scope-fence')).toEqual([11]);
   });
 
@@ -67,7 +68,14 @@ describe('the guardrail catalogue', () => {
       Object.keys(PROOFS)
         .filter((id) => id.startsWith('ci:'))
         .sort(),
-    ).toEqual(['ci:gates-deterministic', 'ci:one-gateway', 'ci:public-hostile', 'ci:scope-fence', 'ci:spend-caps']);
+    ).toEqual([
+      'ci:gates-deterministic',
+      'ci:one-gateway',
+      'ci:public-hostile',
+      'ci:scope-fence',
+      'ci:spend-caps',
+      'ci:stopped-line',
+    ]);
   });
 
   it('makes each of spec 5.3’s five attacks against one guardrail, and proves every guardrail somehow', () => {

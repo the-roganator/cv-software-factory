@@ -220,40 +220,64 @@ export function logSilent(entries: RouteCounts[], tolerance: Tolerance = TOLERAN
 /** The paths' counts of each route, by the route the log gives them. */
 export function byRoute(entries: readonly RouteCounts[]): Map<string, RouteCounts[]> {
   const routes = new Map<string, RouteCounts[]>();
-  for (const entry of entries) routes.set(entry.route, [...(routes.get(entry.route) ?? []), entry]);
+  for (const entry of entries) {
+    const paths = routes.get(entry.route);
+    if (paths) paths.push(entry);
+    else routes.set(entry.route, [entry]);
+  }
   return routes;
 }
 
+/** A route judged with its paths' counts together: its paths, their counts summed, and what they say is wrong. */
+export interface JudgedRoute {
+  paths: RouteCounts[];
+  counts: Counts;
+  finding: Disagreement | undefined;
+}
+
 /**
- * The metrics wrong on every route at once, rather than on some: more than one route is judged, and every route
- * judged, with its paths' counts together as in `logSilent`, has metrics that count something other than its log and
- * traces both saw. That is one finding about the metrics, not one per route: the app counts every request wrongly.
- * A path whose metrics had a gap is left out, as the watcher leaves it out, and the rest of its route is judged; a
- * route with too few requests left to judge is not judged, and neither counts towards it nor stands in its way. Any
- * other route judged otherwise, its records agreeing among them, does.
+ * The routes the agreement check judges, with their paths' counts together as in `logSilent`. A path whose metrics had
+ * a gap is left out, as the watcher leaves it out, and the rest of its route is judged; a route with too few requests
+ * left to judge is not judged.
+ */
+export function judgedRoutes(entries: readonly RouteCounts[], tolerance: Tolerance = TOLERANCE): JudgedRoute[] {
+  const judged: JudgedRoute[] = [];
+  for (const paths of byRoute(entries.filter((entry) => !entry.gap)).values()) {
+    const counts = total(paths);
+    if (Math.max(counts.metrics, counts.logs, counts.traces ?? 0) < tolerance.minRequests) continue;
+    judged.push({ paths, counts, finding: judge(counts, tolerance) });
+  }
+  return judged;
+}
+
+/**
+ * Several routes' counts as one, on every route (`*`), with the version that served most of their requests: undefined
+ * when the metrics do not say, and then `signalForDisagreement` makes no signal of it.
+ */
+export function onEveryRoute(routes: readonly JudgedRoute[]): RouteCounts {
+  const paths = routes.flatMap((route) => route.paths);
+  const versions = new Map<string, number>();
+  for (const entry of paths) {
+    if (entry.version) versions.set(entry.version, (versions.get(entry.version) ?? 0) + entry.metrics);
+  }
+  return { path: '*', route: '*', version: busiest(versions), ...total(paths) };
+}
+
+/**
+ * The metrics wrong on every route at once, rather than on some: more than one route is judged (`judgedRoutes`), and
+ * every one has metrics that count something other than its log and traces both saw. That is one finding about the
+ * metrics, not one per route: the app counts every request wrongly. A route not judged neither counts towards it nor
+ * stands in its way; any route judged otherwise, its records agreeing among them, does.
  *
- * Its counts are the wrong routes' summed, on every route (`*`), with the version that served most of them; nothing
- * when the metrics are not wrong everywhere, or do not say which version served the requests.
+ * Its counts are the wrong routes' summed (`onEveryRoute`); nothing when the metrics are not wrong everywhere.
  */
 export function metricsWrongEverywhere(
   entries: readonly RouteCounts[],
   tolerance: Tolerance = TOLERANCE,
 ): RouteCounts | undefined {
-  const wrong: RouteCounts[] = [];
-  let routes = 0;
-  for (const paths of byRoute(entries.filter((entry) => !entry.gap)).values()) {
-    const counts = total(paths);
-    if (Math.max(counts.metrics, counts.logs, counts.traces ?? 0) < tolerance.minRequests) continue;
-    if (judge(counts, tolerance) !== 'wrong-metric') return undefined;
-    routes += 1;
-    wrong.push(...paths);
-  }
-  if (routes < 2) return undefined;
-  const versions = new Map<string, number>();
-  for (const entry of wrong) {
-    if (entry.version) versions.set(entry.version, (versions.get(entry.version) ?? 0) + entry.metrics);
-  }
-  return { path: '*', route: '*', version: busiest(versions), ...total(wrong) };
+  const judged = judgedRoutes(entries, tolerance);
+  if (judged.length < 2 || judged.some((route) => route.finding !== 'wrong-metric')) return undefined;
+  return onEveryRoute(judged);
 }
 
 /**

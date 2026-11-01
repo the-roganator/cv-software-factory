@@ -463,27 +463,34 @@ describe('Verify by the log watcher’s agreement check', () => {
     expect(await look(wrongEverywhere, target, options(thin))).toMatchObject({ verification: { outcome: 'cleared' } });
   });
 
-  it('waits on metrics wrong on some routes and not others, a gap, too few requests or traces', async () => {
+  it('persists while the metrics are wrong on any route, alone and thinly served too', async () => {
     const about = { ...logged, route: '/about' };
+    // The ticket on every route takes each route's signals, so a route still wrong is its own.
     const some = records({ '/products/glove-left': { ...logged, metrics: 30 }, '/about': about });
-    expect(await look(wrongEverywhere, target, options(some))).toEqual({
-      kind: 'wait',
-      why: 'the records disagree on some routes and not others, so the metrics are not wrong on every one',
+    expect(await look(wrongEverywhere, target, options(some))).toMatchObject({
+      verification: { outcome: 'persists', check: 'metrics against logs and traces' },
     });
-    const gapped = records({ '/products/glove-left': logged, '/about': { ...about, gap: true } });
-    expect(await look(wrongEverywhere, target, options(gapped))).toEqual({
-      kind: 'wait',
-      why: 'the metrics had a gap',
+    const alone = records({ '/products/glove-left': { ...logged, metrics: 30 } });
+    expect(await look(wrongEverywhere, target, options(alone))).toMatchObject({
+      verification: { outcome: 'persists' },
     });
-    // A path with a gap is left out: wrong metrics on every other route still persist, and agreeing ones wait.
+    // A path with a gap is left out: wrong metrics on the other routes still persist.
     const wrongBeside = records({
       '/products/glove-left': { ...logged, metrics: 30 },
-      '/products/glove-right': { ...logged, metrics: 30 },
       '/about': { ...about, metrics: 30 },
       '/privacy': { ...logged, route: '/privacy', metrics: 4021, gap: true },
     });
     expect(await look(wrongEverywhere, target, options(wrongBeside))).toMatchObject({
       verification: { outcome: 'persists' },
+    });
+  });
+
+  it('judges the routes left once a gap is left out, and waits on too few requests, traces or another disagreement', async () => {
+    const about = { ...logged, route: '/about' };
+    // As on a silent log's `*`, the routes without the gap are judged.
+    const gapped = records({ '/products/glove-left': logged, '/about': { ...about, metrics: 4021, gap: true } });
+    expect(await look(wrongEverywhere, target, options(gapped))).toMatchObject({
+      verification: { outcome: 'cleared' },
     });
     const onlyGap = records({ '/about': { ...about, metrics: 4021, gap: true } });
     expect(await look(wrongEverywhere, target, options(onlyGap))).toEqual({
@@ -499,6 +506,11 @@ describe('Verify by the log watcher’s agreement check', () => {
     expect(await look(wrongEverywhere, target, options(late))).toEqual({
       kind: 'wait',
       why: 'Tempo did not have every trace of the window',
+    });
+    const unlogged = records({ '/products/glove-left': logged, '/about': { ...about, logs: 0 } });
+    expect(await look(wrongEverywhere, target, options(unlogged))).toEqual({
+      kind: 'wait',
+      why: 'the routes’ records disagree, and none of them has wrong metrics',
     });
   });
 

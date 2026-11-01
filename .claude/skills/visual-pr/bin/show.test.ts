@@ -42,8 +42,8 @@ function show(before: Buffer, after: Buffer) {
   dirs.push(dir);
   writeFileSync(join(dir, 'before.png'), before);
   writeFileSync(join(dir, 'after.png'), after);
-  // A folder that does not exist yet, as scratch/pr/<branch>/ on a clean checkout.
-  const out = join(dir, 'pr', 'branch', 'snapshot.svg');
+  // Folders that do not exist yet, as scratch/pr/<owner>-<repo>/<branch>/ on a clean checkout.
+  const out = join(dir, 'pr', 'owner-repo', 'branch', 'snapshot.svg');
   const run = spawnSync(process.execPath, [SCRIPT, join(dir, 'before.png'), join(dir, 'after.png'), out], {
     encoding: 'utf8',
   });

@@ -7,13 +7,15 @@
 import type { NewEvent } from '@software-factory/events';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import postgres, { type Sql } from 'postgres';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, inject, it, vi } from 'vitest';
 import { AgentCalls, type AgentCallsOptions } from '../../src/gateway/agents.ts';
 import {
+  agentCalls,
   agentRequest,
   call,
   captured,
   cassettesDir,
+  cutter,
   database,
   start,
   stop,
@@ -32,19 +34,35 @@ describe('agents through the gateway, while the line is stopped', () => {
     expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
   });
 
-  /** Appends one of Martin's commands, as the admin service's role, and returns once the gateway has heard it. */
-  const appendHeard = async (sql: Sql, event: NewEvent) => {
-    // The gateway's listener and this one share the client's one listening connection, and hear each append in the
-    // order they listened in: the gateway's first.
+  /**
+   * Appends one of Martin's commands, as the admin service's role, while the store notifies no append, so nothing the
+   * gateway hears can be it. Gives its seq, for `notifyHeard`.
+   */
+  const appendUnheard = async (event: NewEvent): Promise<number> => {
+    const [stored] = await new EventWriter(database.admin, {
+      kind: 'real',
+      artifacts: new DiskArtifacts(cassettesDir),
+    }).append(event);
+    if (!stored) throw new Error('nothing appended');
+    return stored.seq;
+  };
+
+  /** Notifies an append's seq, as the store does, and returns once the gateway has heard that one. */
+  const notifyHeard = async (sql: Sql, seq: number) => {
+    // The gateway's listener and this one share the client's one listening connection, and hear each notification in
+    // the order they listened in: the gateway's first.
     const heard = Promise.withResolvers<void>();
-    const listening = await sql.listen('events', () => heard.resolve());
+    const listening = await sql.listen('events', (payload) => payload === String(seq) && heard.resolve());
     try {
-      await new EventWriter(database.admin, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) }).append(event);
+      await database.owner`select pg_notify('events', ${String(seq)})`;
       await heard.promise;
     } finally {
       await listening.unlisten();
     }
   };
+
+  /** Stops the store notifying appends, so the only notifications are the test's own. */
+  const quiet = () => database.owner`alter table events disable trigger events_appended`;
 
   const started = (): NewEvent => ({
     id: crypto.randomUUID(),
@@ -62,19 +80,76 @@ describe('agents through the gateway, while the line is stopped', () => {
     // A clock that never moves, so the gateway's view of the line, running, would never go stale of itself.
     const now = new Date();
     const { sql, token } = await start({ clock: () => now });
+    await quiet();
     const before = await call(token, agentRequest());
     expect(before.status).toBe(200);
     await before.text();
-    await appendHeard(sql, stop());
+    const stopped = await appendUnheard(stop());
+    // Unheard, the stop is not seen: the gateway's view of the line is fresh, and nothing else made it read again.
+    const unheard = await call(token, agentRequest());
+    expect(unheard.status).toBe(200);
+    await unheard.text();
+    // Its own notification heard, the next call is refused.
+    await notifyHeard(sql, stopped);
     const response = await call(token, agentRequest());
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
 
-    // And it answers again as soon as it hears the line start.
-    await appendHeard(sql, started());
+    // And it answers again as soon as it hears the line start, and not before.
+    const resumed = await appendUnheard(started());
+    expect((await call(token, agentRequest())).status).toBe(403);
+    await notifyHeard(sql, resumed);
     const after = await call(token, agentRequest());
     expect(after.status).toBe(200);
     await after.text();
+  });
+
+  it('reads the line again once it listens again after its connection drops, and so sees a stop it missed', async () => {
+    const store = new URL(inject('databaseUrl'));
+    const between = await cutter(store.hostname, Number(store.port));
+    let client: Sql | undefined;
+    try {
+      const now = new Date();
+      const { token } = await start({
+        clock: () => now,
+        // Through the cutter, trying again to connect at once rather than after the client's usual backoff.
+        client: (gateway) => {
+          const {
+            user,
+            pass,
+            database: name,
+          } = gateway.options as unknown as { user: string; pass: string; database: string };
+          client = postgres({
+            host: '127.0.0.1',
+            port: between.port,
+            user,
+            password: pass,
+            database: name,
+            backoff: () => 0.05,
+            onnotice: () => {},
+          });
+          return client;
+        },
+      });
+      const before = await call(token, agentRequest());
+      expect(before.status).toBe(200);
+      await before.text();
+      // Every connection cut, and none taken until the stop is in: the stop's notification is lost.
+      between.refuse(true);
+      between.cut();
+      await new EventWriter(database.admin, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) }).append(
+        stop(),
+      );
+      between.refuse(false);
+      await vi.waitFor(() => expect(captured.text()).toMatch(/listening for appends again/), { timeout: 10_000 });
+      const response = await call(token, agentRequest());
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
+    } finally {
+      await agentCalls?.stop();
+      await client?.end({ timeout: 0 });
+      await between.close();
+    }
   });
 
   it('sees the line stop within a few seconds when it hears nothing', async () => {
@@ -128,6 +203,21 @@ describe('agents through the gateway, while the line is stopped', () => {
     expect(listen).toHaveBeenCalledTimes(2);
     await agents.stop();
     expect(unlisten).toHaveBeenCalledOnce();
+
+    // A client that listens by itself after a failed first try is not asked again: another try would only add more.
+    const revived = vi.fn((_channel: string, _hear: () => void, ready: () => void) => {
+      setTimeout(ready, 1);
+      return Promise.reject(new Error('connection reset'));
+    });
+    const reviving = new AgentCalls({
+      sql: { listen: revived },
+      log: captured.log,
+      relistenMs: 10,
+    } as unknown as AgentCallsOptions);
+    await reviving.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(revived).toHaveBeenCalledOnce();
+    await reviving.stop();
 
     // Stopped before it could listen, it tries no more.
     const never = vi.fn().mockRejectedValue(new Error('connection refused'));

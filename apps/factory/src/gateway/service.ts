@@ -120,8 +120,9 @@ export async function startGateway(config: GatewayConfig, env: NodeJS.ProcessEnv
   await caps.resume();
   caps.start();
   refusals.start();
-  // Each append heard, so a stop of the line is refused from the next call.
-  await agents.start();
+  // Each append heard, so a stop of the line is refused from the next call. Not waited for: until it listens, the
+  // gateway reads the line every few seconds, and a store slow to answer holds up nothing else.
+  void agents.start();
   // Only in `record`, where nothing is replayed from the folder, but Jev's calls with no TypeSafe key.
   const pruner =
     config.mode === 'record' && config.cassettesDir

@@ -4,11 +4,13 @@
  */
 import { mkdtempSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { connect as connectTcp, createServer as createNetServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NewEvent } from '@software-factory/events';
 import { DiskArtifacts, EventWriter, issueJobToken } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
+import type { Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import type { SpendPolicy } from '../../../../policy/spend.ts';
@@ -105,13 +107,44 @@ async function fakeProvider() {
   };
 }
 
+/** A TCP relay to the store that can cut every connection through it, and refuse new ones. */
+export async function cutter(host: string, port: number) {
+  const sockets = new Set<Socket>();
+  let refusing = false;
+  const relay = createNetServer((client) => {
+    if (refusing) return void client.destroy();
+    const upstream = connectTcp(port, host);
+    for (const socket of [client, upstream]) {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      socket.on('close', () => {
+        sockets.delete(socket);
+        client.destroy();
+        upstream.destroy();
+      });
+    }
+    client.pipe(upstream).pipe(client);
+  });
+  const { port: relayPort } = await listenLocal(relay);
+  return {
+    port: relayPort,
+    cut: () => {
+      for (const socket of sockets) socket.destroy();
+    },
+    refuse: (on: boolean) => {
+      refusing = on;
+    },
+    close: () => new Promise<void>((resolve) => relay.close(() => resolve())),
+  };
+}
+
 export let provider: Awaited<ReturnType<typeof fakeProvider>>;
 export let database: Database;
 let server: Server | undefined;
 export let url: string;
 export let cassettesDir: string;
 export let caps: ProviderCaps;
-let agentCalls: AgentCalls | undefined;
+export let agentCalls: AgentCalls | undefined;
 export const captured = capturingLog();
 
 /** The stand-in provider for a file's tests, and each test's gateway and store gone after it. */
@@ -139,6 +172,8 @@ export interface Options {
   clock?: () => Date;
   /** Whether the gateway listens for appends, as it does when it runs. */
   listening?: boolean;
+  /** The gateway's own client, made from its role's, for a test that comes between it and the store. */
+  client?: (gateway: Sql) => Sql;
 }
 
 export async function start({
@@ -149,10 +184,11 @@ export async function start({
   settings: fromStore = false,
   clock,
   listening = true,
+  client,
 }: Options = {}) {
   database = await freshDatabase('agents');
   cassettesDir = mkdtempSync(join(tmpdir(), 'cassettes-'));
-  const sql = database.as.gateway;
+  const sql = client ? client(database.as.gateway) : database.as.gateway;
   const events = new EventWriter(sql, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) });
   // A clock a minute on at every look, so the settings in force are read again each time.
   let looks = 0;

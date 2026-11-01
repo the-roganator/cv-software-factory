@@ -104,7 +104,9 @@ describe('the Postgres exporter', () => {
     expect(env.find((e) => e.name === 'DATA_SOURCE_PASS')?.valueFrom?.secretKeyRef).toEqual(secret);
     expect((await migrate())?.env?.find((e) => e.name === 'METRICS_PASSWORD')?.valueFrom?.secretKeyRef).toEqual(secret);
     // `make up` makes the Secret, as it does the store's other passwords.
-    expect(await readFile(join(DEPLOY, '../Makefile'), 'utf-8')).toMatch(/\$\(call secret,factory,postgres-metrics,/);
+    expect(await readFile(join(DEPLOY, '../Makefile'), 'utf-8')).toMatch(
+      /\$\(call password,factory,postgres-metrics\)/,
+    );
   });
 
   it('is let in by Prometheus’s server alone, on 9187, and reaches Postgres alone', async () => {

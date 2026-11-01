@@ -25,7 +25,7 @@ LOCAL_CA = $(or $(shell node scripts/local-ca.ts dir),$(error node cannot say wh
 # Secret no pod reads, made here if it is not there, and set on the role here as the database's owner
 # (packages/store/src/operator.ts), so it works on any cluster as soon as it is made. A store not yet migrated has no
 # operator, and the owner appends there; it cannot enrol at all.
-as-martin = $(call secret,factory,postgres-$(1),--from-literal=password="$$(openssl rand -hex 24)") && \
+as-martin = $(call password,factory,postgres-$(1)) && \
 	{ $(KUBECTL) -n factory port-forward svc/postgres 15432:5432 >/dev/null 2>&1 & forward=$$!; \
 	trap 'kill $$forward' EXIT; sleep 2; \
 	secret() { $(KUBECTL) -n factory get secret "$$1" -o jsonpath='{.data.password}' | base64 -d; }; \
@@ -44,9 +44,16 @@ as-operator = $(call as-martin,operator,$(1))
 namespace = { made="$$($(KUBECTL) get namespace $(1) -o name --ignore-not-found)" && \
 	{ [ -n "$$made" ] || $(KUBECTL) create namespace $(1) >/dev/null; }; }
 
-# $(call secret,namespace,name,data): create a Secret unless it exists.
-secret = $(call namespace,$(1)) && \
-	{ $(KUBECTL) -n $(1) get secret $(2) >/dev/null 2>&1 || $(KUBECTL) -n $(1) create secret generic $(2) $(3); }
+# $(call password,namespace,name[,key[,more]]): give a Secret a random password under key (`password` unless named), made
+# once, with any more data. Made only when the cluster says the Secret holds none there: a Secret with an empty one, or
+# none, is made again, and any other failure to read it stops here. The password goes through stdin, never a command
+# line, and is checked before it is stored, so a failed openssl stops here rather than store an empty one that each
+# later run would keep.
+password = $(call namespace,$(1)) && \
+	{ held="$$($(KUBECTL) -n $(1) get secret $(2) -o jsonpath='{.data.$(or $(3),password)}' --ignore-not-found)" && \
+	{ [ -n "$$held" ] || { fresh="$$(openssl rand -hex 24)" && [ -n "$$fresh" ] && \
+		$(KUBECTL) -n $(1) delete secret $(2) --ignore-not-found >/dev/null && printf %s "$$fresh" | \
+		$(KUBECTL) -n $(1) create secret generic $(2) --from-file=$(or $(3),password)=/dev/stdin $(4) >/dev/null; }; }; }
 
 .DEFAULT_GOAL := help
 .PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
@@ -66,12 +73,12 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 		--kube-context $(CONTEXT) --namespace argocd --create-namespace \
 		--values deploy/argocd/values.yaml --wait --timeout 5m --hide-notes
 	@# Passwords live only in the cluster: made here once, never committed.
-	@$(call secret,factory,postgres,--from-literal=password="$$(openssl rand -hex 24)")
-	@$(call secret,factory,postgres-console,--from-literal=password="$$(openssl rand -hex 24)")
-	@$(call secret,factory,postgres-metrics,--from-literal=password="$$(openssl rand -hex 24)")
-	@$(call secret,factory,postgres-admin,--from-literal=password="$$(openssl rand -hex 24)")
+	@$(call password,factory,postgres)
+	@$(call password,factory,postgres-console)
+	@$(call password,factory,postgres-metrics)
+	@$(call password,factory,postgres-admin)
 	@# The proofs' role, which `make guardrails` connects as from the Mac; the migrate Job sets it.
-	@$(call secret,factory,postgres-proofs,--from-literal=password="$$(openssl rand -hex 24)")
+	@$(call password,factory,postgres-proofs)
 	@$(MAKE) --no-print-directory worker-secrets
 	@$(MAKE) --no-print-directory gateway-key
 	@$(MAKE) --no-print-directory github-key
@@ -80,7 +87,7 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory share-key
 	@$(MAKE) --no-print-directory refusal-key
 	@$(MAKE) --no-print-directory judgements-token
-	@$(call secret,telemetry,grafana-admin,--from-literal=admin-user=admin --from-literal=admin-password="$$(openssl rand -hex 24)")
+	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
 	sed 's|targetRevision: main|targetRevision: $(REVISION)|' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
 	@echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
@@ -162,9 +169,7 @@ pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-a
 # when Argo CD next syncs, so on a cluster made before the scoreboard, run this before the deploy that brings it.
 scoreboard-secrets: node_modules ## Give the scoreboard its password, and the answer key from the private checkout (PRIVATE_DIR)
 	@$(call namespace,scoreboard)
-	@$(KUBECTL) -n factory get secret postgres-scoreboard >/dev/null 2>&1 || \
-		printf %s "$$(openssl rand -hex 24)" | \
-		$(KUBECTL) -n factory create secret generic postgres-scoreboard --from-file=password=/dev/stdin >/dev/null
+	@$(call password,factory,postgres-scoreboard)
 	@password="$$($(KUBECTL) -n factory get secret postgres-scoreboard -o jsonpath='{.data.password}' | base64 -d)" && \
 		[ -n "$$password" ] && printf %s "$$password" | \
 		$(KUBECTL) -n scoreboard create secret generic postgres --from-file=password=/dev/stdin --dry-run=client -o yaml | \
@@ -246,12 +251,7 @@ judgements-token: ## Give triage and the gateway the token judgements take, made
 # workers had roles, run this before the deploy whose image brings their migration, or their roles have no password
 # until the sync after it.
 worker-secrets: ## Give each worker that uses the store a password for its own role
-	@for worker in $(STORE_WORKERS); do \
-		$(KUBECTL) -n factory get secret postgres-$$worker >/dev/null 2>&1 || \
-			printf %s "$$(openssl rand -hex 24)" | \
-			$(KUBECTL) -n factory create secret generic postgres-$$worker --from-file=password=/dev/stdin >/dev/null || \
-			exit 1; \
-	done
+	@for worker in $(STORE_WORKERS); do $(call password,factory,postgres-$$worker) || exit 1; done
 
 egress: ## Prove the fences: only the gateway, the GitHub worker and Kyverno leave the cluster; the scoreboard reaches Postgres alone, and no service account of ours may read its Secrets (needs the workers running)
 	scripts/egress.sh

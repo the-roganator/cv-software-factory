@@ -201,21 +201,21 @@ describe('the stop-the-line drill', () => {
     expect('output' in taken && taken.output).not.toMatch(/gateway/);
   });
 
-  it('does not count a stop by a role that may not make one', async () => {
+  it('does not count a stop by a role that may not make one, even were row security to fail', async () => {
     const { d } = drill({});
     d.make = async (target, reason) => {
-      // The drill's own reason, by a role that is not Martin's, with row security off as if it had failed.
-      if (target === 'stop-the-line') {
-        await database.owner`alter table events disable row level security`;
-        try {
-          await append(database.as.line, 'line.stopped', { reason });
-        } finally {
-          await database.owner`alter table events enable row level security`;
-        }
-      }
+      // The drill's own reason, by a role that is not Martin's.
+      if (target === 'stop-the-line') await append(database.as.line, 'line.stopped', { reason });
       return true;
     };
-    const taken = await stopTheLine(d);
+    // With row security off, the drill's own filter by role is all that keeps it from counting the line's stop.
+    await database.owner`alter table events disable row level security`;
+    let taken: Awaited<ReturnType<typeof stopTheLine>>;
+    try {
+      taken = await stopTheLine(d);
+    } finally {
+      await database.owner`alter table events enable row level security`;
+    }
     expect('output' in taken && taken.output).toMatch(
       /✗ no line\.stopped by Martin’s roles was recorded for this drill/,
     );

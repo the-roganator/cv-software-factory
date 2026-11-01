@@ -440,14 +440,22 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
       );
       return finished(signal, target, 'persists', told?.evidence?.[0]);
     }
-    const routes = [...byRoute(all).values()].map(total);
-    if (routes.some((route) => route.gap)) return { kind: 'wait', why: 'the metrics had a gap' };
+    // A path whose metrics had a gap holds a running total, which says nothing of the window: as the watcher does, the
+    // other paths are judged, and the ticket clears only once none had one.
+    const gapless = all.filter((entry) => !entry.gap);
+    const gapped = gapless.length < all.length;
+    const routes = [...byRoute(gapless).values()].map(total);
     const judged = routes.filter((route) => Math.max(route.metrics, route.logs, route.traces ?? 0) >= minRequests);
-    if (!judged.length) return { kind: 'wait', why: `no route had ${minRequests} requests on the new version` };
+    if (!judged.length) {
+      if (gapped) return { kind: 'wait', why: 'the metrics had a gap' };
+      return { kind: 'wait', why: `no route had ${minRequests} requests on the new version` };
+    }
     if (judged.some((route) => route.traces === undefined)) {
       return { kind: 'wait', why: 'Tempo did not have every trace of the window' };
     }
-    if (judged.every(recordsAgree)) return finished(signal, target, 'cleared');
+    if (judged.every(recordsAgree)) {
+      return gapped ? { kind: 'wait', why: 'the metrics had a gap' } : finished(signal, target, 'cleared');
+    }
     // A route whose metrics are still wrong, beside others that agree, is a ticket of its own, as the watcher finds it.
     return {
       kind: 'wait',

@@ -228,8 +228,9 @@ export function byRoute(entries: readonly RouteCounts[]): Map<string, RouteCount
  * The metrics wrong on every route at once, rather than on some: more than one route is judged, and every route
  * judged, with its paths' counts together as in `logSilent`, has metrics that count something other than its log and
  * traces both saw. That is one finding about the metrics, not one per route: the app counts every request wrongly.
- * A route with too few requests to judge, or whose metrics had a gap, is not judged, and neither counts towards it
- * nor stands in its way; any other route judged otherwise, its records agreeing among them, does.
+ * A path whose metrics had a gap is left out, as the watcher leaves it out, and the rest of its route is judged; a
+ * route with too few requests left to judge is not judged, and neither counts towards it nor stands in its way. Any
+ * other route judged otherwise, its records agreeing among them, does.
  *
  * Its counts are the wrong routes' summed, on every route (`*`), with the version that served most of them; nothing
  * when the metrics are not wrong everywhere, or do not say which version served the requests.
@@ -240,9 +241,9 @@ export function metricsWrongEverywhere(
 ): RouteCounts | undefined {
   const wrong: RouteCounts[] = [];
   let routes = 0;
-  for (const paths of byRoute(entries).values()) {
+  for (const paths of byRoute(entries.filter((entry) => !entry.gap)).values()) {
     const counts = total(paths);
-    if (counts.gap || Math.max(counts.metrics, counts.logs, counts.traces ?? 0) < tolerance.minRequests) continue;
+    if (Math.max(counts.metrics, counts.logs, counts.traces ?? 0) < tolerance.minRequests) continue;
     if (judge(counts, tolerance) !== 'wrong-metric') return undefined;
     routes += 1;
     wrong.push(...paths);

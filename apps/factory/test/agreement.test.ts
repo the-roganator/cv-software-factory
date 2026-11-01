@@ -334,6 +334,15 @@ describe('metrics wrong on every route', () => {
       true,
     ],
     [
+      'a path whose metrics had a gap is left out, and its route judged on the rest',
+      [
+        entry('/p/x', 90, 30, 30, '/p/:slug'),
+        { ...entry('/p/y', 20, 20, 20, '/p/:slug'), gap: true },
+        entry('/b', 60, 20, 20),
+      ],
+      true,
+    ],
+    [
       'one route and a gap are one route',
       [entry('/a', 90, 30, 30), { ...entry('/b', 4000, 20, 20), gap: true }],
       false,

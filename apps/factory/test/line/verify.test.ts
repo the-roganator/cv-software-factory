@@ -475,6 +475,21 @@ describe('Verify by the log watcher’s agreement check', () => {
       kind: 'wait',
       why: 'the metrics had a gap',
     });
+    // A path with a gap is left out: wrong metrics on every other route still persist, and agreeing ones wait.
+    const wrongBeside = records({
+      '/products/glove-left': { ...logged, metrics: 30 },
+      '/products/glove-right': { ...logged, metrics: 30 },
+      '/about': { ...about, metrics: 30 },
+      '/privacy': { ...logged, route: '/privacy', metrics: 4021, gap: true },
+    });
+    expect(await look(wrongEverywhere, target, options(wrongBeside))).toMatchObject({
+      verification: { outcome: 'persists' },
+    });
+    const onlyGap = records({ '/about': { ...about, metrics: 4021, gap: true } });
+    expect(await look(wrongEverywhere, target, options(onlyGap))).toEqual({
+      kind: 'wait',
+      why: 'the metrics had a gap',
+    });
     const thin = records({ '/products/glove-left': { metrics: 1, logs: 1, traces: 1 } });
     expect(await look(wrongEverywhere, target, options(thin))).toEqual({
       kind: 'wait',

@@ -17,14 +17,14 @@ const precise = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-d
 const weekday = new Intl.DateTimeFormat('en-GB', { weekday: 'short' });
 const day = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
-/** 16:20 */
 /** The start of the day t falls in, where the viewer is. */
 export function startOfDay(t: number): number {
-  const day = new Date(t);
-  day.setHours(0, 0, 0, 0);
-  return day.getTime();
+  const start = new Date(t);
+  start.setHours(0, 0, 0, 0);
+  return start.getTime();
 }
 
+/** 16:20 */
 export const clock = (at: number) => time.format(at);
 
 /** 16:20:30, for a canary's steps, which last minutes */

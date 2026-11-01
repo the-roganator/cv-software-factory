@@ -227,7 +227,8 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 # Triage's caller token for the gateway's judgements (docs/COMPONENTS/LLM-GATEWAY.md#judgements): 32 random bytes in hex,
 # made once, in the Secret judgements-token in `factory`, which only triage and the gateway name, through stdin and never
 # a file or a command line. Both read it when they start and need it to start, so a new one restarts both: until then a
-# triage with the old token is refused, and one waiting for the Secret starts with it.
+# triage with the old token is refused, and one waiting for the Secret starts with it. Restarting the gateway cuts any
+# agent's call in flight; it happens only when the Secret is made.
 judgements-token: ## Give triage and the gateway the token judgements take, made once
 	@$(call namespace,factory)
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the token.

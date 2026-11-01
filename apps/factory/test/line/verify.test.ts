@@ -289,6 +289,8 @@ interface PathCounts {
   traces?: number;
   /** The route the log gives the path; a path the log has no record of has none. */
   route?: string;
+  /** Its metrics had a gap in every window. */
+  gap?: true;
 }
 
 /** Prometheus, Loki and Tempo counting the same requests in every window, and the windows they were asked about. */
@@ -299,7 +301,10 @@ function records(paths: Record<string, PathCounts>, { complete = true } = {}) {
   const prometheus = {
     instant: async (query: string): Promise<Sample[]> => {
       asked.push(query);
-      return entries.map(([path, c]) => ({ labels: { http_route: path, service_version: VERSION }, value: c.metrics }));
+      return entries.map(([path, c]) => ({
+        labels: { http_route: path, service_version: VERSION, ...(c.gap ? { agreement_gap: 'true' } : {}) },
+        value: c.metrics,
+      }));
     },
     range: async () => undefined,
   } as unknown as Prometheus;
@@ -354,7 +359,8 @@ describe('Verify by the log watcher’s agreement check', () => {
     expect(windows.at(-1)?.end).toEqual(new Date(later.getTime() - 4 * 60_000));
     for (const { start } of windows) expect(start.getTime()).toBeGreaterThanOrEqual(PROMOTED);
     // Each record counts the new version's requests alone.
-    const counted = asked.filter((query) => !query.includes('[24h]'));
+    // Not the last day's log, which places the paths: the metrics' query looks back a day too, for gaps.
+    const counted = asked.filter((query) => !query.includes('count_over_time') || !query.includes('[24h]'));
     expect(counted).toHaveLength(18);
     for (const query of counted) expect(query).toMatch(new RegExp(`service_version="${VERSION}"|version ${VERSION}`));
   });
@@ -429,6 +435,36 @@ describe('Verify by the log watcher’s agreement check', () => {
     });
     const back = records({ '/products/glove-left': logged, '/about': { ...logged, route: '/about' } });
     expect(await look(silentLog, target, options(back))).toMatchObject({ verification: { outcome: 'cleared' } });
+  });
+
+  it('waits while the metrics of the route had a gap, whichever way they read', async () => {
+    const gap = { kind: 'wait', why: 'the metrics had a gap' };
+    for (const signal of [wrongMetric, missingLog]) {
+      const gapped = records({ '/products/glove-left': { ...logged, metrics: 4021, gap: true } });
+      expect(await look(signal, target, options(gapped))).toEqual(gap);
+      const agreeing = records({ '/products/glove-left': { ...logged, gap: true } });
+      expect(await look(signal, target, options(agreeing))).toEqual(gap);
+    }
+    // A path with no gap still shows the ticket persists, as the watcher would judge it.
+    const beside = records({
+      '/products/glove-left': { metrics: 10, logs: 0, traces: 10 },
+      '/products/glove-right': { ...logged, metrics: 4021, gap: true },
+    });
+    expect(await look(missingLog, target, options(beside))).toMatchObject({ verification: { outcome: 'persists' } });
+    // Another route's gap is not the ticket's.
+    const elsewhere = records({ '/products/glove-left': logged, '/about': { ...logged, route: '/about', gap: true } });
+    expect(await look(wrongMetric, target, options(elsewhere))).toMatchObject({ verification: { outcome: 'cleared' } });
+    // On `*`, the other routes are judged; with too few requests left, it waits on the gap.
+    const back = records({
+      '/products/glove-left': { ...logged, gap: true },
+      '/about': { ...logged, route: '/about' },
+    });
+    expect(await look(silentLog, target, options(back))).toMatchObject({ verification: { outcome: 'cleared' } });
+    const thin = records({
+      '/products/glove-left': { ...logged, gap: true },
+      '/about': { metrics: 1, logs: 1, traces: 1, route: '/about' },
+    });
+    expect(await look(silentLog, target, options(thin))).toEqual(gap);
   });
 
   it('cannot tell too soon after the promotion, on too few requests, or on records that disagree otherwise', async () => {

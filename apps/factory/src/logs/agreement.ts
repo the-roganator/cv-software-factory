@@ -21,6 +21,11 @@ export interface Counts {
   metrics: number;
   logs: number;
   traces?: number;
+  /**
+   * The metrics had a gap: a series counted now had no sample at the window's start, though it had some in the day
+   * before. What it counted in the window cannot be told from its running total, so the route is not judged.
+   */
+  gap?: boolean;
 }
 
 export interface Tolerance {
@@ -46,8 +51,12 @@ export const AGREEMENT_CHECK: Record<Disagreement, string> = {
   'wrong-metric': 'metrics against logs and traces',
 };
 
-/** What the three records' counts for a route say is wrong, if they say. */
-export function judge({ metrics, logs, traces }: Counts, tolerance: Tolerance = TOLERANCE): Disagreement | undefined {
+/** What the three records' counts for a route say is wrong, if they say. A route whose metrics had a gap is not judged. */
+export function judge(
+  { metrics, logs, traces, gap }: Counts,
+  tolerance: Tolerance = TOLERANCE,
+): Disagreement | undefined {
+  if (gap) return undefined;
   if (Math.max(metrics, logs, traces ?? 0) < tolerance.minRequests) return undefined;
   const logsAgreeMetrics = agree(logs, metrics, tolerance);
   if (traces === undefined) {
@@ -89,10 +98,18 @@ export function combine(earlier: RouteCounts[], later: RouteCounts[]): RouteCoun
       logs: before.logs + entry.logs,
       // Traces are known for the pair only when they are known for both.
       ...(before.traces !== undefined && entry.traces !== undefined ? { traces: before.traces + entry.traces } : {}),
+      // A gap in either window is a gap in both.
+      ...(before.gap || entry.gap ? { gap: true } : {}),
     });
   }
   return [...combined.values()];
 }
+
+/** How far before a window's start a series' last sample still makes its absence there a gap, not a new series. */
+export const GAP_LOOKBACK = '24h';
+
+/** The label the metrics' query gives the requests of series that had a gap. */
+const GAP_LABEL = 'agreement_gap';
 
 /**
  * The requests each route and version counted in the last `seconds`, series by series before they are summed: the
@@ -100,11 +117,21 @@ export function combine(earlier: RouteCounts[], later: RouteCounts[]): RouteCoun
  * counter went down has restarted (the app's pod restarted on the same version), so it counts from nothing too.
  * `increase` would miss the first requests of a series that began in the window, and in an app with thin traffic
  * most routes' series do.
+ *
+ * A series with no sample then, but some in the `GAP_LOOKBACK` before, is not new: its metrics had a gap, and it came
+ * back with its whole running total, which counting from nothing would take for the window's requests. Its requests
+ * are summed apart, marked with `agreement_gap="true"`, so that the route is not judged on them.
  */
 export function requestsBetween(job: string, seconds: number): string {
   const counter = (offset = '') => `http_server_request_duration_seconds_count{${job}, http_route!=""}${offset}`;
-  const delta = `(${counter()} - (${counter(` offset ${seconds}s`)} or ${counter()} * 0))`;
-  return `sum by (http_route, service_version) ((${delta} >= 0) or (${counter()} unless (${delta} >= 0)))`;
+  const then = counter(` offset ${seconds}s`);
+  const delta = `(${counter()} - (${then} or ${counter()} * 0))`;
+  const counted = `((${delta} >= 0) or (${counter()} unless (${delta} >= 0)))`;
+  const gapped = `(${counter()} and (last_over_time(${counter(`[${GAP_LOOKBACK}] offset ${seconds}s`)}) unless ${then}))`;
+  return (
+    `sum by (http_route, service_version, ${GAP_LABEL}) ` +
+    `((${counted} unless ${gapped}) or label_replace(${gapped}, "${GAP_LABEL}", "true", "", ""))`
+  );
 }
 
 /**
@@ -139,14 +166,22 @@ export async function count(
     }
     return entry;
   };
-  // The version of a route is the one that served most of it.
-  const busiest = new Map<string, number>();
+  // The version of a route is the one that served most of it, its series with a gap and without summed together.
+  const served = new Map<string, Map<string | undefined, number>>();
   for (const { labels, value } of metrics) {
     const entry = at(labels.http_route ?? '');
     entry.metrics += value;
-    if (value > (busiest.get(entry.path) ?? 0)) {
-      busiest.set(entry.path, value);
-      entry.version = labels.service_version;
+    if (labels[GAP_LABEL] === 'true') entry.gap = true;
+    const versions = served.get(entry.path) ?? new Map<string | undefined, number>();
+    versions.set(labels.service_version, (versions.get(labels.service_version) ?? 0) + value);
+    served.set(entry.path, versions);
+  }
+  for (const [path, versions] of served) {
+    let most = 0;
+    for (const [version, value] of versions) {
+      if (value <= most) continue;
+      most = value;
+      at(path).version = version;
     }
   }
   for (const { labels, value } of logs) {
@@ -182,17 +217,22 @@ export function logSilent(entries: RouteCounts[], tolerance: Tolerance = TOLERAN
   return unlogged >= 2 && agree(logged, 0, tolerance);
 }
 
-/** Several paths' counts as one. As in `combine`, the traces are known only when every path's are. */
+/**
+ * Several paths' counts as one. As in `combine`, the traces are known only when every path's are, and a gap in any
+ * path's metrics is a gap in all of them.
+ */
 export function total(entries: readonly Counts[]): Counts {
   let metrics = 0;
   let logs = 0;
   let traces: number | undefined = 0;
+  let gap = false;
   for (const entry of entries) {
     metrics += entry.metrics;
     logs += entry.logs;
     traces = traces === undefined || entry.traces === undefined ? undefined : traces + entry.traces;
+    gap ||= entry.gap === true;
   }
-  return { metrics, logs, ...(traces === undefined || !entries.length ? {} : { traces }) };
+  return { metrics, logs, ...(traces === undefined || !entries.length ? {} : { traces }), ...(gap ? { gap } : {}) };
 }
 
 /** At most this many routes are shown in a silent log's evidence, the busiest first. */

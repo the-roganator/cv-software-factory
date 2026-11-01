@@ -1105,9 +1105,12 @@ export const PAYLOADS = {
    * reason if he gave one. The autonomy level is a control of its own (`controls.changed`): a start that names one is
    * from before it was, kept as it was recorded, and sets nothing.
    */
-  'line.started': z.strictObject({ autonomy: z.enum(V.AUTONOMY).optional(), reason: text(200).optional() }),
+  'line.started': z.strictObject({
+    autonomy: z.enum(V.AUTONOMY).optional(),
+    reason: text(V.MARTIN_REASON_CHARS).optional(),
+  }),
   /** The line stopped, from the console's Stop the line or `make stop-the-line`, with Martin's reason. */
-  'line.stopped': z.strictObject({ reason: text(200) }),
+  'line.stopped': z.strictObject({ reason: text(V.MARTIN_REASON_CHARS) }),
   /**
    * One of a guardrail's proofs, taken by `make guardrails` from a clean checkout of `main`: the catalogue's proof
    * (`policy/guardrails.ts`), whether it held, and its output verbatim. Appended only by the proofs' role
@@ -1343,7 +1346,7 @@ export const PAYLOADS = {
       /** What the move was, as the admin service judged it from the stage `flags` held. */
       action: z.enum(V.FLAG_ACTIONS),
       revision: z.string().regex(/^[!-~]{1,128}$/, "the flag set's revision, as flagd holds it"),
-      reason: text(200).optional(),
+      reason: text(V.MARTIN_REASON_CHARS).optional(),
       steppedUp: z.boolean(),
       /** The names `flags` held in no stage's shape (set by hand), which the write dropped, and so turned off. */
       dropped: z.array(z.string().min(1).max(253)).min(1).max(100).optional(),

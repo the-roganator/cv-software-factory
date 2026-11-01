@@ -2,7 +2,7 @@
  * What Martin's writes say and ask in words: what the admin service refused, or warned of, where he pressed
  * (`Refusal`), and a reason in his words, counted (`ReasonField`).
  */
-import { NEED_REASON_CHARS } from '@software-factory/events';
+import { MARTIN_REASON_CHARS } from '@software-factory/events';
 import type { ReactNode, Ref } from 'react';
 
 /** What the admin service refused, or warned of, where Martin pressed: nothing when it said nothing. */
@@ -24,7 +24,7 @@ export function ReasonField({
   id,
   label,
   labelHidden = false,
-  limit = NEED_REASON_CHARS,
+  limit = MARTIN_REASON_CHARS,
   rows = 2,
   required = false,
   value,

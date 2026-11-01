@@ -333,3 +333,10 @@ export const MAX_NEEDS = 20;
 
 /** The most a coder may say of why it needs one of them. */
 export const NEED_REASON_CHARS = 200;
+
+/**
+ * The most Martin's own reason may be, as he writes it in the console's dialogs and `make stop-the-line`: why he stopped
+ * or started the line (`line.stopped`, `line.started`), or moved a flag (`flag.staged`). The admin service takes its
+ * limit from those events, and the console counts against it.
+ */
+export const MARTIN_REASON_CHARS = 200;

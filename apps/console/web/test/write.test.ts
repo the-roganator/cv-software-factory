@@ -4,7 +4,7 @@
  * admin service is a stand-in for `fetch`; the passkey's ways are stand-ins for `StepUp.tsx`'s. Then the reason field
  * every write that asks for words draws (`Words.tsx`).
  */
-import { NEED_REASON_CHARS, REQUEST_WORDS } from '@software-factory/events';
+import { MARTIN_REASON_CHARS, REQUEST_WORDS } from '@software-factory/events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Asked } from '../src/components/StepUp.tsx';
 import { ReasonField } from '../src/components/Words.tsx';
@@ -235,9 +235,9 @@ describe('the reason field', () => {
 
   it('takes a reason’s limit from the events package, and counts against it', () => {
     const tree = field({});
-    expect(elements(tree, 'textarea')[0]?.props.maxLength).toBe(NEED_REASON_CHARS);
+    expect(elements(tree, 'textarea')[0]?.props.maxLength).toBe(MARTIN_REASON_CHARS);
     const chars = elements(tree, 'span').find((span) => span.props.className === 'chars');
-    expect(chars?.props.children).toEqual([6, ' / ', NEED_REASON_CHARS]);
+    expect(chars?.props.children).toEqual([6, ' / ', MARTIN_REASON_CHARS]);
   });
 
   it('takes words with a limit of their own', () => {

@@ -21,7 +21,7 @@ import { PAYLOADS, validate, validateSignal } from '../src/schemas.ts';
 import type { NewEvent, PublicEvent } from '../src/types.ts';
 import { type Catalogue, upcast } from '../src/upcast.ts';
 import { ADMIN_TYPES, EVENT_TYPES, VERSIONS } from '../src/versions.ts';
-import { HOLD_CAUSES, REFUSAL_MECHANISMS } from '../src/vocabulary.ts';
+import { HOLD_CAUSES, MARTIN_REASON_CHARS, REFUSAL_MECHANISMS } from '../src/vocabulary.ts';
 import { gate, judgement, opened, REPORT_TEXT, signal, VISITOR_KEY } from './fixtures.ts';
 
 /** An event read back, as one about to be appended again: what it reads as must be valid now. */
@@ -1638,5 +1638,18 @@ describe('a guardrail’s proof', () => {
     for (const url of ['https://example.com/actions/runs/1', 'http://github.com/a/b/actions/runs/1']) {
       expect(proved({ proof: 'ci:spend-caps', mechanism: 'ci-tests', run: { ...run, url } }).ok, url).toBe(false);
     }
+  });
+});
+
+describe('Martin’s own reason', () => {
+  const reasons = {
+    'line.stopped': PAYLOADS['line.stopped'].shape.reason,
+    'line.started': PAYLOADS['line.started'].shape.reason,
+    'flag.staged': PAYLOADS['flag.staged'].shape.reason,
+  };
+
+  it.each(Object.entries(reasons))('%s takes as many characters as his reason may have, and no more', (_, reason) => {
+    expect(reason.safeParse('a'.repeat(MARTIN_REASON_CHARS)).success).toBe(true);
+    expect(reason.safeParse('a'.repeat(MARTIN_REASON_CHARS + 1)).success).toBe(false);
   });
 });

@@ -660,6 +660,7 @@ describe("a guardrail's proof", () => {
       await appended(real.operator, 'work-item.summarised');
       const seen = await real.proofs<{ seq: string }[]>`select seq from events order by seq`;
       expect(seen.map((row) => row.seq)).toEqual(read);
+      // As the line above shows, said plainly: the role sees no refusal at all.
       expect(await real.proofs`select seq from events where type = 'action.refused'`).toEqual([]);
       // When each work item was taken onto the line, and nothing more of it, nor of any other table.
       await real.as.line`insert into line (work_item, stage) values ('1001', 'plan')`;

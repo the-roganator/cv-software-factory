@@ -6,7 +6,11 @@
  *
  * 1. Takes the job token (`x-api-key`, or `Authorization: Bearer`) and finds the job it was made for, while the job
  *    has not ended: that names the work item and the agent. It refuses every call while the line is stopped. Only
- *    then does it read the body.
+ *    then does it read the body. The store notifies every append on its `events` channel, and the gateway, listening
+ *    there, reads the line's state again before it answers the next call, so a stop is refused from the first call
+ *    after it is heard. Otherwise it keeps the state it read for a few seconds (`LINE_FRESH_MS`), which is how long a
+ *    stop goes unseen when a notification is lost: while the listening connection is down, until it listens again or
+ *    those seconds run out, whichever is first; or when it could not listen at all, which it logs.
  * 2. Takes only what it knows: the request's fields, its betas and its tools are allow-listed (`REQUEST`, `BETAS`).
  *    A server tool, such as web search, would let a fenced agent reach the web through the gateway and would cost
  *    what the caps do not count, so only the runner's own tools are allowed.
@@ -31,7 +35,7 @@
 
 import { context, propagation, ROOT_CONTEXT, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { cutTo } from '@software-factory/events';
-import { IgnoredCommands, jobForToken, lineStopped } from '@software-factory/store';
+import { IgnoredCommands, jobForToken, lineStopped, listen } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { type AgentModel, MODEL_AGENTS, MODELS, type ModelAgent } from '../../../../policy/models.ts';
@@ -181,7 +185,7 @@ export function routes(profile: Profile, allLocal: boolean): instruments.Route[]
   });
 }
 
-/** How long the line's state is trusted before it is read again. */
+/** How long the line's state is trusted before it is read again, when no append has been heard since it was read. */
 const LINE_FRESH_MS = 5_000;
 const PROVIDER_TIMEOUT_MS = 15 * 60_000;
 
@@ -192,7 +196,11 @@ const header = (headers: Headers, name: string) => {
 
 export class AgentCalls {
   readonly #o: AgentCallsOptions;
-  #line: { stopped: boolean; at: number } | undefined;
+  /** The line's state as last read, when, and how many appends had been heard when the read began. */
+  #line: { stopped: boolean; at: number; heard: number } | undefined;
+  /** The appends heard on the store's `events` channel, and each time it listened again after a dropped connection. */
+  #heard = 0;
+  #listening: { unlisten: () => Promise<void> } | undefined;
   /** Martin's commands that a role not his appended: ignored, and each logged once. */
   readonly #ignored: IgnoredCommands;
 
@@ -203,6 +211,32 @@ export class AgentCalls {
 
   #now(): number {
     return (this.#o.clock?.() ?? new Date()).getTime();
+  }
+
+  /**
+   * Listens for appends, so a stop or start is seen at the next call. After a dropped connection the client listens
+   * again, which counts as heard too: what was appended meanwhile went unheard. If it cannot listen, the gateway reads
+   * the line every few seconds, as it would after a lost notification, and logs why.
+   */
+  async start(): Promise<void> {
+    const hear = () => {
+      this.#heard++;
+    };
+    try {
+      this.#listening = await listen(this.#o.sql, hear, hear);
+    } catch (error) {
+      this.#o.log.warn(
+        { err: error },
+        `could not listen for appends: a stop of the line is seen within ${LINE_FRESH_MS / 1000}s, not at once`,
+      );
+    }
+  }
+
+  /** Stops listening. */
+  async stop(): Promise<void> {
+    const listening = this.#listening;
+    this.#listening = undefined;
+    await listening?.unlisten();
   }
 
   /**
@@ -493,11 +527,15 @@ export class AgentCalls {
 
   async #lineStopped(): Promise<boolean> {
     const now = this.#now();
-    if (this.#line && now - this.#line.at < LINE_FRESH_MS) return this.#line.stopped;
+    const line = this.#line;
+    if (line && line.heard === this.#heard && now - line.at < LINE_FRESH_MS) return line.stopped;
+    // Taken before the read: an append heard while it is under way may have committed after it, so is read again.
+    const heard = this.#heard;
     // Only Martin's roles stop and start the line; a stop or start any other appended is ignored, and logged once.
     await this.#ignored.check();
-    this.#line = { stopped: await lineStopped(this.#o.sql), at: now };
-    return this.#line.stopped;
+    const stopped = await lineStopped(this.#o.sql);
+    this.#line = { stopped, at: now, heard };
+    return stopped;
   }
 
   async #audit(

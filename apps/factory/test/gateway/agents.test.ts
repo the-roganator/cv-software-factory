@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import type { NewEvent } from '@software-factory/events';
 import { DiskArtifacts, EventWriter, endJobToken, issueJobToken } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
+import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import type { SpendPolicy } from '../../../../policy/spend.ts';
 import { AgentCassettes, keyedRequest } from '../../src/gateway/agent-cassettes.ts';
-import { AgentCalls, usageOf } from '../../src/gateway/agents.ts';
+import { AgentCalls, type AgentCallsOptions, usageOf } from '../../src/gateway/agents.ts';
 import { Cassettes } from '../../src/gateway/cassettes.ts';
 import { Gateway, type Mode } from '../../src/gateway/gateway.ts';
 import * as instruments from '../../src/gateway/metrics.ts';
@@ -110,6 +111,7 @@ let server: Server | undefined;
 let url: string;
 let cassettesDir: string;
 let caps: ProviderCaps;
+let agentCalls: AgentCalls | undefined;
 const captured = capturingLog();
 
 beforeAll(async () => {
@@ -118,6 +120,8 @@ beforeAll(async () => {
 afterAll(() => provider.close());
 afterEach(async () => {
   await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  await agentCalls?.stop();
+  agentCalls = undefined;
   await database?.end();
 });
 
@@ -130,6 +134,8 @@ interface Options {
   settings?: boolean;
   /** The gateway's clock, for a test that moves it on. */
   clock?: () => Date;
+  /** Whether the gateway listens for appends, as it does when it runs. */
+  listening?: boolean;
 }
 
 async function start({
@@ -139,6 +145,7 @@ async function start({
   local,
   settings: fromStore = false,
   clock,
+  listening = true,
 }: Options = {}) {
   database = await freshDatabase('agents');
   cassettesDir = mkdtempSync(join(tmpdir(), 'cassettes-'));
@@ -181,6 +188,8 @@ async function start({
     refusals,
     ...(clock && { clock }),
   });
+  agentCalls = agents;
+  if (listening) await agents.start();
   const gateway = new Gateway({
     sql,
     spend,
@@ -347,18 +356,85 @@ describe('agents through the gateway', () => {
     expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
   });
 
-  it('refuses the calls of an agent it already answered, once it has seen the line stop', async () => {
+  /** Appends one of Martin's commands, as the admin service's role, and returns once the gateway has heard it. */
+  const appendHeard = async (sql: Sql, event: NewEvent) => {
+    // The gateway's listener and this one share the client's one listening connection, and hear each append in the
+    // order they listened in: the gateway's first.
+    const heard = Promise.withResolvers<void>();
+    const listening = await sql.listen('events', () => heard.resolve());
+    try {
+      await new EventWriter(database.admin, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) }).append(event);
+      await heard.promise;
+    } finally {
+      await listening.unlisten();
+    }
+  };
+
+  const started = (): NewEvent => ({
+    id: crypto.randomUUID(),
+    ts: new Date().toISOString(),
+    work_item: null,
+    type: 'line.started',
+    version: 2,
+    actor: 'martin',
+    summary: 'The line started',
+    payload: { reason: 'testing' },
+    artifacts: [],
+  });
+
+  it('refuses the calls of an agent it already answered as soon as it hears the line stop', async () => {
+    // A clock that never moves, so the gateway's view of the line, running, would never go stale of itself.
+    const now = new Date();
+    const { sql, token } = await start({ clock: () => now });
+    const before = await call(token, agentRequest());
+    expect(before.status).toBe(200);
+    await before.text();
+    await appendHeard(sql, stop());
+    const response = await call(token, agentRequest());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
+
+    // And it answers again as soon as it hears the line start.
+    await appendHeard(sql, started());
+    const after = await call(token, agentRequest());
+    expect(after.status).toBe(200);
+    await after.text();
+  });
+
+  it('sees the line stop within a few seconds when it hears nothing', async () => {
     let offset = 0;
-    const { token } = await start({ clock: () => new Date(Date.now() + offset) });
+    const { token } = await start({ clock: () => new Date(Date.now() + offset), listening: false });
     const before = await call(token, agentRequest());
     expect(before.status).toBe(200);
     await before.text();
     await new EventWriter(database.admin, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) }).append(stop());
-    // Past the few seconds the gateway keeps its view of the line (LINE_FRESH_MS), its cached "running" gone.
+    // Unheard, the stop goes unseen while the gateway's view of the line is fresh...
+    const unseen = await call(token, agentRequest());
+    expect(unseen.status).toBe(200);
+    await unseen.text();
+    // ...and is seen once it is a few seconds old (LINE_FRESH_MS).
     offset = 5_000;
     const response = await call(token, agentRequest());
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { message: expect.stringMatching(/line is stopped/) } });
+  });
+
+  it('reads the line every few seconds, and says why, when it cannot listen for appends', async () => {
+    // A store nobody answers at: the gateway starts all the same.
+    const unreachable = postgres('postgres://factory_gateway@127.0.0.1:1/factory', {
+      connect_timeout: 1,
+      onnotice: () => {},
+    });
+    try {
+      const agents = new AgentCalls({ sql: unreachable, log: captured.log } as unknown as AgentCallsOptions);
+      await agents.start();
+      expect(captured.text()).toMatch(
+        /could not listen for appends: a stop of the line is seen within 5s, not at once/,
+      );
+      await agents.stop();
+    } finally {
+      await unreachable.end({ timeout: 0 });
+    }
   });
 
   it('ignores a stop that says it is Martin’s from any other role, and logs it', async () => {

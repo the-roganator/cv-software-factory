@@ -12,8 +12,8 @@
  *   (`BURST`) is held instead, with the others, as one burst: a work item with no ticket, which waits for Martin.
  *   Each new problem the sense finds while it waits joins it. Martin approving it opens their tickets, as the sense's
  *   would have been; his rejection closes it (`settleOne`). A signal that would add evidence to an open ticket counts
- *   as a new problem, and is held as one, unless a release explains it: its version went live moments before, and a
- *   release has every sense see each open ticket's defect there again.
+ *   as a new problem, and is held as one, unless a release explains it: its version went live at most
+ *   `BURST.releaseMinutes` before, and a release has every sense see each open ticket's defect there again.
  * - Before it trusts a sense's signal, triage looks at what that sense reads besides the app, as it stood when the
  *   sense saw it (`ENVIRONMENT`), and records the look with the signal. One that would open or reopen a ticket while
  *   any of it was not seen to be healthy is held for Martin as a burst is, with its cause the environment: no agent
@@ -591,10 +591,11 @@ export class Triage {
       return { outcome: 'counted', workItem: ticket.workItem, events: [] };
     // Seen there in a version no release has just put live, it is found again, not re-seen: it counts toward a burst,
     // and is held in one, as a new problem is.
+    const live: LiveTimes = new Map();
     const held =
       taken &&
-      !(await released(sql, signal.version, taken.received_at)) &&
-      (await this.#hold(signal, taken, tickets, 'add'));
+      !(await released(sql, live, signal.version, taken.received_at)) &&
+      (await this.#hold(signal, taken, tickets, 'add', live));
     if (held) return held;
     return {
       outcome: 'evidence',
@@ -604,9 +605,9 @@ export class Triage {
   }
 
   /**
-   * Holds a signal that would open or reopen a ticket, or add to an open one, if it was seen while what its sense reads
-   * was not seen to be healthy, unless it would add to an open ticket. One that would open a ticket, or add to an open
-   * one in a version no release explains, is also held if its sense has a hold waiting for Martin, or if with it the
+   * Holds a signal that would open or reopen a ticket if it was seen while what its sense reads was not seen to be
+   * healthy; one that would add to an open ticket is never held for that. One that would open a ticket, or add to an
+   * open one in a version no release explains, is also held if its sense has a hold waiting for Martin, or if with it the
    * sense has found more problems than `BURST.tickets` within `BURST.minutes` of it: the tickets it opened, the open
    * tickets it added to in versions no release explains, and those problems in its signals still waiting in the inbox,
    * which triage would otherwise take one by one. A held signal joins its sense's waiting hold, of either cause, or
@@ -617,6 +618,7 @@ export class Triage {
     taken: Taken,
     tickets: Ticket[],
     would: 'open' | 'reopen' | 'add',
+    live: LiveTimes = new Map(),
   ): Promise<Made | undefined> {
     const { sql } = this.#o;
     const now = this.#o.now();
@@ -655,12 +657,7 @@ export class Triage {
         and received_at between ${taken.received_at}::timestamptz - make_interval(mins => ${BURST.minutes})
                             and ${taken.received_at}::timestamptz + make_interval(mins => ${BURST.minutes})
         and (outcome in ('opened', 'evidence') or (triaged_at is null and attempts < ${INBOX.attempts}))`;
-    // When each version went live, asked once a version.
-    const live = new Map<string, Date | undefined>();
-    const explains = async (version: string, at: Date) => {
-      if (!live.has(version)) live.set(version, await liveSince(sql, version));
-      return explainedBy(live.get(version), at);
-    };
+    const explains = (version: string, at: Date) => released(sql, live, version, at);
     // The tickets the sense opened, the problems found again on open tickets, and the new ones waiting, each fingerprint
     // once: a ticket it opened and then found again in another version is one problem.
     const opened = new Set<string>();
@@ -709,19 +706,23 @@ async function seenIn(sql: Sql, workItem: string, sense: string, version: string
  * there again within a run or two, which is the release's doing, not a burst. A sighting later than that is found
  * again, which is the sense's doing: a defect back after it had stopped seeing it, or a fault in what it reads.
  */
-const released = async (sql: Sql, version: string, at: Date) => explainedBy(await liveSince(sql, version), at);
+async function released(sql: Sql, live: LiveTimes, version: string, at: Date): Promise<boolean> {
+  if (!live.has(version)) live.set(version, await liveSince(sql, version));
+  const since = live.get(version);
+  return !since || at.getTime() <= since.getTime() + BURST.releaseMinutes * 60_000;
+}
 
-const explainedBy = (live: Date | undefined, at: Date) =>
-  !live || at.getTime() <= live.getTime() + BURST.releaseMinutes * 60_000;
+/** When each version of the app went live, as one signal's triage has asked: each is asked once. */
+type LiveTimes = Map<string, Date | undefined>;
 
 /**
  * When a version of the app last went live: when its canary started, when it was promoted, or when a release rolled
- * back, aborted or errored restored it, as the line recorded; or, for a release the line did not watch, when a sense first saw
- * it, if that was later.
+ * back, aborted or errored restored it, as the line recorded; or, for a release the line did not watch, when a sense
+ * first saw it.
  */
 async function liveSince(sql: Sql, version: string): Promise<Date | undefined> {
   const [row] = await sql<{ live: Date | null }[]>`
-    select greatest(
+    select coalesce(
       (select max(ts) from events
        where (type in ('release.started', 'release.promoted') and payload->>'version' = ${version})
           or (type in ('release.rolled-back', 'release.aborted', 'release.errored')

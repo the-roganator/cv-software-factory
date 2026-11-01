@@ -1288,6 +1288,60 @@ describe('triage', () => {
       expect(await takeAll()).toEqual(['opened', 'evidence', 'opened', 'opened', 'opened']);
     });
 
+    /** The line's record of a release, `minutesAgo` before now. */
+    const released = (type: 'release.promoted' | 'release.rolled-back', payload: object, minutesAgo: number) =>
+      new EventWriter(database.as.line, { kind: 'real', artifacts }).append({
+        id: crypto.randomUUID(),
+        ts: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+        work_item: null,
+        type,
+        version: VERSIONS[type],
+        actor: 'factory',
+        summary: type,
+        payload,
+        artifacts: [],
+      } as unknown as NewEvent);
+
+    it('lets a promotion explain the sightings in its version for as long as the policy says, and no longer', async () => {
+      await openOn(every);
+      await liveAnHourAgo('b08efd8');
+      await liveAnHourAgo('c09efd8');
+      const promoted = (version: string) => ({
+        release: '6d8f9c7b54',
+        version,
+        previous: 'a00efd8',
+        watched: true,
+        dryRun: false,
+      });
+      await released('release.promoted', promoted('b08efd8'), BURST.releaseMinutes - 1);
+      await released('release.promoted', promoted('c09efd8'), BURST.releaseMinutes + 1);
+      for (const n of every) await sendSignal(database.owner, page(n, { version: 'b08efd8' }));
+      expect(await takeAll()).toEqual(every.map(() => 'evidence'));
+      for (const n of every) await sendSignal(database.owner, page(n, { version: 'c09efd8' }));
+      expect(await takeAll()).toEqual(every.map(() => 'held'));
+    });
+
+    it('lets a rollback that restores a version explain the sightings in it', async () => {
+      await openOn(every);
+      await liveAnHourAgo('d10efd8');
+      await released(
+        'release.rolled-back',
+        {
+          release: '6d8f9c7b54',
+          version: 'e11efd8',
+          restored: 'd10efd8',
+          weight: 25,
+          reason: 'More server errors than the stable version',
+          failed: [],
+          dryRun: false,
+          by: 'analysis',
+        },
+        1,
+      );
+      for (const n of every) await sendSignal(database.owner, page(n, { version: 'd10efd8' }));
+      expect(await takeAll()).toEqual(every.map(() => 'evidence'));
+    });
+
     it('lets a release that restores a version explain the sightings in it', async () => {
       await openOn(every);
       await liveAnHourAgo('e05efd8');

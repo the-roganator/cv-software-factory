@@ -40,4 +40,14 @@ Or open the repository in its dev container.
 - Pull requests are squash-merged; `main` accepts nothing else.
 - Keep the docs current in the same pull request as the change. Start with [`AGENTS.md`](AGENTS.md): it applies to people as well as agents.
 
+## Tests
+
+Every change that adds or changes behaviour comes with tests that prove it, in the same pull request:
+
+- **New functionality** is tested where it is used: at its public interface, never its internals ([`docs/REVIEWERS.md`](docs/REVIEWERS.md), rule 5).
+- **A bug fix** comes with a test that fails without the fix.
+- **A test is not weakened to make a change pass.** One that no longer holds is changed or removed on purpose, and the pull request says why.
+
+Unit and database tests are Vitest's (`*.test.ts`, mostly in each package's `test/` folder), and `make check` runs them. The browser tests run in the pinned Playwright image with `make e2e`: the console's are Playwright's, in `apps/console/e2e`, and the probes' and crawler's are Vitest's browser project, in `apps/factory/test/browser`. CI runs them all on pull requests and again in the merge queue, except where a pull request cannot change what they test: release, deploy and manifests-only pull requests skip some, as the README's [How changes land](README.md#how-changes-land) says. The pull request template asks which tests prove the change.
+
 By contributing, you agree that your contribution is licensed under the [MIT licence](LICENSE).

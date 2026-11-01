@@ -57,5 +57,7 @@ Every change is a pull request, squash-merged into `main` once the required chec
 - [Specification](docs/SPECIFICATION.md): what is being built
 - [Components](docs/COMPONENTS/README.md): which part does what
 - [Decisions](docs/architecture/adr/): the major ones, and why
+- [Contributing](CONTRIBUTING.md): reporting a bug or an idea, and changing the code, its tests included
+- [Security](SECURITY.md): reporting a vulnerability privately
 
 [MIT licence](LICENSE)

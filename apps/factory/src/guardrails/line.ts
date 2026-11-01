@@ -11,8 +11,8 @@
  *
  * Stopping loses the step in hand, which runs again from its last event when the line starts (`line/worker.ts`):
  * Martin is told how many agents are running before he says yes. The gateway's refusal of an agent's call while the
- * line is stopped is not looked for here: the stop ends the pods that would call it, often before they call again
- * within the gateway's few seconds' view of the line, so the drill would race it. `ci:stopped-line` proves it instead.
+ * line is stopped is not looked for here: the stop ends the pods that would call it, often before they call again, so
+ * the drill would race it. `ci:stopped-line` proves it instead.
  */
 import { randomUUID } from 'node:crypto';
 import { upcast } from '@software-factory/events';

@@ -18,7 +18,7 @@ Every worker and the console reach the store through [postgres.js](https://githu
 
 - **Queries as tagged templates.** Each value in ``sql`… ${x}` `` is sent as a bound parameter, so no query can be written that splices a value into its text.
 - **Transactions** (`sql.begin`), which the event store's appends and the line's queue run in.
-- **`LISTEN`**, on a connection postgres.js keeps open and reconnects itself, which wakes the line and triage when an event lands.
+- **`LISTEN`**, on a connection postgres.js keeps open and reconnects itself, which wakes the line and triage when an event lands, and has the gateway read the line's state again before it answers the next agent call, so a stop is refused from the first call after it is heard ([LLM gateway](LLM-GATEWAY.md#agents)).
 - **No dependencies of its own.**
 
 A time to the microsecond, such as `storeClock`'s, is bound as text (``${t}::text::timestamptz``): postgres.js makes a `Date` of every `timestamptz` parameter, which keeps only milliseconds.

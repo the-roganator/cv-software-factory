@@ -6,7 +6,11 @@
  *
  * 1. Takes the job token (`x-api-key`, or `Authorization: Bearer`) and finds the job it was made for, while the job
  *    has not ended: that names the work item and the agent. It refuses every call while the line is stopped. Only
- *    then does it read the body.
+ *    then does it read the body. The store notifies every append on its `events` channel, and the gateway, listening
+ *    there, reads the line's state again before it answers the next call, so a stop is refused from the first call
+ *    after it is heard. Otherwise it keeps the state it read for a few seconds (`LINE_FRESH_MS`), which is how long a
+ *    stop goes unseen when a notification is lost: while the listening connection is down, until the client listens
+ *    again, which it keeps trying to; or, when it could not listen as it started, which it logs, until it has.
  * 2. Takes only what it knows: the request's fields, its betas and its tools are allow-listed (`REQUEST`, `BETAS`).
  *    A server tool, such as web search, would let a fenced agent reach the web through the gateway and would cost
  *    what the caps do not count, so only the runner's own tools are allowed.
@@ -31,7 +35,7 @@
 
 import { context, propagation, ROOT_CONTEXT, type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import { cutTo } from '@software-factory/events';
-import { IgnoredCommands, jobForToken, lineStopped } from '@software-factory/store';
+import { IgnoredCommands, jobForToken, lineStopped, listen } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { type AgentModel, MODEL_AGENTS, MODELS, type ModelAgent } from '../../../../policy/models.ts';
@@ -129,6 +133,8 @@ export interface AgentCallsOptions {
   clock?: () => Date;
   /** How long a provider may take over one call, streaming included. */
   providerTimeoutMs?: number;
+  /** How long apart it tries again to listen for appends, when it could not as it started (`RELISTEN_MS`). */
+  relistenMs?: number;
   /** Where each refusal of a guardrail is recorded; without it, none is. */
   refusals?: Refusals;
 }
@@ -181,8 +187,10 @@ export function routes(profile: Profile, allLocal: boolean): instruments.Route[]
   });
 }
 
-/** How long the line's state is trusted before it is read again. */
+/** How long the line's state is trusted before it is read again, when no append has been heard since it was read. */
 const LINE_FRESH_MS = 5_000;
+/** How long apart the gateway tries again to listen for appends, when it could not as it started. */
+const RELISTEN_MS = 30_000;
 const PROVIDER_TIMEOUT_MS = 15 * 60_000;
 
 const header = (headers: Headers, name: string) => {
@@ -192,7 +200,19 @@ const header = (headers: Headers, name: string) => {
 
 export class AgentCalls {
   readonly #o: AgentCallsOptions;
-  #line: { stopped: boolean; at: number } | undefined;
+  /** The line's state as last read, when, and how many appends had been heard when the read began. */
+  #line: { stopped: boolean; at: number; heard: number } | undefined;
+  /** The appends heard on the store's `events` channel, and each time it listened again after a dropped connection. */
+  #heard = 0;
+  #listening: { unlisten: () => Promise<void> } | undefined;
+  /** The try to listen under way, which `stop` waits for. */
+  #trying: Promise<void> | undefined;
+  #relisten: NodeJS.Timeout | undefined;
+  /** Whether the client has listened, by its own retry or this one's. */
+  #listened = false;
+  #closed = false;
+  /** The read of the line under way, and how many appends had been heard when it began, for calls to share. */
+  #reading: { heard: number; stopped: Promise<boolean> } | undefined;
   /** Martin's commands that a role not his appended: ignored, and each logged once. */
   readonly #ignored: IgnoredCommands;
 
@@ -203,6 +223,68 @@ export class AgentCalls {
 
   #now(): number {
     return (this.#o.clock?.() ?? new Date()).getTime();
+  }
+
+  /**
+   * Listens for appends, so a stop or start is seen at the next call. After a dropped connection the client listens
+   * again by itself, as often as it takes, and that counts as heard too: what was appended meanwhile went unheard.
+   * Until it listens, the gateway reads the line every few seconds, as it would after a lost notification.
+   *
+   * The first try's promise resolves once it has listened or failed, and never rejects: the gateway need not wait for
+   * it. A first try the client fails without trying again, as it does when the store refuses the connection, is
+   * logged, and tried again every `RELISTEN_MS` until the client has listened. A failed try's callbacks stay with the
+   * client, which may listen with them later: each is inert once the gateway stops.
+   */
+  start(): Promise<void> {
+    this.#closed = false;
+    this.#trying = this.#listen(true);
+    return this.#trying;
+  }
+
+  readonly #hear = () => {
+    if (!this.#closed) this.#heard++;
+  };
+
+  readonly #ready = () => {
+    if (this.#closed) return;
+    this.#heard++;
+    if (this.#listened) this.#o.log.info('listening for appends again: what was appended meanwhile is read at once');
+    this.#listened = true;
+  };
+
+  async #listen(first: boolean): Promise<void> {
+    try {
+      const listening = await listen(this.#o.sql, this.#hear, this.#ready);
+      // Stopped while it was connecting: let it go at once.
+      if (this.#closed) return void (await listening.unlisten().catch(() => undefined));
+      this.#listening = listening;
+      if (!first) this.#o.log.info('listening for appends: a stop of the line is seen at once');
+    } catch (error) {
+      const every = this.#o.relistenMs ?? RELISTEN_MS;
+      if (first) {
+        this.#o.log.warn(
+          { err: error },
+          `could not listen for appends: a stop of the line is seen within ${LINE_FRESH_MS / 1000}s, not at once, ` +
+            `until it listens; trying again every ${every / 1000}s`,
+        );
+      }
+      if (this.#closed) return;
+      this.#relisten = setTimeout(() => {
+        // The client may have listened with a failed try's callbacks by itself: another try would only add more.
+        if (this.#closed || this.#listened) return;
+        this.#trying = this.#listen(false);
+      }, every).unref();
+    }
+  }
+
+  /** Stops listening, and trying to. */
+  async stop(): Promise<void> {
+    this.#closed = true;
+    clearTimeout(this.#relisten);
+    await this.#trying;
+    const listening = this.#listening;
+    this.#listening = undefined;
+    await listening?.unlisten();
   }
 
   /**
@@ -493,11 +575,28 @@ export class AgentCalls {
 
   async #lineStopped(): Promise<boolean> {
     const now = this.#now();
-    if (this.#line && now - this.#line.at < LINE_FRESH_MS) return this.#line.stopped;
-    // Only Martin's roles stop and start the line; a stop or start any other appended is ignored, and logged once.
-    await this.#ignored.check();
-    this.#line = { stopped: await lineStopped(this.#o.sql), at: now };
-    return this.#line.stopped;
+    const line = this.#line;
+    if (line && line.heard === this.#heard && now - line.at < LINE_FRESH_MS) return line.stopped;
+    // Taken before the read: an append heard while it is under way may have committed after it, so is read again.
+    const heard = this.#heard;
+    // A read begun since the last append heard sees all it would: the calls that come meanwhile share it.
+    if (this.#reading?.heard === heard) return this.#reading.stopped;
+    const reading = {
+      heard,
+      stopped: (async () => {
+        // Only Martin's roles stop and start the line; a stop or start any other appended is ignored, and logged once.
+        await this.#ignored.check();
+        return lineStopped(this.#o.sql);
+      })(),
+    };
+    this.#reading = reading;
+    try {
+      const stopped = await reading.stopped;
+      this.#line = { stopped, at: now, heard };
+      return stopped;
+    } finally {
+      if (this.#reading === reading) this.#reading = undefined;
+    }
   }
 
   async #audit(

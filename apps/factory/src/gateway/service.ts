@@ -120,6 +120,9 @@ export async function startGateway(config: GatewayConfig, env: NodeJS.ProcessEnv
   await caps.resume();
   caps.start();
   refusals.start();
+  // Each append heard, so a stop of the line is refused from the next call. Not waited for: until it listens, the
+  // gateway reads the line every few seconds, and a store slow to answer holds up nothing else.
+  void agents.start();
   // Only in `record`, where nothing is replayed from the folder, but Jev's calls with no TypeSafe key.
   const pruner =
     config.mode === 'record' && config.cassettesDir
@@ -127,11 +130,17 @@ export async function startGateway(config: GatewayConfig, env: NodeJS.ProcessEnv
       : undefined;
 
   /**
-   * Stops the ledger, the caps and the pruner, and records the refusals still folding, each whether or not another
-   * fails to, then lets go of the store.
+   * Stops the ledger, the caps, the pruner and the listening for appends, and records the refusals still folding, each
+   * whether or not another fails to, then lets go of the store.
    */
   const release = async () => {
-    const stopped = await Promise.allSettled([spend.stop(), caps.stop(), pruner?.stop(), refusals.stop()]);
+    const stopped = await Promise.allSettled([
+      spend.stop(),
+      caps.stop(),
+      pruner?.stop(),
+      refusals.stop(),
+      agents.stop(),
+    ]);
     await sql.end();
     const failed = stopped.find((result) => result.status === 'rejected');
     if (failed) throw failed.reason;

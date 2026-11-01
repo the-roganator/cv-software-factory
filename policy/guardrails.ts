@@ -84,8 +84,9 @@ export const PROOFS = {
   },
   'ci:stopped-line': {
     for:
-      "The gateway's and the line's tests of a stop: an agent's calls refused once the gateway sees the line stopped, " +
-      'which it looks for again every few seconds, and the step in hand ended, and none started, until it starts again.',
+      "The gateway's and the line's tests of a stop: an agent's calls refused from the first after the gateway hears " +
+      'the line stopped, or within a few seconds when it hears nothing, and the step in hand ended, and none started, ' +
+      'until it starts again.',
     mechanism: 'ci-tests',
   },
   'stop-the-line': {

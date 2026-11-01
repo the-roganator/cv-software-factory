@@ -10,7 +10,7 @@ Only the current milestone is detailed, because each one is likely to change the
 
 A done-when that needs an event the factory does not control, such as a release while a flag is at a stage, names the drill that makes the event, so its proof does not wait on a coincidence.
 
-**Finishing:** end its file with a retrospective of what was learned, and give each lesson a home. A milestone built in parts ends each part with its own retrospective, in that part's last task, and the milestone's at the end:
+**Finishing:** end its file with a retrospective of what was learned, and give each lesson a home. A milestone built in parts ends each part with its own retrospective, in that part's last task by its order, and the milestone's at the end:
 
 - a major decision becomes an ADR;
 - something that is now simply true goes in the spec, `COMPONENTS/` or `AGENTS.md`;

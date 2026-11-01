@@ -1200,17 +1200,106 @@ describe('triage', () => {
       expect(await heldIn()).toBe(item);
     });
 
-    it('never counts a signal on an open ticket, nor problems a handful apart in time', async () => {
-      await sendSignal(database.owner, page(1));
+    /** Opens a crawler's ticket on each of these pages, each an hour apart, so that none of them is a burst. */
+    const openOn = async (pages: number[]) => {
+      for (const n of pages) {
+        await sendSignal(database.owner, page(n));
+        expect(await triage().takeOne()).toBe('opened');
+        await database.owner`update inbox set received_at = received_at - interval '1 hour'`;
+      }
+    };
+    /** A version of the app a sense first saw an hour ago, which no release has put live since. */
+    const liveAnHourAgo = async (version: string) => {
+      await sendSignal(database.owner, found({ sense: 'probe', route: `/live/${version}`, version }));
       expect(await triage().takeOne()).toBe('opened');
-      for (let n = 0; n < BURST.tickets + 2; n++) await sendSignal(database.owner, page(1, { version: `d0${n}efd8` }));
-      expect(new Set(await takeAll())).toEqual(new Set(['evidence']));
-      // Older than the window, as the earlier tests' signals are.
       await database.owner`update inbox set received_at = received_at - interval '1 hour'`;
-      for (let n = 2; n <= BURST.tickets; n++) await sendSignal(database.owner, page(n));
+    };
+    const every = Array.from({ length: BURST.tickets + 2 }, (_, n) => n + 1);
+
+    it('never counts a release’s sighting on an open ticket, nor problems a handful apart in time', async () => {
+      await openOn(every);
+      // A new version, which every open ticket's defect is seen in at once, as a release does.
+      for (const n of every) await sendSignal(database.owner, page(n, { version: 'a01efd8' }));
+      expect(await takeAll()).toEqual(every.map(() => 'evidence'));
+      await database.owner`update inbox set received_at = received_at - interval '1 hour'`;
+      for (let n = 10; n < 10 + BURST.tickets - 1; n++) await sendSignal(database.owner, page(n));
       expect(await takeAll()).toEqual(Array(BURST.tickets - 1).fill('opened'));
-      await sendSignal(database.owner, page(BURST.tickets + 1));
+      await sendSignal(database.owner, page(99));
       expect(await triage().takeOne()).toBe('opened');
+    });
+
+    it('holds open tickets’ problems seen again, at once, in a version live for a while', async () => {
+      await openOn(every);
+      await liveAnHourAgo('b02efd8');
+      const tickets = await ticketsOf('/burst/%');
+      for (const n of every) await sendSignal(database.owner, page(n, { version: 'b02efd8' }));
+      expect(await takeAll()).toEqual(every.map(() => 'held'));
+      const item = await heldIn();
+      expect(await payloadOf(item, 'hold.started')).toMatchObject({
+        cause: 'burst',
+        reason: expect.stringContaining(`found ${every.length} new problems`),
+      });
+      const evidence = async () =>
+        Promise.all(
+          tickets.map(async (ticket) => (await types(ticket)).filter((type) => type === 'signal.received').length),
+        );
+      expect(await evidence()).toEqual(tickets.map(() => 1));
+      // One seen again in a version a ticket has it in is counted, as ever.
+      await sendSignal(database.owner, page(1));
+      expect(await triage().takeOne()).toBe('counted');
+
+      // Approving adds each to its open ticket.
+      await answer(item, 'approved');
+      expect(await triage().settleOne()).toBe(true);
+      expect(await evidence()).toEqual(tickets.map(() => 2));
+      expect(await payloadOf(item, 'work-item.closed')).toMatchObject({
+        reason: 'Martin let it through: open tickets already had every problem in it',
+      });
+      expect(await ticketsOf('/burst/%')).toEqual(tickets);
+    });
+
+    it('counts open tickets’ problems seen again with new ones, and joins a waiting burst with one', async () => {
+      await openOn([1, 2, 3, 7]);
+      await liveAnHourAgo('c03efd8');
+      for (const n of [1, 2, 3]) await sendSignal(database.owner, page(n, { version: 'c03efd8' }));
+      for (const n of [4, 5, 6]) await sendSignal(database.owner, page(n, { version: 'c03efd8' }));
+      expect(await takeAll()).toEqual(Array(6).fill('held'));
+      const item = await heldIn();
+      expect(await ticketsOf('/burst/%')).toHaveLength(4);
+
+      // While it waits, another open ticket's problem seen again joins it, however long after, and a release's
+      // sighting does not.
+      await database.owner`update inbox set received_at = received_at - interval '1 hour'`;
+      await sendSignal(database.owner, page(7, { version: 'c03efd8' }));
+      expect(await triage().takeOne()).toBe('held');
+      expect(await heldIn()).toBe(item);
+      await sendSignal(database.owner, page(7, { version: 'd04efd8' }));
+      expect(await triage().takeOne()).toBe('evidence');
+    });
+
+    it('lets a release that restores a version explain the sightings in it', async () => {
+      await openOn(every);
+      await liveAnHourAgo('e05efd8');
+      const line = new EventWriter(database.as.line, { kind: 'real', artifacts });
+      await line.append({
+        id: crypto.randomUUID(),
+        ts: new Date().toISOString(),
+        work_item: null,
+        type: 'release.aborted',
+        version: VERSIONS['release.aborted'],
+        actor: 'factory',
+        summary: 'Stop the line aborted the release',
+        payload: {
+          release: '6d8f9c7b54',
+          version: 'f06efd8',
+          restored: 'e05efd8',
+          abortedAt: new Date().toISOString(),
+          by: 'stop',
+        },
+        artifacts: [],
+      } as NewEvent<'release.aborted'>);
+      for (const n of every) await sendSignal(database.owner, page(n, { version: 'e05efd8' }));
+      expect(await takeAll()).toEqual(every.map(() => 'evidence'));
     });
 
     it('never counts a waiting signal that would reopen a verified ticket', async () => {

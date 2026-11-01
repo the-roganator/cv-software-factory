@@ -31,7 +31,7 @@ flowchart TD
 - **Only reports and the planner's findings go to Jev** (`triage/v2`), with routing as plain code.
 - It quarantines injection attempts, and parks suggestions for Martin, which close when he [rejects them](#a-suggestion). A quarantine is recorded as typed judgement refusing the report (`action.refused`, mechanism `typed-judgement`, guardrail 8), on the quarantined work item before it closes, appended as triage's role, the only role that may append a refusal by typed judgement (`policy/refusals.ts`). Its output is Jev's typed answers verbatim, with their probabilities, one line an answer; never the report's words, nor the questions, which are the factory's.
 - **One fingerprint, one ticket.**
-- **More new problems than a handful from one sense at once** wait for Martin as one [burst](#a-burst), before any has a ticket.
+- **More new problems than a handful from one sense at once** wait for Martin as one [burst](#a-burst), before any has a ticket. An open ticket's problem seen again where no release explains it counts as new.
 - **A new problem seen while what its sense reads was not healthy** waits for Martin too, its cause [the environment](#what-a-sense-reads).
 
 ## Matching an open ticket
@@ -58,8 +58,9 @@ A report or a planner's finding never reopens a ticket.
 
 A sense that finds many new problems at once may have found as many defects, or one fault in what it reads, such as a gap in the log that looks like a missing record on every page. Each ticket would be a planner's step and more, so triage holds a burst for one look from Martin instead (cause `burst`).
 
-- **What counts.** A sense's signal that would open a ticket, when with it that sense has found more than five new problems within ten minutes of it (`BURST` in `policy/triage.ts`, human-owned). It counts the tickets the sense opened in that time, and the new problems in its signals still waiting in the inbox, so a burst that arrives at once is held from its first signal. A signal on an open ticket, or one that reopens a verified ticket, never counts.
-- **What it holds.** One work item, held at Triage with no ticket, so nothing of it reaches Plan. Each new problem the sense finds while it waits joins it as evidence, however long after; one it holds already is counted. Other senses carry on as ever.
+- **What counts.** A sense's signal that would open a ticket, when with it that sense has found more than five new problems within ten minutes of it (`BURST` in `policy/triage.ts`, human-owned). It counts the tickets the sense opened in that time, and the new problems in its signals still waiting in the inbox, so a burst that arrives at once is held from its first signal. One that reopens a verified ticket never counts.
+- **An open ticket's problem, seen again.** A signal that would add evidence to an open ticket, the first time its sense sees it in a version, counts as a new problem, and is held as one, unless a release explains it: its version went live at most thirty minutes before it arrived (`BURST.releaseMinutes`). A release puts a version live when its canary starts, when it is promoted, and when a rollback or an abort restores it, as the line records; for a release the line did not watch, when a sense first saw it. Every sense sees each open defect again within a run or two of a release, which is the release's doing; a sense seeing many of them again on a version long live, at once, has had them stop and start again, or has a fault in what it reads. A repeat in a version the ticket has it in never counts.
+- **What it holds.** One work item, held at Triage with no ticket, so nothing of it reaches Plan, nor any open ticket. Each new problem the sense finds while it waits joins it as evidence, however long after; one it holds already is counted. Other senses carry on as ever.
 - **A fresh app.** The line's first start on a fresh app finds many problems by design, and costs this one answer: a first look at what the senses see is worth it, and approving lets them all through.
 
 ### Martin's answer to a burst
@@ -68,7 +69,7 @@ And to problems held for the environment.
 
 | Answer | Does |
 |---|---|
-| Approve | Makes of each problem what it would have made without the burst, in the order the sense sent them: a ticket, as a rule, which the line takes in its turn, or evidence on a ticket opened since. Closes the burst, naming the tickets |
+| Approve | Makes of each problem what it would have made without the burst, in the order the sense sent them: a ticket, as a rule, which the line takes in its turn, or evidence on its open ticket, opened before or since. Closes the burst, naming the tickets |
 | Reject | Closes it with no ticket. A problem the sense still sees is found again, and counts toward a burst afresh |
 | Answer in words | Leaves it waiting: it is still held, and Needs you lists it, until he approves or rejects it |
 

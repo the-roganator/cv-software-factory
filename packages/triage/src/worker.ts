@@ -11,7 +11,9 @@
  * - A sense's signal that would open a ticket when that sense has found more new problems than a handful at once
  *   (`BURST`) is held instead, with the others, as one burst: a work item with no ticket, which waits for Martin.
  *   Each new problem the sense finds while it waits joins it. Martin approving it opens their tickets, as the sense's
- *   would have been; his rejection closes it (`settleOne`). A signal on an open ticket never counts toward a burst.
+ *   would have been; his rejection closes it (`settleOne`). A signal that would add evidence to an open ticket counts
+ *   as a new problem, and is held as one, unless a release explains it: its version went live moments before, and a
+ *   release has every sense see each open ticket's defect there again.
  * - Before it trusts a sense's signal, triage looks at what that sense reads besides the app, as it stood when the
  *   sense saw it (`ENVIRONMENT`), and records the look with the signal. One that would open or reopen a ticket while
  *   any of it was not seen to be healthy is held for Martin as a burst is, with its cause the environment: no agent
@@ -563,7 +565,7 @@ export class Triage {
       if (verified && (verified.dryRun || Date.parse(signal.observedAt) <= verified.closedAt.getTime())) {
         return { outcome: 'counted', workItem: verified.workItem, events: [] };
       }
-      const held = taken && (await this.#hold(signal, taken, tickets, verified !== undefined));
+      const held = taken && (await this.#hold(signal, taken, tickets, verified ? 'reopen' : 'open'));
       if (held) return held;
       if (verified) {
         return {
@@ -584,10 +586,15 @@ export class Triage {
     }
     // Seen again in a version this sense has not seen it in, such as another release rolled back on it: the ticket
     // records it, with its evidence, for the console and for the planner when it takes the ticket.
-    const [seen] = await sql`select 1 from events where work_item = ${ticket.workItem}
-                             and type = 'signal.received' and payload->>'sense' = ${signal.sense}
-                             and payload->>'version' = ${signal.version} limit 1`;
-    if (seen) return { outcome: 'counted', workItem: ticket.workItem, events: [] };
+    if (await seenIn(sql, ticket.workItem, signal.sense, signal.version))
+      return { outcome: 'counted', workItem: ticket.workItem, events: [] };
+    // Seen there in a version no release has just put live, it is found again, not re-seen: it counts toward a burst,
+    // and is held in one, as a new problem is.
+    const held =
+      taken &&
+      !(await released(sql, signal.version, taken.received_at)) &&
+      (await this.#hold(signal, taken, tickets, 'add'));
+    if (held) return held;
     return {
       outcome: 'evidence',
       workItem: ticket.workItem,
@@ -596,17 +603,24 @@ export class Triage {
   }
 
   /**
-   * Holds a signal that would open or reopen a ticket, if it was seen while what its sense reads was not seen to be
-   * healthy. One that would open a ticket is also held if its sense has a hold waiting for Martin, or if with it the
-   * sense has found more new problems than `BURST.tickets` within `BURST.minutes` of it: the tickets it opened, and the
-   * new problems in its signals still waiting in the inbox, which triage would otherwise open one by one. A held signal
-   * joins its sense's waiting hold, of either cause, or starts one; a problem the hold has already is counted.
+   * Holds a signal that would open or reopen a ticket, or add to an open one, if it was seen while what its sense reads
+   * was not seen to be healthy, unless it would add to an open ticket. One that would open a ticket, or add to an open
+   * one in a version no release explains, is also held if its sense has a hold waiting for Martin, or if with it the
+   * sense has found more problems than `BURST.tickets` within `BURST.minutes` of it: the tickets it opened, the open
+   * tickets it added to in versions no release explains, and those problems in its signals still waiting in the inbox,
+   * which triage would otherwise take one by one. A held signal joins its sense's waiting hold, of either cause, or
+   * starts one; a problem the hold has already is counted.
    */
-  async #hold(signal: Seen, taken: Taken, tickets: Ticket[], reopens: boolean): Promise<Made | undefined> {
+  async #hold(
+    signal: Seen,
+    taken: Taken,
+    tickets: Ticket[],
+    would: 'open' | 'reopen' | 'add',
+  ): Promise<Made | undefined> {
     const { sql } = this.#o;
     const now = this.#o.now();
-    const unhealthy = !healthy(signal.environment);
-    if (reopens && !unhealthy) return undefined;
+    const unhealthy = would !== 'add' && !healthy(signal.environment);
+    if (would === 'reopen' && !unhealthy) return undefined;
     const fingerprint = fingerprintOf(signal);
     const waiting = (await heldSignals(sql)).find((held) => held.sense === taken.sense);
     if (waiting) {
@@ -623,30 +637,96 @@ export class Triage {
       const workItem = await nextWorkItem(sql);
       return { outcome: 'held', workItem, events: environmentEvents(signal, taken.id, workItem, now) };
     }
-    const near = await sql<{ fingerprint: string; opened: boolean; route: string; symptom: SymptomClass }[]>`
-      select fingerprint, outcome is not null as opened, signal->>'route' as route, signal->>'symptom' as symptom
+    const near = await sql<
+      {
+        fingerprint: string;
+        outcome: string | null;
+        route: string;
+        symptom: SymptomClass;
+        version: string;
+        received_at: Date;
+      }[]
+    >`
+      select fingerprint, outcome, signal->>'route' as route, signal->>'symptom' as symptom,
+             signal->>'version' as version, received_at
       from inbox
       where sense = ${taken.sense} and id <> ${taken.id} and fingerprint is distinct from ${fingerprint}
         and received_at between ${taken.received_at}::timestamptz - make_interval(mins => ${BURST.minutes})
                             and ${taken.received_at}::timestamptz + make_interval(mins => ${BURST.minutes})
-        and (outcome = 'opened' or (triaged_at is null and attempts < ${INBOX.attempts}))`;
-    const opened = near.filter((row) => row.opened).length;
-    // A waiting signal that an open ticket has, or that a verified ticket has exactly, would open no ticket.
+        and (outcome in ('opened', 'evidence') or (triaged_at is null and attempts < ${INBOX.attempts}))`;
+    // When each version went live, asked once a version.
+    const live = new Map<string, Date | undefined>();
+    const explains = async (version: string, at: Date) => {
+      if (!live.has(version)) live.set(version, await liveSince(sql, version));
+      return explainedBy(live.get(version), at);
+    };
+    let opened = 0;
+    // The problems found again on open tickets, and the new ones waiting, each fingerprint once.
+    const again = new Set<string>();
     const fresh = new Map<string, { route: string; class: SymptomClass }>();
-    for (const { opened, fingerprint: key, route, symptom } of near) {
-      const found = { route, class: symptom };
-      const open = tickets.some((ticket) =>
-        sameFingerprint(ticket.fingerprint, found, { open: ticket.sense, found: signal.sense }),
-      );
-      if (!opened && !open) fresh.set(key, found);
+    for (const row of near) {
+      const found = { route: row.route, class: row.symptom };
+      if (row.outcome === 'opened') opened++;
+      else if (row.outcome === 'evidence') {
+        if (!(await explains(row.version, row.received_at))) again.add(row.fingerprint);
+      } else {
+        const open = tickets.find((ticket) =>
+          sameFingerprint(ticket.fingerprint, found, { open: ticket.sense, found: signal.sense }),
+        );
+        if (!open) fresh.set(row.fingerprint, found);
+        else if (
+          !(await seenIn(sql, open.workItem, signal.sense, row.version)) &&
+          !(await explains(row.version, row.received_at))
+        ) {
+          again.add(row.fingerprint);
+        }
+      }
     }
-    let ahead = 0;
-    for (const found of fresh.values()) if (!(await verifiedTicket(sql, found, signal.sense))) ahead++;
+    // A waiting signal that a verified ticket has exactly would reopen it, which never counts.
+    let ahead = again.size;
+    for (const [key, found] of fresh) {
+      if (!again.has(key) && !(await verifiedTicket(sql, found, signal.sense))) ahead++;
+    }
     const found = 1 + opened + ahead;
     if (found <= BURST.tickets) return undefined;
     const workItem = await nextWorkItem(sql);
     return { outcome: 'held', workItem, events: burstEvents(signal, taken.id, workItem, found, now) };
   }
+}
+
+/** Whether a sense has seen what an open ticket has in a version of the app: the ticket has its signal there. */
+async function seenIn(sql: Sql, workItem: string, sense: string, version: string): Promise<boolean> {
+  const [seen] = await sql`select 1 from events where work_item = ${workItem} and type = 'signal.received'
+                           and payload->>'sense' = ${sense} and payload->>'version' = ${version} limit 1`;
+  return seen !== undefined;
+}
+
+/**
+ * Whether a release explains a signal in a version of the app that reached the inbox at `at`: that version went live
+ * at most `BURST.releaseMinutes` before. A release puts a version live, and every sense sees each open ticket's defect
+ * there again within a run or two, which is the release's doing, not a burst. A sighting later than that is found
+ * again, which is the sense's doing: a defect back after it had stopped seeing it, or a fault in what it reads.
+ */
+const released = async (sql: Sql, version: string, at: Date) => explainedBy(await liveSince(sql, version), at);
+
+const explainedBy = (live: Date | undefined, at: Date) =>
+  !live || at.getTime() <= live.getTime() + BURST.releaseMinutes * 60_000;
+
+/**
+ * When a version of the app last went live: when its canary started, when it was promoted, or when a release rolled
+ * back or aborted restored it, as the line recorded; or, for a release the line did not watch, when a sense first saw
+ * it, if that was later.
+ */
+async function liveSince(sql: Sql, version: string): Promise<Date | undefined> {
+  const [row] = await sql<{ live: Date | null }[]>`
+    select greatest(
+      (select max(ts) from events
+       where (type in ('release.started', 'release.promoted') and payload->>'version' = ${version})
+          or (type in ('release.rolled-back', 'release.aborted') and payload->>'restored' = ${version})),
+      least((select min(received_at) from inbox where signal->>'version' = ${version}),
+            (select min(ts) from events where type = 'signal.received' and payload->>'version' = ${version}))
+    ) as live`;
+  return row?.live ? new Date(row.live) : undefined;
 }
 
 /** A hold of triage's that Martin may have answered. */

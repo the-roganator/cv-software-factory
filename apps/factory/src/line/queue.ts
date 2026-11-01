@@ -25,7 +25,9 @@
  * - A queue with a limit (`take`: The next few, or LINE_TAKE) takes work by the same rule until that many work items
  *   have come onto the line since the limit was set (`since`; LINE_TAKE counts every one there has ever been), and
  *   then no more, while those on it go on to their end. It counts the line's own rows, which are never deleted, by
- *   when each was taken, under the same lock: a restart, or a second worker, takes none beyond the limit.
+ *   when each was taken, under the same lock: a restart, or a second worker, takes none beyond the limit. A ticket
+ *   whose signal was gone as the line took it, and that closed on that look with no step started (`closedAtTake`), is
+ *   one the line looked at, not one it worked on, and counts for neither limit.
  *
  * A work item that closed as verified and reopened (triage reopens it when its signal comes back, and a line running
  * live one a dry run verified) is taken back into Plan for a fresh pass (`revive`), whatever else is on the line and
@@ -34,7 +36,7 @@
  */
 import { cutTo } from '@software-factory/events';
 import { askedByMartin, byMartin, lastEnd, openedAsImprovement } from '@software-factory/store';
-import type { JSONValue, Sql } from 'postgres';
+import type { JSONValue, Sql, TransactionSql } from 'postgres';
 import type { Take } from '../../../../policy/line.ts';
 import type { Handback } from '../runners/steps.ts';
 import type { Draft } from './gates.ts';
@@ -113,6 +115,18 @@ const reopenedSince = (sql: Sql) =>
        and coalesce(l.reopened, 0) < (select max(r.seq) from events r
                                       where r.work_item = l.work_item and r.type = 'work-item.reopened'), false)`;
 
+/**
+ * A row (`l`) whose work item the line only looked at: the sense found its signal gone as the line took it (a
+ * `signal.rechecked` for the take, cleared), it closed on that look, and no agent's step ever started for it. A limit
+ * does not count it. One still seen as it was taken, or that the sense could not tell, went on to the planner, and
+ * counts.
+ */
+const closedAtTake = (sql: Sql | TransactionSql) =>
+  sql`(l.steps = 0 and ${lastEnd(sql, 'l.work_item')} = 'work-item.closed'
+       and exists (select 1 from events r
+                   where r.work_item = l.work_item and r.type = 'signal.rechecked'
+                     and r.payload->>'for' = 'take' and r.payload->>'outcome' = 'cleared'))`;
+
 /** A row (`l`) under nobody's lease. */
 const unheld = (sql: Sql) => sql`(l.held_until is null or l.held_until < clock_timestamp())`;
 
@@ -177,7 +191,7 @@ export class Queue {
    * highest severity that has never been on the line, or, with none, the oldest improvement Martin asked for that has
    * never been on it. Returns its work item, or undefined. A queue of one takes its own ticket or improvement, if it
    * is open and not yet on the line, and no other. A queue with a limit takes none once the line has taken that many
-   * work items since it was set, whichever they were.
+   * work items since it was set, whichever they were, but for those that closed on the look as they were taken.
    */
   async admit(): Promise<string | undefined> {
     const only = this.#only;
@@ -188,8 +202,9 @@ export class Queue {
         // `since` goes as text, for Postgres to read to the microsecond: as a timestamptz, postgres.js would make a
         // `Date` of it first, which keeps only milliseconds.
         const [row] = await tx<{ taken: number }[]>`
-          select count(*)::int as taken from line
-          ${take.since === null ? tx`` : tx`where taken_at >= ${take.since}::text::timestamptz`}`;
+          select count(*)::int as taken from line l
+          where not ${closedAtTake(tx)}
+            ${take.since === null ? tx`` : tx`and l.taken_at >= ${take.since}::text::timestamptz`}`;
         if ((row?.taken ?? 0) >= take.most) return undefined;
       }
       const [busy] = only ? [] : await tx`select 1 from line where stage in ('plan', 'build') limit 1`;

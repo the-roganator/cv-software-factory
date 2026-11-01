@@ -50,6 +50,36 @@ async function ticket(severity: 'broken' | 'degraded' | 'cosmetic', route: strin
 
 const end = (workItem: string) => database.as.line`update line set stage = 'ended' where work_item = ${workItem}`;
 
+/** The line's look at a ticket as it took it, and, if the signal was gone, its close on that look, as the line ends it. */
+async function lookedAtTake(workItem: string, outcome: 'cleared' | 'persists' | 'unsure'): Promise<void> {
+  const event = (type: 'signal.rechecked' | 'work-item.closed', payload: object) =>
+    ({
+      id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      work_item: workItem,
+      type,
+      version: VERSIONS[type],
+      actor: 'factory',
+      summary: `${type} for the test`,
+      payload,
+      artifacts: [],
+    }) as NewEvent;
+  const look = {
+    for: 'take',
+    outcome,
+    check: 'errors on /search',
+    carried: [],
+    ...(outcome === 'unsure' ? { why: 'the sense could not be asked' } : { version: 'a'.repeat(40) }),
+  };
+  await writer().append([
+    event('signal.rechecked', look),
+    ...(outcome === 'cleared'
+      ? [event('work-item.closed', { outcome: 'verified', reason: 'Gone as the line took it.' })]
+      : []),
+  ]);
+  if (outcome === 'cleared') await end(workItem);
+}
+
 const pending: Pending = {
   agent: 'reviewer',
   round: 1,
@@ -146,6 +176,38 @@ describe('a queue with a limit', () => {
     expect(await new Queue(database.as.line, 'all').admit()).toBe(cosmetic);
   });
 
+  it('does not count a ticket that closed on the look as it was taken, but one that went on to the planner', async () => {
+    const broken = await ticket('broken', '/search');
+    const degraded = await ticket('degraded', '/products');
+    const cosmetic = await ticket('cosmetic', '/');
+    const unsure = await ticket('cosmetic', '/about');
+    const two = new Queue(database.as.line, 'test', { take: 2 });
+    expect(await two.admit()).toBe(broken);
+    // Gone as the line took it, and closed with nothing spent: the line only looked at it.
+    await lookedAtTake(broken, 'cleared');
+    expect(await two.admit()).toBe(degraded);
+    // Still seen: on to the planner, whose step starts, and it counts.
+    await lookedAtTake(degraded, 'persists');
+    await two.startStep(degraded);
+    await end(degraded);
+    expect(await two.admit()).toBe(cosmetic);
+    // The sense could not tell: on to Plan, and it counts, its step started or not.
+    await lookedAtTake(cosmetic, 'unsure');
+    await end(cosmetic);
+    expect(await two.admit()).toBeUndefined();
+    expect(await new Queue(database.as.line, 'all').admit()).toBe(unsure);
+  });
+
+  it('counts a ticket the look cleared once a step had started for it', async () => {
+    const broken = await ticket('broken', '/search');
+    await ticket('degraded', '/products');
+    const one = new Queue(database.as.line, 'test', { take: 1 });
+    expect(await one.admit()).toBe(broken);
+    await one.startStep(broken);
+    await lookedAtTake(broken, 'cleared');
+    expect(await one.admit()).toBeUndefined();
+  });
+
   it('counts the work items already on the line, and takes none at all with a limit of none', async () => {
     await ticket('broken', '/search');
     expect(await new Queue(database.as.line, 'test', { take: 0 }).admit()).toBeUndefined();
@@ -163,6 +225,7 @@ describe('a queue set to take what Martin chose', () => {
     await database.owner`update line set taken_at = ${since}::text::timestamptz - interval '1 microsecond'`;
     const broken = await ticket('broken', '/search');
     const degraded = await ticket('degraded', '/products');
+    const cosmetic = await ticket('cosmetic', '/');
     const queue = new Queue(database.as.line, 'test', { take: 2 });
     // LINE_TAKE's two are spent; the next one, counted from now, takes one more.
     expect(await queue.admit()).toBeUndefined();
@@ -170,9 +233,14 @@ describe('a queue set to take what Martin chose', () => {
     expect(await queue.admit()).toBe(broken);
     await end(broken);
     expect(await queue.admit()).toBeUndefined();
+    // Had it closed on the look as it was taken, it would not have been one of his few.
+    await lookedAtTake(broken, 'cleared');
+    expect(await queue.admit()).toBe(degraded);
+    await end(degraded);
+    expect(await queue.admit()).toBeUndefined();
     // Every ticket.
     queue.takes({ only: null, take: null });
-    expect(await queue.admit()).toBe(degraded);
+    expect(await queue.admit()).toBe(cosmetic);
   });
 
   it('sees only the one work item he chose, from when he chose it', async () => {

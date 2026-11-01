@@ -35,7 +35,7 @@ describe('the readers of model.called, one event per step', () => {
     .add(3, 'model.called', 'coder', step('coder', 5, 0.4)).events;
 
   it('counts each step’s calls and tokens in the sheet, and each event as one step', () => {
-    const agents = projectSheet(events, '2001', end(events))?.agents;
+    const agents = projectSheet(project(events, end(events)), '2001')?.agents;
     expect(agents?.map(({ agent, calls, steps }) => ({ agent, calls, steps }))).toEqual([
       { agent: 'planner', calls: 7, steps: 1 },
       { agent: 'coder', calls: 17, steps: 2 },
@@ -88,7 +88,7 @@ describe('the readers of model.called, one event per step', () => {
         model: 'qwen/qwen3.8-27b',
       }).events;
     expect(project(local, end(local)).cards.find((c) => c.number === '2003')).toMatchObject({ local: true, spend: 0 });
-    expect(projectSheet(local, '2003', end(local))?.agents[0]).toMatchObject({ provider: 'local', calls: 30 });
+    expect(projectSheet(project(local, end(local)), '2003')?.agents[0]).toMatchObject({ provider: 'local', calls: 30 });
   });
 
   it('reads a version 1 event, one call with its cassette, as a step of one call', () => {
@@ -100,7 +100,11 @@ describe('the readers of model.called, one event per step', () => {
     });
     if (!v1.ok || !opened) throw new Error('a version 1 model.called should upcast');
     const events = [opened, { ...opened, ...v1.event, id: '2004-v1', seq: (opened.seq ?? 0) + 1 }] as PublicEvent[];
-    expect(projectSheet(events, '2004', end(events))?.agents[0]).toMatchObject({ agent: 'coder', calls: 1, steps: 1 });
+    expect(projectSheet(project(events, end(events)), '2004')?.agents[0]).toMatchObject({
+      agent: 'coder',
+      calls: 1,
+      steps: 1,
+    });
   });
 });
 

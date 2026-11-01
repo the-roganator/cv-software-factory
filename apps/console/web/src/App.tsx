@@ -172,7 +172,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
     if (!on) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
   };
 
-  const sheet = useMemo(() => (open ? projectSheet(source.events, open, t) : undefined), [open, source.events, t]);
+  const sheet = useMemo(() => (open ? projectSheet(view, open) : undefined), [open, view]);
   const sheetIndex = sheet ? view.cards.findIndex((card) => card.number === sheet.card.number) : -1;
 
   if (settingsPage || auditPage || privacyPage) {

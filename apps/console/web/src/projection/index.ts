@@ -11,11 +11,12 @@ import { type FlagsView, flagsView } from './flags.ts';
 import { foldItems, type ItemState } from './items.ts';
 import {
   drawn,
+  everyReturn,
   type Header,
   header,
   panel,
   type Return,
-  returnsAt,
+  returnsWithin,
   type Score,
   type StagePanel,
   type Station,
@@ -24,8 +25,16 @@ import {
   ticketWaits,
 } from './line.ts';
 import { type NeedsView, needsView } from './needs.ts';
-import { type Card, card, type Timeline, timeline } from './reel.ts';
-import { type CanaryView, canaryView, inFlight, releases } from './release.ts';
+import { type AppVersions, appVersions, type Card, card, type Timeline, timeline } from './reel.ts';
+import {
+  type CanaryView,
+  canaryView,
+  type FoldedReleases,
+  foldReleases,
+  inFlight,
+  type Release,
+  releasesAt,
+} from './release.ts';
 import { type Sheet, sheet } from './sheet.ts';
 
 export type { ControlsView } from './controls.ts';
@@ -112,6 +121,32 @@ export interface View {
   flags: FlagsView;
   /** What the "+" on Plan says: what a new improvement would wait behind, and Martin's latest request. */
   improve: ImproveView;
+  /** Every release by t, oldest first, as far as each had got: what a sheet draws its own from. */
+  releases: Release[];
+}
+
+/**
+ * What the events by t say with no time applied: the work items folded, the header, the controls, the releases as far
+ * as they go without a time, and every return and version. Folding is most of the work, and the live console's clock
+ * moves t every few seconds with no new event, so a fold is kept for its events and serves every t that cuts them the
+ * same; `viewAt` applies the time.
+ */
+export interface Fold {
+  /** The events that had happened by t, in seq order. */
+  seen: readonly PublicEvent[];
+  items: ItemState[];
+  controls: ControlsView;
+  header: Header;
+  score: Score | undefined;
+  sample: boolean;
+  improve: ImproveView;
+  releases: FoldedReleases;
+  /** Every return, newest first: which are in the last day is a matter of t. */
+  returns: Return[];
+  versions: AppVersions;
+  /** Each work item's card, once it has closed: an open one's time and version run on with t. */
+  closed: (Card | undefined)[];
+  timeline: Timeline;
 }
 
 export interface ImproveView {
@@ -136,54 +171,117 @@ function improveView(items: readonly ItemState[]): ImproveView {
 /** The events that had happened by t, in seq order. */
 export const upTo = (events: readonly PublicEvent[], t: number) => events.filter((event) => Date.parse(event.ts) <= t);
 
-export function project(events: readonly PublicEvent[], t: number): View {
-  const seen = upTo(events, t);
+/** The fold of the events by t, which needs no time: what `foldAt` keeps. */
+export function fold(seen: readonly PublicEvent[]): Fold {
   const items = foldItems(seen);
   const controls = controlsOf(seen);
-  const line = header(seen, controls.autonomy);
-  const sent = returnsAt(seen, t);
-  const returns = drawn(sent, items);
-  const cards = items.map((item) => card(item, seen, t));
-  const shipped = releases(seen, items, t);
+  const folded = foldReleases(seen, items);
+  const versions = appVersions(seen);
   return {
-    t,
-    sample: items.some((item) => item.sample),
-    header: line,
-    score: score(seen),
-    stations: STAGES.map((stage) => station(stage, items, sent, line, t, shipped)),
-    returns,
-    panels: Object.fromEntries(
-      STAGES.map((stage) => [stage, panel(stage, items, sent, seen, line, t, shipped)]),
-    ) as Record<Stage, StagePanel>,
-    canary: canaryView(shipped),
-    cards,
-    timeline: timeline(cards, shipped),
-    needs: needsView(items, t, inFlight(shipped)),
+    seen,
+    items,
     controls,
-    flags: flagsView(seen, items, shipped, t),
+    header: header(seen, controls.autonomy),
+    score: score(seen),
+    sample: items.some((item) => item.sample),
     improve: improveView(items),
+    releases: folded,
+    returns: everyReturn(seen),
+    versions,
+    closed: items.map((item) => (item.closedAt === undefined ? undefined : card(item, versions, item.closedAt))),
+    // How each release ended and where each card starts, neither of which a later time changes.
+    timeline: timeline(
+      items.map((item) => ({ number: item.number, startedAt: item.openedAt })),
+      folded.map((f) => ('release' in f ? f.release : f.base)),
+    ),
   };
 }
 
-/** One work item's sheet at t, or nothing if it had not opened by then. */
-export function projectSheet(events: readonly PublicEvent[], item: string, t: number): Sheet | undefined {
+/** The last fold of each list of events, kept as long as the list is. */
+const folds = new WeakMap<readonly PublicEvent[], Fold>();
+
+/** The same events, in the same order: one array filtered twice at two times that cut it in the same place. */
+const same = (a: readonly PublicEvent[], b: readonly PublicEvent[]) =>
+  a.length === b.length && a.every((event, i) => event === b[i]);
+
+/** The fold of the events by t: the last one made of these events, while t cuts them the same, or a new one. */
+export function foldAt(events: readonly PublicEvent[], t: number): Fold {
   const seen = upTo(events, t);
-  const state: ItemState | undefined = foldItems(seen.filter((event) => event.work_item === item))[0];
+  const kept = folds.get(events);
+  if (kept && same(kept.seen, seen)) return kept;
+  const made = fold(seen);
+  folds.set(events, made);
+  return made;
+}
+
+/**
+ * The fold each view was drawn from, which a sheet is drawn from too. Kept beside the view, not in it: the view is what
+ * the console draws, the same for the same page whoever reads it, and the fold holds every event it read.
+ */
+const drawnFrom = new WeakMap<View, Fold>();
+
+/** The fold a view was drawn from. */
+export const foldOf = (view: View): Fold => {
+  const folded = drawnFrom.get(view);
+  if (!folded) throw new Error('A view is drawn by viewAt, which keeps its fold');
+  return folded;
+};
+
+/** The console at t, from a fold of the events by t: what depends on the time. */
+export function viewAt(folded: Fold, t: number): View {
+  const { items, header: line } = folded;
+  const sent = returnsWithin(folded.returns, t);
+  const shipped = releasesAt(folded.releases, t);
+  const stations = STAGES.map((stage) => station(stage, items, sent, line, t, shipped));
+  const shown: View = {
+    t,
+    sample: folded.sample,
+    header: line,
+    score: folded.score,
+    stations,
+    returns: drawn(sent, items),
+    panels: Object.fromEntries(
+      STAGES.map((stage, i) => [
+        stage,
+        panel(stage, items, sent, folded.seen, line, t, shipped, stations[i] ?? { status: 'idle' }),
+      ]),
+    ) as Record<Stage, StagePanel>,
+    canary: canaryView(shipped),
+    cards: items.map((item, i) => folded.closed[i] ?? card(item, folded.versions, t)),
+    timeline: folded.timeline,
+    needs: needsView(items, t, inFlight(shipped)),
+    controls: folded.controls,
+    flags: flagsView(folded.seen, items, shipped, t),
+    improve: folded.improve,
+    releases: shipped,
+  };
+  drawnFrom.set(shown, folded);
+  return shown;
+}
+
+export const project = (events: readonly PublicEvent[], t: number): View => viewAt(foldAt(events, t), t);
+
+/** One work item's sheet in a view, or nothing if it had not opened by the view's t. */
+export function projectSheet(view: View, item: string): Sheet | undefined {
+  const { t } = view;
+  const folded = foldOf(view);
+  const state = folded.items.find((i) => i.number === item);
   if (!state) return undefined;
   // An improvement's flag, as Controls draws it: judged against every other flag and the canary in flight.
-  const items = state.kind === 'improvement' ? foldItems(seen) : [];
-  const flags = state.kind === 'improvement' ? flagsView(seen, items, releases(seen, items, t), t) : undefined;
-  const flag = flags && [...flags.flags, ...flags.closed].find((row) => row.workItem === item);
-  // A canary paused for Martin that carries it, drawn from every release's events, as Needs you draws it.
+  const flag =
+    state.kind === 'improvement'
+      ? [...view.flags.flags, ...view.flags.closed].find((row) => row.workItem === item)
+      : undefined;
+  // A canary paused for Martin that carries it, as Needs you draws it.
   const released = state.events.some((event) => event.type === 'release.started');
-  const flight = released ? inFlight(releases(seen, flags ? items : foldItems(seen), t)) : undefined;
+  const flight = released ? inFlight(view.releases) : undefined;
   const canary = flight?.items.some((i) => i.number === item) ? flight : undefined;
   // What waits on Martin for it, drawn as Needs you draws it: its hold, its canary, and its flag waiting to be widened.
   const waits = needsView([state], t, canary);
   const needs = {
     hold: waits.holds[0],
     canary: waits.canary,
-    flag: flags?.needs.find((need) => need.workItem === item),
+    flag: state.kind === 'improvement' ? view.flags.needs.find((need) => need.workItem === item) : undefined,
   };
-  return { ...sheet(state, seen, t, flag), needs };
+  return { ...sheet(state, folded.versions, view.releases, t, flag), needs };
 }

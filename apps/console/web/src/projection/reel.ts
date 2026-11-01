@@ -446,19 +446,45 @@ function wipeOf(item: ItemState): Picture | undefined {
 }
 
 /**
- * The version the app was on at a time: the last one promoted, injected or restored by then. A dry run's release
- * shipped nothing, so it never moves the app.
+ * The version the app was on after each event, a dry run's release never moving it, and the latest time of any event
+ * up to each, so that `appVersion` searches them rather than walk every event for every card.
  */
-export function appVersion(events: readonly PublicEvent[], at: number): string | undefined {
+export interface AppVersions {
+  latest: number[];
+  version: (string | undefined)[];
+}
+
+/**
+ * The version the app was on after each event: the last one promoted, injected or restored by then. A dry run's
+ * release shipped nothing, so it never moves the app.
+ */
+export function appVersions(events: readonly PublicEvent[]): AppVersions {
+  const latest: number[] = [];
+  const versions: (string | undefined)[] = [];
   let version: string | undefined;
+  let at = -Infinity;
   for (const event of events) {
-    if (Date.parse(event.ts) > at) break;
-    if ('dryRun' in event.payload && event.payload.dryRun) continue;
-    if (event.type === 'release.promoted' || event.type === 'defect.injected') version = event.payload.version;
-    if (stopsRelease(event)) version = event.payload.restored;
-    if (event.type === 'release.started' && !version) version = event.payload.previous;
+    at = Math.max(at, Date.parse(event.ts));
+    if (!('dryRun' in event.payload && event.payload.dryRun)) {
+      if (event.type === 'release.promoted' || event.type === 'defect.injected') version = event.payload.version;
+      if (stopsRelease(event)) version = event.payload.restored;
+      if (event.type === 'release.started' && !version) version = event.payload.previous;
+    }
+    latest.push(at);
+    versions.push(version);
   }
-  return version;
+  return { latest, version: versions };
+}
+
+/** The version the app was on at a time: as it was after the events before the first one later than it. */
+export function appVersion({ latest, version }: AppVersions, at: number): string | undefined {
+  let [low, high] = [0, latest.length];
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if ((latest[mid] ?? 0) > at) high = mid;
+    else low = mid + 1;
+  }
+  return low ? version[low - 1] : undefined;
 }
 
 /** Every call the work made was to the local model: something was called, and it cost nothing. */
@@ -467,7 +493,7 @@ function isLocal(item: ItemState): boolean {
   return called.length > 0 && called.length === item.calls && called.every((e) => e.payload.provider === 'local');
 }
 
-export function card(item: ItemState, events: readonly PublicEvent[], t: number): Card {
+export function card(item: ItemState, versions: AppVersions, t: number): Card {
   const end = item.closedAt ?? t;
   const latest = last(item.events, (e) => e.type !== 'model.called');
   return {
@@ -496,7 +522,7 @@ export function card(item: ItemState, events: readonly PublicEvent[], t: number)
     durationMs: Math.max(0, end - item.openedAt),
     spend: item.spend,
     segments: segments(item),
-    appVersion: appVersion(events, end),
+    appVersion: appVersion(versions, end),
     reopened: item.reopened,
     flag: flagOfCard(item),
   };
@@ -511,8 +537,11 @@ function flagOfCard(item: ItemState): Card['flag'] {
 }
 
 /** How a release last ended: while a retry is in flight, its earlier attempt's end still stands. */
-const ending = (r: Release | undefined) => r?.end ?? r?.retried.at(-1);
-const endAt = (r: Release | undefined) => ending(r)?.at ?? 0;
+const ending = (r: Marked | undefined) => r?.end ?? r?.retried.at(-1);
+const endAt = (r: Marked | undefined) => ending(r)?.at ?? 0;
+
+/** What the timeline reads of a release: how it ended, which no later time changes, and what it carried. */
+type Marked = Pick<Release, 'end' | 'retried' | 'dryRun' | 'items' | 'version'>;
 
 /**
  * The timeline: a card's width between work items, half one more between days, and a release marked under no card
@@ -523,12 +552,12 @@ const endAt = (r: Release | undefined) => ending(r)?.at ?? 0;
  * mark of a card before it, in its own place. A rollback, an analysis error and an abort are struck through, since the
  * app went back to the version before. A dry run shipped nothing, and marks nothing.
  */
-export function timeline(cards: readonly Card[], shipped: readonly Release[]): Timeline {
+export function timeline(cards: readonly Pick<Card, 'number' | 'startedAt'>[], shipped: readonly Marked[]): Timeline {
   const ended = shipped.filter((r) => ending(r) && !r.dryRun).sort((a, b) => endAt(a) - endAt(b));
-  const latest = new Map<string, Release>();
+  const latest = new Map<string, Marked>();
   for (const r of ended) for (const item of r.items) latest.set(item.number, r);
-  const under = new Map<number, Release>();
-  const marked = new Set<Release>();
+  const under = new Map<number, Marked>();
+  const marked = new Set<Marked>();
   // A card's mark that ended before an earlier card's would read out of order: it takes a place of its own instead.
   let last = 0;
   for (const [i, c] of cards.entries()) {
@@ -540,7 +569,7 @@ export function timeline(cards: readonly Card[], shipped: readonly Release[]): T
   }
   // The cards in the order they started, and each release in its own place before the first card that started after
   // it ended or whose own mark ended after it, so the versions read in the order the app's changed.
-  type Entry = { at: number } & ({ card: number } | { release: Release });
+  type Entry = { at: number } & ({ card: number } | { release: Marked });
   const entries: Entry[] = cards.map((c, card) => ({ card, at: c.startedAt }));
   const changed = cards.map((c, i) => Math.max(c.startedAt, endAt(under.get(i))));
   for (const release of ended.filter((r) => !marked.has(r))) {

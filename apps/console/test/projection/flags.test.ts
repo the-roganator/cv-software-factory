@@ -175,7 +175,7 @@ describe('a flag', () => {
     expect(checking.needs).toEqual([]);
     expect(foldItems(item.events)[0]?.outcome).toBe('in-progress');
     // Its block on the sheet says it is checking.
-    const block = () => projectSheet(item.events, '2015', START + 1000 * 60_000)?.flag?.blocks[0];
+    const block = () => projectSheet(project(item.events, START + 1000 * 60_000), '2015')?.flag?.blocks[0];
     expect(block()).toMatchObject({ kind: 'staged', current: true, checked: undefined });
 
     // A check another actor appended is no check of Verify's.
@@ -228,7 +228,7 @@ describe('a flag', () => {
       '23 of 24 checks passed with it on, against 23 of 24 with it off. The app kept no preview cookie when a probe asked to preview the flag.',
     );
     expect(failed.needs[0]?.pictures).toBeUndefined();
-    const blocks = projectSheet(item.events, '2015', START + 1000 * 60_000)?.flag?.blocks;
+    const blocks = projectSheet(project(item.events, START + 1000 * 60_000), '2015')?.flag?.blocks;
     expect(blocks?.map((b) => (b.kind === 'staged' ? [b.stage.stage, b.checked?.outcome] : b.kind))).toEqual([
       ['preview', 'failed'],
       ['checks', 'passed'],
@@ -318,7 +318,7 @@ describe('a flag', () => {
     expect(flags[0]?.stops.at(0)?.move.refused).toBeUndefined();
     // Its outcome is Verified, a chapter of its own, and its story ends saying how.
     expect(foldItems(item.events)[0]?.outcome).toBe('verified');
-    const sheet = projectSheet(item.events, '2015', at);
+    const sheet = projectSheet(project(item.events, at), '2015');
     expect(sheet?.chapters.at(-1)).toMatchObject({ label: 'VERIFIED', tone: 'ok' });
     // Its story ends with the line's reason: no sense verified it, so there is no check to name.
     expect(sheet?.closing).toBe(
@@ -354,7 +354,7 @@ describe('a flag', () => {
     expect(needs).toEqual([]);
     // Its outcome is Turned off, and its story ends with Martin's reason: nothing rolled back.
     expect(foldItems(item.events)[0]?.outcome).toBe('turned-off');
-    expect(projectSheet(item.events, '2005', START + 1000 * 60_000)?.closing).toBe(
+    expect(projectSheet(project(item.events, START + 1000 * 60_000), '2005')?.closing).toBe(
       'Martin turned its flag off: Not needed. It closed as turned off, its code still in the app, off, and nothing rolled back.',
     );
   });
@@ -403,7 +403,7 @@ describe('a flag', () => {
       ...staged('tidy', { stage: 'off' }, { stage: 'checks' }, 'flag.to-checks'),
       dropped: ['hand-made'],
     });
-    const blocks = projectSheet(item.events, '2012', START + 1000 * 60_000)?.flag?.blocks;
+    const blocks = projectSheet(project(item.events, START + 1000 * 60_000), '2012')?.flag?.blocks;
     expect(blocks?.[0]).toMatchObject({ kind: 'staged', dropped: ['hand-made'] });
     expect(blocks?.[1]).toMatchObject({ kind: 'released' });
   });
@@ -491,9 +491,9 @@ describe('the samples’ flags', () => {
     });
     // An improvement whose spec waits has no flag on its card, and its fact says so.
     expect(view.cards.find((card) => card.number === '1300')?.flag).toBeUndefined();
-    expect(projectSheet(SAMPLES, '1300', END)?.facts.flag).toBe('sort-by-price · not built yet');
+    expect(projectSheet(project(SAMPLES, END), '1300')?.facts.flag).toBe('sort-by-price · not built yet');
 
-    const sheet = projectSheet(SAMPLES, '1271', END);
+    const sheet = projectSheet(project(SAMPLES, END), '1271');
     expect(sheet?.facts.flag).toBe('last-one · everyone');
     expect(sheet?.chapters.map((c) => c.label)).toEqual(
       expect.arrayContaining(['CHECKS', 'PREVIEW', 'SHARE', 'COMPARED', 'EVERYONE']),

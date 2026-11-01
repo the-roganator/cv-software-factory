@@ -444,7 +444,7 @@ describe('a release’s steps', () => {
     });
     expect(card?.versions).toMatchObject({ rolledBack: false, stopped: 'error', onCanary: false });
     // The sheet names its chapter for the Error.
-    expect(projectSheet(one.events, '1', one.at(8))?.chapters.find((c) => c.label === 'ERROR')).toMatchObject({
+    expect(projectSheet(project(one.events, one.at(8)), '1')?.chapters.find((c) => c.label === 'ERROR')).toMatchObject({
       tone: 'attn',
       text: 'v1.0.1 stopped by an analysis error at 25%',
     });

@@ -271,7 +271,10 @@ describe('a canary paused for Martin, in Needs you', () => {
     const { needs } = project(events, one.at(7));
     expect(needs.holds).toEqual([]);
     expect(needs.canary).toMatchObject({ label: '#1', workItem: '1', title: 'Item 1 and 1 more' });
-    expect(projectSheet(events, '2', one.at(7))?.needs).toMatchObject({ hold: undefined, canary: { label: '#1' } });
+    expect(projectSheet(project(events, one.at(7)), '2')?.needs).toMatchObject({
+      hold: undefined,
+      canary: { label: '#1' },
+    });
     // Ended, it waits on nobody.
     const ended = [
       ...events,

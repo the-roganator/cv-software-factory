@@ -13,8 +13,9 @@
  * (413 when it is too big). No error body echoes the request, which may hold a report's text.
  *
  * Judgements are triage's alone: a request without its token (`authorization: Bearer <token>`) is 401, before its body
- * is read. That is no guardrail's refusal, and is not recorded, as a token that is no running job's is not. With no
- * token configured, every judgement is 401: the route is never open to any caller the network policy lets in.
+ * is read. That is no guardrail's refusal, and is not recorded as one, as a token that is no running job's is not; it is
+ * counted, and pages Martin. With no token configured, every judgement is 401: the route is never open to any caller the
+ * network policy lets in.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -22,6 +23,7 @@ import type { Logger } from '../log.ts';
 import { type AgentCalls, apiError, type Reply } from './agents.ts';
 import { BadRequest } from './errors.ts';
 import type { Gateway } from './gateway.ts';
+import { unauthorizedJudgements } from './metrics.ts';
 import type { Spend } from './spend.ts';
 import { errorResponse } from './wire.ts';
 
@@ -120,6 +122,8 @@ export function createGatewayServer({
 
   async function judgements(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!judgementsToken || !carries(req, judgementsToken)) {
+      // Counted, and paged on; not logged, so a caller cannot fill the log.
+      unauthorizedJudgements.add(1);
       return send(
         res,
         401,

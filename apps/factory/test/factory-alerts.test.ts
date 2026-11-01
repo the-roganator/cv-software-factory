@@ -134,6 +134,7 @@ describe('the alerts on the factory’s health, releases and spend', () => {
       'StoreUnwatched',
       'WorkerCrashLooping',
       'SpendCapReached',
+      'JudgementsUnauthorized',
     ]) {
       expect(level(alert), alert).toEqual([LEVELS.page]);
     }
@@ -447,6 +448,32 @@ describe('the alerts on the factory’s health, releases and spend', () => {
               ],
             },
           ],
+        },
+      ]),
+    );
+  });
+
+  it('page when the gateway answers a judgement without triage’s token, by its figures alone', () => {
+    const unauthorized = 'gateway_judgements_unauthorized_total';
+    expectPasses(
+      promtool([
+        {
+          interval: '1m',
+          input_series: [{ series: gateway(unauthorized, 'service_name="gateway"'), values: each(0, 0, 1, 1, 1) }],
+          alert_rule_test: [
+            { eval_time: '1m', alertname: 'JudgementsUnauthorized', exp_alerts: [] },
+            {
+              eval_time: '2m',
+              alertname: 'JudgementsUnauthorized',
+              exp_alerts: [firing('JudgementsUnauthorized')],
+            },
+          ],
+        },
+        {
+          interval: '1m',
+          // Another pod's series by that name pages no one.
+          input_series: [{ series: other(unauthorized, 'service_name="gateway"'), values: each(0, 5, 9) }],
+          alert_rule_test: [{ eval_time: '2m', alertname: 'JudgementsUnauthorized', exp_alerts: [] }],
         },
       ]),
     );

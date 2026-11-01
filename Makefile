@@ -225,17 +225,20 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 		echo "  refusal-key was missing or not the GitHub worker's, so the line starts again with the right one."; fi
 
 # Triage's caller token for the gateway's judgements (docs/COMPONENTS/LLM-GATEWAY.md#judgements): 32 random bytes in hex,
-# made once, in the Secret judgements-token in `factory`, which only triage and the gateway name, through stdin and never
-# a file or a command line. Both read it when they start and need it to start, so a new one restarts both: until then a
-# triage with the old token is refused, and one waiting for the Secret starts with it. Restarting the gateway cuts any
-# agent's call in flight; it happens only when the Secret is made.
+# in the Secret judgements-token in `factory`, which only triage and the gateway name, through stdin and never a file or
+# a command line. Made once, and made again only when the Secret holds no token this target would make (none, or one
+# shorter than 32 hex characters); any failure to read it stops here, and keeps it. Both read it when they start, so a
+# new one restarts both: triage needs it to start, and the gateway answers every judgement 401 until it has it.
+# Restarting the gateway cuts any agent's call in flight; it happens only when the token is made.
 judgements-token: ## Give triage and the gateway the token judgements take, made once
 	@$(call namespace,factory)
-	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the token.
-	@made="$$($(KUBECTL) -n factory get secret judgements-token -o name --ignore-not-found)" || exit 1; \
-	if [ -z "$$made" ]; then \
+	@held="$$($(KUBECTL) -n factory get secret judgements-token -o jsonpath='{.data.token}' --ignore-not-found)" || exit 1; \
+	held="$$(printf %s "$$held" | base64 -d)" || exit 1; \
+	case "$$held" in *[!0-9a-f]*) held=;; esac; \
+	if [ "$${#held}" -lt 32 ]; then \
 		token="$$(openssl rand -hex 32)" && printf %s "$$token" | \
-			$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin >/dev/null && \
+			$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
+			$(KUBECTL) apply -f - >/dev/null && \
 		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (gateway,triage)' --ignore-not-found >/dev/null && \
 		echo "  Triage and the gateway have a new judgements token, so triage's judgements are taken and no one else's."; fi
 

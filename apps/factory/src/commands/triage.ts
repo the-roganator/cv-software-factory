@@ -21,6 +21,7 @@ import type { Counter } from '@opentelemetry/api';
 import { type Screenshot, SIGNAL_SOURCES } from '@software-factory/events';
 import { type Judge, type Outcome, type PageReader, Triage } from '@software-factory/triage';
 import { INBOX, REPORT_TEXT } from '../../../../policy/triage.ts';
+import { judgementsToken } from '../gateway/config.ts';
 
 export const USAGE = '  factory triage';
 
@@ -46,7 +47,14 @@ export function zeroTriaged(triaged: Pick<Counter, 'add'>): void {
 export async function run(args: string[]): Promise<number> {
   const { GATEWAY_URL, JUDGEMENTS_TOKEN, PAGES_URL, ARTIFACTS_DIR, DATABASE_URL, PROMETHEUS_URL, LOKI_URL, TEMPO_URL } =
     process.env;
-  if (args.length || !GATEWAY_URL || !JUDGEMENTS_TOKEN || !ARTIFACTS_DIR) {
+  let token: string | undefined;
+  try {
+    token = judgementsToken(JUDGEMENTS_TOKEN);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    return 2;
+  }
+  if (args.length || !GATEWAY_URL || !token || !ARTIFACTS_DIR) {
     console.log(
       `Usage:\n${USAGE}\n\nSet GATEWAY_URL, JUDGEMENTS_TOKEN (the gateway's) and ARTIFACTS_DIR, and PAGES_URL to read the pages reports name.`,
     );
@@ -58,6 +66,7 @@ export async function run(args: string[]): Promise<number> {
   const { metrics } = await import('@opentelemetry/api');
   const { connect, DiskArtifacts, EventWriter, forgetReports, pruneInbox } = await import('@software-factory/store');
   const { GatewayClient } = await import('../gateway/client.ts');
+  const { GatewayUnavailable } = await import('../gateway/errors.ts');
   const { waitingFor } = await import('../gateway/waiting.ts');
   const { sendCounts } = await import('../counts.ts');
   const { environmentLook } = await import('../environment.ts');
@@ -66,12 +75,19 @@ export async function run(args: string[]): Promise<number> {
   const { Tempo } = await import('../clients/tempo.ts');
 
   const sql = connect(DATABASE_URL);
-  const gateway = new GatewayClient({ url: GATEWAY_URL, token: JUDGEMENTS_TOKEN });
+  const gateway = new GatewayClient({ url: GATEWAY_URL, token });
 
   const judge: Judge = async (request) => {
     try {
       return await gateway.judge(request);
     } catch (error) {
+      // Waited out, as an outage is, so no report spends its attempts on it; but it is no outage, and only Martin can
+      // end it, so it is an error in the log, and the gateway pages him (`JudgementsUnauthorized`).
+      if (error instanceof GatewayUnavailable && error.status === 401) {
+        log.error(
+          'the gateway refused triage’s token: JUDGEMENTS_TOKEN is not the gateway’s; run make judgements-token',
+        );
+      }
       throw waitingFor(error, new Date()) ?? error;
     }
   };

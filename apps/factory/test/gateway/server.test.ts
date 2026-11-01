@@ -9,7 +9,7 @@ import { type Database, freshDatabase } from '../../../../packages/store/test/da
 import type { SpendPolicy } from '../../../../policy/spend.ts';
 import { Cassettes } from '../../src/gateway/cassettes.ts';
 import { GatewayClient } from '../../src/gateway/client.ts';
-import { configFromEnv } from '../../src/gateway/config.ts';
+import { configFromEnv, judgementsToken } from '../../src/gateway/config.ts';
 import {
   BadRequest,
   CassetteMissing,
@@ -312,6 +312,12 @@ describe('the gateway’s settings', () => {
     expect(configFromEnv({}).judgementsToken).toBeUndefined();
     expect(configFromEnv({ JUDGEMENTS_TOKEN: TOKEN }).judgementsToken).toBe(TOKEN);
     expect(() => configFromEnv({ JUDGEMENTS_TOKEN: 'triage' })).toThrow('JUDGEMENTS_TOKEN');
+    // As triage reads it too: a token with whitespace, as a stray newline would leave, is not sent as written.
+    expect(judgementsToken(undefined)).toBeUndefined();
+    expect(judgementsToken(TOKEN)).toBe(TOKEN);
+    expect(() => judgementsToken(`${TOKEN}\n`)).toThrow('whitespace');
+    expect(() => judgementsToken(` ${TOKEN}`)).toThrow('whitespace');
+    expect(() => judgementsToken('a'.repeat(31))).toThrow('32 characters');
   });
 
   it('refuse a mode or profile that does not exist, and recording nowhere', () => {

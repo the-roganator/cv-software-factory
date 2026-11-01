@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEPLOY, manifests as deployManifests } from './deploy.ts';
+import { DEPLOY, manifests as deployManifests, rendered } from './deploy.ts';
 
 /**
  * The fence around the gateway's judgements as deploy/ declares it: triage's caller token, in a Secret that only triage
@@ -41,18 +41,19 @@ const deployment = async (name: string) => {
 
 describe('triage’s token for judgements', () => {
   it.each([
-    ['triage', 'base/factory/triage.yaml'],
-    ['gateway', 'base/factory/gateway.yaml'],
-  ])('is taken by %s, required, into its one container’s environment', async (name, file) => {
+    // Required: a triage with no token does not start, rather than one that judges nothing.
+    ['triage', 'base/factory/triage.yaml', {}],
+    // Optional: the runners' calls go on without it, and the gateway answers every judgement 401 meanwhile.
+    ['gateway', 'base/factory/gateway.yaml', { optional: true }],
+  ])('is taken by %s into its one container’s environment', async (name, file, optional) => {
     const found = await deployment(name);
     expect([found.file, found.namespace]).toEqual([file, 'factory']);
     const [container, ...others] = found.pod.spec.containers;
     expect(others).toEqual([]);
     expect(found.pod.spec.initContainers).toBeUndefined();
-    // Not optional: a pod with no token does not start, rather than one that judges nothing or takes any caller.
     expect(container?.env?.find((e) => e.name === 'JUDGEMENTS_TOKEN')).toEqual({
       name: 'JUDGEMENTS_TOKEN',
-      valueFrom: { secretKeyRef: { name: SECRET, key: 'token' } },
+      valueFrom: { secretKeyRef: { name: SECRET, key: 'token', ...optional } },
     });
     expect(container?.envFrom).toBeUndefined();
     // No token for the Kubernetes API, where a Secret could be read.
@@ -67,13 +68,23 @@ describe('triage’s token for judgements', () => {
     ]);
   });
 
+  it('is held by triage and the gateway alone in every profile, as Argo CD deploys it', () => {
+    const all = rendered<Manifest>();
+    const overlays = [...new Set(all.map(({ overlay }) => overlay))];
+    expect(overlays.length).toBeGreaterThan(0);
+    const holding = all.filter(({ manifest }) => /judgements-token|JUDGEMENTS_TOKEN/.test(JSON.stringify(manifest)));
+    expect(holding.map(({ overlay, manifest }) => `${overlay}: ${manifest.kind}/${manifest.metadata?.name}`)).toEqual(
+      overlays.flatMap((overlay) => [`${overlay}: Deployment/gateway`, `${overlay}: Deployment/triage`]),
+    );
+  });
+
   it('is in no manifest: make judgements-token makes it, through stdin, and make up runs it', async () => {
     const made = (await manifests()).filter(
       ({ manifest }) => manifest.kind === 'Secret' && manifest.metadata?.name === SECRET,
     );
     expect(made).toEqual([]);
     const makefile = await readFile(join(DEPLOY, '..', 'Makefile'), 'utf-8');
-    expect(makefile).toContain(`create secret generic ${SECRET} --from-file=token=/dev/stdin`);
+    expect(makefile).toContain(`create secret generic ${SECRET} --from-file=token=/dev/stdin --dry-run=client`);
     expect(makefile).toMatch(/^\t@\$\(MAKE\) --no-print-directory judgements-token$/m);
     expect(makefile).toMatch(/^\.PHONY: .*\bjudgements-token\b/m);
   });

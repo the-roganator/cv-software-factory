@@ -85,13 +85,15 @@ spec:
                   name: anthropic
                   key: api-key
                   optional: true
-            # Triage's caller token: a judgement without it is refused with 401. `make judgements-token` (and so `make up`)
-            # makes the Secret once, which only triage and the gateway name. Required: with no Secret the pod does not start.
+            # Triage's caller token: a judgement without it is answered 401. `make judgements-token` (and so `make up`)
+            # makes the Secret once, which only triage and the gateway name. Optional, so the runners' calls go on without
+            # it: with none, the gateway answers every judgement 401, and the make target restarts it once it makes one.
             - name: JUDGEMENTS_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: judgements-token
                   key: token
+                  optional: true
             # LM Studio on the Mac, through OrbStack's address for the host. Only the local profile's network policy lets
             # the gateway reach it (deploy/overlays/local/local-models.yaml).
             - name: LOCAL_MODELS_URL

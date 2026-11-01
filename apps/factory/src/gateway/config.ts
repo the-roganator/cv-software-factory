@@ -38,6 +38,19 @@ export interface GatewayConfig {
 /** `make judgements-token` makes 64 hex characters; anything much shorter could be guessed. */
 const SHORTEST_TOKEN = 32;
 
+/**
+ * Triage's caller token for judgements, as the gateway and triage both read it from `JUDGEMENTS_TOKEN`: undefined when
+ * unset, and refused when it is short enough to guess or holds whitespace, which a header would not carry as written.
+ */
+export function judgementsToken(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (/\s/.test(value)) throw new Error('JUDGEMENTS_TOKEN holds whitespace: make one with openssl rand -hex 32.');
+  if (value.length < SHORTEST_TOKEN) {
+    throw new Error(`JUDGEMENTS_TOKEN is under ${SHORTEST_TOKEN} characters: make one with openssl rand -hex 32.`);
+  }
+  return value;
+}
+
 const oneOf = <T extends string>(name: string, value: string, allowed: readonly T[]): T => {
   if (!(allowed as readonly string[]).includes(value)) {
     throw new Error(`${name} is ${JSON.stringify(value)}; it must be one of ${allowed.join(', ')}.`);
@@ -59,11 +72,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
     anthropicUrl: env.ANTHROPIC_URL || undefined,
     localModelsUrl: env.LOCAL_MODELS_URL || 'http://127.0.0.1:1234',
     allLocal: env.ALL_LOCAL === 'true',
-    judgementsToken: env.JUDGEMENTS_TOKEN || undefined,
+    judgementsToken: judgementsToken(env.JUDGEMENTS_TOKEN),
   };
-  if (config.judgementsToken && config.judgementsToken.length < SHORTEST_TOKEN) {
-    throw new Error(`JUDGEMENTS_TOKEN is under ${SHORTEST_TOKEN} characters: make one with openssl rand -hex 32.`);
-  }
   if (config.allLocal && !MODELS[config.profile].local) {
     throw new Error(`ALL_LOCAL sends every agent to the local model, and the ${config.profile} profile has none.`);
   }

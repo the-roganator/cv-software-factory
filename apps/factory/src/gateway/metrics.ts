@@ -74,6 +74,14 @@ export const capRefusals = meter.createCounter('gateway.cap.refusals', {
   description: 'Calls refused for a spend cap, by agent, provider, model and cap (day, month, work-item, provider)',
 });
 
+/**
+ * Judgements answered 401, without triage's token: triage's token not the gateway's, or another caller asking. Either
+ * pages (`JudgementsUnauthorized`). It has no labels: nothing about the caller is known but that it was wrong.
+ */
+export const unauthorizedJudgements = meter.createCounter('gateway.judgements.unauthorized', {
+  description: "Judgements answered 401 because they did not carry triage's token",
+});
+
 const capSpent = meter.createObservableGauge('gateway.cap.spent_usd', {
   description: "Model spend so far in the day's and the month's window, by cap (day, month) and profile, in US dollars",
 });
@@ -126,6 +134,7 @@ export function zeroCounts(messages: readonly Route[], judgements: readonly Rout
     statuses: typesafe,
     caps: every(CAPS).filter((cap) => cap !== 'provider'),
   });
+  unauthorizedJudgements.add(0);
 }
 
 interface Sets {

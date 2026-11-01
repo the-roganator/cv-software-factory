@@ -372,16 +372,15 @@ const deploying = (item: ItemState) => item.outcome === 'deploying';
  */
 function noteOf(item: ItemState, stage: Stage, behind = false): string {
   const note = holdNote(item, stage, behind);
-  if (!item.hold || !item.cleared) return note;
-  const { version } = item.cleared;
-  return `${note} · cleared${version ? ` on ${shortVersion(version)}` : ''}`;
+  const cleared = item.hold && item.cleared;
+  return cleared ? `${note} · cleared on ${shortVersion(cleared.version ?? '')}` : note;
 }
 
-/** A kicker after "Needs you · ", in lower case but for a station's name: "held by a gate", "Verify asks you". */
-const midSentence = (words: string) =>
-  STAGES.some((stage) => words.startsWith(`${stage[0]?.toUpperCase()}${stage.slice(1)} `))
-    ? words
-    : `${words[0]?.toLowerCase()}${words.slice(1)}`;
+/**
+ * A kicker after "Needs you · ", in lower case but for the one that opens with a station's name: "held by a gate",
+ * "Verify asks you". A test holds every cause to it.
+ */
+const midSentence = (words: string) => (words.startsWith('Verify') ? words : words[0]?.toLowerCase() + words.slice(1));
 
 /** Whether a work item waits on Martin where it is: a hold, or an improvement's flag waiting for him to widen it. */
 const waitsOnMartin = (item: ItemState) => item.hold !== undefined || item.outcome === 'needs-you';

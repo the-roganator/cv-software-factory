@@ -90,6 +90,12 @@ export const BURST = {
   tickets: 5,
   /** How close together a sense's signals are, in minutes, to count as one burst. Two of a sense's runs, by default. */
   minutes: 10,
+  /**
+   * How long after a version goes live, in minutes, a sense seeing an open ticket's defect in it for the first time is
+   * the release's doing, which never counts toward a burst; later, it is found again, which does. Room after a promotion
+   * for the slowest sense, the log watcher, which judges ten minutes of requests four minutes late, with time to spare.
+   */
+  releaseMinutes: 30,
 } as const;
 
 /**

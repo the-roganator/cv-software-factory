@@ -221,8 +221,9 @@ export function senseReopened(signal: Seen, signalId: string, workItem: string, 
 }
 
 /**
- * A sense's signal that would have opened a ticket, and with the others found with it makes a burst: a work item held
- * for Martin, with the signal as its first evidence and none of its problems a ticket. `found` is how many it found.
+ * A sense's signal that would have opened a ticket, or added to an open one in a version no release explains, and with
+ * the others found with it makes a burst: a work item held for Martin, with the signal as its first evidence and none
+ * of its problems a ticket or on one. `found` is how many it found.
  */
 export function burstEvents(signal: Seen, signalId: string, workItem: string, found: number, now: Date): NewEvent[] {
   const sense = SENSE_NAMES[signal.sense as Exclude<Sense, 'report'>];
@@ -239,12 +240,12 @@ export function burstEvents(signal: Seen, signalId: string, workItem: string, fo
     stage: 'triage',
     kind: 'held',
     cause: 'burst',
-    reason: `${sense} found ${found} new problems within ${BURST.minutes} minutes, more than ${BURST.tickets} at once: it may be what it reads that is at fault. None has a ticket until Martin looks. Approving opens a ticket for each; rejecting closes them all.`,
+    reason: `${sense} found ${found} new problems within ${BURST.minutes} minutes, more than ${BURST.tickets} at once, counting open tickets' problems it saw again: it may be what it reads that is at fault. None reaches a ticket until Martin looks. Approving opens a ticket or adds to one for each; rejecting closes them all.`,
   });
   return summarise(writer, {
     title,
     description: `${sense} found ${found} new problems at once. Triage held them for Martin as one burst, before any has a ticket or reaches Plan.`,
-    story: `${sense} found ${found} new problems within ${BURST.minutes} minutes, first on ${where(signal.route)} in version ${signal.version}: ${signal.check}. That may be as many defects, or one fault in what the sense reads, and each ticket would cost a planner’s step and more. So triage opened none, and held the burst for Martin, for every new problem the sense found while it waited to join. Approving opens a ticket for each, as the sense’s would have been; rejecting closes them all, and a problem still there is found again.`,
+    story: `${sense} found ${found} new problems within ${BURST.minutes} minutes, first on ${where(signal.route)} in version ${signal.version}: ${signal.check}. That may be as many defects, or one fault in what the sense reads, and each ticket would cost a planner’s step and more. So triage opened none, and held the burst for Martin, for every new problem the sense found while it waited to join. An open ticket’s problem seen again in a version no release has just put live counts as new: the sense had stopped seeing it, or what it reads is at fault. Approving opens a ticket for each, as the sense’s would have been, or adds it to its open ticket; rejecting closes them all, and a problem still there is found again.`,
   });
 }
 

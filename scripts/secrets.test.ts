@@ -12,8 +12,9 @@ import { describe, expect, it } from 'vitest';
  * not log in until someone deleted the Secret by hand. It stores one only once it has it, through stdin, never on a
  * command line, and makes again a Secret that holds an empty one.
  *
- * Every Secret it writes, those included, it applies server-side: a client-side apply keeps a copy of the Secret's data
- * in its last-applied annotation, where the Anthropic key or the answer key would show wherever the Secret is printed.
+ * Every Secret it renders and applies, those included, it applies server-side: a client-side apply keeps a copy of the
+ * Secret's data in its last-applied annotation, where the Anthropic key or the answer key would show wherever the Secret
+ * is printed. The signing keys, made once, it creates outright, which keeps no copy either.
  */
 
 type Cluster = 'holds one' | 'holds an empty one' | 'has none' | 'cannot be read';
@@ -130,14 +131,34 @@ describe('making a password from the Makefile', () => {
 describe('every Secret the Makefile writes', () => {
   // Each recipe's lines, with a backslash's continuation joined on, so a create and the apply it is piped to are one.
   const commands = readFileSync('Makefile', 'utf-8').replaceAll('\\\n', ' ').split('\n');
-  const creates = commands.filter((line) => /create secret/.test(line));
 
   it('is created outright or applied server-side, never applied client-side', () => {
-    expect(creates.length).toBeGreaterThan(8);
-    for (const line of creates) {
-      const rendered = /create secret[^|]*--dry-run=client -o yaml\s*\|\s*(\S+)/.exec(line);
-      if (rendered) expect(rendered[1], line).toBe('$(apply-secret)');
-      else expect(line, line).not.toMatch(/create secret[^|]*\|\s*\$\(KUBECTL\) apply/);
+    const writes = commands.flatMap((line) =>
+      [...line.matchAll(/create secret (?:generic|tls) (\S+)([^|]*)(?:\|([^|]*))?/g)].map(([, name, flags, next]) => ({
+        name,
+        rendered: /--dry-run/.test(flags ?? ''),
+        next: (next ?? '').trim(),
+      })),
+    );
+    // Each Secret the Makefile writes, so one moved out of it, or a new one, is seen here.
+    expect([...new Set(writes.map(({ name }) => name))].sort()).toEqual(
+      [
+        '$(2)',
+        'answer-key',
+        'anthropic',
+        'console-tls',
+        'github-app',
+        'judgements-token',
+        'postgres',
+        'pushover',
+        'refusal-signing-key',
+        'share-signing-key',
+        'typesafe',
+      ].sort(),
+    );
+    for (const write of writes) {
+      if (write.rendered) expect(write.next, write.name).toMatch(/^\$\(apply-secret\)(\s|$)/);
+      else expect(write.next, write.name).not.toMatch(/\bapply\b/);
     }
   });
 

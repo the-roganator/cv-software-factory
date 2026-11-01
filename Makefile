@@ -238,15 +238,18 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 # a command line. Made once, and made again only when the Secret holds no token this target would make (none, or one
 # shorter than 32 hex characters); any failure to read it stops here, and keeps it. Both read it when they start, so a
 # new one restarts both: triage needs it to start, and the gateway answers every judgement 401 until it has it.
-# Restarting the gateway cuts any agent's call in flight; it happens only when the token is made.
+# Restarting the gateway cuts any agent's call in flight; it happens only when the token is made. A token kept is applied
+# again as it is, which takes away any copy of it an earlier client-side apply left in the Secret's annotation.
 judgements-token: ## Give triage and the gateway the token judgements take, made once
 	@$(call namespace,factory)
 	@held="$$($(KUBECTL) -n factory get secret judgements-token -o jsonpath='{.data.token}' --ignore-not-found)" || exit 1; \
 	bytes="$$(printf %s "$$held" | base64 -d | wc -c)" && others="$$(printf %s "$$held" | base64 -d | tr -d 0-9a-f | wc -c)" || exit 1; \
-	if [ "$$bytes" -lt 32 ] || [ "$$others" -ne 0 ]; then \
-		token="$$(openssl rand -hex 32)" && printf %s "$$token" | \
-			$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
-			$(apply-secret) >/dev/null && \
+	if [ "$$bytes" -lt 32 ] || [ "$$others" -ne 0 ]; then token="$$(openssl rand -hex 32)" && [ -n "$$token" ] || exit 1; new=1; \
+	else token="$$(printf %s "$$held" | base64 -d)"; new=; fi; \
+	printf %s "$$token" | \
+		$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
+		$(apply-secret) >/dev/null || exit 1; \
+	if [ -n "$$new" ]; then \
 		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (gateway,triage)' --ignore-not-found >/dev/null && \
 		echo "  Triage and the gateway have a new judgements token, so triage's judgements are taken and no one else's."; fi
 

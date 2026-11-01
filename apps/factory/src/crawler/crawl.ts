@@ -5,13 +5,17 @@
  * it holds once its scripts have run, and what axe finds wrong with it. A link that redirects is not opened: where
  * it lands is crawled as a link of its own, from the same page, so a page is always browsed at its own address.
  * This module gathers; judging is in `judge.ts`.
+ *
+ * Every request carries the headers the crawl is given (the mark, `UNMEASURED`), but one: each static asset that
+ * answered is asked for once more without the mark, as a visitor's browser asks, because the app answers every marked
+ * request `private, no-store` by its own rule, and only a visitor's answer says whether the asset may be kept.
  */
 
 import { AxeBuilder } from '@axe-core/playwright';
 import { cutAt, cutTo, type SymptomClass } from '@software-factory/events';
 import type { BrowserContext, Page } from 'playwright';
 import { aboutTheConnection } from '../senses/browser.ts';
-import { type Exchange, exchange, pathOf, type RequestHeaders } from '../senses/http.ts';
+import { type Exchange, exchange, pathOf, type RequestHeaders, UNMEASURED } from '../senses/http.ts';
 
 /** How a resource was reached: a link to follow, an image on a page, or a script, stylesheet or icon. */
 export type Kind = 'link' | 'image' | 'asset';
@@ -23,7 +27,30 @@ export interface Resource {
   /** The page that first led to it. The home page leads to itself. */
   from: string;
   answer: Exchange;
+  /**
+   * For each resource whose caching is judged (`cachingJudged`): the answer a visitor gets, which is the same
+   * request again without the mark when the crawl sends it, and `answer` itself when it does not.
+   */
+  visitor?: Exchange;
 }
+
+const STATIC = /\.(?:js|mjs|css|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf)$/i;
+
+/**
+ * Whether a resource's caching is judged: a static asset (a script, stylesheet, icon or image, or a link to such a
+ * file) that answered 200 and is not a page. The one rule, which the crawl asks again by and the judge judges by.
+ */
+export const cachingJudged = ({ kind, path, answer }: Resource, pages: ReadonlySet<string>): boolean =>
+  answer.status === 200 && !pages.has(path) && (kind !== 'link' || STATIC.test(path.split('?')[0] ?? ''));
+
+/** Whether a header's name is the mark's, in any casing. */
+const isTheMark = (name: string) => Object.hasOwn(UNMEASURED, name.toLowerCase());
+
+/** The headers a visitor sends of those the crawl sends: all but the mark. */
+export const unmarked = (headers: RequestHeaders): RequestHeaders | undefined => {
+  const rest = Object.fromEntries(Object.entries(headers).filter(([name]) => !isTheMark(name)));
+  return Object.keys(rest).length ? rest : undefined;
+};
 
 export interface AccessibilityIssue {
   rule: string;
@@ -155,6 +182,14 @@ export async function crawl({
     enqueue(browsed.references.links, 'link', next);
     enqueue(browsed.references.images, 'image', next);
     enqueue(browsed.references.assets, 'asset', next);
+  }
+  const pages = new Set(result.pages.map((page) => page.path));
+  const marked = headers !== undefined && Object.keys(headers).some(isTheMark);
+  for (const resource of result.resources) {
+    if (!cachingJudged(resource, pages)) continue;
+    resource.visitor = marked
+      ? await exchange(app, resource.path, { record, headers: unmarked(headers) })
+      : resource.answer;
   }
   return result;
 }

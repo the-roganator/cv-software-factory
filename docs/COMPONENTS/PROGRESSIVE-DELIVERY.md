@@ -86,6 +86,7 @@ Errors and latency are the visitors' and the [traffic generator](TRAFFIC-GENERAT
 - **No record.** The app keeps no record of those requests in its request log, request metrics or traces, so the three still agree ([log watcher](LOG-WATCHER.md#agreement)). An error one causes is still logged, with no trace.
 - **Only from inside.** The app's public route removes the header (the Traefik `Middleware` `visitors`, in the app's repository), so only a client in the cluster, asking the Services directly, can be left out. Admission holds every route to the app to that Middleware, and every Middleware in `website` to the strip ([the mark](ADMISSION-CONTROL.md#the-mark)).
 - **Kept:** the traffic generator never sends it. It stands in for the visitors, and goes in through the split as they do.
+- **Kept too:** the crawler's one ask for each static asset without the mark, whose caching only a visitor's answer shows ([not counted](PROBES-AND-CRAWLER.md#not-counted)): a few quick answers a crawl, counted as a visitor's, on the version the crawl watches.
 
 ## Rolling back and stopping
 

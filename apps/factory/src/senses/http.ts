@@ -33,7 +33,8 @@ export type RequestHeaders = Readonly<Record<string, string>>;
  * causes is still logged, with no trace), so the errors and latency the objectives and a canary's analysis read are
  * the visitors' and the traffic generator's alone, the canary and its baseline are judged on the same mix, and the
  * three records still agree. The traffic generator does not send it: it stands in for the visitors, and must be
- * judged.
+ * judged. Nor does the crawler's second ask for a static asset, whose caching only a visitor's answer can show: the app
+ * answers every marked request `private, no-store` (`crawler/crawl.ts`).
  */
 export const UNMEASURED: RequestHeaders = { 'x-unmeasured': '1' };
 

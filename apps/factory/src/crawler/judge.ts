@@ -7,7 +7,8 @@
  *   page's route, and is `scope: 'page'`: a class found on every page crawled is one signal for `*`. A page is
  *   opened only at its own address (`crawl.ts`), so a page reached through a redirect is judged where it landed;
  * - a broken link or image belongs on the route of the page that holds it, where a visitor meets it;
- * - a server error, a redirect loop, a slow answer or an uncached asset belongs on the route that was asked for.
+ * - a server error, a redirect loop, a slow answer or an uncached asset belongs on the route that was asked for. An
+ *   asset's caching is judged on the answer a visitor gets (`visitor` in `crawl.ts`), not on the crawl's marked one.
  *
  * The classes in `OF_A_PAGE` are told only by opening a page. On a route where a link led to no page that could be
  * opened (it looped, or answered with an error, or the page would not open), they can be neither passed nor
@@ -18,7 +19,7 @@ import type { Evidence, SymptomClass } from '@software-factory/events';
 import type { Check } from '../capture.ts';
 import { type Exchange, exchange, type RequestHeaders } from '../senses/http.ts';
 import type { Finding } from '../senses/types.ts';
-import type { Crawl, Resource } from './crawl.ts';
+import { type Crawl, cachingJudged, type Resource } from './crawl.ts';
 
 /** An answer slower than this, in milliseconds, is slow. It is generous: the check is for answers that hurt. */
 export const SLOW = 2_000;
@@ -78,8 +79,6 @@ export interface JudgeInput {
   slow?: number;
 }
 
-const STATIC = /\.(?:js|mjs|css|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf)$/i;
-
 const quoted = (path: string) => path.replaceAll('"', '');
 
 export function judge({ crawl, errors, secure, version, template, slow = SLOW }: JudgeInput): Judged {
@@ -87,6 +86,7 @@ export function judge({ crawl, errors, secure, version, template, slow = SLOW }:
   const trouble: Trouble[] = [];
   const byPath = new Map(crawl.resources.map((r) => [r.path, r]));
   const pageRoutes = new Set(crawl.pages.map((page) => template(page.path)));
+  const browsedPaths = new Set(crawl.pages.map((page) => page.path));
   /** A link that led to no page, on a route where no page was opened: what a page would show there is not known. */
   const noPage = (path: string, why: string) => {
     if (pageRoutes.has(template(path))) return;
@@ -165,15 +165,28 @@ export function judge({ crawl, errors, secure, version, template, slow = SLOW }:
         evidence: [answer.evidence],
       });
     }
-    if (status === 200 && !isPage && (kind !== 'link' || STATIC.test(path.split('?')[0] ?? '')) && !cached(answer)) {
-      issues.push({
-        symptom: 'not-cached',
-        route: target,
-        at: from,
-        scope: 'other',
-        message: `${path} is a static asset and says nothing to let it be kept: its Cache-Control is ${answer.headers['cache-control'] ? `"${answer.headers['cache-control']}"` : 'missing'}.`,
-        evidence: [answer.evidence],
-      });
+    if (cachingJudged(resource, browsedPaths)) {
+      // Judged on the answer a visitor gets: the crawl's own requests carry the mark, which the app answers no-store.
+      const { visitor } = resource;
+      if (visitor?.status !== 200) {
+        const why = !visitor
+          ? 'was not asked for as a visitor asks'
+          : `answered ${visitor.failure ?? visitor.status ?? 'nothing'}${visitor.landed !== path ? ` at ${visitor.landed}` : ''} when asked for as a visitor asks`;
+        trouble.push({
+          route: target,
+          symptoms: ['not-cached'],
+          message: `${path} ${why}, so whether it may be kept is not known.`,
+        });
+      } else if (!cached(visitor)) {
+        issues.push({
+          symptom: 'not-cached',
+          route: target,
+          at: from,
+          scope: 'other',
+          message: `${path} is a static asset and says nothing to let it be kept: its Cache-Control, as a visitor is answered, is ${visitor.headers['cache-control'] ? `"${visitor.headers['cache-control']}"` : 'missing'}.`,
+          evidence: [visitor.evidence],
+        });
+      }
     }
   }
 

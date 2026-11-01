@@ -113,6 +113,13 @@ describe('what the crawl could not tell', () => {
     expect(observations.map((o) => o.check)).toContain('missing-header@/items/:item');
   }, 60_000);
 
+  it('is trouble, not a pass, for caching, when an asset asked for as a visitor asks gets no answer to judge', async () => {
+    const observations = await crawl('visitor-unanswered');
+    expect(troubleOn(observations, '/static/:file').map((o) => o.check)).toEqual(['not-cached@/static/:file']);
+    expect(troubleOn(observations, '/static/:file')[0]?.trouble).toMatch(/answered 503 when asked for as a visitor/);
+    expect(found(observations)).toEqual([]);
+  }, 60_000);
+
   it('is trouble, not a pass, when a link gets no answer', async () => {
     const observations = await crawl('no-answer');
     expect(troubleOn(observations, '/reset')).toHaveLength(CLASSES.length);
@@ -188,6 +195,17 @@ describe('what the evidence holds', () => {
     const observations = await crawl('error-500');
     const { evidence } = observations.find((o) => o.check === 'server-error@/items/:item')?.finding ?? {};
     expect(evidence?.[0]).toMatchObject({ kind: 'http', status: 500, url: '/items/b' });
+  }, 60_000);
+
+  it('has the answer a visitor got for an asset not cached, not the crawl’s marked one', async () => {
+    const observations = await crawl('no-cache');
+    const finding = observations.find((o) => o.check === 'not-cached@/static/:file')?.finding;
+    expect(finding?.evidence?.[0]).toMatchObject({
+      kind: 'http',
+      status: 200,
+      headers: { 'cache-control': 'no-cache' },
+    });
+    expect(finding?.message).toContain('"no-cache"');
   }, 60_000);
 
   it('has the elements of an accessibility finding, with their boxes where they are in view', async () => {

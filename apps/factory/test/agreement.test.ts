@@ -212,6 +212,36 @@ describe('counting a route whose metrics had a gap', () => {
     await watcher.checkAgreement(at(59));
     expect(sent.map((s) => [s.route, s.symptom])).toEqual([['/privacy', 'wrong-metric']]);
   });
+  it('says so in the watcher’s log when the log is silent for every route too', async () => {
+    const sent: InboxSignal[] = [];
+    const warned: unknown[] = [];
+    const infos: unknown[] = [];
+    const quiet = (path: string, value: number): Sample => ({
+      labels: { http_route: path, service_version: VERSION },
+      value,
+    });
+    const watcher = new Watcher(
+      {
+        objectives,
+        prometheus: {
+          instant: async () => [quiet('/a', 40), quiet('/b', 20), metric(4021, true)],
+          range: async () => undefined,
+        },
+        loki: { instant: async () => [] },
+        tempo: { requestsByRoute: async () => ({ routes: [], complete: true }) },
+        outbox: { send: async (signal: InboxSignal) => void sent.push(signal) },
+        log: {
+          info: (fields: unknown) => void infos.push(fields),
+          warn: (fields: unknown) => void warned.push(fields),
+        },
+      } as unknown as Backends,
+      { errors: new Date(0), reports: new Date(0) },
+    );
+    for (const minutes of [44, 49]) await watcher.checkAgreement(at(minutes));
+    expect(sent.map((s) => [s.route, s.symptom])).toEqual([['*', 'missing-log']]);
+    expect(warned).toEqual([{ paths: 1 }]);
+    expect(infos.at(-1)).toMatchObject({ gaps: 1, signals: 1 });
+  });
 });
 
 describe('judging windows in pairs', () => {

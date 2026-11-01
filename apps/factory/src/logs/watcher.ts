@@ -259,18 +259,18 @@ export class Watcher {
     if (!before) return 0;
 
     const both = combine(before.routes, routes);
+    // A path whose metrics had a gap in either window is not judged: its series came back with a running total, which
+    // cannot say what it counted in the windows. It is judged again once a pair of windows has no gap.
+    const gaps = both.filter((entry) => entry.gap).length;
+    if (gaps) log.warn({ paths: gaps }, 'agreement not judged on paths whose metrics had a gap');
     // A log silent for every route is one finding about the log, not one for each route that had requests. A pair
     // with one window silent is the edge of the same gap: over both, every route would seem to have lost some of its
     // records, and each would be a finding of its own.
     if (logSilent(both) || logSilent(before.routes) || logSilent(routes)) {
       const sent = (await this.tell('* missing-log', end, async () => signalForSilentLog(both, end))) ? 1 : 0;
-      log.info({ routes: routes.length, signals: sent }, 'agreement checked: the log is silent for every route');
+      log.info({ routes: routes.length, gaps, signals: sent }, 'agreement checked: the log is silent for every route');
       return sent;
     }
-    // A path whose metrics had a gap in either window is not judged: its series came back with a running total, which
-    // cannot say what it counted in the windows. It is judged again once a pair of windows has no gap.
-    const gaps = both.filter((entry) => entry.gap).length;
-    if (gaps) log.warn({ paths: gaps }, 'agreement not judged on paths whose metrics had a gap');
     // Metrics wrong on every route judged are one finding about the metrics, as a silent log is about the log.
     const everywhere = metricsWrongEverywhere(both);
     if (everywhere) {

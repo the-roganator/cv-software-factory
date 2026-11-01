@@ -10,7 +10,8 @@ Open [`index.html`](index.html) to see it: every token, both themes, the mark, a
 |---|---|---|
 | [`tokens.json`](tokens.json) | Source of truth: colour roles per theme, type, space, radius, stroke, shadow, motion, station geometry. W3C Design Tokens (DTCG) format. | Yes |
 | [`tokens.css`](tokens.css) | Custom properties and `.t-*` type classes, generated from the JSON. | No: run `build.ts` |
-| [`build.ts`](build.ts) | `node docs/design/system/build.ts` (Node 24, no dependencies) regenerates `tokens.css` and `station.js`, and fails if any meaningful colour pair drops below WCAG 2.2 AA. With `--check` it writes nothing and fails if either is out of date; `make check` runs it that way. | Yes |
+| [`properties.css`](properties.css) | The custom properties alone, Paper at the root and Ink by its attribute: what the console imports, without the `.t-*` classes it does not use. | No: run `build.ts` |
+| [`build.ts`](build.ts) | `node docs/design/system/build.ts` (Node 24, no dependencies) regenerates `tokens.css`, `properties.css` and `station.js`, and fails if any meaningful colour pair drops below WCAG 2.2 AA. With `--check` it writes nothing and fails if any is out of date; `make check` runs it that way. | Yes |
 | [`station.ts`](station.ts) | The `<sf-station>` element: the station kit, which the console imports as it is. No `<style>` element or `style` attribute, so it runs under the console's content security policy. | Yes |
 | [`station.js`](station.js) | The same element as a classic script, so design pages open from disk. | No: run `build.ts` |
 | [`mark/`](mark/) | The MR monogram: `mark.svg` (Paper), `mark-ink.svg` (Ink), `icon.svg` (favicon and app icon). | Replace, don't edit |
@@ -69,7 +70,7 @@ All three faces are on Google Fonts; self-host them in the app (woff2, `font-dis
 
 ## Space, shape, motion
 
-- **Space:** 4px base (`--space-1` … `--space-9`); page gutter 48px at desktop.
+- **Space:** a 4px base, written in pixels where it is used (`12px` says as much as a token would, in fewer characters); the page's gutter, 48px at desktop, is the one token, `--space-gutter`.
 - **Radius:** 2 (the Needs-you edge), 4 (small controls), 6 (cards, buttons), 8 (panels, popovers), pill.
 - **Stroke:** 1px hairlines; 2px for the Needs-you rule, focus rings and the station chassis; 1.75px for station tools.
 - **Elevation:** flat. The only shadow is `--shadow-popover`, for panels that float over the line and for the sheet.

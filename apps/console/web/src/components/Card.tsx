@@ -150,7 +150,7 @@ export const Card = memo(function Card({ card, index, count, ref }: CardProps) {
   return (
     <article
       ref={ref}
-      className="card"
+      className="card raised"
       data-index={index}
       aria-roledescription="slide"
       aria-label={`${index + 1} of ${count}: ${card.title}. ${card.reopened ? 'Reopened. ' : ''}${word}`}
@@ -163,7 +163,7 @@ export const Card = memo(function Card({ card, index, count, ref }: CardProps) {
         </span>
         {card.reopened ? (
           <span className="again-out">
-            <span className="pill-sample again">Reopened</span>
+            <span className="pill pill-sample again">Reopened</span>
             <OutcomeWord outcome={card.outcome} />
           </span>
         ) : (
@@ -176,7 +176,7 @@ export const Card = memo(function Card({ card, index, count, ref }: CardProps) {
         <p className="desc">{card.description}</p>
       </div>
       <div className="meta">
-        {card.sample && <span className="pill-sample">Sample</span>}
+        {card.sample && <span className="pill pill-sample">Sample</span>}
         <b>#{card.number}</b>
         {card.flag && (
           <span className="flagm" title={`Its flag, ${card.flag.name}`}>

@@ -374,7 +374,8 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; padding
         <tbody>
           <tr><td><code>tokens.json</code></td><td>Source of truth: colour roles per theme, type, space, radius, stroke, motion. DTCG format.</td></tr>
           <tr><td><code>tokens.css</code></td><td>Generated custom properties and <code>.t-*</code> type classes. Do not edit.</td></tr>
-          <tr><td><code>build.ts</code></td><td>Regenerates tokens.css and fails if a meaningful colour pair drops below WCAG AA.</td></tr>
+          <tr><td><code>properties.css</code></td><td>The custom properties alone, for the console. Generated; do not edit.</td></tr>
+          <tr><td><code>build.ts</code></td><td>Regenerates tokens.css and properties.css, and fails if a meaningful colour pair drops below WCAG AA.</td></tr>
           <tr><td><code>mark/</code></td><td>The monogram for Paper and Ink, and the app icon.</td></tr>
           <tr><td><code>station.js</code></td><td>The <code>&lt;sf-station&gt;</code> element. Reference implementation to port into the app.</td></tr>
           <tr><td><code>README.md</code></td><td>Rules, the state model, accessibility and what is still to decide.</td></tr>

@@ -217,7 +217,7 @@ test.describe('the Canary panel', () => {
       await page.goto(consoleUrl());
       await shown(page);
       const canary = panel(page);
-      const captions = canary.locator('.measures small.rule');
+      const captions = canary.locator('.measures small.measure-rule');
       await expect(captions).toHaveCount(4);
       for (const caption of width >= WIDTHS.laptop.width ? await captions.all() : []) {
         const [height, line] = await caption.evaluate((el) => [
@@ -308,7 +308,7 @@ test.describe('the Canary panel on a phone', () => {
     const row = panel(page).getByRole('row', { name: /^Journeys/ });
     await expect(row).toContainText('could not measure');
     await expect(row.getByText('The journeys Job did not finish')).toBeVisible();
-    await expect(row.locator('.rule')).toBeHidden();
+    await expect(row.locator('.measure-rule')).toBeHidden();
   });
 });
 

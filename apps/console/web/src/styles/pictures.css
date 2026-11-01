@@ -144,14 +144,14 @@
   user-select: none;
   -webkit-user-select: none;
 }
-.wipe .a,
-.wipe .b {
+.wipe .wipe-before,
+.wipe .wipe-after {
   position: absolute;
   inset: 0;
   isolation: isolate;
   overflow: hidden;
 }
-.wipe .b {
+.wipe .wipe-after {
   z-index: 1;
   clip-path: inset(0 0 0 var(--at));
 }
@@ -488,7 +488,7 @@ svg.chart {
   background: var(--signal);
   border-radius: 0.7cqw;
 }
-.jev .a {
+.jev .jev-answer {
   font-family: var(--font-mono);
   text-align: right;
   white-space: nowrap;
@@ -580,10 +580,10 @@ svg.chart {
 }
 
 /* In a wipe, each side's missing screenshot says so in the half that side shows. */
-.wipe .a .shot-missing {
+.wipe .wipe-before .shot-missing {
   right: calc(100% - var(--at));
 }
-.wipe .b .shot-missing {
+.wipe .wipe-after .shot-missing {
   left: var(--at);
 }
 
@@ -598,7 +598,7 @@ svg.chart {
   min-width: max(14px, 2.6cqw);
   height: max(14px, 2.6cqw);
   padding: 0 0.4cqw;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--attn);
   color: var(--on-attn);
   font: 500 max(9px, 1.6cqw) / 1 var(--font-mono);
@@ -796,18 +796,18 @@ svg.chart {
   gap: 2cqw;
   font-size: max(9px, 1.9cqw);
 }
-.finding .rule {
+.finding .finding-rule {
   display: flex;
   align-items: center;
   gap: 1.6cqw;
 }
-.finding .rule b {
+.finding .finding-rule b {
   font: 400 max(10px, 2.2cqw) / 1.2 var(--font-mono);
 }
 .finding .impact {
   padding: 0.3cqw 1.2cqw;
   border: 1px solid var(--attn);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font: max(8px, 1.5cqw) / 1.3 var(--font-mono);
   letter-spacing: 0.15cqw;
   text-transform: uppercase;
@@ -838,7 +838,7 @@ svg.chart {
   place-items: center;
   width: max(14px, 2.8cqw);
   height: max(14px, 2.8cqw);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--attn);
   color: var(--on-attn);
   font-size: max(9px, 1.6cqw);
@@ -928,7 +928,7 @@ svg.chart {
   justify-content: space-between;
   gap: 2cqw;
 }
-.unused .a {
+.unused .unused-answer {
   font-family: var(--font-mono);
 }
 .withheld-note {

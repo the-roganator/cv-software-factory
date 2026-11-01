@@ -162,7 +162,7 @@ function Foot({ workItem, onOpen, martin }: { workItem: string | undefined; mart
 function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
   const id = useId();
   return (
-    <article className="need" {...named(id, need.kicker, onOpen)}>
+    <article className="need raised ruled" {...named(id, need.kicker, onOpen)}>
       <Kick need={need} />
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
@@ -230,7 +230,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   };
 
   return (
-    <article className="need" {...named(id, need.kicker, onOpen)} aria-busy={busy || undefined}>
+    <article className="need raised ruled" {...named(id, need.kicker, onOpen)} aria-busy={busy || undefined}>
       <Kick need={need} />
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
@@ -240,7 +240,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
             {row.answer === 'answered' ? (
               <button
                 type="button"
-                className="btn"
+                className="btn small"
                 aria-expanded={writing}
                 aria-controls={`${id}-words`}
                 aria-disabled={busy || undefined}
@@ -249,7 +249,12 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
                 {row.label}
               </button>
             ) : (
-              <button type="button" className="btn" aria-disabled={busy || undefined} onClick={() => void send(row)}>
+              <button
+                type="button"
+                className="btn small"
+                aria-disabled={busy || undefined}
+                onClick={() => void send(row)}
+              >
                 {row.label}
                 {row.stepUp && !writes.fresh && <Key />}
               </button>
@@ -310,7 +315,7 @@ function CanaryCard({ need, admin, onOpen }: { need: CanaryNeed; admin: Admin } 
   const martin = admin.kind === 'martin';
   const { release } = need;
   return (
-    <article className="need" {...named(id, need.kicker, onOpen)}>
+    <article className="need raised ruled" {...named(id, need.kicker, onOpen)}>
       <div className="kick">
         <b>{need.kicker}</b>
         <span>
@@ -351,7 +356,7 @@ function FlagAnswer({
       {martin ? (
         <button
           type="button"
-          className={`btn${move.refused ? ' cant' : ''}`}
+          className={`btn small${move.refused ? ' cant' : ''}`}
           disabled={move.refused !== undefined}
           onClick={onChoose}
         >
@@ -401,7 +406,7 @@ function FlagCard({
       need.evidence
     );
   return (
-    <article className="need flag-need" {...named(id, need.kicker, onOpen)}>
+    <article className="need raised ruled flag-need" {...named(id, need.kicker, onOpen)}>
       <div className="kick">
         <b>{need.kicker}</b>
         <span>

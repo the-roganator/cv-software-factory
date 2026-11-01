@@ -335,7 +335,7 @@ function ReturnPill({ r }: { r: Return }) {
   const { mid, peak } = arc(r);
   const style = { left: `${(mid / 1344) * 100}%`, top: `${(peak / 220) * 100}%` } as CSSProperties;
   return (
-    <span className="ret ret-pill show" style={style}>
+    <span className="ret pill ret-pill show" style={style}>
       <Glyph name="back" />
       {r.text}
     </span>
@@ -628,7 +628,7 @@ function StagePanel({ stage, view, anchor, container, onClose, onOpen, plus, onI
         </div>
       )}
       {stage === 'plan' && (
-        <button type="button" className="btn small plus" onClick={onImprove}>
+        <button type="button" className="btn plus" onClick={onImprove}>
           {PLUS}
           {plus}
         </button>

@@ -94,7 +94,7 @@ export function Scoreboard({ score, sample }: { score: Score | undefined; sample
   }
   return (
     <div className="score-wrap">
-      {sample && <span className="pill-sample">Sample</span>}
+      {sample && <span className="pill pill-sample">Sample</span>}
       {/* biome-ignore lint/a11y/useSemanticElements: a fieldset holds a form's controls, and these are figures */}
       <div className="score" role="group" aria-label="Scoreboard: seeded and injected defects">
         <div>
@@ -133,7 +133,7 @@ function LineButton({ line, token }: { line: LineState; token: string }) {
     <>
       <button
         type="button"
-        className={`btn line-btn ${stopped ? 'primary' : 'attn'}`}
+        className={`btn small line-btn ${stopped ? 'primary' : 'attn'}`}
         onClick={() => setOpen(stopped ? 'start' : 'stop')}
       >
         {stopped ? (
@@ -349,7 +349,7 @@ export function Header({
             nothing there is lost to a reload: a preview, a pinned theme or time, an open sheet. */}
         <a className="brand" href={away ? '/' : '#top'} aria-label="Software Factory: Martin Rogan, a live CV, home">
           <Mark />
-          <span className="rule" aria-hidden="true" />
+          <span className="brand-rule" aria-hidden="true" />
           <span>
             <b>Software Factory</b> <small>Martin Rogan · a live CV</small>
           </span>
@@ -360,7 +360,7 @@ export function Header({
           </span>
           {/* Martin's are in his account menu, where the header has room for what he does. */}
           {!martin && <Switches {...switches} />}
-          {admin.kind === 'martin' && previewing && <span className="pill-visitor">VISITOR VIEW</span>}
+          {admin.kind === 'martin' && previewing && <span className="pill pill-visitor">VISITOR VIEW</span>}
           {admin.kind === 'martin' && !previewing && (
             <>
               <StepUpPill />

@@ -138,16 +138,10 @@
   cursor: pointer;
 }
 .pill-visitor {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
   background: var(--ok-wash);
   color: var(--ok-text);
-  border: 1px solid var(--ok-line);
-  font: 11px / 1.4 var(--font-mono);
+  border-color: var(--ok-line);
   letter-spacing: 0.8px;
-  white-space: nowrap;
 }
 
 /* The doors: one card in the middle of the page. */
@@ -155,8 +149,6 @@
   max-width: 460px;
   margin: 64px auto 0;
   padding: 32px;
-  background: var(--raised);
-  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   display: flex;
   flex-direction: column;
@@ -276,26 +268,7 @@
   color: var(--text-muted);
 }
 
-/* Fields. */
-input.field {
-  font: inherit;
-  font-size: 14px;
-  color: var(--text);
-  background: var(--raised);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-small);
-  padding: 9px 11px;
-  width: 100%;
-}
-input.field:focus {
-  outline: var(--stroke-rule) solid var(--signal);
-  outline-offset: 1px;
-}
-input.field:disabled {
-  color: var(--text-muted);
-  background-color: transparent;
-  cursor: default;
-}
+/* A one-time code's field (the field is base.css's). */
 input.code {
   font: 500 20px / 1 var(--font-mono);
   letter-spacing: 2px;
@@ -336,9 +309,6 @@ input.code::placeholder {
   }
   .door h1 {
     font-size: 32px;
-  }
-  input.field {
-    font-size: 16px;
   }
   /* A code's 30 characters fit a phone's field, at the 16px below which iOS zooms into a field as it is focused. */
   input.code {

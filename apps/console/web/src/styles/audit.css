@@ -44,7 +44,7 @@
   min-height: 40px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
   font-size: 13px;
   color: var(--text-2);
@@ -75,10 +75,6 @@ table.audit {
 }
 .audit thead th {
   text-align: left;
-  font: 10.5px / 1.4 var(--font-mono);
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--text-muted);
   font-weight: 400;
   padding: 0 14px 8px 0;
   border-bottom: 1px solid var(--line-strong);
@@ -96,14 +92,10 @@ table.audit {
 .audit .day th {
   text-align: left;
   padding: 18px 0 6px;
-  font: 10.5px / 1.4 var(--font-mono);
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--text-muted);
   font-weight: 400;
   border-bottom: 1px solid var(--line-strong);
 }
-.audit .t {
+.audit .audit-time {
   font: 12px var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
@@ -134,7 +126,7 @@ table.audit {
 .audit .item a {
   color: var(--text);
 }
-.audit .what small {
+.audit .audit-what small {
   display: block;
   margin-top: 2px;
   font: 11px / 1.45 var(--font-mono);
@@ -145,7 +137,7 @@ table.audit {
   box-shadow: inset 2px 0 0 var(--text);
   padding-left: 10px;
 }
-.audit .what small.withheld {
+.audit .audit-what small.withheld {
   font-family: var(--font-sans);
   font-size: 12px;
   font-style: italic;
@@ -160,9 +152,6 @@ table.audit {
 }
 .audit-page .btn.small {
   align-self: flex-start;
-  min-height: 36px;
-  padding: 0 12px;
-  font-size: 13px;
 }
 
 @media (max-width: 720px) {
@@ -209,7 +198,7 @@ table.audit {
     box-shadow: none;
     padding-left: 0;
   }
-  .audit td.what {
+  .audit td.audit-what {
     grid-column: 1 / -1;
   }
 }

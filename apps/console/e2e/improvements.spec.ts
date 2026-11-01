@@ -49,7 +49,7 @@ test('Martin asks for an improvement with the “+”, giving his passkey again,
   const dialog = page.getByRole('dialog', { name: 'Request an improvement' });
   await expect(dialog.locator('.kickline')).toHaveText('An improvement');
   // The samples' open tickets, waiting for the planner.
-  await expect(dialog.locator('ul.what li').first()).toHaveText(
+  await expect(dialog.locator('ul.dialog-what li').first()).toHaveText(
     /^It waits behind every open ticket, \d+ now, oldest first\. To take it at once, choose Just one in Controls\.$/,
   );
   const request = dialog.getByRole('button', { name: 'Request (asks for your passkey)' });

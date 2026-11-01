@@ -191,7 +191,7 @@ function StepUpDialog({ asked, token, onAnswer }: { asked: Asked; token: string;
         </button>
       }
     >
-      <div className="what">{asked.what}</div>
+      <div className="dialog-what">{asked.what}</div>
       <p>
         {asked.why}, so it needs your passkey again. Once given, it stays fresh for five minutes, for this and anything
         else that asks.
@@ -235,7 +235,7 @@ export function StepUpPill() {
   const now = useNow(until);
   if (until === undefined) return null;
   return (
-    <span className="fresh" role="status">
+    <span className="pill fresh" role="status">
       <Glyph name="key" className="glyph key" />
       <span className="long">Passkey given · </span>
       {left(until, now)}

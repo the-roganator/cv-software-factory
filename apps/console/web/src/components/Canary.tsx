@@ -411,7 +411,7 @@ function Measures({
               <tr key={name} className={ruled ? 'failed' : ''}>
                 <td>
                   {label}
-                  <small className="rule">{rule}</small>
+                  <small className="measure-rule">{rule}</small>
                 </td>
                 <Fresh className="mono" fig={canary} look={look} motion={motion}>
                   <span className="base-inline">baseline {baseline.text}</span>
@@ -441,7 +441,7 @@ function Measures({
             <tr key={name} className={condemned || phase === 'inconclusive' ? 'failed' : ''}>
               <td>
                 {label}
-                <small className="rule">{rule}</small>
+                <small className="measure-rule">{rule}</small>
               </td>
               <td className="mono">
                 {canary}
@@ -788,7 +788,7 @@ export function CanaryAnswers({ r, admin }: { r: Release; admin: Admin }) {
             {martin ? (
               <button
                 type="button"
-                className={`btn${c.action === 'abort' ? ' attn-line' : ''}`}
+                className={`btn small${c.action === 'abort' ? ' attn-line' : ''}`}
                 aria-disabled={acts.busy || undefined}
                 onClick={() => acts.press(c)}
               >
@@ -826,7 +826,7 @@ interface CanaryProps {
 export function Canary({ view, t, onOpen, admin, lineStopped, ticking, motion, autoRollback }: CanaryProps) {
   if (view.state !== 'shown')
     return (
-      <section className="canary idle" aria-labelledby="canary-title">
+      <section className="panel canary idle" aria-labelledby="canary-title">
         <h2 id="canary-title">Canary</h2>
         <p>No release yet. Each deploy Martin merges goes out here as a canary, beside the version it would replace.</p>
       </section>
@@ -860,7 +860,7 @@ export function Canary({ view, t, onOpen, admin, lineStopped, ticking, motion, a
   // the table of their own a rollback or an error has otherwise.
   const trended = r.looks.length > 0 && showsMeasures(r);
   return (
-    <section className="canary" aria-labelledby="canary-title">
+    <section className="panel canary" aria-labelledby="canary-title">
       <div className="canary-head">
         <div>
           <p className="kick">
@@ -868,7 +868,7 @@ export function Canary({ view, t, onOpen, admin, lineStopped, ticking, motion, a
               <span className={`dot ${dot}`} aria-hidden="true" />
               {word}
             </span>
-            {r.dryRun && <span className="pill-sample">Dry run</span>}
+            {r.dryRun && <span className="pill pill-sample">Dry run</span>}
           </p>
           <h2 id="canary-title">{title}</h2>
           <p className="carries">

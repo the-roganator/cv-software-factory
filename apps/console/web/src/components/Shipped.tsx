@@ -60,7 +60,7 @@ function Block({
         <span className={`dot ${dot}`} aria-hidden="true" />
         {word}
       </span>
-      {r.dryRun && <span className="pill-sample">Dry run</span>}
+      {r.dryRun && <span className="pill pill-sample">Dry run</span>}
     </>
   );
   const body = (
@@ -79,7 +79,7 @@ function Block({
   );
   if (folded)
     return (
-      <details className="rel">
+      <details className="rel raised">
         <summary className="rel-head">
           {head}
           <span className="more">Show this release</span>
@@ -88,7 +88,7 @@ function Block({
       </details>
     );
   return (
-    <article className="rel">
+    <article className="rel raised">
       <div className="rel-head">{head}</div>
       {body}
     </article>

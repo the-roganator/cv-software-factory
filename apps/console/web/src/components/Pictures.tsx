@@ -206,10 +206,10 @@ function Wipe({ before, after, tags, interactive }: Extract<PictureData, { type:
   const anchor = after.boxes[0] ?? before.boxes[0];
   return (
     <div className="wipe" ref={wipe}>
-      <div className="a">
+      <div className="wipe-before">
         <Shot shot={before} eager={interactive} anchor={anchor} />
       </div>
-      <div className="b">
+      <div className="wipe-after">
         <Shot shot={after} eager={interactive} anchor={anchor} />
       </div>
       <span className="div" />
@@ -654,7 +654,7 @@ function AnswerRows({ answers }: { answers: Answers }) {
             <span className="p" aria-hidden="true">
               <i style={{ width: `${p * 100}%` }} />
             </span>
-            <span className="a">
+            <span className="jev-answer">
               {text} {p.toFixed(2)}
             </span>
           </div>
@@ -760,7 +760,7 @@ function QuarantinePicture({ judgement }: Extract<PictureData, { type: 'quaranti
           return (
             <div key={answer.key}>
               <span>{QUESTION[answer.key] ?? answer.question}</span>
-              <span className="a">
+              <span className="unused-answer">
                 {text} {q.toFixed(2)}
               </span>
             </div>
@@ -1004,7 +1004,7 @@ function AccessibilityPicture({ findings, shot, source }: Extract<PictureData, {
         <div className="findings">
           {numbered.map(({ finding, elements }) => (
             <div key={finding.rule} className="finding">
-              <div className="rule">
+              <div className="finding-rule">
                 <b>{finding.rule}</b>
                 <span className="impact">{finding.impact}</span>
               </div>

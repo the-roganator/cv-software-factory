@@ -1,19 +1,11 @@
-/* The Canary panel: the Release station opened up, full width under the line. */
+/* The Canary panel: the Release station opened up, full width under the line. A panel (controls.css), as Controls is. */
 
 .canary {
   margin-top: 44px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
 }
-.canary h2 {
-  margin: 0;
-  font: 400 28px / 1.05 var(--font-display);
-  letter-spacing: -0.2px;
+/* Its heading a touch looser than other panels' (controls.css, read after this file). */
+.panel.canary h2 {
+  line-height: 1.05;
 }
 .canary p {
   margin: 0;
@@ -452,7 +444,6 @@ p.words {
 @media (max-width: 720px) {
   .canary {
     margin-top: 32px;
-    padding: 18px;
   }
   .canary .rel-id {
     text-align: left;
@@ -468,7 +459,7 @@ p.words {
   }
   /* The rules' captions go; a measure's own words, such as why it could not measure, stay. */
   .measures .base,
-  .measures .rule,
+  .measures .measure-rule,
   .measures .tr,
   .measures .trend {
     display: none;

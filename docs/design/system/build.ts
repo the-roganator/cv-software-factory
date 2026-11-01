@@ -1,9 +1,10 @@
 /**
- * Generate tokens.css from tokens.json, and station.js from station.ts, and check colour contrast.
- * The JSON and the TypeScript are the sources.
+ * Generate tokens.css and properties.css from tokens.json, and station.js from station.ts, and check colour contrast.
+ * The JSON and the TypeScript are the sources. tokens.css has everything, for the specimen and the mockups;
+ * properties.css only the custom properties, Paper at the root and Ink by its attribute, for the console.
  *
- *     node docs/design/system/build.ts            # write tokens.css and station.js
- *     node docs/design/system/build.ts --check    # fail if either is out of date (make check, CI)
+ *     node docs/design/system/build.ts            # write tokens.css, properties.css and station.js
+ *     node docs/design/system/build.ts --check    # fail if any is out of date (make check, CI)
  *
  * Fails if a pair that carries meaning drops below its WCAG 2.2 AA threshold in either theme.
  * Plain TypeScript with no dependencies, run by Node's built-in type stripping.
@@ -14,6 +15,7 @@ import { join, relative } from 'node:path';
 
 const SRC = join(import.meta.dirname, 'tokens.json');
 const OUT = join(import.meta.dirname, 'tokens.css');
+const PROPERTIES_OUT = join(import.meta.dirname, 'properties.css');
 const STATION_SRC = join(import.meta.dirname, 'station.ts');
 const STATION_OUT = join(import.meta.dirname, 'station.js');
 
@@ -108,7 +110,8 @@ function block(selector: string, values: Record<string, string>): string {
   return `${selector} {\n${Object.entries(values).map(([k, v]) => `  --${k}: ${v};\n`).join('')}}\n`;
 }
 
-function css(tokens: Tokens): string {
+/** The custom properties: Paper's colours and the shared tokens at the root, and Ink's colours over them. */
+function properties(tokens: Tokens): string[] {
   const shared: Record<string, string> = {};
   for (const [name, v] of entries(tokens.font)) shared[`font-${name}`] = fontStack(v);
   for (const group of ['space', 'radius', 'stroke'] as const) {
@@ -121,12 +124,16 @@ function css(tokens: Tokens): string {
   shared['shadow-popover'] = `${s.offsetX} ${s.offsetY} ${s.blur} ${s.spread} ${s.color}`;
   for (const [name, v] of entries(tokens.station)) shared[`station-${name}`] = v;
 
-  const out = [
+  return [
     '/* Generated from tokens.json by build.ts. Do not edit by hand. */\n',
     block(':root', { ...colours(tokens, 'paper'), ...shared }),
     block('[data-theme="ink"], .theme-ink', colours(tokens, 'ink')),
-    block('[data-theme="paper"], .theme-paper', colours(tokens, 'paper')),
   ];
+}
+
+/** The properties, Paper again for a container inside Ink, and the type roles as classes. */
+function css(tokens: Tokens): string {
+  const out = [...properties(tokens), block('[data-theme="paper"], .theme-paper', colours(tokens, 'paper'))];
 
   // Type roles as utility classes, so markup and components can share them.
   for (const [name, v] of entries(tokens.type)) {
@@ -166,6 +173,7 @@ function stationScript(source: string): string {
 const tokens: Tokens = JSON.parse(readFileSync(SRC, 'utf-8'));
 const outputs: [string, string][] = [
   [OUT, css(tokens)],
+  [PROPERTIES_OUT, properties(tokens).join('')],
   [STATION_OUT, stationScript(readFileSync(STATION_SRC, 'utf-8'))],
 ];
 for (const [file, built] of outputs) {

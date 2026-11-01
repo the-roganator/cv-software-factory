@@ -54,7 +54,7 @@ test('a visitor reads every event, newest first, with what a visitor wrote left 
 
   await page.getByLabel('Work item').fill('1315');
   const refused = rows(page).filter({ hasText: 'The scope fence refused' }).first();
-  await expect(refused.locator('.what')).toHaveClass('what refused');
+  await expect(refused.locator('.audit-what')).toHaveClass('audit-what refused');
 });
 
 test('Martin, signed in, reads the same rows from the public stream, never his full events', async ({ page }) => {

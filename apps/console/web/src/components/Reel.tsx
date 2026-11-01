@@ -417,7 +417,7 @@ export function Reel({ view, centre, onCentre, onOpen, motion }: ReelProps) {
             {timeline.days.map(({ at, day }) => (
               <span
                 key={day}
-                className="day"
+                className="label day"
                 data-at={at}
                 style={{ left: `calc(${at * 100}% - 20px)` } as CSSProperties}
               >
@@ -471,7 +471,7 @@ export function Reel({ view, centre, onCentre, onOpen, motion }: ReelProps) {
       <p className="sr" aria-live="polite">
         {announcement}
       </p>
-      <p className="help what">
+      <p className="help reel-help">
         <b>What am I looking at?</b> Each card is one work item: what was wrong or wanted, what changed on the site, and
         what it cost. Where nothing visible changed, the card shows what did: a graph, a package, a log line or the
         refusal that stopped an attack. Open a card for every stage, screenshot and model call.

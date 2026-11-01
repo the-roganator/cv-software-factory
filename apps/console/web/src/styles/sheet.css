@@ -149,9 +149,6 @@ html[data-motion="off"] .scrim {
 .report {
   margin: 0;
   padding: 14px 18px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
   max-width: 760px;
 }
 .report.withheld {
@@ -224,6 +221,10 @@ html[data-motion="off"] .scrim {
   min-height: 40px;
   min-width: 84px;
 }
+/* Replay, waiting at the end with motion off, keeps its full strength rather than the faded disabled look (base.css). */
+.ctl .btn:disabled {
+  opacity: 1;
+}
 .clock {
   font: 400 24px / 1 var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -269,7 +270,7 @@ html[data-motion="off"] .scrim {
   width: 10px;
   height: 10px;
   margin-top: 17px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   border: 2px solid var(--line-strong);
   background: var(--bg);
 }
@@ -399,8 +400,6 @@ html[data-motion="off"] .scrim {
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
-  background: var(--raised);
-  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
 }
 details.rel:not([open]) {
@@ -459,6 +458,10 @@ details[open] .more {
 .rel .words {
   margin: 0;
 }
+/* A flag's pages at Checks (flags.css), in its release's card. */
+.rel .flag-pages {
+  margin-top: 0;
+}
 .deploy-wait {
   max-width: 600px;
 }
@@ -489,9 +492,6 @@ details[open] .more {
   grid-template-columns: 20px minmax(0, 1fr);
   gap: 10px;
   padding: 10px 14px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
   font-size: 13.5px;
 }
 .criteria .glyph {
@@ -534,8 +534,6 @@ details[open] .more {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   padding: 4px 18px;
-  background: var(--raised);
-  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   font-size: 13px;
 }
@@ -562,8 +560,6 @@ details[open] .more {
 }
 .side-card {
   padding: 18px;
-  background: var(--raised);
-  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
 }
 .side-card h3 {
@@ -577,10 +573,6 @@ table.models {
 }
 .models th {
   text-align: left;
-  font: 10px / 1.4 var(--font-mono);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--text-muted);
   font-weight: 400;
   padding: 0 0 8px;
   border-bottom: 1px solid var(--line);
@@ -815,12 +807,9 @@ table.models {
 table.scope {
   width: 100%;
   margin-top: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
   border-collapse: separate;
   border-spacing: 0;
   overflow: hidden;
-  background: var(--raised);
   font: 12px / 1.4 var(--font-mono);
 }
 table.scope th,
@@ -832,10 +821,6 @@ table.scope td {
 table.scope th {
   border-top: 0;
   background: var(--surface);
-  font: 10px / 1.4 var(--font-mono);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--text-muted);
   font-weight: 400;
 }
 .scope .num {
@@ -875,13 +860,6 @@ table.scope th {
   grid-template-columns: 54px repeat(3, minmax(0, 1fr));
   gap: 0 8px;
 }
-.rounds .colh,
-.rounds .rn {
-  font: 10px / 1.4 var(--font-mono);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
 .rounds .colh {
   padding-bottom: 6px;
 }
@@ -900,26 +878,23 @@ table.scope th {
   gap: 3px;
   min-width: 0;
   padding: 10px 11px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
   font-size: 12.5px;
 }
-.cell .t {
+.cell .cell-state {
   display: flex;
   align-items: center;
   gap: 6px;
   font-weight: 500;
 }
-.cell .t.muted {
+.cell .cell-state.muted {
   font-weight: 400;
   color: var(--text-muted);
 }
-.cell .t .glyph {
+.cell .cell-state .glyph {
   width: 14px;
   height: 14px;
 }
-.t.ok .glyph {
+.cell-state.ok .glyph {
   color: var(--ok);
 }
 .rounds .cell small {
@@ -1022,10 +997,6 @@ table.scope th {
   gap: 8px 16px;
   margin-top: 10px;
   padding: 10px 12px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--attn);
-  border-radius: var(--radius-rule) var(--radius-card) var(--radius-card) var(--radius-rule);
   font-size: 13px;
 }
 .rounds .after:has(.tone-faint) {
@@ -1068,9 +1039,6 @@ table.scope th {
   gap: 7px;
   min-width: 0;
   padding: 11px 13px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
 }
 .remark .top {
   display: flex;
@@ -1091,7 +1059,7 @@ table.scope th {
 .weight {
   padding: 2px 7px;
   border: 1px solid var(--signal);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font: 9.5px / 1.4 var(--font-mono);
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -1185,10 +1153,7 @@ table.scope th {
   margin: 0;
   padding: 14px 18px;
   max-width: 760px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-left: var(--stroke-rule) solid var(--text);
-  border-radius: var(--radius-rule) var(--radius-card) var(--radius-card) var(--radius-rule);
+  border-left-color: var(--text);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1210,9 +1175,6 @@ table.scope th {
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 8px 18px;
   padding: 14px 16px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
   font-size: 13.5px;
 }
 .spec-dl dt {

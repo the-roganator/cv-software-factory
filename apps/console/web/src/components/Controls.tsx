@@ -277,7 +277,7 @@ function Switch({
       }}
     >
       <span>
-        <span className="what">
+        <span className="switch-what">
           {label}
           {keyed && <Key />}
         </span>

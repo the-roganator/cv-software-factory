@@ -244,9 +244,9 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
                   {CATEGORY_NAME[card.category]}
                 </span>
                 <span className="kind">{kindName(card)}</span>
-                {card.reopened && <span className="pill-sample again">Reopened</span>}
+                {card.reopened && <span className="pill pill-sample again">Reopened</span>}
                 <OutcomeWord outcome={card.outcome} />
-                {card.sample && <span className="pill-sample">Sample</span>}
+                {card.sample && <span className="pill pill-sample">Sample</span>}
               </div>
               <h2 id="sheet-title" tabIndex={-1} ref={title}>
                 {card.title}
@@ -415,7 +415,7 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
               )}
             </div>
             <aside className="sheet-side">
-              <dl className="facts-dl">
+              <dl className="facts-dl raised">
                 <Fact name="Work item">#{card.number}</Fact>
                 {sheet.facts.ticket && (
                   <>
@@ -478,11 +478,11 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
                 <Fact name="Code written by humans">{plural(sheet.facts.humanLines, 'line')}</Fact>
               </dl>
               {sheet.seenBy && <SeenBy rows={sheet.seenBy} />}
-              <div className="side-card">
+              <div className="side-card raised">
                 <h3>Agents and models</h3>
                 {sheet.agents.length ? (
                   <table className="models">
-                    <thead>
+                    <thead className="label small">
                       <tr>
                         <th>Agent and model</th>
                         <th className="num">Calls</th>
@@ -557,7 +557,7 @@ export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin
                     ' Local calls are counted and capped like any other, and priced at nothing.'}
                 </Source>
               </div>
-              <div className="side-card">
+              <div className="side-card raised">
                 <h3>
                   Gates
                   {sheet.gatesAttempt && <span className="attempt"> · attempt {sheet.gatesAttempt}</span>}
@@ -629,7 +629,7 @@ const RISK_WORDS: Record<string, string> = {
  */
 function Request({ request }: { request: NonNullable<SheetData['request']> }) {
   return (
-    <figure className="martins-request">
+    <figure className="martins-request raised ruled">
       <span className="label">The request · in Martin’s words · {when(request.at)}</span>
       <blockquote>{request.words}</blockquote>
       <figcaption className="help">
@@ -666,7 +666,7 @@ function SpecSection({ sheet }: { sheet: SheetData }) {
       }
     >
       {improvement ? (
-        <dl className="spec-dl">
+        <dl className="spec-dl raised">
           <dt>What it changes</dt>
           <dd>{spec.outcome}</dd>
           <dt>Its flag</dt>
@@ -685,7 +685,7 @@ function SpecSection({ sheet }: { sheet: SheetData }) {
       )}
       <ul className={`criteria ${card.outcome === 'verified' ? 'met' : ''}`}>
         {spec.criteria.map((c) => (
-          <li key={c.given + c.when}>
+          <li className="raised" key={c.given + c.when}>
             <Glyph name={card.outcome === 'verified' ? 'check' : 'dash'} />
             <span>
               <em>GIVEN</em> {c.given} <em>WHEN</em> {c.when} <em>THEN</em> {c.expect}
@@ -701,8 +701,8 @@ function SpecSection({ sheet }: { sheet: SheetData }) {
         ))}
       </ul>
       {scope && (
-        <table className="scope">
-          <thead>
+        <table className="scope raised">
+          <thead className="label small">
             <tr>
               <th>
                 {of === undefined
@@ -762,9 +762,9 @@ function Rounds({ rounds, now, after }: { rounds: Attempt[]; now: RoundsNow; aft
   return (
     <div className="rounds">
       <span />
-      <span className="colh">Build</span>
-      <span className="colh">Gates</span>
-      <span className="colh">Review</span>
+      <span className="label small colh">Build</span>
+      <span className="label small colh">Gates</span>
+      <span className="label small colh">Review</span>
       {rounds.map((a, i) => (
         <RoundRow
           key={`${a.pass}-${a.attempt}`}
@@ -779,7 +779,7 @@ function Rounds({ rounds, now, after }: { rounds: Attempt[]; now: RoundsNow; aft
       ))}
       {now.next && <NextRound attempt={now.next.attempt} building={now.next.building} />}
       {after && (
-        <div className="after">
+        <div className="after raised ruled">
           <OutcomeWord outcome={after.outcome} />
           <span>{after.text}</span>
         </div>
@@ -795,7 +795,7 @@ function Rounds({ rounds, now, after }: { rounds: Attempt[]; now: RoundsNow; aft
 function Running() {
   return (
     <>
-      <span className="t">Running</span>
+      <span className="cell-state">Running</span>
       <span className="busy" aria-hidden="true" />
     </>
   );
@@ -805,17 +805,17 @@ function Running() {
 function NextRound({ attempt, building }: { attempt: number; building: boolean }) {
   return (
     <>
-      <div className="rn">
+      <div className="label small rn">
         Round<b>{attempt}</b>
       </div>
-      <div className={`cell next${building ? ' running' : ''}`}>
-        {building ? <Running /> : <span className="t muted">Waiting</span>}
+      <div className={`cell raised next${building ? ' running' : ''}`}>
+        {building ? <Running /> : <span className="cell-state muted">Waiting</span>}
       </div>
-      <div className="cell next">
-        <span className="t muted">Waiting</span>
+      <div className="cell raised next">
+        <span className="cell-state muted">Waiting</span>
       </div>
-      <div className="cell next">
-        <span className="t muted">Waiting</span>
+      <div className="cell raised next">
+        <span className="cell-state muted">Waiting</span>
       </div>
     </>
   );
@@ -835,11 +835,11 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
   const gatesRunning = gates?.state === 'running';
   return (
     <>
-      <div className="rn">
+      <div className="label small rn">
         Round<b>{a.attempt}</b>
       </div>
-      <div className="cell">
-        <span className="t">Attempt {a.attempt}</span>
+      <div className="cell raised">
+        <span className="cell-state">Attempt {a.attempt}</span>
         <small>
           {a.how}
           {a.commit ? ` · ${a.commit.slice(0, 7)}` : ''}
@@ -849,13 +849,13 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
           {plural(a.files, 'file')}
         </small>
       </div>
-      <div className={`cell${gatesRunning ? ' running' : ''}`}>
+      <div className={`cell raised${gatesRunning ? ' running' : ''}`}>
         {gates ? (
           <>
             {gatesRunning ? (
               <Running />
             ) : (
-              <span className={`t ${gates.state === 'passed' ? 'ok' : ''}`}>
+              <span className={`cell-state ${gates.state === 'passed' ? 'ok' : ''}`}>
                 <Glyph name={gates.state === 'passed' ? 'check' : 'cross'} />
                 {`${gates.passed} of ${gates.total}`}
               </span>
@@ -870,13 +870,13 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
             )}
           </>
         ) : (
-          <span className="t muted">Waiting</span>
+          <span className="cell-state muted">Waiting</span>
         )}
       </div>
-      <div className={`cell${reviewing ? ' running' : ''}`}>
+      <div className={`cell raised${reviewing ? ' running' : ''}`}>
         {review ? (
           <>
-            <span className={`t ${review.verdict === 'approved' ? 'ok' : ''}`}>
+            <span className={`cell-state ${review.verdict === 'approved' ? 'ok' : ''}`}>
               {review.verdict === 'approved' && <Glyph name="check" />}
               {VERDICT[review.verdict]}
             </span>
@@ -892,7 +892,7 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
         ) : reviewing ? (
           <Running />
         ) : (
-          <span className="t muted">{gates?.state === 'failed' ? 'Not reviewed' : 'Waiting'}</span>
+          <span className="cell-state muted">{gates?.state === 'failed' ? 'Not reviewed' : 'Waiting'}</span>
         )}
       </div>
       {a.returned && (
@@ -911,7 +911,7 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
                 </svg>
               </>
             )}
-            <span className="ret-pill">
+            <span className="pill ret-pill">
               <Glyph name="back" />
               {capital(a.returned.from)} → Build · {a.returned.detail}
             </span>
@@ -930,18 +930,18 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
 function Report({ report }: { report: NonNullable<SheetData['report']> }) {
   const withheld =
     report.by === 'planner' ? (
-      <p className="report withheld">
+      <p className="report raised withheld">
         {report.times > 1
           ? `The planner’s findings on ${report.page}, ${report.times} of them, each noticed while it planned another ticket. Their words are untrusted, as a visitor’s are, so they are shown only to Martin; what triage made of them is below.`
           : `The planner’s finding on ${report.page}, noticed while it planned another ticket. Its words are untrusted, as a visitor’s are, so they are shown only to Martin; what triage made of them is below.`}
       </p>
     ) : report.quarantined ? (
-      <p className="report withheld">
+      <p className="report raised withheld">
         A visitor’s report from {report.page}. It gave orders to the system, so it is quarantined. Its text is kept for{' '}
         {REPORT_KEPT_DAYS} days, and shown only to Martin and to the visitor who sent it.
       </p>
     ) : (
-      <p className="report withheld">
+      <p className="report raised withheld">
         A visitor’s report from {report.page}. Its text is kept for {REPORT_KEPT_DAYS} days, shown only to the visitor
         who sent it and to Martin; what triage made of it is below.
       </p>
@@ -996,7 +996,7 @@ function ReviewThread({ reviews, start, open }: { reviews: ThreadReview[]; start
       {r.findings.length > 0 && (
         <ul className="remarks">
           {r.findings.map((f) => (
-            <li className="remark" key={`${f.path}:${f.line}:${f.comment}`}>
+            <li className="remark raised" key={`${f.path}:${f.line}:${f.comment}`}>
               <div className="top">
                 <span
                   className={`weight ${f.blocking ? 'blocking' : 'suggestion'} ${open && f.blocking && i === reviews.length - 1 ? 'open' : ''}`}
@@ -1038,7 +1038,7 @@ function ReviewThread({ reviews, start, open }: { reviews: ThreadReview[]; start
 /** Who saw a ticket's problem: every sense, in the order they first saw it, and those that haven't yet. */
 function SeenBy({ rows }: { rows: Sighting[] }) {
   return (
-    <div className="side-card seen-by">
+    <div className="side-card raised seen-by">
       <h3>Seen by</h3>
       <ul>
         {rows.map((row) => (
@@ -1249,7 +1249,7 @@ function Replay({ chapters, motion }: { chapters: Chapter[]; motion: boolean }) 
           ))}
         </ol>
         {events.length > 5 && (
-          <button type="button" className="btn small all-events" onClick={() => setAll(!all)}>
+          <button type="button" className="btn all-events" onClick={() => setAll(!all)}>
             {all ? 'Fewer events' : `All events (${events.length})`}
           </button>
         )}

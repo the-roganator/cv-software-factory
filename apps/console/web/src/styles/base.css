@@ -1,5 +1,6 @@
-/* The page: base styles, controls, the header, the intro and the footer. Colours, type and spacing are the design
-   system's tokens (tokens.css); nothing here names a colour of its own. */
+/* The page: base styles, the recipes the components share, controls, the header, the intro and the footer. Colours,
+   radii and type are the design system's tokens (properties.css), and spacing is in pixels on its 4px base; nothing
+   here names a colour of its own. */
 
 * {
   box-sizing: border-box;
@@ -47,14 +48,71 @@ a:hover {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+/* A label: a section's name, a column's head, a kicker. Small, for a column's head in a dense table. */
 .label {
   font: 10.5px / 1.4 var(--font-mono);
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--text-muted);
 }
+.label.small {
+  font-size: 10px;
+  letter-spacing: 1px;
+}
 .muted {
   color: var(--text-muted);
+}
+
+/*
+ * The recipes: each written once, here, and named in the markup of whatever draws one. A component's own rule says
+ * only how its use differs.
+ */
+/* A raised card on the page or in a panel; one that needs you takes the attn rule on its left edge. */
+.raised {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+.ruled {
+  border-left: var(--stroke-rule) solid var(--attn);
+  border-radius: var(--radius-rule) var(--radius-card) var(--radius-card) var(--radius-rule);
+}
+/* A field: a text box, a drop-down or a text area, ringed while it has the focus. */
+.field {
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background-color: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  padding: 9px 11px;
+  width: 100%;
+}
+.field:focus {
+  outline: var(--stroke-rule) solid var(--signal);
+  outline-offset: 1px;
+}
+input.field:disabled,
+select.field:disabled {
+  color: var(--text-muted);
+  background-color: transparent;
+  cursor: default;
+}
+textarea.field {
+  background-color: var(--bg);
+  resize: vertical;
+}
+/* An outlined pill: a state or a fact beside a name, never a control. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-2);
+  white-space: nowrap;
 }
 .wrap {
   --g: var(--space-gutter);
@@ -191,6 +249,18 @@ a:hover {
 .btn.primary:hover {
   background: var(--signal-hover);
 }
+/* A button in a row of others, a card or a form: shorter, in the controls' size. */
+.btn.small {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+/* A button that can't be pressed now, or that waits on a write in flight: faded, and no pointer. */
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
 .icon-btn {
   width: 40px;
   height: 40px;
@@ -264,7 +334,7 @@ header.top .wrap {
   color: var(--text);
   text-decoration: none;
 }
-.brand .rule {
+.brand-rule {
   width: 1px;
   height: 30px;
   background: var(--line-strong);
@@ -377,17 +447,14 @@ header.top .wrap {
 .notice .label {
   flex: none;
 }
+/* Dashed, in capitals: what is shown is not the factory's own work. */
 .pill-sample {
-  display: inline-flex;
-  align-items: center;
   padding: 2px 8px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius-pill);
-  font: 10px / 1.4 var(--font-mono);
+  border-style: dashed;
+  font-size: 10px;
   letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--text-muted);
-  white-space: nowrap;
 }
 /* An outlined pill, solid where Sample's is dashed: a ticket open again. */
 .pill-sample.again {
@@ -467,7 +534,7 @@ footer.foot a.foot-key:hover {
   header.top .wrap {
     min-height: 60px;
   }
-  .brand .rule,
+  .brand-rule,
   .brand small,
   .top-right .status {
     display: none;
@@ -517,6 +584,9 @@ footer.foot a.foot-key:hover {
   }
   .phone-status {
     display: inline-flex;
+  }
+  input.field {
+    font-size: 16px;
   }
 }
 

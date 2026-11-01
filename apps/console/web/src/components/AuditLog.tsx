@@ -154,7 +154,7 @@ export function AuditLog({ events, t, profile, settled }: Props) {
           {settled || events.length ? view.caption : 'Reading the events…'}
           {view.shown > 0 && ' Martin’s own actions are ruled on the left.'}
         </caption>
-        <thead>
+        <thead className="label">
           <tr>
             <th scope="col">Time</th>
             <th scope="col">Actor</th>
@@ -165,7 +165,7 @@ export function AuditLog({ events, t, profile, settled }: Props) {
         </thead>
         {view.days.map((day) => (
           <tbody key={day.rows[0]?.seq}>
-            <tr className="day">
+            <tr className="day label">
               <th scope="rowgroup" colSpan={5}>
                 {day.label}
               </th>
@@ -196,7 +196,7 @@ function Row({ row }: { row: AuditRow }) {
   const kind = KIND[row.kind];
   return (
     <tr className={row.martin ? 'martin' : undefined}>
-      <td className="t">
+      <td className="audit-time">
         <time dateTime={new Date(row.at).toISOString()}>{clockSeconds(row.at)}</time>
       </td>
       <td className="who">{ACTOR_NAME[row.actor]}</td>
@@ -217,7 +217,7 @@ function Row({ row }: { row: AuditRow }) {
           </>
         )}
       </td>
-      <td className={row.refused ? 'what refused' : 'what'}>
+      <td className={row.refused ? 'audit-what refused' : 'audit-what'}>
         {row.what}
         {row.detail && <small>{row.detail}</small>}
         {row.withheld && <small className="withheld">{row.withheld}</small>}

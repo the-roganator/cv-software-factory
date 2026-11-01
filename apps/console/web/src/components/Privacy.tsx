@@ -70,7 +70,7 @@ export function Privacy() {
           Like any web server, it records the requests it answers, to keep the site running and find what goes wrong.
         </p>
         <table className="privacy-kept">
-          <thead>
+          <thead className="label">
             <tr>
               <th scope="col">Record</th>
               <th scope="col">What it holds</th>

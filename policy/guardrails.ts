@@ -84,9 +84,9 @@ export const PROOFS = {
   },
   'ci:stopped-line': {
     for:
-      "The gateway's and the line's tests of a stop: an agent's calls refused from the first after the gateway hears " +
-      'the line stopped, or within a few seconds when it hears nothing, and the step in hand ended, and none started, ' +
-      'until it starts again.',
+      "The gateway's, the line's and the runners' tests of a stop: an agent's calls refused from the first after the " +
+      'gateway hears the line stopped, or within a few seconds when it hears nothing, and the step in hand ended, its ' +
+      'jobs and its token with it, and none started, until it starts again.',
     mechanism: 'ci-tests',
   },
   'stop-the-line': {
@@ -111,7 +111,10 @@ export interface CiProof {
   workflow: string;
   /** The job that runs its tests: every part of it, when it runs in parts. */
   job: string;
-  /** The test files that prove it, each of which the job runs (guardrails.test.ts checks that it does). */
+  /**
+   * The test files that prove it, each of which the job runs and CODEOWNERS gives Martin (guardrails.test.ts checks
+   * both), so that a test is weakened only with his approval.
+   */
   tests: readonly string[];
 }
 
@@ -132,27 +135,43 @@ export const CI_PROOFS = {
   'ci:one-gateway': {
     workflow: CHECK,
     job: 'tests',
-    tests: ['apps/factory/test/credentials.test.ts', 'apps/factory/test/runner-fences.test.ts'],
+    tests: [
+      'apps/factory/test/credentials.test.ts',
+      'apps/factory/test/runner-fences.test.ts',
+      'apps/factory/test/proofs/one-gateway.runners.test.ts',
+    ],
   },
   'ci:spend-caps': {
     workflow: CHECK,
     job: 'tests',
-    tests: ['apps/factory/test/gateway/gateway.test.ts', 'apps/factory/test/gateway/agents.test.ts'],
+    tests: ['apps/factory/test/proofs/spend-caps.gateway.test.ts'],
   },
   'ci:public-hostile': {
     workflow: CHECK,
     job: 'tests',
-    tests: ['scripts/workflows.test.ts', 'apps/factory/test/github/issues.test.ts', 'scripts/review-gate.test.ts'],
+    tests: [
+      'scripts/workflows.test.ts',
+      'apps/factory/test/proofs/public-hostile.issues.test.ts',
+      'scripts/review-gate.test.ts',
+    ],
   },
   'ci:scope-fence': {
     workflow: CHECK,
     job: 'tests',
-    tests: ['apps/factory/test/runners.test.ts', 'apps/factory/test/line/coder.test.ts'],
+    tests: [
+      'apps/factory/test/proofs/scope-fence.runners.test.ts',
+      'apps/factory/test/proofs/scope-fence.coder.test.ts',
+      'apps/factory/test/proofs/scope-fence.line.test.ts',
+    ],
   },
   'ci:stopped-line': {
     workflow: CHECK,
     job: 'tests',
-    tests: ['apps/factory/test/gateway/agents.test.ts', 'apps/factory/test/line/line.test.ts'],
+    tests: [
+      'apps/factory/test/proofs/stopped-line.gateway.test.ts',
+      'apps/factory/test/proofs/stopped-line.line.test.ts',
+      'apps/factory/test/proofs/stopped-line.runners.test.ts',
+    ],
   },
 } as const satisfies Record<CiProofId, CiProof>;
 

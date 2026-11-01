@@ -3,12 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trace } from '@opentelemetry/api';
-import { type InboxSignal, type NewEvent, PATH_CHARS, type PayloadOf, VERSIONS } from '@software-factory/events';
-import { DiskArtifacts, EventWriter, flagsTaken, lineStopped, nextWorkItem } from '@software-factory/store';
+import { type InboxSignal, type NewEvent, PATH_CHARS, type PayloadOf } from '@software-factory/events';
+import { DiskArtifacts, EventWriter, flagsTaken, nextWorkItem } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
-import type { Handback } from '../../../runner/src/step.ts';
+import { describe, expect, it, vi } from 'vitest';
 import { DryRunActions } from '../../src/github/actions.ts';
 import { DryRunReads } from '../../src/github/dry-run-reads.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
@@ -17,176 +15,36 @@ import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { commentOf } from '../../src/line/review.ts';
 import { lineSettings } from '../../src/line/settings.ts';
-import { APP_REPOSITORY, Line, type LineOptions, signalId } from '../../src/line/worker.ts';
+import { APP_REPOSITORY, type LineOptions, signalId } from '../../src/line/worker.ts';
 import { SettingsReader } from '../../src/settings.ts';
 import { quiet } from '../github/fake.ts';
 import { appendSettings, settingsPayload } from '../settings-events.ts';
 import { recordSpans } from '../tracing.ts';
-import { type Agent, FakeGitHub, FakeProbes, FakeSteps, MAIN } from './fakes.ts';
+import { type Agent, type FakeGitHub, FakeProbes, MAIN } from './fakes.ts';
+import {
+  AGENTS,
+  CODED,
+  clock,
+  database,
+  event,
+  events,
+  failures,
+  handback,
+  line,
+  martin,
+  PATCH,
+  payloads,
+  SPEC,
+  stage,
+  summaries,
+  ticket,
+  types,
+  withLineStore,
+} from './harness.ts';
 
+// The tests of a stop and of the scope fence, which prove guardrails, are in proofs/, Martin's (CODEOWNERS).
+withLineStore();
 const { spans } = recordSpans();
-let database: Database;
-let events: EventWriter;
-/** Martin's commands, from the admin service's role: only his roles may append them. */
-let martin: EventWriter;
-beforeEach(async () => {
-  database = await freshDatabase('line');
-  events = new EventWriter(database.as.line, {
-    kind: 'real',
-    artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
-  });
-  martin = new EventWriter(database.admin, {
-    kind: 'real',
-    artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
-  });
-});
-afterEach(() => database?.end());
-
-const event = <K extends NewEvent['type']>(
-  workItem: string | null,
-  type: K,
-  payload: PayloadOf<K>,
-  actor: NewEvent['actor'] = 'factory',
-): NewEvent =>
-  ({
-    id: crypto.randomUUID(),
-    ts: new Date().toISOString(),
-    work_item: workItem,
-    type,
-    version: VERSIONS[type],
-    actor,
-    summary: `${type} for the test`,
-    payload,
-    artifacts: [],
-  }) as NewEvent;
-
-/** A ticket as triage opens one, with its severity. */
-async function ticket(severity: PayloadOf<'ticket.opened'>['severity'] = 'broken', route = '/search'): Promise<string> {
-  const workItem = await nextWorkItem(database.as.triage);
-  await events.append([
-    event(workItem, 'work-item.opened', { kind: 'defect-fix', title: 'Server errors', sample: false }, 'triage'),
-    event(
-      workItem,
-      'ticket.opened',
-      {
-        title: `Server errors on ${route}`,
-        category: 'errors',
-        severity,
-        fingerprint: { route, class: 'server-error' },
-        traces: [],
-      },
-      'triage',
-    ),
-  ]);
-  return workItem;
-}
-
-const handback = (result: unknown, patch = ''): Handback => ({
-  ending: 'finished',
-  patch,
-  note: 'Escaped the query before it reaches the database.',
-  turns: 6,
-  session: 'session-1',
-  result,
-});
-
-const PATCH = `diff --git a/src/search.ts b/src/search.ts
---- a/src/search.ts
-+++ b/src/search.ts
-@@ -1 +1 @@
--old
-+new
-diff --git a/test/search.test.ts b/test/search.test.ts
-new file mode 100644
---- /dev/null
-+++ b/test/search.test.ts
-@@ -0,0 +1,2 @@
-+it('finds a quote', () => {});
-+expect(1).toBe(1);
-`;
-
-const SPEC = {
-  outcome: 'Search answers a query with a quote in it.',
-  criteria: [
-    {
-      given: 'a query with a quote',
-      when: 'it is searched',
-      expect: 'the page lists matches',
-      from: 'the ticket',
-      quote: 'Server errors',
-    },
-  ],
-  scope: ['src/search.ts', 'test/'],
-  risks: [],
-  rollout: 'Ships as it is.',
-};
-
-const CODED = {
-  title: 'fix(search): escape the query',
-  note: 'Search passed the query to the database as it was. A test searches for a quote; the query is escaped now.',
-};
-
-const AGENTS: Record<string, Agent> = {
-  planner: () => handback({ verdict: 'spec', spec: SPEC }),
-  coder: () => handback(CODED, PATCH),
-  reviewer: () => handback({ verdict: 'approved', note: 'It does what the spec says.', findings: [] }),
-  describer: () =>
-    handback({
-      title: 'fix(search): escape the query',
-      body: 'Search escaped nothing, so a quote broke the query.',
-      summary: { title: 'Search with a quote', description: 'Fixed.', story: 'The factory fixed search.' },
-    }),
-};
-
-/** The time as the line sees it, which a test can move on. */
-let now = Date.parse('2026-10-06T09:00:00Z');
-
-function line(
-  agents: Partial<Record<string, Agent>> = AGENTS,
-  store: Pick<EventWriter, 'append'> = events,
-  options: Partial<LineOptions> = {},
-) {
-  const steps = new FakeSteps(database.as.gateway, agents);
-  const github = new FakeGitHub();
-  const it = new Line({
-    sql: database.as.line,
-    events: store,
-    steps,
-    github,
-    log: quiet,
-    gatesEveryMs: 0,
-    me: 'test',
-    now: () => new Date(now),
-    ...options,
-  });
-  /** A pass of the line, and whatever steps it started, to their end. */
-  const pass = async () => {
-    await it.tick();
-    await it.idle();
-  };
-  return { line: it, steps, github, pass };
-}
-
-async function types(workItem: string): Promise<string[]> {
-  const rows = await database.as.line<{ type: string }[]>`
-    select type from events where work_item = ${workItem} order by seq`;
-  return rows.map((r) => r.type);
-}
-
-async function payloads<K extends NewEvent['type']>(workItem: string, type: K): Promise<PayloadOf<K>[]> {
-  const rows = await database.as.line<{ payload: PayloadOf<K> }[]>`
-    select payload from events where work_item = ${workItem} and type = ${type} order by seq`;
-  return rows.map((r) => r.payload);
-}
-
-async function summaries(workItem: string, type: NewEvent['type']): Promise<string[]> {
-  const rows = await database.as.line<{ summary: string }[]>`
-    select summary from events where work_item = ${workItem} and type = ${type} order by seq`;
-  return rows.map((r) => r.summary);
-}
-
-const stage = async (workItem: string) =>
-  (await database.as.line<{ stage: string }[]>`select stage from line where work_item = ${workItem}`)[0]?.stage;
 
 describe('the line', () => {
   it('runs each step in a span named for its work item, agent and job, with what the step writes in GitHub inside it', async () => {
@@ -695,7 +553,7 @@ describe('the line', () => {
     // GitHub is read once a minute: each pass below is a minute on, but the one where the line returns the work.
     const { pass, github } = line(AGENTS, events, { gatesEveryMs: 60_000 });
     const later = async () => {
-      now += 60_000;
+      clock.now += 60_000;
       await pass();
     };
     await later(); // the issue, and the planner
@@ -742,40 +600,6 @@ describe('the line', () => {
     expect(github.pulls.get(12)?.draft).toBe(true);
     // It resumes the session its pushed round ended with: the one that named the file held work never pushed.
     expect(steps.requests.at(-1)).toMatchObject({ agent: 'coder', round: 2, resume: 'session-1' });
-  });
-
-  it('ignores an answer or a stop that says it is Martin’s from any other role, and logs each once', async () => {
-    const workItem = await ticket();
-    const warned: string[] = [];
-    const log = { ...quiet, warn: (_details: object, message: string) => void warned.push(message) } as never;
-    const { pass, steps, github } = line(AGENTS, events, { log });
-    await pass(); // the issue, and the planner
-    await pass(); // the coder
-    github.pass();
-    await pass(); // the gates pass, and the reviewer
-    await pass(); // the describer
-    await pass(); // the hold for Martin
-    const before = await types(workItem);
-    // Were row security on the events ever to fail, the line's own role could append them: it still heeds neither.
-    await database.owner`alter table events disable row level security`;
-    try {
-      await events.append([
-        event(workItem, 'hold.answered', { decision: 'answered', answer: 'Name the test' }, 'martin'),
-        event(null, 'line.stopped', { reason: 'Martin stopped the line' }, 'martin'),
-      ]);
-    } finally {
-      await database.owner`alter table events enable row level security`;
-    }
-    await pass();
-    await pass();
-    expect((await types(workItem)).slice(before.length)).toEqual(['hold.answered']);
-    expect(await stage(workItem)).toBe('held');
-    expect(steps.requests.at(-1)).toMatchObject({ agent: 'describer' });
-    expect(await lineStopped(database.as.line)).toBe(false);
-    expect(warned.filter((message) => message.startsWith('ignored'))).toEqual([
-      "ignored hold.answered: factory_line appended it, and it is not one of Martin's roles",
-      "ignored line.stopped: factory_line appended it, and it is not one of Martin's roles",
-    ]);
   });
 
   it('sends a failing change back to the coder, which resumes its session on a branch that moved on', async () => {
@@ -1162,7 +986,7 @@ describe('the line', () => {
     const broken = await ticket('broken', '/search');
     const it = line(AGENTS, events, { take: 0 });
     // The next fifty is more than policy allows: not in force, so the line's own default is, and it takes nothing.
-    await controls({ take: { kind: 'next-few', count: 50, since: new Date(now).toISOString() } });
+    await controls({ take: { kind: 'next-few', count: 50, since: new Date(clock.now).toISOString() } });
     await it.pass();
     expect(it.steps.requests).toEqual([]);
     expect(await stage(broken)).toBeUndefined();
@@ -1578,53 +1402,6 @@ describe('the line', () => {
     expect(await payloads(workItem, 'hold.started')).toEqual([]);
   });
 
-  it('refuses a patch outside the spec’s scope back to the coder once, then holds, and none reaches GitHub', async () => {
-    const workItem = await ticket();
-    const outside = PATCH.replaceAll('src/search.ts', 'src/server.ts');
-    const { pass, steps, github } = line({ ...AGENTS, coder: () => handback(CODED, outside) });
-    await pass(); // the planner
-    await pass(); // the coder strays, and the fence refuses its patch
-    expect((await payloads(workItem, 'action.refused'))[0]).toEqual({
-      mechanism: 'scope-fence',
-      guardrails: [11],
-      action: 'Push the coder’s round 1 to a new pull request',
-      output: ['scope: src/search.ts, test/', 'refused src/server.ts +1 −1', 'allowed test/search.test.ts +2 −0'].join(
-        '\n',
-      ),
-      files: [
-        { path: 'src/server.ts', added: 1, removed: 1, allowed: false },
-        { path: 'test/search.test.ts', added: 2, removed: 0, allowed: true },
-      ],
-    });
-    expect(await stage(workItem)).toBe('build');
-    await pass(); // back to the coder, which resumes its session from a fresh checkout and strays again
-    const back = steps.requests.at(-1);
-    expect(back).toMatchObject({ agent: 'coder', round: 1, attempt: 3, resume: 'session-1', commit: MAIN });
-    expect(back?.prompt).toContain('The line refused your patch');
-    expect(back?.prompt).toContain('    refused src/server.ts +1 −1');
-    await pass(); // the second refusal holds the work item
-    expect(await stage(workItem)).toBe('held');
-    expect((await payloads(workItem, 'hold.started'))[0]).toEqual({
-      stage: 'build',
-      kind: 'held',
-      cause: 'scope',
-      reason: 'The scope fence refused the coder’s patch twice: it changed files outside the spec’s scope',
-    });
-    expect(github.acts.map((a) => a.action)).toEqual(['openIssue']);
-    expect(steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder', 'coder']);
-    // His answer sends it back to the planner, which is told what the fence printed and what he said.
-    await martin.append(
-      event(workItem, 'hold.answered', { decision: 'answered', answer: 'The server is fine to change' }, 'martin'),
-    );
-    await pass();
-    const replan = steps.requests.at(-1);
-    expect(replan?.agent).toBe('planner');
-    expect(replan?.prompt).toContain(
-      'The scope fence printed: scope: src/search.ts, test/; refused src/server.ts +1 −1',
-    );
-    expect(replan?.prompt).toContain('He said: The server is fine to change');
-  });
-
   it('holds as scope at once, not gates, a coder that needs a file outside its scope, and pushes nothing of the round', async () => {
     const workItem = await ticket();
     const needs = [{ path: 'src/server.ts', reason: 'It assumes a search asks nothing; every search now does.' }];
@@ -1759,18 +1536,6 @@ describe('the line', () => {
     expect(github.acts.filter((a) => a.action === 'applyPatch')).toHaveLength(1);
   });
 
-  it('refuses a patch that changes a path the app’s CODEOWNERS gives Martin at the commit, though the scope takes it in', async () => {
-    const workItem = await ticket();
-    const { pass, github } = line({ ...AGENTS, coder: () => handback(CODED, PATCH) });
-    await pass(); // the planner, before the test file was Martin's
-    github.protectedPaths = [...github.protectedPaths, 'test/search.test.ts'];
-    await pass();
-    expect((await payloads(workItem, 'action.refused'))[0]?.output).toBe(
-      ['scope: src/search.ts, test/', 'allowed src/search.ts +1 −1', 'refused test/search.test.ts +2 −0'].join('\n'),
-    );
-    expect(github.acts.map((a) => a.action)).toEqual(['openIssue']);
-  });
-
   it('pushes the patch a refused coder brings back inside the scope, as a draft pull request', async () => {
     const workItem = await ticket();
     let tries = 0;
@@ -1841,7 +1606,7 @@ describe('the line', () => {
     const made = new DryRunActions(
       new DiskArtifacts(recorded),
       quiet,
-      () => new Date(now),
+      () => new Date(clock.now),
       async (_repo, path, ref) => (ref === MAIN ? (files[path] ?? null) : null),
     );
     const mergeAfterMs = 20 * 60_000;
@@ -1849,7 +1614,7 @@ describe('the line', () => {
       actions: made,
       reads: github,
       dryRun: made,
-      dryRunReads: new DryRunReads(made, github, { checksAfterMs: 0, mergeAfterMs }, () => new Date(now)),
+      dryRunReads: new DryRunReads(made, github, { checksAfterMs: 0, mergeAfterMs }, () => new Date(clock.now)),
       repositories: [APP_REPOSITORY],
       health: () => ({}),
       log: quiet,
@@ -1896,7 +1661,7 @@ describe('the line', () => {
       expect(describer?.commits?.map((c) => c.patch)).toEqual([PATCH, expect.stringContaining('+newer')]);
       expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ kind: 'approval', cause: 'merge' });
 
-      now += mergeAfterMs;
+      clock.now += mergeAfterMs;
       await pass(); // the dry run merges it, and the work item waits at Release for the dry run's release, not held
       await pass();
       expect(await stage(workItem)).toBe('release');
@@ -1942,31 +1707,6 @@ describe('the line', () => {
     await pass();
     expect(steps.finished).toEqual([workItem]);
     expect(await stage(workItem)).toBe('ended');
-  });
-
-  it('stops the step in hand when the line stops, records nothing of it, and runs it afresh when it starts', async () => {
-    const workItem = await ticket();
-    let stopped = false;
-    const {
-      line: it,
-      steps,
-      pass,
-    } = line({ ...AGENTS, planner: () => (stopped ? (AGENTS.planner?.({} as never) ?? 'fails') : 'works on') });
-    await it.tick();
-    while (steps.working === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-    await martin.append(event(null, 'line.stopped', { reason: 'Martin stopped the line' }, 'martin'));
-    await it.tick();
-    await it.idle();
-    expect(steps.working).toBe(0);
-    expect(await types(workItem)).toEqual(['work-item.opened', 'ticket.opened']);
-    await pass(); // stopped: nothing starts
-    expect(steps.requests).toHaveLength(1);
-
-    stopped = true;
-    await martin.append(event(null, 'line.started', { autonomy: 'supervised' }, 'martin'));
-    await pass();
-    expect(steps.requests.map((r) => r.attempt)).toEqual([1, 2]);
-    expect(await types(workItem)).toContain('spec.written');
   });
 
   it('counts nothing against a step a provider’s cap ended, starts none behind it, and runs it again once it clears', async () => {
@@ -2109,7 +1849,7 @@ describe('the line', () => {
     expect(await types(workItem)).not.toContain('pull-request.pushed');
     await pass(); // too soon to try again
     expect(github.acts.filter((a) => a.action === 'applyPatch')).toHaveLength(0);
-    now += 60_000;
+    clock.now += 60_000;
     await pass(); // the effects again, and not the coder
     expect(steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder']);
     expect(github.acts.map((a) => a.action)).toEqual([
@@ -2512,12 +2252,12 @@ describe('the line', () => {
       const dir = mkdtempSync(join(tmpdir(), 'dry-run-'));
       // Its pull request, #12, is the App's, as the GitHub worker's guard would read it from GitHub.
       const own = new IssueGuard({ openedBy: async () => ({ by: APP_USER, pullRequest: true }) });
-      const made = new DryRunActions(new DiskArtifacts(dir), quiet, () => new Date(now), undefined, own);
+      const made = new DryRunActions(new DiskArtifacts(dir), quiet, () => new Date(clock.now), undefined, own);
       const server = createWorkerServer({
         actions: made,
         reads,
         dryRun: made,
-        dryRunReads: new DryRunReads(made, reads, { checksAfterMs: 0, mergeAfterMs: 0 }, () => new Date(now)),
+        dryRunReads: new DryRunReads(made, reads, { checksAfterMs: 0, mergeAfterMs: 0 }, () => new Date(clock.now)),
         repositories: [APP_REPOSITORY],
         health: () => ({}),
         log: quiet,
@@ -2554,7 +2294,7 @@ describe('the line', () => {
     await pass(); // the gates pass, the reviewer hands back, its check run is made and its review fails
     expect(await failures(workItem)).toEqual({ failures: 0, failure: null });
     expect(await types(workItem)).not.toContain('review.submitted');
-    now += 60_000;
+    clock.now += 60_000;
     await pass(); // the review alone, from the kept handback
     const reviewed = (action: string) => github.acts.filter((a) => a.action === action);
     expect(reviewed('createCheckRun')).toHaveLength(1);
@@ -2581,7 +2321,7 @@ describe('the line', () => {
     await pass(); // the pull request is opened, and recording the push fails
     expect(github.acts.map((a) => a.action)).toEqual(['openIssue', 'setBranch', 'applyPatch', 'openPullRequest']);
     expect(await types(workItem)).not.toContain('pull-request.pushed');
-    now += 60_000;
+    clock.now += 60_000;
     await pass();
     expect(github.acts.map((a) => a.action)).toEqual(['openIssue', 'setBranch', 'applyPatch', 'openPullRequest']);
     expect(steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder']);
@@ -2596,7 +2336,7 @@ describe('the line', () => {
     // Opened, and then the line crashed before it heard back: the kept handback has the push, and not this.
     github.crashAfter = 'openPullRequest';
     await pass();
-    now += 60_000;
+    clock.now += 60_000;
     await pass();
     expect(github.acts.filter((a) => a.action === 'openPullRequest')).toHaveLength(1);
     expect((await payloads(workItem, 'pull-request.pushed')).map((p) => p.number)).toEqual([12]);
@@ -2644,32 +2384,12 @@ describe('the line', () => {
     github.failing.set('applyPatch', 100);
     for (let i = 0; i < 8; i++) {
       await pass();
-      now += 15 * 60_000;
+      clock.now += 15 * 60_000;
     }
     expect(steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder']);
     const [hold] = await payloads(workItem, 'hold.started');
     expect(hold).toMatchObject({ stage: 'build', cause: 'failures' });
     expect(hold?.reason).toMatch(/^The coder's work could not be put in GitHub 6 times: GitHub failed: applyPatch/);
-  });
-
-  it('starts no step that was still preparing when the line stopped, and counts nothing against it', async () => {
-    const workItem = await ticket();
-    const { line: it, pass, steps, github } = line();
-    await pass(); // the issue, and the planner
-    // The coder's step reads main's head as it prepares, and GitHub is slow.
-    const slow = Promise.withResolvers<void>();
-    github.holdReads = slow.promise;
-    await it.tick();
-    await martin.append(event(null, 'line.stopped', { reason: 'Martin stopped the line' }, 'martin'));
-    await it.tick();
-    github.holdReads = undefined;
-    slow.resolve();
-    await it.idle();
-    expect(steps.requests.map((r) => r.agent)).toEqual(['planner']);
-    expect(await failures(workItem)).toEqual({ failures: 0, failure: null });
-    await martin.append(event(null, 'line.started', { autonomy: 'supervised' }, 'martin'));
-    await pass();
-    expect(steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder']);
   });
 });
 
@@ -2841,7 +2561,7 @@ describe('the deploy pull request', () => {
     expect(described(github)).toEqual([]);
     await pass();
     expect(described(github)).toEqual([]);
-    now += 60_000;
+    clock.now += 60_000;
     await pass();
     expect(described(github)).toHaveLength(1);
   });
@@ -3041,9 +2761,3 @@ describe('the deploy pull request that carries a held work item', () => {
     expect(await changes(workItem)).toEqual([{ pullRequest: DEPLOY, head: 'd', state: 'checking' }]);
   });
 });
-
-async function failures(workItem: string) {
-  const [row] = await database.as.line<{ failures: number; failure: string | null }[]>`
-    select failures, failure from line where work_item = ${workItem}`;
-  return row;
-}

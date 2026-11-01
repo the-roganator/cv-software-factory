@@ -18,6 +18,7 @@ import {
 } from '../../../policy/guardrails.ts';
 import { RECORDS } from '../../../scripts/policy-hash.ts';
 import vitest from '../../../vitest.config.ts';
+import { inScope, ownedPaths } from '../src/github/paths.ts';
 import { jobNames } from '../src/guardrails/ci.ts';
 import { type Context, ORDER, PRODUCTION_WRITES, TAKERS } from '../src/guardrails/proofs.ts';
 
@@ -197,5 +198,22 @@ describe('what takes each proof', () => {
         expect(runs(test), `${id}: ${test} is run by make check-tests`).toBe(true);
       }
     }
+  });
+
+  it('reads each proof from CI from tests CODEOWNERS gives Martin, so none is weakened without his approval', () => {
+    // As GitHub reads CODEOWNERS: the last entry that matches a path names its owners. Each entry is read as the scope
+    // fence reads it, as GitHub does for an entry from the root, which every entry there is.
+    const entries = read('.github/CODEOWNERS')
+      .split('\n')
+      .map((line) => line.replace(/#.*/, '').trim().split(/\s+/))
+      .filter(([pattern]) => pattern);
+    const ownersOf = (file: string) =>
+      entries.findLast(([pattern]) => inScope(file, ownedPaths(pattern ?? '')))?.slice(1) ?? [];
+    for (const [id, proof] of Object.entries(CI_PROOFS)) {
+      for (const test of proof.tests) expect(ownersOf(test), `${id}: ${test}`).toEqual(['@mrogan']);
+    }
+    // And this test, which holds them to it; but not the files they were drawn from, which change with the line.
+    expect(ownersOf('apps/factory/test/guardrails.test.ts')).toEqual(['@mrogan']);
+    expect(ownersOf('apps/factory/test/line/line.test.ts')).toEqual([]);
   });
 });

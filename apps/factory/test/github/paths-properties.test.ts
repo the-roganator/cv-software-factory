@@ -1,8 +1,8 @@
 /**
  * Properties of the paths a patch may change (`github/paths.ts`), over scopes, paths and CODEOWNERS files fast-check
- * makes up. `paths.test.ts`, `runners.test.ts`, `reads.test.ts` and `patches.test.ts` hold the examples; these hold
- * what must be true whatever a scope says, since a scope is the planner's words, and whatever CODEOWNERS says, since it
- * is whatever the app's repository holds at a commit.
+ * makes up. `paths.test.ts`, `proofs/scope-fence.runners.test.ts`, `reads.test.ts` and `patches.test.ts` hold the
+ * examples; these hold what must be true whatever a scope says, since a scope is the planner's words, and whatever
+ * CODEOWNERS says, since it is whatever the app's repository holds at a commit.
  *
  * Two readings here are written again from their rules, not from the code: what a scope entry means, segment by
  * segment, and which paths GitHub gives a CODEOWNERS entry's owner. Each CODEOWNERS entry is made from a path it must

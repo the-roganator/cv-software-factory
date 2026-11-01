@@ -26,6 +26,16 @@
 /scripts/commit-msg.ts       @mrogan
 /scripts/check-kind.sh       @mrogan
 
+# The tests that prove a guardrail from CI (CI_PROOFS in policy/guardrails.ts), and the test that holds each to it
+/apps/factory/test/proofs/               @mrogan
+/apps/factory/test/credentials.test.ts   @mrogan
+/apps/factory/test/runner-fences.test.ts @mrogan
+/apps/factory/test/guardrails.test.ts    @mrogan
+/scripts/github-settings.test.ts         @mrogan
+/scripts/merge-decisions.test.ts         @mrogan
+/scripts/review-gate.test.ts             @mrogan
+/scripts/workflows.test.ts               @mrogan
+
 # Intent, specification and reference material
 /docs/INTENT.md              @mrogan
 /docs/REVIEWERS.md           @mrogan

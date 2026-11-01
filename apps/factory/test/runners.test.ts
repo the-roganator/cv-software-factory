@@ -1,89 +1,22 @@
 import { mkdtempSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
 import { DiskArtifacts, issueJobToken, jobForToken } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
-import pino, { type Logger } from 'pino';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type Database, freshDatabase } from '../../../packages/store/test/database.ts';
-import { type Handback, RESULT_BYTES as RUNNER_RESULT_BYTES, type Step } from '../../runner/src/step.ts';
+import pino from 'pino';
+import { describe, expect, it } from 'vitest';
+import { RESULT_BYTES as RUNNER_RESULT_BYTES } from '../../runner/src/step.ts';
 import { agentJob, prepareJob } from '../src/runners/jobs.ts';
-import type { Kube } from '../src/runners/kube.ts';
 import { StepLogs } from '../src/runners/logs.ts';
-import { fence, ownedPaths } from '../src/runners/scope.ts';
 import { lineServers } from '../src/runners/serve.ts';
-import { RESULT_BYTES, Runners } from '../src/runners/steps.ts';
+import { RESULT_BYTES, type Runners } from '../src/runners/steps.ts';
 import { quiet } from './github/fake.ts';
+import { DONE, database, handBack, line, STEP, withRunnersStore } from './runners-harness.ts';
 
-const PATCH = (path: string) => `diff --git a/${path} b/${path}
---- a/${path}
-+++ b/${path}
-@@ -1 +1 @@
--old
-+new
-`;
-
-describe('the scope fence', () => {
-  it('lets through only the files, folders and patterns the scope names', () => {
-    const scope = ['src/money.ts', 'test/', 'src/pages/*.ts'];
-    expect(
-      fence(PATCH('src/money.ts') + PATCH('test/money.test.ts') + PATCH('src/pages/home.ts'), scope),
-    ).toMatchObject({ ok: true });
-    expect(fence(PATCH('src/pages/deep/home.ts') + PATCH('src/app.ts'), scope)).toMatchObject({
-      ok: false,
-      outside: ['src/pages/deep/home.ts', 'src/app.ts'],
-    });
-  });
-
-  it('never lets through the workflows, the deployment or a code-owned path, whatever the scope says', () => {
-    const owned = ownedPaths('# The rules\n/Dockerfile  @mrogan\n/deploy/ @mrogan\npackage.json @mrogan\n');
-    expect(owned).toEqual(['Dockerfile', 'Dockerfile/', 'deploy/', '**/package.json', '**/package.json/']);
-    const result = fence(
-      PATCH('.github/workflows/check.yml') + PATCH('Dockerfile') + PATCH('apps/package.json'),
-      ['**'],
-      owned,
-    );
-    expect(result.outside).toEqual(['.github/workflows/check.yml', 'Dockerfile', 'apps/package.json']);
-  });
-
-  it('prints the scope, then each file it allowed or refused, with its lines', () => {
-    const patch = PATCH('src/money.ts') + PATCH('src/pages/cards.ts');
-    const scope = ['src/money.ts', 'test/money.test.ts'];
-    expect(fence(patch, scope)).toEqual({
-      ok: false,
-      paths: ['src/money.ts', 'src/pages/cards.ts'],
-      outside: ['src/pages/cards.ts'],
-      files: [
-        { path: 'src/money.ts', added: 1, removed: 1, allowed: true },
-        { path: 'src/pages/cards.ts', added: 1, removed: 1, allowed: false },
-      ],
-      output: [
-        'scope: src/money.ts, test/money.test.ts',
-        'allowed src/money.ts +1 −1',
-        'refused src/pages/cards.ts +1 −1',
-      ].join('\n'),
-    });
-  });
-
-  it('cuts its output at a whole line, and says how many more there were', () => {
-    const patch = Array.from({ length: 300 }, (_, i) => PATCH(`src/pages/page-${i}.ts`)).join('');
-    const { output } = fence(patch, ['src/money.ts']);
-    expect(output.length).toBeLessThanOrEqual(4000);
-    const lines = output.split('\n');
-    expect(lines.slice(1, -1).every((line) => /^refused src\/pages\/page-\d+\.ts \+1 −1$/.test(line))).toBe(true);
-    expect(lines.at(-1)).toBe(`… and ${300 - (lines.length - 2)} more`);
-  });
-});
-
-const STEP: Step = {
-  agent: 'coder',
-  repository: 'https://github.com/the-roganator/cv-worlds-worst-website.git',
-  commit: 'a'.repeat(40),
-  prompt: 'Fix it.',
-  maxTurns: 10,
-};
+// The tests of the scope fence, the agent pod's token and a stop, which prove guardrails, are in proofs/, Martin's
+// (CODEOWNERS).
+withRunnersStore();
 
 describe('a runner’s jobs', () => {
   const names = { job: 'coder-1001-1-1', workItem: '1001' };
@@ -105,30 +38,6 @@ describe('a runner’s jobs', () => {
     expect(job.metadata.labels['factory.mrogan.dev/runner']).toBe('prepare');
   });
 
-  it('give only the agent pod its job token, the gateway and the handback', () => {
-    const settings = {
-      image: 'runner',
-      deadlineSeconds: 1200,
-      gatewayUrl: 'http://gateway',
-      handbackUrl: 'http://line/v1/handback',
-      token: 'sfj_x',
-      hosts: [{ ip: '10.43.0.9', hostnames: ['gateway'] }],
-    };
-    const agentEnv = Object.fromEntries(
-      agentJob(names, STEP, settings).spec.template.spec.containers[0]?.env.map((e) => [e.name, e.value]) ?? [],
-    );
-    const prepareEnv = Object.fromEntries(
-      prepareJob(names, STEP, settings).spec.template.spec.containers[0]?.env.map((e) => [e.name, e.value]) ?? [],
-    );
-    expect(agentEnv).toMatchObject({
-      ANTHROPIC_BASE_URL: 'http://gateway',
-      ANTHROPIC_API_KEY: 'sfj_x',
-      HANDBACK_URL: 'http://line/v1/handback',
-    });
-    expect(prepareEnv).not.toHaveProperty('ANTHROPIC_API_KEY');
-    expect(JSON.parse(agentEnv.RUNNER_STEP ?? '{}')).toEqual(STEP);
-  });
-
   it('give the agent pod the addresses it needs and no DNS, which would be a way out', () => {
     const hosts = [{ ip: '10.43.0.9', hostnames: ['gateway'] }];
     const settings = { image: 'runner', deadlineSeconds: 1200, gatewayUrl: '', handbackUrl: '', token: '', hosts };
@@ -140,141 +49,6 @@ describe('a runner’s jobs', () => {
     expect(prepareJob(names, STEP, settings).spec.template.spec).not.toHaveProperty('dnsPolicy');
   });
 });
-
-/** What each pod prints, by its part, or `refused` for a log the API will not give, as for a pod that never started. */
-type PodLogs = Partial<Record<'prepare' | 'agent', string>>;
-
-/**
- * The Kubernetes API, as far as the line uses it: Jobs that end as each test says, each with a pod that prints what
- * the test says, which goes with its Job, and a record of every call.
- */
-function fakeKube(
-  agent: (env: Record<string, string>) => void | Promise<void>,
-  prepare: 'succeeded' | 'failed' = 'succeeded',
-  logs: PodLogs = {},
-  /** Whether a failed prepare pod failed at its own deadline. */
-  outOfTime = false,
-) {
-  const calls: string[] = [];
-  const jobs = new Map<string, { status: Record<string, unknown> }>();
-  const pods = new Map<
-    string,
-    { job: string; labels: Record<string, string>; log: string | undefined; reason: string | undefined }
-  >();
-  const kube: Kube = {
-    async get<T>(path: string) {
-      calls.push(`GET ${path}`);
-      const selector = /\/pods\?labelSelector=(.+)$/.exec(path)?.[1];
-      if (selector) {
-        const [key, value] = decodeURIComponent(selector).split('=');
-        const items = [...pods].filter(([, pod]) => pod.labels[key ?? ''] === value);
-        return {
-          items: items.map(([name, pod]) => ({
-            metadata: { name, labels: pod.labels },
-            status: { reason: pod.reason },
-          })),
-        } as T;
-      }
-      return jobs.get(path.split('/').at(-1) ?? '') as T | undefined;
-    },
-    async text(path: string) {
-      calls.push(`GET ${path}`);
-      const name = /\/pods\/([^/]+)\/log\?/.exec(path)?.[1] ?? '';
-      const pod = pods.get(name);
-      if (!pod) return undefined;
-      if (pod.log === 'refused') throw new Error('container "agent" in pod is waiting to start');
-      return pod.log ?? '';
-    },
-    async create(path: string, body: unknown) {
-      const manifest = body as {
-        kind: string;
-        metadata: { name: string };
-        spec: {
-          template?: {
-            metadata: { labels: Record<string, string> };
-            spec: { containers: { env: { name: string; value: string }[] }[] };
-          };
-        };
-      };
-      calls.push(`POST ${path} ${manifest.kind} ${manifest.metadata.name}`);
-      if (manifest.kind !== 'Job') return;
-      const name = manifest.metadata.name;
-      const labels = manifest.spec.template?.metadata.labels ?? {};
-      const part = labels['factory.mrogan.dev/runner'] as 'prepare' | 'agent';
-      const reason = outOfTime && part === 'prepare' ? 'DeadlineExceeded' : undefined;
-      pods.set(`${name}-x7k2p`, { job: name, labels: { ...labels, 'job-name': name }, log: logs[part], reason });
-      if (name.endsWith('-prepare')) {
-        jobs.set(name, {
-          status: prepare === 'succeeded' ? { succeeded: 1 } : { conditions: [{ type: 'Failed', status: 'True' }] },
-        });
-        return;
-      }
-      jobs.set(name, { status: {} });
-      const env = Object.fromEntries(
-        manifest.spec.template?.spec.containers[0]?.env.map((e) => [e.name, e.value]) ?? [],
-      );
-      // The pod runs, and ends a moment after.
-      setTimeout(async () => {
-        await agent(env);
-        jobs.set(name, { status: { succeeded: 1 } });
-      }, 10);
-    },
-    async remove(path: string) {
-      calls.push(`DELETE ${path}`);
-      const name = path.split('/').at(-1) ?? '';
-      jobs.delete(name);
-      // A Job's pods go with it.
-      for (const [pod, { job }] of pods) if (job === name) pods.delete(pod);
-    },
-  };
-  return { kube, calls };
-}
-
-let database: Database;
-beforeAll(async () => {
-  database = await freshDatabase('runners');
-});
-afterAll(() => database?.end());
-
-async function line(
-  agent: Parameters<typeof fakeKube>[0],
-  prepare?: 'succeeded' | 'failed',
-  log: Logger = quiet,
-  { podLogs, logs, hang, outOfTime }: { podLogs?: PodLogs; logs?: StepLogs; hang?: boolean; outOfTime?: boolean } = {},
-) {
-  const { kube, calls } = fakeKube(agent, prepare, podLogs, outOfTime);
-  // An API that never gives a pod's log.
-  if (hang) kube.text = () => new Promise(() => {});
-  let handbackUrl = '';
-  const runners = new Runners({
-    sql: database.as.line,
-    kube,
-    image: 'runner',
-    gatewayUrl: 'http://gateway',
-    handbackUrl: 'http://line/v1/handback',
-    log,
-    ...(logs ? { logs } : {}),
-    // A step waits only as long as its logs take to keep, so the wait is short only where they are never given.
-    logWaitMs: hang ? 50 : 2_000,
-    pollMs: 10,
-    graceMs: 10,
-    lookup: async () => '10.43.0.9',
-  });
-  const server: Server = createServer(runners.handback());
-  handbackUrl = `${(await listenLocal(server)).url}/v1/handback`;
-  return { runners, calls, handbackUrl, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
-}
-
-const handBack = (url: string, token: string, body: unknown) =>
-  fetch(url, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
-
-const DONE: Handback = {
-  ending: 'finished',
-  patch: PATCH('src/money.ts'),
-  note: 'Fixed the rounding.',
-  turns: 7,
-  session: 'abc',
-};
 
 describe('running a step', () => {
   it('prepares, runs the agent, takes its handback once, ends its token and cleans up', async () => {
@@ -391,23 +165,6 @@ describe('a step’s attempts and results', () => {
     const answer = await handBack(handbackUrl, token, { ...DONE, result: { text: '€'.repeat(30_000) } });
     await close();
     expect(answer.status).toBe(400);
-  });
-
-  it('stops a step in hand when the line stops: its jobs go, and its token ends', async () => {
-    let token = '';
-    const { runners, calls, close } = await line((env) => {
-      token = env.ANTHROPIC_API_KEY ?? '';
-      // An agent still working, that would never hand back.
-      return new Promise<void>(() => {});
-    });
-    const running = runners.run({ ...STEP, workItem: '1007', round: 1, deadlineSeconds: 60 });
-    while (!token) await new Promise((resolve) => setTimeout(resolve, 5));
-    await runners.cancel();
-    const outcome = await running;
-    await close();
-    expect(outcome).toEqual({ kind: 'stopped', job: 'coder-1007-1-1' });
-    expect(calls).toContain('DELETE /apis/batch/v1/namespaces/runners/jobs/coder-1007-1-1-agent');
-    expect(await jobForToken(database.as.line, token)).toBeUndefined();
   });
 
   it('stops a step when its signal aborts, and starts none whose signal aborted before it began', async () => {
@@ -638,12 +395,5 @@ describe('the handback', () => {
     });
     expect(huge.status).toBe(413);
     await close();
-  });
-});
-
-describe('the scope fence, against a path that climbs out', () => {
-  it('refuses it before it can match a folder', () => {
-    const climbing = PATCH('src/../.github/workflows/x.yml');
-    expect(() => fence(climbing, ['src/'])).toThrow('not a plain path');
   });
 });

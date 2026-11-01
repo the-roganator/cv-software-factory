@@ -113,7 +113,7 @@ export interface CiProof {
   job: string;
   /**
    * The test files that prove it, each of which the job runs and CODEOWNERS gives Martin (guardrails.test.ts checks
-   * both), so that a test is weakened only with his approval.
+   * both), so a change to one is put to him as a change to the rules.
    */
   tests: readonly string[];
 }

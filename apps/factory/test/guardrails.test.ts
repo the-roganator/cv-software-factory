@@ -200,20 +200,21 @@ describe('what takes each proof', () => {
     }
   });
 
-  it('reads each proof from CI from tests CODEOWNERS gives Martin, so none is weakened without his approval', () => {
+  it('reads each proof from CI from tests CODEOWNERS gives Martin, so a change to one is put to him', () => {
     // As GitHub reads CODEOWNERS: the last entry that matches a path names its owners. Each entry is read as the scope
-    // fence reads it, as GitHub does for an entry from the root, which every entry there is.
+    // fence reads it, which is GitHub's reading of an entry from the root with no `?`, as every entry there is.
     const entries = read('.github/CODEOWNERS')
       .split('\n')
       .map((line) => line.replace(/#.*/, '').trim().split(/\s+/))
       .filter(([pattern]) => pattern);
+    for (const [pattern] of entries) expect(pattern, pattern).toMatch(/^\/[^?]*$/);
     const ownersOf = (file: string) =>
       entries.findLast(([pattern]) => inScope(file, ownedPaths(pattern ?? '')))?.slice(1) ?? [];
     for (const [id, proof] of Object.entries(CI_PROOFS)) {
       for (const test of proof.tests) expect(ownersOf(test), `${id}: ${test}`).toEqual(['@mrogan']);
     }
-    // And this test, which holds them to it; but not the files they were drawn from, which change with the line.
+    // And this test, which holds them to it; but not a file no entry names.
     expect(ownersOf('apps/factory/test/guardrails.test.ts')).toEqual(['@mrogan']);
-    expect(ownersOf('apps/factory/test/line/line.test.ts')).toEqual([]);
+    expect(ownersOf('apps/factory/test/no-entry-names-this.test.ts')).toEqual([]);
   });
 });

@@ -82,10 +82,16 @@ export const PROOFS = {
     for: "The scope fence's tests: a patch outside its spec's scope is refused.",
     mechanism: 'ci-tests',
   },
+  'ci:stopped-line': {
+    for:
+      "The gateway's and the line's tests of a stop: every agent's call refused while the line is stopped, and the " +
+      'step in hand ended, and none started, until it starts again.',
+    mechanism: 'ci-tests',
+  },
   'stop-the-line': {
     for:
-      "The drill: the line stopped, an agent's call refused by the gateway, no step running and no work item taken; " +
-      'then the line started again. And the last real canary a stop aborted, and how long ago.',
+      'The drill: the line stopped, no step running and no work item taken; then the line started again. And the ' +
+      'last real canary a stop aborted, and how long ago.',
     mechanism: 'stop-the-line',
   },
   rollback: {
@@ -141,6 +147,11 @@ export const CI_PROOFS = {
     workflow: CHECK,
     job: 'tests',
     tests: ['apps/factory/test/runners.test.ts', 'apps/factory/test/line/coder.test.ts'],
+  },
+  'ci:stopped-line': {
+    workflow: CHECK,
+    job: 'tests',
+    tests: ['apps/factory/test/gateway/agents.test.ts', 'apps/factory/test/line/line.test.ts'],
   },
 } as const satisfies Record<CiProofId, CiProof>;
 
@@ -238,7 +249,7 @@ export const GUARDRAILS = [
     rule: 'automatic rollback; stop the line always works.',
     mechanism:
       'The canary rolls itself back; Stop the line ends every step, takes nothing new and aborts a canary in flight.',
-    proofs: ['stop-the-line', 'rollback'],
+    proofs: ['ci:stopped-line', 'stop-the-line', 'rollback'],
   },
   {
     n: 10,

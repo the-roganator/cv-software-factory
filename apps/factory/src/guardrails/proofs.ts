@@ -244,6 +244,7 @@ export const TAKERS = {
   'ci:spend-caps': fromCi('ci:spend-caps'),
   'ci:public-hostile': fromCi('ci:public-hostile'),
   'ci:scope-fence': fromCi('ci:scope-fence'),
+  'ci:stopped-line': fromCi('ci:stopped-line'),
   'stop-the-line': async (context) => {
     const taken: DrillTaken = await stopTheLine({
       sql: context.sql,
@@ -277,6 +278,7 @@ export const ORDER: readonly ProofId[] = [
   'ci:spend-caps',
   'ci:public-hostile',
   'ci:scope-fence',
+  'ci:stopped-line',
   'app-permissions',
   'bypass',
   'workflow-refusal',

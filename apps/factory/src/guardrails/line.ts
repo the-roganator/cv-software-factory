@@ -5,14 +5,14 @@
  *   analysis's verdict verbatim, who rolled it back and how long ago. None, and it does not hold: the drill that makes
  *   one is the rollback switch's (task 25).
  * - `stop-the-line`, in two parts. The drill, against the line as it is, after Martin says yes: `make stop-the-line`;
- *   then the line's stop is recorded by one of his roles, no pod is left in `runners`, the gateway refused an agent's
- *   call because the line had stopped, and the line took no work item while it was stopped; then
- *   `make start-the-line`, whatever happened. And the last real canary a stop aborted, by the line's role, and how
- *   long ago: none, and it does not hold.
+ *   then the line's stop is recorded by one of his roles, no pod is left in `runners`, and the line took no work item
+ *   while it was stopped; then `make start-the-line`, whatever happened. And the last real canary a stop aborted, by
+ *   the line's role, and how long ago: none, and it does not hold.
  *
- * Stopping loses the step in hand, which runs again from its last event when the line starts (`line/worker.ts`).
- * The gateway refuses a call only from an agent whose step is running, so the drill can show its refusal only when an
- * agent is running as the line stops: Martin is told how many are before he says yes.
+ * Stopping loses the step in hand, which runs again from its last event when the line starts (`line/worker.ts`):
+ * Martin is told how many agents are running before he says yes. The gateway's refusal of an agent's call while the
+ * line is stopped is not looked for here: the stop ends the pods that would call it, often before they call again
+ * within the gateway's few seconds' view of the line, so the drill would race it. `ci:stopped-line` proves it instead.
  */
 import { randomUUID } from 'node:crypto';
 import { upcast } from '@software-factory/events';
@@ -102,9 +102,8 @@ export interface Drill {
   say(line: string): void;
 }
 
-/** How long the drill waits for the runners' pods to go, and for the gateway's refusal. */
+/** How long the drill waits for the runners' pods to go. */
 export const PODS_GONE_MS = 180_000;
-export const REFUSED_MS = 60_000;
 /** How long the line stays stopped at least: three of its passes, so that one that took anything would have. */
 export const STOPPED_MS = 45_000;
 const POLL_MS = 3_000;
@@ -116,11 +115,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
   const before = await drill.runnerPods();
   const agents = before.filter((p) => p.part === 'agent');
   drill.say(
-    `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) are running in runners now${
-      agents.length
-        ? ''
-        : ': with no agent running, nothing calls the gateway to be refused, and the proof will not hold'
-    }.`,
+    `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) are running in runners now.`,
   );
   if (!(await drill.ask('Stop the line now, and start it again after the checks?'))) {
     return { declined: 'Martin did not say yes: the drill was not taken, and nothing is recorded for it.' };
@@ -172,37 +167,17 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     const at = stop?.at ?? from;
     const since = (to: string) => Date.parse(to) - Date.parse(at);
 
-    // Listed again once stopped, so a pod started after the prompt is seen, and an agent then running is waited for.
+    // Listed again once stopped, so a pod started after the prompt is seen and waited for.
     const atStop = await drill.runnerPods();
-    const seen = new Map([...before, ...atStop].map((p) => [p.name, p]));
-    const agentsSeen = [...seen.values()].filter((p) => p.part === 'agent');
-    // The runners' pods go, and the gateway refuses an agent's call, side by side.
+    const seen = new Set([...before, ...atStop].map((p) => p.name));
     const started = drill.now().getTime();
     let left = atStop;
-    let refusal: { output: string; appended_at: Date } | undefined;
-    while (drill.now().getTime() - started < PODS_GONE_MS) {
-      if (left.length) left = await drill.runnerPods();
-      if (!refusal && agentsSeen.length && drill.now().getTime() - started < REFUSED_MS) {
-        [refusal] = await sql<{ output: string; appended_at: Date }[]>`
-          select payload->>'output' as output, appended_at from events
-          where type = 'action.refused' and appended_by = 'factory_gateway' and payload->>'mechanism' = 'gateway'
-            and payload->'guardrails' @> '[9]'::jsonb and appended_at >= ${at}::timestamptz
-          order by seq limit 1`;
-      }
-      const waitingForRefusal = !refusal && agentsSeen.length > 0 && drill.now().getTime() - started < REFUSED_MS;
-      if (!left.length && !waitingForRefusal) break;
+    while (left.length && drill.now().getTime() - started < PODS_GONE_MS) {
       await drill.sleep(POLL_MS);
+      left = await drill.runnerPods();
     }
     if (left.length) fail(`pods still in runners: ${left.map((p) => p.name).join(', ')}`);
     else lines.push(`✓ No pod is left in runners (${seen.size} were running at the prompt or the stop).`);
-    if (refusal) {
-      lines.push(`✓ The gateway refused an agent's call at ${refusal.appended_at.toISOString()}: ${refusal.output}`);
-    } else if (agentsSeen.length)
-      fail(`the gateway recorded no refusal of an agent's call within ${REFUSED_MS / 1000}s`);
-    else
-      fail(
-        'no agent was running at the stop, so none called the gateway to be refused: take the drill again while one runs',
-      );
 
     const waited = since(await storeNow());
     if (waited < STOPPED_MS) await drill.sleep(STOPPED_MS - waited);

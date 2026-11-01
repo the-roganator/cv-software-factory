@@ -233,9 +233,8 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 judgements-token: ## Give triage and the gateway the token judgements take, made once
 	@$(call namespace,factory)
 	@held="$$($(KUBECTL) -n factory get secret judgements-token -o jsonpath='{.data.token}' --ignore-not-found)" || exit 1; \
-	held="$$(printf %s "$$held" | base64 -d)" || exit 1; \
-	case "$$held" in *[!0-9a-f]*) held=;; esac; \
-	if [ "$${#held}" -lt 32 ]; then \
+	bytes="$$(printf %s "$$held" | base64 -d | wc -c)" && others="$$(printf %s "$$held" | base64 -d | tr -d 0-9a-f | wc -c)" || exit 1; \
+	if [ "$$bytes" -lt 32 ] || [ "$$others" -ne 0 ]; then \
 		token="$$(openssl rand -hex 32)" && printf %s "$$token" | \
 			$(KUBECTL) -n factory create secret generic judgements-token --from-file=token=/dev/stdin --dry-run=client -o yaml | \
 			$(KUBECTL) apply -f - >/dev/null && \

@@ -1,5 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
@@ -240,6 +241,23 @@ describe('judgements, which take triage’s token', () => {
     if (!sql) throw new Error('no database');
     expect(await sql`select 1 from model_calls`).toHaveLength(0);
     expect(await sql`select 1 from events`).toHaveLength(0);
+    await stop();
+  });
+
+  it('close the connection once they answer 401, so a caller cannot hold it by sending the body slowly', async () => {
+    await start('record');
+    const { port } = new URL(url);
+    const socket = connect(Number(port), '127.0.0.1');
+    let answer = '';
+    socket.on('data', (chunk: Buffer) => {
+      answer += chunk.toString();
+    });
+    const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+    // A body announced as large, of which only a little is ever sent.
+    socket.write('POST /v1/judgements HTTP/1.1\r\nhost: gateway\r\ncontent-length: 100000\r\n\r\n{"state":');
+    await closed;
+    expect(answer).toMatch(/^HTTP\/1\.1 401 /);
+    expect(answer.toLowerCase()).toContain('connection: close');
     await stop();
   });
 

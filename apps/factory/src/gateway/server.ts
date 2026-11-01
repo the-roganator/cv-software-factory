@@ -128,7 +128,8 @@ export function createGatewayServer({
         res,
         401,
         { error: 'unauthorized', message: 'Judgements take triage’s token, and this request did not carry it.' },
-        { 'www-authenticate': 'Bearer' },
+        // Closed once answered: the body is never read, so a caller cannot hold the connection open by sending it slowly.
+        { 'www-authenticate': 'Bearer', connection: 'close' },
       );
     }
     let input: unknown;

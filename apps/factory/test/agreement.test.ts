@@ -42,6 +42,8 @@ describe('judging a route from its three counts', () => {
     ['traces that are late are not the metrics’ fault', { metrics: 40, logs: 40 }, undefined],
     ['without traces, a log that lacks requests the metrics counted', { metrics: 40, logs: 0 }, 'missing-log'],
     ['more log records than requests counted is not a missing log', { metrics: 10, logs: 40, traces: 10 }, undefined],
+    ['metrics that had a gap are not judged', { metrics: 4021, logs: 4, traces: 4, gap: true }, undefined],
+    ['nor is a log missing beside them', { metrics: 4021, logs: 0, traces: 4021, gap: true }, undefined],
   ] as const)('%s', (_what, counts, expected) => {
     expect(judge(counts)).toBe(expected);
   });
@@ -75,6 +77,13 @@ describe('two windows as one', () => {
     expect(combine([first], [second]).map((e) => judge(e))).toEqual([undefined]);
   });
 
+  it('keeps a gap in either window', () => {
+    const gapped = { ...entry('/a', 900, 1, 1), gap: true };
+    expect(combine([gapped], [entry('/a', 1, 1, 1)])[0]?.gap).toBe(true);
+    expect(combine([entry('/a', 1, 1, 1)], [gapped])[0]?.gap).toBe(true);
+    expect(combine([entry('/a', 1, 1, 1)], [entry('/a', 1, 1, 1)])[0]?.gap).toBeUndefined();
+  });
+
   it('does not know the traces of two windows unless it knew both', () => {
     const [both] = combine([entry('/a', 9, 9, 9)], [entry('/a', 1, 1)]);
     expect(both?.traces).toBeUndefined();
@@ -85,7 +94,14 @@ describe('counting the metrics', () => {
   it('takes each series’ counter now less its counter then, before summing them', () => {
     const expr = requestsBetween('job="app"', 300);
     expect(expr).toContain('offset 300s');
-    expect(expr.startsWith('sum by (http_route, service_version) (')).toBe(true);
+    expect(expr.startsWith('sum by (http_route, service_version, agreement_gap) (')).toBe(true);
+  });
+
+  it('marks the requests of a series that had a gap: one with nothing then, but something in the day before', () => {
+    const series = 'http_server_request_duration_seconds_count{job="app", http_route!=""}';
+    const gapped = `(${series} and (last_over_time(${series}[24h] offset 300s) unless ${series} offset 300s))`;
+    const expr = requestsBetween('job="app"', 300);
+    expect(expr).toContain(`unless ${gapped}) or label_replace(${gapped}, "agreement_gap", "true", "", "")`);
   });
 
   it('counts a series born in the window, or one whose counter restarted, from nothing', () => {
@@ -132,6 +148,56 @@ describe('counting the traces', () => {
     const { routes, tracesComplete } = await counted({ '/': 1200 }, false);
     expect(tracesComplete).toBe(false);
     expect(routes[0]?.traces).toBeUndefined();
+  });
+});
+
+describe('counting a route whose metrics had a gap', () => {
+  const backends = (samples: Sample[]) =>
+    ({
+      prometheus: { instant: async () => samples },
+      loki: { instant: async () => [{ labels: { path: '/privacy', route: '/privacy' }, value: 4 }] },
+      tempo: { requestsByRoute: async () => ({ routes: [{ route: '/privacy', requests: 4 }], complete: true }) },
+    }) as unknown as Parameters<typeof count>[1];
+  const metric = (value: number, gap?: true): Sample => ({
+    labels: { http_route: '/privacy', service_version: VERSION, ...(gap ? { agreement_gap: 'true' } : {}) },
+    value,
+  });
+
+  it('marks the route when any of its series had one', async () => {
+    const { routes } = await count(objectives, backends([metric(3), metric(4018, true)]), at(40), at(45));
+    expect(routes).toEqual([
+      { path: '/privacy', route: '/privacy', version: VERSION, metrics: 4021, logs: 4, traces: 4, gap: true },
+    ]);
+    expect(judge(routes[0] as RouteCounts)).toBeUndefined();
+  });
+
+  it('judges the route as ever when none had one', async () => {
+    const { routes } = await count(objectives, backends([metric(4021)]), at(40), at(45));
+    expect(routes[0]?.gap).toBeUndefined();
+    expect(judge(routes[0] as RouteCounts)).toBe('wrong-metric');
+  });
+
+  it('signals nothing for it, and says so in the watcher’s log, until a pair of windows has no gap', async () => {
+    const sent: InboxSignal[] = [];
+    const warned: unknown[] = [];
+    // The series came back in the second window, with its running total; the windows after count as ever.
+    const windows = [[metric(4)], [metric(4021, true)], [metric(4)], [metric(4021)]];
+    const watcher = new Watcher(
+      {
+        ...backends([]),
+        prometheus: { instant: async () => windows.shift() ?? [metric(4)], range: async () => undefined },
+        objectives,
+        outbox: { send: async (signal: InboxSignal) => void sent.push(signal) },
+        log: { info: () => {}, warn: (fields: unknown) => void warned.push(fields) },
+      } as unknown as Backends,
+      { errors: new Date(0), reports: new Date(0) },
+    );
+    for (const minutes of [44, 49, 54]) await watcher.checkAgreement(at(minutes));
+    expect(sent).toEqual([]);
+    expect(warned).toEqual([{ routes: 1 }, { routes: 1 }]);
+    // A pair with no gap is judged: here metrics that count too many.
+    await watcher.checkAgreement(at(59));
+    expect(sent.map((s) => [s.route, s.symptom])).toEqual([['/privacy', 'wrong-metric']]);
   });
 });
 

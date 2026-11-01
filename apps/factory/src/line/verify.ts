@@ -428,6 +428,7 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
       return finished(signal, target, 'persists', signalForSilentLog(all, end)?.evidence?.[0]);
     }
     const served = total(all);
+    if (served.gap) return { kind: 'wait', why: 'the metrics had a gap' };
     const requests = Math.round(Math.max(served.metrics, served.traces ?? 0));
     if (requests < minRequests) {
       return { kind: 'wait', why: `the new version served ${requests} requests, fewer than ${minRequests}` };
@@ -442,6 +443,8 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
 
   const paths = all.filter((entry) => onRoute(entry, signal.route, known));
   const sum = total(paths);
+  // A series that came back after a gap holds its running total, which says nothing of the window, either way.
+  if (sum.gap) return { kind: 'wait', why: 'the metrics had a gap' };
   // Any of the route's paths, as the watcher judges them, or the route as a whole.
   const busiest = [...paths].sort((a, b) => b.metrics - a.metrics);
   const worst =

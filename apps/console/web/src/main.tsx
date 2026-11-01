@@ -8,7 +8,6 @@ import './styles/canary.css';
 import './styles/bird.css';
 import './styles/reel.css';
 import './styles/pictures.css';
-import './styles/sheet.css';
 import './styles/admin.css';
 import './styles/controls.css';
 import './styles/needs.css';

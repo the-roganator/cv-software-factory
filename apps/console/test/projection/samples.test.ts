@@ -1,6 +1,7 @@
 import { STAGES } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { project, projectSheet, upTo } from '../../web/src/projection/index.ts';
+import { project, upTo } from '../../web/src/projection/index.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES, work } from './support.ts';
 
 const view = project(SAMPLES, END);

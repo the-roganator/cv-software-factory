@@ -9,8 +9,9 @@ import { describe, expect, it } from 'vitest';
 import { MOVE } from '../../../factory/src/admin/flags.ts';
 import { isHeld } from '../../web/src/held.ts';
 import { flagsView } from '../../web/src/projection/flags.ts';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES, work } from './support.ts';
 
 const START = Date.parse('2026-10-03T09:00:00Z');

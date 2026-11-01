@@ -6,7 +6,7 @@
  */
 import type { PayloadOf, PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { foldItem } from '../../web/src/projection/items.ts';
 import {
   BACKGROUND,
@@ -17,6 +17,7 @@ import {
   measuring,
   releases,
 } from '../../web/src/projection/release.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { work } from './support.ts';
 
 const started: PayloadOf<'release.started'> = {

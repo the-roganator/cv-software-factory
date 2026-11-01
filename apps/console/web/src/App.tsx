@@ -23,13 +23,13 @@ import { Reel } from './components/Reel.tsx';
 import { EmptyReel, States } from './components/States.tsx';
 import { StepUpProvider } from './components/StepUp.tsx';
 import { factoryOf } from './profile.ts';
-import { project, projectSheet, settingsView } from './projection/index.ts';
+import { project, settingsView } from './projection/index.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
 import { type Origin, origin, useEvents } from './source.ts';
 
 const params = new URLSearchParams(location.search);
 
-/** The sheet's code arrives when the first sheet opens: the first view does not need it. */
+/** The sheet's code, its stylesheet and its projection arrive when the first sheet opens: the first view needs none. */
 const Sheet = lazy(() => import('./components/Sheet.tsx').then((module) => ({ default: module.Sheet })));
 
 /** The doors' code, and the passkey ceremonies', arrive only on a door. */
@@ -172,9 +172,6 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
     if (!on) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
   };
 
-  const sheet = useMemo(() => (open ? projectSheet(view, open) : undefined), [open, view]);
-  const sheetIndex = sheet ? view.cards.findIndex((card) => card.number === sheet.card.number) : -1;
-
   if (settingsPage || auditPage || privacyPage) {
     return (
       <OriginContext.Provider value={from}>
@@ -312,12 +309,11 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
         </div>
       </main>
       <Footer signIn={signedIn.kind === 'visitor'} />
-      {sheet && (
+      {open && (
         <Suspense fallback={null}>
           <Sheet
-            sheet={sheet}
-            index={sheetIndex}
-            count={n}
+            view={view}
+            item={open}
             motion={motion}
             onStep={(index) => {
               onCentre(index);

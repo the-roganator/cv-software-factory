@@ -1,6 +1,9 @@
 /**
  * One work item in full, at time t: what happened, a chapter per step through the line with the site as it was
  * at each, the evidence, the change, the facts, the agents and models, and the gates.
+ *
+ * Only the sheet's own chunk imports this module's code (the projection's index re-exports its types alone), so the
+ * first view does not load it: the sheet projects itself when it opens.
  */
 import type {
   DefectCategory,
@@ -25,10 +28,11 @@ import {
   type ThreadReview,
 } from './fixing.ts';
 import { checkedOf, type FlagBlock, type FlagNeed, type FlagRow, fromVerify, itemFlag, STAGE_NAME } from './flags.ts';
+import { foldOf, type View } from './index.ts';
 import { type Capture, clearanceWords, endsRelease, type Hold, type ItemState, summaryOf } from './items.ts';
-import type { CanaryNeed, Need } from './needs.ts';
+import { type CanaryNeed, type Need, needsView } from './needs.ts';
 import { type AppVersions, bySense, type Card, card, type Picture, picture, pictureOfSignal } from './reel.ts';
-import { endedAt, type Release, type StoppedBy, stoppedBy } from './release.ts';
+import { endedAt, inFlight, type Release, type StoppedBy, stoppedBy } from './release.ts';
 import { reportText } from './report.ts';
 import { SENSE } from './senses.ts';
 
@@ -1121,4 +1125,29 @@ function flagBlocks(item: ItemState, row: FlagRow): FlagBlock[] {
   const last = blocks.at(-1);
   if (last?.kind === 'staged') last.current = true;
   return blocks.reverse();
+}
+
+/** One work item's sheet in a view, or nothing if it had not opened by the view's t. */
+export function projectSheet(view: View, item: string): Sheet | undefined {
+  const { t } = view;
+  const folded = foldOf(view);
+  const state = folded.items.find((i) => i.number === item);
+  if (!state) return undefined;
+  // An improvement's flag, as Controls draws it: judged against every other flag and the canary in flight.
+  const flag =
+    state.kind === 'improvement'
+      ? [...view.flags.flags, ...view.flags.closed].find((row) => row.workItem === item)
+      : undefined;
+  // A canary paused for Martin that carries it, as Needs you draws it.
+  const released = state.events.some((event) => event.type === 'release.started');
+  const flight = released ? inFlight(view.releases) : undefined;
+  const canary = flight?.items.some((i) => i.number === item) ? flight : undefined;
+  // What waits on Martin for it, drawn as Needs you draws it: its hold, its canary, and its flag waiting to be widened.
+  const waits = needsView([state], t, canary);
+  const needs = {
+    hold: waits.holds[0],
+    canary: waits.canary,
+    flag: state.kind === 'improvement' ? view.flags.needs.find((need) => need.workItem === item) : undefined,
+  };
+  return { ...sheet(state, folded.versions, view.releases, t, flag), needs };
 }

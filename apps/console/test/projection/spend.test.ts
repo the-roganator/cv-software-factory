@@ -6,8 +6,9 @@
  */
 import { type PayloadOf, type PublicEvent, upcast, VERSIONS } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { header } from '../../web/src/projection/line.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { work } from './support.ts';
 
 const step = (

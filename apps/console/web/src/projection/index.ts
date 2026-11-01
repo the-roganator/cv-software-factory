@@ -35,7 +35,6 @@ import {
   type Release,
   releasesAt,
 } from './release.ts';
-import { type Sheet, sheet } from './sheet.ts';
 
 export type { ControlsView } from './controls.ts';
 export type { Attempt, RoundsNow, ThreadReview } from './fixing.ts';
@@ -96,7 +95,6 @@ export type {
   Sighting,
   Verified,
 } from './sheet.ts';
-export { marksNote, scrubbed, TARGET } from './sheet.ts';
 
 export interface View {
   t: number;
@@ -260,28 +258,3 @@ export function viewAt(folded: Fold, t: number): View {
 }
 
 export const project = (events: readonly PublicEvent[], t: number): View => viewAt(foldAt(events, t), t);
-
-/** One work item's sheet in a view, or nothing if it had not opened by the view's t. */
-export function projectSheet(view: View, item: string): Sheet | undefined {
-  const { t } = view;
-  const folded = foldOf(view);
-  const state = folded.items.find((i) => i.number === item);
-  if (!state) return undefined;
-  // An improvement's flag, as Controls draws it: judged against every other flag and the canary in flight.
-  const flag =
-    state.kind === 'improvement'
-      ? [...view.flags.flags, ...view.flags.closed].find((row) => row.workItem === item)
-      : undefined;
-  // A canary paused for Martin that carries it, as Needs you draws it.
-  const released = state.events.some((event) => event.type === 'release.started');
-  const flight = released ? inFlight(view.releases) : undefined;
-  const canary = flight?.items.some((i) => i.number === item) ? flight : undefined;
-  // What waits on Martin for it, drawn as Needs you draws it: its hold, its canary, and its flag waiting to be widened.
-  const waits = needsView([state], t, canary);
-  const needs = {
-    hold: waits.holds[0],
-    canary: waits.canary,
-    flag: state.kind === 'improvement' ? view.flags.needs.find((need) => need.workItem === item) : undefined,
-  };
-  return { ...sheet(state, folded.versions, view.releases, t, flag), needs };
-}

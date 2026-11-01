@@ -9,7 +9,7 @@ import { release as policy } from '../../../../policy/release.ts';
 import { DRAWN } from '../../../factory/src/release/read.ts';
 import { FRESH_MINUTES, STEP_UP } from '../../web/src/access.ts';
 import { deployCaption } from '../../web/src/projection/fixing.ts';
-import { project, projectSheet, upTo } from '../../web/src/projection/index.ts';
+import { project, upTo } from '../../web/src/projection/index.ts';
 import { endsRelease, foldItems, stopsRelease } from '../../web/src/projection/items.ts';
 import { type Card, timeline } from '../../web/src/projection/reel.ts';
 import {
@@ -33,6 +33,7 @@ import {
   versionsAt,
   written,
 } from '../../web/src/projection/release.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES, work } from './support.ts';
 
 const at = (iso: string) => Date.parse(iso);

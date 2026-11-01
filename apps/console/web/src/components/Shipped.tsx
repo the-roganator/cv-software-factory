@@ -5,8 +5,9 @@
  */
 import { clock, clockSeconds, duration, isCommit, percent, shortVersion, shortWhen } from '../format.ts';
 import type { Release, Sheet as SheetData, Shipped, Verified } from '../projection/index.ts';
-import { marksNote, SENSE } from '../projection/index.ts';
+import { SENSE } from '../projection/index.ts';
 import { endedAt, figureOf, phaseOf, rollouts, standing } from '../projection/release.ts';
+import { marksNote } from '../projection/sheet.ts';
 import { VERDICT, Verdict } from './Canary.tsx';
 import { Glyph } from './Glyph.tsx';
 import { ToolMark } from './Logos.tsx';

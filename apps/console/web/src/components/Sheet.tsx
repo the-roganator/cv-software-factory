@@ -4,10 +4,13 @@
  *
  * What waits on Martin for the work item heads it, as Needs you's cards, and an improvement's flag has its slider:
  * Martin answers and moves the flag here as there, and a visitor reads both, read-only.
+ *
+ * The page lazy-loads this module, with its stylesheet and the sheet's projection, when the first sheet opens: the
+ * first view loads none of them.
  */
 
 import { MODEL_AGENTS, type Sense } from '@software-factory/events';
-import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
 import {
   AGENT_NAME,
@@ -37,10 +40,12 @@ import type {
   Sheet as SheetData,
   Sighting,
   ThreadReview,
+  View,
 } from '../projection/index.ts';
-import { deployWords, SENSE, scrubbed, TARGET } from '../projection/index.ts';
+import { deployWords, SENSE } from '../projection/index.ts';
 import { backWords } from '../projection/release.ts';
 import { REPORT_KEPT_DAYS } from '../projection/report.ts';
+import { projectSheet, scrubbed, TARGET } from '../projection/sheet.ts';
 import { kindName, ONGOING, OutcomeWord, spendWords } from './Card.tsx';
 import { FlagSection } from './FlagSheet.tsx';
 import { CATEGORY_NAME, Glyph } from './Glyph.tsx';
@@ -48,6 +53,7 @@ import { LogoMark, ToolMark, type ToolName } from './Logos.tsx';
 import { WaitsOnMartin } from './NeedsYou.tsx';
 import { keyed, Picture, Shot, useMeasured } from './Pictures.tsx';
 import { ShippedSection } from './Shipped.tsx';
+import '../styles/sheet.css';
 
 const SOURCE: Record<PictureData['type'], string> = {
   wipe: 'Playwright screenshots, taken when the signal fired and after rollout. The marks are drawn from the elements the probe checked.',
@@ -131,9 +137,10 @@ const SIDE_NAME: Record<string, string> = {
 };
 
 interface SheetProps {
-  sheet: SheetData;
-  index: number;
-  count: number;
+  /** The page's view, which the sheet projects its work item from. */
+  view: View;
+  /** The work item's number. */
+  item: string;
   motion: boolean;
   onStep: (to: number) => void;
   onClose: () => void;
@@ -145,7 +152,17 @@ interface SheetProps {
   onMoved: () => void;
 }
 
-export function Sheet({ sheet, index, count, motion, onStep, onClose, app, admin, onMoved }: SheetProps) {
+/** The work item's sheet in the view, or nothing if it had not opened by the view's t. */
+export function Sheet({ view, item, ...props }: SheetProps) {
+  const sheet = useMemo(() => projectSheet(view, item), [view, item]);
+  if (!sheet) return null;
+  const index = view.cards.findIndex((card) => card.number === sheet.card.number);
+  return <Raised sheet={sheet} index={index} count={view.cards.length} {...props} />;
+}
+
+type RaisedProps = Omit<SheetProps, 'view' | 'item'> & { sheet: SheetData; index: number; count: number };
+
+function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMoved }: RaisedProps) {
   const dialog = useRef<HTMLElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
   const scroller = useRef<HTMLDivElement>(null);

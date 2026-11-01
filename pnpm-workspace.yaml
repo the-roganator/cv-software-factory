@@ -14,6 +14,15 @@ trustPolicyExclude:
   # semver's v5 line, which release-please's changelog writer reaches through meow: the July 2023 backport
   # of a ReDoS fix, published by an npm CLI maintainer without provenance, after the v7 line had it.
   - semver@5.7.2
+overrides:
+  # GHSA-g3hv-75wg-m249: minimatch before 11.0.1, at optimizationLevel 2 or more, can be made to amplify a pattern's
+  # parts into a denial of service, and no 10.x release fixes it. Neither user here sets that level, but the
+  # vulnerable version is still reported. release-please (through @google-automations/git-file-utils) and sigstore's
+  # TUF client (through @tufjs/models) both still ask for ^10, and use only matching, which 11 keeps; each is lifted
+  # alone, so a package written for an older minimatch is not moved to 11 unseen. Each does nothing once its parent
+  # asks for 11.
+  '@google-automations/git-file-utils>minimatch@<11.0.1': ^11.0.1
+  '@tufjs/models>minimatch@<11.0.1': ^11.0.1
 allowBuilds:
   lefthook: false # its postinstall only installs the git hooks, which `prepare` does
   protobufjs: false # its postinstall only prints a version-scheme warning

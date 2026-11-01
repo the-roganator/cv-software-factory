@@ -427,10 +427,12 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
     if (logSilent(all, tolerance)) {
       return finished(signal, target, 'persists', signalForSilentLog(all, end)?.evidence?.[0]);
     }
-    const served = total(all);
-    if (served.gap) return { kind: 'wait', why: 'the metrics had a gap' };
+    // A path whose metrics had a gap holds a running total, which says nothing of the window: the rest are judged.
+    const gapless = all.filter((entry) => !entry.gap);
+    const served = total(gapless);
     const requests = Math.round(Math.max(served.metrics, served.traces ?? 0));
     if (requests < minRequests) {
+      if (gapless.length < all.length) return { kind: 'wait', why: 'the metrics had a gap' };
       return { kind: 'wait', why: `the new version served ${requests} requests, fewer than ${minRequests}` };
     }
     // A route the log still leaves out, in an otherwise full log, is a ticket of its own, as the watcher finds it.
@@ -441,10 +443,11 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
     };
   }
 
-  const paths = all.filter((entry) => onRoute(entry, signal.route, known));
+  const onIt = all.filter((entry) => onRoute(entry, signal.route, known));
+  // A path whose metrics had a gap holds a running total, which says nothing of the window, either way: as the
+  // watcher does, the route's other paths are judged, and it can clear only once none had one.
+  const paths = onIt.filter((entry) => !entry.gap);
   const sum = total(paths);
-  // A series that came back after a gap holds its running total, which says nothing of the window, either way.
-  if (sum.gap) return { kind: 'wait', why: 'the metrics had a gap' };
   // Any of the route's paths, as the watcher judges them, or the route as a whole.
   const busiest = [...paths].sort((a, b) => b.metrics - a.metrics);
   const worst =
@@ -457,6 +460,7 @@ async function byAgreement(signal: FirstSignal, disagreement: Disagreement, targ
     const told = await signalForDisagreement(disagreement, worst, { objectives: c.objectives, prometheus }, start, end);
     return finished(signal, target, 'persists', told?.evidence?.[0]);
   }
+  if (paths.length < onIt.length) return { kind: 'wait', why: 'the metrics had a gap' };
   const requests = Math.round(Math.max(sum.metrics, sum.logs, sum.traces ?? 0));
   if (requests < minRequests) {
     return { kind: 'wait', why: `the route had ${requests} requests on the new version, fewer than ${minRequests}` };

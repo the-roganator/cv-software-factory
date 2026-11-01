@@ -445,14 +445,26 @@ describe('Verify by the log watcher’s agreement check', () => {
       const agreeing = records({ '/products/glove-left': { ...logged, gap: true } });
       expect(await look(signal, target, options(agreeing))).toEqual(gap);
     }
+    // A path with no gap still shows the ticket persists, as the watcher would judge it.
+    const beside = records({
+      '/products/glove-left': { metrics: 10, logs: 0, traces: 10 },
+      '/products/glove-right': { ...logged, metrics: 4021, gap: true },
+    });
+    expect(await look(missingLog, target, options(beside))).toMatchObject({ verification: { outcome: 'persists' } });
+    // Another route's gap is not the ticket's.
+    const elsewhere = records({ '/products/glove-left': logged, '/about': { ...logged, route: '/about', gap: true } });
+    expect(await look(wrongMetric, target, options(elsewhere))).toMatchObject({ verification: { outcome: 'cleared' } });
+    // On `*`, the other routes are judged; with too few requests left, it waits on the gap.
     const back = records({
       '/products/glove-left': { ...logged, gap: true },
       '/about': { ...logged, route: '/about' },
     });
-    expect(await look(silentLog, target, options(back))).toEqual(gap);
-    // Another route's gap is not the ticket's.
-    const elsewhere = records({ '/products/glove-left': logged, '/about': { ...logged, route: '/about', gap: true } });
-    expect(await look(wrongMetric, target, options(elsewhere))).toMatchObject({ verification: { outcome: 'cleared' } });
+    expect(await look(silentLog, target, options(back))).toMatchObject({ verification: { outcome: 'cleared' } });
+    const thin = records({
+      '/products/glove-left': { ...logged, gap: true },
+      '/about': { metrics: 1, logs: 1, traces: 1, route: '/about' },
+    });
+    expect(await look(silentLog, target, options(thin))).toEqual(gap);
   });
 
   it('cannot tell too soon after the promotion, on too few requests, or on records that disagree otherwise', async () => {

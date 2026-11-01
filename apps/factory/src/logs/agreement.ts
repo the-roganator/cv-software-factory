@@ -166,15 +166,22 @@ export async function count(
     }
     return entry;
   };
-  // The version of a route is the one that served most of it.
-  const busiest = new Map<string, number>();
+  // The version of a route is the one that served most of it, its series with a gap and without summed together.
+  const served = new Map<string, Map<string | undefined, number>>();
   for (const { labels, value } of metrics) {
     const entry = at(labels.http_route ?? '');
     entry.metrics += value;
     if (labels[GAP_LABEL] === 'true') entry.gap = true;
-    if (value > (busiest.get(entry.path) ?? 0)) {
-      busiest.set(entry.path, value);
-      entry.version = labels.service_version;
+    const versions = served.get(entry.path) ?? new Map<string | undefined, number>();
+    versions.set(labels.service_version, (versions.get(labels.service_version) ?? 0) + value);
+    served.set(entry.path, versions);
+  }
+  for (const [path, versions] of served) {
+    let most = 0;
+    for (const [version, value] of versions) {
+      if (value <= most) continue;
+      most = value;
+      at(path).version = version;
     }
   }
   for (const { labels, value } of logs) {

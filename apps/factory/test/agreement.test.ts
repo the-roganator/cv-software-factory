@@ -171,6 +171,17 @@ describe('counting a route whose metrics had a gap', () => {
     expect(judge(routes[0] as RouteCounts)).toBeUndefined();
   });
 
+  it('gives the route the version that served most of it, its series with a gap and without together', async () => {
+    const other = 'v0.9.3';
+    const samples = [
+      metric(3),
+      metric(4, true),
+      { labels: { http_route: '/privacy', service_version: other }, value: 5 },
+    ];
+    const { routes } = await count(objectives, backends(samples), at(40), at(45));
+    expect(routes[0]?.version).toBe(VERSION);
+  });
+
   it('judges the route as ever when none had one', async () => {
     const { routes } = await count(objectives, backends([metric(4021)]), at(40), at(45));
     expect(routes[0]?.gap).toBeUndefined();
@@ -194,7 +205,7 @@ describe('counting a route whose metrics had a gap', () => {
     );
     for (const minutes of [44, 49, 54]) await watcher.checkAgreement(at(minutes));
     expect(sent).toEqual([]);
-    expect(warned).toEqual([{ routes: 1 }, { routes: 1 }]);
+    expect(warned).toEqual([{ paths: 1 }, { paths: 1 }]);
     // A pair with no gap is judged: here metrics that count too many.
     await watcher.checkAgreement(at(59));
     expect(sent.map((s) => [s.route, s.symptom])).toEqual([['/privacy', 'wrong-metric']]);

@@ -109,6 +109,10 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
       };
     },
   },
+  // Version 2 adds the looks at an open ticket, as the line takes it and beside another's verified fix, and the
+  // version its signal was last seen on, and the merged pull requests of the work items carried; a version 1 look
+  // reads as it was, its `carried` the release looked at's alone.
+  'signal.rechecked': { 1: (payload) => payload },
   'release.promoted': { 1: (payload) => ({ ...payload, release: payload.version, watched: true, dryRun: false }) },
   // A version 1 rollback recorded one failed measure, by its label, with its series and the reason as its words.
   'release.rolled-back': {

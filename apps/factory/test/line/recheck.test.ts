@@ -51,12 +51,45 @@ const NEW = commitOf(CANARY);
 const OLD = commitOf(STABLE);
 const SCOPE = ['src/departments.ts', 'test/departments.test.ts'];
 
+/** An open ticket a probe saw on the version before, with `symptom` if given, that the line has not taken. */
+async function ticketed(route: string, symptom?: PayloadOf<'signal.received'>['symptom']): Promise<string> {
+  const workItem = await nextWorkItem(database.as.triage);
+  await events.append([
+    event(
+      workItem,
+      'work-item.opened',
+      { kind: 'defect-fix', title: `No alt text on ${route}`, sample: false },
+      'triage',
+    ),
+    event(
+      workItem,
+      'ticket.opened',
+      {
+        title: `No alt text on ${route}`,
+        category: 'accessibility',
+        severity: 'degraded',
+        fingerprint: { route, class: 'missing-alt' },
+        traces: [],
+      },
+      'triage',
+    ),
+    event(
+      workItem,
+      'signal.received',
+      { sense: 'probe', check: route, route, version: OLD, ...(symptom ? { symptom } : {}) },
+      'probe',
+    ),
+  ]);
+  return workItem;
+}
+
 /** A ticket a probe saw on the version before, with its spec, on the line at `stage`, with issue `issue`. */
 async function planned(
   stage: string,
   issue: number,
   scope = SCOPE,
   route = '/departments/:department',
+  symptom?: PayloadOf<'signal.received'>['symptom'],
 ): Promise<string> {
   const workItem = await nextWorkItem(database.as.triage);
   await events.append([
@@ -76,7 +109,13 @@ async function planned(
     event(
       workItem,
       'signal.received',
-      { sense: 'probe', check: route === '/departments/:department' ? 'departments' : route, route, version: OLD },
+      {
+        sense: 'probe',
+        check: route === '/departments/:department' ? 'departments' : route,
+        route,
+        version: OLD,
+        ...(symptom ? { symptom } : {}),
+      },
       'probe',
     ),
     event(
@@ -201,6 +240,7 @@ describe('a held work item looked at again after a release', () => {
         version: NEW,
         against: OLD,
         carried: [other],
+        since: OLD,
       },
     ]);
     expect(probes.asked).toEqual([{ sense: 'probe', check: 'departments', route: '/departments/:department' }]);
@@ -208,7 +248,7 @@ describe('a held work item looked at again after a release', () => {
     expect(await payloads(workItem, 'work-item.closed')).toEqual([
       {
         outcome: 'verified',
-        reason: `The probe’s check “departments” passed twice in a row on ${NEW.slice(0, 7)}, a release that carried work item #${other}, not this one’s fix`,
+        reason: `The probe’s check “departments” passed twice in a row on ${NEW.slice(0, 7)}, a version released since ${OLD.slice(0, 7)}, where its signal was last seen, with the fix of work item #${other}, not this one’s`,
       },
     ]);
     const acts = github.acts.filter((a) => a.action === 'closeIssue' || a.action === 'closePullRequest');
@@ -476,7 +516,7 @@ describe('17 October again: two tickets for one defect', () => {
     expect(await payloads(waiter, 'work-item.closed')).toEqual([
       {
         outcome: 'verified',
-        reason: `The probe’s check “/departments” passed twice in a row on ${NEW.slice(0, 7)}, a release that carried work item #${first}, not this one’s fix`,
+        reason: `The probe’s check “/departments” passed twice in a row on ${NEW.slice(0, 7)}, a version released since ${OLD.slice(0, 7)}, where its signal was last seen, with the fix of work item #${first} (pull request #12), not this one’s`,
       },
     ]);
     expect(github.acts.filter((a) => a.action === 'closeIssue').map((a) => a.args.number)).toEqual([11, 30]);
@@ -490,5 +530,190 @@ describe('17 October again: two tickets for one defect', () => {
     expect(looks.at(-1)).toMatchObject({ for: 'wait', outcome: 'persists', carried: [first] });
     expect(await payloads(waiter, 'work-item.closed')).toEqual([]);
     expect(await stage(waiter)).toBe('build');
+  });
+});
+
+describe('an open ticket a release since already fixed', () => {
+  /** A work item whose pull request #`number` merged, carried by a release promoted since the tickets were seen. */
+  async function fixed(number = 120): Promise<string> {
+    const fixer = await nextWorkItem(database.as.triage);
+    await events.append([
+      event(fixer, 'work-item.opened', { kind: 'defect-fix', title: 'No alt text on /', sample: false }, 'triage'),
+      event(fixer, 'pull-request.merged', { number, commit: NEW, by: 'martin' }, 'martin'),
+    ]);
+    await database.owner`insert into line (work_item, stage) values (${fixer}, 'ended')`;
+    await promoted(fixer);
+    return fixer;
+  }
+
+  it('closes as verified as the line takes it, crediting the fix, with no issue opened and no planner', async () => {
+    const probes = new FakeProbes(CLEARED);
+    const { line: it, github } = line(probes);
+    const ticket = await ticketed('/products');
+    const fixer = await fixed();
+    const next = await ticketed('/basket');
+    await pass(it); // the line takes the ticket, and the probe looks again
+    expect(await payloads(ticket, 'signal.rechecked')).toEqual([
+      {
+        for: 'take',
+        outcome: 'cleared',
+        sense: 'probe',
+        check: '/products',
+        release: 'f00dfeed01',
+        version: NEW,
+        against: OLD,
+        carried: [fixer],
+        since: OLD,
+        merged: [{ workItem: fixer, pullRequest: 120 }],
+      },
+    ]);
+    await pass(it); // it closes, and the line takes the next ticket at once
+    expect(await payloads(ticket, 'work-item.closed')).toEqual([
+      {
+        outcome: 'verified',
+        reason: `The probe’s check “/products” passed twice in a row on ${NEW.slice(0, 7)}, a version released since ${OLD.slice(0, 7)}, where its signal was last seen, with the fix of work item #${fixer} (pull request #120)`,
+      },
+    ]);
+    expect(github.acts.filter((a) => a.action === 'openIssue' || a.action === 'closeIssue')).toEqual([]);
+    expect(await stage(ticket)).toBe('ended');
+    await pass(it);
+    expect(await stage(next)).toBeDefined();
+  });
+
+  it('says the releases since carried none of the factory’s fixes only when they carried none', async () => {
+    const { line: it } = line(new FakeProbes(CLEARED));
+    const ticket = await ticketed('/products');
+    await promoted(null);
+    await pass(it);
+    await pass(it);
+    expect(await payloads(ticket, 'work-item.closed')).toEqual([
+      {
+        outcome: 'verified',
+        reason: `The probe’s check “/products” passed twice in a row on ${NEW.slice(0, 7)}, a version released since ${OLD.slice(0, 7)}, where its signal was last seen, with none of the factory’s fixes`,
+      },
+    ]);
+  });
+
+  it('goes on to Plan when its signal is still there, and is not looked at again', async () => {
+    const probes = new FakeProbes({ outcome: 'persists', version: NEW, runs: ['failed', 'failed'] });
+    const { line: it, github } = line(probes);
+    const ticket = await ticketed('/products');
+    await fixed();
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([{ for: 'take', outcome: 'persists' }]);
+    await pass(it);
+    expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
+    expect(await payloads(ticket, 'work-item.closed')).toEqual([]);
+    expect(probes.asked).toHaveLength(1);
+  });
+
+  it('credits the fix though triage recorded a signal on the version before after the release', async () => {
+    const { line: it } = line(new FakeProbes(CLEARED));
+    const ticket = await ticketed('/products');
+    const fixer = await fixed();
+    // A late signal, on the version before the promotion: it says nothing of the release since.
+    await events.append([
+      event(
+        ticket,
+        'signal.received',
+        { sense: 'probe', check: '/products', route: '/products', version: OLD },
+        'probe',
+      ),
+    ]);
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([
+      { for: 'take', outcome: 'cleared', since: OLD, carried: [fixer] },
+    ]);
+  });
+
+  it('credits the fix to a ticket whose only signal triage recorded after the release, on the version before', async () => {
+    const { line: it } = line(new FakeProbes(CLEARED));
+    const fixer = await fixed();
+    const ticket = await ticketed('/products');
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([
+      { for: 'take', outcome: 'cleared', since: OLD, carried: [fixer] },
+    ]);
+  });
+
+  it('goes on to Plan at once when the sense cannot tell, unsure', async () => {
+    const probes = new FakeProbes({ outcome: 'unsure', version: NEW, runs: ['errored'] } as unknown as VerifyAnswer);
+    const { line: it, github } = line(probes);
+    const ticket = await ticketed('/products');
+    await fixed();
+    await pass(it);
+    expect(await payloads(ticket, 'signal.rechecked')).toMatchObject([{ for: 'take', outcome: 'unsure' }]);
+    await pass(it);
+    expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
+  });
+
+  it('is not looked at when its signal was seen on the stable version, or no release is known', async () => {
+    const probes = new FakeProbes(CLEARED);
+    const { line: it, github } = line(probes);
+    const ticket = await ticketed('/products');
+    await pass(it);
+    expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
+    expect(probes.asked).toEqual([]);
+    expect(await payloads(ticket, 'signal.rechecked')).toEqual([]);
+  });
+
+  it('closes beside a verified fix of the same sense and symptom, naming the fix, and leaves others open', async () => {
+    const probes = new FakeProbes(CLEARED);
+    // One work item at a time, so the line takes none of the tickets while the fix goes through.
+    const { line: it, github } = line(probes, { take: 1 });
+    const first = await planned('held', 11, SCOPE, '/', 'missing-alt');
+    await events.append([
+      event(
+        first,
+        'pull-request.pushed',
+        {
+          number: 120,
+          title: 'fix(home): give the images alt text',
+          branch: `factory/${first}-no-alt-text`,
+          attempt: 1,
+          testsFirst: true,
+          files: [{ path: 'src/home.ts', added: 1, removed: 1 }],
+          whole: [{ path: 'src/home.ts', added: 1, removed: 1 }],
+        },
+        'coder',
+      ),
+      event(first, 'hold.started', { stage: 'review', kind: 'approval', cause: 'merge', reason: 'Held for the test' }),
+    ]);
+    github.pulls.set(120, {
+      number: 120,
+      state: 'open',
+      merged: false,
+      mergeCommit: null,
+      mergedBy: null,
+      head: { ref: `factory/${first}-no-alt-text`, sha: 'f'.repeat(40) },
+      base: { ref: 'main', sha: MAIN },
+      draft: false,
+      nodeId: 'PR_120',
+    });
+    const beside = await ticketed('/products', 'missing-alt');
+    const unlike = await ticketed('/basket', 'broken-image');
+    github.merge(120);
+    now += 60_000;
+    await pass(it);
+    await promoted(first);
+    for (let i = 0; i < 4; i++) {
+      now += 60_000;
+      await pass(it);
+    }
+    expect(await payloads(first, 'work-item.closed')).toMatchObject([{ outcome: 'verified' }]);
+    expect(await payloads(beside, 'signal.rechecked')).toMatchObject([
+      { for: 'fix', outcome: 'cleared', carried: [first], merged: [{ workItem: first, pullRequest: 120 }] },
+    ]);
+    expect(await payloads(beside, 'work-item.closed')).toEqual([
+      {
+        outcome: 'verified',
+        reason: `The probe’s check “/products” passed twice in a row on ${NEW.slice(0, 7)}, a version released since ${OLD.slice(0, 7)}, where its signal was last seen, with the fix of work item #${first} (pull request #120)`,
+      },
+    ]);
+    // No event on the fix's own work item names it: the credit is the ticket's.
+    expect(await payloads(first, 'signal.rechecked')).toEqual([]);
+    expect(await payloads(unlike, 'signal.rechecked')).toEqual([]);
+    expect(await payloads(unlike, 'work-item.closed')).toEqual([]);
+    expect(await stage(beside)).toBeUndefined();
   });
 });

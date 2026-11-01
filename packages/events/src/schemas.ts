@@ -906,14 +906,15 @@ export const PAYLOADS = {
   }),
 
   /**
-   * The sense that saw a held or waiting work item's defect looked again, as Verify does, at the version the stable
-   * Service runs, which did not carry its fix: after a release was promoted (`release`), or as the work it waited on
-   * ended (`wait`). It cleared, it persists, or the sense could not tell, and says why. A look at the end of a wait with
-   * no release of the app recorded names none.
+   * The sense that saw a work item's defect looked again, as Verify does, at the version the stable Service runs, which
+   * did not carry its fix: at a held or waiting work item, after a release was promoted (`release`), or as the work it
+   * waited on ended (`wait`); at an open ticket, as the line took it, before Plan (`take`), or as Verify cleared another
+   * ticket's fix of the same sense and symptom (`fix`). It cleared, it persists, or the sense could not tell, and says
+   * why. A look at the end of a wait with no release of the app recorded names none.
    */
   'signal.rechecked': z
     .strictObject({
-      for: z.enum(['release', 'wait']),
+      for: z.enum(['release', 'wait', 'take', 'fix']),
       outcome: z.enum(['cleared', 'persists', 'unsure']),
       /** The sense that looked: the one whose signal opened the ticket. */
       sense: z.enum(V.SENSES).optional(),
@@ -922,8 +923,16 @@ export const PAYLOADS = {
       release: releaseId.optional(),
       version: appVersion.optional(),
       against: appVersion.optional(),
-      /** The work items that release carried, as its start recorded them: none for a release on the line itself. */
+      /**
+       * The work items carried by the releases promoted after the ticket's signal was last seen, up to the one looked
+       * at, as their starts recorded them: none for releases on the line itself. Version 1 named only the release
+       * looked at's.
+       */
       carried: z.array(workItem).max(20),
+      /** The version the ticket's signal was last seen on, which the releases `carried` names came after. */
+      since: appVersion.optional(),
+      /** The pull request each of the work items `carried` names merged, for those that merged one. */
+      merged: z.array(z.strictObject({ workItem, pullRequest })).max(20).optional(),
       evidence: evidence.optional(),
       /** Why the sense could not tell. */
       why: text(200).optional(),

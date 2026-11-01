@@ -540,7 +540,7 @@ export function whatClearedOnLook(
   rechecked: PayloadOf<'signal.rechecked'>,
   policy: Release['verify'] = RELEASE.verify,
 ): string {
-  return clearedBy(rechecked, clearedOnWords(rechecked.carried), policy);
+  return clearedBy(rechecked, clearedOnWords(rechecked), policy);
 }
 
 /**

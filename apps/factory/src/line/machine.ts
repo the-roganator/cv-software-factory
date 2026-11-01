@@ -96,6 +96,10 @@
  * has cleared; one that waits on Martin's judgement stays, and says the signal cleared, and his closing its pull request
  * then closes it as verified. A signal since, or a later look that finds it, ends the clearance.
  *
+ * So may an open ticket's, before the line takes it. As it takes one whose signal was last seen on a version before
+ * the one the stable Service runs, before its issue opens and the planner starts (`atTake`), the sense looks again the
+ * same way: cleared, it closes as verified, with no issue opened and nothing spent; otherwise it goes on to Plan.
+ *
  * Two tickets can be one defect, which shows only once the planner names the files. After Plan, a work item whose
  * spec's scope shares a file with the spec of work in flight waits (`wait.started`), before the coder starts and before
  * a spec that always needs Martin is held for him, until each of those work items is verified or closed. Then its
@@ -756,14 +760,16 @@ export type Next =
    */
   | { do: 'hand-over'; release: PayloadOf<'release.promoted'> }
   /**
-   * Look again at a held or waiting work item's signal, by the sense that saw it, at the version the stable Service
-   * runs: after a release (`release`), or as the work it waited on ended (`wait`).
+   * Look again at a work item's signal, by the sense that saw it, at the version the stable Service runs: at a held or
+   * waiting one, after a release (`release`), or as the work it waited on ended (`wait`); at a ticket the line has just
+   * taken, before Plan (`take`).
    */
-  | { do: 'recheck'; for: 'release' | 'wait' }
+  | { do: 'recheck'; for: 'release' | 'wait' | 'take' }
   /**
    * Close the work item as verified, and its issue as completed, saying what cleared it: the verification, Martin's
-   * word, with what he said, or a look again that found the defect gone on a release that did not carry its fix. Its
-   * pull request, if it has one open, closes with it.
+   * word, with what he said, or a look again that found the defect gone on a release that did not carry its fix,
+   * naming the fixes the releases since its signal was last seen carried. Its pull request, if it has one open, closes
+   * with it. A ticket that cleared as the line took it has no issue yet, and none is opened.
    */
   | {
       do: 'verified';
@@ -796,7 +802,8 @@ export interface Facts {
   waitedOn?: Record<string, { closedAt: string } | null>;
   /**
    * The latest real release promoted, which the stable Service runs, and whether a look again at it is still due: no
-   * more than the policy's wait after it, or after the hold or wait started, whichever is later. None known, no look.
+   * more than the policy's wait after it, or after the hold or wait started, whichever is later; always, for a ticket
+   * the line has just taken (`atTake`). None known, no look.
    */
   stable?: Stable;
 }
@@ -870,6 +877,12 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   };
 
   if (!s.spec) {
+    // Before its issue opens and the planner starts: a ticket whose signal is gone from the stable version, which a
+    // release since may have fixed, closes as verified, with nothing spent on it.
+    if (atTake(s) && facts.issue === null) {
+      if (s.cleared) return { stage: 'plan', next: { do: 'verified', verification: undefined, rechecked: s.cleared } };
+      if (lookDue(s, facts.stable)) return { stage: 'plan', next: { do: 'recheck', for: 'take' } };
+    }
     if (facts.issue === null) return { stage: 'plan', next: { do: 'open-issue' } };
     return step('planner');
   }
@@ -1007,10 +1020,25 @@ export function closesWhenCleared(state: WorkItemState): boolean {
 }
 
 /**
- * Whether the sense that saw a held or waiting work item's defect should look again at the release the stable Service
- * runs: one it has not looked at under this hold or wait, still due, that does not carry its own fix, by a sense that
- * can look again (not a visitor's report or the planner), and with no signal of the ticket seen on that version, which
- * already says the defect is there.
+ * Whether a ticket is where the line looks again at its signal as it takes it: never planned, never sent back to Plan
+ * by Verify or Martin, never reopened, held or waiting. One that came back was looked at already, by Verify or triage.
+ */
+export const atTake = (state: WorkItemState) =>
+  state.ticket !== undefined &&
+  !state.request &&
+  !state.lastSpec &&
+  !state.replan &&
+  !state.persisted.length &&
+  !state.reopened.length &&
+  !state.hold &&
+  !state.waiting &&
+  !state.closed;
+
+/**
+ * Whether the sense that saw a held or waiting work item's defect, or that of a ticket the line has just taken, should
+ * look again at the release the stable Service runs: one it has not looked at under this hold or wait, or since the
+ * take, still due, that does not carry its own fix, by a sense that can look again (not a visitor's report or the
+ * planner), and with no signal of the ticket seen on that version, which already says the defect is there.
  */
 export function lookDue(state: WorkItemState, stable: Stable | undefined): boolean {
   if (!stable?.due || !state.ticket || state.request) return false;

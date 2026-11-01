@@ -375,7 +375,7 @@ describe('triage', () => {
           ts: at,
           work_item: item,
           type: 'signal.rechecked',
-          version: 1,
+          version: 2,
           actor: 'crawler',
           summary: 'Cleared',
           payload: {

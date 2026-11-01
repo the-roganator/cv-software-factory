@@ -1,6 +1,6 @@
 # Planner
 
-An agent: writes a spec for each ticket, and for each improvement Martin asks for. Part of the [factory plane](README.md#agents).
+An agent: writes a spec for each ticket the line takes, unless its sense finds the defect already gone as the line takes it ([open tickets a release may have fixed](RELEASE-AND-VERIFY.md#open-tickets-a-release-may-have-fixed)), and for each improvement Martin asks for. Part of the [factory plane](README.md#agents).
 
 - **Reads:** tickets; Martin's improvement requests.
 - **Produces:** a spec per work item: outcome, acceptance criteria, scope, risk, rollout; and for an improvement, its title, its flag and its pages.

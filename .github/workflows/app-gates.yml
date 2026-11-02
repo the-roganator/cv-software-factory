@@ -9,7 +9,9 @@
 #   the base and fails on the change twice. The app is broken on purpose, so failing on the base is no reason to fail.
 #   Each probe's `/device` check is among them: a change whose pages start to keep anything on a visitor's device, or
 #   to ask another origin, fails.
-# - test integrity: fails a change that deletes, skips or weakens an existing test.
+# - test integrity: fails a change that deletes, skips or weakens an existing test, or changes an assertion one makes,
+#   except the tests the pull request's description names as ones its spec contradicts, which it names in its summary.
+#   It reads the description through the API when it runs, so it alone holds `pull-requests: read`.
 # - tests first: runs the change's new and changed tests against the base's source, and says which fail there. Not
 #   required: a fix whose tests all pass before it holds for Martin, and the line reads this to know.
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
@@ -112,6 +114,11 @@ jobs:
     if: ${{ !inputs.skip }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # To read the description, which names the tests the change's spec contradicts. Still read-only: the caller grants
+    # it too, and the step runs none of the change's code.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       # These jobs check out and run a change's code. They do it only where that code can do no harm: a pull_request
       # or merge_group run, with this workflow's read-only token and no secrets (ADR 0014). Called from anything else,
@@ -149,6 +156,8 @@ jobs:
           working_directory: factory
           install_args: node
       - run: node factory/apps/factory/src/gates/test-integrity.ts base change
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
   tests-first:
     name: tests first

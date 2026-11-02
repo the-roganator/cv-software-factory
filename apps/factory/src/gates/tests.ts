@@ -17,6 +17,12 @@ export interface TestCase {
   disabled: false | 'skip' | 'todo' | 'only' | 'conditional';
   /** Calls to `expect` and `assert` inside the test's body, including in helpers it defines there. */
   assertions: number;
+  /**
+   * Each of those calls as text, in order: the whole chain, such as `expect(res.status).not.toBe(500)`, with the
+   * spacing and line breaks outside strings taken out (one space kept between two words) and a trailing comma
+   * dropped, so a test reformatted asserts what it did.
+   */
+  calls: string[];
   /** The test's call as written, for telling whether a test changed. */
   source: string;
 }
@@ -143,6 +149,48 @@ interface Block {
   to: number;
 }
 
+/** Where the chain of calls and properties that starts with the call opening at `open` ends: `(…).not.toBe(…)`. */
+function chainEnd(source: string, code: boolean[], open: number): number {
+  let end = closing(source, code, open);
+  for (;;) {
+    const link = /^\s*\??\.\s*[A-Za-z_$][\w$]*/.exec(source.slice(end, end + 200));
+    if (!link) return end;
+    end += link[0].length;
+    const call = /^\s*\(/.exec(source.slice(end, end + 200));
+    if (call) end = closing(source, code, end + call[0].length - 1);
+  }
+}
+
+/**
+ * A call's text as `TestCase.calls` keeps it: strings, comments and regular expressions as written, and in the code
+ * between them no spacing (but one space between two words, as in `typeof x`) and no trailing comma.
+ */
+function callText(source: string, code: boolean[], from: number, to: number): string {
+  const isSpace = (i: number) => code[i] === true && /\s/.test(source[i] ?? '');
+  let text = '';
+  for (let i = from; i < to; i++) {
+    const c = source[i] as string;
+    if (!code[i]) {
+      text += c;
+      continue;
+    }
+    let next = i;
+    while (next < to && isSpace(next)) next++;
+    if (next > i) {
+      if (/[\w$]$/.test(text) && /^[\w$]/.test(source[next] ?? '')) text += ' ';
+      i = next - 1;
+      continue;
+    }
+    if (c === ',') {
+      let after = i + 1;
+      while (after < to && isSpace(after)) after++;
+      if (code[after] && ')]}'.includes(source[after] ?? '')) continue;
+    }
+    text += c;
+  }
+  return text;
+}
+
 export function testsIn(source: string): TestCase[] {
   const code = codeMask(source);
   const blocks: Block[] = [];
@@ -189,16 +237,23 @@ export function testsIn(source: string): TestCase[] {
     });
   }
 
-  const assertions = [...source.matchAll(ASSERTION)].map((m) => m.index).filter((i) => code[i]);
+  const assertions = [...source.matchAll(ASSERTION)]
+    .filter((m) => code[m.index])
+    .map((m) => ({
+      at: m.index,
+      text: callText(source, code, m.index, chainEnd(source, code, m.index + m[0].length - 1)),
+    }));
   return blocks
     .filter((b) => b.kind === 'test')
     .map((test) => {
       const around = blocks.filter((b) => b.kind === 'describe' && b.from < test.from && b.to >= test.to);
       const describedDisabled = around.find((b) => b.disabled)?.disabled ?? false;
+      const calls = assertions.filter((a) => a.at > test.from && a.at < test.to).map((a) => a.text);
       return {
         name: [...around.map((b) => b.name), test.name].join(' > '),
         disabled: test.disabled || describedDisabled,
-        assertions: assertions.filter((i) => i > test.from && i < test.to).length,
+        assertions: calls.length,
+        calls,
         source: source.slice(test.from, test.to),
       };
     });

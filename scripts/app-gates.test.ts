@@ -35,9 +35,14 @@ describe("the app's gates (ADR 0014)", () => {
     expect(workflow.match(/github\.event\.\w+/g)).toEqual(['github.event.pull_request', 'github.event.merge_group']);
   });
 
-  it('hold a read-only token and no secret', () => {
+  it('hold a read-only token and no secret, which test integrity alone may read pull requests with', () => {
     expect(workflow).toMatch(/^permissions:\n {2}contents: read\n\n/m);
-    expect(workflow).not.toMatch(/^ {4}permissions:/m);
+    const granted = Object.entries(jobs).filter(([, job]) => /^ {4}permissions:/m.test(job));
+    expect(granted.map(([id]) => id)).toEqual(['test-integrity']);
+    expect(jobs['test-integrity']).toMatch(
+      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {4}steps:/m,
+    );
+    expect(workflow.match(/github\.token/g)).toHaveLength(1);
     expect(workflow).not.toMatch(/secrets\./);
   });
 });

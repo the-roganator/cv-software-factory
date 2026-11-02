@@ -193,21 +193,30 @@ export async function stillSignedIn(expiresAt: string): Promise<boolean> {
 }
 
 /**
+ * Martin's own parts of the page, which a visitor never loads: his account menu, the line's button and the step-up
+ * dialog with its ceremony. The page loads each through these, and the session check fetches them all once it says he
+ * is signed in, before the page draws him so, so that they arrive with his header rather than a moment after it.
+ */
+export const MARTINS_PARTS = {
+  account: () => import('./components/Account.tsx'),
+  lineButton: () => import('./components/LineButton.tsx'),
+  stepUp: () => import('./components/StepUpDialog.tsx'),
+};
+
+/** How long the signed-in page waits for Martin's parts before it draws him anyway, and they arrive when they can. */
+const PARTS_WAIT_MS = 3000;
+
+/** Martin's parts, fetched; never longer than `PARTS_WAIT_MS`, and never a failure: the page asks again where it needs one. */
+const martinsParts = () =>
+  Promise.race([
+    Promise.all(Object.values(MARTINS_PARTS).map((load) => load())).catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, PARTS_WAIT_MS)),
+  ]);
+
+/**
  * Whether this browser is signed in, asked as the page opens, and again when the session's 30 minutes are up or the
  * page is shown again: a session that has ended sends the page to the sign-in door, saying so. Only the live console asks: a recording has no service.
  */
-/**
- * Martin's own parts of the page, which a visitor never loads: his account menu, the line's button and the step-up
- * dialog. Fetched once the session says he is signed in, and before the page draws him so, they arrive with his header
- * rather than a moment after it. Should one fail to arrive, the page draws him anyway, and asks for it again there.
- */
-const martinsParts = () =>
-  Promise.all([
-    import('./components/Account.tsx'),
-    import('./components/LineButton.tsx'),
-    import('./components/StepUpDialog.tsx'),
-  ]).catch(() => undefined);
-
 export function useAdmin(live: boolean): Admin {
   const [admin, setAdmin] = useState<Admin>(() => (live ? { kind: 'checking' } : { kind: 'none' }));
   useEffect(() => {

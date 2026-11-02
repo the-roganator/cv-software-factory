@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import type { Admin } from '../admin.ts';
+import { type Admin, MARTINS_PARTS } from '../admin.ts';
 import { AUTONOMY, duration } from '../format.ts';
 import type { Header as LineState, Score } from '../projection/index.ts';
 import type { Theme } from '../settings.ts';
@@ -7,12 +7,9 @@ import type { Connection } from '../source.ts';
 import { Mark } from './Mark.tsx';
 import { StepUpPill } from './StepUp.tsx';
 
-/**
- * Martin's own parts of the header, which a visitor never loads: the session check fetches them before the page draws
- * him signed in (`useAdmin`), so they arrive with the rest of his header rather than after it.
- */
-const Account = lazy(() => import('./Account.tsx').then((module) => ({ default: module.Account })));
-const LineButton = lazy(() => import('./LineButton.tsx').then((module) => ({ default: module.LineButton })));
+/** Martin's own parts of the header, which a visitor never loads (`MARTINS_PARTS`). */
+const Account = lazy(() => MARTINS_PARTS.account().then((module) => ({ default: module.Account })));
+const LineButton = lazy(() => MARTINS_PARTS.lineButton().then((module) => ({ default: module.LineButton })));
 
 /** Whether the line runs, in words and a dot that never carries the meaning alone. */
 export function LineStatus({ line, connection }: { line: LineState; connection: Connection }) {

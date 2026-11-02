@@ -23,16 +23,24 @@ import {
   useState,
 } from 'react';
 import { FRESH_MINUTES } from '../access.ts';
-import type { Session } from '../admin.ts';
+import { MARTINS_PARTS, type Session } from '../admin.ts';
 import { Glyph } from './Glyph.tsx';
 
 /**
  * The dialog and its ceremony, which only Martin uses: the session check fetches them before the page draws him signed
  * in (`useAdmin`), so the dialog opens at once when an action asks.
  */
-const StepUpDialog = lazy(() => import('./StepUpDialog.tsx').then((module) => ({ default: module.StepUpDialog })));
-const ceremony = async (token: string, live: () => boolean) =>
-  (await import('./StepUpDialog.tsx')).ceremony(token, live);
+const StepUpDialog = lazy(() => MARTINS_PARTS.stepUp().then((module) => ({ default: module.StepUpDialog })));
+/** The ceremony, or why not in words if its code cannot be fetched, so an action that asks never waits on it for ever. */
+const ceremony = async (token: string, live: () => boolean) => {
+  let code: Awaited<ReturnType<typeof MARTINS_PARTS.stepUp>>;
+  try {
+    code = await MARTINS_PARTS.stepUp();
+  } catch {
+    return 'The passkey’s code could not be fetched: reload the page and try again.';
+  }
+  return code.ceremony(token, live);
+};
 
 /** What the step-up dialog says of an action: its name, what will happen, and why it asks ("Promoting ships to everyone"). */
 export interface Asked {

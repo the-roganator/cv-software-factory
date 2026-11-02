@@ -1,7 +1,7 @@
 /**
  * Visual regression, in the pinned Playwright image (`make e2e`; UPDATE=1 rewrites the snapshots) with motion off
  * and t fixed: every station in every state in both themes, Triage's, Plan's, Review's and Verify's tools paused
- * at a moment of their motion, and the line, one card per picture and the sheet at
+ * at a moment of their motion, and the line, one card per picture, the sheet and a wipe opened from it at full size at
  * all three widths. Milestone 4's states come from its test data: a card for each new picture and outcome, the line
  * with tickets waiting and with a spend cap, Triage's panel, a ticket's and a quarantined report's sheets, and an
  * empty store for real events. Milestone 5's come from the samples: a card for each wait and hold, Review's panel,
@@ -171,6 +171,15 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await page.evaluate(() => document.fonts.ready);
       await page.waitForLoadState('networkidle');
       await expect(page).toHaveScreenshot(`sheet-${width}.png`);
+    });
+
+    test('a screenshot at full size', async ({ page }) => {
+      await page.goto(consoleUrl({ item: '1296', sheet: true }));
+      await page.getByRole('button', { name: 'Open at full size: The home page, broken and fixed' }).click();
+      const view = page.getByRole('dialog', { name: 'The home page, broken and fixed' });
+      await picturesShown(view);
+      await page.evaluate(() => document.fonts.ready);
+      await expect(page).toHaveScreenshot(`full-size-${width}.png`);
     });
   });
 }

@@ -11,7 +11,7 @@
  * by its id and timings. Every route an agent is told is cut at its query. Everything else the senses keep is the
  * app's answer to a request the sense made itself.
  */
-import type { PayloadOf } from '@software-factory/events';
+import type { Giveaway, PayloadOf, SecurityHeader } from '@software-factory/events';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
 import { count } from './agent.ts';
 
@@ -78,6 +78,22 @@ const SENSE: Record<Signal['sense'], string> = {
 
 const LEVELS = ['error', 'warn', 'info', 'debug'] as const;
 
+/** What the crawler asks of a header beyond its being sent, where it asks more. */
+const ASKED: Partial<Record<SecurityHeader, string>> = {
+  'x-content-type-options': ' (as nosniff)',
+  'x-frame-options': ' (or frame-ancestors in the CSP)',
+};
+
+/** What an error page gave away, in words. */
+const GIVEN_AWAY: Record<Giveaway, string> = {
+  'stack-trace': 'a stack trace in the body',
+  'file-path': 'a file path in the body',
+  'software-banner': 'a framework or version banner in the body',
+  'database-error': 'a database error in the body',
+  'server-version': 'its software’s version in server',
+  'powered-by': 'x-powered-by',
+};
+
 /** One piece of evidence, as lines of the prompt. */
 export function evidenceLines(evidence: Evidence): string[] {
   switch (evidence.kind) {
@@ -87,6 +103,8 @@ export function evidenceLines(evidence: Evidence): string[] {
         `${evidence.method} ${evidence.url} answered ${evidence.status ?? 'nothing'} in ${evidence.timings.totalMs} ms`,
         ...evidence.redirects.map((r) => `  redirected ${r.status} to ${r.location}`),
         ...(headers.length ? [`  headers: ${headers.join('; ')}`] : []),
+        ...(evidence.missing ? [`  missing: ${evidence.missing.map((h) => `${h}${ASKED[h] ?? ''}`).join(', ')}`] : []),
+        ...(evidence.givesAway ? [`  gives away: ${evidence.givesAway.map((g) => GIVEN_AWAY[g]).join(', ')}`] : []),
       ];
     }
     case 'console':

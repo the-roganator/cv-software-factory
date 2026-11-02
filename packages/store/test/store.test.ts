@@ -52,7 +52,7 @@ function report(item: string): NewEvent<'signal.received'> {
     ts: at(1),
     work_item: item,
     type: 'signal.received',
-    version: 4,
+    version: 5,
     actor: 'widget',
     summary: 'Report: the clock says ten past four',
     payload: {

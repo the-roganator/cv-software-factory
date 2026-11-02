@@ -14,7 +14,7 @@ export const VERSIONS = {
   'defect.injected': 1,
   'attack.launched': 1,
   // Sense and triage
-  'signal.received': 4,
+  'signal.received': 5,
   'judgement.made': 1,
   'ticket.opened': 1,
   // Plan and build
@@ -38,8 +38,8 @@ export const VERSIONS = {
   'release.rolled-back': 4,
   'release.aborted': 1,
   'release.errored': 1,
-  'verification.finished': 4,
-  'signal.rechecked': 2,
+  'verification.finished': 5,
+  'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,
   'hold.started': 10,

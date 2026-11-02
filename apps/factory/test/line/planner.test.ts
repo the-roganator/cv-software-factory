@@ -303,6 +303,23 @@ describe('the planner’s prompt', () => {
     expect(prompt).toContain('no scope may name: .github/, deploy/, Dockerfile.');
   });
 
+  it('names the security headers the crawler found missing, and no other, in the bench’s missing-header', () => {
+    const fixture = FIXTURES.planner['missing-header'];
+    if (!fixture) throw new Error('The bench has no missing-header fixture for the planner.');
+    for (const signal of fixture.input.signals)
+      expect(validateSignal({ ...signal, observedAt: '2026-11-02T10:00:00.000Z', artifacts: [] })).toEqual({
+        ok: true,
+      });
+    const prompt = planner.prompt(fixture.input);
+    expect(prompt).toContain(
+      `Plan the fix for ticket #${fixture.input.workItem}: Content-Security-Policy and X-Frame-Options are missing on every page.`,
+    );
+    expect(prompt).toContain('missing: content-security-policy, x-frame-options (or frame-ancestors in the CSP)');
+    // Recorded, absent, but not asked for over plain HTTP: the planner is not told it is missing.
+    expect(prompt).toContain('strict-transport-security: (absent)');
+    expect(prompt).not.toMatch(/missing: [^\n]*strict-transport-security/);
+  });
+
   it('stops it at a diagnosis, and leaves reproducing the defect to the coder’s failing test', () => {
     const prompt = planner.prompt(INPUT);
     expect(prompt).toContain('Stop as soon as you can name the code at fault');

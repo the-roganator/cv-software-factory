@@ -15,7 +15,13 @@
  * failed, so they are trouble there. On a route where no page could be, such as an asset's or a redirect's that
  * landed on a page elsewhere, they are not checked at all.
  */
-import type { Evidence, SymptomClass } from '@software-factory/events';
+import {
+  type Evidence,
+  type Giveaway,
+  SECURITY_HEADERS,
+  type SecurityHeader,
+  type SymptomClass,
+} from '@software-factory/events';
 import type { Check } from '../capture.ts';
 import { type Exchange, exchange, type RequestHeaders } from '../senses/http.ts';
 import type { Finding } from '../senses/types.ts';
@@ -24,11 +30,8 @@ import { type Crawl, cachingJudged, type Resource } from './crawl.ts';
 /** An answer slower than this, in milliseconds, is slow. It is generous: the check is for answers that hurt. */
 export const SLOW = 2_000;
 
-/** The headers any site should send on its pages, as `[name, what to look for]`. */
-const SECURITY_HEADERS = ['content-security-policy', 'x-content-type-options', 'referrer-policy', 'x-frame-options'];
-
 /** Every header the checks read, so that an exchange's evidence shows what was looked at. */
-export const RECORDED = [...SECURITY_HEADERS, 'strict-transport-security', 'expires', 'server', 'x-powered-by'];
+export const RECORDED = [...SECURITY_HEADERS, 'expires', 'server', 'x-powered-by'];
 
 export interface Issue extends Finding {
   route: string;
@@ -209,7 +212,8 @@ export function judge({ crawl, errors, secure, version, template, slow = SLOW }:
         at: page.path,
         scope: 'page',
         message: `${page.path} does not send ${missing.join(', ')}.`,
-        evidence: [resource.answer.evidence],
+        // A copy: the same answer is the evidence of other checks, which found nothing missing.
+        evidence: [{ ...resource.answer.evidence, missing }],
       });
     }
     if (page.console.length) {
@@ -262,8 +266,8 @@ export function judge({ crawl, errors, secure, version, template, slow = SLOW }:
       route: error.route,
       at: '/',
       scope: 'other',
-      message: `The error page for ${error.what} gives away ${leaked.join(', ')}.`,
-      evidence: [error.answer.evidence],
+      message: `The error page for ${error.what} gives away ${leaked.map((g) => GIVEAWAY_WORDS[g]).join(', ')}.`,
+      evidence: [{ ...error.answer.evidence, givesAway: leaked }],
     });
   }
   return { issues, trouble };
@@ -277,16 +281,17 @@ function cached(answer: Exchange): boolean {
   return Boolean(answer.headers.expires) && Date.parse(answer.headers.expires as string) > Date.now();
 }
 
-function missingHeaders(answer: Exchange, secure: boolean): string[] {
+/** The security headers a page did not send as asked, in `SECURITY_HEADERS`' order. */
+function missingHeaders(answer: Exchange, secure: boolean): SecurityHeader[] {
   const { headers } = answer;
-  const missing = SECURITY_HEADERS.filter((name) => {
+  return SECURITY_HEADERS.filter((name) => {
     if (name === 'x-frame-options')
       return !headers[name] && !/frame-ancestors/i.test(headers['content-security-policy'] ?? '');
     if (name === 'x-content-type-options') return !/nosniff/i.test(headers[name] ?? '');
+    // Only over HTTPS: a browser ignores it over plain HTTP.
+    if (name === 'strict-transport-security') return secure && !headers[name];
     return !headers[name];
   });
-  if (secure && !headers['strict-transport-security']) missing.push('strict-transport-security');
-  return missing;
 }
 
 /** A page the app gave for something that is not a page: where it was asked for, and what it said. */
@@ -320,25 +325,36 @@ export async function askForErrors(app: string, headers?: RequestHeaders): Promi
 }
 
 /** What an error page gives away that a visitor has no use for: its workings. */
-const GIVEAWAYS: Array<[string, RegExp]> = [
+const GIVEAWAYS: Array<[Giveaway, RegExp]> = [
   [
-    'a stack trace',
+    'stack-trace',
     /\n\s+at\s+[^\n]*\(.*:\d+:\d+\)|\n\s+at\s+\S+:\d+:\d+|Traceback \(most recent call last\)|Exception in thread|\bStack trace\b/i,
   ],
   [
-    'a file path',
+    'file-path',
     /(?:\/(?:Users|home|var|usr|app|srv|opt|workspace|node_modules|src)\/[\w.@-]+(?:\/[\w.@-]+)+)|[A-Za-z]:\\(?:[\w.-]+\\)+/,
   ],
   [
-    'a framework or version banner',
+    'software-banner',
     /\b(?:Express|Fastify|Koa|Django|Rails|Flask|Werkzeug|Laravel|Spring|ASP\.NET|Apache|nginx|Tomcat|Jetty)\b[\s/]*v?\d|Node\.js v\d+|Cannot (?:GET|POST|PUT|DELETE) \//i,
   ],
-  ['a database error', /SQLITE_\w+|SQLSTATE|syntax error at or near|\bORA-\d+|\bSQL syntax\b/i],
+  ['database-error', /SQLITE_\w+|SQLSTATE|syntax error at or near|\bORA-\d+|\bSQL syntax\b/i],
 ];
 
-export function leaks(answer: Exchange): string[] {
+/** Each giveaway as the crawler's message says it. */
+const GIVEAWAY_WORDS: Record<Giveaway, string> = {
+  'stack-trace': 'a stack trace',
+  'file-path': 'a file path',
+  'software-banner': 'a framework or version banner',
+  'database-error': 'a database error',
+  'server-version': 'its software’s version in Server',
+  'powered-by': 'its software in X-Powered-By',
+};
+
+export function leaks(answer: Exchange): Giveaway[] {
   const found = GIVEAWAYS.filter(([, pattern]) => pattern.test(answer.body)).map(([name]) => name);
   const { server, 'x-powered-by': poweredBy } = answer.headers;
-  if (poweredBy || (server && /\d+\.\d+/.test(server))) found.push('its software in a header');
+  if (server && /\d+\.\d+/.test(server)) found.push('server-version');
+  if (poweredBy) found.push('powered-by');
   return found;
 }

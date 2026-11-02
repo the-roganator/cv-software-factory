@@ -112,7 +112,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 2 adds the looks at an open ticket, as the line takes it and beside another's verified fix, and the
   // version its signal was last seen on, and the merged pull requests of the work items carried; a version 1 look
   // reads as it was, its `carried` the release looked at's alone.
-  'signal.rechecked': { 1: (payload) => payload },
+  // Version 3 lets an HTTP exchange name what its check found wanting, as version 5 of a signal does; a version 2
+  // look's evidence named nothing.
+  'signal.rechecked': { 1: (payload) => payload, 2: (payload) => payload },
   'release.promoted': { 1: (payload) => ({ ...payload, release: payload.version, watched: true, dryRun: false }) },
   // A version 1 rollback recorded one failed measure, by its label, with its series and the reason as its words.
   'release.rolled-back': {
@@ -149,10 +151,13 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // verification was a sense's, though it never said which.
   // Version 3 adds the canary to the senses, and its analysis to the evidence; a version 2 verification reads as it was.
   // Version 4 adds the other work item whose own page a page is; a version 3 verification never said.
+  // Version 5 lets an HTTP exchange name what its check found wanting, as version 5 of a signal does; a version 4
+  // verification's evidence named nothing.
   'verification.finished': {
     1: (payload) => ({ ...payload, dryRun: false }),
     2: (payload) => payload,
     3: (payload) => payload,
+    4: (payload) => payload,
   },
   // Version 2 adds the planner's findings to the kinds of work item; a version 1 work item reads as it was.
   'work-item.opened': { 1: (payload) => payload },
@@ -161,7 +166,14 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 2 adds the planner to the sources of a signal; a version 1 signal reads as it was.
   // Version 3 adds the canary to the senses, and its analysis to the evidence; a version 2 signal reads as it was.
   // Version 4 adds how what the sense reads stood, as triage looked; a version 3 signal never said.
-  'signal.received': { 1: (payload) => payload, 2: (payload) => payload, 3: (payload) => payload },
+  // Version 5 lets an HTTP exchange name what its check found wanting: the security headers a page did not send, and
+  // what an error page gave away. A version 4 signal's evidence named nothing, and an agent is told what it has.
+  'signal.received': {
+    1: (payload) => payload,
+    2: (payload) => payload,
+    3: (payload) => payload,
+    4: (payload) => payload,
+  },
   // Version 2 lets the canary reopen a ticket as any sense may; a version 1 reopening reads as it was.
   // Version 3 adds the line's reopening of a ticket a dry run verified; a version 2 reopening was a sense's.
   'work-item.reopened': { 1: (payload) => payload, 2: (payload) => ({ ...payload, dryRun: false }) },

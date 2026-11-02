@@ -261,6 +261,13 @@ export const evidence = z.discriminatedUnion('kind', [
     timings: z.strictObject({ firstByteMs: count, totalMs: count }),
     /** Each redirect followed on the way, in order. */
     redirects: z.array(z.strictObject({ status: z.number().int().min(300).max(399), location: text(300) })).max(20),
+    /**
+     * What the check found wanting in this answer, by name from a closed list, so that an agent is told it: the
+     * security headers a page did not send as asked (`missing-header`), and what an error page gave away
+     * (`leaks-detail`). Absent from a check that names nothing, and from evidence before signal.received version 5.
+     */
+    missing: z.array(z.enum(V.SECURITY_HEADERS)).min(1).max(V.SECURITY_HEADERS.length).optional(),
+    givesAway: z.array(z.enum(V.GIVEAWAYS)).min(1).max(V.GIVEAWAYS.length).optional(),
   }),
   z.strictObject({
     kind: z.literal('console'),

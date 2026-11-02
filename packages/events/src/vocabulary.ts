@@ -58,6 +58,34 @@ export const SYMPTOM_CLASSES = [
 export type SymptomClass = (typeof SYMPTOM_CLASSES)[number];
 
 /**
+ * The security headers the crawler asks every page for (`missing-header`). Strict-Transport-Security is asked for only
+ * over HTTPS.
+ */
+export const SECURITY_HEADERS = [
+  'content-security-policy',
+  'x-content-type-options',
+  'referrer-policy',
+  'x-frame-options',
+  'strict-transport-security',
+] as const;
+export type SecurityHeader = (typeof SECURITY_HEADERS)[number];
+
+/**
+ * What the crawler finds an error page giving away (`leaks-detail`): a stack trace, a file path, a framework's or
+ * version's banner, or a database's error in the body; its software's version in `server`, or an `x-powered-by` at
+ * all.
+ */
+export const GIVEAWAYS = [
+  'stack-trace',
+  'file-path',
+  'software-banner',
+  'database-error',
+  'server-version',
+  'powered-by',
+] as const;
+export type Giveaway = (typeof GIVEAWAYS)[number];
+
+/**
  * What the senses read besides the app, which triage looks at before it trusts a sense's new problem: Prometheus, Loki
  * and Tempo, and the disk under the cluster's volumes.
  */

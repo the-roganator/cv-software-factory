@@ -582,7 +582,13 @@ export class Triage {
         outcome: 'opened',
         workItem,
         events: [...senseTicket(signal, seed, workItem, now), ...joined],
-        ticket: { workItem, title: ticketTitle(fingerprint, signal.sense), category, fingerprint, sense: signal.sense },
+        ticket: {
+          workItem,
+          title: ticketTitle(fingerprint, signal.sense, signal.evidence),
+          category,
+          fingerprint,
+          sense: signal.sense,
+        },
       };
     }
     // Seen again in a version this sense has not seen it in, such as another release rolled back on it: the ticket

@@ -296,7 +296,7 @@ describe('triage', () => {
       ts: at,
       work_item: item,
       type: 'verification.finished',
-      version: 4,
+      version: 5,
       actor: 'factory',
       summary: 'Cleared',
       payload: { outcome: 'cleared', check: 'links lead somewhere', against: 'c0ffee1', pages: [], dryRun },
@@ -375,7 +375,7 @@ describe('triage', () => {
           ts: at,
           work_item: item,
           type: 'signal.rechecked',
-          version: 2,
+          version: 3,
           actor: 'crawler',
           summary: 'Cleared',
           payload: {

@@ -64,10 +64,13 @@ export interface Need {
   evidence: Evidence;
   /**
    * The way the hold ends, which the card offers first: the pull request to merge, on GitHub (`github`, so the card
-   * marks it as GitHub's), or the settings to raise a cap. A sample's pull request never existed, so it has no `href`
-   * and is not GitHub's: the card names it and links nowhere, as the sheet's facts do.
+   * marks it as GitHub's and opens it in a new tab), or the settings to raise a cap. One that links nowhere says
+   * `why`: a sample's pull request, which never existed, as the sheet's facts link it nowhere too.
    */
-  link: { href: string | undefined; label: string; github: boolean } | undefined;
+  link:
+    | { href: string; label: string; github: boolean }
+    | { href: undefined; label: string; github: false; why: string }
+    | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
@@ -324,6 +327,8 @@ function deployEvidence(item: ItemState): string {
   return `${at} ${deployWords(item.deploy).evidence}`;
 }
 
+const SAMPLE_PULL = 'A sample’s pull request, which never existed, so it links nowhere.';
+
 /**
  * The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed; the
  * settings for a spend cap.
@@ -331,10 +336,14 @@ function deployEvidence(item: ItemState): string {
 function linkOf(item: ItemState, cause: HoldCause): Need['link'] {
   const pull = (verb: string, n: number): Need['link'] =>
     item.sample
-      ? { href: undefined, label: `${verb} #${n}`, github: false }
+      ? { href: undefined, label: `${verb} #${n}`, github: false, why: SAMPLE_PULL }
       : { href: `${APP_REPO}/pull/${n}`, label: `${verb} #${n} on GitHub`, github: true };
   if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
-  if (cause === 'deploy' && item.deploy) return pull('Deploy', item.deploy.pullRequest);
+  // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
+  // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
+  if (cause === 'deploy' && (item.deploy?.state === 'checking' || item.deploy?.state === 'passed')) {
+    return pull('Deploy', item.deploy.pullRequest);
+  }
   if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings', github: false };
   return undefined;
 }

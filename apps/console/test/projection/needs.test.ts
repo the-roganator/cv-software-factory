@@ -341,11 +341,17 @@ describe('Needs you', () => {
       expect(
         String((need?.evidence as { text?: string } | undefined)?.text).replace(/^Merged at \d\d:\d\d\. /, ''),
       ).toBe(text);
-      expect(need?.link).toEqual({
-        href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
-        label: `Deploy #${change.pullRequest} on GitHub`,
-        github: true,
-      });
+      // The deploy pull request is the way on only while its checks run or have passed: failed, closed or merged, a
+      // newer build or Argo CD moves the fix on, and the card offers no way there.
+      expect(need?.link).toEqual(
+        change.state === 'checking' || change.state === 'passed'
+          ? {
+              href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
+              label: `Deploy #${change.pullRequest} on GitHub`,
+              github: true,
+            }
+          : undefined,
+      );
       // Only once its checks pass is it Martin's: then its card says Needs you, flashing, and Needs you counts it.
       expect(outcome).toBe(change.state === 'passed' ? 'needs-you' : 'deploying');
       expect(need?.forMartin).toBe(change.state === 'passed');
@@ -382,11 +388,13 @@ describe('Needs you', () => {
     const merge = needs.holds.find((need) => need.cause === 'merge');
     expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'rejected']);
     // A sample's pull request never existed: the card names it, not as GitHub's, and links nowhere, as the sheet does.
-    expect(merge?.link).toEqual({ href: undefined, label: 'Merge #1312', github: false });
+    const nowhere = 'A sample’s pull request, which never existed, so it links nowhere.';
+    expect(merge?.link).toEqual({ href: undefined, label: 'Merge #1312', github: false, why: nowhere });
     expect(needs.holds.find((need) => need.cause === 'deploy')?.link).toEqual({
       href: undefined,
       label: 'Deploy #1331',
       github: false,
+      why: nowhere,
     });
     expect(needs.holds.find((need) => need.cause === 'spend')?.link).toEqual({
       href: '?view=settings',

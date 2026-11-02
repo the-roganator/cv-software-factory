@@ -77,7 +77,8 @@ function Evidence({ need }: { need: Need }) {
 /**
  * The way the hold ends, first among the answers: the pull request to merge, marked as GitHub's, or the settings to
  * raise a cap. A link, as it opens a page, drawn as the buttons beside it are, in the text's weight. A sample's pull
- * request never existed: it keeps the row, dashed as what can't be taken, named without GitHub, and says why.
+ * request never existed: it keeps the row, dashed as what can't be taken, named without GitHub, and says why. GitHub's
+ * mark stands inside the link, before the words that name GitHub, as the sheet's stands before its link.
  */
 function WayForward({ link }: { link: Need['link'] }) {
   if (!link) return null;
@@ -85,13 +86,20 @@ function WayForward({ link }: { link: Need['link'] }) {
     return (
       <div className="answer">
         <span className="btn small way nowhere">{link.label}</span>
-        <p className="why">A sample’s pull request, which never existed, so it links nowhere.</p>
+        <p className="why">{link.why}</p>
       </div>
     );
   }
-  return (
+  // GitHub opens in a tab of its own, so words half written on the card, or the sheet, are still here after.
+  return link.github ? (
+    <a className="btn small way" href={link.href} target="_blank" rel="noopener">
+      <ToolMark name="github" />
+      {link.label}
+      <span aria-hidden="true">↗</span>
+      <span className="sr"> (opens GitHub in a new tab)</span>
+    </a>
+  ) : (
     <a className="btn small way" href={link.href}>
-      {link.github && <ToolMark name="github" />}
       {link.label}
     </a>
   );

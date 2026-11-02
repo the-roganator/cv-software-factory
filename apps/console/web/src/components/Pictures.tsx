@@ -4,6 +4,7 @@
  */
 import type { Evidence, PayloadOf, Screenshot } from '@software-factory/events';
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
+import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { useArtifactUrl } from '../artifacts.ts';
 import { AGENT_NAME, axis, capital, clock, figure, inWords, money, plural, shortVersion, times } from '../format.ts';
 import type { Picture as PictureData, Source, Tag } from '../projection/index.ts';
@@ -47,7 +48,8 @@ const FRAME = 10 / 16;
 
 /**
  * A figure read from an element's box when it is laid out and whenever it changes size, kept in state: the element's
- * ref, and the figure. `read` may give back the figure before, for a change too small to draw again.
+ * ref, and the figure. `read` may give back the figure before, for a change too small to draw again. It is a fixed
+ * rule, taken from the first render: one that reads props or state would keep their first values.
  */
 export function useMeasured<T>(initial: T, read: (box: DOMRect, before: T) => T) {
   const ref = useRef<HTMLDivElement>(null);
@@ -904,7 +906,7 @@ function HttpPicture({ exchange, source }: Extract<PictureData, { type: 'http' }
               {cycle
                 ? `… and the same ${word(cycle)}, ${plural(rest, 'more time')}.`
                 : `… and ${plural(rest, 'more redirect')}.`}
-              {status === null && ` The ${SENSE[source.sense].name.toLowerCase()} gave up after ${redirects.length}.`}
+              {status === null && ` ${capital(SENSE[source.sense].the)} gave up after ${redirects.length}.`}
             </p>
           )}
         </div>
@@ -1216,7 +1218,7 @@ function SpendPicture({ stage, spent, cap, agents, stopped }: Extract<PictureDat
   return (
     <div className="pad">
       <div className="waits">
-        <div className="cap attn">Held at {capital(stage)} · its spend cap reached</div>
+        <div className="cap attn">Held at {STATION_NAME[stage]} · its spend cap reached</div>
         <div className="figure-big">
           {money(spent)} <small>spent on this work item</small>
         </div>

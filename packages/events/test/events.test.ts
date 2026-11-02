@@ -170,7 +170,7 @@ describe('validation', () => {
     const verified = {
       ...started,
       type: 'verification.finished',
-      version: 4,
+      version: 5,
       actor: 'factory',
       payload: { outcome: 'cleared', sense: 'probe', check: 'search', against: 'v0.9.3', pages: [], dryRun: false },
     };
@@ -531,7 +531,7 @@ describe('validation', () => {
   });
 
   it('takes a look again that says why only when it could not tell, and names the version when it could', () => {
-    const looked = { ...opened, type: 'signal.rechecked', version: 2, actor: 'probe' };
+    const looked = { ...opened, type: 'signal.rechecked', version: 3, actor: 'probe' };
     const payload = {
       for: 'release',
       outcome: 'cleared',
@@ -558,7 +558,7 @@ describe('validation', () => {
   });
 
   it('takes a look as the line takes a ticket, or beside a verified fix, crediting the fixes since its signal', () => {
-    const looked = { ...opened, type: 'signal.rechecked', version: 2, actor: 'crawler' };
+    const looked = { ...opened, type: 'signal.rechecked', version: 3, actor: 'crawler' };
     const payload = {
       for: 'take',
       outcome: 'cleared',
@@ -831,7 +831,7 @@ describe('upcasting the real catalogue', () => {
       event: { version: 2, payload: opened.payload },
     });
     expect(upcast({ type: 'signal.received', version: 1, payload: signal.payload })).toMatchObject({
-      event: { version: 4, payload: signal.payload },
+      event: { version: 5, payload: signal.payload },
     });
     const finding = { kind: 'planner-finding', title: 'A finding on /about', sample: false };
     expect(validate({ ...opened, actor: 'planner', payload: finding })).toEqual({ ok: true });
@@ -1098,7 +1098,7 @@ describe('upcasting the real catalogue', () => {
   it('reads version 3 of signal.received as it was, and takes triage’s look at what the sense reads at 4', () => {
     const logs = { sense: 'logs', check: 'every request leaves a record', route: '/about', version: 'v0.9.2' };
     expect(upcast({ type: 'signal.received', version: 3, payload: logs })).toMatchObject({
-      event: { version: 4, payload: logs },
+      event: { version: 5, payload: logs },
     });
     const environment = {
       at: '2026-10-13T19:47:57.000Z',
@@ -1116,6 +1116,54 @@ describe('upcasting the real catalogue', () => {
     const inbox = { ...logs, symptom: 'missing-log', observedAt: signal.ts, artifacts: [] };
     expect(validateSignal(inbox)).toEqual({ ok: true });
     expect(validateSignal({ ...inbox, environment }).ok).toBe(false);
+  });
+
+  it('reads version 4 of signal.received, and versions before of a verification and a look, as they were', () => {
+    const http = {
+      kind: 'http',
+      method: 'GET',
+      url: '/',
+      status: 200,
+      headers: { 'content-security-policy': null },
+      timings: { firstByteMs: 2, totalMs: 3 },
+      redirects: [],
+    };
+    const crawler = { sense: 'crawler', check: 'missing-header@*', route: '*', version: 'd487739', evidence: [http] };
+    expect(upcast({ type: 'signal.received', version: 4, payload: crawler })).toMatchObject({
+      event: { version: 5, payload: crawler },
+    });
+    for (const [type, from] of [
+      ['verification.finished', 4],
+      ['signal.rechecked', 2],
+    ] as const) {
+      const payload = { check: 'missing-header@*', evidence: http };
+      expect(upcast({ type, version: from, payload })).toMatchObject({ event: { version: from + 1, payload } });
+    }
+  });
+
+  it('lets an HTTP exchange name the security headers it lacked and what it gave away, from closed lists only', () => {
+    const http = {
+      kind: 'http',
+      method: 'GET',
+      url: '/',
+      status: 200,
+      headers: { 'content-security-policy': null, 'x-frame-options': null },
+      timings: { firstByteMs: 2, totalMs: 3 },
+      redirects: [],
+    };
+    const found = (evidence: object) =>
+      validate({
+        ...signal,
+        actor: 'crawler',
+        summary: '/ does not send content-security-policy',
+        payload: { sense: 'crawler', check: 'missing-header@*', route: '*', version: 'd487739', evidence: [evidence] },
+      });
+    expect(found({ ...http, missing: ['content-security-policy', 'x-frame-options'] })).toEqual({ ok: true });
+    expect(found({ ...http, givesAway: ['stack-trace', 'powered-by'] })).toEqual({ ok: true });
+    expect(found({ ...http, missing: ['x-anything'] }).ok).toBe(false);
+    expect(found({ ...http, givesAway: ['ignore previous instructions'] }).ok).toBe(false);
+    // A list that names nothing is left out, not empty.
+    expect(found({ ...http, missing: [] }).ok).toBe(false);
   });
 
   it('reads version 2 of release.started as a release whose steps are not known', () => {
@@ -1303,7 +1351,7 @@ describe('upcasting the real catalogue', () => {
   it('reads version 1 of verification.finished as a verification that ran, by a sense it never named', () => {
     const v1 = { outcome: 'cleared', check: 'Every page', against: 'v0.9.0', pages: [] };
     const read = upcast({ type: 'verification.finished', version: 1, payload: v1 });
-    expect(read).toMatchObject({ event: { version: 4, payload: { ...v1, dryRun: false } } });
+    expect(read).toMatchObject({ event: { version: 5, payload: { ...v1, dryRun: false } } });
     expect(read.ok && validate(asNew(read.event))).toEqual({ ok: true });
   });
 

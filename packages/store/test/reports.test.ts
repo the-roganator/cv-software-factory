@@ -38,7 +38,7 @@ function judged(workItem: string, sense: 'report' | 'planner', text: string, ts 
       ...base,
       id: crypto.randomUUID(),
       type: 'signal.received',
-      version: 4,
+      version: 5,
       actor: 'triage',
       summary: 'A visitor reported a problem on /about',
       payload: {

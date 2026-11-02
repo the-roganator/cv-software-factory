@@ -11,9 +11,11 @@ import {
   type Dependency,
   type Environment,
   type EventType,
+  type Evidence,
   type InboxSignal,
   type NewEvent,
   type PayloadOf,
+  SECURITY_HEADERS,
   type Sense,
   type SignalSource,
   type SymptomClass,
@@ -125,13 +127,52 @@ export const CANARY_ANY_ROUTE = 'routes it could not narrow to one';
 const where = (route: string, sense?: SignalSource) =>
   route !== '*' ? shortPath(route) : sense === 'canary' ? CANARY_ANY_ROUTE : 'every page';
 
-/** A ticket's title, from what was seen and where, and by which sense when it was a sense. */
-export const ticketTitle = (fingerprint: Fingerprint, sense?: SignalSource): string =>
-  !('class' in fingerprint)
-    ? `Wrong words on ${shortPath(fingerprint.page)}`
-    : fingerprint.route === '*' && sense === 'canary'
-      ? `${TITLES[fingerprint.class]} in a canary release`
-      : `${TITLES[fingerprint.class]} on ${where(fingerprint.route)}`;
+/** How many, in words, for a title. */
+const HOW_MANY = ['None', 'One', 'Two', 'Three', 'Four', 'Five'];
+
+/** The longest title a ticket takes (`ticket.opened`). */
+const LONGEST_TITLE = 120;
+
+/**
+ * What a title says is wrong, from a sense's evidence where it names it: the security headers missing, by name in the
+ * order the crawler asks for them, or by how many. On every page, only those every page's evidence lacks: a header one
+ * page lacks is not missing on every page. On one route, those any of its pages lacks.
+ */
+function whatIsWrong(symptom: SymptomClass, route: string, evidence: readonly Evidence[], named: boolean): string {
+  const lists = evidence.flatMap((e) => (e.kind === 'http' && e.missing ? [e.missing] : []));
+  const missing = new Set<string>(
+    route === '*'
+      ? SECURITY_HEADERS.filter((h) => lists.length && lists.every((list) => list.includes(h)))
+      : lists.flat(),
+  );
+  if (symptom !== 'missing-header' || !missing.size) return TITLES[symptom];
+  const names = SECURITY_HEADERS.filter((h) => missing.has(h)).map((h) =>
+    h.replace(/(^|-)([a-z])/g, (_, dash: string, c: string) => dash + c.toUpperCase()),
+  );
+  if (names.length === 1) return `${names[0]} is missing`;
+  if (!named) return `${HOW_MANY[names.length]} security headers are missing`;
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)} are missing`;
+}
+
+/**
+ * A ticket's title, from what was seen and where, and by which sense when it was a sense. A sense's evidence names
+ * what is wrong where it can: the security headers a page does not send, by name if the title has room for them.
+ */
+export function ticketTitle(
+  fingerprint: Fingerprint,
+  sense?: SignalSource,
+  evidence: readonly Evidence[] = [],
+): string {
+  if (!('class' in fingerprint)) return `Wrong words on ${shortPath(fingerprint.page)}`;
+  const titled = (named: boolean) => {
+    const wrong = whatIsWrong(fingerprint.class, fingerprint.route, evidence, named);
+    return fingerprint.route === '*' && sense === 'canary'
+      ? `${wrong} in a canary release`
+      : `${wrong} on ${where(fingerprint.route)}`;
+  };
+  const named = titled(true);
+  return named.length <= LONGEST_TITLE ? named : titled(false);
+}
 
 /** A report's ticket says a visitor raised it. Its title is the factory's words, never the visitor's. */
 export const reportedTitle = (fingerprint: Fingerprint): string => {
@@ -168,7 +209,7 @@ export function senseTicket(signal: Seen, signalId: string, workItem: string, no
   const symptom = signal.symptom as SymptomClass;
   const { category, severity } = SYMPTOMS[symptom];
   const fingerprint = { route: signal.route, class: symptom };
-  const title = ticketTitle(fingerprint, signal.sense);
+  const title = ticketTitle(fingerprint, signal.sense, signal.evidence);
   const sense = SENSE_NAMES[signal.sense as Exclude<Sense, 'report'>];
   const writer = new Writer(signalId, workItem, now);
   writer.add('work-item.opened', 'triage', `${sense} opened a work item`, {

@@ -11,7 +11,7 @@
  * by its id and timings. Every route an agent is told is cut at its query. Everything else the senses keep is the
  * app's answer to a request the sense made itself.
  */
-import type { PayloadOf } from '@software-factory/events';
+import { GIVEAWAY_WORDS, type PayloadOf, SECURITY_HEADER_ASKS } from '@software-factory/events';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
 import { count } from './agent.ts';
 
@@ -87,6 +87,12 @@ export function evidenceLines(evidence: Evidence): string[] {
         `${evidence.method} ${evidence.url} answered ${evidence.status ?? 'nothing'} in ${evidence.timings.totalMs} ms`,
         ...evidence.redirects.map((r) => `  redirected ${r.status} to ${r.location}`),
         ...(headers.length ? [`  headers: ${headers.join('; ')}`] : []),
+        ...(evidence.missing
+          ? [
+              `  missing: ${evidence.missing.map((h) => (SECURITY_HEADER_ASKS[h] ? `${h} (${SECURITY_HEADER_ASKS[h]})` : h)).join(', ')}`,
+            ]
+          : []),
+        ...(evidence.givesAway ? [`  gives away: ${evidence.givesAway.map((g) => GIVEAWAY_WORDS[g]).join(', ')}`] : []),
       ];
     }
     case 'console':

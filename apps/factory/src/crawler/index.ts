@@ -178,7 +178,7 @@ export class Crawler implements Sense {
  * Folds issues into findings, one for each class on each route, and says which classes are found on every page
  * crawled: those become one finding on `*`, and the pages' own are dropped.
  */
-function collapse(issues: Issue[], pages: string[]) {
+export function collapse(issues: Issue[], pages: string[]) {
   const every = new Set<SymptomClass>();
   if (pages.length >= EVERY_PAGE_NEEDS) {
     for (const symptom of CLASSES) {

@@ -58,6 +58,53 @@ export const SYMPTOM_CLASSES = [
 export type SymptomClass = (typeof SYMPTOM_CLASSES)[number];
 
 /**
+ * The security headers the crawler asks every page for (`missing-header`). Strict-Transport-Security is asked for only
+ * over HTTPS.
+ */
+export const SECURITY_HEADERS = [
+  'content-security-policy',
+  'x-content-type-options',
+  'referrer-policy',
+  'x-frame-options',
+  'strict-transport-security',
+] as const;
+export type SecurityHeader = (typeof SECURITY_HEADERS)[number];
+
+/**
+ * What the crawler asks of a header beyond its being sent, where it asks more, as an agent is told it. The rule
+ * itself is `missingHeaders` in the crawler's `judge.ts`: change one, change both.
+ */
+export const SECURITY_HEADER_ASKS: Partial<Record<SecurityHeader, string>> = {
+  'x-content-type-options': 'as nosniff',
+  'x-frame-options': 'or frame-ancestors in the CSP',
+};
+
+/**
+ * What the crawler finds an error page giving away (`leaks-detail`): a stack trace, a file path, a framework's or
+ * version's banner, or a database's error in the body; its software's version in `server`, or an `x-powered-by` at
+ * all.
+ */
+export const GIVEAWAYS = [
+  'stack-trace',
+  'file-path',
+  'software-banner',
+  'database-error',
+  'server-version',
+  'powered-by',
+] as const;
+export type Giveaway = (typeof GIVEAWAYS)[number];
+
+/** Each giveaway in words, as the crawler's message and an agent's prompt say it. */
+export const GIVEAWAY_WORDS: Record<Giveaway, string> = {
+  'stack-trace': 'a stack trace',
+  'file-path': 'a file path',
+  'software-banner': 'a framework or version banner',
+  'database-error': 'a database error',
+  'server-version': 'its software’s version in Server',
+  'powered-by': 'an X-Powered-By header',
+};
+
+/**
  * What the senses read besides the app, which triage looks at before it trusts a sense's new problem: Prometheus, Loki
  * and Tempo, and the disk under the cluster's volumes.
  */

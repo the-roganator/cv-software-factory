@@ -13,7 +13,7 @@
 import { cutTo, type InboxSignal } from '@software-factory/events';
 import type { Logger } from 'pino';
 import type { Look } from '../pictures/index.ts';
-import type { Sense } from './types.ts';
+import type { Finding, Observation, Sense } from './types.ts';
 
 export interface RunnerOptions {
   sense: Sense;
@@ -42,6 +42,27 @@ export interface Run {
 }
 
 export const FAILURES_BEFORE_A_SIGNAL = 2;
+
+/** A failed check's observation as the signal the runner leaves in the inbox for it. */
+export function signalOf(
+  sense: Sense['name'],
+  { check, route, finding, artifacts }: Observation & { finding: Finding },
+  version: string,
+  at: Date,
+): InboxSignal {
+  const evidence = finding.evidence?.slice(0, 8);
+  return {
+    sense,
+    check,
+    route,
+    version,
+    symptom: finding.symptom,
+    ...(evidence?.length && { evidence }),
+    observedAt: at.toISOString(),
+    summary: cutTo(finding.message.trim(), 200),
+    artifacts,
+  };
+}
 
 export class SenseRunner {
   private readonly options: RunnerOptions;
@@ -120,19 +141,8 @@ export class SenseRunner {
           `a check failed: ${finding.message}`,
         );
         if (!signalled) continue;
-        const evidence = finding.evidence?.slice(0, 8);
         try {
-          await this.options.send({
-            sense: sense.name,
-            check,
-            route,
-            version,
-            symptom: finding.symptom,
-            ...(evidence?.length && { evidence }),
-            observedAt: new Date(this.now()).toISOString(),
-            summary: cutTo(finding.message.trim(), 200),
-            artifacts: observation.artifacts,
-          });
+          await this.options.send(signalOf(sense.name, { ...observation, finding }, version, new Date(this.now())));
           run.signalled++;
         } catch (error) {
           log.error({ sense: sense.name, check, err: describe(error) }, 'the inbox did not take a signal');

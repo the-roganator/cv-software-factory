@@ -10,7 +10,8 @@
  * Every fixture is invented: a ticket, a request, a spec or a pull request that neither a visitor nor Martin wrote. A
  * cassette recorded from one holds only that and the app's public code.
  */
-import type { PayloadOf } from '@software-factory/events';
+import type { Evidence, PayloadOf } from '@software-factory/events';
+import { ticketTitle } from '@software-factory/triage/events';
 import { protectedFrom } from '../../github/paths.ts';
 import { fence } from '../../runners/scope.ts';
 import { SMOKE_SCOPE, SMOKE_SEED } from '../../runners/smoke.ts';
@@ -308,6 +309,54 @@ const PRICE_SIGNALS: Signal[] = [
     ],
   },
 ];
+
+/**
+ * What the crawler saw of a page at `APP_MAIN`, which sends neither a Content-Security-Policy nor an X-Frame-Options,
+ * over plain HTTP, where Strict-Transport-Security is recorded, absent, and not asked for.
+ */
+const headersOf = (url: string): Evidence => ({
+  kind: 'http',
+  method: 'GET',
+  url,
+  status: 200,
+  headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'private, no-store',
+    location: null,
+    'content-security-policy': null,
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'x-frame-options': null,
+    'strict-transport-security': null,
+    expires: null,
+    server: null,
+    'x-powered-by': null,
+  },
+  timings: { firstByteMs: 4, totalMs: 6 },
+  redirects: [],
+  missing: ['content-security-policy', 'x-frame-options'],
+});
+
+/** The crawler's signal of two security headers missing from every page, as it would send it. */
+const HEADERS_SIGNALS: Signal[] = [
+  {
+    sense: 'crawler',
+    check: 'missing-header@*',
+    route: '*',
+    version: 'd487739',
+    symptom: 'missing-header',
+    evidence: ['/', '/products', '/about'].map(headersOf),
+  },
+];
+
+/** The ticket triage would open for it, titled from the signal's evidence. */
+const HEADERS_TICKET: PayloadOf<'ticket.opened'> = {
+  title: ticketTitle({ route: '*', class: 'missing-header' }, 'crawler', HEADERS_SIGNALS[0]?.evidence),
+  category: 'security',
+  severity: 'cosmetic',
+  fingerprint: { route: '*', class: 'missing-header' },
+  traces: [],
+};
 
 /**
  * A spec for the wrong price, as the planner writes one: invented, like the ticket, after the spec Claude wrote from
@@ -720,6 +769,18 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
             ],
           },
         ],
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+      },
+    },
+    'missing-header': {
+      about:
+        'a security defect the crawler names: no page sends a Content-Security-Policy or an X-Frame-Options, and Strict-Transport-Security, absent, is not asked for over plain HTTP',
+      commit: APP_MAIN,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: HEADERS_TICKET },
+        signals: HEADERS_SIGNALS,
         protectedPaths: APP_PROTECTED,
         answers: [],
       },

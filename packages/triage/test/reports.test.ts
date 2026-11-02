@@ -1,6 +1,7 @@
+import type { SecurityHeader } from '@software-factory/events';
 import { validate } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
-import { findingEvents, reportEvents, senseEvidence, senseTicket, typedAnswers } from '../src/events.ts';
+import { findingEvents, reportEvents, senseEvidence, senseTicket, ticketTitle, typedAnswers } from '../src/events.ts';
 import type { Answer, Judge, JudgeRequest } from '../src/judge.ts';
 import { triageQuestions } from '../src/questions.ts';
 import { judgeReport, type PageView, passagesOf } from '../src/reports.ts';
@@ -271,6 +272,61 @@ describe('the events triage writes', () => {
     });
     const evidence = senseEvidence(found, '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d', '1001', NOW);
     expect(evidence.map((e) => [e.type, e.actor])).toEqual([['signal.received', 'crawler']]);
+  });
+
+  it('name the security headers a sense’s evidence says are missing, by name while the title has room', () => {
+    const page = (url: string, missing: SecurityHeader[]) => ({
+      kind: 'http' as const,
+      method: 'GET' as const,
+      url,
+      status: 200,
+      headers: { 'content-security-policy': null, 'x-frame-options': null, 'strict-transport-security': null },
+      timings: { firstByteMs: 2, totalMs: 3 },
+      redirects: [],
+      missing,
+    });
+    const found = (route: string, ...evidence: ReturnType<typeof page>[]) => ({
+      sense: 'crawler' as const,
+      check: `missing-header@${route}`,
+      route,
+      version: 'c02efd8',
+      symptom: 'missing-header' as const,
+      observedAt: '2026-10-04T08:59:58.000Z',
+      evidence,
+      artifacts: [],
+    });
+    const titled = (signal: ReturnType<typeof found>) => {
+      const events = senseTicket(signal, '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a60', '1004', NOW);
+      for (const event of events) expect(validate(event)).toEqual({ ok: true });
+      const titles = events.flatMap((e) => ('title' in e.payload ? [e.payload.title] : []));
+      expect(new Set(titles).size).toBe(1);
+      return titles[0];
+    };
+    // In the crawler's order, and on every page only what every page's evidence lacks.
+    const both = found(
+      '*',
+      page('/', ['x-frame-options', 'content-security-policy']),
+      page('/about', ['content-security-policy', 'x-frame-options']),
+    );
+    expect(titled(both)).toBe('Content-Security-Policy and X-Frame-Options are missing on every page');
+    expect(ticketTitle({ route: '*', class: 'missing-header' }, 'crawler', both.evidence)).toBe(titled(both));
+    const one = found(
+      '*',
+      page('/', ['content-security-policy']),
+      page('/about', ['content-security-policy', 'x-frame-options']),
+    );
+    expect(titled(one)).toBe('Content-Security-Policy is missing on every page');
+    // On one route, what any of its pages lacks.
+    const items = found('/items/:item', page('/items/a', ['referrer-policy']), page('/items/b', ['x-frame-options']));
+    expect(titled(items)).toBe('Referrer-Policy and X-Frame-Options are missing on /items/:item');
+    expect(titled(found('/about', page('/about', ['referrer-policy'])))).toBe('Referrer-Policy is missing on /about');
+    const all = page('/', ['content-security-policy', 'x-content-type-options', 'referrer-policy', 'x-frame-options']);
+    expect(titled(found('*', all))).toBe(
+      'Content-Security-Policy, X-Content-Type-Options, Referrer-Policy and X-Frame-Options are missing on every page',
+    );
+    // Too long to name them all, it counts them.
+    const route = `/${'a'.repeat(59)}`;
+    expect(titled(found(route, { ...all, url: route }))).toBe(`Four security headers are missing on ${route}`);
   });
 
   it('say where a canary’s signal on every route is: routes its analysis could not narrow to one, not every page', () => {

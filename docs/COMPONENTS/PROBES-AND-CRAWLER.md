@@ -151,6 +151,8 @@ then the rows whose images are all gone.
 
 It uses the same sense runner, so a check signals after failing twice in a row.
 
+Agents read a signal by its typed fields, never its summary, so the evidence names what failed. Most classes' evidence names it with what it already records (the status, the redirects, the timings, the headers looked at, the console, axe's findings). Where that is not enough, the HTTP exchange says it in closed lists: the security headers a page did not send as asked (`missing`, of `SECURITY_HEADERS` in `packages/events`; Strict-Transport-Security only over HTTPS), and what an error page gave away (`givesAway`). A test judges a crawl for each class and checks what an agent is told (`crawler-signals.test.ts`).
+
 ### Routes
 
 - **Templates.** A finding is on the route template worked out from the URLs it saw (`/products/:slug`).

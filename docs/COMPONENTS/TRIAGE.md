@@ -27,7 +27,7 @@ flowchart TD
 
 ## Every signal
 
-- **A sense's signal** takes its category and severity from `policy/triage.ts`, and repeats by fingerprint.
+- **A sense's signal** takes its category and severity from `policy/triage.ts`, and repeats by fingerprint. Its ticket's title says what was seen and where, and names what failed where the evidence does: "Content-Security-Policy and X-Frame-Options are missing on every page", or how many headers when their names would not fit.
 - **Only reports and the planner's findings go to Jev** (`triage/v2`), with routing as plain code.
 - It quarantines injection attempts, and parks suggestions for Martin, which close when he [rejects them](#a-suggestion). A quarantine is recorded as typed judgement refusing the report (`action.refused`, mechanism `typed-judgement`, guardrail 8), on the quarantined work item before it closes, appended as triage's role, the only role that may append a refusal by typed judgement (`policy/refusals.ts`). Its output is Jev's typed answers verbatim, with their probabilities, one line an answer; never the report's words, nor the questions, which are the factory's.
 - **One fingerprint, one ticket.**

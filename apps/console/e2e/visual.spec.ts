@@ -11,10 +11,11 @@
  * work item's among them. Milestone 7's from a stand-in for the admin service: the sign-in and enrolment doors, a code
  * refused, Martin's account menu, a visitor's report quoted on his sheet, Preview as visitor, the settings for Martin
  * with a change unsaved and for a visitor, and the bottom row: Needs you (Waiting on Martin for a visitor, his words
- * being written for him, the passkey asked for on a guardrail's Approve, and nothing waiting) beside Controls; and the
- * audit log, whole and narrowed to a visitor's report; and the privacy page. Part B's flags from the samples, with the
- * admin service's check of the app stood in for: Controls' Flags, each confirmation, a flag's card, and the sheet, its
- * card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan, for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
+ * being written for him, the passkey asked for on a guardrail's Approve, and nothing waiting) beside Controls, Flags and
+ * Spend; and the audit log, whole and narrowed to a visitor's report; and the privacy page. Part B's flags from the
+ * samples, with the admin service's check of the app stood in for: the Flags panel, each confirmation, a flag's card,
+ * and the sheet, its card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan,
+ * for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
  * Part C's canary paused for Martin, with auto-rollback off: the Canary panel, its card in Needs you, and the switch.
  */
 import type { Page } from '@playwright/test';
@@ -763,11 +764,11 @@ test.describe('the settings in Ink', () => {
 });
 
 /**
- * Milestone 7, Part B: the flags. Controls' Flags for Martin and a visitor, each of the slider's confirmations, a
+ * Milestone 7, Part B: the flags. The Flags panel for Martin and a visitor, each of the slider's confirmations, a
  * flag's card in Needs you, the app's copy lagging, and an improvement's sheet, its flag part way out and out to
  * everyone, at all three widths; the app taking a change, not checked, and a flag turned off and closed, on a laptop.
  */
-const flagsGroup = (page: Page) => page.locator('article.controls .ctl-group.flags');
+const flagsGroup = (page: Page) => page.getByRole('article', { name: 'Flags' }).locator('.ctl-group.flags');
 
 /** The console with the flags drawn, and the admin service's check of the app answering as asked. */
 async function withFlags(
@@ -798,7 +799,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
   test.describe(`${width}, the flags`, () => {
     test.use({ viewport });
 
-    test('Controls’ Flags, for Martin and for a visitor', async ({ page }) => {
+    test('the Flags panel, for Martin and for a visitor', async ({ page }) => {
       await withFlags(page, 'martin');
       await expect(flagsGroup(page)).toHaveScreenshot(`m07-flags-${width}.png`);
       await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -806,7 +807,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await expect(flagsGroup(page)).toHaveScreenshot(`m07-flags-visitor-${width}.png`);
     });
 
-    test('Controls’ Flags, the app still holding the revision before', async ({ page }) => {
+    test('the Flags panel, the app still holding the revision before', async ({ page }) => {
       await withFlags(page, 'martin', { held: 'lagging' });
       await expect(flagsGroup(page)).toHaveScreenshot(`m07-flags-lagging-${width}.png`);
     });
@@ -896,7 +897,7 @@ test.describe('the flags on a laptop', () => {
   test.use({ viewport: WIDTHS.laptop });
 
   for (const held of ['taking', 'unchecked'] as const) {
-    test(`Controls’ Flags, the app’s copy ${held}`, async ({ page }) => {
+    test(`the Flags panel, the app’s copy ${held}`, async ({ page }) => {
       await withFlags(page, 'visitor', { held });
       await expect(flagsGroup(page).locator('.sync')).toHaveScreenshot(`m07-flags-${held}.png`);
     });
@@ -918,7 +919,7 @@ test.describe('the flags on a laptop', () => {
 test.describe('the flags in Ink', () => {
   test.use({ viewport: WIDTHS.desktop });
 
-  test('Controls’ Flags, the app still holding the revision before', async ({ page }) => {
+  test('the Flags panel, the app still holding the revision before', async ({ page }) => {
     await withFlags(page, 'martin', { theme: 'ink', held: 'lagging' });
     await expect(flagsGroup(page)).toHaveScreenshot('m07-flags-ink.png');
   });

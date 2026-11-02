@@ -1,8 +1,8 @@
 /**
  * An improvement's flag on its sheet, in place of Release and Verify: the flag's name and the stage it is at, in the
  * stages' words, its slider, and a block per stage it reached, newest first, the older ones folded, each drawn as a
- * release's block is. The slider is Controls' own: Martin sets a stage here as there, through the same confirmation,
- * and a visitor's is read-only.
+ * release's block is. The slider is the Flags panel's own: Martin sets a stage here as there, through the same
+ * confirmation, and a visitor's is read-only.
  *
  * What Verify finds at each stage comes in its own events: at Checks, the journeys' result with the flag on, against
  * a run with it off, and the probes' pictures of the pages off and on, in light and dark, with where they differ; at
@@ -321,10 +321,10 @@ export function FlagSection({
         {row.turnedOff
           ? `is off, turned off by Martin.`
           : `is at ${stageWords(row.stage)}: ${lower(stageSays(row.stage))}`}{' '}
-        Each stage is Martin’s, here or in Controls; widening asks for his passkey.
+        Each stage is Martin’s, here or in Flags; widening asks for his passkey.
       </p>
       <FlagSlider row={row} onChoose={admin.kind === 'martin' ? (stop) => setChoosing(stop.to) : undefined} />
-      {/* As in Controls, a flag closed meanwhile takes its confirmation with it: no move is left to make. */}
+      {/* As in Flags, a flag closed meanwhile takes its confirmation with it: no move is left to make. */}
       {choosing && admin.kind === 'martin' && !row.closed && (
         <Suspense fallback={null}>
           <FlagDialog

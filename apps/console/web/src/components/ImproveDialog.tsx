@@ -42,7 +42,7 @@ function Facts({ improve, martin }: { improve: ImproveView; martin: boolean }) {
       </li>
       <li>
         It ships behind a flag of its own, off, and {martin ? 'you widen' : 'he widens'} it a stage at a time from
-        Controls.
+        Flags.
       </li>
       <li>
         {martin

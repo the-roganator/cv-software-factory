@@ -1,5 +1,5 @@
 /**
- * How many times the reel, and a flag's slider in Controls, have rendered. The drag tests read them (through
+ * How many times the reel, and a flag's slider in Flags, have rendered. The drag tests read them (through
  * `?debug=renders`) to prove that dragging draws frames without rendering: the count must not grow with the number of
  * frames.
  */

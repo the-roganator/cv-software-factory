@@ -8,7 +8,7 @@
  * share, Preview skipped, to Checks with no passkey, narrowing, turning off with a reason, turning back on, and a stop
  * that can't be taken, which says why and only closes. The move he confirms is what the console sends. Dragging the
  * handle renders nothing until it is let go. The line under the flags says each state of the admin service's check.
- * An improvement's sheet carries the same slider and the flag's card: Martin moves the flag there as in Controls, and
+ * An improvement's sheet carries the same slider and the flag's card: Martin moves the flag there as in Flags, and
  * a visitor reads both, as the sheet of any held work item heads with its card, read-only.
  * Snapshots are `visual.spec.ts`'s, and axe's look is `quality.spec.ts`'s.
  */
@@ -35,11 +35,11 @@ function moves(page: Page): { bodies: unknown[] } {
   return sent;
 }
 
-const flags = (page: Page) => page.locator('article.controls .ctl-group.flags');
+const flags = (page: Page) => page.getByRole('article', { name: 'Flags' }).locator('.ctl-group.flags');
 const flag = (page: Page, name: string) =>
   flags(page).locator('.flag', { has: page.locator('code', { hasText: name }) });
 const slider = (page: Page, name: string) => flag(page, name).getByRole('group', { name: new RegExp(`^${name}:`) });
-/** A confirmation: the browser's own `<dialog>`, over Controls or over the sheet, which is a dialog itself. */
+/** A confirmation: the browser's own `<dialog>`, over Flags or over the sheet, which is a dialog itself. */
 const dialog = (page: Page) => page.locator('dialog');
 
 async function open(page: Page, as: 'visitor' | 'martin', at = END, extra: readonly RawEvent[] = []) {
@@ -54,7 +54,10 @@ test('a visitor sees each flag read-only, its card waiting on Martin, and whethe
 }) => {
   await heldAs(page, 'held');
   await open(page, 'visitor');
-  await expect(flags(page).locator('> .label')).toHaveText('Flags2 in the app');
+  await expect(page.getByRole('article', { name: 'Flags' }).locator('.panel-head .label')).toHaveText(
+    '2 in the app · Read only',
+  );
+  await expect(page.getByRole('article', { name: 'Flags' })).toContainText('Only Martin sets a flag’s stage');
   await expect(slider(page, 'last-one')).toHaveAccessibleName('last-one: Everyone');
   await expect(slider(page, 'delivery-dates')).toHaveAccessibleName('delivery-dates: Preview');
   await expect(flags(page).getByRole('button', { name: /Widen|Narrow|Turn/ })).toHaveCount(0);
@@ -302,7 +305,7 @@ test('Martin moves a flag from its improvement’s sheet, as from Controls, and 
   });
 
   await test.step('The sheet’s slider takes a stop, through the same confirmation, and sends the same move', async () => {
-    await expect(sheetFlag(page)).toContainText('Each stage is Martin’s, here or in Controls');
+    await expect(sheetFlag(page)).toContainText('Each stage is Martin’s, here or in Flags');
     const stop = sheetFlag(page).getByRole('button', { name: 'Narrow to Checks, delivery-dates' });
     await stop.click();
     await expect(dialog(page).getByRole('heading')).toHaveText('Narrow delivery-dates to Checks');
@@ -360,8 +363,8 @@ const centre = async (stop: Locator) => {
 const renders = (page: Page) => page.evaluate(() => (globalThis as { sfRenders?: { flags: number } }).sfRenders?.flags);
 
 for (const [width, viewport, where] of [
-  ['a desktop', WIDTHS.desktop, 'Controls'],
-  ['a phone', WIDTHS.phone, 'Controls'],
+  ['a desktop', WIDTHS.desktop, 'Flags'],
+  ['a phone', WIDTHS.phone, 'Flags'],
   ['a desktop', WIDTHS.desktop, 'the sheet'],
   ['a phone', WIDTHS.phone, 'the sheet'],
 ] as const) {

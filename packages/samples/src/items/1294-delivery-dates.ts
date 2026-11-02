@@ -7,7 +7,7 @@
 import { commitFor, Item } from '../build.ts';
 import { shot } from '../captures.ts';
 
-/** The flag the spec names, and the one Controls draws. */
+/** The flag the spec names, and the one the Flags panel draws. */
 export const FLAG = 'delivery-dates';
 
 /**

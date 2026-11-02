@@ -161,7 +161,9 @@ One page, read from top to bottom: *is it running → what is happening → what
 - **Landing:** the reel opens at now and stays there until the viewer moves it.
 - **Canary:** the release in flight compared with baseline on requests, error rate, latency and synthetic journeys, with its traffic steps and each step's verdict, and how it ended: promoted, rolled back with the analysis's words, stopped by an analysis error, aborted by Martin, or stopped with the line. It is always there, full width under the line, drawing the newest release in full until the next starts; before the first, it is one line. It says, for everyone, that the canary moves on by itself and rolls back by itself the moment a measure fails, or, with auto-rollback off, pauses for Martin when errors or latency fail, while failed journeys or too few requests still roll it back.
 - **Needs you:** one card per work item waiting on Martin, answered by admin and shown read-only to visitors, with his answers once given. **Try it yourself** (visitors): the visitor actions in section 5.3, with what is left of today's allowance.
-- **Controls:** autonomy, switches, feature flags, each agent's model and effort, and spend against today's caps. Read-only for visitors: everything admin can change, a visitor can see. Guardrails that cannot be switched off are not drawn as switches; one line says so.
+- **Controls:** the line's controls: autonomy, switches and what the line takes, with each agent's model and effort on the settings page. Read-only for visitors: everything admin can change, a visitor can see. Guardrails that cannot be switched off are not drawn as switches; one line says so.
+- **Flags:** each feature flag and its stage, set by admin and shown read-only to visitors.
+- **Spend:** spend against today's caps, for everyone, with the caps on the settings page.
 - **Audit log:** every agent action, model call and admin action, for everyone, from public views.
 - **Guardrails visible:** blocked actions, failed gates and rollbacks are shown as prominently as successes.
 - Panels explain themselves in a line; the reel has a "What am I looking at?" explanation.

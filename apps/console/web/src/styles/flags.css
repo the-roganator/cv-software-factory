@@ -1,8 +1,8 @@
 /*
- * The feature flags: a flag's stages as a slider of five stops, Off to Everyone, in Controls and on an improvement's
- * sheet; Controls' row per flag and the line under them saying whether the app holds them as set; and a flag's
- * pages, on its sheet and its card in Needs you. Where a flag's dialog, card or release differs from the others of its
- * kind, the rule is with theirs (controls.css, needs.css, sheet.css), not here.
+ * The feature flags: a flag's stages as a slider of five stops, Off to Everyone, in the Flags panel and on an
+ * improvement's sheet; the panel's row per flag and the line under them saying whether the app holds them as set; and
+ * a flag's pages, on its sheet and its card in Needs you. Where a flag's dialog, card or release differs from the others
+ * of its kind, the rule is with theirs (controls.css, needs.css, sheet.css), not here.
  */
 
 /* A flag's name in code, wherever it is named. */
@@ -130,7 +130,7 @@ button.fstop:hover i {
   cursor: grabbing;
 }
 
-/* Controls' Flags: a row per flag, its name, its work item and the preview eye, then the slider. */
+/* The Flags panel: a row per flag, its name, its work item and the preview eye, then the slider. */
 .flag {
   display: flex;
   flex-direction: column;

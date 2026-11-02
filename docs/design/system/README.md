@@ -320,13 +320,13 @@ An **MR monogram**: Martin Rogan's initials in Instrument Serif, with the R set 
 
 One page, three widths. The console is designed to be read from top to bottom: *is it running → what is happening → what does it need from me*.
 
-The Canary panel sits full width directly under the line, at every width: it is the Release station opened up. The bottom row, Needs you and Controls, sits under the reel, for everyone; Try it yourself joins it for visitors in milestone 8. Guardrails sits full width under the bottom row, for everyone: a checklist of the eleven, in two columns from 1180 up and one below. Sign-in, enrolment, the settings and the audit log are pages of their own (see Admin).
+The Canary panel sits full width directly under the line, at every width: it is the Release station opened up. The bottom row, Needs you on the left and Controls, Flags and Spend one above the other on the right, sits under the reel, for everyone; Try it yourself joins it for visitors in milestone 8. Guardrails sits full width under the bottom row, for everyone: a checklist of the eleven, in two columns from 1180 up and one below. Sign-in, enrolment, the settings and the audit log are pages of their own (see Admin).
 
 | Width | The line | The Canary panel | The reel and the sheet | Bottom row |
 |---|---|---|---|---|
-| ≥ 1180 | 8 stations in a row, scaled to fit; captions show state and one figure | The steps on the left, the measures on the right | Cards up to 620px with both neighbours showing; the sheet in two columns | Needs you, Controls, side by side and equally wide |
+| ≥ 1180 | 8 stations in a row, scaled to fit; captions show state and one figure | The steps on the left, the measures on the right | Cards up to 620px with both neighbours showing; the sheet in two columns | Needs you on the left; Controls, Flags and Spend one above the other on the right, the two columns equally wide |
 | 721–1179 | Same row, smaller; captions show state only | The same, narrower | The same reel; the sheet in one column, its side column as two cards side by side | The same |
-| ≤ 720 | **Two rows of four stations**, reading left to right like text; the current return becomes one line of text underneath; tapping a station opens a bottom sheet | One column: the steps, then the measures, each baseline under its canary figure | Cards the width of the screen with neighbours just showing; the timeline the same window as at every width, a few work items either side of the playhead; the sheet at 94% height, one column, its scrubber showing dots and the current label | One column: Needs you, then Controls |
+| ≤ 720 | **Two rows of four stations**, reading left to right like text; the current return becomes one line of text underneath; tapping a station opens a bottom sheet | One column: the steps, then the measures, each baseline under its canary figure | Cards the width of the screen with neighbours just showing; the timeline the same window as at every width, a few work items either side of the playhead; the sheet at 94% height, one column, its scrubber showing dots and the current label | One column: Needs you, then Controls, Flags and Spend |
 
 The phone keeps the stations: they are the thing people remember, and at a quarter of the width the face, hatch and beacon still read. What goes on the phone is detail: figures, the parcels on the belt, and the return arcs.
 
@@ -342,7 +342,9 @@ Each panel does one job:
 - **The reel:** every work item, oldest to now. Watching the app change says more than a list; what waits on Martin is also listed in Needs you.
 - **The sheet:** one work item in full: what waits on Martin for it, answered there as in Needs you, the stage scrubber and the site at each step, the evidence, the change, the model calls and the gates.
 - **Needs you:** one card per hold, the line's and triage's (a spec and the planner's question on it are one decision), and each flag that waits for Martin to widen it, each answer beside what it does. Requesting an improvement lives on the Plan station, not here.
-- **Controls:** autonomy, three switches, what the line takes, the flags, and spend against the day's, the month's and a work item's caps; the models and the caps themselves are on the settings page. Guardrails that can't be switched off are not drawn as switches; one line says so, and points to Guardrails.
+- **Controls:** autonomy, three switches and what the line takes. Guardrails that can't be switched off are not drawn as switches; one line says so, and points to Guardrails.
+- **Flags:** each feature flag an improvement ships behind, and its stage.
+- **Spend:** spend against the day's, the month's and a work item's caps; the models and the caps themselves are on the settings page.
 - **Guardrails:** a checklist of spec 6's eleven, each held or not and how old its proof is; each opens in place to what holds it, its refusals and its red-team attack. It is how a visitor sees that the factory can be trusted, so it is on the console, not a page of its own, and kept short there.
 - **Left out on purpose:** placeholders for other apps, a live-feed ticker (the stations and the reel already show what is happening), an always-on feedback loop under the belt (production feeding Sense is a return like any other), sparklines, and help text that repeats itself.
 
@@ -444,7 +446,7 @@ Yellow stays the Release station's bird. Moving is ink, a measure that passed an
 
 ## Admin
 
-What Martin does from the console, and what a visitor sees of it, agreed as a set: the bottom row (Needs you and Controls), sign-in and enrolment, the account menu, the passkey asked again (step-up), the settings, the audit log, the Canary panel's controls, stopping and starting the line, and Preview as visitor. The mockup draws each (`?view=`, `?dialog=`, `?mode=visitor` and the rest in its comment). Requesting an improvement (the "+" on Plan) and the flags are in "Improvements and flags", below.
+What Martin does from the console, and what a visitor sees of it, agreed as a set: the bottom row (Needs you, Controls, Flags and Spend), sign-in and enrolment, the account menu, the passkey asked again (step-up), the settings, the audit log, the Canary panel's controls, stopping and starting the line, and Preview as visitor. The mockup draws each (`?view=`, `?dialog=`, `?mode=visitor` and the rest in its comment). Requesting an improvement (the "+" on Plan) and the flags are in "Improvements and flags", below.
 
 Everything Martin can change, a visitor can see. The console draws both from the same table, `policy/access.ts`, so every control has a read-only form, and the two never drift apart.
 
@@ -454,7 +456,7 @@ A visitor sees every control where Martin does, with its value and what it does,
 
 - **A setting keeps its shape.** The autonomy level and the take are segmented controls with the current choice filled in `line-strong`, not `text`; a switch shows its state with its track at 60%; a model, an effort or a cap is a disabled field showing its value. None can be focused as a button.
 - **An action becomes a label.** Approve, Promote and the rest are drawn as a plain outlined label (`.ro`: 1px `line`, no fill, `text-2`) beside the sentence that says what it does, so a visitor reads the same "what happens if" as Martin.
-- **The panel says whose.** Controls carries a READ ONLY label, and its last line says that only Martin changes these, signed in with his passkey, and that each change is in the audit log. Needs you is titled **Waiting on Martin**, and each card ends "Martin answers, signed in".
+- **The panel says whose.** Controls and Flags carry a READ ONLY label, and the last line of Controls, Flags and Spend says that only Martin changes what it holds, signed in with his passkey, and that each change is in the audit log. Needs you is titled **Waiting on Martin**, and each card ends "Martin answers, signed in".
 
 No lock glyph and no greyed-out buttons: a lock says "pay to unlock", and a grey button says "broken". The read-only form is part of the demo.
 
@@ -502,20 +504,22 @@ The card keeps the `attn` rule on its left edge. A count in the panel's head say
 
 **On the sheet.** A work item's sheet heads its main column with the cards Needs you has for it, its hold's and its flag's, under **Needs you** (**Waiting on Martin** for a visitor), so Martin answers where he reads the evidence. They are the same cards, from the same components: the same answers beside what each does, the same key and passkey, the same write to the admin service, the same refusal on the card. Only the title, which the sheet's head already says, and "Open the work item" are left off, so each card is named by its kicker. At ≥ 1180 they take the main column's width beside the facts; at 721–1179 and on a phone, the one column's, at the top, where the sheet opens. An answered card leaves the sheet as its event arrives, as it leaves Needs you, and the sheet below it tells what happened; Answered today stays in Needs you. With nothing waiting, the sheet has no such section.
 
-### Controls
+### Controls and Spend
 
-Four groups, each under a `t-label`, then a key to the key, and links to the settings and the audit log:
+Controls, Flags and Spend are three panels, one above the other, each under its own heading. Controls holds four groups, each under a `t-label`, then a key to the key and a link to the audit log; Spend, its meters, a line on who sets the caps and a link to the settings. Flags is below, in "Improvements and flags".
 
 - **Autonomy** and **What the line takes** are drawn alike: each a segmented control the panel's full width, its choices equally wide and ordered tightest to loosest, with one line under it saying what the choice in force means. In both, the key sits on each choice looser than the one in force, so it moves with the selection: moving there needs the passkey, and tightening never does.
 - **Autonomy:** Supervised, Guarded, Lights-out. Loosening asks for the passkey and tells Martin's phone; tightening is immediate. Lights-out is never the default.
   - **Lights-out's note:** while Lights-out is chosen, one more line: "Also needs `AUTONOMY` set to `lights-out` in the app's repository, which only you can set". The passkey's dialog that chooses it says the whole of it: it takes two settings: this one, and `AUTONOMY` set to `lights-out` in the app's repository on GitHub, which only Martin can set. The line reads this one and the review gate reads the variable, so the stricter wins: with only one of them set, risky changes still wait for him, as under Guarded. The gate names the rule that passed each pull request, and the line adds one to the queue only by a rule this level allows. A visitor's line says the same of Martin.
 - **Switches:** Agents take new work, Auto-merge low-risk changes, Auto-rollback, each with a line saying what it does, or what off means. Turning agents back on asks for nothing: it is not starting the line, which has its own button and asks. Auto-merge has the line add a pull request to the merge queue once the review check passes it by a rule the autonomy level allows; under Supervised it waits for Martin anyway. **Auto-rollback** says what each position does: on, a canary the analysis judges bad rolls back by itself; off, one whose errors or latency it judges bad pauses for Martin in Needs you instead, while a failed journeys check still rolls it back, and Stop the line still aborts one. Turning it off asks for the passkey ("Turn off auto-rollback": overriding a guardrail) and tells his phone; turning it on asks for nothing, and says a canary already paused for him stays paused.
 - **What the line takes:** Just one (with its number), The next few (with how many, and how many it has taken so far) or Every ticket, a line saying what the line will do, and then the number its choice takes. These are `LINE_TAKE` and `LINE_ONLY` as settings.
-- **Spend:** three meters in ink (spend is not a fault): models today against the day's cap, this month against the month's, and the dearest work item today against a work item's cap, with when the day resets, in UTC. A meter at its cap turns `attn`.
+- **Alerts:** one switch, Alerts to my phone (Alerts to Martin's phone for a visitor), sending every alert to his phone or none: on by default on the public profiles, off on the laptop. Switching it off asks for the passkey; on asks for nothing.
+
+**Spend:** three meters in ink (spend is not a fault): models today against the day's cap, this month against the month's, and the dearest work item today against a work item's cap, with when the day resets, in UTC. A meter at its cap turns `attn`.
 
 ### The settings
 
-A page of its own, from the account menu and from Controls: "Settings" for Martin, "Models and spend" for a visitor.
+A page of its own, from the account menu and from Spend: "Settings" for Martin, "Models and spend" for a visitor.
 
 - **Models:** a table with a row per agent (the planner, the coder, the reviewer, the describer), each with what it does, its model, its effort, and what it spent in the last seven days. The model's drop-down offers the models `policy/models.ts` gives the profile, by the names the sheet uses: Claude Haiku, Sonnet and Opus, and, on a profile with a local model, that one too ("Qwen3.8 27B · local"); a cloud profile has no local entry. Efforts above policy's highest for that agent are listed and disabled, "· above policy", and a hint under the field says "up to high". Each row's cells sit at the top, so the two drop-downs line up, the same height, and the hint hangs beneath. A line says that a change applies from an agent's next step, and that triage is not here, since it asks Jev.
 - **The line** (everyone): Controls' Autonomy, Switches and What the line takes, the same controls and not a copy, at the top of the right-hand column. A change acts at once, as in Controls, with no Save; Martin's panel ends with the key to the key, and a visitor's is read-only, as in Controls.
@@ -559,7 +563,7 @@ A dialog is a `raised` card on a `scrim`, 480px wide in the middle of the screen
 
 ## Improvements and flags
 
-Martin asks for an improvement with the "+" on Plan. It goes down the same line as a fix, and ships behind a feature flag of its own, off; he then widens the flag from Controls a stage at a time, and Verify checks each stage. A visitor sees all of it: the "+" and its form, every improvement's request, spec and progress, and the flags and their stages, read-only, by the rules in "Read only" above. The mockup draws each (`?dialog=improve`, `?flag=`, `?sync=behind` and the rest in its comment), with #1316, "Delivery dates on each product", part way out.
+Martin asks for an improvement with the "+" on Plan. It goes down the same line as a fix, and ships behind a feature flag of its own, off; he then widens the flag from Flags a stage at a time, and Verify checks each stage. A visitor sees all of it: the "+" and its form, every improvement's request, spec and progress, and the flags and their stages, read-only, by the rules in "Read only" above. The mockup draws each (`?dialog=improve`, `?flag=`, `?sync=behind` and the rest in its comment), with #1316, "Delivery dates on each product", part way out.
 
 ### The stages
 
@@ -573,7 +577,7 @@ A flag has four stages, and off. Each stage keeps the ones before it, and off be
 | **Share** | And a share of the traffic generator's requests (10, 25 or 50%), so Verify can compare the two sides. Visitors still don't see it. | Flag on against flag off, on errors and latency, from the generator's own figures, with the canary's thresholds and enough requests on each side. |
 | **Everyone** | Every visitor. | The journeys still pass. |
 
-A flag's stages are drawn as a slider of five stops, Off to Everyone (`.fslider`): the stops passed filled in `signal` and joined by a `signal` line, the stage it stands at ringed like the Canary panel's current step, the rest hollow on a `line-strong` rail. Share carries its share in `text-muted` ("Share 50%"). A stop that cannot be taken now is drawn with a dashed ring, and says why only when it is chosen. The same slider is in Controls, where Martin sets the stage with it, and on the sheet, read-only.
+A flag's stages are drawn as a slider of five stops, Off to Everyone (`.fslider`): the stops passed filled in `signal` and joined by a `signal` line, the stage it stands at ringed like the Canary panel's current step, the rest hollow on a `line-strong` rail. Share carries its share in `text-muted` ("Share 50%"). A stop that cannot be taken now is drawn with a dashed ring, and says why only when it is chosen. The same slider is in Flags and on the sheet, where Martin sets the stage with either; a visitor's is read-only.
 
 ### The "+" and the form
 
@@ -581,7 +585,7 @@ The "+" stays where it is, a `signal` disc on the Plan station, and Plan's panel
 
 - **An improvement** in `t-label` with the improvement glyph, and the title **Request an improvement**, then: "Say what should change, in your own words. The planner turns it into a spec, which waits for you before any code is written."
 - One field, **What you want** (600 characters, counted, required). Its first sentence, cut at a word to about 60 characters, titles the work item until the planner names it in the spec, so no model is asked for a title alone; a line under the field says so.
-- A box of three facts: it waits behind every open ticket (how many now), oldest first, and Just one in Controls takes it at once; it ships behind a flag of its own, off, widened a stage at a time from Controls; visitors see the words, with anything shaped like a secret left out.
+- A box of three facts: it waits behind every open ticket (how many now), oldest first, and Just one in Controls takes it at once; it ships behind a flag of its own, off, widened a stage at a time from Flags; visitors see the words, with anything shaped like a secret left out.
 - **Request**, with the key while the passkey is not fresh, and under it why: requesting widens what the line does, so it asks for the passkey again, and tells his phone.
 
 Once asked, the work item is a row in Plan's panel, waiting with the tickets ("Asked by Martin · waiting behind the open tickets", or "waiting for the planner" when no ticket waits), and a card on the reel. Nothing else announces it.
@@ -597,7 +601,7 @@ The sheet, top to bottom:
 1. **The request:** "The request · in Martin's words" and when, then his words in Instrument Serif 22 in quotation marks, ruled on the left in 2px `text` like his rows in the audit log, and a line saying it was asked with the "+", with his passkey, and that a visitor's suggestion never starts work by itself.
 2. **How it went:** the scrubber's chapters are REQUEST, SPEC, APPROVED, PR, GATES, REVIEW, MERGED (Martin approved the pull request: an improvement's waits for him in every mode), RELEASED (with the flag off), then one for each stage Martin set (CHECKS, PREVIEW, SHARE, EVERYONE, or OFF) and each check Verify made at one (CHECKED, PREVIEWED, COMPARED, VERIFIED). Each widening's event says it was given with the passkey.
 3. **Evidence:** the wipe at full size, its source "Playwright screenshots by the probes: the release, with the flag off, and the Checks stage, with it on".
-4. **The flag**, in place of Release and Verify: the flag's name in code and a sentence saying the stage it is at, in the table's words, and that each stage is Martin's, here or in Controls; the slider, Controls' own, for Martin to set a stage from here just as there (a stop or the handle, the same confirmation, the same passkey rule: widening past Checks asks for it again, narrowing and Off never do), and read-only for a visitor; then one block per stage it reached, newest first, the older folded, drawn as a release's block is (a `raised` card, a `t-label` head and the outcome's word):
+4. **The flag**, in place of Release and Verify: the flag's name in code and a sentence saying the stage it is at, in the table's words, and that each stage is Martin's, here or in Flags; the slider, the Flags panel's own, for Martin to set a stage from here just as there (a stop or the handle, the same confirmation, the same passkey rule: widening past Checks asks for it again, narrowing and Off never do), and read-only for a visitor; then one block per stage it reached, newest first, the older folded, drawn as a release's block is (a `raised` card, a `t-label` head and the outcome's word):
    - **Released · v0.9.12:** shipped with the flag off, so nobody saw a change; its release and when it was promoted.
    - **Checks:** the journeys' and the device check's result, then the pages the spec names, off and on, side by side, each captioned "flag off" or "flag on · intended", a row for each page in light and then in dark (the browser's `prefers-color-scheme`, so a change that answers to either shows), the page's caption naming the scheme ("A product · dark"), and why they are there: the probes are written from the spec, blind, and know no new feature, so the pictures are for Martin to judge when he widens, and the spec's criteria were proved by the pull request's own tests.
    - **Preview:** that a probe asked for the preview, and the cookie the device check found, on the station face; and, while it is at Preview or wider, **Preview it on the app ↗**.
@@ -608,9 +612,9 @@ The sheet, top to bottom:
 
 The facts gain **Flag**: its name and stage ("delivery-dates · preview", or "price-sort · not built yet" while its spec waits).
 
-### The flags in Controls
+### The Flags panel
 
-A group of its own, **Flags**, between What the line takes and Spend, with how many flags the app has. One row per flag, so ten fit without the panel growing much: its name in code, its work item's number as a link that opens the sheet, from Preview up an eye on the right, 16px in `text-muted`, whose tooltip and accessible name say "Preview it on the app" (it opens the app in a new tab with `?preview=` on the first page the spec changes, or its front page when the spec names none, which sets the preview cookie in that browser for a day), and the slider. Nothing else: what a stage means, and why one cannot be taken, is said when it is chosen.
+A panel of its own, **Flags**, between Controls and Spend, with how many flags the app has in its head (and READ ONLY, for a visitor). One row per flag, so ten fit without the panel growing much: its name in code, its work item's number as a link that opens the sheet, from Preview up an eye on the right, 16px in `text-muted`, whose tooltip and accessible name say "Preview it on the app" (it opens the app in a new tab with `?preview=` on the first page the spec changes, or its front page when the spec names none, which sets the preview cookie in that browser for a day), and the slider. Nothing else: what a stage means, and why one cannot be taken, is said when it is chosen.
 
 **Setting a stage.** Martin clicks a stop, or drags the handle and lets go on one; the handle follows the pointer and, until the change is applied, goes back to where the flag stands. Either opens one confirmation, a dialog as the others are, whose box says the move ("PREVIEW → SHARE") and who gets it on there, in the table's words:
 
@@ -633,7 +637,7 @@ An improvement's spec is a hold like any other, **An improvement's spec**, with 
 
 ### For visitors
 
-The same views, read-only, by the rules above: the "+" and its form as described; Controls' flags and an improvement's sheet with their sliders, read-only, with no handle and no stop to press, and the line saying whether the app holds the flags as set; Needs you's flag cards under "Waiting on Martin", in Needs you and on the sheet. **Preview it** stays a link for a visitor: a preview is the app's own feature, sets only the cookie they asked for, and shows the change in their own browser alone. The audit log has each request and each stage, with Martin's words and whether the passkey was given (`improvement.requested`, `flag.staged`).
+The same views, read-only, by the rules above: the "+" and its form as described; the Flags panel and an improvement's sheet with their sliders, read-only, with no handle and no stop to press, and the line saying whether the app holds the flags as set; Needs you's flag cards under "Waiting on Martin", in Needs you and on the sheet. **Preview it** stays a link for a visitor: a preview is the app's own feature, sets only the cookie they asked for, and shows the change in their own browser alone. The audit log has each request and each stage, with Martin's words and whether the passkey was given (`improvement.requested`, `flag.staged`).
 
 ## Guardrails
 

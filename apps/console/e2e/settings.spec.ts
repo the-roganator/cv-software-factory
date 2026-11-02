@@ -1,5 +1,5 @@
 /**
- * The settings (`?view=settings`) and Controls' Spend group, against a stand-in for the admin service: a visitor's
+ * The settings (`?view=settings`) and the Spend panel, against a stand-in for the admin service: a visitor's
  * read-only page, and Martin's, where a change is a draft in words until saved, a save that raises asks for the
  * passkey, a local model has no effort, and a cap that is no figure cannot be saved. The real service's save, and its
  * checks, are `apps/factory/test/admin/admin.test.ts`'s. Snapshots are `visual.spec.ts`'s.
@@ -165,20 +165,55 @@ test('Martin’s passkeys and this session, and the way here from his account me
   await expect(page.getByRole('button', { name: 'Sign out everywhere' })).toBeVisible();
 });
 
-test('Controls shows the spend against today’s caps, for everyone, with a way to the caps', async ({ page }) => {
+test('the Spend panel shows the spend against today’s caps, for everyone, with a way to the caps', async ({ page }) => {
   await adminService(page, 'visitor');
   await page.goto(consoleUrl());
   await ready(page);
-  const controls = page.getByRole('article', { name: 'Controls' });
-  await expect(controls).toContainText('Read only');
-  await expect(controls).toContainText(/Models today\$\d+\.\d\d of \$20\.00/);
-  await expect(controls).toContainText('of $1.00, at the cap');
-  await expect(controls).toContainText('resets at 00:00 UTC');
-  await controls.getByRole('link', { name: 'Models and spend caps' }).click();
+  const spend = page.getByRole('article', { name: 'Spend' });
+  await expect(spend.locator('.panel-head .label')).toHaveText('resets at 00:00 UTC');
+  await expect(spend).toContainText(/Models today\$\d+\.\d\d of \$20\.00/);
+  await expect(spend).toContainText('of $1.00, at the cap');
+  await expect(spend).toContainText('Martin sets each cap within its ceiling');
+  // Controls holds the line's controls alone: the meters and the way to the caps are Spend's.
+  await expect(page.getByRole('article', { name: 'Controls' })).not.toContainText('Models today');
+  await spend.getByRole('link', { name: 'Models and spend caps' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Models and spend');
 });
 
 for (const [width, viewport] of Object.entries(WIDTHS)) {
+  test(`the bottom row on ${width}: Needs you, then Controls, Flags and Spend one above the other`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await adminService(page, 'martin');
+    await page.goto(consoleUrl());
+    await ready(page);
+    const box = async (name: string) => {
+      const found = await page.locator('section.bottom').getByRole('article', { name, exact: true }).boundingBox();
+      if (!found) throw new Error(`no ${name}`);
+      return found;
+    };
+    const [needs, controls, flags, spend] = await Promise.all([
+      box('Needs you'),
+      box('Controls'),
+      box('Flags'),
+      box('Spend'),
+    ]);
+    // In order, each under the one before.
+    expect(flags.y).toBeGreaterThan(controls.y + controls.height);
+    expect(spend.y).toBeGreaterThan(flags.y + flags.height);
+    for (const panel of [flags, spend]) expect(panel.x).toBe(controls.x);
+    if (width === 'phone') {
+      // One column: Needs you above them all, as wide as they are.
+      expect(controls.y).toBeGreaterThan(needs.y + needs.height);
+      expect(controls.x).toBe(needs.x);
+    } else {
+      // Two columns: Needs you on the left, the three on the right, from the top of the row.
+      expect(controls.x).toBeGreaterThan(needs.x + needs.width);
+      expect(controls.y).toBe(needs.y);
+    }
+  });
+
   for (const theme of THEMES) {
     test.describe(`${width}, ${theme}`, () => {
       test.use({ viewport });
@@ -194,7 +229,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
         });
       }
 
-      test('Controls has nothing for axe to find', async ({ page }) => {
+      test('the bottom row has nothing for axe to find', async ({ page }) => {
         await adminService(page, 'martin');
         await page.goto(consoleUrl({ theme }));
         await ready(page);

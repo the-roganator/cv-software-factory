@@ -1,7 +1,7 @@
 /**
  * Which stage a feature flag may move to from where it stands, and why one cannot be taken now (milestone 7, task 16).
- * Martin sets each flag's stage from the console's Controls; the admin service judges the move here, then writes it to
- * `flags` with `policy/flags.ts`. The console draws each stop of a flag's slider from the same judgement, so it says
+ * Martin sets each flag's stage from the console's Flags panel; the admin service judges the move here, then writes it
+ * to `flags` with `policy/flags.ts`. The console draws each stop of a flag's slider from the same judgement, so it says
  * why a stop cannot be taken before Martin chooses it, in the words the admin service refuses it with.
  *
  * - **Widening** is one stage at a time, so Verify can check each, but Preview may be skipped (Checks to Share).

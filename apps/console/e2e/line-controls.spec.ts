@@ -103,8 +103,8 @@ test('a visitor sees every control read-only, and no Stop or Start', async ({ pa
   await expect(panel.locator('.panel-head .label')).toHaveText('Read only');
   const autonomy = panel.getByRole('group', { name: 'Autonomy' });
   await expect(autonomy.getByRole('button', { name: 'Guarded' })).toHaveAttribute('aria-pressed', 'true');
-  // Every control of the line; the flags' links to their work items open the sheet, and the flags are `flags.spec.ts`'s.
-  for (const button of await panel.locator('.ctl-group:not(.flags)').getByRole('button').all()) {
+  // Every control of the line: the flags are a panel of their own, and `flags.spec.ts`'s.
+  for (const button of await panel.locator('.ctl-group').getByRole('button').all()) {
     await expect(button).toBeDisabled();
   }
   await expect(panel.getByRole('switch', { name: /Agents take new work/ })).toBeChecked();

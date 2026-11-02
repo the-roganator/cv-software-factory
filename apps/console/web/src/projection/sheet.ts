@@ -1133,7 +1133,7 @@ export function projectSheet(view: View, item: string): Sheet | undefined {
   const folded = foldOf(view);
   const state = folded.items.find((i) => i.number === item);
   if (!state) return undefined;
-  // An improvement's flag, as Controls draws it: judged against every other flag and the canary in flight.
+  // An improvement's flag, as Flags draws it: judged against every other flag and the canary in flight.
   const flag =
     state.kind === 'improvement'
       ? [...view.flags.flags, ...view.flags.closed].find((row) => row.workItem === item)

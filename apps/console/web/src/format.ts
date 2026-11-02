@@ -118,8 +118,9 @@ export const tokens = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : S
 /** 4.6%, 0.0%; to two places for a rate the canary judges, 0.25%. Every percentage the console writes is one of these. */
 export const percent = (share: number, places = 1) => `${(share * 100).toFixed(places)}%`;
 
-/** A share of pixels changed: to a tenth of a point, a hundredth below one point, and never a change shown as none. */
-export const changedShare = (share: number) => (share < 0.0001 ? 'under 0.01%' : percent(share, share < 0.01 ? 2 : 1));
+/** A share of pixels changed: 0% for none, to a tenth of a point, a hundredth below one point, and never a change shown as none. */
+export const changedShare = (share: number) =>
+  share === 0 ? percent(0, 0) : share < 0.0001 ? 'under 0.01%' : percent(share, share < 0.01 ? 2 : 1);
 
 const whole = new Intl.NumberFormat('en-GB');
 

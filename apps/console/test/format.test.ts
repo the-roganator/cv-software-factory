@@ -105,6 +105,7 @@ describe('a percentage', () => {
     expect(changedShare(0.123)).toBe('12.3%');
     expect(changedShare(0.0042)).toBe('0.42%');
     expect(changedShare(0.00001)).toBe('under 0.01%');
+    expect(changedShare(0)).toBe('0%');
   });
 });
 

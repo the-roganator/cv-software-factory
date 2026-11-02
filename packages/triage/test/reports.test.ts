@@ -302,14 +302,23 @@ describe('the events triage writes', () => {
       expect(new Set(titles).size).toBe(1);
       return titles[0];
     };
-    // In the crawler's order, from every page's evidence.
+    // In the crawler's order, and on every page only what every page's evidence lacks.
     const both = found(
       '*',
-      page('/', ['x-frame-options']),
+      page('/', ['x-frame-options', 'content-security-policy']),
       page('/about', ['content-security-policy', 'x-frame-options']),
     );
     expect(titled(both)).toBe('Content-Security-Policy and X-Frame-Options are missing on every page');
     expect(ticketTitle({ route: '*', class: 'missing-header' }, 'crawler', both.evidence)).toBe(titled(both));
+    const one = found(
+      '*',
+      page('/', ['content-security-policy']),
+      page('/about', ['content-security-policy', 'x-frame-options']),
+    );
+    expect(titled(one)).toBe('Content-Security-Policy is missing on every page');
+    // On one route, what any of its pages lacks.
+    const items = found('/items/:item', page('/items/a', ['referrer-policy']), page('/items/b', ['x-frame-options']));
+    expect(titled(items)).toBe('Referrer-Policy and X-Frame-Options are missing on /items/:item');
     expect(titled(found('/about', page('/about', ['referrer-policy'])))).toBe('Referrer-Policy is missing on /about');
     const all = page('/', ['content-security-policy', 'x-content-type-options', 'referrer-policy', 'x-frame-options']);
     expect(titled(found('*', all))).toBe(

@@ -135,10 +135,16 @@ const LONGEST_TITLE = 120;
 
 /**
  * What a title says is wrong, from a sense's evidence where it names it: the security headers missing, by name in the
- * order the crawler asks for them, or by how many.
+ * order the crawler asks for them, or by how many. On every page, only those every page's evidence lacks: a header one
+ * page lacks is not missing on every page. On one route, those any of its pages lacks.
  */
-function whatIsWrong(symptom: SymptomClass, evidence: readonly Evidence[], named: boolean): string {
-  const missing = new Set(evidence.flatMap((e) => (e.kind === 'http' ? (e.missing ?? []) : [])));
+function whatIsWrong(symptom: SymptomClass, route: string, evidence: readonly Evidence[], named: boolean): string {
+  const lists = evidence.flatMap((e) => (e.kind === 'http' && e.missing ? [e.missing] : []));
+  const missing = new Set<string>(
+    route === '*'
+      ? SECURITY_HEADERS.filter((h) => lists.length && lists.every((list) => list.includes(h)))
+      : lists.flat(),
+  );
   if (symptom !== 'missing-header' || !missing.size) return TITLES[symptom];
   const names = SECURITY_HEADERS.filter((h) => missing.has(h)).map((h) =>
     h.replace(/(^|-)([a-z])/g, (_, dash: string, c: string) => dash + c.toUpperCase()),
@@ -159,7 +165,7 @@ export function ticketTitle(
 ): string {
   if (!('class' in fingerprint)) return `Wrong words on ${shortPath(fingerprint.page)}`;
   const titled = (named: boolean) => {
-    const wrong = whatIsWrong(fingerprint.class, evidence, named);
+    const wrong = whatIsWrong(fingerprint.class, fingerprint.route, evidence, named);
     return fingerprint.route === '*' && sense === 'canary'
       ? `${wrong} in a canary release`
       : `${wrong} on ${where(fingerprint.route)}`;

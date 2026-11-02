@@ -190,12 +190,9 @@ const CASES: Record<(typeof CLASSES)[number], Case> = {
       server: 'nginx',
       'x-powered-by': 'Express',
     }),
-    tells: [
-      'GET /no-such-page answered 404',
-      'gives away: a stack trace in the body, a file path in the body, x-powered-by',
-    ],
+    tells: ['GET /no-such-page answered 404', 'gives away: a stack trace, a file path, an X-Powered-By header'],
     // Server names its software but not its version, which is not a giveaway.
-    not: /gives away: .*server/,
+    not: /gives away: .*Server/,
   },
 };
 
@@ -249,6 +246,6 @@ describe("what each of the crawler's classes tells an agent", () => {
   it('names the version in Server as a giveaway', () => {
     const errors = NOT_FOUND('Not found', { 'content-type': 'text/html', server: 'nginx/1.25.3' });
     const [found] = told({ crawl: crawlOf(), errors, tells: [] });
-    expect(found?.lines).toContain('gives away: its software’s version in server');
+    expect(found?.lines).toContain('gives away: its software’s version in Server');
   });
 });

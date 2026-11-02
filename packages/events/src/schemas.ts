@@ -264,7 +264,8 @@ export const evidence = z.discriminatedUnion('kind', [
     /**
      * What the check found wanting in this answer, by name from a closed list, so that an agent is told it: the
      * security headers a page did not send as asked (`missing-header`), and what an error page gave away
-     * (`leaks-detail`). Absent from a check that names nothing, and from evidence before signal.received version 5.
+     * (`leaks-detail`). Absent from a check that names nothing, and from evidence written before they were added (signal.received
+     * version 5, verification.finished version 5, signal.rechecked version 3).
      */
     missing: z.array(z.enum(V.SECURITY_HEADERS)).min(1).max(V.SECURITY_HEADERS.length).optional(),
     givesAway: z.array(z.enum(V.GIVEAWAYS)).min(1).max(V.GIVEAWAYS.length).optional(),

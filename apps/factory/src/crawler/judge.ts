@@ -17,6 +17,7 @@
  */
 import {
   type Evidence,
+  GIVEAWAY_WORDS,
   type Giveaway,
   SECURITY_HEADERS,
   type SecurityHeader,
@@ -281,7 +282,10 @@ function cached(answer: Exchange): boolean {
   return Boolean(answer.headers.expires) && Date.parse(answer.headers.expires as string) > Date.now();
 }
 
-/** The security headers a page did not send as asked, in `SECURITY_HEADERS`' order. */
+/**
+ * The security headers a page did not send as asked, in `SECURITY_HEADERS`' order. What it asks beyond a header's being
+ * sent is told to agents by `SECURITY_HEADER_ASKS`, beside the list: change one, change both.
+ */
 function missingHeaders(answer: Exchange, secure: boolean): SecurityHeader[] {
   const { headers } = answer;
   return SECURITY_HEADERS.filter((name) => {
@@ -340,16 +344,6 @@ const GIVEAWAYS: Array<[Giveaway, RegExp]> = [
   ],
   ['database-error', /SQLITE_\w+|SQLSTATE|syntax error at or near|\bORA-\d+|\bSQL syntax\b/i],
 ];
-
-/** Each giveaway as the crawler's message says it. */
-const GIVEAWAY_WORDS: Record<Giveaway, string> = {
-  'stack-trace': 'a stack trace',
-  'file-path': 'a file path',
-  'software-banner': 'a framework or version banner',
-  'database-error': 'a database error',
-  'server-version': 'its software’s version in Server',
-  'powered-by': 'its software in X-Powered-By',
-};
 
 export function leaks(answer: Exchange): Giveaway[] {
   const found = GIVEAWAYS.filter(([, pattern]) => pattern.test(answer.body)).map(([name]) => name);

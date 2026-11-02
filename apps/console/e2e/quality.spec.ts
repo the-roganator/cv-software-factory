@@ -12,35 +12,35 @@ const axe = (page: Page) =>
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
     .exclude('.card[data-place="side"]');
 
-// WCAG 2.2 AA, in both themes, at all three widths, with motion on and off.
+// WCAG 2.2 AA, in both themes, at all three widths, with motion off, as the console is tested everywhere unless a
+// test is about motion: motion changes how things move, not the contrast, roles, names and structure axe checks. The
+// page and its open stage panel are scanned from one load; the sheet is reached through its address, as the reel
+// would otherwise have to be stepped to its work item. Each scan fails softly, by name, so one finding does not hide
+// another's.
 for (const [width, viewport] of Object.entries(WIDTHS)) {
   for (const theme of THEMES) {
-    for (const motion of [false, true]) {
-      test.describe(`${width}, ${theme}, motion ${motion ? 'on' : 'off'}`, () => {
-        test.use({ viewport });
+    test.describe(`${width}, ${theme}`, () => {
+      test.use({ viewport });
 
-        test('the page has nothing for axe to find', async ({ page }) => {
-          await page.goto(consoleUrl({ theme, motion }));
-          await ready(page);
-          expect((await axe(page).analyze()).violations).toEqual([]);
+      test('the page, an open stage panel and an open sheet have nothing for axe to find', async ({ page }) => {
+        await page.goto(consoleUrl({ theme }));
+        await ready(page);
+        await test.step('the page', async () => {
+          expect.soft((await axe(page).analyze()).violations, 'the page').toEqual([]);
         });
-
-        test('an open stage panel has nothing for axe to find', async ({ page }) => {
-          await page.goto(consoleUrl({ theme, motion }));
-          await ready(page);
+        await test.step('an open stage panel', async () => {
           await page.getByRole('button', { name: /^Gates:/ }).click();
           await page.getByRole('dialog').waitFor();
-          expect((await axe(page).analyze()).violations).toEqual([]);
+          expect.soft((await axe(page).analyze()).violations, 'an open stage panel').toEqual([]);
         });
-
-        test('an open sheet has nothing for axe to find', async ({ page }) => {
-          await page.goto(consoleUrl({ theme, motion, item: '1296', sheet: true }));
+        await test.step('an open sheet', async () => {
+          await page.goto(consoleUrl({ theme, item: '1296', sheet: true }));
           await page.getByRole('dialog', { name: 'Prices go negative' }).waitFor();
           await page.evaluate(() => document.fonts.ready);
-          expect((await axe(page).include('.sheet').analyze()).violations).toEqual([]);
+          expect.soft((await axe(page).include('.sheet').analyze()).violations, 'an open sheet').toEqual([]);
         });
       });
-    }
+    });
   }
 }
 

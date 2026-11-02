@@ -2,8 +2,8 @@
  * The feature flags, in a panel of their own under Controls: a row per flag, with its name, its work item's link, the
  * preview eye from Preview up, and its stages as a slider of five stops, Off to Everyone. Martin sets a stage by
  * clicking a stop, or by dragging the handle and letting go on one; either opens one confirmation, which says the move
- * and who gets the flag on there, or why that stop can't be taken now. Under the flags, whether the app holds them as set, from the admin service's last
- * check of it.
+ * and who gets the flag on there, or why that stop can't be taken now. Under the flags, whether the app holds them as
+ * set, from the admin service's last check of it.
  *
  * Every stop is judged by `policy/flag-moves.ts`, the rules the admin service refuses a move by (`projection/flags.ts`),
  * but the service decides: it judges the move again from the stage `flags` holds, asks for the passkey again where the
@@ -283,7 +283,7 @@ function FlagLine({
 /**
  * The Flags panel, between Controls and Spend in the bottom row's right column, for everyone: a row per flag in the
  * app, those turned off and closed folded at the foot, and whether the app holds them as set. With no flag yet, a
- * sentence on how one comes. A visitor's is read-only, and says so in its head, as Controls does.
+ * sentence on how one comes. A visitor's is read-only, says so in its head, as Controls does, and ends saying whose.
  */
 export function FlagsPanel({
   flags,
@@ -350,6 +350,11 @@ export function FlagsPanel({
           </Suspense>
         )}
       </div>
+      {!martin && (
+        <p className="help">
+          Only Martin sets a flag’s stage, signed in with his passkey, and every move is an event for all to see.
+        </p>
+      )}
     </article>
   );
 }

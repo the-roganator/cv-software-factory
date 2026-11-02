@@ -456,7 +456,7 @@ A visitor sees every control where Martin does, with its value and what it does,
 
 - **A setting keeps its shape.** The autonomy level and the take are segmented controls with the current choice filled in `line-strong`, not `text`; a switch shows its state with its track at 60%; a model, an effort or a cap is a disabled field showing its value. None can be focused as a button.
 - **An action becomes a label.** Approve, Promote and the rest are drawn as a plain outlined label (`.ro`: 1px `line`, no fill, `text-2`) beside the sentence that says what it does, so a visitor reads the same "what happens if" as Martin.
-- **The panel says whose.** Controls and Flags carry a READ ONLY label, and Controls' last line says that only Martin changes these, signed in with his passkey, and that each change is in the audit log. Needs you is titled **Waiting on Martin**, and each card ends "Martin answers, signed in".
+- **The panel says whose.** Controls and Flags carry a READ ONLY label, and the last line of Controls, Flags and Spend says that only Martin changes what it holds, signed in with his passkey, and that each change is in the audit log. Needs you is titled **Waiting on Martin**, and each card ends "Martin answers, signed in".
 
 No lock glyph and no greyed-out buttons: a lock says "pay to unlock", and a grey button says "broken". The read-only form is part of the demo.
 

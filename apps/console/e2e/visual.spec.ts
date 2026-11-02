@@ -11,10 +11,11 @@
  * work item's among them. Milestone 7's from a stand-in for the admin service: the sign-in and enrolment doors, a code
  * refused, Martin's account menu, a visitor's report quoted on his sheet, Preview as visitor, the settings for Martin
  * with a change unsaved and for a visitor, and the bottom row: Needs you (Waiting on Martin for a visitor, his words
- * being written for him, the passkey asked for on a guardrail's Approve, and nothing waiting) beside Controls; and the
- * audit log, whole and narrowed to a visitor's report; and the privacy page. Part B's flags from the samples, with the
- * admin service's check of the app stood in for: the Flags panel, each confirmation, a flag's card, and the sheet, its
- * card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan, for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
+ * being written for him, the passkey asked for on a guardrail's Approve, and nothing waiting) beside Controls, Flags and
+ * Spend; and the audit log, whole and narrowed to a visitor's report; and the privacy page. Part B's flags from the
+ * samples, with the admin service's check of the app stood in for: the Flags panel, each confirmation, a flag's card,
+ * and the sheet, its card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan,
+ * for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
  * Part C's canary paused for Martin, with auto-rollback off: the Canary panel, its card in Needs you, and the switch.
  */
 import type { Page } from '@playwright/test';

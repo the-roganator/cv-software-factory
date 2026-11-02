@@ -298,6 +298,19 @@ describe('the coder', () => {
     expect(prompt).not.toContain('Process completed');
     // The describer is told the returns, and never what a gate said.
     expect(state.returns).toEqual([{ from: 'gates', reason }]);
+    // Anything secret-shaped is redacted, as a public view redacts it: the prompt is kept in a cassette.
+    const token = `ghp_${'a'.repeat(36)}`;
+    const secret = [
+      { check: 'gates / tests', annotations: [{ path: 'test/env.test.ts', message: `token=${token} leaked` }] },
+    ];
+    const told = coder.prompt({
+      ...input,
+      round: 2,
+      returned: { from: 'gates', reason, failures: secret },
+      session: 's',
+    });
+    expect(told).not.toContain(token);
+    expect(told).toContain('    at test/env.test.ts: “token=[redacted] leaked”');
     // A path cut to fit is said to be cut, so the coder does not look for a file of that name.
     const cut = [
       {

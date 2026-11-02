@@ -50,6 +50,7 @@ import {
   type PayloadOf,
   recordedPath,
 } from '@software-factory/events';
+import { redactSecrets } from '@software-factory/events/public';
 import { z } from 'zod';
 import { guardrailsFor } from '../../../../../policy/refusals.ts';
 import { filesIn, PatchRefused } from '../../github/patches.ts';
@@ -260,12 +261,15 @@ const CHECKS =
 const TEST_INTEGRITY =
   'Add tests as you need, but never delete, rename or skip an existing test, or leave one with fewer assertions: the test integrity gate fails all four.';
 
-/** Text from outside the factory as one line of a prompt: its whitespace one space, and cut to fit. */
-const oneLine = (text: string, max: number) => cutTo(text.replace(/\s+/g, ' ').trim(), max);
+/**
+ * Text from outside the factory as one line of a prompt: anything secret-shaped redacted, as a public view redacts it,
+ * since a prompt is kept in a cassette; its whitespace one space; and cut to fit.
+ */
+const oneLine = (text: string, max: number) => cutTo(redactSecrets(text.replace(/\s+/g, ' ').trim()), max);
 
 /**
  * The checks that failed, each with what it said was wrong at which file. The words are the gate's, and quote the
- * app's code (a test's name, a path), which a change can put anything in: each is quoted, on a line of its own and cut
+ * app's code (a test's name, a path), which a change can put anything in: each is redacted and quoted, on a line of its own and cut
  * to what the event keeps, under a line that says it is data. A check with no reason recorded (it named none, or was
  * recorded before the line kept them) is still named, without saying it named none.
  */

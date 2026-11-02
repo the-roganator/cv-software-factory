@@ -11,6 +11,8 @@ An agent: writes the fix, or builds an improvement behind its flag. Part of the 
 - The ticket's public view, and each sense's signal by its typed fields, as the [planner's](PLANNER.md#its-prompt) does (`line/agents/evidence.ts`).
 - The spec, with its scope as the only files it may change.
 - In a later round sent back by review, the review's blocking findings and its suggestions, numbered.
+- In a later round sent back by the gates, each required check that failed, with what it said was wrong at which file: its annotations at the failure level, which the line records with it (`gate.finished`), without Actions' line for a step that exited non-zero. They are the gate's words, which quote the app's code (a test's name, a path), so each is quoted on a line of its own, cut to 200 characters, under a line that says it is data. A check that said nothing is still named.
+- Before its first round, the rule the [test integrity](TEST-INTEGRITY.md) gate holds it to: tests may be added, but no existing test deleted, renamed, skipped or left with fewer assertions. When a criterion contradicts an existing test the scope allows, it leaves the test alone and changes nothing, naming the test the spec contradicts, so the work item holds for Martin rather than failing the gate.
 - When a criterion cannot be met without changing a file outside the scope (an existing test its change rightly makes wrong), to leave that file alone and name it, with why: never a path no scope may name, which the prompt lists. A later round that resumes its session is told it again.
 
 For an improvement, Martin's words in place of the ticket, and the spec with its flag, its pages and each criterion's side of the flag, and:

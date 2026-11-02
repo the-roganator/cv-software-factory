@@ -146,6 +146,7 @@ type Payloads = {
     | 'signal.received'
     | 'signal.rechecked'
     | 'gates.started'
+    | 'gate.finished'
     | 'gates.finished'
     | 'review.submitted'
     | 'review.accepted'
@@ -165,6 +166,22 @@ type Payloads = {
     | 'work-item.reopened']: PayloadOf<K>;
 };
 
+/** A check that failed on a commit, with what it said was wrong: none, when it named nothing. */
+export interface GateFailure {
+  check: string;
+  annotations: NonNullable<PayloadOf<'gate.finished'>['annotations']>;
+}
+
+/**
+ * Why the work went back to Build: where from, and the reason. Work the gates sent back has each required check that
+ * failed too, with what it said, so the coder is told why and not only which.
+ */
+export interface Rebuild {
+  from: Stage;
+  reason: string;
+  failures?: GateFailure[];
+}
+
 /** Where a work item is, from its events. */
 export interface WorkItemState {
   ticket: PayloadOf<'ticket.opened'> | undefined;
@@ -177,7 +194,7 @@ export interface WorkItemState {
   spec: PayloadOf<'spec.written'> | undefined;
   /** The latest pull request pushed, and whether the coder must build again since. */
   pullRequest: PayloadOf<'pull-request.pushed'> | undefined;
-  rebuild: { from: Stage; reason: string } | undefined;
+  rebuild: Rebuild | undefined;
   /** The coder's round: 1, and one more each time work returns to Build. */
   round: number;
   /** The scope fence's output on the coder's last patch, when it refused that patch and nothing was pushed since. */
@@ -185,7 +202,9 @@ export interface WorkItemState {
   /** The coder's patches the scope fence has refused, since Martin last answered a hold. */
   fenceRefusals: number;
   /** The gates on the latest push: the commit they started on, and how they ended, once they have. */
-  gates: { commit: string; conclusion: 'passed' | 'failed' | undefined; failed: string[] } | undefined;
+  gates:
+    | { commit: string; conclusion: 'passed' | 'failed' | undefined; failed: string[]; failures: GateFailure[] }
+    | undefined;
   /**
    * Whether the gates passed on the latest push, in its latest run that has ended: a run on a newer commit of the
    * push (main merged in) leaves them passed while it runs, and replaces them when it ends.
@@ -333,6 +352,19 @@ const initial = (): WorkItemState => ({
   cleared: undefined,
 });
 
+/**
+ * The required checks that failed in the gates' round that ended, each with what it said, for work they send back to
+ * Build: in the order the round named them, and nothing for work sent back from anywhere else.
+ */
+function gateFailures(state: WorkItemState, from: Stage): Pick<Rebuild, 'failures'> {
+  const gates = state.gates;
+  if (from !== 'gates' || gates?.conclusion !== 'failed') return {};
+  const failures = gates.failed.map(
+    (check) => gates.failures.find((f) => f.check === check) ?? { check, annotations: [] },
+  );
+  return failures.length ? { failures } : {};
+}
+
 /** A look again stands only under the hold or wait it was made under. */
 const forgetLook = (state: WorkItemState) => Object.assign(state, { rechecked: undefined, cleared: undefined });
 
@@ -385,7 +417,13 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
       // A run on a newer commit of the same push (main merged into the branch, as to resolve a conflict) replaces the
       // run before once it ends: until then, gates that passed still stand, and the work item waits where it is.
       case 'gates.started':
-        state.gates = { commit: event.payload.commit, conclusion: undefined, failed: [] };
+        state.gates = { commit: event.payload.commit, conclusion: undefined, failed: [], failures: [] };
+        break;
+      case 'gate.finished':
+        if (state.gates?.commit === event.payload.commit && event.payload.conclusion === 'failure') {
+          const { check, annotations = [] } = event.payload;
+          state.gates.failures = [...state.gates.failures.filter((f) => f.check !== check), { check, annotations }];
+        }
         break;
       case 'gates.finished':
         if (state.gates?.commit === event.payload.commit) {
@@ -427,7 +465,11 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         // Work sent back leaves the threads open for the round it goes to.
         state.accepted = undefined;
         if (event.payload.to === 'build') {
-          state.rebuild = { from: event.payload.from, reason: event.payload.reason };
+          state.rebuild = {
+            from: event.payload.from,
+            reason: event.payload.reason,
+            ...gateFailures(state, event.payload.from),
+          };
           state.respecified = false;
           // A change written up is written up again: the next round is a different change, and its pull request
           // went back to draft with the return, until the describer readies it again.

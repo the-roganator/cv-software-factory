@@ -1,6 +1,8 @@
+import { GATE_ANNOTATION_CHARS, MAX_GATE_ANNOTATIONS, type PayloadOf } from '@software-factory/events';
+import { validate } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
 import type { CheckRun, PullRequestState } from '../../src/github/reads.ts';
-import { APP_SLUG, gateEvents, gateRecord, REVIEW_GATE_CHECK } from '../../src/line/gates.ts';
+import { APP_SLUG, asEvent, gateEvents, gateRecord, REVIEW_GATE_CHECK } from '../../src/line/gates.ts';
 
 const SHA = 'a'.repeat(40);
 const MERGED = 'c'.repeat(40);
@@ -77,6 +79,39 @@ describe('the gates, as events', () => {
       conclusion: 'failure',
       summary: 'Two tests fail',
     });
+  });
+
+  it('record what a failed check said was wrong, cut to fit, and nothing for one that named nothing or passed', () => {
+    const said = { path: 'test/app.test.ts', message: '"files > keeps nothing of the other files" was deleted' };
+    const many = Array.from({ length: 14 }, (_, i) => ({
+      path: `test/${i}.test.ts`,
+      message: `"case ${i}" was deleted`,
+    }));
+    const runs = [
+      { ...run(1, 'test integrity', 'failure'), annotations: [said] },
+      { ...run(2, 'types', 'failure'), annotations: [] },
+      { ...run(3, 'lint', 'failure'), annotations: [{ path: 'src/a.ts', message: 'x'.repeat(400) }, ...many] },
+      // GitHub keeps a passing run's notices: they say nothing of a failure.
+      { ...run(4, 'test', 'success'), annotations: [said] },
+    ];
+    const drafts = gateEvents(pr(), runs, ['test integrity', 'types', 'lint', 'test'], nothing);
+    const finished = (check: string) =>
+      drafts.find((d) => d.type === 'gate.finished' && d.payload.check === check)?.payload as
+        | PayloadOf<'gate.finished'>
+        | undefined;
+    expect(finished('test integrity')?.annotations).toEqual([said]);
+    expect(finished('types')).not.toHaveProperty('annotations');
+    expect(finished('test')).not.toHaveProperty('annotations');
+    const lint = finished('lint')?.annotations ?? [];
+    expect(lint).toHaveLength(MAX_GATE_ANNOTATIONS);
+    expect(lint[0]?.message).toHaveLength(GATE_ANNOTATION_CHARS);
+    expect(lint[0]?.message.endsWith('…')).toBe(true);
+    // Each is a valid event, as the store will take it.
+    for (const draft of drafts)
+      expect(validate(asEvent('1015', draft, '2026-11-02T06:50:49.000Z'))).toEqual({ ok: true });
+    // The same runs again say nothing new: what a check said is recorded with it, once.
+    const record = gateRecord(drafts.map(({ type, payload }) => ({ type, payload })));
+    expect(gateEvents(pr(), runs, ['test integrity', 'types', 'lint', 'test'], record)).toEqual([]);
   });
 
   it('take a check run again by its latest run, and leave out the factory’s own', () => {

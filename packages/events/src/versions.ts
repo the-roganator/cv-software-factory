@@ -24,7 +24,7 @@ export const VERSIONS = {
   'wait.started': 1,
   // Gates and review
   'gates.started': 1,
-  'gate.finished': 1,
+  'gate.finished': 2,
   'gates.finished': 1,
   'review.submitted': 4,
   'review.accepted': 1,

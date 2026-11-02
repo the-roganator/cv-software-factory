@@ -651,6 +651,8 @@ describe('public views', () => {
     expect(view).not.toContain('sk-ant-api03');
     expect(view).not.toContain('ghp_');
     expect(view).toContain('FAIL test/money.test.ts');
+    // What a failed check said is the gate's words, which quote the app's code: redacted as its output is.
+    expect(view).toContain('\\"pounds > writes 5 pence as £0.05\\" was deleted');
   });
 
   it('keep a release’s steps, which the console draws the canary by', () => {
@@ -1346,6 +1348,22 @@ describe('upcasting the real catalogue', () => {
     const { release: _, ...unnamed } = canary;
     expect(held(unnamed).ok).toBe(false);
     expect(held({ ...canary, cause: 'deploy' }).ok).toBe(false);
+  });
+
+  it('reads version 1 of gate.finished as a check that said nothing, and takes what one said from version 2', () => {
+    const { annotations: _, ...v1 } = gate.payload;
+    const read = upcast({ type: 'gate.finished', version: 1, payload: v1 });
+    expect(read).toMatchObject({ event: { version: 2, payload: v1 } });
+    expect(read.ok && validate(asNew(read.event))).toEqual({ ok: true });
+    const said = (annotations: unknown) => validate({ ...gate, payload: { ...gate.payload, annotations } });
+    const one = { path: 'test/app.test.ts', message: '"files > keeps nothing of the other files" was deleted' };
+    expect(said([one])).toEqual({ ok: true });
+    // A check that said nothing leaves them out, not empty; and an event keeps no more than ten, each cut to fit.
+    expect(said([]).ok).toBe(false);
+    expect(said(Array.from({ length: 11 }, () => one)).ok).toBe(false);
+    expect(said([{ ...one, message: 'x'.repeat(301) }]).ok).toBe(false);
+    expect(said([{ ...one, path: 'x'.repeat(201) }]).ok).toBe(false);
+    expect(said([{ message: one.message }]).ok).toBe(false);
   });
 
   it('reads version 1 of verification.finished as a verification that ran, by a sense it never named', () => {

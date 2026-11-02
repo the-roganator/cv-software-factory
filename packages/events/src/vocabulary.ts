@@ -381,6 +381,10 @@ export const MAX_NEEDS = 20;
 /** The most a coder may say of why it needs one of them. */
 export const NEED_REASON_CHARS = 200;
 
+/** The most of a failed gate's own messages (its annotations) one `gate.finished` keeps, and the most each may be. */
+export const MAX_GATE_ANNOTATIONS = 10;
+export const GATE_ANNOTATION_CHARS = 300;
+
 /**
  * The most Martin's own reason may be, as he writes it in the console's dialogs and `make stop-the-line`: why he stopped
  * or started the line (`line.stopped`, `line.started`), or moved a flag (`flag.staged`). The admin service takes its

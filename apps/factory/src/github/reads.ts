@@ -1,10 +1,10 @@
 /**
- * What the other workers may read from GitHub through the worker: a pull request's state, the check runs on a commit,
- * the checks a branch's ruleset requires, a branch's head, the paths no patch may change at a commit, and how a
- * commit compares with a branch. The line reads them to see its pull requests through their gates and to Martin's
- * merge, and appends what it sees as events; holds a spec's scope to the protected paths; and gives the reviewer the
- * base its change is measured from, and anchors its findings to lines the change shows. The worker itself touches no
- * store.
+ * What the other workers may read from GitHub through the worker: a pull request's state, the check runs on a commit
+ * (with what each that failed said was wrong), the checks a branch's ruleset requires, a branch's head, the paths no
+ * patch may change at a commit, and how a commit compares with a branch. The line reads them to see its pull requests
+ * through their gates and to Martin's merge, and appends what it sees as events; holds a spec's scope to the protected
+ * paths; and gives the reviewer the base its change is measured from, and anchors its findings to lines the change
+ * shows. The worker itself touches no store.
  *
  * After the merge, the line reads what a release is made of through the worker too, since only it reaches GitHub and
  * GHCR: the commits between two commits, and whether one is an ancestor of the other; the commit an image was built
@@ -48,6 +48,17 @@ export interface CheckRun {
   completedAt: string | null;
   /** The check's own one-line title, when it gave one. */
   title: string | null;
+  /**
+   * What a run that failed said was wrong (`failedAnnotations`): each of its annotations at the failure level, with
+   * the file it named. Absent from a run that has not failed, and from one GitHub never read, such as a dry run's.
+   */
+  annotations?: Annotation[];
+}
+
+/** One of a check run's annotations: the file it is on, or `.github` for the run as a whole, and what it says. */
+export interface Annotation {
+  path: string;
+  message: string;
 }
 
 /**
@@ -154,6 +165,23 @@ const CHECK_RUNS = z.object({
   ),
 });
 
+const ANNOTATIONS = z.array(
+  z.object({ path: z.string(), annotation_level: z.string().nullable().optional(), message: z.string().nullable() }),
+);
+
+/** The most annotations of a run read: the first page. A gate fails on a handful, and an event keeps ten. */
+const ANNOTATIONS_PER_PAGE = 50;
+
+/**
+ * The line Actions adds to every job that fails, on the run as a whole: it says nothing of why, and is the same on
+ * every failed job.
+ */
+const EXIT_CODE = /^Process completed with exit code \d+\.?$/;
+
+/** Whether a run's conclusion is a failure, as the gates judge one: anything but a success, a neutral or a skip. */
+const failed = (run: { status: string; conclusion: string | null }) =>
+  run.status === 'completed' && !['success', 'neutral', 'skipped'].includes(run.conclusion ?? '');
+
 const RULES = z.array(
   z.object({
     type: z.string(),
@@ -238,16 +266,40 @@ export class LiveReads implements Reads {
   async checkRuns(repo: string, sha: string): Promise<CheckRun[]> {
     // One page: a commit here has a dozen check runs, not a hundred.
     const { body } = await this.#github.poll(repo, `/repos/${repo}/commits/${sha}/check-runs?per_page=100`, CHECK_RUNS);
-    return body.check_runs.map((run) => ({
-      id: run.id,
-      name: run.name,
-      status: run.status,
-      conclusion: run.conclusion,
-      app: run.app?.slug ?? null,
-      startedAt: run.started_at ?? null,
-      completedAt: run.completed_at ?? null,
-      title: run.output?.title ?? null,
-    }));
+    return Promise.all(
+      body.check_runs.map(async (run) => {
+        const read: CheckRun = {
+          id: run.id,
+          name: run.name,
+          status: run.status,
+          conclusion: run.conclusion,
+          app: run.app?.slug ?? null,
+          startedAt: run.started_at ?? null,
+          completedAt: run.completed_at ?? null,
+          title: run.output?.title ?? null,
+        };
+        return failed(run) ? { ...read, annotations: await this.#failedAnnotations(repo, run.id) } : read;
+      }),
+    );
+  }
+
+  /**
+   * A failed run's annotations at the failure level, less Actions' exit-code line: what the gate itself said was
+   * wrong. A job's summary is not in its check run's output, so these are the only reasons GitHub keeps for a job.
+   * One more conditional read for each run that failed, and none for the rest; a run whose annotations are gone, as
+   * when it was run again, has none.
+   */
+  async #failedAnnotations(repo: string, id: number): Promise<Annotation[]> {
+    try {
+      const path = `/repos/${repo}/check-runs/${id}/annotations?per_page=${ANNOTATIONS_PER_PAGE}`;
+      const { body } = await this.#github.poll(repo, path, ANNOTATIONS);
+      return body.flatMap(({ path, annotation_level, message }) =>
+        annotation_level === 'failure' && message?.trim() && !EXIT_CODE.test(message.trim()) ? [{ path, message }] : [],
+      );
+    } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found') return [];
+      throw error;
+    }
   }
 
   async requiredChecks(repo: string, branch: string): Promise<string[]> {

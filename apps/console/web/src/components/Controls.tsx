@@ -24,7 +24,7 @@ import { phoneInForce } from '@software-factory/policy/phone';
 import type { Profile } from '@software-factory/policy/spend';
 import { type ReactNode, useId, useState } from 'react';
 import { CONTROL_STEP_UP, PHONE_STEP_UP } from '../access.ts';
-import type { Admin } from '../admin.ts';
+import { type Admin, said as serviceSaid } from '../admin.ts';
 import { AUTONOMY, money, shortWhen } from '../format.ts';
 import type { HeldAnswer } from '../held.ts';
 import type { ControlsView, FlagsView, Meter, SpendView } from '../projection/index.ts';
@@ -165,10 +165,18 @@ function useChange(admin: Admin) {
   // Where the last change was pressed, so what the service said of it shows there.
   const [pressed, setPressed] = useState<Where | undefined>(undefined);
   const change = async (where: Where, body: Change, asked: Asked): Promise<boolean> => {
-    if (admin.kind !== 'martin' || writes.busy) return false;
-    setPressed(where);
+    if (admin.kind !== 'martin') return false;
     const path = where === 'alerts' ? '/admin/alerts/phone' : '/admin/line/controls';
-    return (await writes.send(path, body, { passkey: asked })).kind === 'done';
+    const written = await writes.send(path, body, {
+      passkey: asked,
+      // Moved only by a write that is refused, as it says why: one pressed while another is under way is not sent,
+      // and leaves the other's refusal under the control that was pressed for it.
+      words: (got) => {
+        setPressed(where);
+        return serviceSaid(got);
+      },
+    });
+    return written.kind === 'done';
   };
   /** What the service said of the last change, if it was pressed in this group. */
   const said = (where: Where) => (pressed === where ? writes.refusal : undefined);

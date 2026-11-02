@@ -71,10 +71,13 @@ describe('a write', () => {
     expect(sent).toEqual([{ path: '/admin/line/controls', body: { newWork: false }, token: 'token-1' }]);
   });
 
-  it('sends nothing while one is under way, or with no session', async () => {
+  it('sends nothing while one is under way, or with no session, and says nothing of what it did not send', async () => {
     const { w } = make();
+    answers.push({ status: 409, body: { refused: 'line', message: 'The line is stopped already.' } });
     const first = w.send('/admin/line/controls', { newWork: false });
-    expect((await w.send('/admin/line/controls', { newWork: true })).kind).toBe('unsent');
+    const words = vi.fn(() => 'not sent');
+    expect((await w.send('/admin/line/controls', { newWork: true }, { words })).kind).toBe('unsent');
+    expect(words).not.toHaveBeenCalled();
     await first;
     expect(sent).toHaveLength(1);
     const visitor = make({ token: () => undefined });

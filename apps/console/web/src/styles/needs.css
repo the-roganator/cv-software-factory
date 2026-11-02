@@ -84,13 +84,11 @@
   border-color: var(--attn-line);
   color: var(--attn);
 }
-/* A disabled answer is dashed and muted: a flag's stage that can't be taken now is not faded too, its reason beside it
-   in full; a Send with no words yet is. */
-.answers .btn:disabled {
+/* A flag's stage that can't be taken now is dashed and muted, not faded, its reason beside it in full. Every other
+   disabled answer, a Send with no words yet among them, is faded as any disabled button is. */
+.answers .btn.cant {
   border-style: dashed;
   color: var(--text-muted);
-}
-.answers .btn.cant {
   opacity: 1;
 }
 .answers p.why {

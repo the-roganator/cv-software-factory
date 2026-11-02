@@ -4,7 +4,7 @@
   margin-top: 44px;
 }
 /* Its heading a touch looser than other panels' (controls.css, read after this file). */
-.panel.canary h2 {
+.panel.canary h2:not(.dialog *) {
   line-height: 1.05;
 }
 .canary p {
@@ -404,7 +404,7 @@ p.words {
   gap: 8px 20px;
   padding: 16px 24px;
 }
-.canary.idle h2 {
+.canary.idle h2:not(.dialog *) {
   font-size: 22px;
 }
 .canary.idle p {

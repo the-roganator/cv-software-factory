@@ -218,7 +218,8 @@
   align-items: baseline;
   gap: 12px;
 }
-.panel h2 {
+/* A panel's heading, but not a dialog's mounted inside one, which keeps its own (above), whatever it is in. */
+.panel h2:not(.dialog *) {
   margin: 0;
   font: 400 28px / 1 var(--font-display);
   letter-spacing: -0.2px;

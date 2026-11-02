@@ -57,6 +57,7 @@ test('a visitor sees each flag read-only, its card waiting on Martin, and whethe
   await expect(page.getByRole('article', { name: 'Flags' }).locator('.panel-head .label')).toHaveText(
     '2 in the app · Read only',
   );
+  await expect(page.getByRole('article', { name: 'Flags' })).toContainText('Only Martin sets a flag’s stage');
   await expect(slider(page, 'last-one')).toHaveAccessibleName('last-one: Everyone');
   await expect(slider(page, 'delivery-dates')).toHaveAccessibleName('delivery-dates: Preview');
   await expect(flags(page).getByRole('button', { name: /Widen|Narrow|Turn/ })).toHaveCount(0);

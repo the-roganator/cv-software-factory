@@ -78,14 +78,18 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       test.use({ viewport });
 
       for (const as of ['martin', 'visitor'] as const) {
-        test(`the header, Controls and Spend, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
+        test(`the header, Controls, Flags and Spend, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
           page,
         }) => {
           await adminService(page, as);
           await page.goto(consoleUrl({ theme }));
           await ready(page);
           await page.locator('article.spend').waitFor();
-          const panels = axe(page).include('header.top').include('article.controls').include('article.spend');
+          const panels = axe(page)
+            .include('header.top')
+            .include('article.controls')
+            .include('article.flags-panel')
+            .include('article.spend');
           expect((await panels.analyze()).violations).toEqual([]);
         });
       }

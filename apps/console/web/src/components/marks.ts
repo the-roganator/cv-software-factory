@@ -11,6 +11,10 @@ interface Box {
   height: number;
 }
 
+/** What a mark says: its number in a list beside the picture, its label, or both, as a picture's words name it. */
+export const markLabel = (mark: { n?: number | undefined; label?: string | undefined }) =>
+  [mark.n, mark.label].filter((part) => part !== undefined && part !== '').join(' ');
+
 /** A mark's box on the whole page, in percent of its width and height, and whether its label goes above it. */
 export function placedWhole(mark: Box, page: { width: number; height: number }) {
   const share = (px: number, of: number) => `${of ? (px / of) * 100 : 0}%`;

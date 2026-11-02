@@ -48,7 +48,7 @@ function CheckedPages({ checked }: { checked: Checked & { stage: 'checks' } }) {
             <figure>
               <div className="vis">
                 {off ? (
-                  <Shot shot={off} />
+                  <Shot shot={off} of={`${page.scheme}, the flag off`} />
                 ) : (
                   <div className="shot-missing">
                     <span className="label">No picture with it off</span>
@@ -66,7 +66,7 @@ function CheckedPages({ checked }: { checked: Checked & { stage: 'checks' } }) {
             <figure>
               <div className="vis">
                 {on ? (
-                  <Shot shot={on} />
+                  <Shot shot={on} of={`${page.scheme}, the flag on`} />
                 ) : (
                   <div className="shot-missing">
                     <span className="label">Screenshot unavailable</span>

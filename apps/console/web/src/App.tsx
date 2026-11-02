@@ -18,7 +18,6 @@ import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
 import { Line } from './components/Line.tsx';
 import { LogoSymbols } from './components/Logos.tsx';
 import { NeedsYou } from './components/NeedsYou.tsx';
-import { OpensShots } from './components/Pictures.tsx';
 import { PreviewBanner } from './components/Preview.tsx';
 import { Reel } from './components/Reel.tsx';
 import { EmptyReel, States } from './components/States.tsx';
@@ -312,22 +311,19 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
       <Footer signIn={signedIn.kind === 'visitor'} />
       {open && (
         <Suspense fallback={null}>
-          {/* In a sheet, a screenshot opens at full size; on a card, the card opens the sheet. */}
-          <OpensShots.Provider value={true}>
-            <Sheet
-              view={view}
-              item={open}
-              motion={motion}
-              onStep={(index) => {
-                onCentre(index);
-                setOpen(view.cards[index]?.number);
-              }}
-              onClose={() => setOpen(undefined)}
-              app={factory.app}
-              admin={admin}
-              onMoved={held.refresh}
-            />
-          </OpensShots.Provider>
+          <Sheet
+            view={view}
+            item={open}
+            motion={motion}
+            onStep={(index) => {
+              onCentre(index);
+              setOpen(view.cards[index]?.number);
+            }}
+            onClose={() => setOpen(undefined)}
+            app={factory.app}
+            admin={admin}
+            onMoved={held.refresh}
+          />
         </Suspense>
       )}
     </OriginContext.Provider>

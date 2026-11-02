@@ -2,11 +2,13 @@
  * A screenshot opened at full size from a sheet, from the samples: a shot's frame, a wipe's two sides and a strip of
  * unchanged pages each open the whole page with its marks, by the keyboard as by the pointer, and close back to the
  * control that opened them, with the sheet still open behind; every mark is drawn, the ones a frame leaves out too;
- * a tall page scrolls inside the view; on a phone the view is the screen's width and a wipe's sides are one above the
- * other; on a card, which opens its sheet, a screenshot opens nothing of its own; and WCAG 2.2 AA in both themes.
+ * a tall page scrolls inside the view, under its title and Close; a flag's pages are told apart by name; on a phone
+ * the view is the screen's width and a wipe's sides are one above the other; on a card, which opens its sheet, a
+ * screenshot opens nothing of its own; and WCAG 2.2 AA in both themes.
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
+import { AT_CHECKS } from './flags.ts';
 import { consoleUrl, expect, THEMES, test, WIDTHS } from './support.ts';
 
 const sheetOf = (page: Page) => page.locator('section.sheet');
@@ -121,6 +123,17 @@ test.describe('a screenshot at full size', () => {
     await expect(viewer(page).getByRole('button', { name: 'Close' })).toBeInViewport();
   });
 
+  test('a flag’s pages are named by their scheme and the flag, off and on', async ({ page }) => {
+    await page.goto(consoleUrl({ item: '1271', sheet: true, at: AT_CHECKS }));
+    const names = await sheetOf(page)
+      .locator('.flag-pages')
+      .getByRole('button', { name: /^Open at full size: / })
+      .evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label')));
+    expect(names.length).toBeGreaterThan(1);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names.some((name) => /, (light|dark), the flag off$/.test(name ?? ''))).toBe(true);
+  });
+
   test('on a card, a screenshot opens nothing of its own: the card opens its sheet', async ({ page }) => {
     await page.goto(consoleUrl({ item: '1296' }));
     await expect(page.locator('.card[data-place="centre"] .wipe')).toBeVisible();
@@ -160,6 +173,10 @@ test.describe('a screenshot at full size on a phone', () => {
       .evaluateAll((pages) => pages.map((p) => p.getBoundingClientRect().toJSON() as DOMRect));
     if (!before || !after) throw new Error('No pages');
     expect(after.y).toBeGreaterThan(before.y + before.height);
+    // The title and Close stay on the screen: only the pages scroll.
+    await expect(view.getByRole('heading', { level: 2 })).toBeInViewport({ ratio: 1 });
+    await expect(view.getByRole('button', { name: 'Close' })).toBeInViewport({ ratio: 1 });
+    expect(await view.evaluate((el) => el.scrollHeight - el.clientHeight)).toBe(0);
     await view.getByRole('button', { name: 'Close' }).click();
     await expect(view).toBeHidden();
     await expect(open).toBeFocused();

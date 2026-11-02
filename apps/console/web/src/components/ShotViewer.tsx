@@ -9,7 +9,7 @@ import type { Screenshot } from '@software-factory/events';
 import { createPortal } from 'react';
 import { useArtifactUrl } from '../artifacts.ts';
 import { Dialog } from './Dialog.tsx';
-import { placedWhole } from './marks.ts';
+import { markLabel, placedWhole } from './marks.ts';
 import type { Mark } from './Pictures.tsx';
 import '../styles/viewer.css';
 
@@ -36,8 +36,10 @@ export function ShotViewer({ opened, onClose }: { opened: Opened; onClose: () =>
       {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a tall page scrolls here, and the keyboard scrolls it too */}
       <section className="viewer-scroll" tabIndex={0} aria-label="The whole page">
         <div className={`viewer-sides ${sides.length > 1 ? 'two' : ''}`}>
-          {sides.map((side) => (
-            <WholePage key={side.shot.hash} side={side} />
+          {/* By place: a wipe's two sides can be the same picture. */}
+          {sides.map((side, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: the sides are fixed while the view is open, before then after
+            <WholePage key={i} side={side} />
           ))}
         </div>
       </section>
@@ -52,12 +54,13 @@ function WholePage({ side }: { side: Side }) {
   return (
     <figure className="viewer-side">
       {tag && <figcaption className={`label tone-${tag.tone} toned`}>{tag.text}</figcaption>}
-      <div className="viewer-page">
+      {/* Never wider than the page itself, so a narrow one is not scaled up past its own pixels. */}
+      <div className="viewer-page" style={{ maxWidth: `${shot.width}px` }}>
         <img src={url(shot.hash)} alt={alt} width={shot.width} height={shot.height} draggable={false} />
         {marks.map((mark) => {
           const { up, ...box } = placedWhole(mark, shot);
           // At full size there is room for both a numbered mark's number and its label.
-          const label = [mark.n, mark.label].filter((part) => part !== undefined && part !== '').join(' ');
+          const label = markLabel(mark);
           return (
             <span
               key={`${mark.x},${mark.y},${mark.kind}`}

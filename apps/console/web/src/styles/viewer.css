@@ -5,12 +5,15 @@
 .dialog.viewer {
   width: calc(100vw - 32px);
   max-width: 1328px;
+  /* The card inside is held to the dialog's height, so the dialog never scrolls as well as the page. */
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
 }
 .dialog.viewer:has(.viewer-sides.two) {
   max-width: 2648px;
 }
 .viewer .dialog-card {
-  max-height: calc(100dvh - 40px);
+  max-height: calc(100dvh - 34px);
 }
 .viewer-scroll {
   flex: 1 1 auto;
@@ -46,6 +49,8 @@
 /* The page at the width it is given, its marks in shares of it, and their labels scaled to it as on a card. */
 .viewer-page {
   position: relative;
+  width: 100%;
+  margin-inline: auto;
   container-type: inline-size;
 }
 .viewer-page img {
@@ -58,9 +63,10 @@
   .dialog.viewer {
     width: 100%;
     max-width: none;
+    max-height: calc(100dvh - 16px);
   }
   .viewer .dialog-card {
-    max-height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 18px);
   }
   .viewer-sides.two {
     grid-template-columns: 1fr;

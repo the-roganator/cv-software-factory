@@ -4,6 +4,7 @@
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
+import type { RawEvent } from '@software-factory/events';
 import { consoleUrl, expect, MERGE_WAITING, ready, THEMES, test, WIDTHS } from './support.ts';
 
 const axe = (page: Page) =>
@@ -256,5 +257,41 @@ test.describe('tool marks', () => {
     await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
     await expect(raise).toHaveAttribute('href', '?view=settings');
     await expect(raise.locator('.toolmark')).toHaveCount(0);
+  });
+
+  test('a real pull request’s way is GitHub’s: its mark, and a new tab, said to a screen reader', async ({ page }) => {
+    // #1311 as a work item of the factory's own rather than a sample's, so its pull request is GitHub's.
+    await page.route('**/api/events?after=0', async (route) => {
+      const response = await route.fetch();
+      const events = (await response.json()) as (RawEvent & { work_item?: string })[];
+      route.fulfill({
+        response,
+        json: events.map((event) =>
+          event.type === 'work-item.opened' && event.work_item === '1311'
+            ? { ...event, payload: { ...(event.payload as object), sample: false } }
+            : event,
+        ),
+      });
+    });
+    await page.goto(consoleUrl({}));
+    await ready(page);
+    const answers = page
+      .locator('article.needs .need')
+      .filter({ has: page.getByText('#1311 ·', { exact: false }) })
+      .locator('.answers');
+    const way = answers.getByRole('link', { name: 'Merge #1312 on GitHub (opens GitHub in a new tab)' });
+    await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
+    await expect(way).toHaveAttribute('href', 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1312');
+    await expect(way).toHaveAttribute('target', '_blank');
+    await expect(way).toHaveAttribute('rel', 'noopener');
+    await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
+    await expect(way.locator('.toolmark-github')).toBeVisible();
+    await expect(way).toContainText('↗');
+    await expect(answers.locator('.way.nowhere')).toHaveCount(0);
+    // Its drawing is an image of this origin's, which the policy lets the stylesheet use.
+    const url = await way
+      .locator('.toolmark-github')
+      .evaluate((mark) => getComputedStyle(mark).maskImage.replace(/^url\("?|"?\)$/g, ''));
+    expect((await page.request.get(url)).headers()['content-type']).toContain('image/svg+xml');
   });
 });

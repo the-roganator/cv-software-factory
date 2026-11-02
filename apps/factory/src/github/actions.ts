@@ -14,10 +14,16 @@
  *
  * Both refuse to move, delete or commit to a branch the factory does not own (`branches.ts`), and to act on an issue
  * or pull request the App did not open (`issues.ts`), whatever they are asked: only opening one takes none.
+ *
+ * A pull request's description is where test integrity reads the tests its spec contradicts (`gates/contradicts.ts`).
+ * Only the worker writes that section, rendered from the list the line gives it (`contradicts`), replacing any the
+ * body it was given holds; a body it is given with no list keeps no section at all, so no agent's words can name a
+ * test. Given a list and no body, it rewrites the section in the body the pull request has.
  */
 import type { ArtifactStore } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { type Contradicted, withContradicted } from '../gates/contradicts.ts';
 import { guardBranch } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import {
@@ -127,12 +133,28 @@ export interface PullRequestDraft {
   body: string;
   draft?: boolean;
   labels?: string[];
+  /** The tests the work's spec contradicts, which the body's section names: none, with an empty list. */
+  contradicts?: Contradicted[];
 }
 
 export interface PullRequestChange {
   title?: string;
   body?: string;
   keepCarries?: boolean;
+  /**
+   * The tests the work's spec contradicts, which the body's section names: the new body's, or, with no new body, the
+   * one the pull request has. An empty list takes the section out.
+   */
+  contradicts?: Contradicted[];
+}
+
+/**
+ * A body as the worker publishes it: with the section for the tests given, and only that section. A body with no list
+ * keeps none: markers in it, from an agent or anyone, are taken out, so only `render` writes what the gate reads.
+ */
+export function described(body: string, contradicts: readonly Contradicted[] | undefined): string {
+  if (contradicts === undefined && !/factory:contradicts/i.test(body)) return body;
+  return withContradicted(body, contradicts ?? []);
 }
 
 export interface PullRequestRef {
@@ -398,12 +420,12 @@ export class LiveActions implements Actions {
     return answer.createCommitOnBranch.commit.oid;
   }
 
-  async openPullRequest(repo: string, { labels, ...draft }: PullRequestDraft): Promise<PullRequestRef> {
+  async openPullRequest(repo: string, { labels, contradicts, ...draft }: PullRequestDraft): Promise<PullRequestRef> {
     const made = await this.#github.write(
       repo,
       'POST',
       `/repos/${repo}/pulls`,
-      { ...draft, draft: draft.draft ?? false },
+      { ...draft, body: described(draft.body, contradicts), draft: draft.draft ?? false },
       z.object({ number: NUMBER, html_url: z.string(), node_id: z.string().min(1) }),
     );
     // Its own pull request, just opened: nothing to ask the guard.
@@ -411,10 +433,26 @@ export class LiveActions implements Actions {
     return { number: made.number, url: made.html_url, nodeId: made.node_id };
   }
 
-  async updatePullRequest(repo: string, number: number, { keepCarries, ...change }: PullRequestChange): Promise<void> {
+  async updatePullRequest(
+    repo: string,
+    number: number,
+    { keepCarries, contradicts, ...change }: PullRequestChange,
+  ): Promise<void> {
     // Guarded within its turn, which it takes as it is asked: a description asked after it still waits for it.
     await this.#inTurn(repo, number, async () => {
       await this.#guard.check(repo, number, 'updatePullRequest');
+      if (change.body !== undefined) change.body = described(change.body, contradicts);
+      else if (contradicts !== undefined) {
+        // The section alone, in the body as it is: read in its turn, so nothing written since is written over.
+        const { body } = await this.#github.read(
+          repo,
+          `/repos/${repo}/pulls/${number}`,
+          DEPLOY_PULL.pick({ body: true }),
+        );
+        const now = described(body ?? '', contradicts);
+        if (now === (body ?? '') && change.title === undefined) return;
+        change.body = now;
+      }
       if (keepCarries && change.body !== undefined) {
         // Read in its turn, so a description written since the new body was made is not written over.
         const { body } = await this.#github.read(
@@ -652,6 +690,8 @@ export interface DryRunPull {
   nodeId: string;
   /** When it would have been closed unmerged, or null while it is open: then it never merges. */
   closedAt: Date | null;
+  /** Its description, as the dry run would last have written it. */
+  body: string;
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -816,7 +856,9 @@ export class DryRunActions implements Actions {
     return sha;
   }
 
-  async openPullRequest(repo: string, draft: PullRequestDraft): Promise<PullRequestRef> {
+  async openPullRequest(repo: string, { contradicts, ...given }: PullRequestDraft): Promise<PullRequestRef> {
+    // What it records is what it would publish: the body with its section, and not the list it was made from.
+    const draft = { ...given, body: described(given.body, contradicts) };
     await this.#record('openPullRequest', repo, draft);
     const number = this.#number();
     const nodeId = `dry-run-${number}`;
@@ -830,18 +872,38 @@ export class DryRunActions implements Actions {
       readiedAt: draft.draft ? null : this.#now(),
       nodeId,
       closedAt: null,
+      body: draft.body,
     });
     return { number, url: `dry-run:${repo}#${number}`, nodeId };
   }
 
-  // A dry run's deploy pull requests have no body to read: what it records is the body the watch made.
+  // A dry run's deploy pull requests have no body to read: what it records is the body the watch made. Its own pull
+  // requests' bodies it remembers, so a section given alone is recorded in the description it would have set.
   async updatePullRequest(
     repo: string,
     number: number,
-    { keepCarries: _, ...change }: PullRequestChange,
+    { keepCarries: _, contradicts, ...change }: PullRequestChange,
   ): Promise<void> {
     await this.#guarded(repo, number, 'updatePullRequest');
-    await this.#record('updatePullRequest', repo, { number, ...change });
+    const pull = this.#pulls.get(number);
+    const body =
+      change.body !== undefined
+        ? described(change.body, contradicts)
+        : contradicts !== undefined && pull?.repo === repo
+          ? described(pull.body, contradicts)
+          : undefined;
+    if (body !== undefined && pull?.repo === repo) {
+      if (body === pull.body && change.title === undefined) return;
+      pull.body = body;
+    }
+    // A pull request it never opened has no body it knows: it records the list, which says what it would have set.
+    const unknown = body === undefined && contradicts !== undefined ? { contradicts } : {};
+    await this.#record('updatePullRequest', repo, {
+      number,
+      ...change,
+      ...(body !== undefined ? { body } : {}),
+      ...unknown,
+    });
   }
 
   async describeDeploy(repo: string, number: number, deploy: Deploy): Promise<boolean> {

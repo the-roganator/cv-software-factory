@@ -72,6 +72,26 @@ test.describe('fixing', () => {
     await expect(sheet.locator('.scrub')).toContainText('DESCRIBED');
   });
 
+  test('a fix’s spec names the existing tests it contradicts, under its criteria, and a spec that names none shows none', async ({
+    page,
+  }) => {
+    await page.goto(consoleUrl({ item: '1310', sheet: true, at: MERGE_WAITING }));
+    const sheet = page.getByRole('dialog', { name: 'Sorting by name puts lower case last' });
+    await sheet.waitFor();
+    const contradicts = sheet.locator('.contradicts');
+    await expect(contradicts.locator('.label')).toHaveText('Tests it contradicts');
+    await expect(contradicts.locator('li')).toHaveText([
+      'test/products.test.ts · the products page > sorts by name, capitals first',
+    ]);
+    await expect(contradicts).toContainText(
+      'The change may delete, rename or rewrite these existing tests, and no other.',
+    );
+    await expect(sheet.locator('.risks')).toContainText('it loosens a test');
+    await page.goto(consoleUrl({ item: '1311', sheet: true }));
+    await page.getByRole('dialog', { name: 'Quantities over nine are refused' }).waitFor();
+    await expect(page.locator('.contradicts')).toHaveCount(0);
+  });
+
   test('a return’s next round shows before the coder pushes it, and a step in hand moves, unless motion is reduced', async ({
     page,
   }) => {

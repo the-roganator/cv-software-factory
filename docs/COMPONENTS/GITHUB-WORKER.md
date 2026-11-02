@@ -35,6 +35,15 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
   - reopening one with a comment (`reopenIssue`, only while it is closed, saying it once since it closed);
   - a comment on its own (`comment`), as the line's hand-over of an improvement makes, made only when the issue does not say it already, word for word, so asking again after a failure or a crash says it once.
 
+### Descriptions
+
+A fix's pull request's description holds the section [test integrity](TEST-INTEGRITY.md#tests-the-spec-contradicts) reads for the tests its spec contradicts, and only the worker writes it, with `render` from `gates/contradicts.ts`, which the gate reads with the same module.
+
+- **The list, not the text.** The line gives `openPullRequest` and `updatePullRequest` the spec's list (`contradicts`, each entry one the gate would read, at most ten, checked at the door), and the worker writes the section from it, after the rest of the body, replacing any section the body it was given holds. An empty list writes none. A body given with no list keeps no section: markers in it are taken out, so no agent's words, the describer's or the planner's, can name a test.
+- **The section alone.** Given a list and no body, it rewrites the section in the body the pull request has, read in the pull request's turn, and writes nothing when that changes nothing.
+- **Before the commit.** A gate's run reads the description as it starts, so the line sets it before each push to an open pull request, and a new pull request opens with it ([the coder](CODER.md)).
+- **In a dry run,** it records the description it would have set; for a pull request it never opened, whose body it does not know, the list.
+
 The line names the work item an action is for in `x-factory-work-item`, and the agent whose step it carries out in `x-factory-agent`, and the worker's log of the action, or of its failure, carries both, so a fix's commit or pull request is found by its work item. A deploy pull request's description, which carries many work items, names none. Neither header changes what is done.
 
 ### Its issues and pull requests only
@@ -81,7 +90,8 @@ The line reads through it too, `POST /v1/reads/<read>` (`github/reads.ts`):
   - the checks a branch's rulesets require;
   - a branch's head;
   - how a commit compares with a branch: its merge base, and each file it changes with its patch;
-  - the paths no patch may change at a commit: the workflows, the deployment and what its CODEOWNERS gives a person.
+  - the paths no patch may change at a commit: the workflows, the deployment and what its CODEOWNERS gives a person;
+  - `file`: a file at a commit, as text, not there, or there and not text the API sends whole, which the line reads to check the tests a spec names are in their files.
 - **For a release:**
   - `commits`: the commits between two, oldest first, and whether one is the other's ancestor. A commit GitHub never had, a dry run's, is a 404;
   - `imageRevision`: the commit an image of a repository's deploy was built from, by its OCI revision label in GHCR;
@@ -185,6 +195,7 @@ A dry run's reads answer for what it would have made (`github/dry-run-reads.ts`)
 - its pull request is open, and its head is the last commit it would have pushed;
 - each commit it made has every check main's ruleset requires, passing `GITHUB_DRY_RUN_CHECKS_SECONDS` after it (120 by default), each titled as having run nothing;
 - a comparison is taken from the real commit its first commit went on;
+- a file at one of its commits is as its commits left it;
 - a step that starts from one of its commits is told the real commit under it, and the dry run's commits as patches (`checkout`), which the runner's prepare step makes on it, so the reviewer, the describer and a later round see the change;
 - the pull request is merged, as the App, `GITHUB_DRY_RUN_MERGE_SECONDS` after it was last readied (1200), never while it is a draft, so a line in `dry-run` goes round.
 - one it closed (`closePullRequest`) is closed and unmerged, and never merges.

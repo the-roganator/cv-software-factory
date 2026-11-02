@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { structuredPatch } from 'diff';
 import { APP_LOGIN, type DryRunActions, type DryRunPull } from './actions.ts';
 import type { DeployProposal } from './deploys.ts';
-import type { Checkout, CheckRun, Commits, Comparison, PullRequestState, Reads, Signed } from './reads.ts';
+import type { Checkout, CheckRun, Commits, Comparison, FileAt, PullRequestState, Reads, Signed } from './reads.ts';
 
 export interface DryRunTimes {
   /** How long after a commit the dry run's checks on it pass. */
@@ -93,6 +93,16 @@ export class DryRunReads implements Reads {
   /** At a commit the dry run made, the paths protected where its first commit went: it never changes CODEOWNERS. */
   protectedPaths(repo: string, ref: string): Promise<string[]> {
     return this.#live.protectedPaths(repo, this.#made.rootOf(ref));
+  }
+
+  /** A file at a commit the dry run made, as its commits left it, and otherwise as GitHub has it. */
+  async file(repo: string, ref: string, path: string): Promise<FileAt> {
+    for (let at = ref, made = this.#made.commitMade(at); made; at = made.parent, made = this.#made.commitMade(at)) {
+      if (!made.files.has(path)) continue;
+      const text = made.files.get(path) ?? null;
+      return text === null ? { found: false } : { found: true, text };
+    }
+    return this.#live.file(repo, this.#made.rootOf(ref), path);
   }
 
   async comparison(repo: string, base: string, head: string): Promise<Comparison> {

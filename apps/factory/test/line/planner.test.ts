@@ -6,11 +6,13 @@ import { evidenceLines, seen, ticketLines } from '../../src/line/agents/evidence
 import {
   findingSignal,
   MAX_PLANNER_FINDINGS,
+  missingTests,
   type PlannerInput,
   planner,
   plannerResult,
   quoteProblem,
   sourcesOf,
+  tagged,
 } from '../../src/line/agents/planner.ts';
 import { FIXTURES } from '../../src/line/bench/fixtures.ts';
 import type { Handback } from '../../src/runners/steps.ts';
@@ -285,6 +287,126 @@ describe('the planner’s scope', () => {
     ).toBe(true);
     expect(plannerResult().safeParse({ verdict: 'maybe' }).success).toBe(false);
     expect(plannerResult().safeParse({ verdict: 'reject', reason: 'x'.repeat(301) }).success).toBe(false);
+  });
+});
+
+describe('the tests a spec contradicts', () => {
+  const named = { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' };
+  const contradicting = (contradicts: unknown, scope = SPEC.scope) =>
+    plannerResult(PROTECTED, SOURCES).safeParse({ verdict: 'spec', spec: { ...SPEC, scope, contradicts } });
+  const MONEY_TESTS = [
+    "describe('pounds', () => {",
+    "  it('drops the pence of a whole pound', () => {",
+    "    expect(pounds(600)).toBe('£6');",
+    '  });',
+    '});',
+  ].join('\n');
+
+  it('are asked for by file and full name, as test integrity names them, and are usually none', () => {
+    for (const prompt of [planner.prompt(INPUT), planner.prompt(REQUEST)]) {
+      expect(prompt).toContain('- `contradicts`: the existing tests a criterion contradicts');
+      expect(prompt).toContain('joined with " > "');
+      expect(prompt).toContain('usually there are none');
+      expect(prompt).toContain('"scope":[],"contradicts":[],"risks":[]');
+    }
+  });
+
+  it('name a test in a file the scope takes in, and no protected path, each once', () => {
+    expect(contradicting([named]).success).toBe(true);
+    // None is said by leaving the list out, or empty: the event keeps no empty list.
+    const none = contradicting([]);
+    expect(none.success && none.data.verdict === 'spec' && 'contradicts' in none.data.spec).toBe(false);
+    const issue = (parsed: ReturnType<typeof contradicting>) => parsed.error?.issues[0];
+    expect(issue(contradicting([{ ...named, file: 'test/cart.test.ts' }]))).toMatchObject({
+      path: ['spec', 'contradicts', 0],
+      message: 'test/cart.test.ts is not in the scope: a test it contradicts is one the change may change',
+    });
+    // A folder the scope may name can hold a file no patch may change, which no entry may name either.
+    expect(issue(contradicting([{ ...named, file: 'src/AGENTS.md' }], ['src/']))?.message).toBe(
+      'src/AGENTS.md names a path no patch may change',
+    );
+    expect(issue(contradicting([named, named]))?.message).toContain('is named twice');
+    expect(contradicting(Array.from({ length: 11 }, (_, i) => ({ ...named, test: `test ${i}` }))).success).toBe(false);
+  });
+
+  it('are refused where the gate would not read them', () => {
+    for (const entry of [
+      { ...named, file: '../test/money.test.ts' },
+      { ...named, file: '/test/money.test.ts' },
+      { ...named, file: 'test/`money`.test.ts' },
+      { ...named, test: 'pounds\n> drops the pence' },
+    ]) {
+      const parsed = contradicting([entry], ['src/money.ts', 'test/']);
+      expect(parsed.success, JSON.stringify(entry)).toBe(false);
+    }
+  });
+
+  it('tag the spec test-loosening, which the line adds if the planner left it out, and takes none away', () => {
+    const spec = { ...SPEC, risks: [] as PayloadOf<'spec.written'>['risks'], contradicts: [named] };
+    expect(tagged(spec).risks).toEqual(['test-loosening']);
+    expect(tagged({ ...spec, risks: ['dependency-change', 'test-loosening'] }).risks).toEqual([
+      'dependency-change',
+      'test-loosening',
+    ]);
+    expect(tagged(SPEC as PayloadOf<'spec.written'>)).toEqual(SPEC);
+  });
+
+  it('are each a test their file has at the commit, where the line can read the file', async () => {
+    const files: Record<string, { found: false } | { found: true; text: string | null }> = {
+      'test/money.test.ts': { found: true, text: MONEY_TESTS },
+      'test/huge.test.ts': { found: true, text: null },
+    };
+    const read = async (path: string) => files[path] ?? { found: false as const };
+    expect(await missingTests([named], read)).toEqual([]);
+    expect(await missingTests([{ ...named, test: 'pounds > keeps the pence' }], read)).toEqual([
+      'test/money.test.ts has no test named “pounds > keeps the pence”',
+    ]);
+    expect(await missingTests([{ ...named, file: 'test/gone.test.ts' }], read)).toEqual([
+      'there is no file test/gone.test.ts',
+    ]);
+    // A file it cannot read as text is the gate's to judge: its summary says an entry names no test in the base.
+    expect(await missingTests([{ ...named, file: 'test/huge.test.ts' }], read)).toEqual([]);
+  });
+
+  it('refuse a spec naming a test that is not there, and write one that is, tagged', async () => {
+    const reads: unknown[] = [];
+    const context = {
+      workItem: '1301',
+      commit: 'c'.repeat(40),
+      leaveSignal: async () => {},
+      read: async (name: string, args: { path: string }) => {
+        reads.push([name, args]);
+        return args.path === named.file ? { found: true, text: MONEY_TESTS } : { found: false };
+      },
+    } as unknown as EffectsContext;
+    const spec = { ...SPEC, contradicts: [named] };
+    const drafts = await planner.apply({ verdict: 'spec', spec, findings: [] }, {} as Handback, INPUT, context);
+    expect(reads).toEqual([['file', { ref: 'c'.repeat(40), path: 'test/money.test.ts' }]]);
+    expect(drafts[0]?.payload).toEqual({ ...spec, risks: ['test-loosening'] });
+    const wrong = { ...SPEC, contradicts: [{ ...named, test: 'pounds > whole pounds' }] };
+    await expect(
+      planner.apply({ verdict: 'spec', spec: wrong, findings: [] }, {} as Handback, INPUT, context),
+    ).rejects.toThrow(
+      'The planner’s spec names tests it contradicts that are not there at ccccccc: test/money.test.ts has no test named “pounds > whole pounds”',
+    );
+  });
+});
+
+describe('the bench’s contradicted test', () => {
+  it('is a ticket whose fix contradicts a test the seed pins, and the coder’s spec for it names that test', () => {
+    const planned = FIXTURES.planner['whole-pounds'];
+    const coded = FIXTURES.coder['whole-pounds'];
+    if (!planned || !coded) throw new Error('The bench has no whole-pounds fixtures.');
+    // The seed pins the whole pound without pence in a test of its own, which a fix to two digits contradicts.
+    expect(planned.seed).toContain("+  it('drops the pence of a whole pound', () => {");
+    expect(coded.seed).toBe(planned.seed);
+    expect(coded.input.spec.contradicts).toEqual([
+      { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' },
+    ]);
+    // The coder's spec is one the line would take from the planner given the same ticket.
+    const parsed = planner.schema(planned.input).safeParse({ verdict: 'spec', spec: coded.input.spec });
+    expect(parsed.success).toBe(true);
+    expect(planner.prompt(planned.input)).toContain('- `contradicts`:');
   });
 });
 

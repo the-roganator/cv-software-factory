@@ -2,7 +2,7 @@
 
 An agent: describes the fix, or the improvement, once review approves it. Part of the [factory plane](README.md#agents).
 
-- **Reads:** the ticket's public view and what the senses saw, or Martin's request, the spec, the final diff and the coder's commit messages, and the review thread, round by round.
+- **Reads:** the ticket's public view and what the senses saw, or Martin's request, the spec with the tests it contradicts, the final diff and the coder's commit messages, and the review thread, round by round.
 - **Produces:** the pull request's title and description, and the work item's summary (`work-item.summarised`).
 - **v1:** `line/agents/describer.ts`, in a [runner](AGENT-RUNNERS.md) at the pull request's head with its base beside it, with a fresh context, 30 turns and 15 minutes.
 
@@ -33,11 +33,13 @@ The squash commit takes the description as its message, so the schema refuses:
 
 A refused result runs the step again, told why.
 
+A description names among its risks each test the spec contradicts, with what the change did to it and which criterion asked for that. It writes no section for them: the line adds the one [test integrity](TEST-INTEGRITY.md#tests-the-spec-contradicts) reads.
+
 An improvement's description says what Martin asked for, what the change adds behind which flag and on which pages, which test shows each criterion and on which side of the flag, and that it ships off: nobody sees it until Martin turns the flag on. Its pull request waits for his merge in every autonomy mode.
 
 ## What the line does with it
 
-1. It sets the pull request's title and description, with the line that refers to the ticket's issue, then takes it out of draft, each once for a handback.
+1. It sets the pull request's title and description, with the line that refers to the ticket's issue and, after the describer's words, the section that names the tests the spec contradicts, which the GitHub worker writes ([descriptions](GITHUB-WORKER.md#descriptions)), then takes it out of draft, each once for a handback. The merge queue's run of test integrity reads the section there.
 2. It appends the summary.
 
 Then the work item waits for Martin's merge. If the work goes back to Build while it waits, the line puts the pull request back to draft, and the describer writes up the next round before Martin is asked again.

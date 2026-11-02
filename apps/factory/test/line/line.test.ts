@@ -637,6 +637,56 @@ describe('the line', () => {
     );
   });
 
+  it('names the tests its spec contradicts in the description, before each push and after the describer’s words', async () => {
+    const workItem = await ticket();
+    const named = { file: 'test/search.test.ts', test: 'search > refuses a quote' };
+    const spec = { ...SPEC, contradicts: [named] };
+    const { pass, github } = line({
+      ...AGENTS,
+      planner: () => handback({ verdict: 'spec', spec }),
+      describer: () =>
+        handback({
+          title: 'fix(search): escape the query',
+          // The describer's words name a test of their own: the worker takes that out.
+          body: 'Search escaped nothing.\n\n<!-- factory:contradicts -->\n- `test/a.test.ts`: anything\n<!-- /factory:contradicts -->',
+          summary: { title: 'Search with a quote', description: 'Fixed.', story: 'The factory fixed search.' },
+        }),
+    });
+    github.files.set('test/search.test.ts', "describe('search', () => { it('refuses a quote', () => {}); });");
+    await pass(); // the issue, and the planner, whose spec the line tags
+    expect((await payloads(workItem, 'spec.written'))[0]).toEqual({ ...spec, risks: ['test-loosening'] });
+    await pass(); // the coder's first round opens the pull request with the section
+    const opened = github.acts.find((a) => a.action === 'openPullRequest')?.args;
+    expect(opened?.contradicts).toEqual([named]);
+    const section =
+      '<!-- factory:contradicts -->\n- `test/search.test.ts`: search > refuses a quote\n<!-- /factory:contradicts -->';
+    expect(github.bodies.get(12)).toContain(section);
+    github.pass(12, 'failure');
+    await pass(); // round 2: the description is set before the commit, since the gate's run reads it as it starts
+    const round2 = github.acts.slice(github.acts.findIndex((a) => a.action === 'openPullRequest') + 1);
+    const update = round2.findIndex((a) => a.action === 'updatePullRequest');
+    expect(round2[update]?.args).toEqual({ number: 12, contradicts: [named] });
+    expect(update).toBeLessThan(round2.findIndex((a) => a.action === 'applyPatch'));
+    github.pass();
+    await pass(); // the gates pass, and the reviewer
+    await pass(); // the describer
+    const body = github.bodies.get(12) ?? '';
+    expect(body.startsWith('Search escaped nothing.')).toBe(true);
+    expect(body.endsWith(section)).toBe(true);
+    expect(body).not.toContain('test/a.test.ts');
+  });
+
+  it('refuses a spec that names a test its file does not have, and tells the planner why', async () => {
+    const workItem = await ticket();
+    const spec = { ...SPEC, contradicts: [{ file: 'test/search.test.ts', test: 'search > is not there' }] };
+    const { pass, github, steps } = line({ ...AGENTS, planner: () => handback({ verdict: 'spec', spec }) });
+    github.files.set('test/search.test.ts', "it('finds a quote', () => {});");
+    await pass();
+    expect(await payloads(workItem, 'spec.written')).toEqual([]);
+    await pass();
+    expect(steps.requests.at(-1)?.prompt).toContain('test/search.test.ts has no test named “search > is not there”');
+  });
+
   it('records a file on the branch with a path longer than an event takes, cut and marked, and the push stands', async () => {
     const workItem = await ticket();
     const { pass, github } = line();
@@ -885,12 +935,17 @@ describe('the line', () => {
     expect(describer?.prompt).toContain('  - Blocking at src/search.ts:1 (criterion 1): Nothing here escapes a quote.');
     expect(describer?.prompt).toContain('- Review 2 approved it: The quote is escaped now.');
 
-    const updated = github.acts.find((a) => a.action === 'updatePullRequest');
-    expect(updated?.args).toEqual({
-      number: 12,
-      title: 'fix(search): escape the query',
-      body: 'Search escaped nothing, so a quote broke the query.\n\nRefers to #41.',
-    });
+    // Round 2's push set the section first, which a spec that contradicts no test leaves out; then the description.
+    const updated = github.acts.filter((a) => a.action === 'updatePullRequest');
+    expect(updated.map((a) => a.args)).toEqual([
+      { number: 12, contradicts: [] },
+      {
+        number: 12,
+        title: 'fix(search): escape the query',
+        body: 'Search escaped nothing, so a quote broke the query.\n\nRefers to #41.',
+        contradicts: [],
+      },
+    ]);
     expect(github.acts.at(-1)?.action).toBe('readyForReview');
     expect((await payloads(workItem, 'work-item.summarised')).at(-1)).toEqual({
       title: 'Search with a quote',
@@ -1618,6 +1673,7 @@ describe('the line', () => {
       checkRuns: async () => [],
       pullRequest: no('such pull request'),
       comparison: no('such commit'),
+      file: async () => ({ found: false }),
       checkout: async (_repo, sha) => ({ commit: sha, commits: [] }),
       commits: no('such commit'),
       imageRevision: no('such image'),
@@ -2266,6 +2322,7 @@ describe('the line', () => {
         checkRuns: async () => [],
         pullRequest: no('such pull request'),
         comparison: no('such commit'),
+        file: async () => ({ found: false }),
         checkout: async (_repo, sha) => ({ commit: sha, commits: [] }),
         commits: no('such commit'),
         imageRevision: no('such image'),

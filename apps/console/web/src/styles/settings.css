@@ -90,8 +90,6 @@ table.agents {
   font-size: 13.5px;
 }
 .agents th {
-  text-align: left;
-  font-weight: 400;
   padding: 0 12px 8px 0;
   border-bottom: 1px solid var(--line);
 }

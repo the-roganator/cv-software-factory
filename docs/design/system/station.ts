@@ -22,8 +22,8 @@
  *   button:hover sf-station::part(machine) { transform: translateY(-3px); }
  * The legs are tucked 4px under the body, so a lift of up to 4px reads as stretching.
  *
- * Colour comes from the design system's CSS custom properties (tokens.css), which inherit
- * into the shadow tree, so the station follows the Paper or Ink theme of its container.
+ * Colour comes from the design system's CSS custom properties (tokens.css, or properties.css in the console), which
+ * inherit into the shadow tree, so the station follows the Paper or Ink theme of its container.
  *
  * This TypeScript module is the source, and the console imports it as it is. Its styles are one
  * constructed stylesheet shared by every station, and its drawing uses classes and presentation

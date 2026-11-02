@@ -6,10 +6,15 @@ export default defineConfig({
     projects: [
       {
         extends: true,
+        // The console's browser code is written to React's API and runs on Preact's, as its Vite build says
+        // (apps/console/vite.config.ts): its own tests, in apps/console/web/test, import it as that build does.
+        resolve: { alias: [{ find: /^react$/, replacement: 'preact/compat' }] },
+        oxc: { jsx: { runtime: 'automatic', importSource: 'preact' } },
         test: {
           name: 'unit',
           include: [
             'apps/*/test/**/*.test.ts',
+            'apps/console/web/test/**/*.test.ts',
             'packages/*/test/**/*.test.ts',
             'scripts/**/*.test.ts',
             '.claude/skills/*/bin/*.test.ts',

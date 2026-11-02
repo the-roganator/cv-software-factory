@@ -5,10 +5,12 @@
  * everywhere. Escape or a click outside closes it.
  */
 import { lazy, type ReactNode, Suspense, useEffect, useRef, useState } from 'react';
-import { doorHref, leave, post, type Session, said, toolLink } from '../admin.ts';
+import { type Session, toolLink } from '../admin.ts';
 import { clock } from '../format.ts';
 import { StepUpLine } from './StepUp.tsx';
 import type { Tool } from './ToolLogos.tsx';
+import { Refusal } from './Words.tsx';
+import { useSignOut } from './Write.tsx';
 
 /** The tools' logos arrive only for a menu that has a tool to show. */
 const ToolLogo = lazy(() => import('./ToolLogos.tsx').then((module) => ({ default: module.ToolLogo })));
@@ -33,8 +35,7 @@ export function Account({
     return link ? [{ ...tool, ...link }] : [];
   });
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
+  const { busy, refusal, signOut } = useSignOut(session.token);
   const root = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
 
@@ -55,20 +56,6 @@ export function Account({
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
-
-  const signOut = async (everywhere: boolean) => {
-    setBusy(true);
-    setRefusal(undefined);
-    const got = await post(everywhere ? '/admin/sign-out-everywhere' : '/admin/sign-out', {}, session.token);
-    // Signed out, or the session had already ended (signed out elsewhere, or its passkey revoked): either way this
-    // browser holds none now, though only a sign-out that went through ended every other.
-    if (got.status === 200 || got.status === 401) {
-      leave(doorHref('sign-in', got.status === 200 && everywhere ? 'everywhere' : 'here'));
-      return;
-    }
-    setBusy(false);
-    setRefusal(said(got));
-  };
 
   return (
     <span className="account" ref={root}>
@@ -122,11 +109,7 @@ export function Account({
         <button type="button" disabled={busy} onClick={() => void signOut(true)}>
           Sign out everywhere <small className="after">every device</small>
         </button>
-        {refusal && (
-          <p className="menu-refusal" role="alert">
-            {refusal}
-          </p>
-        )}
+        <Refusal text={refusal} />
       </div>
     </span>
   );

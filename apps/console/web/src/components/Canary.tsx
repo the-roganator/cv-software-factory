@@ -5,7 +5,7 @@
  */
 import type { ReleaseControl } from '@software-factory/events';
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { type Admin, said, write } from '../admin.ts';
+import type { Admin } from '../admin.ts';
 import { clockSeconds, duration, isCommit, shortVersion, times } from '../format.ts';
 import type { CanaryView, Carried, Measured, Release } from '../projection/index.ts';
 import {
@@ -51,7 +51,9 @@ import {
 import { Dialog } from './Dialog.tsx';
 import { Glyph, type GlyphName } from './Glyph.tsx';
 import { ToolMark } from './Logos.tsx';
-import { type Asked, Key, useStepUp } from './StepUp.tsx';
+import { type Asked, Key } from './StepUp.tsx';
+import { Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 
 /** A measure's verdict, from the analysis's own phases: in flight is ink, only a pass is green, a failure is warm. */
 export const VERDICT: Record<VerdictPhase, [word: string, tone: Tone, glyph: GlyphName]> = {
@@ -660,31 +662,17 @@ const ASKED: Partial<Record<ReleaseControl, (r: Release, c: Control) => Asked>> 
  * and the Needs-you card of a canary paused for him act through it, so the two are the same controls.
  */
 function useActs(r: Release, admin: Admin, controls: readonly Control[]) {
-  const stepUp = useStepUp();
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
+  const writes = useWrite(admin.kind === 'martin' ? admin.session.token : undefined);
+  const { busy, refusal, fresh } = writes;
   const [aborting, setAborting] = useState(false);
-  const act = async (c: Control) => {
-    if (admin.kind !== 'martin') return;
-    setBusy(true);
-    setRefusal(undefined);
-    const asked = ASKED[c.action]?.(r, c);
+  const act = (c: Control) => {
     const route = c.action === 'promote-fully' ? 'promote' : c.action;
     const body = { release: r.id, ...(c.action === 'promote-fully' && { fully: true }) };
-    let cancelled = false;
-    const ask =
-      asked &&
-      (async () => {
-        cancelled = !(await stepUp.ask(asked));
-        return !cancelled;
-      });
-    const got = await write(`/admin/release/${route}`, body, admin.session.token, ask);
-    setBusy(false);
-    // Cancelled at the passkey: nothing was asked of the canary, and nothing to say.
-    if (cancelled) return;
-    if (got.status !== 200) setRefusal(said(got));
-    // Made, with something left undone that Martin must know of: his pause, still set after the control.
-    else if (typeof got.body?.warning === 'string') setRefusal(got.body.warning);
+    return writes.send(`/admin/release/${route}`, body, {
+      passkey: ASKED[c.action]?.(r, c),
+      // Made, with something left undone that Martin must know of: his pause, still set after the control.
+      done: (got) => (typeof got.body?.warning === 'string' ? got.body.warning : undefined),
+    });
   };
   /** Presses a control: Abort asks first, in its dialog; the rest act at once, or after the passkey. */
   const press = (c: Control) => {
@@ -698,36 +686,23 @@ function useActs(r: Release, admin: Admin, controls: readonly Control[]) {
       title="Abort the canary"
       onClose={() => setAborting(false)}
       actions={
-        <>
-          <button type="button" className="btn" onClick={() => setAborting(false)}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn attn"
-            onClick={() => {
-              setAborting(false);
-              void act(abort);
-            }}
-          >
-            Abort
-          </button>
-        </>
+        <button
+          type="button"
+          className="btn attn"
+          onClick={() => {
+            setAborting(false);
+            void act(abort);
+          }}
+        >
+          Abort
+        </button>
       }
     >
       <p>{abortWords(r)}</p>
     </Dialog>
   );
-  return { busy, refusal, press, dialog, fresh: stepUp.fresh };
+  return { busy, refusal, press, dialog, fresh };
 }
-
-/** A refusal of one of Martin's acts, where he pressed. */
-const Refusal = ({ text }: { text: string | undefined }) =>
-  text ? (
-    <p className="canary-refusal" role="alert">
-      {text}
-    </p>
-  ) : null;
 
 /**
  * Martin's controls, under the steps and the note: his buttons, each with the key while the passkey is not fresh

@@ -19,10 +19,11 @@
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
+import { MARTIN_ANSWER_CHARS } from '@software-factory/events';
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
-import { type Admin, said, write } from '../admin.ts';
+import type { Admin } from '../admin.ts';
 import { clock, inWords, shortVersion } from '../format.ts';
 import { previewHref } from '../profile.ts';
 import {
@@ -40,9 +41,8 @@ import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
 import { Shot } from './Pictures.tsx';
 import { Key, useStepUp } from './StepUp.tsx';
-
-/** The most an answer in words may say, as the admin service and the event take it. */
-const WORDS = 300;
+import { ReasonField, Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 
 const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer' } as const;
 
@@ -195,11 +195,10 @@ function Kick({ need }: { need: Need }) {
 /** Martin's card: his answers, the words field when he opens it, and what the service said if it refused. */
 function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Placed) {
   const id = useId();
-  const stepUp = useStepUp();
-  const [busy, setBusy] = useState(false);
+  const writes = useWrite(token);
+  const { busy } = writes;
   const [writing, setWriting] = useState(false);
   const [words, setWords] = useState('');
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const field = useRef<HTMLTextAreaElement>(null);
   // The field takes focus as it opens, so he can write at once.
   useEffect(() => {
@@ -207,32 +206,25 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   }, [writing]);
 
   const send = async (answer: Need['answers'][number]) => {
-    if (busy) return;
-    setBusy(true);
-    setRefusal(undefined);
-    let cancelled = false;
-    const ask =
-      answer.stepUp &&
-      (async () => {
-        cancelled = !(await stepUp.ask({
-          title: `Approve #${need.workItem}`,
-          what: answer.does,
-          why:
-            need.cause === 'spec'
-              ? 'Approving an improvement’s spec sets the line building something new'
-              : 'Approving overrides a guardrail',
-        }));
-        return !cancelled;
-      });
     const body = { hold: need.hold, ...(answer.answer === 'answered' && { words: words.trim() }) };
-    const got = await write(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, token, ask || undefined);
-    setBusy(false);
-    // Cancelled at the passkey: nothing was sent, and nothing to say.
-    if (cancelled) return;
-    if (got.status !== 200) return setRefusal(said(got));
-    // Answered: the card moves to Answered today as the event arrives, unless words left it held.
-    setWriting(false);
-    setWords('');
+    await writes.send(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, {
+      passkey: answer.stepUp
+        ? {
+            title: `Approve #${need.workItem}`,
+            what: answer.does,
+            why:
+              need.cause === 'spec'
+                ? 'Approving an improvement’s spec sets the line building something new'
+                : 'Approving overrides a guardrail',
+          }
+        : undefined,
+      // Answered: the card moves to Answered today as the event arrives, unless words left it held.
+      done: () => {
+        setWriting(false);
+        setWords('');
+        return undefined;
+      },
+    });
   };
 
   return (
@@ -257,7 +249,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
             ) : (
               <button type="button" className="btn" aria-disabled={busy || undefined} onClick={() => void send(row)}>
                 {row.label}
-                {row.stepUp && !stepUp.fresh && <Key />}
+                {row.stepUp && !writes.fresh && <Key />}
               </button>
             )}
             <p>{row.does}</p>
@@ -270,28 +262,22 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
                   if (words.trim()) void send(row);
                 }}
               >
-                <label className="sr" htmlFor={`${id}-text`}>
-                  Your answer to #{need.workItem}
-                </label>
-                <textarea
-                  ref={field}
+                <ReasonField
                   id={`${id}-text`}
-                  className="field"
-                  maxLength={WORDS}
+                  label={`Your answer to #${need.workItem}`}
+                  labelHidden
+                  limit={MARTIN_ANSWER_CHARS}
                   rows={3}
                   value={words}
+                  onChange={setWords}
                   placeholder="What the line should know"
-                  onChange={(event) => setWords(event.currentTarget.value)}
-                />
-                <div className="row">
-                  <span className="help">
-                    {need.aboutReport
+                  help={
+                    need.aboutReport
                       ? 'Your words stay yours: a visitor’s report opened this, so no visitor and no agent reads them.'
-                      : 'Visitors see your words, with anything shaped like a secret left out.'}{' '}
-                    <span className="chars">
-                      {words.length} / {WORDS}
-                    </span>
-                  </span>
+                      : 'Visitors see your words, with anything shaped like a secret left out.'
+                  }
+                  field={field}
+                >
                   <button
                     type="submit"
                     className="btn primary small"
@@ -300,17 +286,13 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
                   >
                     Send
                   </button>
-                </div>
+                </ReasonField>
               </form>
             )}
           </div>
         ))}
       </div>
-      {refusal && (
-        <p className="canary-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={writes.refusal} />
       <Foot workItem={need.workItem} onOpen={onOpen} martin />
     </article>
   );

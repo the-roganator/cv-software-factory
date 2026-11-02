@@ -17,11 +17,13 @@ import { CAP_NAMES, CAPS, type CapField, changesBetween, inForce } from '@softwa
 import { CEILINGS } from '@software-factory/policy/spend';
 import { type ChangeEvent, useEffect, useMemo, useState } from 'react';
 import { SETTINGS_STEP_UP } from '../access.ts';
-import { type Admin, doorHref, post, type Session, said, write } from '../admin.ts';
+import { type Admin, doorHref, leave, type Session } from '../admin.ts';
 import { capital, changeWords, clock, dayLabel, modelTitle, money, plural } from '../format.ts';
 import type { ControlsView, SettingsView } from '../projection/index.ts';
 import { KeyLegend, LineControls, SpendGroup } from './Controls.tsx';
-import { Key, useStepUp } from './StepUp.tsx';
+import { Key } from './StepUp.tsx';
+import { Refusal } from './Words.tsx';
+import { useSignOut, useWrite } from './Write.tsx';
 import '../styles/settings.css';
 
 /** What each agent does, in a line. */
@@ -85,7 +87,6 @@ export function Settings({
   const { profile, settings } = view;
   const policy = MODELS[profile];
   const ceilings = CEILINGS[profile];
-  const stepUp = useStepUp();
   const [draft, setDraft] = useState<Draft>(EMPTY);
   // A save, this page's or another's, starts the draft again from what is now in force: a draft left over would undo
   // a newer setting.
@@ -93,8 +94,8 @@ export function Settings({
   useEffect(() => {
     if (lastSaved !== undefined) setDraft(EMPTY);
   }, [lastSaved]);
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
+  const writes = useWrite(session?.token);
+  const { busy } = writes;
 
   // What the page asks for: what is in force, with the draft on top. A local model in force has no effort to keep, so
   // a move to Claude starts at the agent's default.
@@ -133,8 +134,6 @@ export function Settings({
 
   const save = async () => {
     if (!session || busy || badCaps.length || !changes.length) return;
-    setBusy(true);
-    setRefusal(undefined);
     const agents: Record<string, { model?: string; effort?: string }> = {};
     const caps: Record<string, number | null> = {};
     for (const change of changes) {
@@ -149,29 +148,22 @@ export function Settings({
         ...(model.provider !== 'local' && { effort: model.effort }),
       };
     }
-    let cancelled = false;
-    const ask = async () => {
-      cancelled = !(await stepUp.ask({
-        title: 'Save the settings',
-        what: (
-          <>
-            <b>{capital(changes.map(changeWords).join('; '))}</b>, from each agent’s next step.
-          </>
-        ),
-        why: 'This raises spend',
-      }));
-      return !cancelled;
-    };
-    const got = await write(
+    // Saved: the draft stays until the event arrives, and then starts again from what is in force.
+    await writes.send(
       '/admin/settings',
       { ...(Object.keys(agents).length && { agents }), ...(Object.keys(caps).length && { caps }) },
-      session.token,
-      ask,
+      {
+        passkey: {
+          title: 'Save the settings',
+          what: (
+            <>
+              <b>{capital(changes.map(changeWords).join('; '))}</b>, from each agent’s next step.
+            </>
+          ),
+          why: 'This raises spend',
+        },
+      },
     );
-    setBusy(false);
-    if (cancelled) return;
-    // Saved: the draft stays until the event arrives, and then starts again from what is in force.
-    if (got.status !== 200) setRefusal(said(got));
   };
 
   const readOnly = !martin;
@@ -373,7 +365,7 @@ export function Settings({
           className="btn small"
           onClick={() => {
             setDraft(EMPTY);
-            setRefusal(undefined);
+            writes.say(undefined);
           }}
         >
           Discard
@@ -386,14 +378,10 @@ export function Settings({
           onClick={() => void save()}
         >
           Save
-          {raises && !stepUp.fresh && <Key />}
+          {raises && !writes.fresh && <Key />}
         </button>
       </div>
-      {refusal && (
-        <p className="dialog-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={writes.refusal} />
     </div>
   );
 
@@ -454,35 +442,31 @@ function outsideWords(view: SettingsView, agent: ModelAgent): string | undefined
 
 /** Martin's passkeys: each with when it was enrolled and last used, which is this device's, and Revoke. */
 function Passkeys({ session }: { session: Session }) {
-  const stepUp = useStepUp();
   const [held, setHeld] = useState(session.passkeys);
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
-  const revoke = async (passkey: Session['passkeys'][number]) => {
-    if (busy) return;
-    setBusy(true);
-    setRefusal(undefined);
-    let cancelled = false;
-    const ask = async () => {
-      cancelled = !(await stepUp.ask({
-        title: `Revoke ${passkey.name}`,
-        what: (
-          <>
-            <b>{passkey.name} can no longer sign in</b>, and every session it signed in ends
-            {passkey.current ? ', this one among them' : ''}.
-          </>
-        ),
-        why: 'Revoking a passkey changes who can sign in',
-      }));
-      return !cancelled;
-    };
-    const got = await write(`/admin/passkeys/${encodeURIComponent(passkey.id)}/revoke`, {}, session.token, ask);
-    setBusy(false);
-    if (cancelled) return;
-    if (got.status !== 200) return setRefusal(said(got));
-    if (got.body?.signedOut === true) return location.assign(doorHref('sign-in', 'here'));
-    setHeld((keys) => keys.filter((key) => key.id !== passkey.id));
-  };
+  const writes = useWrite(session.token);
+  const revoke = (passkey: Session['passkeys'][number]) =>
+    writes.send(
+      `/admin/passkeys/${encodeURIComponent(passkey.id)}/revoke`,
+      {},
+      {
+        passkey: {
+          title: `Revoke ${passkey.name}`,
+          what: (
+            <>
+              <b>{passkey.name} can no longer sign in</b>, and every session it signed in ends
+              {passkey.current ? ', this one among them' : ''}.
+            </>
+          ),
+          why: 'Revoking a passkey changes who can sign in',
+        },
+        done: (got) => {
+          // This session's own passkey: it has ended, so the page goes to the sign-in door, as signing out does.
+          if (got.body?.signedOut === true) leave(doorHref('sign-in', 'here'));
+          else setHeld((keys) => keys.filter((key) => key.id !== passkey.id));
+          return undefined;
+        },
+      },
+    );
   return (
     <article className="panel" aria-labelledby="keys-title">
       <h2 id="keys-title">Passkeys</h2>
@@ -502,11 +486,11 @@ function Passkeys({ session }: { session: Session }) {
             <button
               type="button"
               className="btn small"
-              aria-disabled={busy || undefined}
+              aria-disabled={writes.busy || undefined}
               onClick={() => void revoke(passkey)}
             >
               Revoke<span className="sr"> {passkey.name}</span>
-              {!stepUp.fresh && <Key />}
+              {!writes.fresh && <Key />}
             </button>
           </div>
         ))}
@@ -514,30 +498,14 @@ function Passkeys({ session }: { session: Session }) {
       <p className="help">
         Two at most. Each is added with <code>factory admin enrol</code> on the command line, never from here.
       </p>
-      {refusal && (
-        <p className="dialog-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={writes.refusal} />
     </article>
   );
 }
 
 /** This session: when it started, with which passkey, when it ends, and signing out here or everywhere. */
 function ThisSession({ session }: { session: Session }) {
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
-  const signOut = async (everywhere: boolean) => {
-    setBusy(true);
-    setRefusal(undefined);
-    const got = await post(everywhere ? '/admin/sign-out-everywhere' : '/admin/sign-out', {}, session.token);
-    if (got.status === 200 || got.status === 401) {
-      location.assign(doorHref('sign-in', got.status === 200 && everywhere ? 'everywhere' : 'here'));
-      return;
-    }
-    setBusy(false);
-    setRefusal(said(got));
-  };
+  const { busy, refusal, signOut } = useSignOut(session.token);
   return (
     <article className="panel" aria-labelledby="session-title">
       <h2 id="session-title">This session</h2>
@@ -553,11 +521,7 @@ function ThisSession({ session }: { session: Session }) {
           Sign out everywhere
         </button>
       </div>
-      {refusal && (
-        <p className="dialog-refusal" role="alert">
-          {refusal}
-        </p>
-      )}
+      <Refusal text={refusal} />
     </article>
   );
 }

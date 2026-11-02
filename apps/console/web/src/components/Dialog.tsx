@@ -3,7 +3,8 @@
  * sheet on a phone. It is the browser's own modal `<dialog>`, so the page behind it cannot be reached and focus stays
  * in it; its title takes focus as it opens, and the control that opened it gets it back as it closes. Escape, the
  * scrim or Cancel close it. Every write that asks before it acts uses one: the passkey again (`StepUp.tsx`), aborting
- * a canary, and the actions to come.
+ * a canary, and the actions to come. It draws its Cancel itself, first in the row at its foot, as `onClose` implies;
+ * a dialog with nothing to do has only Close.
  */
 import { type ReactNode, useEffect, useId, useRef } from 'react';
 
@@ -12,8 +13,8 @@ interface DialogProps {
   /** A line above the title: what kind of dialog it is. */
   kicker?: ReactNode;
   children: ReactNode;
-  /** Its buttons, Cancel first, as a row at its foot. */
-  actions: ReactNode;
+  /** What it does, after its Cancel, in the row at its foot; with none, the row has only Close. */
+  actions?: ReactNode;
   onClose: () => void;
 }
 
@@ -62,7 +63,12 @@ export function Dialog({ title, kicker, children, actions, onClose }: DialogProp
           {title}
         </h2>
         {children}
-        <div className="row">{actions}</div>
+        <div className="row">
+          <button type="button" className="btn" onClick={onClose}>
+            {actions ? 'Cancel' : 'Close'}
+          </button>
+          {actions}
+        </div>
       </div>
     </dialog>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { LINE_STEP_UP } from '../access.ts';
-import { type Admin, said, write } from '../admin.ts';
+import type { Admin } from '../admin.ts';
 import { AUTONOMY, duration } from '../format.ts';
 import type { Header as LineState, Score } from '../projection/index.ts';
 import type { Theme } from '../settings.ts';
@@ -10,6 +10,8 @@ import { Dialog } from './Dialog.tsx';
 import { Glyph } from './Glyph.tsx';
 import { Mark } from './Mark.tsx';
 import { Key, StepUpPill, useStepUp } from './StepUp.tsx';
+import { ReasonField, Refusal } from './Words.tsx';
+import { useWrite } from './Write.tsx';
 
 /** Whether the line runs, in words and a dot that never carries the meaning alone. */
 export function LineStatus({ line, connection }: { line: LineState; connection: Connection }) {
@@ -119,9 +121,6 @@ export function Scoreboard({ score, sample }: { score: Score | undefined; sample
   );
 }
 
-/** The most a reason may be, as `line.stopped` and `line.started` take it. */
-const REASON = 200;
-
 /**
  * Stop the line, in `attn`, always one press away; while it is stopped, Start the line in its place, in `signal`, with
  * the key while the passkey is not fresh. Each opens its dialog, which asks for a reason, for the audit log.
@@ -171,24 +170,18 @@ function LineDialog({
   token: string;
   onClose: () => void;
 }) {
-  const stepUp = useStepUp();
   const id = useId();
   const field = useRef<HTMLTextAreaElement>(null);
   const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [answer, setAnswer] = useState<{ text: string; done: boolean } | undefined>(undefined);
-  const live = useRef(true);
-  useEffect(
-    () => () => {
-      live.current = false;
-    },
-    [],
-  );
+  const writes = useWrite(token);
+  const { busy, fresh } = writes;
+  // Stopped, with a canary in flight it could not abort: what the service warned of is said, and only Close is left.
+  const [done, setDone] = useState(false);
   const stop = kind === 'stop';
   const asks = LINE_STEP_UP[`line.${kind}`];
   // Stopped or started from elsewhere while it was open (`make stop-the-line`, another tab): it would do nothing now.
   // Not while it acts, or once it has something to say, which the line's own change brings.
-  const moot = stop === stopped && !busy && answer === undefined;
+  const moot = stop === stopped && !busy && writes.refusal === undefined;
   useEffect(() => {
     if (moot) onClose();
   }, [moot, onClose]);
@@ -196,56 +189,41 @@ function LineDialog({
   const act = async () => {
     const why = reason.trim();
     if (!why) return field.current?.focus();
-    if (busy) return;
-    setBusy(true);
-    setAnswer(undefined);
-    let refused: string | undefined;
-    const prove = async () => {
-      refused = await stepUp.prove(() => live.current);
-      return refused === undefined && live.current;
-    };
-    const got = await write(
+    await writes.send(
       `/admin/line/${kind}`,
       { reason: why },
-      token,
-      LINE_STEP_UP[`line.${kind}`] ? prove : undefined,
+      {
+        passkey: asks ? 'prove' : undefined,
+        done: (got) => {
+          // Stopped, with a canary in flight it could not abort: Martin must know, and that `make stop-the-line` will.
+          if (typeof got.body?.warning === 'string') {
+            setDone(true);
+            return got.body.warning;
+          }
+          onClose();
+          return undefined;
+        },
+      },
     );
-    // Closed while it asked: nothing more is sent, and nothing to say.
-    if (!live.current) return;
-    setBusy(false);
-    if (got.status !== 200) return setAnswer({ text: refused ?? said(got), done: false });
-    // Stopped, with a canary in flight it could not abort: Martin must know, and that `make stop-the-line` will.
-    if (typeof got.body?.warning === 'string') return setAnswer({ text: got.body.warning, done: true });
-    onClose();
   };
 
-  const done = answer?.done === true;
-  const label = stop ? 'Stop the line' : asks && !stepUp.fresh ? 'Use your passkey and start' : 'Start the line';
+  const label = stop ? 'Stop the line' : asks && !fresh ? 'Use your passkey and start' : 'Start the line';
   return (
     <Dialog
       title={stop ? 'Stop the line' : 'Start the line'}
       onClose={onClose}
       actions={
-        done ? (
-          <button type="button" className="btn" onClick={onClose}>
-            Close
+        done ? undefined : (
+          <button
+            type="button"
+            className={`btn ${stop ? 'attn' : 'primary'}`}
+            disabled={!reason.trim()}
+            aria-disabled={busy || undefined}
+            onClick={() => void act()}
+          >
+            {label}
+            {asks && !fresh && <Glyph name="key" className="glyph key" />}
           </button>
-        ) : (
-          <>
-            <button type="button" className="btn" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className={`btn ${stop ? 'attn' : 'primary'}`}
-              disabled={!reason.trim()}
-              aria-disabled={busy || undefined}
-              onClick={() => void act()}
-            >
-              {label}
-              {asks && !stepUp.fresh && <Glyph name="key" className="glyph key" />}
-            </button>
-          </>
         )
       }
     >
@@ -262,34 +240,20 @@ function LineDialog({
       )}
       {!done && (
         <div className="reason">
-          <label className="label" htmlFor={`${id}-reason`}>
-            Reason
-          </label>
-          <textarea
-            ref={field}
+          <ReasonField
             id={`${id}-reason`}
-            className="field"
-            maxLength={REASON}
-            rows={2}
+            label="Reason"
             required
             value={reason}
+            onChange={setReason}
             placeholder="Why, for the audit log"
-            onChange={(event) => setReason(event.currentTarget.value)}
+            help="Visitors see your reason, with anything shaped like a secret left out."
+            field={field}
           />
-          <span className="help">
-            Visitors see your reason, with anything shaped like a secret left out.{' '}
-            <span className="chars">
-              {reason.length} / {REASON}
-            </span>
-          </span>
         </div>
       )}
-      {asks && !stepUp.fresh && !done && <p className="help">Starting the line asks for your passkey again.</p>}
-      {answer && (
-        <p className="dialog-refusal" role="alert">
-          {answer.text}
-        </p>
-      )}
+      {asks && !fresh && !done && <p className="help">Starting the line asks for your passkey again.</p>}
+      <Refusal text={writes.refusal} />
     </Dialog>
   );
 }

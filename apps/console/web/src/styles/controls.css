@@ -69,9 +69,7 @@
   line-height: 1.45;
   color: var(--text-2);
 }
-.dialog-refusal,
-.canary-refusal,
-.controls-refusal {
+.write-refusal {
   padding: 8px 10px;
   border-left: var(--stroke-rule) solid var(--attn);
   font-size: 12.5px;

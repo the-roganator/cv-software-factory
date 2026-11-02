@@ -30,6 +30,15 @@ describe('the fold of the events', () => {
     expect(foldAt([...events], END)).not.toBe(foldAt(events, END));
   });
 
+  it('is made again when an event by t is added to the same list', () => {
+    const events = SAMPLES.slice(0, -1);
+    const fold = foldAt(events, END);
+    events.push(SAMPLES.at(-1) as PublicEvent);
+    const again = foldAt(events, END);
+    expect(again).not.toBe(fold);
+    expect(again.seen).toEqual(upTo(SAMPLES, END));
+  });
+
   it('draws the same view at a t as a fold made for it alone', () => {
     const events = [...SAMPLES];
     project(events, END);

@@ -3,8 +3,10 @@
 # cache on main only: a copy saved on one of their branches, about 100 MB a set, would serve nobody else, and one for
 # each pull request and queued merge after a move of the toolchain would crowd the repository's 10 GB.
 # mise-action keys its cache by the tools it is asked for and the files that pin them (scripts/toolchain.test.ts holds
-# this list to every workflow's), so it runs when those move, weekly in case the cache was evicted, and by hand: on
-# main alone, since a run elsewhere would save a cache only its own branch could read.
+# this list to every workflow's), so it runs when those move, by hand, and daily: the key changes every 30 days
+# (mise-action's cache_max_age_days) and only main saves one, so a day is the longest check.yml goes without a cache
+# after it does, or after one is evicted. On main alone, since a run elsewhere would save a cache only its own branch
+# could read.
 name: toolchain cache
 
 on:
@@ -12,7 +14,7 @@ on:
     branches: [main]
     paths: [mise.toml, mise.lock, .github/workflows/check.yml, .github/workflows/toolchain-cache.yml]
   schedule:
-    - cron: '41 4 * * 1'
+    - cron: '41 4 * * *'
   workflow_dispatch:
 
 permissions:

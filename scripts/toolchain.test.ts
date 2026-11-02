@@ -131,12 +131,17 @@ describe('every use of mise in CI', () => {
   it("is cached on main for each set of tools any workflow installs, since a run reads only its own and main's", () => {
     const cache = read('.github/workflows/toolchain-cache.yml');
     // Each set as the matrix's include gives it, beside the job it is named for.
-    const warmed = [...cache.matchAll(/^ +- job: \w+\n +tools: (.+)$/gm)].map(([, tools = '']) => tools);
+    // The tools in the order mise-action keys them by, so `pnpm node` is the same set as `node pnpm`.
+    const set = (tools = '') => tools.split(' ').filter(Boolean).sort().join(' ');
+    const warmed = [...cache.matchAll(/^ +- job: \w+\n +tools: (.+)$/gm)].map(([, tools]) => set(tools));
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow writes it.
     const matrix = '${{ matrix.tools }}';
-    const installed = new Set(uses.filter(({ file }) => file !== 'toolchain-cache.yml').map(({ tools }) => tools));
+    // app-gates.yml runs in the app's repository alone (it refuses anything but its pull requests and merge queue),
+    // whose caches are its own: this repository's main cannot serve it.
+    const here = uses.filter(({ file }) => file !== 'toolchain-cache.yml' && file !== 'app-gates.yml');
+    expect(here.every(({ tools }) => tools)).toBe(true);
+    const installed = new Set(here.map(({ tools }) => set(tools)));
     expect(installed.has('node')).toBe(true);
-    expect(installed.has(undefined)).toBe(false);
     expect(warmed.sort()).toEqual([...installed].sort());
     expect(uses.filter(({ file }) => file === 'toolchain-cache.yml').map(({ tools }) => tools)).toEqual([matrix]);
   });

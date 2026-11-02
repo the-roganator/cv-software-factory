@@ -91,7 +91,9 @@ jobs:
       # mise itself at one named release in every workflow (scripts/toolchain.test.ts). With mise.lock beside mise.toml,
       # the action installs with `--locked`: the versions and checksums the lock holds, and it fails when the lock has
       # none for a request, rather than resolve that day's release. Every use saves its cache on main alone: a run reads
-      # only its own branch's caches and main's, so a copy saved anywhere else would serve nobody (toolchain-cache.yml).
+      # only its own branch's caches and main's, so a copy saved anywhere else would serve that branch's later runs and
+      # nobody else's, at about 100 MB each (toolchain-cache.yml). A pull request that moves the toolchain installs it
+      # afresh on each run for that.
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17

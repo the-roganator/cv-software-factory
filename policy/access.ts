@@ -263,6 +263,15 @@ export const ACCESS = {
     routes: ['POST /admin/improvements'],
   },
 
+  // A red-team attack (`attacks.ts`): one of spec 5.3's five, its content fixed in code, made by the red-team harness
+  // against the real mechanism with no agent. It loosens nothing and asks the line for no work, so it asks for nothing
+  // more. One at a time: a launch is refused while the last has neither finished nor passed its limit.
+  'attack.launch': {
+    ...admin('Launch a red-team attack against its real mechanism, one at a time: its refusal shows on its card'),
+    server: 'admin',
+    routes: ['POST /admin/attacks/:attack'],
+  },
+
   // Models and spend, within policy (`settings.ts`). A save is one route, and is each of the four below that it does:
   // the admin service asks for the passkey again when any of them needs it, so a save that raises anything does.
   'agent.raise': admin('Give an agent a dearer model, or more effort', true),

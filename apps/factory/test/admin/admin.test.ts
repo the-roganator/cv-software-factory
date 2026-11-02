@@ -537,6 +537,7 @@ const WRITES: [string, Body][] = [
   ['/admin/holds/1/reject', { hold: crypto.randomUUID() }],
   ['/admin/holds/1/answer', { hold: crypto.randomUUID(), words: 'Go on' }],
   ['/admin/flags/delivery-dates/stage', { from: { stage: 'off' }, to: { stage: 'checks' } }],
+  ['/admin/attacks/egress', {}],
 ];
 
 describe('every write route', () => {
@@ -2714,6 +2715,131 @@ describe('an improvement asked for', () => {
     expect((await browser.post('/admin/improvements', { id: crypto.randomUUID(), words })).status).toBe(200);
     const [requested] = await lastEvents(1);
     expect(requested?.public).toMatchObject({ payload: { words: 'Add a status page. The token is [redacted].' } });
+  });
+});
+
+describe('an attack launched', () => {
+  const launches = () =>
+    db.owner<{ seq: string; work_item: string; type: string; appended_by: string; payload: Body }[]>`
+      select seq::text, work_item, type, appended_by, payload from events
+      where type = 'attack.launched' or (type = 'work-item.opened' and payload->>'kind' = 'red-team')
+      order by seq`;
+
+  /** The harness's end of an attack, appended as its role, or as another's with row security off, as a forgery. */
+  const finish = async (workItem: string, as: 'redteam' | 'line' = 'redteam') => {
+    const event = {
+      id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      work_item: workItem,
+      type: 'attack.finished',
+      version: VERSIONS['attack.finished'],
+      actor: 'red-team',
+      summary: 'The attack was not seen to its end',
+      payload: { attack: 'egress', outcome: 'unfinished', expected: ['egress-policy'], refusals: [], attempts: [] },
+      artifacts: [],
+    } as NewEvent;
+    const append = () =>
+      new EventWriter(as === 'redteam' ? db.redteam : db.as.line, {
+        kind: 'real',
+        artifacts: new DiskArtifacts('/nonexistent'),
+      }).append(event);
+    if (as === 'redteam') return append();
+    await db.owner`alter table events disable row level security`;
+    try {
+      return await append();
+    } finally {
+      await db.owner`alter table events enable row level security`;
+    }
+  };
+
+  /** Ends whatever attack is under way, so each test launches from none. */
+  beforeEach(async () => {
+    const [last] = await db.owner<{ work_item: string }[]>`
+      select work_item from events l where type = 'attack.launched'
+        and not exists (select 1 from events f where f.work_item = l.work_item and f.type = 'attack.finished'
+                        and f.appended_by = 'factory_redteam')
+      order by seq desc limit 1`;
+    if (last) await finish(last.work_item);
+  });
+
+  it('needs no passkey again, and opens a work item of kind red-team with his launch, in one transaction', async () => {
+    const { browser } = await signedIn();
+    const before = (await launches()).length;
+    const launched = await browser.post('/admin/attacks/workflow', {});
+    expect(launched).toMatchObject({ status: 200, body: { attack: 'workflow' } });
+    const [opened, launch] = (await launches()).slice(before);
+    expect(opened).toMatchObject({
+      work_item: launched.body.workItem,
+      type: 'work-item.opened',
+      appended_by: 'factory_admin',
+      payload: { kind: 'red-team', category: 'red-team', title: 'Red-team attack by Martin', sample: false },
+    });
+    expect(launch).toMatchObject({
+      work_item: launched.body.workItem,
+      type: 'attack.launched',
+      appended_by: 'factory_admin',
+      payload: { attack: 'workflow' },
+    });
+    expect(Number(launch?.seq)).toBe(Number(opened?.seq) + 1);
+    const [event] = await lastEvents(1);
+    expect(event).toMatchObject({
+      actor: 'martin',
+      summary: 'Martin launched an attack: “Fix CI” by editing a workflow',
+    });
+  });
+
+  it('runs one at a time: refused while the last has neither finished nor passed its limit', async () => {
+    const { browser } = await signedIn();
+    const first = await browser.post('/admin/attacks/egress', {});
+    expect(first.status).toBe(200);
+    const before = (await launches()).length;
+    expect(await browser.post('/admin/attacks/image', {})).toMatchObject({
+      status: 409,
+      body: {
+        refused: 'attack',
+        message: `One attack at a time: #${first.body.workItem} has not finished. Launch another once it has, or in 10 minutes, when it counts as unfinished.`,
+      },
+    });
+    // An end appended by any role but the harness's is none.
+    await finish(String(first.body.workItem), 'line');
+    expect((await browser.post('/admin/attacks/image', {})).status).toBe(409);
+    expect(await launches()).toHaveLength(before);
+    // The harness's end lets the next through.
+    await finish(String(first.body.workItem));
+    expect(await browser.post('/admin/attacks/image', {})).toMatchObject({ status: 200, body: { attack: 'image' } });
+  });
+
+  it('lets the next through once the last has passed its limit, by the store’s clock', async () => {
+    const { browser } = await signedIn();
+    const first = await browser.post('/admin/attacks/test', {});
+    expect(first.status).toBe(200);
+    await db.owner`alter table events disable trigger user`;
+    try {
+      await db.owner`update events set appended_at = appended_at - interval '44 minutes'
+                     where work_item = ${String(first.body.workItem)}`;
+      expect(await browser.post('/admin/attacks/report', {})).toMatchObject({
+        status: 409,
+        body: { message: expect.stringContaining('or in a minute, when it counts as unfinished') },
+      });
+      await db.owner`update events set appended_at = appended_at - interval '1 minute'
+                     where work_item = ${String(first.body.workItem)}`;
+    } finally {
+      await db.owner`alter table events enable trigger user`;
+    }
+    expect(await browser.post('/admin/attacks/report', {})).toMatchObject({ status: 200, body: { attack: 'report' } });
+  });
+
+  it('takes one of the five attacks, by its id, and nothing from the body', async () => {
+    const { browser } = await signedIn();
+    const before = (await launches()).length;
+    expect(await browser.post('/admin/attacks/rm-rf', {})).toMatchObject({ status: 404, body: { refused: 'attack' } });
+    for (const body of [{ attack: 'egress' }, { kind: 'defect-fix' }, { title: 'Mine' }]) {
+      expect(await browser.post('/admin/attacks/egress', body), JSON.stringify(body)).toMatchObject({
+        status: 400,
+        body: { refused: 'body' },
+      });
+    }
+    expect(await launches()).toHaveLength(before);
   });
 });
 

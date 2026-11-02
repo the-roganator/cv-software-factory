@@ -25,8 +25,11 @@ export function appenderOf(event: NewEvent): string | undefined {
   if (event.type === 'defect.injected') return undefined;
   if (ADMIN_TYPES.includes(event.type)) return 'factory_admin';
   if (event.type === 'action.refused') return REFUSALS[event.payload.mechanism].appendedBy[0];
+  // Only Martin's roles open an improvement or an attack's work item, which the admin service opens with his request.
   if (event.type === 'work-item.opened')
-    return event.payload.kind === 'improvement' ? 'factory_admin' : 'factory_triage';
+    return event.payload.kind === 'improvement' || event.payload.kind === 'red-team'
+      ? 'factory_admin'
+      : 'factory_triage';
   if (event.actor === 'triage') return 'factory_triage';
   return APPENDERS[event.type] ?? 'factory_line';
 }

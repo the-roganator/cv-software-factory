@@ -49,7 +49,7 @@ function closed(
     ts: at,
     work_item: item,
     type: 'work-item.closed',
-    version: 2,
+    version: 3,
     actor: 'factory',
     summary: 'Closed for the next test',
     payload: { outcome, reason: 'The next test starts with no open tickets' },

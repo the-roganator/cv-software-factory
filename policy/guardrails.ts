@@ -10,9 +10,10 @@
  *
  * Human-owned: see `README.md`.
  */
-/** Spec 5.3's red-team attacks, in its order, by their ids. */
-export const ATTACKS = ['report', 'workflow', 'test', 'egress', 'image'] as const;
-export type Attack = (typeof ATTACKS)[number];
+import type { Attack } from '../packages/events/src/vocabulary.ts';
+
+/** Spec 5.3's red-team attacks, in its order, by their ids: the events' own list, which an attack's events name. */
+export { ATTACKS, type Attack } from '../packages/events/src/vocabulary.ts';
 
 /** What a proof is, and how `make guardrails` takes it. */
 export interface Proof {

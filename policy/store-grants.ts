@@ -45,15 +45,19 @@ const SIGNAL = 'insert (id, sense, fingerprint, signal)';
  */
 const READ = 'true';
 /**
- * Every worker appends any event but his commands, and opens any work item but an improvement, which only his roles
- * open (0035_improvement-requests.sql); and only the line appends its record of what a release did
+ * Every worker appends any event but his commands, and opens any work item but an improvement or an attack's, which
+ * only his roles open (0035_improvement-requests.sql, 0045_red-team-attacks.sql); and only the line appends its record
+ * of what a release did
  * (0039_release-events-the-lines.sql). Every role, his included, appends a refusal only by a mechanism
  * `policy/refusals.ts` lets it speak for, under its guardrails, by restrictive policies beside these
  * (0040_refusals-by-mechanism.sql, 0041_refusals-as-they-read.sql, 0042_refusals-before-guardrails.sql).
  */
 const NOT_HIS =
-  '(NOT admin_event(type)) AND (NOT opens_improvement(type, payload)) AND ' +
+  '(NOT admin_event(type)) AND (NOT opens_improvement(type, payload)) AND (NOT opens_attack(type, payload)) AND ' +
   "((NOT line_only_event(type)) OR (CURRENT_USER = 'factory_line'::name))";
+
+/** Martin's roles, as a condition on who appended an event names them. */
+const BY_MARTIN = "appended_by in ('factory_admin', 'factory_operator', 'factory_enrol')";
 
 export const STORE_GRANTS = {
   factory_worker: {
@@ -149,7 +153,8 @@ export const STORE_GRANTS = {
   factory_admin: {
     for:
       "The admin service: appends Martin's commands and nothing else, but the work item of kind improvement his request " +
-      'opens, which it numbers (0035_improvement-requests.sql); reads the full events his views need; and keeps the ' +
+      'opens, and of kind red-team his launch of an attack opens, each of which it numbers ' +
+      '(0035_improvement-requests.sql, 0045_red-team-attacks.sql); reads the full events his views need; and keeps the ' +
       'passkeys, enrolment codes, sessions and WebAuthn challenges of signing in (0023_martins-commands.sql).',
     martin: true,
     on: {
@@ -170,7 +175,12 @@ export const STORE_GRANTS = {
         'delete',
       ],
     },
-    rows: { events: { select: READ, insert: 'admin_event(type) OR opens_improvement(type, payload)' } },
+    rows: {
+      events: {
+        select: READ,
+        insert: 'admin_event(type) OR opens_improvement(type, payload) OR opens_attack(type, payload)',
+      },
+    },
   },
   factory_operator: {
     for:
@@ -214,6 +224,27 @@ export const STORE_GRANTS = {
       },
     },
   },
+  factory_redteam: {
+    for:
+      'The red-team harness: appends how an attack ended (`attack.finished`), which no other role may append, the ' +
+      'refusals it relays for its attacks, and its work item’s close, each only on a work item one of Martin’s roles ' +
+      'launched an attack on (0045_red-team-attacks.sql). It reads only what it acts on and waits for: his launches and ' +
+      'the work items they opened; triage’s typed judgement and admission control’s refusals, each from a role that ' +
+      'may speak for it; and its own events, so an append may be retried and a restart picks up where it left off. No ' +
+      'other table. Its password is in `postgres-redteam`.',
+    on: { events: ['select', 'insert'], store: ['select', 'insert'] },
+    rows: {
+      events: {
+        select:
+          "(appended_by = 'factory_redteam') OR " +
+          `((${BY_MARTIN}) AND ((type = 'attack.launched') OR opens_attack(type, payload))) OR ` +
+          "((type = 'action.refused') AND " +
+          "((payload ->> 'mechanism') = ANY (ARRAY['typed-judgement', 'admission-control'])) AND " +
+          "(appended_by = ANY (refusal_appenders((payload ->> 'mechanism')))))",
+        insert: "(type in ('attack.finished', 'action.refused', 'work-item.closed')) AND launched_by_martin(work_item)",
+      },
+    },
+  },
   console_reader: {
     for:
       "The console's server: public views of events, with the role that appended each (0040_refusals-by-mechanism.sql), " +
@@ -248,6 +279,15 @@ export const STORE_GRANTS = {
  */
 export const PROOFS_ONLY_ROWS =
   "(type <> 'guardrail.proved') OR (CURRENT_USER = 'factory_proofs'::name) OR " +
+  "((CURRENT_USER = 'factory_operator'::name) AND sample)";
+
+/**
+ * The restrictive insert policy on `events` that holds an attack's end to the red-team harness's role
+ * (`0045_red-team-attacks.sql`), as the grants test reads it from the store: every role's insert must meet it as well
+ * as its own. Martin's command line appends one only as a sample.
+ */
+export const REDTEAM_ONLY_ROWS =
+  "(type <> 'attack.finished') OR (CURRENT_USER = 'factory_redteam'::name) OR " +
   "((CURRENT_USER = 'factory_operator'::name) AND sample)";
 
 /**

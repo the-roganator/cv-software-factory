@@ -6,6 +6,7 @@
  */
 import type { PublicEvent } from './types.ts';
 import { type EventType, VERSIONS } from './versions.ts';
+import type { Attack } from './vocabulary.ts';
 
 /** Turns a payload at one version into the next. It also receives public views, so it must not need what they leave out. */
 export type Upcaster = (payload: Record<string, unknown>) => Record<string, unknown>;
@@ -30,6 +31,18 @@ function guardrailsOf({ mechanism, output }: Record<string, unknown>): number[] 
     default:
       return [1];
   }
+}
+
+/**
+ * The attack a version 1 launch described, from its words: the only two recorded, by the samples, deleted a test and
+ * ran an image the agent built. Words that name none of the five read as the report, the first.
+ */
+function attackNamed(words: string): Attack {
+  if (/\btests?\b/i.test(words)) return 'test';
+  if (/\bimages?\b/i.test(words)) return 'image';
+  if (/\bworkflows?\b/i.test(words)) return 'workflow';
+  if (/\b(egress|outside|url|exfiltrat\w*)\b/i.test(words)) return 'egress';
+  return 'report';
 }
 
 export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
@@ -162,7 +175,11 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 2 adds the planner's findings to the kinds of work item; a version 1 work item reads as it was.
   'work-item.opened': { 1: (payload) => payload },
   // Version 2 adds an improvement closed as its flag was turned off; a version 1 close reads as it was.
-  'work-item.closed': { 1: (payload) => payload },
+  // Version 3 adds a red-team attack closed as it ended; a version 2 close reads as it was.
+  'work-item.closed': { 1: (payload) => payload, 2: (payload) => payload },
+  // Version 1 described an attack in free words, and only the samples ever recorded one; version 2 names one of spec
+  // 5.3's five by its id, read from those words, and the refusal it expected is policy's (`policy/attacks.ts`).
+  'attack.launched': { 1: ({ attack }) => ({ attack: attackNamed(String(attack)) }) },
   // Version 2 adds the planner to the sources of a signal; a version 1 signal reads as it was.
   // Version 3 adds the canary to the senses, and its analysis to the evidence; a version 2 signal reads as it was.
   // Version 4 adds how what the sense reads stood, as triage looked; a version 3 signal never said.

@@ -83,6 +83,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(call password,factory,postgres-admin)
 	@# The proofs' role, which `make guardrails` connects as from the Mac; the migrate Job sets it.
 	@$(call password,factory,postgres-proofs)
+	@# The red-team harness's role, which is no member of the workers'; the migrate Job sets it.
+	@$(call password,factory,postgres-redteam)
 	@$(MAKE) --no-print-directory worker-secrets
 	@$(MAKE) --no-print-directory gateway-key
 	@$(MAKE) --no-print-directory github-key

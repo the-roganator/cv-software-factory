@@ -8,11 +8,13 @@ export const VERSIONS = {
   // A work item, from first event to last
   'work-item.opened': 2,
   'work-item.summarised': 1,
-  'work-item.closed': 2,
+  'work-item.closed': 3,
   'work-item.reopened': 3,
   // Before the line: what a visitor started
   'defect.injected': 1,
-  'attack.launched': 1,
+  // A red-team attack: Martin's launch of it (the admin service), and how it ended (the red-team harness)
+  'attack.launched': 2,
+  'attack.finished': 1,
   // Sense and triage
   'signal.received': 5,
   'judgement.made': 1,
@@ -138,6 +140,14 @@ export const LINE_ONLY_TYPES: readonly EventType[] = [
 export const PROOFS_ONLY_TYPES: readonly EventType[] = ['guardrail.proved'];
 
 /**
+ * The red-team harness's own record of how an attack ended: the type only its role (`factory_redteam`) may append (row
+ * security on `events`, `0045_red-team-attacks.sql`), save samples from Martin's command line. The admin service's one
+ * attack at a time, the line's re-derivation of each attack and the Guardrails panel trust it for that, and also read
+ * only those that role appended.
+ */
+export const REDTEAM_ONLY_TYPES: readonly EventType[] = ['attack.finished'];
+
+/**
  * Martin's commands: the types only his roles may append (row security on `events`, `0023_martins-commands.sql`), and
  * that the line, triage and the gateway act on only when one of his roles appended it. Signing in and out, giving his
  * passkey again, and his passkeys are among them, so no worker can forge one (`0025_admin-service.sql`,
@@ -145,9 +155,10 @@ export const PROOFS_ONLY_TYPES: readonly EventType[] = ['guardrail.proved'];
  * `0027_release-controls.sql`), his settings (`settings.changed`, `0028_settings.sql`), and his controls of the line
  * (`controls.changed`, `0030_line-controls.sql`), his switch of alerts to his phone (`alerts.switched`,
  * `0037_alerts-switched.sql`), his stages of a feature flag (`flag.staged`,
- * `0033_flag-stages.sql`), and his requests for an improvement (`improvement.requested`, `0035_improvement-requests.sql`,
+ * `0033_flag-stages.sql`), his requests for an improvement (`improvement.requested`, `0035_improvement-requests.sql`,
  * which also lets only his roles open a work item of kind `improvement`, though `work-item.opened` is no command of his
- * alone). Each command the admin service adds joins this list when its type
+ * alone), and his launches of a red-team attack (`attack.launched`, `0045_red-team-attacks.sql`, which lets only his
+ * roles open a work item of kind `red-team` too). Each command the admin service adds joins this list when its type
  * joins the catalogue, and a migration adds it to the store's own list (`admin_event`): the store's tests fail until
  * the two agree. `release.aborted` is not one: it is the line's record of
  * what the Rollout did, and says `by: martin` when his control came first.
@@ -167,6 +178,7 @@ export const ADMIN_TYPES: readonly EventType[] = [
   'alerts.switched',
   'flag.staged',
   'improvement.requested',
+  'attack.launched',
 ];
 
 export const isEventType = (type: string): type is EventType => Object.hasOwn(VERSIONS, type);

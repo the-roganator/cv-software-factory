@@ -10,7 +10,8 @@ Martin's sign-in, his sessions, and the one way a browser changes the factory (s
 - **v1:** the line's controls: the autonomy level, whether agents take new work, auto-merge, and what the line takes, within policy ([below](#the-lines-controls)).
 - **v1:** the feature flags' stages, written to `flags` as the one service of ours that may ([below](#the-flags-stages)), and whether the app holds them: every pod asked every minute, and after each narrowing or Off ([below](#whether-the-app-holds-the-flags)).
 - **v1:** Martin's requests for an improvement, from the "+", in his own words, which open its work item ([below](#an-improvement)).
-- **Later:** the red-team attacks and visitor keys' usage (spec 5.4), each a route in the access table.
+- **v1:** Martin's launches of a red-team attack, from its guardrail's row, one at a time, which open its work item ([below](#a-red-team-attack)).
+- **Later:** visitor keys' usage (spec 5.4), a route in the access table.
 
 ```mermaid
 flowchart LR
@@ -50,6 +51,7 @@ Every route it answers is in [`policy/access.ts`](../../policy/access.ts), and i
 | `phone.switch` | `POST /admin/alerts/phone` | a write's four checks, and the passkey given within five minutes to switch alerts off (`phone.off`) |
 | `flag.stage` | `POST /admin/flags/:flag/stage` | a write's four checks, and the passkey given within five minutes when the move widens past Checks or turns a flag back on (`flag.widen`, `flag.back-on`) |
 | `improvement.request` | `POST /admin/improvements` | a write's four checks, and the passkey given within five minutes |
+| `attack.launch` | `POST /admin/attacks/:attack` | a write's four checks, and nothing more |
 
 A write's four checks, in order: `Origin` exactly the console's origin in configuration, never one made from the request's `Host`; a live session; the session's token in `X-CSRF-Token`; and, for an action the table marks, the passkey given again within `STEP_UP.minutes`. Every write is a `POST` with a JSON body, which no form can send. An action added later plugs in the same way: a route on its entry, and a handler; the guard comes from the table.
 
@@ -192,6 +194,15 @@ flagd's readiness follows its first read of `flags`, not its watch: a watch brok
 - **It alerts him,** as a [security event](ALERTING.md#security-events) at Notify (`improvement-requested`), as approving its spec does (`improvement-approved`).
 
 A visitor's suggestion never comes here: it never starts work, and Martin, having read one, asks in his own words.
+
+## A red-team attack
+
+`POST /admin/attacks/:attack` is Launch in a guardrail's opened row (`admin/attacks.ts`), with `{}`: the attack is one of spec 5.3's five, by its id in the path (`report`, `workflow`, `test`, `egress`, `image`; `ATTACKS` in the events package), and the [red-team harness](RED-TEAM-HARNESS.md) makes it. Every attack's content is fixed in code and the line builds nothing from it, so an attack loosens nothing and asks the line for no work: it needs no passkey again (`attack.launch`).
+
+- **One transaction, two events.** A work item numbered from the store's sequence, opened as `work-item.opened` of kind and category `red-team`, titled "Red-team attack by Martin" (`ATTACK_TITLE` in `policy/attacks.ts`), then his `attack.launched` on it, naming the attack. The answer names the work item and the attack. The attack's card is there from the moment he launches it.
+- **One at a time.** A launch is refused (409, `attack`) while the last attack his roles launched has neither an `attack.finished` appended by the harness's role, `factory_redteam`, nor passed its limit (`ATTACK_RULES` in `policy/attacks.ts`: from ten minutes to the pull request's 45), measured by the store's clock from when the launch was appended. The refusal says which work item it waits for, and for how long at most. It is asked after the lock every append takes, so two launches at once cannot both pass. A harness that is down blocks nothing for longer than the attack it missed, and the line pages him about that one.
+- **Nothing else from the request.** An attack that is not one of the five is refused (404, `attack`), and a body with anything in it (400). The kind, category and title are the service's.
+- **His alone.** Only Martin's roles may launch an attack or open a work item of kind `red-team` ([event store](EVENT-STORE.md#martins-commands)), and the harness acts on a launch only when one of them appended it.
 
 ## Needs you
 

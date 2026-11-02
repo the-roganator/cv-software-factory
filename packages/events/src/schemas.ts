@@ -431,9 +431,19 @@ export const PAYLOADS = {
     /**
      * How it ended. Triage ends a report it quarantines or discards; anything else ends after the line. An improvement
      * whose flag Martin turned off, at any stage, closes as turned off, with his reason: its code stays in the app, off,
-     * and nothing is rolled back. One whose flag he widened to Everyone closes as verified, and its flag stays his.
+     * and nothing is rolled back. One whose flag he widened to Everyone closes as verified, and its flag stays his. A
+     * red-team attack never reaches the line: the harness closes its work item as its `attack.finished` says it ended,
+     * refused, not refused or unfinished, in the same append.
      */
-    outcome: z.enum(['verified', 'rolled-back', 'no-change', 'quarantined', 'discarded', 'turned-off']),
+    outcome: z.enum([
+      'verified',
+      'rolled-back',
+      'no-change',
+      'quarantined',
+      'discarded',
+      'turned-off',
+      ...V.ATTACK_OUTCOMES,
+    ]),
     reason: text(200),
   }),
   /**
@@ -461,7 +471,64 @@ export const PAYLOADS = {
     }),
 
   'defect.injected': z.strictObject({ choice: text(80), version: appVersion, pullRequest }),
-  'attack.launched': z.strictObject({ attack: text(120), expected: text(120) }),
+  /**
+   * Martin launched a red-team attack from the console: which of spec 5.3's five. Every attack's content is fixed in
+   * code, so the launch names nothing more. One of his commands, appended by the admin service on the work item it
+   * opens for the attack, of kind and category `red-team`, in the same append; the red-team harness acts on one only
+   * when one of his roles appended it.
+   */
+  'attack.launched': z.strictObject({ attack: z.enum(V.ATTACKS) }),
+  /**
+   * How a red-team attack ended, as the harness saw it: refused when every attempt was refused, each by the mechanism
+   * it expects at its place (`policy/attacks.ts`), not refused when one got through, whatever refused the others, and
+   * unfinished when it could not be seen to its end (its limit passed, or its control failed). Appended only by the
+   * harness's role (`factory_redteam`), which row security holds it to (0045_red-team-attacks.sql), on the attack's
+   * work item, with the work item's close. The harness does not grade itself: the line re-derives each from the
+   * refusals it cites and the subject they must be about.
+   */
+  'attack.finished': z
+    .strictObject({
+      attack: z.enum(V.ATTACKS),
+      outcome: z.enum(V.ATTACK_OUTCOMES),
+      /** Each refusal the attack expects, in the order its attempts meet them: attack 2's guard, then GitHub. */
+      expected: z.array(z.enum(V.REFUSAL_MECHANISMS)).min(1).max(8),
+      /** The seqs of the refusals (`action.refused`) it counted, in the order of `expected`. */
+      refusals: z
+        .array(z.number().int().positive())
+        .max(8)
+        .refine((seqs) => new Set(seqs).size === seqs.length, 'each refusal once'),
+      /** The attack's own record of each attempt it made: what it tried, and what came back, verbatim. */
+      attempts: z.array(z.strictObject({ what: text(200), result: z.string().min(1).max(2000) })).max(8),
+      /** What its refusals must be about, so none from someone else's report, pull request or pod is counted. */
+      subject: z
+        .strictObject({
+          /** The report it sent, by the id that identifies it to the factory. */
+          report: z
+            .string()
+            .regex(/^[A-Za-z0-9._:-]{1,128}$/, "a report's id")
+            .optional(),
+          /** The pull request it opened, at the head the review check judged. */
+          pullRequest: z
+            .strictObject({
+              repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/name'),
+              number: pullRequest,
+              head: commit,
+            })
+            .optional(),
+          /** The pod it asked for. */
+          pod: z.strictObject({ namespace: text(63), name: text(253), uid: z.uuid() }).optional(),
+        })
+        .optional(),
+    })
+    .refine(
+      (finished) =>
+        finished.outcome !== 'refused' ||
+        (finished.refusals.length === finished.expected.length && finished.attempts.length > 0),
+      {
+        message: 'a refused attack made its attempts, and cites a refusal for each one it expects',
+        path: ['refusals'],
+      },
+    ),
 
   /**
    * What a sense found, what a visitor reported, or what the planner noticed outside its ticket. A sense's signal

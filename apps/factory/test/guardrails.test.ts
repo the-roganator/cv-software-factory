@@ -1,12 +1,13 @@
 /**
  * The guardrail catalogue (`policy/guardrails.ts`) is spec 6's eleven, in its words, each proof in it once, and each
- * attack against one guardrail.
+ * attack against one guardrail, refused only by mechanisms that show it (`policy/attacks.ts`).
  */
 import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
 import { matchesGlob, posix } from 'node:path';
 import { GUARDRAIL_COUNT } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { ATTACK_RULES, attackLimitMs, LONGEST_ATTACK_MINUTES } from '../../../policy/attacks.ts';
 import {
   ATTACKS,
   CI_PROOFS,
@@ -16,6 +17,7 @@ import {
   PROOFS,
   type ProofId,
 } from '../../../policy/guardrails.ts';
+import { mayAppend, REFUSALS } from '../../../policy/refusals.ts';
 import { RECORDS } from '../../../scripts/policy-hash.ts';
 import vitest from '../../../vitest.config.ts';
 import { inScope, ownedPaths } from '../src/github/paths.ts';
@@ -132,6 +134,30 @@ describe('the guardrail catalogue', () => {
     for (const guardrail of GUARDRAILS) {
       expect(guardrail.proofs.length > 0 || 'attack' in guardrail, `guardrail ${guardrail.n}`).toBe(true);
     }
+  });
+
+  it('expects each attack refused only by mechanisms that show its guardrail, recorded by the harness or one it reads', () => {
+    expect(Object.keys(ATTACK_RULES)).toEqual([...ATTACKS]);
+    // The two whose record another role keeps, which the harness's role reads (0045_red-team-attacks.sql).
+    const waitsFor: Record<string, string> = {
+      'typed-judgement': 'factory_triage',
+      'admission-control': 'factory_line',
+    };
+    for (const attack of ATTACKS) {
+      const guardrail = guardrailAttacked(attack);
+      expect(ATTACK_RULES[attack].expects.length, attack).toBeGreaterThan(0);
+      expect(ATTACK_RULES[attack].minutes, attack).toBeGreaterThan(0);
+      for (const mechanism of ATTACK_RULES[attack].expects) {
+        const shown = Object.values(REFUSALS[mechanism].guardrails).flat() as number[];
+        expect(shown, `${attack}: ${mechanism}`).toContain(guardrail);
+        const by = mayAppend(mechanism, 'factory_redteam') ? 'factory_redteam' : waitsFor[mechanism];
+        expect(by && mayAppend(mechanism, by), `${attack}: ${mechanism}`).toBe(true);
+      }
+    }
+    // The pull request waits for the app's gates, so its limit is the longest.
+    expect(LONGEST_ATTACK_MINUTES).toBe(ATTACK_RULES.test.minutes);
+    expect(attackLimitMs('test')).toBe(ATTACK_RULES.test.minutes * 60_000);
+    expect(attackLimitMs('not-an-attack')).toBe(LONGEST_ATTACK_MINUTES * 60_000);
   });
 });
 

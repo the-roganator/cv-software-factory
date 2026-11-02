@@ -13,9 +13,10 @@ import { sha256 } from './secrets.ts';
 
 /**
  * The events the admin service appends, all of them Martin's: his commands, and the opening of the improvement his
- * request opens, the one work item it opens.
+ * request opens and of the attack his launch opens, the only work items it opens.
  */
 export type AdminEvent =
+  | 'attack.launched'
   | 'admin.signed-in'
   | 'admin.signed-out'
   | 'admin.stepped-up'

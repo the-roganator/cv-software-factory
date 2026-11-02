@@ -14,6 +14,7 @@ import {
   LINE_ONLY_TYPES,
   type NewEvent,
   PROOFS_ONLY_TYPES,
+  REDTEAM_ONLY_TYPES,
   REFUSAL_MECHANISMS,
   type RefusalMechanism,
   VERSIONS,
@@ -22,7 +23,7 @@ import type { JSONValue, Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ENROLMENT_CODE, PASSKEYS, SESSION } from '../../../policy/access.ts';
 import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../policy/refusals.ts';
-import { MARTINS_ROLES, PROOFS_ONLY_ROWS, STORE_GRANTS } from '../../../policy/store-grants.ts';
+import { MARTINS_ROLES, PROOFS_ONLY_ROWS, REDTEAM_ONLY_ROWS, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
@@ -190,6 +191,7 @@ describe('the grants', () => {
       factory_operator: true,
       factory_enrol: true,
       factory_proofs: true,
+      factory_redteam: true,
     });
     for (const worker of WORKERS) {
       const [me] = await db.as[worker]<{ me: string }[]>`select current_user as me`;
@@ -210,6 +212,15 @@ const opened = (workItem: string): NewEvent<'work-item.opened'> => ({
   payload: { kind: 'visitor-report', title: 'A report', sample: true, visitor: { key: 'amber-otter' } },
   artifacts: [],
 });
+
+/**
+ * Martin's launch of an attack on a work item, inserted as the admin service's role, real or a sample: what the
+ * harness's role may append on.
+ */
+const launched = (database: Database, workItem: string, sample = false) => database.admin`
+  insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+  values (${crypto.randomUUID()}, now(), ${workItem}, 'attack.launched', 2, 'martin', 'Martin launched an attack',
+          ${database.admin.json({ attack: 'egress' })}, '[]', '{}', ${sample})`;
 
 /** A signal from a sense, as the inbox takes it. */
 const signal = (sense: 'probe' | 'crawler' | 'metrics' | 'logs' | 'canary'): InboxSignal => ({
@@ -362,7 +373,7 @@ const command = (type: EventType, workItem: string | null = '3200'): NewEvent =>
   }) as NewEvent;
 
 /** Martin's commands that are on a work item: the rest are the line's. */
-const ON_WORK_ITEM: readonly EventType[] = ['hold.answered', 'flag.staged', 'improvement.requested'];
+const ON_WORK_ITEM: readonly EventType[] = ['hold.answered', 'flag.staged', 'improvement.requested', 'attack.launched'];
 
 /** A payload for each of Martin's commands that has one to give. */
 const PAYLOADS: Partial<Record<EventType, object>> = {
@@ -400,6 +411,7 @@ const PAYLOADS: Partial<Record<EventType, object>> = {
     steppedUp: true,
   },
   'improvement.requested': { words: 'Show when an order would arrive on each product page.', steppedUp: true },
+  'attack.launched': { attack: 'egress' },
 };
 
 /** A work item of kind improvement, opened as Martin asks for one. */
@@ -423,10 +435,16 @@ describe("Martin's commands", () => {
   it('are refused from every worker’s role and the scoreboard’s', async () => {
     await writer(db.operator).append(opened('3200'));
     for (const type of ADMIN_TYPES) {
-      for (const [name, sql] of [...Object.entries(db.as), ['scoreboard', db.scoreboard]]) {
-        // The scoreboard's own trigger (0012) refuses it first.
+      for (const [name, sql] of [
+        ...Object.entries(db.as),
+        ['scoreboard', db.scoreboard],
+        ['proofs', db.proofs],
+        ['redteam', db.redteam],
+      ]) {
+        // The scoreboard's own trigger (0012) refuses it first; and a command on a work item the proofs or the harness
+        // cannot see is refused sooner still.
         await expect(writer(sql as Sql).append(command(type, '3200')), `${type} from ${name}`).rejects.toThrow(
-          /row-level security|the scoreboard appends its own figures/,
+          /row-level security|the scoreboard appends its own figures|work item 3200 has not been opened/,
         );
       }
     }
@@ -470,6 +488,31 @@ describe("Martin's commands", () => {
       (
         await db.owner<{ appended_by: string }[]>`
         select appended_by from events where type = 'work-item.opened' and payload->>'kind' = 'improvement'
+        order by seq`
+      ).map((row) => row.appended_by),
+    ).toEqual(['factory_admin', 'factory_operator']);
+  });
+
+  it('open an attack’s work item, with his launch, and no worker or the harness can open one', async () => {
+    const attack = (workItem: string): NewEvent =>
+      ({
+        ...opened(workItem),
+        actor: 'martin',
+        summary: 'Martin launched a red-team attack from the console',
+        payload: { kind: 'red-team', title: 'Red-team attack by Martin', sample: true, category: 'red-team' },
+      }) as NewEvent;
+    const [number] = await db.admin<{ next: string }[]>`select nextval('work_items')::text as next`;
+    const workItem = number?.next ?? '';
+    await writer(db.admin).append([attack(workItem), command('attack.launched', workItem)]);
+    let n = 3240;
+    for (const [name, sql] of [...Object.entries(db.as), ['redteam', db.redteam]] as [string, Sql][]) {
+      await expect(writer(sql).append(attack(String(++n))), name).rejects.toThrow('row-level security');
+    }
+    await writer(db.operator).append(attack('3239'));
+    expect(
+      (
+        await db.owner<{ appended_by: string }[]>`
+        select appended_by from events where type = 'work-item.opened' and payload->>'kind' = 'red-team'
         order by seq`
       ).map((row) => row.appended_by),
     ).toEqual(['factory_admin', 'factory_operator']);
@@ -520,6 +563,8 @@ describe("the line's record of a release", () => {
           ['admin', real.admin],
           ['operator', real.operator],
           ['enrol', real.enrol],
+          ['proofs', real.proofs],
+          ['redteam', real.redteam],
           ['scoreboard', real.scoreboard],
           ['console', real.reader],
         ];
@@ -583,6 +628,7 @@ describe("a guardrail's proof", () => {
         ['factory_admin', real.admin],
         ['factory_operator', real.operator],
         ['factory_enrol', real.enrol],
+        ['factory_redteam', real.redteam],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
         ['metrics_reader', real.metrics],
@@ -675,6 +721,156 @@ describe("a guardrail's proof", () => {
   });
 });
 
+describe("an attack's end", () => {
+  /** An event of a type, inserted as it stands on a work item, real or a sample, as any client could try. */
+  const insert = (sql: Sql, type: string, workItem: string, sample = false, payload: object = {}) => sql`
+    insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+    values (${crypto.randomUUID()}, now(), ${workItem}, ${type}, 1, 'red-team', 'An attack',
+            ${sql.json(payload as JSONValue)}, '[]', '{}', ${sample})`;
+
+  it('is the type the store holds to the harness', () => {
+    expect([...REDTEAM_ONLY_TYPES]).toEqual(['attack.finished']);
+  });
+
+  it('is appended by the harness alone, and by no other role, in a real store', async () => {
+    const real = await freshDatabase('redteam_only');
+    try {
+      await launched(real, '4001');
+      const roles: [string, Sql][] = [
+        ...Object.entries(real.as).map(([name, sql]): [string, Sql] => [`factory_${name}`, sql]),
+        ['factory_admin', real.admin],
+        ['factory_operator', real.operator],
+        ['factory_enrol', real.enrol],
+        ['factory_proofs', real.proofs],
+        ['scoreboard_writer', real.scoreboard],
+        ['console_reader', real.reader],
+        ['metrics_reader', real.metrics],
+      ];
+      for (const [role, sql] of roles) {
+        await expect(insert(sql, 'attack.finished', '4001'), role).rejects.toThrow(
+          /row-level security|permission denied|the scoreboard appends its own figures/,
+        );
+      }
+      await insert(real.redteam, 'attack.finished', '4001');
+      expect(await real.owner`select type, appended_by from events where type = 'attack.finished'`).toEqual([
+        { type: 'attack.finished', appended_by: 'factory_redteam' },
+      ]);
+      // Nor may another role take the harness's name.
+      await expect(real.as.line`set role factory_redteam`).rejects.toThrow('permission denied');
+      await expect(real.admin`set role factory_redteam`).rejects.toThrow('permission denied');
+    } finally {
+      await real.end();
+    }
+  });
+
+  it('is appended as a sample by Martin’s command line too, for `make samples`, and by no other role', async () => {
+    const samples = await freshDatabase('redteam_samples');
+    try {
+      await launched(samples, '4002', true);
+      await insert(samples.operator, 'attack.finished', '4002', true);
+      await insert(samples.redteam, 'attack.finished', '4002', true);
+      await expect(insert(samples.as.line, 'attack.finished', '4002', true)).rejects.toThrow('row-level security');
+      await expect(insert(samples.admin, 'attack.finished', '4002', true)).rejects.toThrow('row-level security');
+    } finally {
+      await samples.end();
+    }
+  });
+
+  it('is with the harness’s other appends only on a work item one of Martin’s roles launched an attack on', async () => {
+    const real = await freshDatabase('redteam_appends');
+    try {
+      await launched(real, '4010');
+      // A launch a worker made up, were row security to let one through, is no launch of his.
+      await real.owner`alter table events disable row level security`;
+      try {
+        await real.as.line`
+          insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+          values (${crypto.randomUUID()}, now(), '4011', 'attack.launched', 2, 'martin', 'A launch', '{}', '[]', '{}',
+                  false)`;
+      } finally {
+        await real.owner`alter table events enable row level security`;
+      }
+      const refusal = { mechanism: 'egress-policy', action: 'Reach example.com', output: 'Refused.', guardrails: [5] };
+      const refused = (workItem: string) => real.redteam`
+        insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+        values (${crypto.randomUUID()}, now(), ${workItem}, 'action.refused', 3, 'red-team', 'Refused',
+                ${real.redteam.json(refusal)}, '[]', ${real.redteam.json({ payload: refusal } as JSONValue)}, false)`;
+      for (const type of ['attack.finished', 'work-item.closed']) await insert(real.redteam, type, '4010');
+      await refused('4010');
+      for (const workItem of ['4011', '4012']) {
+        for (const type of ['attack.finished', 'work-item.closed']) {
+          await expect(insert(real.redteam, type, workItem), `${type} on ${workItem}`).rejects.toThrow(
+            'row-level security',
+          );
+        }
+        await expect(refused(workItem), `a refusal on ${workItem}`).rejects.toThrow('row-level security');
+      }
+      // And nothing else, even there: not an opening, a summary, a launch or a refusal by another mechanism.
+      for (const type of EVENT_TYPES.filter(
+        (t) => !['attack.finished', 'action.refused', 'work-item.closed'].includes(t),
+      )) {
+        await expect(insert(real.redteam, type, '4010'), type).rejects.toThrow('row-level security');
+      }
+      const typed = { mechanism: 'typed-judgement', action: 'A report', output: 'Quarantined.', guardrails: [8] };
+      await expect(
+        real.redteam`
+          insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+          values (${crypto.randomUUID()}, now(), '4010', 'action.refused', 3, 'red-team', 'Refused',
+                  ${real.redteam.json(typed)}, '[]', ${real.redteam.json({ payload: typed } as JSONValue)}, false)`,
+      ).rejects.toThrow('row-level security');
+    } finally {
+      await real.end();
+    }
+  });
+
+  it('is read by the harness with only what it acts on and waits for, and no other table', async () => {
+    const real = await freshDatabase('redteam_read');
+    try {
+      const appended = async (sql: Sql, type: string, workItem: string | null, payload: object = {}) => {
+        const version = type === 'action.refused' ? 3 : type === 'attack.launched' ? 2 : 1;
+        const [row] = await sql<{ seq: string }[]>`
+          insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+          values (${crypto.randomUUID()}, now(), ${workItem}, ${type}, ${version}, 'martin', 'An event',
+                  ${sql.json(payload as JSONValue)}, '[]', ${sql.json({ payload } as JSONValue)}, false)
+          returning seq`;
+        return row?.seq;
+      };
+      const refused = (mechanism: string, guardrails: number[]) => ({
+        mechanism,
+        action: 'An action',
+        output: 'Refused.',
+        guardrails,
+      });
+      const read = [
+        await appended(real.admin, 'work-item.opened', '4020', { kind: 'red-team' }),
+        await appended(real.admin, 'attack.launched', '4020', { attack: 'image' }),
+        await appended(real.as.triage, 'action.refused', '4021', refused('typed-judgement', [8])),
+        await appended(real.as.line, 'action.refused', null, refused('admission-control', [3])),
+        await appended(real.redteam, 'action.refused', '4020', refused('egress-policy', [5])),
+        await appended(real.redteam, 'attack.finished', '4020'),
+        await appended(real.redteam, 'work-item.closed', '4020'),
+      ];
+      // What it does not wait for: another refusal, another work item, Martin's other commands, a worker's events.
+      await appended(real.as.line, 'action.refused', '4022', refused('scope-fence', [11]));
+      await appended(real.as.gateway, 'action.refused', '4022', refused('gateway', [9]));
+      await appended(real.as.line, 'action.refused', '4022', refused('github-guard', [1]));
+      await appended(real.as.triage, 'work-item.opened', '4021', { kind: 'visitor-report' });
+      await appended(real.as.triage, 'signal.received', '4021');
+      await appended(real.admin, 'line.stopped', null, { reason: 'Lunch' });
+      await appended(real.admin, 'work-item.opened', '4023', { kind: 'improvement' });
+      await appended(real.proofs, 'guardrail.proved', null);
+      const seen = await real.redteam<{ seq: string }[]>`select seq from events order by seq`;
+      expect(seen.map((row) => row.seq)).toEqual(read);
+      for (const table of ['inbox', 'line', 'job_tokens', 'model_calls', 'step_logs', 'sessions', 'passkeys']) {
+        await expect(real.redteam.unsafe(`select 1 from ${table}`), table).rejects.toThrow('permission denied');
+      }
+      await expect(real.redteam`select nextval('work_items')`).rejects.toThrow('permission denied');
+    } finally {
+      await real.end();
+    }
+  });
+});
+
 describe('a refusal', () => {
   /** The guardrails a mechanism shows, or the repository's for one that is no mechanism. */
   const shown = (mechanism: string): number[] =>
@@ -745,6 +941,13 @@ describe('a refusal', () => {
         .replace(/\s+/g, ' ')
         .replace(/^\((.*)\)$/, '$1');
     expect(restrictive.map((policy) => ({ ...policy, check: check(policy.check) }))).toEqual([
+      {
+        name: 'events_finished_by_the_harness',
+        table: 'events',
+        command: 'insert',
+        roles: ['public'],
+        check: REDTEAM_ONLY_ROWS,
+      },
       {
         name: 'events_proved_by_the_proofs',
         table: 'events',
@@ -822,9 +1025,13 @@ describe('a refusal', () => {
         ['factory_admin', real.admin],
         ['factory_operator', real.operator],
         ['factory_enrol', real.enrol],
+        ['factory_proofs', real.proofs],
+        ['factory_redteam', real.redteam],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
       ];
+      // The harness appends only on a work item Martin launched an attack on: the one every refusal here is on.
+      await launched(real, '3300');
       const appended: string[] = [];
       for (const mechanism of [...REFUSAL_MECHANISMS, 'not-a-mechanism']) {
         for (const [role, sql] of roles) {
@@ -841,13 +1048,19 @@ describe('a refusal', () => {
       }
       const stored = await real.owner<{ mechanism: string; appended_by: string }[]>`
         select payload->>'mechanism' as mechanism, appended_by from events order by seq`;
-      expect(stored.map((row) => `${row.mechanism} ${row.appended_by}`)).toEqual(appended);
+      expect(
+        stored.filter((row) => row.mechanism !== null).map((row) => `${row.mechanism} ${row.appended_by}`),
+      ).toEqual(appended);
       expect(appended).toEqual([
         'token-permission factory_line',
+        'token-permission factory_redteam',
+        'egress-policy factory_redteam',
         'admission-control factory_line',
         'scope-fence factory_line',
         'github-guard factory_line',
+        'github-guard factory_redteam',
         'review-gate factory_line',
+        'review-gate factory_redteam',
         'gateway factory_gateway',
         'typed-judgement factory_triage',
       ]);

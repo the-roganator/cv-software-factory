@@ -342,6 +342,11 @@ svg.chart {
 .wipe .wipe-open {
   z-index: 2;
 }
+/* The tags and the divider over a wipe say what they are and do nothing: a press on them opens the wipe too. */
+.wipe .wtag,
+.wipe .div {
+  pointer-events: none;
+}
 
 /* A package, its version change, and a scan's findings before and after. */
 .pkg {

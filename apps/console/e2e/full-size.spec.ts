@@ -41,6 +41,18 @@ test.describe('a screenshot at full size', () => {
     await expect(page.getByRole('dialog', { name: 'Prices go negative' })).toBeVisible();
   });
 
+  test('a press on a wipe’s tag opens it too, and on its handle does not', async ({ page }) => {
+    await page.goto(consoleUrl({ item: '1296', sheet: true }));
+    const wipe = sheetOf(page).locator('.evidence-big .wipe');
+    await wipe.locator('.handle').click();
+    await expect(viewer(page)).toHaveCount(0);
+    // The tag takes no pointer events, so the press lands on what is under it: the wipe's opener.
+    const tag = await wipe.locator('.wtag.r').boundingBox();
+    if (!tag) throw new Error('No tag');
+    await page.mouse.click(tag.x + tag.width / 2, tag.y + tag.height / 2);
+    await expect(viewer(page)).toBeVisible();
+  });
+
   test('a page from Verify opens whole, and Close gives the focus back', async ({ page }) => {
     await page.goto(consoleUrl({ item: '1306', sheet: true }));
     const open = sheetOf(page)

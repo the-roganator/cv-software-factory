@@ -93,9 +93,12 @@ export function writer({ token, stepUp, live, show }: WriterDeps): Writer {
                 return unproved === undefined && live();
               }
             : async () => {
-                cancelled = !(await stepUp().ask(passkey));
+                const answer = await stepUp().ask(passkey);
+                // Not asked at all, for a reason in words: said where he pressed, as a refusal is.
+                if (typeof answer === 'string') unproved = answer;
+                cancelled = answer === false;
                 // Given, but what asked has gone while the dialog was open: not sent again.
-                return !cancelled && live();
+                return answer === true && live();
               };
       const got = await write(path, body, session, again);
       // Gone while it asked: nothing more is sent, and nothing to say.

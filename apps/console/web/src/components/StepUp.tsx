@@ -31,13 +31,17 @@ import { Glyph } from './Glyph.tsx';
  * in (`useAdmin`), so the dialog opens at once when an action asks.
  */
 const StepUpDialog = lazy(() => MARTINS_PARTS.stepUp().then((module) => ({ default: module.StepUpDialog })));
-/** The ceremony, or why not in words if its code cannot be fetched, so an action that asks never waits on it for ever. */
+
+/** What an action that asks is told when the dialog's code cannot be fetched, so it never waits on it for ever. */
+export const UNFETCHED = 'The passkey’s code could not be fetched: reload the page and try again.';
+
+/** The ceremony, or why not in words if its code cannot be fetched. */
 const ceremony = async (token: string, live: () => boolean) => {
   let code: Awaited<ReturnType<typeof MARTINS_PARTS.stepUp>>;
   try {
     code = await MARTINS_PARTS.stepUp();
   } catch {
-    return 'The passkey’s code could not be fetched: reload the page and try again.';
+    return UNFETCHED;
   }
   return code.ceremony(token, live);
 };
@@ -54,8 +58,11 @@ export interface StepUp {
   fresh: boolean;
   /** Until when, if it is: the pill counts down to it on a clock of its own. */
   until: number | undefined;
-  /** Asks for the passkey, for this action: true once given, false if Martin cancels. */
-  ask(asked: Asked): Promise<boolean>;
+  /**
+   * Asks for the passkey, for this action: true once given, false if Martin cancels, or why it could not ask, in words
+   * (the dialog's code could not be fetched).
+   */
+  ask(asked: Asked): Promise<boolean | string>;
   /**
    * The passkey sheet itself, for a dialog that says already that it asks (Start the line's "Use your passkey and
    * start"): nothing once given, or why not, in words. It opens no sheet once `live` says the dialog has gone.
@@ -93,23 +100,30 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     const timer = setTimeout(() => setNow(Date.now()), Math.max(0, until - Date.now()));
     return () => clearTimeout(timer);
   }, [until, now]);
-  const [asking, setAsking] = useState<{ id: number; asked: Asked; answer: (given: boolean) => void } | undefined>(
-    undefined,
-  );
+  const [asking, setAsking] = useState<
+    { id: number; asked: Asked; answer: (given: boolean | string) => void } | undefined
+  >(undefined);
   const asks = useRef(0);
   const hasSession = session !== undefined;
   const ask = useCallback(
     (asked: Asked) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<boolean | string>((resolve) => {
         if (!hasSession) return resolve(false);
         asks.current += 1;
         const id = asks.current;
-        // One dialog at a time: an action that asks while another is asking takes its place, and the other's answer is
-        // no, so nothing waits for an answer that never comes.
-        setAsking((before) => {
-          before?.answer(false);
-          return { id, asked, answer: resolve };
-        });
+        // The dialog's code before the dialog: the session check fetched it already, unless that failed, and if it
+        // cannot be fetched now either the action is told why, in words, rather than left waiting for a dialog that
+        // never draws.
+        MARTINS_PARTS.stepUp().then(
+          () =>
+            // One dialog at a time: an action that asks while another is asking takes its place, and the other's
+            // answer is no, so nothing waits for an answer that never comes.
+            setAsking((before) => {
+              before?.answer(false);
+              return { id, asked, answer: resolve };
+            }),
+          () => resolve(UNFETCHED),
+        );
       }),
     [hasSession],
   );

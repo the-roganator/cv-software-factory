@@ -195,7 +195,7 @@ export async function stillSignedIn(expiresAt: string): Promise<boolean> {
 /**
  * Martin's own parts of the page, which a visitor never loads: his account menu, the line's button and the step-up
  * dialog with its ceremony. The page loads each through these, and the session check fetches them all once it says he
- * is signed in, before the page draws him so, so that they arrive with his header rather than a moment after it.
+ * is signed in and before the page draws him so: they arrive with his header rather than a moment after it.
  */
 export const MARTINS_PARTS = {
   account: () => import('./components/Account.tsx'),

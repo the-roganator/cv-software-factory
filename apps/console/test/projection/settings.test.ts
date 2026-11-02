@@ -12,7 +12,7 @@ import { inForce } from '../../../../policy/settings.ts';
 import { SPEND } from '../../../../policy/spend.ts';
 import { SETTINGS_STEP_UP } from '../../web/src/access.ts';
 import { factoryOf } from '../../web/src/profile.ts';
-import { settingsView } from '../../web/src/projection/index.ts';
+import { foldSettings, settingsAt, settingsView } from '../../web/src/projection/index.ts';
 import { work } from './support.ts';
 
 const DAY = Date.parse('2026-10-03T00:00:00Z');
@@ -108,6 +108,22 @@ describe('the spend against the caps', () => {
     expect(week.coder).toEqual({ steps: 2, usd: expect.closeTo(0.65) });
     expect(week.planner).toEqual({ steps: 1, usd: 2 });
     expect(week.describer).toEqual({ steps: 0, usd: 0 });
+  });
+
+  it('is drawn at each time from the events read once, as from the events alone', () => {
+    const events = [
+      ...work('1002', at(8))
+        .open()
+        .add(0, 'model.called', 'coder', step('coder', 0.4))
+        .add(60, 'model.called', 'reviewer', step('reviewer', 0.3)).events,
+      settings(at(1), chosen({ caps: { dayUsd: 0.9, monthUsd: 10, workItemUsd: 0.5 } })),
+    ];
+    const folded = foldSettings(events, 'local');
+    // The day turns, and the week runs out, with no new event.
+    for (const t of [at(12), at(30), at(8 * 24 + 9)])
+      expect(settingsAt(folded, t)).toEqual(settingsView(events, 'local', t));
+    expect(settingsAt(folded, at(30)).spend.today.spentUsd).toBe(0);
+    expect(settingsAt(folded, at(8 * 24 + 9)).week.coder.steps).toBe(0);
   });
 
   it('names no dearest work item on a day none has spent', () => {

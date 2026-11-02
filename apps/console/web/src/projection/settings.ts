@@ -48,12 +48,48 @@ const meter = (spentUsd: number, capUsd: number | null): Meter => ({
   atCap: capUsd !== null && spentUsd >= capUsd,
 });
 
-/** The settings in force at t, and the spend against them. */
-export function settingsView(events: readonly PublicEvent[], profile: Profile, t: number): SettingsView {
-  const seen = events.filter((event) => Date.parse(event.ts) <= t);
-  const latest = seen.findLast((event) => event.type === 'settings.changed');
-  const settings = inForce(profile, latest?.payload);
+/** What a model cost, at its step's end or a judgement's: what the meters count. */
+interface Spent {
+  at: number;
+  usd: number;
+  workItem: PublicEvent['work_item'];
+  /** The agent whose step it was; none for a judgement. */
+  agent: ModelAgent | undefined;
+}
 
+/** The settings in force by the events, and every cost they record: what no later time changes. */
+export interface SettingsFold {
+  profile: Profile;
+  settings: InForce;
+  last: SettingsView['last'];
+  spent: Spent[];
+}
+
+/** The settings and the costs in the events that had happened, read once for those events. */
+export function foldSettings(seen: readonly PublicEvent[], profile: Profile): SettingsFold {
+  const latest = seen.findLast((event) => event.type === 'settings.changed');
+  const spent: Spent[] = [];
+  for (const event of seen) {
+    if (event.type !== 'model.called' && event.type !== 'judgement.made') continue;
+    const agent = event.type === 'model.called' ? event.payload.agent : undefined;
+    spent.push({
+      at: Date.parse(event.ts),
+      usd: event.payload.costUsd,
+      workItem: event.work_item,
+      agent: (MODEL_AGENTS as readonly string[]).includes(agent ?? '') ? (agent as ModelAgent) : undefined,
+    });
+  }
+  return {
+    profile,
+    settings: inForce(profile, latest?.payload),
+    last: latest && { seq: latest.seq ?? 0, at: Date.parse(latest.ts), chose: latest.payload },
+    spent,
+  };
+}
+
+/** The spend against the settings at t, from a fold of the events by t: the day, the month and the week are t's. */
+export function settingsAt(folded: SettingsFold, t: number): SettingsView {
+  const { profile, settings, last } = folded;
   const at = new Date(t);
   const dayStart = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate());
   const monthStart = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1);
@@ -62,19 +98,14 @@ export function settingsView(events: readonly PublicEvent[], profile: Profile, t
   const byItem = new Map<string, number>();
   const spentToday = new Set<string>();
   const week = Object.fromEntries(MODEL_AGENTS.map((agent) => [agent, { steps: 0, usd: 0 }])) as SettingsView['week'];
-  for (const event of seen) {
-    if (event.type !== 'model.called' && event.type !== 'judgement.made') continue;
-    const usd = event.payload.costUsd;
-    const when = Date.parse(event.ts);
+  for (const { at: when, usd, workItem, agent } of folded.spent) {
     if (when >= monthStart) month += usd;
     if (when >= dayStart) today += usd;
-    if (event.work_item) {
-      byItem.set(event.work_item, (byItem.get(event.work_item) ?? 0) + usd);
-      if (when >= dayStart && usd > 0) spentToday.add(event.work_item);
+    if (workItem) {
+      byItem.set(workItem, (byItem.get(workItem) ?? 0) + usd);
+      if (when >= dayStart && usd > 0) spentToday.add(workItem);
     }
-    if (event.type === 'model.called' && when > t - 7 * DAY) {
-      const agent = event.payload.agent as ModelAgent;
-      if (!(MODEL_AGENTS as readonly string[]).includes(agent)) continue;
+    if (agent && when > t - 7 * DAY) {
       week[agent].steps += 1;
       week[agent].usd += usd;
     }
@@ -87,7 +118,7 @@ export function settingsView(events: readonly PublicEvent[], profile: Profile, t
   return {
     profile,
     settings,
-    last: latest && { seq: latest.seq ?? 0, at: Date.parse(latest.ts), chose: latest.payload },
+    last,
     spend: {
       today: meter(today, settings.caps.dayUsd),
       month: meter(month, settings.caps.monthUsd),
@@ -97,3 +128,13 @@ export function settingsView(events: readonly PublicEvent[], profile: Profile, t
     week,
   };
 }
+
+/** The settings in force at t, and the spend against them. */
+export const settingsView = (events: readonly PublicEvent[], profile: Profile, t: number): SettingsView =>
+  settingsAt(
+    foldSettings(
+      events.filter((event) => Date.parse(event.ts) <= t),
+      profile,
+    ),
+    t,
+  );

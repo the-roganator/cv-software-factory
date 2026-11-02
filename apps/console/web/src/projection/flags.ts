@@ -297,14 +297,19 @@ function aroundOf(flags: Record<string, FlagNow>, flag: string, shipped: readonl
   };
 }
 
-/** The flags, as their events had them by now. */
-export function flagsView(
-  seen: readonly PublicEvent[],
-  items: readonly ItemState[],
-  shipped: readonly Release[],
-  t: number,
-): FlagsView {
-  const byNumber = new Map(items.map((item) => [item.number, item]));
+/**
+ * What the events say of the flags, which no later time changes: each flag's state, the line's take, and for each flag
+ * the share its Share stop shows and its latest move with the comparison and the check since. What `fold` keeps.
+ */
+export interface FoldedFlags {
+  all: Record<string, FlagNow>;
+  take: ReturnType<typeof controlsInForce>['take'];
+  /** Each flag, by name, with what its row reads of the events. */
+  read: ({ name: string; now: FlagNow; share: Share } & ReturnType<typeof latest>)[];
+}
+
+/** The flags as the events had them, read once for those events. */
+export function foldFlags(seen: readonly PublicEvent[], items: readonly ItemState[]): FoldedFlags {
   // The flag each improvement's latest spec names; the work item of the latest such spec wins, as the admin service reads it.
   const named: Record<string, string> = {};
   const specs = items.flatMap((item) => {
@@ -315,9 +320,26 @@ export function flagsView(
   for (const { flag, number } of specs.sort((a, b) => a.seq - b.seq)) named[flag] = number;
   const all = flagsFrom(records(seen), named);
   const chosen = seen.findLast((event) => event.type === 'controls.changed' && event.actor === 'martin');
-  const take = controlsInForce(chosen?.payload).take;
+  const read = Object.entries(all).map(([name, now]) => ({
+    name,
+    now,
+    share: shareOf(seen, name, now),
+    ...latest(seen, name),
+  }));
+  return { all, take: controlsInForce(chosen?.payload).take, read };
+}
+
+/** The flags, as their events had them by now: what the releases in flight and the time add to the fold of them. */
+export function flagsView(
+  folded: FoldedFlags,
+  items: readonly ItemState[],
+  shipped: readonly Release[],
+  t: number,
+): FlagsView {
+  const { all, take } = folded;
+  const byNumber = new Map(items.map((item) => [item.number, item]));
   const rows: FlagRow[] = [];
-  for (const [name, now] of Object.entries(all)) {
+  for (const { name, now, share, staged, compared, checked } of folded.read) {
     const workItem = now.workItem ?? now.stagedOn;
     const item = workItem ? byNumber.get(workItem) : undefined;
     if (!workItem || !item) continue;
@@ -325,9 +347,7 @@ export function flagsView(
     // A flag shows once its release is out, or once Martin has moved it.
     if (!released && !now.last) continue;
     const stage = now.stage ?? { stage: 'off' };
-    const share = shareOf(seen, name, now);
     const moves = movesOf(name, now, aroundOf(all, name, shipped));
-    const { staged, compared, checked } = latest(seen, name);
     const at = rank(stage.stage);
     const backOn = turnedOffFromEveryone(now);
     const turnedOff = stage.stage === 'off' && now.last?.to.stage === 'off';

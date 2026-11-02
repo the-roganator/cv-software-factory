@@ -8,7 +8,7 @@ import type { PayloadOf, Screenshot } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { MOVE } from '../../../factory/src/admin/flags.ts';
 import { isHeld } from '../../web/src/held.ts';
-import { flagsView } from '../../web/src/projection/flags.ts';
+import { flagsView, foldFlags } from '../../web/src/projection/flags.ts';
 import { project, projectSheet } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { END, SAMPLES, work } from './support.ts';
@@ -108,8 +108,10 @@ function checked(flag: string, stage: 'checks' | 'preview', outcome: 'passed' | 
     : { ...common, stage, device: { allowed: ['cookie preview'], kept: [] } };
 }
 
-const viewOf = (events: Parameters<typeof foldItems>[0], t = START + 1000 * 60_000) =>
-  flagsView(events, foldItems(events), [], t);
+const viewOf = (events: Parameters<typeof foldItems>[0], t = START + 1000 * 60_000) => {
+  const items = foldItems(events);
+  return flagsView(foldFlags(events, items), items, [], t);
+};
 
 describe('a flag', () => {
   it('shows once its release is out, off, with Checks the one stop it can widen to', () => {

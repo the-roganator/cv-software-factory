@@ -20,7 +20,15 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import { guardBranch } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
-import { carriesSection, type Deploy, DeployRefused, deployTarget, deployTitle, withCarries } from './deploys.ts';
+import {
+  carriesIn,
+  carriesSection,
+  type Deploy,
+  DeployRefused,
+  deployTarget,
+  deployTitle,
+  withCarries,
+} from './deploys.ts';
 import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
 import { CODEOWNERS_PATHS, inScope, protectedFrom } from './paths.ts';
@@ -121,6 +129,12 @@ export interface PullRequestDraft {
   labels?: string[];
 }
 
+export interface PullRequestChange {
+  title?: string;
+  body?: string;
+  keepCarries?: boolean;
+}
+
 export interface PullRequestRef {
   number: number;
   url: string;
@@ -163,8 +177,11 @@ export interface Actions {
   /** Applies a runner's patch to the files at the branch's head, outside the sandbox, and commits it. */
   applyPatch(repo: string, patch: PatchCommit): Promise<string>;
   openPullRequest(repo: string, draft: PullRequestDraft): Promise<PullRequestRef>;
-  /** Retitles or rewrites a pull request the App opened. */
-  updatePullRequest(repo: string, number: number, change: { title?: string; body?: string }): Promise<void>;
+  /**
+   * Retitles or rewrites a pull request the App opened. With `keepCarries`, a deploy pull request's new body keeps the
+   * Carries section its body has as it is written, which the line may have written since the new body was made.
+   */
+  updatePullRequest(repo: string, number: number, change: PullRequestChange): Promise<void>;
   /**
    * Says what a deploy pull request carries, in its body's Carries section (`deploys.ts`), when the pull request is
    * open and still for `commit`; any other pull request is refused. Gives back whether the body changed: saying the
@@ -394,10 +411,20 @@ export class LiveActions implements Actions {
     return { number: made.number, url: made.html_url, nodeId: made.node_id };
   }
 
-  async updatePullRequest(repo: string, number: number, change: { title?: string; body?: string }): Promise<void> {
+  async updatePullRequest(repo: string, number: number, { keepCarries, ...change }: PullRequestChange): Promise<void> {
     // Guarded within its turn, which it takes as it is asked: a description asked after it still waits for it.
     await this.#inTurn(repo, number, async () => {
       await this.#guard.check(repo, number, 'updatePullRequest');
+      if (keepCarries && change.body !== undefined) {
+        // Read in its turn, so a description written since the new body was made is not written over.
+        const { body } = await this.#github.read(
+          repo,
+          `/repos/${repo}/pulls/${number}`,
+          DEPLOY_PULL.pick({ body: true }),
+        );
+        const carries = carriesIn(body);
+        if (carries) change.body = withCarries(change.body, carries);
+      }
       await this.#github.write(repo, 'PATCH', `/repos/${repo}/pulls/${number}`, change);
     });
   }
@@ -807,7 +834,12 @@ export class DryRunActions implements Actions {
     return { number, url: `dry-run:${repo}#${number}`, nodeId };
   }
 
-  async updatePullRequest(repo: string, number: number, change: { title?: string; body?: string }): Promise<void> {
+  // A dry run's deploy pull requests have no body to read: what it records is the body the watch made.
+  async updatePullRequest(
+    repo: string,
+    number: number,
+    { keepCarries: _, ...change }: PullRequestChange,
+  ): Promise<void> {
     await this.#guarded(repo, number, 'updatePullRequest');
     await this.#record('updatePullRequest', repo, { number, ...change });
   }

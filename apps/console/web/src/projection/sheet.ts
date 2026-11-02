@@ -27,8 +27,8 @@ import {
 import { checkedOf, type FlagBlock, type FlagNeed, type FlagRow, fromVerify, itemFlag, STAGE_NAME } from './flags.ts';
 import { type Capture, clearanceWords, endsRelease, type Hold, type ItemState, summaryOf } from './items.ts';
 import type { CanaryNeed, Need } from './needs.ts';
-import { bySense, type Card, card, type Picture, picture, pictureOfSignal } from './reel.ts';
-import { endedAt, type Release, releases, type StoppedBy, stoppedBy } from './release.ts';
+import { type AppVersions, bySense, type Card, card, type Picture, picture, pictureOfSignal } from './reel.ts';
+import { endedAt, type Release, type StoppedBy, stoppedBy } from './release.ts';
 import { reportText } from './report.ts';
 import { SENSE } from './senses.ts';
 
@@ -894,12 +894,13 @@ function reviewsOfPass(item: ItemState): { done: number; of: number; pass: numbe
 
 export function sheet(
   item: ItemState,
-  events: readonly PublicEvent[],
+  versions: AppVersions,
+  shipped: readonly Release[],
   t: number,
   flag?: FlagRow,
 ): Omit<Sheet, 'needs'> {
   const end = item.closedAt ?? t;
-  const own = releases(events, [item], t).filter((r) => r.items.some((i) => i.number === item.number));
+  const own = shipped.filter((r) => r.items.some((i) => i.number === item.number));
   const byId = new Map(own.map((r) => [r.id, r]));
   // Each release is one chapter, where its last event on the item is (or, in an older history, the line's stop after it).
   const lastOf = new Map<string, PublicEvent>();
@@ -992,7 +993,7 @@ export function sheet(
     if (event.type === 'verification.finished' && latest) checked.set(latest, verified(item, event));
   }
   return {
-    card: card(item, events, t),
+    card: card(item, versions, t),
     report:
       report?.type === 'signal.received' && report.payload.report
         ? {

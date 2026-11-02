@@ -35,7 +35,7 @@ describe('a spec waiting for overlapping work', () => {
   it('waits at Build, in the quiet tone, saying what it waits for, at the samples’ end', () => {
     const card = project(SAMPLES, END).cards.find((c) => c.number === '1327');
     expect(card?.outcome).toBe('waits-on-work');
-    const sheet = projectSheet(SAMPLES, '1327', END);
+    const sheet = projectSheet(project(SAMPLES, END), '1327');
     expect(sheet?.chapters.slice(-2)).toMatchObject([
       { label: 'WAITS', tone: 'faint' },
       {
@@ -77,7 +77,7 @@ describe('a held work item looked at again', () => {
     expect(item && clearanceWords(item)).toBe(
       'Its signal cleared on d728dbe, a release that carried work item #1033, not this one’s fix: the probe saw “products journey” pass there. Closing its pull request closes it as verified.',
     );
-    const sheet = projectSheet(item?.events ?? [], '1', Date.parse('2026-10-03T10:00:00Z'));
+    const sheet = projectSheet(project(item?.events ?? [], Date.parse('2026-10-03T10:00:00Z')), '1');
     expect(sheet?.chapters.map((c) => c.label)).toContain('CLEARED');
   });
 
@@ -105,7 +105,7 @@ describe('a held work item looked at again', () => {
     const events = held('gates')
       .add(40, 'signal.rechecked', 'probe', look('cleared'))
       .add(41, 'work-item.closed', 'factory', { outcome: 'verified', reason: 'Cleared on a release' }).events;
-    const sheet = projectSheet(events, '1', Date.parse('2026-10-03T10:00:00Z'));
+    const sheet = projectSheet(project(events, Date.parse('2026-10-03T10:00:00Z')), '1');
     expect(sheet?.closing).toBe(
       'It was verified on d728dbe by the probe’s check “products journey”, on a release that carried work item #1033, not this one’s fix, and closed.',
     );
@@ -128,7 +128,7 @@ describe('an open ticket looked at as the line took it', () => {
       outcome: 'verified',
       reason: 'Cleared as the line took it',
     }).events;
-    const sheet = projectSheet(events, '3', Date.parse('2026-10-03T10:00:00Z'));
+    const sheet = projectSheet(project(events, Date.parse('2026-10-03T10:00:00Z')), '3');
     expect(sheet?.closing).toBe(
       'It was verified on d728dbe by the probe’s check “products journey”, on a version released since f5c6b9c, where its signal was last seen, with the fixes of work items #1009 (pull request #120) and #1012, and closed.',
     );
@@ -140,7 +140,7 @@ describe('an open ticket looked at as the line took it', () => {
       outcome: 'verified',
       reason: 'Cleared as the line took it',
     }).events;
-    expect(projectSheet(events, '3', Date.parse('2026-10-03T10:00:00Z'))?.closing).toBe(
+    expect(projectSheet(project(events, Date.parse('2026-10-03T10:00:00Z')), '3')?.closing).toBe(
       'It was verified on d728dbe by the probe’s check “products journey”, on a version released since f5c6b9c, where its signal was last seen, with none of the factory’s fixes, and closed.',
     );
   });
@@ -148,7 +148,7 @@ describe('an open ticket looked at as the line took it', () => {
   it('marks a look that could not tell as unsure, as the work goes on to Plan', () => {
     const { why: _, ...cleared } = atTake;
     const unsure = { ...cleared, outcome: 'unsure', why: 'the check could not tell' } as const;
-    const sheet = projectSheet(taken(unsure).events, '3', Date.parse('2026-10-03T10:00:00Z'));
+    const sheet = projectSheet(project(taken(unsure).events, Date.parse('2026-10-03T10:00:00Z')), '3');
     expect(sheet?.chapters.map((c) => c.label)).toContain('UNSURE');
   });
 });

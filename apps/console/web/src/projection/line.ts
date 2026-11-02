@@ -313,16 +313,19 @@ export function drawn(returns: readonly Return[], items: readonly ItemState[]): 
   return returns.filter((r) => sentBack.get(r.item) === r.at);
 }
 
-/** Work sent back upstream in the last day, newest first. */
-export function returnsAt(events: readonly PublicEvent[], t: number): Return[] {
+/** Every return in the events, newest first. */
+export function everyReturn(events: readonly PublicEvent[]): Return[] {
   return events
     .flatMap((event) =>
-      event.type === 'work.returned' && event.work_item && t - Date.parse(event.ts) <= RETURNS_MS
+      event.type === 'work.returned' && event.work_item
         ? [returnOf(event.work_item, event.payload, event.summary, Date.parse(event.ts))]
         : [],
     )
     .reverse();
 }
+
+/** Work sent back upstream in the last day by t, of every return, newest first. */
+export const returnsWithin = (returns: readonly Return[], t: number) => returns.filter((r) => t - r.at <= RETURNS_MS);
 
 /**
  * A return in words, from what its event records: the round the coder starts and what sent it back, as the line
@@ -446,7 +449,9 @@ export function panel(
   events: readonly PublicEvent[],
   line: Header,
   t: number,
-  shipped: readonly Release[] = [],
+  shipped: readonly Release[],
+  /** The stage's station at t, whose status lights the work in hand. */
+  { status }: Pick<Station, 'status'>,
 ): StagePanel {
   const present = inStage(items, stage);
   const behind = present.some(ticketWaits);
@@ -514,7 +519,6 @@ export function panel(
     .filter((r) => !r.items.length && (r === flight || (r.end && r.end.at >= startOfDay(t))))
     .reverse()
     .map(ownRow);
-  const { status } = station(stage, items, returns, line, t, shipped);
   const lit = status === 'working' || status === 'returning';
   const mark = (row: PanelRow): PanelRow => (lit && row.state === 'in-hand' ? { ...row, working: true } : row);
   return {

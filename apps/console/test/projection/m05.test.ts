@@ -13,7 +13,7 @@ import { END, MERGE_WAITING, payloads, SAMPLES, work } from './support.ts';
 
 const view = project(SAMPLES, END);
 const card = (number: string) => view.cards.find((c) => c.number === number);
-const sheet = (number: string) => projectSheet(SAMPLES, number, END);
+const sheet = (number: string) => projectSheet(project(SAMPLES, END), number);
 
 describe('the wait for Martin’s merge', () => {
   it('shows the pull request he is asked to merge, not the spec', () => {
@@ -81,7 +81,7 @@ describe('a merged fix', () => {
   });
 
   it('ends its story at the merge, drawn as work waiting', () => {
-    const story = projectSheet(SAMPLES, '1310', at)?.chapters;
+    const story = projectSheet(project(SAMPLES, at), '1310')?.chapters;
     expect(story?.at(-1)).toMatchObject({ label: 'MERGED', waiting: true, tone: 'faint' });
     expect(story?.map((c) => c.label)).not.toContain('NOW');
   });
@@ -115,7 +115,7 @@ describe('a merged fix', () => {
         { stage: 'verify', kind: 'approval', cause: 'verify', reason: 'V' },
         'Own words',
       ).events;
-    const waits = projectSheet(events, '1', work('1').at(6))
+    const waits = projectSheet(project(events, work('1').at(6)), '1')
       ?.chapters.filter((c) => c.label === 'WAITING')
       .map((c) => c.text);
     expect(waits).toEqual([
@@ -185,13 +185,13 @@ describe('a fix whose branch was brought up to date while the reviewer had it', 
     .add(7, 'gates.finished', 'actions', { ...payloads.gatesFailed, commit: updated });
 
   it('shows the gates running again and the review still in hand, as the gates that passed stand until they end', () => {
-    const running = projectSheet(story.events, '1', story.at(5));
+    const running = projectSheet(project(story.events, story.at(5)), '1');
     expect(running?.rounds.map((a) => a.gates?.state)).toEqual(['running']);
     expect(running?.roundsNow.reviewing).toBe(true);
   });
 
   it('takes the review out of hand once the newer run fails', () => {
-    const failed = projectSheet(story.events, '1', story.at(8));
+    const failed = projectSheet(project(story.events, story.at(8)), '1');
     expect(failed?.rounds.map((a) => a.gates?.state)).toEqual(['failed']);
     expect(failed?.roundsNow.reviewing).toBe(false);
   });
@@ -439,7 +439,7 @@ describe('the sheet of a fix', () => {
       });
     // `docs/*` takes in what was kept, one segment, but what was cut off may hold more.
     const pattern = withScope('docs/*');
-    expect(projectSheet(pattern, '1311', END)?.scope?.rows.slice(-2)).toEqual([
+    expect(projectSheet(project(pattern, END), '1311')?.scope?.rows.slice(-2)).toEqual([
       { path: 'docs/*', added: undefined, removed: undefined, outside: false },
       { path: cut, added: 1, removed: 0, outside: true },
     ]);
@@ -449,7 +449,7 @@ describe('the sheet of a fix', () => {
       inScope: false,
     });
     const folder = withScope('docs/');
-    expect(projectSheet(folder, '1311', END)?.scope?.rows.at(-1)).toEqual({
+    expect(projectSheet(project(folder, END), '1311')?.scope?.rows.at(-1)).toEqual({
       path: 'docs/',
       added: 1,
       removed: 0,
@@ -573,7 +573,7 @@ describe('a fix sent back by the gates and then by the reviewer', () => {
 
   it('draws the round a return sends it into at once, the coder at work on it, before it pushes', () => {
     // The gates sent round 1 back at 14:15:55; the coder pushed round 2 at 14:19:00.
-    const between = projectSheet(SAMPLES, '1325', Date.parse('2026-10-06T14:17:00Z'));
+    const between = projectSheet(project(SAMPLES, Date.parse('2026-10-06T14:17:00Z')), '1325');
     expect(between?.rounds.map((a) => a.attempt)).toEqual([1]);
     expect(between?.roundsNow).toEqual({ next: { attempt: 2, building: true }, reviewing: false });
     // And at the end, the reviewer's return waits for round 3.
@@ -594,14 +594,14 @@ describe('a fix sent back by the gates and then by the reviewer', () => {
         payload: { ...back.payload, from: 'build' as const, to: 'plan' as const },
       },
     ];
-    expect(projectSheet(replanned, '1325', end)?.roundsNow.next).toBeUndefined();
+    expect(projectSheet(project(replanned, end), '1325')?.roundsNow.next).toBeUndefined();
     // And back at Build in the new pass, the coder at work before its first push: no round 3 from the pass before.
     const coding = events.find((e) => e.type === 'model.called' && e.actor === 'coder');
     if (!coding) throw new Error('expected #1325 to have the coder’s call');
     const rebuilding = [...replanned, { ...coding, id: `${coding.id}-again`, ts: '2026-10-06T14:25:00.000Z' }];
     const later = Date.parse('2026-10-06T14:25:00Z');
-    expect(projectSheet(rebuilding, '1325', later)?.card.segments[3]).toBe('now');
-    expect(projectSheet(rebuilding, '1325', later)?.roundsNow.next).toBeUndefined();
+    expect(projectSheet(project(rebuilding, later), '1325')?.card.segments[3]).toBe('now');
+    expect(projectSheet(project(rebuilding, later), '1325')?.roundsNow.next).toBeUndefined();
   });
 
   it('knows each round by its pass and its number, as each pass starts again at round 1', () => {
@@ -615,7 +615,7 @@ describe('a fix sent back by the gates and then by the reviewer', () => {
   });
 
   it('says which step of the last round is in hand: its gates, then its review', () => {
-    const at = (time: string) => projectSheet(SAMPLES, '1325', Date.parse(time));
+    const at = (time: string) => projectSheet(project(SAMPLES, Date.parse(time)), '1325');
     const gating = at('2026-10-06T14:20:00Z');
     expect(gating?.rounds.at(-1)?.gates?.state).toBe('running');
     expect(gating?.roundsNow).toEqual({ next: undefined, reviewing: false });
@@ -659,7 +659,7 @@ describe('a fix sent back for an approval’s suggestions', () => {
     }) satisfies PayloadOf<'review.submitted'>;
   const back = (round: number, figures: { blocking: number } | { suggestions: number }) =>
     ({ from: 'review', to: 'build', reason: 'Sent back', round, ...figures }) satisfies PayloadOf<'work.returned'>;
-  const sheetOf = (events: ReturnType<typeof work>) => projectSheet(events.events, '3', events.at(60));
+  const sheetOf = (events: ReturnType<typeof work>) => projectSheet(project(events.events, events.at(60)), '3');
   const fix = () => work('3').open().add(1, 'pull-request.pushed', 'coder', pushed(1));
 
   it('counts the review after the suggestions round against the most there may now be', () => {
@@ -812,7 +812,7 @@ describe('a story’s end', () => {
     );
     // #1306 closed verified, and the same error came back: open again, its story has no end until it closes again.
     const closed = Date.parse(SAMPLES.find((e) => e.work_item === '1306' && e.type === 'work-item.closed')?.ts ?? '');
-    expect(projectSheet(SAMPLES, '1306', closed)?.closing).toBe(
+    expect(projectSheet(project(SAMPLES, closed), '1306')?.closing).toBe(
       'It was verified on v0.9.10 by the log watcher’s check “new error pattern”, and closed.',
     );
     expect(sheet('1306')?.closing).toBeUndefined();
@@ -841,14 +841,14 @@ describe('a story’s end', () => {
       outcome: 'no-change',
       reason: 'Martin agreed with the coder, saying: nothing to fix',
     }).events;
-    expect(projectSheet(answered, '5100', Date.parse('2026-10-04T00:00:00Z'))?.closing).toBe(
+    expect(projectSheet(project(answered, Date.parse('2026-10-04T00:00:00Z')), '5100')?.closing).toBe(
       'It closed: Martin agreed with the coder, saying: nothing to fix.',
     );
     const unmerged = fix().add(9, 'work-item.closed', 'martin', {
       outcome: 'no-change',
       reason: 'Pull request #5101 was closed without being merged',
     }).events;
-    expect(projectSheet(unmerged, '5100', Date.parse('2026-10-04T00:00:00Z'))?.closing).toBe(
+    expect(projectSheet(project(unmerged, Date.parse('2026-10-04T00:00:00Z')), '5100')?.closing).toBe(
       'It closed with pull request #5101 unmerged.',
     );
   });
@@ -870,7 +870,7 @@ describe('a story’s end', () => {
         outcome: 'verified',
         reason: 'The error rate stayed inside its objective',
       });
-    expect(projectSheet(cleared.events, '5100', t)?.closing).toBe(
+    expect(projectSheet(project(cleared.events, t), '5100')?.closing).toBe(
       'It was verified on v0.9.12 by the metrics’ check “error rate”, and closed.',
     );
     const judged = fix()
@@ -885,7 +885,7 @@ describe('a story’s end', () => {
         outcome: 'verified',
         reason: 'Martin judged it cleared, saying: it is fine',
       });
-    expect(projectSheet(judged.events, '5100', t)?.closing).toBe(
+    expect(projectSheet(project(judged.events, t), '5100')?.closing).toBe(
       'It closed: Martin judged it cleared, saying: it is fine.',
     );
   });
@@ -902,11 +902,11 @@ describe('a story’s end', () => {
           story: `${story} Nothing has been fixed yet: the ticket waits at Plan.`,
         }).events;
     const t = Date.parse('2026-10-04T00:00:00Z');
-    expect(projectSheet(stored('triage'), '5200', t)?.story).toBe(story);
-    expect(projectSheet(stored('triage'), '5200', t)?.card.description).toBe(
+    expect(projectSheet(project(stored('triage'), t), '5200')?.story).toBe(story);
+    expect(projectSheet(project(stored('triage'), t), '5200')?.card.description).toBe(
       'The probes found it: the contact form sends. Triage opened a ticket, errors and broken.',
     );
-    expect(projectSheet(stored('describer'), '5200', t)?.story).toBe(
+    expect(projectSheet(project(stored('describer'), t), '5200')?.story).toBe(
       `${story} Nothing has been fixed yet: the ticket waits at Plan.`,
     );
   });

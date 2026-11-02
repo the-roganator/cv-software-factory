@@ -534,7 +534,21 @@ function position(r: Building, now: number): Pick<Release, 'step' | 'weight' | '
 }
 
 /** Every release by t, oldest first, each as far as it had got. */
-export function releases(events: readonly PublicEvent[], items: readonly ItemState[], t: number): Release[] {
+export const releases = (events: readonly PublicEvent[], items: readonly ItemState[], t: number): Release[] =>
+  releasesAt(foldReleases(events, items), t);
+
+/**
+ * The releases folded from their events, as far as they go without a time: each one that has ended in full, and each in
+ * flight with all but its place, which `releasesAt` adds. The events are those by some t, so a fold serves every later
+ * t until another event arrives.
+ */
+export type FoldedReleases = readonly (
+  | { release: Release }
+  | { building: Building; base: Release; judged: JudgedBad | undefined }
+)[];
+
+/** Every release in its events, as far as it goes without a time (`FoldedReleases`). */
+export function foldReleases(events: readonly PublicEvent[], items: readonly ItemState[]): FoldedReleases {
   const titles = new Map(items.map((item) => [item.number, item.title]));
   const carried = (number: string): Carried => ({ number, title: titles.get(number) ?? '' });
   const byId = new Map<string, Building>();
@@ -693,7 +707,7 @@ export function releases(events: readonly PublicEvent[], items: readonly ItemSta
     // Recorded a pass after Argo Rollouts acted on it: it ended then, at the step it had reached.
     if (event.type === 'release.aborted') close(r, abortedAt(r, Date.parse(event.payload.abortedAt), event.payload.by));
   }
-  return [...byId.values()].map((r): Release => {
+  return [...byId.values()].map((r): FoldedReleases[number] => {
     const {
       listed: _listed,
       stoppedAt: _stoppedAt,
@@ -704,20 +718,35 @@ export function releases(events: readonly PublicEvent[], items: readonly ItemSta
       ...release
     } = r;
     if (!r.planned) release.steps = measuredSteps(r);
-    const end = endOf(r);
-    const judged = end || r.dryRun ? undefined : judgedBadOf(r);
-    // Paused for Martin, it waits where it is: no step's pause runs out, and no look is due. Argo Rollouts paused it
-    // when it was judged, so it stands where it was then, or where Martin has promoted it to since.
-    const asOf = judged ? Math.max(judged.at, ...r.promotions.filter((p) => p.at <= t).map((p) => p.at)) : t;
-    const place = { ...position(r, end?.at ?? asOf), ...(judged && { until: undefined, since: undefined }) };
+    const ended = endOf(r);
+    const judged = ended || r.dryRun ? undefined : judgedBadOf(r);
     const ticket = tickets.get(r.id);
-    if (end?.kind === 'rolled-back' && ticket) end.ticket = { ...carried(ticket.number), how: ticket.how };
+    const end =
+      ended?.kind === 'rolled-back' && ticket
+        ? { ...ended, ticket: { ...carried(ticket.number), how: ticket.how } }
+        : ended;
     release.looks = [...r.looks].sort((a, b) => a.at - b.at);
     const looked = release.looks.findLast((l) => l.measures.some((m) => m.name !== 'journeys'));
     if (!end && !r.dryRun && !judged && looked) release.nextLook = looked.at + BACKGROUND.intervalMs;
     // An end the history inferred from a stop answers an abort as its own event does; only a retry outlives an end.
     const acting = end && r.acting?.action !== 'retry' ? undefined : r.acting;
-    return { ...release, ...place, weight: end ? end.weight : place.weight, end, judgedBad: judged, acting };
+    const base: Release = { ...release, end, judgedBad: judged, acting };
+    // Ended, it stands where it ended, whatever the time; judged bad, where it was judged, or promoted to since.
+    if (end) return { release: { ...base, ...position(r, end.at), weight: end.weight } };
+    return { building: r, base, judged };
+  });
+}
+
+/** The releases folded from the events by t, each placed as far as it had got at t. */
+export function releasesAt(folded: FoldedReleases, t: number): Release[] {
+  return folded.map((f) => {
+    if ('release' in f) return f.release;
+    const { building: r, base, judged } = f;
+    // Paused for Martin, it waits where it is: no step's pause runs out, and no look is due. Argo Rollouts paused it
+    // when it was judged, so it stands where it was then, or where Martin has promoted it to since.
+    const asOf = judged ? Math.max(judged.at, ...r.promotions.filter((p) => p.at <= t).map((p) => p.at)) : t;
+    const place = { ...position(r, asOf), ...(judged && { until: undefined, since: undefined }) };
+    return { ...base, ...place };
   });
 }
 

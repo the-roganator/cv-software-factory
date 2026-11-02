@@ -23,7 +23,7 @@ import { Reel } from './components/Reel.tsx';
 import { EmptyReel, States } from './components/States.tsx';
 import { StepUpProvider } from './components/StepUp.tsx';
 import { factoryOf } from './profile.ts';
-import { project, projectSheet, settingsView } from './projection/index.ts';
+import { foldOf, project, projectSheet, settingsAt } from './projection/index.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
 import { type Origin, origin, useEvents } from './source.ts';
 
@@ -118,7 +118,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   // Whether the canary bird is out of its cage, keeping the Canary panel company.
   const [birdOut, setBirdOut] = useState(false);
   const flying = view.canary.state === 'shown' && !view.canary.release.end ? view.canary.release : undefined;
-  const settings = useMemo(() => settingsView(source.events, factory.profile, t), [source.events, t]);
+  const settings = useMemo(() => settingsAt(foldOf(view).settings, factory.profile, t), [view, t]);
   const n = view.cards.length;
   // The reel draws just after the line, not with it: it is most of the page's work, and the line is what a visitor
   // reads first. An effect runs after the frame that drew the line, so the reel comes in the next.
@@ -172,7 +172,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
     if (!on) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
   };
 
-  const sheet = useMemo(() => (open ? projectSheet(source.events, open, t) : undefined), [open, source.events, t]);
+  const sheet = useMemo(() => (open ? projectSheet(view, open) : undefined), [open, view]);
   const sheetIndex = sheet ? view.cards.findIndex((card) => card.number === sheet.card.number) : -1;
 
   if (settingsPage || auditPage || privacyPage) {

@@ -145,7 +145,7 @@ describe('An improvement Martin asked for', () => {
 
   it('shows his request on the sheet, the REQUEST chapter with his passkey, and each criterion’s side', () => {
     const item = asked('2104').add(4, 'spec.written', 'planner', SPEC).add(5, 'hold.started', 'factory', HELD);
-    const sheet = projectSheet(item.events, '2104', START + 10 * 60_000);
+    const sheet = projectSheet(project(item.events, START + 10 * 60_000), '2104');
     expect(sheet?.request).toEqual({ words: WORDS, steppedUp: true, at: START });
     expect(sheet?.chapters[0]).toMatchObject({ label: 'REQUEST', text: 'work-item.opened, with his passkey' });
     expect(sheet?.spec?.criteria.map((c) => c.withFlag)).toEqual(['on', 'off']);
@@ -169,7 +169,7 @@ describe('An improvement Martin asked for', () => {
     const need = view.needs.holds.find((n) => n.workItem === '1334');
     expect(need?.kicker).toBe('An improvement’s spec');
     expect(need?.answers.find((a) => a.answer === 'approved')?.stepUp).toBe(true);
-    expect(projectSheet(SAMPLES, '1334', END)?.request?.words).toMatch(/^Tell people how much more/);
+    expect(projectSheet(project(SAMPLES, END), '1334')?.request?.words).toMatch(/^Tell people how much more/);
   });
 });
 

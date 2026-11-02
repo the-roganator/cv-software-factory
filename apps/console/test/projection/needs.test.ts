@@ -389,15 +389,15 @@ describe('Needs you', () => {
     const { needs, flags } = project(SAMPLES, END);
     // Every hold's card, the same on its sheet as in Needs you, tickets and improvements alike.
     for (const need of needs.holds) {
-      expect(projectSheet(SAMPLES, need.workItem, END)?.needs).toEqual({ hold: need, flag: undefined });
+      expect(projectSheet(project(SAMPLES, END), need.workItem)?.needs).toEqual({ hold: need, flag: undefined });
     }
     // A flag waiting for Martin to widen it, beside the flag's own row.
     const [flag] = flags.needs;
-    const sheet = projectSheet(SAMPLES, flag?.workItem ?? '', END);
+    const sheet = projectSheet(project(SAMPLES, END), flag?.workItem ?? '');
     expect(sheet?.needs).toEqual({ hold: undefined, flag });
     expect(sheet?.flag?.row).toEqual(flags.flags.find((row) => row.name === flag?.flag));
     // Nothing waits on a work item closed, or held for nobody.
-    expect(projectSheet(SAMPLES, '1271', END)?.needs).toEqual({ hold: undefined, flag: undefined });
+    expect(projectSheet(project(SAMPLES, END), '1271')?.needs).toEqual({ hold: undefined, flag: undefined });
   });
 
   it('leaves the sheet’s card once its hold is answered, as Needs you does', () => {
@@ -405,7 +405,9 @@ describe('Needs you', () => {
       .open()
       .add(10, 'hold.started', 'planner', hold('question', { stage: 'plan', kind: 'question', question: 'Which?' }))
       .add(20, 'hold.answered', 'martin', { decision: 'approved' });
-    expect(projectSheet(item.events, '2060', START + 15 * 60_000)?.needs.hold?.kicker).toBe('The planner asks');
-    expect(projectSheet(item.events, '2060', START + 25 * 60_000)?.needs.hold).toBeUndefined();
+    expect(projectSheet(project(item.events, START + 15 * 60_000), '2060')?.needs.hold?.kicker).toBe(
+      'The planner asks',
+    );
+    expect(projectSheet(project(item.events, START + 25 * 60_000), '2060')?.needs.hold).toBeUndefined();
   });
 });

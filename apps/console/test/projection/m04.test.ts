@@ -13,7 +13,7 @@ import { AFTERNOON, CAPPED, CLEARED, FIXTURE, work } from './support.ts';
 const view = project(FIXTURE, AFTERNOON);
 const card = (number: string) => view.cards.find((c) => c.number === number);
 const station = (stage: string, t = AFTERNOON) => project(FIXTURE, t).stations.find((s) => s.stage === stage);
-const sheet = (number: string, t = AFTERNOON) => projectSheet(FIXTURE, number, t);
+const sheet = (number: string, t = AFTERNOON) => projectSheet(project(FIXTURE, t), number);
 
 describe('a ticket from a sense', () => {
   it('has left Triage and waits at Plan for the planner, in the quiet tone', () => {
@@ -206,7 +206,7 @@ describe('a ticket’s sheet', () => {
         durationMs: 4000,
         calls: 1,
       }).events;
-    expect(projectSheet(events, '1', Date.parse(events.at(-1)?.ts ?? ''))?.agents[0]).toMatchObject({
+    expect(projectSheet(project(events, Date.parse(events.at(-1)?.ts ?? '')), '1')?.agents[0]).toMatchObject({
       provider: 'bedrock',
       details: ['effort high'],
     });
@@ -256,14 +256,14 @@ describe('Triage’s panel', () => {
     const t = AFTERNOON;
     const counts = project([...FIXTURE, ...finding], t).panels.triage.senses;
     expect(counts).toEqual(view.panels.triage.senses);
-    expect(projectSheet(finding, '2001', t)?.report).toEqual({
+    expect(projectSheet(project(finding, t), '2001')?.report).toEqual({
       page: '/contact',
       quarantined: false,
       by: 'planner',
       times: 1,
       texts: [],
     });
-    expect(projectSheet(finding, '2001', t)?.chapters.map((c) => c.label)).toContain('FINDING');
+    expect(projectSheet(project(finding, t), '2001')?.chapters.map((c) => c.label)).toContain('FINDING');
     expect(project(finding, t).cards[0]?.picture.type).toBe('judgement');
 
     // Noticed again, by another planner in its own words: triage counts it into the hold, which still waits once.
@@ -278,8 +278,8 @@ describe('Triage’s panel', () => {
       .add(0.1, 'judgement.made', 'triage', { ...judgement, route: 'repeat', joined: '2001' })
       .events.map((event) => ({ ...event, id: `${event.id}-again` }));
     const twice = [...finding, ...again];
-    expect(projectSheet(twice, '2001', t)?.report?.times).toBe(2);
-    expect(projectSheet(twice, '2001', t)?.chapters.filter((c) => c.label === 'FINDING')).toHaveLength(2);
+    expect(projectSheet(project(twice, t), '2001')?.report?.times).toBe(2);
+    expect(projectSheet(project(twice, t), '2001')?.chapters.filter((c) => c.label === 'FINDING')).toHaveLength(2);
     expect(project(twice, t).cards.map((card) => [card.number, card.outcome])).toEqual([['2001', 'held']]);
   });
 
@@ -320,7 +320,7 @@ describe('Triage’s panel', () => {
     expect(picture).toMatchObject({ type: 'judgement', page: shot });
     // His words settle nothing: the defect is still held, waiting for him to approve or reject it.
     expect(project(finding, AFTERNOON).cards[0]?.outcome).toBe('held');
-    expect(projectSheet(finding, '2002', AFTERNOON)?.chapters.map((c) => c.label)).toContain('ANSWERED');
+    expect(projectSheet(project(finding, AFTERNOON), '2002')?.chapters.map((c) => c.label)).toContain('ANSWERED');
     // Once Martin has approved it, and triage opened its ticket, it waits at Plan like any ticket, pictured by what
     // triage made of it, as a report's ticket is, until the line has evidence of its own.
     const ticketed = work('2002', AFTERNOON - 60_000)

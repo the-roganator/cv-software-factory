@@ -101,11 +101,13 @@ const FULL: PublicEvent[] = SAMPLES.map((event) =>
 
 describe('the projection, given the full events', () => {
   it('quotes a visitor’s report on its sheet, made plain', () => {
-    expect(projectSheet(FULL, '1268', END)?.report?.texts).toEqual(['The form blost/b my message twice: see or mail']);
+    expect(projectSheet(project(FULL, END), '1268')?.report?.texts).toEqual([
+      'The form blost/b my message twice: see or mail',
+    ]);
   });
 
   it('has no text to quote from the public events', () => {
-    expect(projectSheet(SAMPLES, '1268', END)?.report).toMatchObject({ by: 'visitor', texts: [] });
+    expect(projectSheet(project(SAMPLES, END), '1268')?.report).toMatchObject({ by: 'visitor', texts: [] });
   });
 
   it('draws everything else as it draws the public events', () => {

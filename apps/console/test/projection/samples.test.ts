@@ -133,20 +133,20 @@ describe('the samples, projected', () => {
 
 describe('a sheet', () => {
   it('says when a sense saw the ticket’s problem again in a later version, such as another release rolled back', () => {
-    const canary = projectSheet(SAMPLES, '1308', END)?.seenBy?.find((s) => s.sense === 'canary');
+    const canary = projectSheet(project(SAMPLES, END), '1308')?.seenBy?.find((s) => s.sense === 'canary');
     expect(canary).toMatchObject({
       opened: true,
       again: { versions: ['efef168f4eec299dfc27c8fc78477ce28379b38d'], at: Date.parse('2026-10-05T17:43:40Z') },
     });
     // The log watcher saw #1306's error again in the release that reopened it.
-    const logs = projectSheet(SAMPLES, '1306', END)?.seenBy?.find((s) => s.sense === 'logs');
+    const logs = projectSheet(project(SAMPLES, END), '1306')?.seenBy?.find((s) => s.sense === 'logs');
     expect(logs?.again?.versions).toEqual(['v0.9.12']);
     // A sense seen in one version only says nothing more.
-    expect(projectSheet(SAMPLES, '1302', END)?.seenBy?.every((s) => s.again === undefined)).toBe(true);
+    expect(projectSheet(project(SAMPLES, END), '1302')?.seenBy?.every((s) => s.again === undefined)).toBe(true);
   });
 
   it('steps through the item’s story, from the injection to its verification', () => {
-    const sheet = projectSheet(SAMPLES, '1302', END);
+    const sheet = projectSheet(project(SAMPLES, END), '1302');
     expect(sheet?.chapters.map((c) => c.label)).toEqual([
       'INJECT',
       'ON SITE',
@@ -170,11 +170,11 @@ describe('a sheet', () => {
   });
 
   it('ends at now while the item is still on the line', () => {
-    expect(projectSheet(SAMPLES, '1325', END)?.chapters.at(-1)).toMatchObject({ label: 'NOW', position: 100 });
+    expect(projectSheet(project(SAMPLES, END), '1325')?.chapters.at(-1)).toMatchObject({ label: 'NOW', position: 100 });
   });
 
   it('shows the site as it stood at each step', () => {
-    const sheet = projectSheet(SAMPLES, '1296', END);
+    const sheet = projectSheet(project(SAMPLES, END), '1296');
     const site = (label: string) => sheet?.chapters.find((c) => c.label === label)?.site?.side;
     expect(site('INJECT')).toBeUndefined();
     expect(site('ON SITE')).toBe('before');
@@ -213,7 +213,7 @@ describe('a sheet', () => {
         };
       });
     const fixed = (events: typeof SAMPLES) => {
-      const sheet = projectSheet(events, '1296', END);
+      const sheet = projectSheet(project(events, END), '1296');
       const verified = sheet?.chapters.find((c) => c.label === 'VERIFIED')?.site;
       const evidence = sheet?.captures.filter((c) => c.side === 'fixed');
       return { side: verified?.side, version: verified?.shot.version, hash: verified?.shot.hash, evidence };
@@ -249,7 +249,7 @@ describe('a sheet', () => {
 
   it('draws a verification that found the problem still there as persisting, never warm the first time', () => {
     const chapter = (events: typeof SAMPLES, label: string) =>
-      projectSheet(events, '1296', END)?.chapters.find((c) => c.label === label);
+      projectSheet(project(events, END), '1296')?.chapters.find((c) => c.label === label);
     expect(chapter(SAMPLES, 'VERIFIED')?.tone).toBe('ok');
     const persisted = SAMPLES.map((event) =>
       event.work_item === '1296' && event.type === 'verification.finished'
@@ -272,8 +272,8 @@ describe('a sheet', () => {
     });
     const reopened = [...SAMPLES, ...later.events];
     const at = later.at(11);
-    expect(projectSheet(SAMPLES, '1296', at)?.card).toMatchObject({ outcome: 'verified' });
-    const sheet = projectSheet(reopened, '1296', at);
+    expect(projectSheet(project(SAMPLES, at), '1296')?.card).toMatchObject({ outcome: 'verified' });
+    const sheet = projectSheet(project(reopened, at), '1296');
     expect(sheet?.card).toMatchObject({
       outcome: 'waiting',
       segments: ['passed', 'passed', 'queued', ...Array(5).fill('none')],
@@ -285,7 +285,7 @@ describe('a sheet', () => {
   });
 
   it('totals each agent’s calls, tokens and cost', () => {
-    const sheet = projectSheet(SAMPLES, '1296', END);
+    const sheet = projectSheet(project(SAMPLES, END), '1296');
     expect(sheet?.agents.map((a) => a.agent)).toEqual(['planner', 'coder', 'reviewer']);
     const total = sheet?.agents.reduce((sum, a) => sum + a.cost, 0) ?? 0;
     expect(total).toBeCloseTo(sheet?.card.spend ?? 0, 6);
@@ -298,13 +298,13 @@ describe('a sheet', () => {
   });
 
   it('lists the gates of the latest attempt', () => {
-    const gates = projectSheet(SAMPLES, '1302', END)?.gates ?? [];
+    const gates = projectSheet(project(SAMPLES, END), '1302')?.gates ?? [];
     expect(gates).toHaveLength(12);
     expect(gates.every((g) => g.conclusion === 'success')).toBe(true);
   });
 
   it('withholds a visitor’s report, saying where it came from', () => {
-    expect(projectSheet(SAMPLES, '1268', END)?.report).toEqual({
+    expect(projectSheet(project(SAMPLES, END), '1268')?.report).toEqual({
       page: '/contact',
       quarantined: false,
       by: 'visitor',
@@ -314,7 +314,7 @@ describe('a sheet', () => {
   });
 
   it('compares every page with the version before, the intended one first', () => {
-    const verification = projectSheet(SAMPLES, '1304', END)?.shipped[0]?.verification;
+    const verification = projectSheet(project(SAMPLES, END), '1304')?.shipped[0]?.verification;
     expect(verification?.against).toBe('v0.9.7');
     expect(verification?.pages[0]).toMatchObject({ page: 'Contact', intended: true });
     expect(verification?.pages.find((p) => p.page === 'Home')).toMatchObject({ changed: 0, intended: false });
@@ -322,7 +322,7 @@ describe('a sheet', () => {
 
   it('shows each page as the verification took it, though a later one took the same picture', () => {
     // #1306's pages are the same to the pixel on v0.9.8 and v0.9.10: one picture, one hash, in both verifications.
-    const versions = projectSheet(SAMPLES, '1306', END)?.shipped.flatMap((s) =>
+    const versions = projectSheet(project(SAMPLES, END), '1306')?.shipped.flatMap((s) =>
       s.verification ? [[s.release.version, s.verification.pages.map((p) => p.screenshot?.version)]] : [],
     );
     expect(versions).toEqual([
@@ -332,7 +332,7 @@ describe('a sheet', () => {
   });
 
   it('names the other work item the release carried on a page that is its own, before the pages the same', () => {
-    const shared = projectSheet(SAMPLES, '1306', END)?.shipped.find((s) => s.release.version === 'v0.9.8');
+    const shared = projectSheet(project(SAMPLES, END), '1306')?.shipped.find((s) => s.release.version === 'v0.9.8');
     expect(shared?.verification?.pages.map((p) => [p.page, p.intended, p.intendedFor])).toEqual([
       ['Contact', false, '1304'],
       ['Home', false, undefined],
@@ -361,14 +361,14 @@ describe('replay', () => {
   it('draws the same sheet at t, the same way', () => {
     for (const t of instants.filter((_, i) => i % 7 === 0)) {
       for (const number of ['1271', '1296', '1302', '1304', '1311', '1315', '1319', '1323']) {
-        expect(projectSheet(SAMPLES, number, t)).toEqual(projectSheet(upTo(SAMPLES, t), number, t));
+        expect(projectSheet(project(SAMPLES, t), number)).toEqual(projectSheet(project(upTo(SAMPLES, t), t), number));
       }
     }
   });
 
   it('shows nothing of a work item before it opened', () => {
     const before1302 = Date.parse('2026-10-03T09:11:00Z');
-    expect(projectSheet(SAMPLES, '1302', before1302)).toBeUndefined();
+    expect(projectSheet(project(SAMPLES, before1302), '1302')).toBeUndefined();
     expect(project(SAMPLES, before1302).cards.map((c) => c.number)).not.toContain('1302');
     expect(STAGES).toHaveLength(8);
   });

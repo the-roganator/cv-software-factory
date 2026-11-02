@@ -8,7 +8,7 @@ import { type Chapter, marksNote, project, projectSheet, scrubbed, TARGET } from
 import { spread } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES } from './support.ts';
 
-const sheet = (item: string, t = END) => projectSheet(SAMPLES, item, t);
+const sheet = (item: string, t = END) => projectSheet(project(SAMPLES, t), item);
 const returned = Date.parse(SAMPLES.find((e) => e.work_item === '1306' && e.type === 'work.returned')?.ts ?? '');
 
 describe('Release and Verify on the sheet', () => {
@@ -95,7 +95,7 @@ describe('a work item that goes round more than once', () => {
       }
       return [event];
     });
-    const s = projectSheet(held, '1306', Date.parse(closed?.ts ?? ''));
+    const s = projectSheet(project(held, Date.parse(closed?.ts ?? '')), '1306');
     expect(s?.chapters.filter((c) => c.label === 'PERSISTS').map((c) => c.tone)).toEqual(['signal', 'attn']);
     expect(s?.shipped[0]?.verification).toMatchObject({ outcome: 'persists', held: true, words: 'It needs Martin' });
   });

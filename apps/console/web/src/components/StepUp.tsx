@@ -9,7 +9,17 @@
  * The page's own count is a convenience: the service decides. A write it refuses for want of the passkey asks for it
  * here and is sent again (`write` in `admin.ts`), however fresh the page thought it was.
  */
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { FRESH_MINUTES } from '../access.ts';
 import { post, type Session, said } from '../admin.ts';
 import { Dialog } from './Dialog.tsx';
@@ -25,10 +35,8 @@ export interface Asked {
 export interface StepUp {
   /** Whether the passkey was given in the last five minutes, as far as the page knows. */
   fresh: boolean;
-  /** Until when, if it is. */
+  /** Until when, if it is: the pill counts down to it on a clock of its own. */
   until: number | undefined;
-  /** The provider's clock, which the pill counts down by. */
-  now: number;
   /** Asks for the passkey, for this action: true once given, false if Martin cancels. */
   ask(asked: Asked): Promise<boolean>;
   /**
@@ -41,7 +49,6 @@ export interface StepUp {
 const NONE: StepUp = {
   fresh: false,
   until: undefined,
-  now: 0,
   ask: async () => false,
   prove: async (_live: () => boolean) => 'Sign in first.',
 };
@@ -60,12 +67,14 @@ export function StepUpProvider({ session, children }: { session: Session | undef
   // Fresh from the session's own step-up, as the service said, or from one given on this page since.
   const steppedUpAt = session?.steppedUp && session.steppedUpAt ? Date.parse(session.steppedUpAt) : undefined;
   const until = Math.max(given ?? 0, steppedUpAt ?? 0) + FRESH_MINUTES * 60_000;
+  // The time the provider last looked: when the passkey was given, and when it runs out. Only the pill counts down in
+  // between, so nothing that asks for a step-up is drawn again while it does.
   const [now, setNow] = useState(() => Date.now());
-  // The pill counts down in whole minutes, so a look every few seconds is enough, and none once it has run out.
   useEffect(() => {
     if (now >= until) return;
-    const timer = setInterval(() => setNow(Date.now()), 5000);
-    return () => clearInterval(timer);
+    // From the clock, not from `now`: the session's own step-up moves `until` while `now` is still when it last looked.
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, until - Date.now()));
+    return () => clearTimeout(timer);
   }, [until, now]);
   const [asking, setAsking] = useState<{ id: number; asked: Asked; answer: (given: boolean) => void } | undefined>(
     undefined,
@@ -113,10 +122,7 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     });
   };
   const fresh = now < until;
-  const value = useMemo(
-    () => ({ fresh, until: fresh ? until : undefined, now, ask, prove }),
-    [fresh, until, now, ask, prove],
-  );
+  const value = useMemo(() => ({ fresh, until: fresh ? until : undefined, ask, prove }), [fresh, until, ask, prove]);
   return (
     <StepUpContext.Provider value={value}>
       {children}
@@ -227,9 +233,26 @@ export function Key() {
 /** Whole minutes left, never nought while any is: "5min". */
 const left = (until: number, now: number) => `${Math.max(1, Math.ceil((until - now) / 60_000))}min`;
 
+/**
+ * The time, for a countdown to `until`: it counts in whole minutes, so a look every few seconds is enough, and none
+ * once it has run out. Each countdown keeps its own, so its ticks draw it alone.
+ */
+function useNow(until: number | undefined) {
+  const [now, setNow] = useState(() => Date.now());
+  // Before the browser paints, so a countdown that starts or moves is never drawn from the time it last looked.
+  useLayoutEffect(() => {
+    if (until === undefined) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, [until]);
+  return now;
+}
+
 /** The header's pill while the passkey is fresh: "Passkey given · 5min", counting down. Nothing otherwise. */
 export function StepUpPill() {
-  const { until, now } = useStepUp();
+  const { until } = useStepUp();
+  const now = useNow(until);
   if (until === undefined) return null;
   return (
     <span className="fresh" role="status">
@@ -243,7 +266,8 @@ export function StepUpPill() {
 
 /** The same, as a line in the account menu, where a phone shows it. */
 export function StepUpLine() {
-  const { until, now } = useStepUp();
+  const { until } = useStepUp();
+  const now = useNow(until);
   if (until === undefined) return null;
   return (
     <>

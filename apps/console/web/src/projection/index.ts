@@ -7,7 +7,7 @@
 import type { PublicEvent, Stage } from '@software-factory/events';
 import { STAGES } from '@software-factory/events';
 import { type ControlsView, controlsOf } from './controls.ts';
-import { type FlagsView, flagsView } from './flags.ts';
+import { type FlagsView, type FoldedFlags, flagsView, foldFlags } from './flags.ts';
 import { foldItems, type ItemState } from './items.ts';
 import {
   drawn,
@@ -83,7 +83,7 @@ export { QUARANTINE_AT, segmentsLabel } from './reel.ts';
 export type { CanaryView, Carried, End, Measured, Release, Step } from './release.ts';
 export { SENSE } from './senses.ts';
 export type { Meter, SettingsView, SpendView } from './settings.ts';
-export { settingsView } from './settings.ts';
+export { foldSettings, settingsAt, settingsView } from './settings.ts';
 export type {
   After,
   AgentRow,
@@ -141,6 +141,7 @@ export interface Fold {
   sample: boolean;
   improve: ImproveView;
   releases: FoldedReleases;
+  flags: FoldedFlags;
   /** Every return, newest first: which are in the last day is a matter of t. */
   returns: Return[];
   versions: AppVersions;
@@ -186,6 +187,7 @@ export function fold(seen: readonly PublicEvent[]): Fold {
     sample: items.some((item) => item.sample),
     improve: improveView(items),
     releases: folded,
+    flags: foldFlags(seen, items),
     returns: everyReturn(seen),
     versions,
     closed: items.map((item) => (item.closedAt === undefined ? undefined : card(item, versions, item.closedAt))),
@@ -254,7 +256,7 @@ export function viewAt(folded: Fold, t: number): View {
     timeline: folded.timeline,
     needs: needsView(items, t, inFlight(shipped)),
     controls: folded.controls,
-    flags: flagsView(folded.seen, items, shipped, t),
+    flags: flagsView(folded.flags, items, shipped, t),
     improve: folded.improve,
     releases: shipped,
   };

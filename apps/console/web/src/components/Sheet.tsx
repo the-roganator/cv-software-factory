@@ -463,11 +463,14 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                 )}
                 {card.pullRequest && (
                   <Fact name="Pull request">
-                    {/* A sample's pull request never existed, so it links nowhere. */}
+                    {/* A sample's pull request never existed, so it links nowhere, and has no mark: GitHub holds none. */}
                     {card.sample ? (
                       `#${card.pullRequest}`
                     ) : (
-                      <a href={`${APP_REPO}/pull/${card.pullRequest}`}>#{card.pullRequest} on GitHub</a>
+                      <>
+                        <ToolMark name="github" />{' '}
+                        <a href={`${APP_REPO}/pull/${card.pullRequest}`}>#{card.pullRequest} on GitHub</a>
+                      </>
                     )}
                   </Fact>
                 )}
@@ -477,9 +480,12 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                     {card.sample ? (
                       `#${sheet.deploy.deploy.pullRequest}`
                     ) : (
-                      <a href={`${APP_REPO}/pull/${sheet.deploy.deploy.pullRequest}`}>
-                        #{sheet.deploy.deploy.pullRequest} on GitHub
-                      </a>
+                      <>
+                        <ToolMark name="github" />{' '}
+                        <a href={`${APP_REPO}/pull/${sheet.deploy.deploy.pullRequest}`}>
+                          #{sheet.deploy.deploy.pullRequest} on GitHub
+                        </a>
+                      </>
                     )}{' '}
                     · {deployWords(sheet.deploy.deploy).fact}
                   </Fact>

@@ -1,7 +1,7 @@
 /*
  * Needs you, the left of the bottom row: a card per hold, with the `attn` rule on its left edge, its answers in a
- * column of outlined buttons (or, for a visitor, labels) beside what each does, and Answered today under a
- * `line-strong` hairline.
+ * column of outlined buttons (or, for a visitor, labels) beside what each does, headed by the way the hold ends when
+ * it ends elsewhere, and Answered today under a `line-strong` hairline.
  */
 .count-attn {
   font: 12px / 1 var(--font-mono);
@@ -78,6 +78,20 @@
 }
 .answers .btn {
   justify-content: flex-start;
+}
+/* The way a hold ends, when it ends elsewhere (a pull request to merge, on GitHub; the settings, to raise a cap): a
+   link drawn as the buttons are, on a row of its own above them, bordered and weighted in the text's colour, as it
+   is the way forward and they are the ways back. */
+.answers .way {
+  grid-column: 1 / -1;
+  justify-self: start;
+  border-color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
+}
+.answers .way:hover {
+  color: var(--text);
+  text-decoration: underline;
 }
 /* Abort of a canary paused for Martin: outlined in the alarm colour, never filled, as no answer is suggested. */
 .answers .btn.attn-line {

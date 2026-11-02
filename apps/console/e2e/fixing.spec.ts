@@ -229,4 +229,28 @@ test.describe('tool marks', () => {
     await expect(ran.locator('.toolmark-kubernetes')).toBeVisible();
     await expect(ran).toContainText('Kubernetes pod of its own in the runners namespace');
   });
+
+  test('a hold that ends elsewhere heads its answers with the way there, a pull request marked as GitHub’s', async ({
+    page,
+  }) => {
+    await page.goto(consoleUrl({}));
+    await ready(page);
+    const card = (workItem: string) =>
+      page.locator('article.needs .need').filter({ has: page.getByText(`#${workItem} ·`, { exact: false }) });
+    // A merge and a deploy, on GitHub: the link comes first, before the answers that send it back or close it.
+    for (const [workItem, name] of [
+      ['1311', 'Merge #1312 on GitHub'],
+      ['1321', 'Deploy #1331 on GitHub'],
+    ] as const) {
+      const answers = card(workItem).locator('.answers');
+      const way = answers.getByRole('link', { name });
+      await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
+      await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
+      await expect(way.locator('.toolmark-github')).toBeVisible();
+    }
+    // A spend cap's way is the console's own settings: no mark.
+    const raise = card('1319').getByRole('link', { name: 'Raise the cap in the settings' });
+    await expect(raise).toHaveClass(/\bway\b/);
+    await expect(raise.locator('.toolmark')).toHaveCount(0);
+  });
 });

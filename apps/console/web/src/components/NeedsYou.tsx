@@ -2,7 +2,9 @@
  * Needs you, the left of the bottom row: one card per hold, the line's and triage's, oldest first, so what has waited
  * longest is on top. Each says what the hold is, shows the one piece of evidence that explains it, and lists each
  * answer it takes beside what that answer does, from the line's own table. The buttons are all outlined: the console
- * does not suggest an answer. Under the cards, Martin's answers today.
+ * does not suggest an answer. A hold that ends elsewhere (a merge or a deploy, on GitHub; a spend cap, in the settings)
+ * heads its answers with the way there, a link drawn as a button and bolder, since it is the way forward and the
+ * answers are the ways back. Under the cards, Martin's answers today.
  *
  * For Martin, each answer is a write to the admin service, naming the hold the card showed, so the service answers
  * that hold or none. Approving a guardrail's hold asks for his passkey again (the key shows while it is not fresh);
@@ -39,6 +41,7 @@ import {
 } from '../projection/index.ts';
 import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
+import { ToolMark } from './Logos.tsx';
 import { Shot } from './Pictures.tsx';
 import { Key, useStepUp } from './StepUp.tsx';
 import { ReasonField, Refusal } from './Words.tsx';
@@ -47,7 +50,7 @@ import { useWrite } from './Write.tsx';
 const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer' } as const;
 
 function Evidence({ need }: { need: Need }) {
-  const { evidence, link } = need;
+  const { evidence } = need;
   return (
     <>
       {evidence.kind === 'output' ? (
@@ -67,12 +70,21 @@ function Evidence({ need }: { need: Need }) {
       ) : (
         <p className="ev">{evidence.text}</p>
       )}
-      {link && (
-        <p className="ev">
-          <a href={link.href}>{link.label}</a>
-        </p>
-      )}
     </>
+  );
+}
+
+/**
+ * The way the hold ends, first among the answers: the pull request to merge, marked as GitHub's, or the settings to
+ * raise a cap. A link, as it opens a page, drawn as the buttons beside it are, in the text's weight.
+ */
+function WayForward({ link }: { link: Need['link'] }) {
+  if (!link) return null;
+  return (
+    <a className="btn small way" href={link.href}>
+      {link.github && <ToolMark name="github" />}
+      {link.label}
+    </a>
   );
 }
 
@@ -165,6 +177,7 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
+        <WayForward link={need.link} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -233,6 +246,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
+        <WayForward link={need.link} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {row.answer === 'answered' ? (

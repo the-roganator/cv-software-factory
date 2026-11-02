@@ -62,8 +62,11 @@ export interface Need {
   since: number;
   title: string;
   evidence: Evidence;
-  /** A link the card offers beside its evidence: the pull request to merge, or the settings to raise a cap. */
-  link: { href: string; label: string } | undefined;
+  /**
+   * The way the hold ends, which the card offers first: the pull request to merge, on GitHub (`github`, so the card
+   * marks it as GitHub's), or the settings to raise a cap.
+   */
+  link: { href: string; label: string; github: boolean } | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
@@ -323,13 +326,17 @@ function deployEvidence(item: ItemState): string {
 /** The pull request a merge or a deploy waits for, on GitHub; the settings for a spend cap. */
 function linkOf(item: ItemState, cause: HoldCause): Need['link'] {
   if (cause === 'merge' && item.pullRequest !== undefined) {
-    return { href: `${APP_REPO}/pull/${item.pullRequest}`, label: `Merge #${item.pullRequest} on GitHub` };
+    return {
+      href: `${APP_REPO}/pull/${item.pullRequest}`,
+      label: `Merge #${item.pullRequest} on GitHub`,
+      github: true,
+    };
   }
   if (cause === 'deploy' && item.deploy) {
     const n = item.deploy.pullRequest;
-    return { href: `${APP_REPO}/pull/${n}`, label: `Deploy #${n} on GitHub` };
+    return { href: `${APP_REPO}/pull/${n}`, label: `Deploy #${n} on GitHub`, github: true };
   }
-  if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings' };
+  if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings', github: false };
   return undefined;
 }
 

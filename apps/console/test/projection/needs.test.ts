@@ -343,6 +343,7 @@ describe('Needs you', () => {
       expect(need?.link).toEqual({
         href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
         label: `Deploy #${change.pullRequest} on GitHub`,
+        github: true,
       });
       // Only once its checks pass is it Martin's: then its card says Needs you, flashing, and Needs you counts it.
       expect(outcome).toBe(change.state === 'passed' ? 'needs-you' : 'deploying');
@@ -380,7 +381,13 @@ describe('Needs you', () => {
     const merge = needs.holds.find((need) => need.cause === 'merge');
     expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'rejected']);
     expect(merge?.link?.href).toMatch(/\/pull\/\d+$/);
-    expect(needs.holds.find((need) => need.cause === 'spend')?.link?.href).toBe('?view=settings');
+    // A pull request is GitHub's, and the card marks it so; the settings are the console's own.
+    expect(merge?.link?.github).toBe(true);
+    expect(needs.holds.find((need) => need.cause === 'spend')?.link).toEqual({
+      href: '?view=settings',
+      label: 'Raise the cap in the settings',
+      github: false,
+    });
     expect(needs.answered).toEqual([
       expect.objectContaining({ workItem: '1329', how: 'Answered in words, still held', words: 'kept' }),
     ]);

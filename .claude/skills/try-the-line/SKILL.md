@@ -25,7 +25,7 @@ To change the cluster in auto mode, Martin may add `Bash(kubectl --context k3d-s
 
 1. A throwaway Postgres for the job token and `model_calls`:
    ```sh
-   docker run -d --name sf-bench-pg -e POSTGRES_USER=factory -e POSTGRES_PASSWORD=factory -e POSTGRES_DB=factory -p 127.0.0.1:5433:5432 "$(awk '/image:/{print $2}' deploy/base/postgres/statefulset.yaml)"
+   docker run -d --name sf-bench-pg -e POSTGRES_USER=factory -e POSTGRES_PASSWORD=factory -e POSTGRES_DB=factory -p 127.0.0.1:5433:5432 "$(awk '/image:/{print $NF}' deploy/base/postgres/statefulset.yaml)"
    DATABASE_URL=postgres://factory:factory@127.0.0.1:5433/factory LINE_PASSWORD=line GATEWAY_PASSWORD=gateway node packages/store/src/migrate.ts
    ```
 2. A gateway on Claude:

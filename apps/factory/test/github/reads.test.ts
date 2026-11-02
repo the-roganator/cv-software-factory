@@ -6,13 +6,14 @@ import { listenLocal } from '@software-factory/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DryRunActions, LiveActions } from '../../src/github/actions.ts';
 import { ownsBranch } from '../../src/github/branches.ts';
+import { GitHubError } from '../../src/github/client.ts';
 import { DEPLOYS, DeployProposals, DeployRefused } from '../../src/github/deploys.ts';
 import { LiveReads, type ReleaseSources } from '../../src/github/reads.ts';
 import type { Registry } from '../../src/github/registry.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { pipeline, type Signer, UnsignedError } from '../../src/github/signatures.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
-import { calls, client, OTHER_SHA, quiet, REPO, SHA } from './fake.ts';
+import { calls, client, OTHER_SHA, quiet, REPO, type Route, SHA } from './fake.ts';
 
 const PULL = {
   number: 7,
@@ -137,6 +138,96 @@ describe('reading GitHub for the line', () => {
     expect(await reads.head(REPO, 'main')).toBe(SHA);
     expect(await reads.pullRequestFrom(REPO, 'factory/1001-cart')).toMatchObject({ number: 7, state: 'open' });
     expect(await reads.pullRequestFrom(REPO, 'factory/1002-none')).toBeNull();
+  });
+
+  it('reads what each latest failed check said was wrong, without Actions’ exit-code line, and asks nothing of the rest', async () => {
+    const completed = { status: 'completed', app: { slug: 'github-actions' }, output: { title: null } };
+    const runs = [
+      { ...completed, id: 1, name: 'gates / test integrity', conclusion: 'failure' },
+      { ...completed, id: 2, name: 'gates / types', conclusion: 'timed_out' },
+      { ...completed, id: 3, name: 'gates / tests', conclusion: 'success' },
+      { ...completed, id: 4, name: 'gates / gone', conclusion: 'failure' },
+      { id: 5, name: 'gates / journeys', status: 'in_progress', conclusion: null },
+      { ...completed, id: 6, name: 'gates / refused', conclusion: 'failure' },
+      // An earlier attempt of a check run again: the gates never record it, so nothing is read of it.
+      { ...completed, id: 0, name: 'gates / tests', conclusion: 'failure' },
+    ];
+    const annotations = (id: number, body: unknown) => ({
+      method: 'GET',
+      path: `/repos/${REPO}/check-runs/${id}/annotations?per_page=50`,
+      answer: () => ({ body }),
+    });
+    const sent: Parameters<typeof calls>[0] = [];
+    const { github } = client(
+      [
+        {
+          method: 'GET',
+          path: `/repos/${REPO}/commits/${SHA}/check-runs?per_page=100`,
+          answer: () => ({ body: { check_runs: runs } }),
+        },
+        annotations(1, [
+          { path: '.github', annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+          {
+            path: 'test/app.test.ts',
+            annotation_level: 'failure',
+            message: '"files > keeps nothing of the other files" was deleted',
+          },
+          { path: 'test/app.test.ts', annotation_level: 'warning', message: 'A warning says nothing of the failure' },
+          { path: '.github', annotation_level: 'notice', message: 'Node 20 is deprecated' },
+        ]),
+        annotations(2, [
+          { path: '.github', annotation_level: 'failure', message: 'Process completed with exit code 2.' },
+        ]),
+        { method: 'GET', path: `/repos/${REPO}/check-runs/4/annotations?per_page=50`, answer: () => ({ status: 404 }) },
+        { method: 'GET', path: `/repos/${REPO}/check-runs/6/annotations?per_page=50`, answer: () => ({ status: 403 }) },
+      ],
+      sent,
+    );
+    const read = await new LiveReads(github).checkRuns(REPO, SHA);
+    expect(read.map((run) => [run.name, run.annotations])).toEqual([
+      [
+        'gates / test integrity',
+        [{ path: 'test/app.test.ts', message: '"files > keeps nothing of the other files" was deleted' }],
+      ],
+      ['gates / types', []],
+      ['gates / tests', undefined],
+      ['gates / gone', []],
+      ['gates / journeys', undefined],
+      // Refused, the reasons are left out, and the runs still read.
+      ['gates / refused', []],
+      ['gates / tests', undefined],
+    ]);
+    // One read of the runs, and one more for each that failed.
+    expect(
+      calls(sent)
+        .map((s) => s.path.split('?')[0])
+        .sort(),
+    ).toEqual([
+      `/repos/${REPO}/check-runs/1/annotations`,
+      `/repos/${REPO}/check-runs/2/annotations`,
+      `/repos/${REPO}/check-runs/4/annotations`,
+      `/repos/${REPO}/check-runs/6/annotations`,
+      `/repos/${REPO}/commits/${SHA}/check-runs`,
+    ]);
+  });
+
+  it('fails the read of the runs while GitHub rate-limits or fails what a run said, so the line asks again', async () => {
+    const failed = { id: 1, name: 'gates / test integrity', status: 'completed', conclusion: 'failure', app: null };
+    for (const status of [429, 502]) {
+      const { github } = client([
+        {
+          method: 'GET',
+          path: `/repos/${REPO}/commits/${SHA}/check-runs?per_page=100`,
+          answer: () => ({ body: { check_runs: [failed] } }),
+        },
+        {
+          method: 'GET',
+          path: `/repos/${REPO}/check-runs/1/annotations?per_page=50`,
+          answer: () => ({ status, headers: { 'retry-after': '3600' } }),
+        },
+      ]);
+      await expect(new LiveReads(github).checkRuns(REPO, SHA)).rejects.toBeInstanceOf(GitHubError);
+    }
   });
 
   it('compares a commit with a branch: where it left it, and each file it changes since, with its patch and lines', async () => {
@@ -355,7 +446,7 @@ describe('the worker over HTTP, for the line', () => {
   let close: (() => void) | undefined;
   afterEach(() => close?.());
 
-  async function serve(routes = ROUTES, sources?: ReleaseSources) {
+  async function serve(routes: Route[] = ROUTES, sources?: ReleaseSources) {
     const { github, sent } = client(routes);
     const dryRun = new DryRunActions(new DiskArtifacts(await mkdtemp(join(tmpdir(), 'dry-run-'))), quiet);
     const server = createWorkerServer({
@@ -377,6 +468,33 @@ describe('the worker over HTTP, for the line', () => {
     expect(await worker.read('requiredChecks', REPO, { branch: 'main' })).toEqual(['test', 'journeys']);
     await expect(worker.read('checkRuns', REPO, { sha: 'nope' })).rejects.toMatchObject({ status: 400 });
     await expect(worker.read('pullRequest', 'someone/else', { number: 7 })).rejects.toBeInstanceOf(GitHubWorkerError);
+  });
+
+  it('answers the check runs with what each that failed said', async () => {
+    const failed = {
+      id: 9,
+      name: 'gates / test integrity',
+      status: 'completed',
+      conclusion: 'failure',
+      app: { slug: 'github-actions' },
+    };
+    const said = { path: 'test/app.test.ts', message: '"files > keeps nothing of the other files" was deleted' };
+    const { worker } = await serve([
+      ...ROUTES.filter((route) => !route.path.includes('/check-runs')),
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/commits/${SHA}/check-runs?per_page=100`,
+        answer: () => ({ body: { check_runs: [failed] } }),
+      },
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/check-runs/9/annotations?per_page=50`,
+        answer: () => ({ body: [{ ...said, annotation_level: 'failure' }] }),
+      },
+    ]);
+    expect(await worker.read('checkRuns', REPO, { sha: SHA })).toMatchObject([
+      { name: 'gates / test integrity', conclusion: 'failure', annotations: [said] },
+    ]);
   });
 
   it('answers the release reads, and refuses an image the repository does not deploy', async () => {

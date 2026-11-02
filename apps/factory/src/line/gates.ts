@@ -7,6 +7,9 @@
  * that did not carry it and nothing since says the defect is back (as when the line closed it for that reason, or
  * Martin did while it was held), and with no change otherwise.
  *
+ * A check that failed is recorded with what it said was wrong (its annotations, which the worker reads with the
+ * runs), so the coder is told why when the work comes back to it, not only which.
+ *
  * `gateEvents` is the decision, a pure function of what GitHub says and what the work item has already recorded, so
  * reading the same state again appends nothing. The gates are done when every check the ruleset requires has
  * finished on the commit, and every other check that started there, or at a merge, on the checks that have finished;
@@ -14,9 +17,19 @@
  * gates, and are left out; nor is the review gate's (ADR 0014), which is Martin's say, not a gate a change can pass:
  * it waits for his approval, which comes after the gates.
  */
-import { cutAt, cutTo, type EventType, type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
+import {
+  cutAt,
+  cutTo,
+  type EventType,
+  GATE_ANNOTATION_CHARS,
+  MAX_GATE_ANNOTATIONS,
+  type NewEvent,
+  type PayloadOf,
+  recordedPath,
+  VERSIONS,
+} from '@software-factory/events';
 import { APP_LOGIN } from '../github/actions.ts';
-import type { CheckRun, PullRequestState } from '../github/reads.ts';
+import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { whatClearedOnLook } from './verify.ts';
 
 /** The App, as GitHub names the app behind a check run: the factory's own runs (the reviewer's) are not gates. */
@@ -64,8 +77,23 @@ export function gateRecord(events: readonly { type: string; payload: unknown }[]
   return record;
 }
 
-const outcome = (conclusion: string | null): PayloadOf<'gate.finished'>['conclusion'] =>
-  conclusion === 'success' || conclusion === 'neutral' ? 'success' : conclusion === 'skipped' ? 'skipped' : 'failure';
+const outcome: (conclusion: string | null) => PayloadOf<'gate.finished'>['conclusion'] = outcomeOf;
+
+/**
+ * What a failed run said was wrong, as `gate.finished` keeps it: its first annotations, each cut to fit, or nothing
+ * when it named nothing. A run that did not fail says nothing here, whatever GitHub kept.
+ */
+function annotationsOf(run: CheckRun): PayloadOf<'gate.finished'>['annotations'] {
+  if (outcome(run.conclusion) !== 'failure') return undefined;
+  const kept = (run.annotations ?? [])
+    .map(({ path, message }) => ({
+      ...recordedPath(path.trim()),
+      message: cutTo(message.trim(), GATE_ANNOTATION_CHARS),
+    }))
+    .filter(({ path, message }) => path && message)
+    .slice(0, MAX_GATE_ANNOTATIONS);
+  return kept.length ? kept : undefined;
+}
 
 const durationOf = (run: CheckRun) =>
   run.startedAt && run.completedAt ? Math.max(0, Date.parse(run.completedAt) - Date.parse(run.startedAt)) : 0;
@@ -167,6 +195,7 @@ function gateRun(
     const conclusion = outcome(run.conclusion);
     const title = run.title?.trim();
     const summary = title === undefined ? undefined : cutTo(title, 200);
+    const annotations = annotationsOf(run);
     drafts.push({
       type: 'gate.finished',
       actor: 'actions',
@@ -179,6 +208,7 @@ function gateRun(
         required: required.includes(run.name),
         durationMs: durationOf(run),
         ...(summary ? { summary } : {}),
+        ...(annotations ? { annotations } : {}),
       },
     });
   }

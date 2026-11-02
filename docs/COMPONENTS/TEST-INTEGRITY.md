@@ -15,6 +15,8 @@ It reads each test file of the base and the change (`gates/tests.ts`: Vitest's a
 
 A test that moved file under its name has moved, not been deleted.
 
+Each failure is an annotation on its file, such as `"a product page > says when it was last dusted" was deleted`. When the gate sends a change back, the line gives the [coder](CODER.md#its-prompt) these words, and the coder is told the rule before its first round.
+
 ## Tests first
 
 Not required. The change's new and changed tests, with what changed in its test folders, run against the base's source. The check fails unless at least one fails there.

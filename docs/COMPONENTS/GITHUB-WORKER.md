@@ -77,7 +77,7 @@ The line reads through it too, `POST /v1/reads/<read>` (`github/reads.ts`):
 
 - **For a fix,** each a conditional request:
   - a pull request's state;
-  - the check runs on a commit;
+  - the check runs on a commit, each that failed with its annotations at the failure level, less Actions' exit-code line: one more read for each failed run;
   - the checks a branch's rulesets require;
   - a branch's head;
   - how a commit compares with a branch: its merge base, and each file it changes with its patch;

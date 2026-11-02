@@ -308,7 +308,7 @@ export interface Brings {
   /** The pins whose range was read: each pin moved from a commit its pinned images' labels name. */
   pins: Pin[];
   /** The pins it moves from no commit it knows, whose changes are not listed. */
-  unranged?: Pin[];
+  unranged: Pin[];
   commits: Brought[];
   /** How many commits it brings: exact when every range was read whole, at least this many when not. */
   count: number;
@@ -366,7 +366,7 @@ export function conventional(message: string): {
 export function bringsSection(target: DeployTarget, brings: Brings): string {
   const url = `https://github.com/${target.repo}`;
   // A pin with no range still counts: the column says which of the deploy's pins each pull request reaches.
-  const several = brings.pins.length + (brings.unranged?.length ?? 0) > 1;
+  const several = brings.pins.length + brings.unranged.length > 1;
   const shown = brings.commits.slice(0, MAX_BROUGHT);
   const more = brings.count - shown.length;
   const head = several
@@ -388,22 +388,40 @@ export function bringsSection(target: DeployTarget, brings: Brings): string {
     cells[head.length - 1] = `and ${brings.whole ? '' : 'at least '}${more} more`;
     rows.push(`| ${cells.join(' | ')} |`.replace(/ {2}/g, ' '));
   }
-  const since = brings.pins.length > 1 ? 'the commits pinned now' : 'the pinned commit';
+  // The app's one pin has no name of its own: it is the deploy.
+  const names = (pins: readonly Pin[]) => pins.map((p) => p.what || 'the deploy').join(' and ');
+  const unranged = brings.unranged ?? [];
+  const ranged = brings.pins;
   const all = `${brings.whole ? '' : 'at least '}${brings.count === 1 ? 'one pull request' : `${brings.count} pull requests`}`;
-  const said = brings.count
-    ? `It brings ${all} merged since ${since}, newest first:
-
-| ${head.join(' | ')} |
+  const table = `| ${head.join(' | ')} |
 |${head.map(() => '---').join('|')}|
-${rows.join('\n')}`
-    : `It brings no pull request: nothing merged since ${since}.`;
-  const unranged = brings.unranged?.length
-    ? `\n\nWhat ${brings.unranged.map((p) => p.what).join(' and ')} ${brings.unranged.length > 1 ? 'bring is' : 'brings is'} not listed: no commit is pinned for ${brings.unranged.length > 1 ? 'them' : 'it'} to compare with.`
-    : '';
+${rows.join('\n')}`;
+  // With a pin it cannot list, it says only what the others bring, by name, so no sentence speaks for the whole deploy.
+  const named = names(ranged).replace(/^./, (c) => c.toUpperCase());
+  const pinnedFor = `the commit${ranged.length > 1 ? 's' : ''} pinned for ${ranged.length > 1 ? 'them' : 'it'}`;
+  const said = !ranged.length
+    ? []
+    : unranged.length
+      ? [
+          brings.count
+            ? `${named} ${ranged.length > 1 ? 'bring' : 'brings'} ${all} merged since ${pinnedFor}, newest first:\n\n${table}`
+            : `Nothing merged since the commit${ranged.length > 1 ? 's' : ''} pinned for ${names(ranged)}.`,
+        ]
+      : [
+          brings.count
+            ? `It brings ${all} merged since ${ranged.length > 1 ? 'the commits pinned now' : 'the pinned commit'}, newest first:\n\n${table}`
+            : `It brings no pull request: nothing merged since ${ranged.length > 1 ? 'the commits pinned now' : 'the pinned commit'}.`,
+        ];
+  if (unranged.length) {
+    const many = unranged.length > 1;
+    said.push(
+      `What ${names(unranged)} ${many ? 'bring' : 'brings'} is not listed: no commit is pinned for ${many ? 'them' : 'it'} to compare with.`,
+    );
+  }
   return `${BRINGS_START}
 ### Pull requests
 
-${said}${unranged}
+${said.join('\n\n')}
 ${BRINGS_END}`;
 }
 
@@ -580,24 +598,29 @@ export async function newerBuild(
 
 /**
  * The commits one pin's move brings, `pinned...commit` as GitHub compares them, oldest first a hundred to a page: the
- * first page, which says how many there are, then the newest pages, up to `MAX_RANGE_PAGES` in all. A comparison of
- * two commits never changes, so it is read, not polled: it would only crowd the polls' cache.
+ * first page, which says how many there are, then the newest pages one at a time, up to `MAX_RANGE_PAGES` in all.
+ * A comparison of two commits never changes, and once listed is not read again, so it is read, not polled: its
+ * entries would only push the polls' own out of their cache.
  */
 async function range(github: GitHub, repo: string, pinned: string, commit: string) {
   const path = (page: number) => `/repos/${repo}/compare/${pinned}...${commit}?per_page=100&page=${page}`;
   const first = await github.read(repo, path(1), COMPARED);
+  const pages = [first];
   const last = Math.ceil(first.total_commits / 100);
-  // The newest pages after the first, oldest first, read together.
-  const later = Array.from({ length: Math.min(last, MAX_RANGE_PAGES) - 1 }, (_, i) => last - i).reverse();
-  const newest = await Promise.all(later.map((page) => github.read(repo, path(page), COMPARED)));
-  const commits = [first, ...newest].flatMap((p) => p.commits);
+  for (let page = last; page > 1 && pages.length < MAX_RANGE_PAGES; page--) {
+    pages.push(await github.read(repo, path(page), COMPARED));
+  }
+  // Each page's commits are oldest first; the pages after the first are newest first.
+  const [, ...newest] = pages;
+  const commits = [first, ...newest.reverse()].flatMap((p) => p.commits);
   const unique = [...new Map(commits.map((c) => [c.sha, c])).values()];
   return { total: first.total_commits, commits: unique };
 }
 
 /**
  * What a deploy brings: the commits in the range of each pin it moves from a known commit, each once, with the pins
- * it reaches, newest first; undefined when no pin has a range. Main's history is linear, so each commit's place in it
+ * it reaches, newest first, and the pins it moves with no range, whose changes it cannot list; undefined when it moves
+ * no pin. Main's history is linear, so each commit's place in it
  * (`order`, main's newest commits from the head the pass read, newest first) orders them; one older than those is
  * ordered by when it was committed.
  */
@@ -611,7 +634,9 @@ export async function brings(
   const ranged = moves.flatMap(({ pin, proposal }) =>
     proposal.pinned ? [{ pin, pinned: proposal.pinned, commit: proposal.commit }] : [],
   );
-  if (!ranged.length) return undefined;
+  if (!moves.length) return undefined;
+  const unranged = moves.filter((m) => !m.proposal.pinned).map((m) => m.pin);
+  if (!ranged.length) return { pins: [], unranged, commits: [], count: 0, whole: true };
   // Pins moved from the same commit to the same commit, as pins built together are, share one read.
   const ranges = new Map<string, { pinned: string; commit: string; pins: Pin[] }>();
   for (const { pin, pinned, commit } of ranged) {
@@ -648,7 +673,7 @@ export async function brings(
   });
   return {
     pins: ranged.map((r) => r.pin),
-    unranged: moves.filter((m) => !m.proposal.pinned).map((m) => m.pin),
+    unranged,
     commits: newest.map(({ sha, message, reaches }) => ({
       sha,
       message,
@@ -719,6 +744,27 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       log.warn({ repo, err: error }, 'could not read the pull requests a deploy brings: it goes without them for now');
       return null;
     }
+  };
+
+  /**
+   * Lists what a deploy brings in its open pull request's body, made from the body it has, once its title and branch
+   * say the same build: whether the body now lists it. Its Carries are those it has as it is written.
+   */
+  const list = async (
+    number: number,
+    body: string | null | undefined,
+    moves: readonly Move[],
+    order: readonly { sha: string }[],
+  ): Promise<boolean> => {
+    const read = await broughtBy(moves, order);
+    if (read === null) return false;
+    if (read) {
+      await actions.updatePullRequest(repo, number, {
+        body: deployBody(target, moves, body, read),
+        keepCarries: true,
+      });
+    }
+    return true;
   };
 
   /** Whether a deploy pull request conflicts with main, or GitHub has yet to say. */
@@ -801,15 +847,7 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       if (!existing.labels.some((l) => l.name === label)) await actions.addLabels(repo, existing.number, [label]);
       proposals.set(target, open(existing.number));
       // Opened by a pass whose read of what it brings failed, or before the body listed them.
-      if (!bringsIn(existing.body) && moves.some((m) => m.proposal.pinned)) {
-        const read = await broughtBy(moves, commits);
-        listed = read !== null;
-        if (read)
-          await actions.updatePullRequest(repo, existing.number, {
-            body: deployBody(target, moves, existing.body, read),
-            keepCarries: true,
-          });
-      }
+      if (!bringsIn(existing.body)) listed = await list(existing.number, existing.body, moves, commits);
       // Only its list was left to read: whether it conflicts was settled at this head.
       if (current && proposed?.settled !== false) {
         proposed = { found: all, title, head, ...(listed ? {} : { listed: false as const }) };
@@ -846,10 +884,8 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     });
     await actions.setBranch(repo, target.branch, pins, { force: true });
     await actions.deleteBranch(repo, scratch);
-    // What a new or moved pull request brings, read once its commit is made, so the read never delays that commit
-    // past main's head; one made again on main brings what it did.
-    const read = existing?.title === title ? undefined : await broughtBy(moves, commits);
-    if (read === null) listed = false;
+    // Its title and body follow the branch at once, before anything slow, so they never name a build it does not run.
+    // What it brings is listed after, from the body just written: one made again on main lists what it did.
     if (existing?.title === title) {
       log.info(
         { repo, number: existing.number, commits: built },
@@ -857,20 +893,23 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       );
     } else if (existing) {
       // Moved, it keeps what the line said it carries, which the newer build carries too, until the line says again.
-      const body = deployBody(target, moves, existing.body, read ?? undefined);
+      const body = deployBody(target, moves, existing.body);
       await actions.updatePullRequest(repo, existing.number, { title, body, keepCarries: true });
       proposals.set(target, open(existing.number));
       log.info({ repo, number: existing.number, commits: built }, 'moved the deploy pull request to a newer build');
+      listed = await list(existing.number, body, moves, commits);
     } else {
+      const body = deployBody(target, moves);
       const made = await actions.openPullRequest(repo, {
         head: target.branch,
         base: 'main',
         title,
-        body: deployBody(target, moves, undefined, read ?? undefined),
+        body,
         labels: [label],
       });
       proposals.set(target, open(made.number));
       log.info({ repo, number: made.number, commits: built }, 'opened a deploy pull request');
+      listed = await list(made.number, body, moves, commits);
     }
     proposed = { found: all, title, head, ...(listed ? {} : { listed: false as const }) };
   };

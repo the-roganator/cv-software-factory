@@ -278,6 +278,10 @@ function ghcr(revision: string | ((image: string) => string) = commit('a')): Reg
 
 const writes = (sent: Sent[]) => calls(sent).filter((s) => s.method !== 'GET');
 
+/** The write that retitled a deploy pull request. */
+const retitle = (sent: Sent[]) =>
+  writes(sent).find((s) => s.method === 'PATCH' && /\/pulls\/\d+$/.test(s.path) && 'title' in (s.body as object));
+
 /** Each write, as its method and its path within the repository. */
 const steps = (sent: Sent[]) =>
   writes(sent).map((s) => `${s.method} ${s.path.replace(/^\/repos\/[^/]+\/[^/]+\//, '').replace(/^\//, '')}`);
@@ -343,6 +347,8 @@ describe('the deploy watch', () => {
       'DELETE git/refs/heads/factory/deploy/local',
       'POST pulls',
       'POST issues/70/labels',
+      // Then, its title and branch at the build, what it brings.
+      'PATCH pulls/70',
     ]);
     // The scratch branch, the commit and the pin file all come from the one head of main.
     expect(writes(gh.sent)[0]?.body).toEqual({ ref: 'refs/heads/factory/deploy/local', sha: HEAD });
@@ -360,8 +366,10 @@ describe('the deploy watch', () => {
       base: 'main',
       title: message.headline,
     });
+    // Opened without the list, which its next write adds.
+    expect(bringsIn((writes(gh.sent)[4] as { body: { body: string } }).body.body)).toBe(false);
     const url = 'https://github.com/the-roganator/cv-software-factory';
-    expect((writes(gh.sent)[4] as { body: { body: string } }).body.body).toBe(
+    expect((writes(gh.sent).at(-1) as { body: { body: string } }).body.body).toBe(
       `Runs [\`bbbbbbb\`](${url}/commit/${commit('b')}) on the local cluster: [the changes since \`aaaaaaa\`](${url}/compare/${commit('a')}...${commit('b')}).
 
 | Image | Digest |
@@ -433,6 +441,7 @@ Argo CD deploys it from \`deploy/overlays/local\` once this merges. A newer buil
       'DELETE git/refs/heads/factory/deploy/local',
       'POST pulls',
       'POST issues/70/labels',
+      'PATCH pulls/70',
     ]);
     const { message, files } = committed(gh.sent);
     expect(message.headline).toBe(BOTH_TITLE);
@@ -441,7 +450,7 @@ Argo CD deploys it from \`deploy/overlays/local\` once this merges. A newer buil
       [FACTORY_PINS.file]: FACTORY_PIN.replace(digest('1'), digest('7')).replace(digest('2'), digest('8')),
     });
     const url = 'https://github.com/the-roganator/cv-software-factory';
-    expect((writes(gh.sent)[4] as { body: { body: string } }).body.body).toBe(
+    expect((writes(gh.sent).at(-1) as { body: { body: string } }).body.body).toBe(
       `Runs on the local cluster:
 
 - console at [\`ccccccc\`](${url}/commit/${commit('c')}): [the changes since \`aaaaaaa\`](${url}/compare/${commit('a')}...${commit('c')})
@@ -486,7 +495,7 @@ It brings 2 pull requests merged since the commits pinned now, newest first:
     });
     await watch(gh, FACTORY)();
     expect(steps(gh.sent)).not.toContain('POST pulls');
-    expect(writes(gh.sent).at(-1)).toMatchObject({
+    expect(retitle(gh.sent)).toMatchObject({
       path: `/repos/${FACTORY.repo}/pulls/69`,
       body: { title: BOTH_TITLE },
     });
@@ -505,7 +514,7 @@ It brings 2 pull requests merged since the commits pinned now, newest first:
       FACTORY,
       ghcr((image) => commit(image.endsWith('console') ? 'c' : 'a')),
     )();
-    expect(writes(gh.sent).at(-1)).toMatchObject({
+    expect(retitle(gh.sent)).toMatchObject({
       path: `/repos/${FACTORY.repo}/pulls/69`,
       body: { title: 'chore(deploy): run the factory bbbbbbb on the local cluster' },
     });
@@ -541,12 +550,17 @@ It brings 2 pull requests merged since the commits pinned now, newest first:
       pulls: [{ number: 69, title: older, state: 'open', merged_at: null, labels: label }],
     });
     await watch(gh, FACTORY)();
-    const update = writes(gh.sent).at(-1);
+    const update = retitle(gh.sent);
     expect(update?.path).toBe(`/repos/${FACTORY.repo}/pulls/69`);
     expect(update?.body).toMatchObject({
       title: 'chore(deploy): run the factory bbbbbbb on the local cluster',
       body: expect.stringContaining(`/commit/${commit('b')})`),
     });
+    // Retitled at once, without the list, which follows in a write of its own.
+    expect(bringsIn((update?.body as { body?: string } | undefined)?.body)).toBe(false);
+    const listed = writes(gh.sent).at(-1) as { body: { body: string } };
+    expect(Object.keys(listed.body)).toEqual(['body']);
+    expect(bringsIn(listed.body.body)).toBe(true);
   });
 
   it('asks who opened the pull request before it moves it, and moves none the App did not open', async () => {
@@ -674,6 +688,7 @@ It brings 2 pull requests merged since the commits pinned now, newest first:
       'DELETE git/refs/heads/factory/deploy/local',
       'POST pulls',
       'POST issues/70/labels',
+      'PATCH pulls/70',
     ]);
   });
 
@@ -693,7 +708,15 @@ It brings 2 pull requests merged since the commits pinned now, newest first:
     // Nor again as main moves on: GitHub has no pull request of the dry run's to conflict with main.
     gh.moveMain();
     await pass();
-    expect(records).toEqual(['setBranch', 'commit', 'setBranch', 'deleteBranch', 'openPullRequest']);
+    // Opened, then its list written in.
+    expect(records).toEqual([
+      'setBranch',
+      'commit',
+      'setBranch',
+      'deleteBranch',
+      'openPullRequest',
+      'updatePullRequest',
+    ]);
     expect(writes(gh.sent)).toEqual([]);
     // Its reads find the deploy branch at the commit it would have made on main's head, and no scratch branch.
     const made = actions.branchMade(FACTORY.repo, FACTORY.branch) as string;
@@ -738,7 +761,7 @@ describe('the pull requests a deploy brings', () => {
     expect(updates(gh.sent)).toHaveLength(1);
   });
 
-  it('reads nothing for a pin whose pinned commit is not known: it has no range', async () => {
+  it('reads nothing for a pin whose pinned commit is not known, and says its changes are not listed', async () => {
     const gh = github(APP, { pins: { [APP_PIN.file]: APP_PIN_FILE } });
     await watch(
       gh,
@@ -746,9 +769,11 @@ describe('the pull requests a deploy brings', () => {
       ghcr(() => undefined as unknown as string),
     )();
     expect(calls(gh.sent).filter((s) => s.path.includes('/compare/'))).toEqual([]);
-    const opened = writes(gh.sent).find((s) => s.path.endsWith('/pulls')) as { body: { body: string } };
-    expect(bringsIn(opened.body.body)).toBe(false);
-    expect(opened.body.body).not.toContain('the changes since');
+    const listed = writes(gh.sent).at(-1) as { body: { body: string } };
+    expect(listed.body.body).not.toContain('the changes since');
+    expect(listed.body.body).toContain(
+      `### Pull requests\n\nWhat the deploy brings is not listed: no commit is pinned for it to compare with.\n<!-- factory: /brings -->`,
+    );
   });
 
   it('lists them in a dry run’s body as in a live one', async () => {
@@ -757,19 +782,20 @@ describe('the pull requests a deploy brings', () => {
     const store = {
       put: async (bytes: Uint8Array) => {
         const record = JSON.parse(new TextDecoder().decode(bytes));
-        if (record.action === 'openPullRequest') bodies.push(JSON.stringify(record));
+        if (record.action === 'updatePullRequest') bodies.push(JSON.stringify(record));
         return '0'.repeat(64);
       },
     };
     await watch(gh, FACTORY, ghcr(), new DryRunActions(store as never, quiet))();
     const live = github(FACTORY);
     await watch(live, FACTORY)();
-    const opened = writes(live.sent).find((s) => s.path.endsWith('/pulls')) as { body: { body: string } };
+    const listed = writes(live.sent).at(-1) as { body: { body: string } };
+    expect(bringsIn(listed.body.body)).toBe(true);
     expect(bodies).toHaveLength(1);
-    expect(bodies[0]).toContain(JSON.stringify(opened.body.body));
+    expect(bodies[0]).toContain(JSON.stringify(listed.body.body));
   });
 
-  it('reads the first page of a long range and then its newest together, and lists each once, newest first', async () => {
+  it('reads the first page of a long range and then its newest, one at a time, and lists each once, newest first', async () => {
     const shas = Array.from({ length: 250 }, (_, i) => i.toString(16).padStart(40, '0'));
     const sent: Sent[] = [];
     const { github: client_ } = client(
@@ -791,9 +817,7 @@ describe('the pull requests a deploy brings', () => {
     );
     const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
     const read = (await brings(client_, APP.repo, APP, [move], [])) as Brings;
-    const [first, ...later] = calls(sent).map((s) => /page=(\d+)$/.exec(s.path)?.[1]);
-    expect(first).toBe('1');
-    expect(later.sort()).toEqual(['2', '3']);
+    expect(calls(sent).map((s) => /page=(\d+)$/.exec(s.path)?.[1])).toEqual(['1', '3', '2']);
     expect(read.count).toBe(250);
     expect(read.whole).toBe(true);
     expect(read.commits.map((c) => c.sha)).toEqual([...shas].reverse());
@@ -911,15 +935,41 @@ describe('the pull requests a deploy brings', () => {
     );
     // Its rows still say which of the deploy's pins they reach.
     expect(bringsSection(FACTORY, read)).toContain('| #5 | console | fix | – | x |');
-    expect(bringsSection(FACTORY, read)).toContain('merged since the pinned commit');
+    expect(bringsSection(FACTORY, read)).toContain(
+      'Console brings one pull request merged since the commit pinned for it, newest first:',
+    );
   });
 
-  it('reads them once its commit is made, so the read never holds that commit back', async () => {
+  it('reads them only once the pull request is opened at its build, so nothing slow comes between branch and title', async () => {
     const gh = github(FACTORY);
     await watch(gh, FACTORY)();
-    const order = calls(gh.sent).map((s) => (s.path.includes('/compare/') ? 'compare' : s.path));
-    expect(order.indexOf('/graphql')).toBeGreaterThan(-1);
-    expect(order.indexOf('compare')).toBeGreaterThan(order.indexOf('/graphql'));
+    const order = calls(gh.sent).map((s) => (s.path.includes('/compare/') ? 'compare' : `${s.method} ${s.path}`));
+    const opened = order.indexOf(`POST /repos/${FACTORY.repo}/pulls`);
+    expect(opened).toBeGreaterThan(order.indexOf(`PATCH /repos/${FACTORY.repo}/git/refs/heads/deploy/local`));
+    expect(order.indexOf('compare')).toBeGreaterThan(opened);
+  });
+
+  it('moves the pull request at once when the read fails, and lists them on a later pass', async () => {
+    const older = 'chore(deploy): run the factory aaaaaaa on the local cluster';
+    const gh = github(FACTORY, {
+      failCompare: true,
+      pulls: [{ number: 69, title: older, state: 'open', merged_at: null, labels: label }],
+    });
+    const pass = watch(gh, FACTORY);
+    await pass();
+    expect(updates(gh.sent)).toHaveLength(1);
+    expect(retitle(gh.sent)?.body).toMatchObject({ title });
+    gh.compares();
+    await pass();
+    expect(bringsIn(updates(gh.sent).at(-1)?.body.body)).toBe(true);
+  });
+
+  it('says what the others bring by name when a pin has no range, and nothing for the deploy as a whole', () => {
+    const read: Brings = { pins: [CONSOLE_PIN], unranged: [FACTORY_PINS], commits: [], count: 0, whole: true };
+    expect(bringsSection(FACTORY, read)).toContain(
+      'Nothing merged since the commit pinned for console.\n\nWhat the factory brings is not listed',
+    );
+    expect(bringsSection(FACTORY, read)).not.toContain('It brings');
   });
 });
 
@@ -1195,6 +1245,7 @@ describe('the list of pull requests', () => {
   const brought = (message: string, reaches: Pin[] = [APP_PIN], sha = commit('b')) => ({ sha, message, reaches });
   const one = (commits: Brings['commits'], extra: Partial<Brings> = {}): Brings => ({
     pins: [APP_PIN],
+    unranged: [],
     commits,
     count: commits.length,
     whole: true,

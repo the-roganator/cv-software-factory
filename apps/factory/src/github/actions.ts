@@ -244,7 +244,6 @@ const CREATE_COMMIT = `mutation($input: CreateCommitOnBranchInput!) {
 }`;
 
 /** What describing a deploy needs to know of its pull request. */
-const PULL_BODY = z.object({ body: z.string().nullable() });
 const DEPLOY_PULL = z.object({
   state: z.string(),
   title: z.string(),
@@ -418,7 +417,11 @@ export class LiveActions implements Actions {
       await this.#guard.check(repo, number, 'updatePullRequest');
       if (keepCarries && change.body !== undefined) {
         // Read in its turn, so a description written since the new body was made is not written over.
-        const { body } = await this.#github.read(repo, `/repos/${repo}/pulls/${number}`, PULL_BODY);
+        const { body } = await this.#github.read(
+          repo,
+          `/repos/${repo}/pulls/${number}`,
+          DEPLOY_PULL.pick({ body: true }),
+        );
         const carries = carriesIn(body);
         if (carries) change.body = withCarries(change.body, carries);
       }
@@ -832,7 +835,11 @@ export class DryRunActions implements Actions {
   }
 
   // A dry run's deploy pull requests have no body to read: what it records is the body the watch made.
-  async updatePullRequest(repo: string, number: number, { keepCarries, ...change }: PullRequestChange): Promise<void> {
+  async updatePullRequest(
+    repo: string,
+    number: number,
+    { keepCarries: _, ...change }: PullRequestChange,
+  ): Promise<void> {
     await this.#guarded(repo, number, 'updatePullRequest');
     await this.#record('updatePullRequest', repo, { number, ...change });
   }

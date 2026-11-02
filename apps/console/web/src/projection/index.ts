@@ -200,16 +200,22 @@ export function fold(seen: readonly PublicEvent[]): Fold {
 /** The last fold of each list of events, kept as long as the list is. */
 const folds = new WeakMap<readonly PublicEvent[], Fold>();
 
-/** The same events, in the same order: one array filtered twice at two times that cut it in the same place. */
-const same = (a: readonly PublicEvent[], b: readonly PublicEvent[]) =>
-  a.length === b.length && a.every((event, i) => event === b[i]);
+/** How many of the events had happened by t. */
+const countUpTo = (events: readonly PublicEvent[], t: number) => {
+  let n = 0;
+  for (const event of events) if (Date.parse(event.ts) <= t) n++;
+  return n;
+};
 
-/** The fold of the events by t: the last one made of these events, while t cuts them the same, or a new one. */
+/**
+ * The fold of the events by t: the last one made of these events, while t cuts them the same, or a new one. The events
+ * by one time hold those by any earlier one, so as many of them as the kept fold read are the same ones, and none is
+ * copied to find that out. An event added to the same array is one more.
+ */
 export function foldAt(events: readonly PublicEvent[], t: number): Fold {
-  const seen = upTo(events, t);
   const kept = folds.get(events);
-  if (kept && same(kept.seen, seen)) return kept;
-  const made = fold(seen);
+  if (kept && kept.seen.length === countUpTo(events, t)) return kept;
+  const made = fold(upTo(events, t));
   folds.set(events, made);
   return made;
 }
@@ -232,19 +238,16 @@ export function viewAt(folded: Fold, t: number): View {
   const { items, header: line } = folded;
   const sent = returnsWithin(folded.returns, t);
   const shipped = releasesAt(folded.releases, t);
-  const stations = STAGES.map((stage) => station(stage, items, sent, line, t, shipped));
+  const atStages = STAGES.map((stage) => ({ stage, at: station(stage, items, sent, line, t, shipped) }));
   const shown: View = {
     t,
     sample: folded.sample,
     header: line,
     score: folded.score,
-    stations,
+    stations: atStages.map(({ at }) => at),
     returns: drawn(sent, items),
     panels: Object.fromEntries(
-      STAGES.map((stage, i) => [
-        stage,
-        panel(stage, items, sent, folded.seen, line, t, shipped, stations[i] ?? { status: 'idle' }),
-      ]),
+      atStages.map(({ stage, at }) => [stage, panel(stage, items, sent, folded.seen, line, t, shipped, at)]),
     ) as Record<Stage, StagePanel>,
     canary: canaryView(shipped),
     cards: items.map((item, i) => folded.closed[i] ?? card(item, folded.versions, t)),

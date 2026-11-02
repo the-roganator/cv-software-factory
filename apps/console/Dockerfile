@@ -4,8 +4,8 @@
 #     docker build --file apps/console/Dockerfile --build-arg GIT_COMMIT=$(git rev-parse HEAD) .
 #
 # The browser code is built in one stage and the server's production dependencies installed in another; the
-# runtime image takes the output of both, then the server's code, and keeps the repository's layout, so the server finds its files
-# where it does in development. The migration Job runs this image too.
+# runtime image takes the output of both, then the server's code, and keeps the repository's layout, so the server
+# finds its files where it does in development. The migration Job runs this image too.
 
 FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS base
 WORKDIR /repo
@@ -38,8 +38,8 @@ COPY docs/design/system/mark/icon.svg docs/design/system/mark/
 ARG GIT_COMMIT=unknown
 RUN GIT_COMMIT=$GIT_COMMIT pnpm --filter @software-factory/console build
 
-# The server's production dependencies, made readable by the unprivileged runtime user and by nobody's writes in the
-# same layer, so a change to the code alone writes none of them again.
+# The server's production dependencies, readable by the unprivileged runtime user and writable by root alone, set in
+# the layer that installs them, so a change to the code alone writes none of them again.
 FROM base AS deps
 RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/console... \
   && chmod -R a+rX,go-w /repo

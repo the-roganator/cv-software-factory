@@ -19,8 +19,8 @@
 
 FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea AS playwright
 
-# The production dependencies, made readable by the unprivileged runtime user and by nobody's writes in the same
-# layer, so a change to the code alone writes none of them again.
+# The production dependencies, readable by the unprivileged runtime user and writable by root alone, set in the layer
+# that installs them, so a change to the code alone writes none of them again.
 FROM playwright AS deps
 WORKDIR /repo
 # pnpm at the version (and hash) pinned in package.json's packageManager field.

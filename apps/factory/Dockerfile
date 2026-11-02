@@ -18,8 +18,8 @@ COPY packages/events/package.json packages/events/
 COPY packages/store/package.json packages/store/
 COPY packages/triage/package.json packages/triage/
 
-# The production dependencies, made readable by the unprivileged runtime user and by nobody's writes in the same
-# layer, so a change to the code alone writes none of them again.
+# The production dependencies, readable by the unprivileged runtime user and writable by root alone, set in the layer
+# that installs them, so a change to the code alone writes none of them again.
 FROM base AS deps
 # No lifecycle scripts: the only one is the repository's own, which installs git hooks.
 RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/factory... \

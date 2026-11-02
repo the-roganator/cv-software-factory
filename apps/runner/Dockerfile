@@ -26,8 +26,8 @@ COPY --from=release /opt/pnpm /opt/pnpm
 RUN ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm
 ENV npm_config_manage_package_manager_versions=false
 
-# The Agent SDK and the runner's other production dependencies, made readable by the unprivileged runtime user and by
-# nobody's writes in the same layer, so a change to the code alone writes none of them again.
+# The Agent SDK and the runner's other production dependencies, readable by the unprivileged runtime user and
+# writable by root alone, set in the layer that installs them, so a change to the code alone writes none of them again.
 FROM node AS deps
 WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./

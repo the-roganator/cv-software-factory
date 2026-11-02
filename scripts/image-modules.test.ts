@@ -20,7 +20,8 @@ interface Image {
   dockerfile: string;
   /**
    * The stages whose copies the runtime holds: its own, those it copies `/repo` from whole, and the stages they are
-   * built from. A stage it takes only a built output from (the console's `web`, for its `dist`) is not one.
+   * built from that copy into `/repo`. A stage it takes only a built output from (the console's `web`, for its `dist`)
+   * is not one.
    */
   stages: string[];
   /** What the image runs: its command, and any other a Job runs it with. */
@@ -50,6 +51,14 @@ const IMAGES: Record<string, Image> = {
     hostOnly: ['apps/runner/src/agent.ts', 'apps/runner/src/prepare.ts', 'apps/factory/src/guardrails/command.ts'],
     // The line's worker, which `factory line serve` imports only once it runs.
     reaches: ['apps/factory/src/line/worker.ts', 'packages/events/src/schemas.ts'],
+  },
+  // The probes and the crawler, from the same CLI on the Playwright image, with the factory image's code copied again.
+  browser: {
+    dockerfile: 'apps/factory/Dockerfile.browser',
+    stages: ['deps', 'runtime'],
+    entries: ['apps/factory/src/cli.ts', 'apps/factory/src/telemetry.ts'],
+    hostOnly: ['apps/runner/src/agent.ts', 'apps/runner/src/prepare.ts', 'apps/factory/src/guardrails/command.ts'],
+    reaches: ['apps/factory/src/commands/probes.ts', 'apps/factory/src/commands/crawler.ts'],
   },
   runner: {
     dockerfile: 'apps/runner/Dockerfile',

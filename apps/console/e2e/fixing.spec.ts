@@ -230,27 +230,31 @@ test.describe('tool marks', () => {
     await expect(ran).toContainText('Kubernetes pod of its own in the runners namespace');
   });
 
-  test('a hold that ends elsewhere heads its answers with the way there, a pull request marked as GitHub’s', async ({
+  test('a hold that ends elsewhere heads its answers with the way there, and a sample’s pull request links nowhere', async ({
     page,
   }) => {
     await page.goto(consoleUrl({}));
     await ready(page);
     const card = (workItem: string) =>
       page.locator('article.needs .need').filter({ has: page.getByText(`#${workItem} ·`, { exact: false }) });
-    // A merge and a deploy, on GitHub: the link comes first, before the answers that send it back or close it.
+    // A sample's merge and deploy: their pull requests never existed, so the way comes first, named and dashed, with
+    // why beside it, and neither links to GitHub nor carries its mark, as the sheet's facts do not.
     for (const [workItem, name] of [
-      ['1311', 'Merge #1312 on GitHub'],
-      ['1321', 'Deploy #1331 on GitHub'],
+      ['1311', 'Merge #1312'],
+      ['1321', 'Deploy #1331'],
     ] as const) {
       const answers = card(workItem).locator('.answers');
-      const way = answers.getByRole('link', { name });
-      await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
-      await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
-      await expect(way.locator('.toolmark-github')).toBeVisible();
+      await expect(answers.locator('.way').first()).toHaveText(name);
+      await expect(answers.locator('.answer').first().locator('.way.nowhere')).toBeVisible();
+      await expect(answers).toContainText('A sample’s pull request, which never existed, so it links nowhere.');
+      await expect(answers.getByRole('link')).toHaveCount(0);
+      await expect(answers.locator('.toolmark')).toHaveCount(0);
     }
-    // A spend cap's way is the console's own settings: no mark.
-    const raise = card('1319').getByRole('link', { name: 'Raise the cap in the settings' });
-    await expect(raise).toHaveClass(/\bway\b/);
+    // A spend cap's way is the console's own settings: a link, first, with no mark.
+    const answers = card('1319').locator('.answers');
+    const raise = answers.getByRole('link', { name: 'Raise the cap in the settings' });
+    await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
+    await expect(raise).toHaveAttribute('href', '?view=settings');
     await expect(raise.locator('.toolmark')).toHaveCount(0);
   });
 });

@@ -64,9 +64,10 @@ export interface Need {
   evidence: Evidence;
   /**
    * The way the hold ends, which the card offers first: the pull request to merge, on GitHub (`github`, so the card
-   * marks it as GitHub's), or the settings to raise a cap.
+   * marks it as GitHub's), or the settings to raise a cap. A sample's pull request never existed, so it has no `href`
+   * and is not GitHub's: the card names it and links nowhere, as the sheet's facts do.
    */
-  link: { href: string; label: string; github: boolean } | undefined;
+  link: { href: string | undefined; label: string; github: boolean } | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
@@ -323,19 +324,17 @@ function deployEvidence(item: ItemState): string {
   return `${at} ${deployWords(item.deploy).evidence}`;
 }
 
-/** The pull request a merge or a deploy waits for, on GitHub; the settings for a spend cap. */
+/**
+ * The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed; the
+ * settings for a spend cap.
+ */
 function linkOf(item: ItemState, cause: HoldCause): Need['link'] {
-  if (cause === 'merge' && item.pullRequest !== undefined) {
-    return {
-      href: `${APP_REPO}/pull/${item.pullRequest}`,
-      label: `Merge #${item.pullRequest} on GitHub`,
-      github: true,
-    };
-  }
-  if (cause === 'deploy' && item.deploy) {
-    const n = item.deploy.pullRequest;
-    return { href: `${APP_REPO}/pull/${n}`, label: `Deploy #${n} on GitHub`, github: true };
-  }
+  const pull = (verb: string, n: number): Need['link'] =>
+    item.sample
+      ? { href: undefined, label: `${verb} #${n}`, github: false }
+      : { href: `${APP_REPO}/pull/${n}`, label: `${verb} #${n} on GitHub`, github: true };
+  if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
+  if (cause === 'deploy' && item.deploy) return pull('Deploy', item.deploy.pullRequest);
   if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings', github: false };
   return undefined;
 }

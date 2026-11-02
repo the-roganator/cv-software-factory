@@ -76,10 +76,19 @@ function Evidence({ need }: { need: Need }) {
 
 /**
  * The way the hold ends, first among the answers: the pull request to merge, marked as GitHub's, or the settings to
- * raise a cap. A link, as it opens a page, drawn as the buttons beside it are, in the text's weight.
+ * raise a cap. A link, as it opens a page, drawn as the buttons beside it are, in the text's weight. A sample's pull
+ * request never existed: it keeps the row, dashed as what can't be taken, named without GitHub, and says why.
  */
 function WayForward({ link }: { link: Need['link'] }) {
   if (!link) return null;
+  if (link.href === undefined) {
+    return (
+      <div className="answer">
+        <span className="btn small way nowhere">{link.label}</span>
+        <p className="why">A sample’s pull request, which never existed, so it links nowhere.</p>
+      </div>
+    );
+  }
   return (
     <a className="btn small way" href={link.href}>
       {link.github && <ToolMark name="github" />}

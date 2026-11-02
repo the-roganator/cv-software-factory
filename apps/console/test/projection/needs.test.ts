@@ -290,8 +290,9 @@ describe('Needs you', () => {
   });
 
   it('says what a deploy waits for in each state, links its pull request, and says it waits for Martin once its checks pass', () => {
+    // Not a sample's: its deploy pull request is GitHub's, and the card links it.
     const merged = work('2042', START)
-      .open()
+      .add(0, 'work-item.opened', 'factory', { kind: 'defect-fix', title: 'Item 2042', sample: false })
       .add(1, 'pull-request.merged', 'martin', { number: 9, commit: 'b'.repeat(40), by: 'martin' })
       .add(1, 'hold.started', 'factory', hold('deploy', { stage: 'release', kind: 'approval' }));
     const at = (t: number) => {
@@ -380,9 +381,13 @@ describe('Needs you', () => {
     ]);
     const merge = needs.holds.find((need) => need.cause === 'merge');
     expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'rejected']);
-    expect(merge?.link?.href).toMatch(/\/pull\/\d+$/);
-    // A pull request is GitHub's, and the card marks it so; the settings are the console's own.
-    expect(merge?.link?.github).toBe(true);
+    // A sample's pull request never existed: the card names it, not as GitHub's, and links nowhere, as the sheet does.
+    expect(merge?.link).toEqual({ href: undefined, label: 'Merge #1312', github: false });
+    expect(needs.holds.find((need) => need.cause === 'deploy')?.link).toEqual({
+      href: undefined,
+      label: 'Deploy #1331',
+      github: false,
+    });
     expect(needs.holds.find((need) => need.cause === 'spend')?.link).toEqual({
       href: '?view=settings',
       label: 'Raise the cap in the settings',

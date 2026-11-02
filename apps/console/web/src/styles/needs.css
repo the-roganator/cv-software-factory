@@ -93,6 +93,17 @@
   color: var(--text);
   text-decoration: underline;
 }
+/* A sample's pull request, which never existed: the same row, dashed and muted as what can't be taken, with why. */
+.answers .way.nowhere {
+  grid-column: auto;
+  border-style: dashed;
+  border-color: var(--line-strong);
+  color: var(--text-muted);
+  cursor: default;
+}
+.answers .way.nowhere:hover {
+  text-decoration: none;
+}
 /* Abort of a canary paused for Martin: outlined in the alarm colour, never filled, as no answer is suggested. */
 .answers .btn.attn-line {
   border-color: var(--attn-line);

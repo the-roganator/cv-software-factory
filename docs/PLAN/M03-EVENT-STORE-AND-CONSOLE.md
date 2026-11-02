@@ -117,7 +117,7 @@ Martin reviews in slices as they land: the line first, then a card, then the she
 
 Playwright runs every check against the production build, fed from the sample files with no Postgres behind it:
 
-- **Accessibility:** axe finds nothing on any view, in both themes, at all three widths, with motion off, and a work item's sheet with motion on as well, as its Replay button is enabled only then.
+- **Accessibility:** axe finds nothing on any view, in both themes, at all three widths, with motion off, but for a work item's sheet, scanned with motion on, as its Replay button is enabled only then.
 - **Safe by mechanism:** a listener fails the test on any content security policy violation, and on any request to another origin.
 - **Visual regression:**
   - each station kind in each state, in both themes (96 images);

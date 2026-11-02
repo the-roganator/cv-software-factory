@@ -2,8 +2,9 @@
  * The slider's confirmation (`Flags.tsx`), from a stop, a drag or a flag's card, in Controls, Needs you or a work
  * item's sheet. Only Martin opens one, so its code arrives when he first does.
  */
+
+import { SHARES } from '@software-factory/policy/flags';
 import { useEffect, useId, useRef, useState } from 'react';
-import { SHARES } from '../../../../../policy/flags.ts';
 import { FLAG_STEP_UP } from '../access.ts';
 import { type Answer, said, write } from '../admin.ts';
 import {

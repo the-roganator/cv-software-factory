@@ -20,6 +20,7 @@
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
+import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
 import { type Admin, said, write } from '../admin.ts';
 import { clock, inWords, shortVersion } from '../format.ts';
@@ -34,7 +35,6 @@ import {
   type Need,
   type NeedsView,
   STAGE_NAME,
-  stageName,
 } from '../projection/index.ts';
 import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
@@ -186,7 +186,7 @@ function Kick({ need }: { need: Need }) {
     <div className="kick">
       <b>{need.kicker}</b>
       <span>
-        #{need.workItem} · {stageName(need.stage)} · {need.waited}
+        #{need.workItem} · {STATION_NAME[need.stage]} · {need.waited}
       </span>
     </div>
   );
@@ -476,7 +476,7 @@ function FlagCard({
   );
 }
 
-export interface NeedsYouProps {
+interface NeedsYouProps {
   needs: NeedsView;
   flags: FlagsView;
   admin: Admin;

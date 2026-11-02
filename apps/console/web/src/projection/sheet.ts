@@ -9,12 +9,11 @@ import type {
   PublicEvent,
   Screenshot,
   Sense,
-  SignalSource,
   SymptomClass,
 } from '@software-factory/events';
 import { clearedOnWords, knownInScope, LIMITS, SENSES } from '@software-factory/events';
 import { FLAG_STEP_UP } from '../access.ts';
-import { clock, shortVersion } from '../format.ts';
+import { clock, listed, plural, shortVersion } from '../format.ts';
 import {
   type Attempt,
   attempts,
@@ -25,22 +24,13 @@ import {
   startsPass,
   type ThreadReview,
 } from './fixing.ts';
-import {
-  type Checked,
-  type Compared,
-  checkedOf,
-  type FlagNeed,
-  type FlagRow,
-  type Stage as FlagStage,
-  fromVerify,
-  itemFlag,
-  STAGE_NAME,
-} from './flags.ts';
-import { type Capture, clearanceWords, type Hold, type ItemState, summaryOf } from './items.ts';
+import { checkedOf, type FlagBlock, type FlagNeed, type FlagRow, fromVerify, itemFlag, STAGE_NAME } from './flags.ts';
+import { type Capture, clearanceWords, endsRelease, type Hold, type ItemState, summaryOf } from './items.ts';
 import type { CanaryNeed, Need } from './needs.ts';
 import { bySense, type Card, card, type Picture, picture, pictureOfSignal } from './reel.ts';
-import { endedWords, type Release, releases, type StoppedBy, stoppedBy } from './release.ts';
+import { endedAt, type Release, releases, type StoppedBy, stoppedBy } from './release.ts';
 import { reportText } from './report.ts';
+import { SENSE } from './senses.ts';
 
 export interface Chapter {
   label: string;
@@ -88,7 +78,7 @@ export interface GateRow {
 }
 
 /** One path the spec lets the coder change, or one changed outside it. */
-export interface ScopeRow {
+interface ScopeRow {
   path: string;
   /** The lines added and removed there; nothing when it is untouched. */
   added: number | undefined;
@@ -101,7 +91,7 @@ export interface ScopeRow {
  * What the scope's rows measure: the pull request's whole change, every round together, or the coder's last patch
  * when the fence refused it since. Nothing before the coder has handed anything back.
  */
-export type ScopeOf = { pullRequest: number } | { refused: number } | undefined;
+type ScopeOf = { pullRequest: number } | { refused: number } | undefined;
 
 /** What the work item waits for now, under its rounds. */
 export interface After {
@@ -109,7 +99,7 @@ export interface After {
   text: string;
 }
 
-export interface PageComparison {
+interface PageComparison {
   page: string;
   screenshot: Screenshot | undefined;
   changed: number;
@@ -165,39 +155,11 @@ export interface Sighting {
 }
 
 /** One sense's evidence, the first time it saw the problem. */
-export interface SenseEvidence {
+interface SenseEvidence {
   sense: Sense;
   at: number;
   picture: Picture;
 }
-
-/**
- * One block of an improvement's flag on its sheet: its release, with the flag off, and then each move Martin made of it,
- * with Verify's check at Checks and Preview, and its comparison at Share.
- */
-export type FlagBlock =
-  | { kind: 'released'; at: number; version: string; release: string }
-  | {
-      kind: 'staged';
-      at: number;
-      stage: FlagStage;
-      from: FlagStage | null;
-      /** Martin widened it, narrowed it, turned it off, or turned it back on. */
-      action: PayloadOf<'flag.staged'>['action'];
-      /** Whether his passkey was given for it: every widening past Checks. */
-      passkey: boolean;
-      reason: string | undefined;
-      /** Flags set by hand outside every stage that the write dropped, and so turned off. */
-      dropped: string[];
-      /** The move the flag stands at now. */
-      current: boolean;
-      /** The revision the move wrote, which Verify's judgement of it names. */
-      revision: string;
-      /** At Share, Verify's comparison there, if it has judged. */
-      compared: Compared | undefined;
-      /** At Checks or Preview, Verify's check there with the probes, if it has run. */
-      checked: Checked | undefined;
-    };
 
 /** An improvement's flag on its sheet, in place of Release and Verify: the slider, read-only, and a block per move. */
 export interface FlagSheet {
@@ -279,16 +241,6 @@ export interface Sheet {
   earlier: string[];
 }
 
-const SENSE: Record<SignalSource, string> = {
-  probe: 'Probe',
-  crawler: 'Crawler',
-  metrics: 'Metrics',
-  logs: 'Logs',
-  canary: 'Canary',
-  report: 'Visitor report',
-  planner: 'Planner',
-};
-
 /** Who or what noticed the work, in a few words. */
 function foundBy(item: ItemState): string {
   const signal = item.events.find((event) => event.type === 'signal.received');
@@ -296,22 +248,12 @@ function foundBy(item: ItemState): string {
   if (item.openedBy === 'dependabot') return 'Dependabot';
   if (item.kind === 'red-team') return 'Red-team harness';
   if (signal?.type === 'signal.received') {
-    return signal.payload.sense === 'report'
-      ? SENSE.report
-      : `${SENSE[signal.payload.sense]} · ${signal.payload.check}`;
+    const { sense, check } = signal.payload;
+    if (sense === 'report') return 'Visitor report';
+    return `${sense === 'planner' ? 'Planner' : SENSE[sense].name} · ${check}`;
   }
   return 'The factory';
 }
-
-/** Whose check it was, as the closing sentence says it. */
-const CHECK_OF: Record<Sense, string> = {
-  probe: 'the probe’s check',
-  crawler: 'the crawler’s check',
-  metrics: 'the metrics’ check',
-  logs: 'the log watcher’s check',
-  canary: 'the canary’s check',
-  report: 'the check',
-};
 
 /**
  * How a closed work item closed, in a sentence to end its story: verified on which version by which check, closed by
@@ -340,7 +282,7 @@ function closing(item: ItemState): string | undefined {
     if (verification?.type === 'signal.rechecked' && verification.payload.outcome === 'cleared' && !answered) {
       const { sense, check, version } = verification.payload;
       const on = version ? ` on ${shortVersion(version)}` : '';
-      return `It was verified${on} by ${sense ? CHECK_OF[sense] : 'the check'} “${check}”, on ${clearedOnWords(verification.payload)}, and closed.`;
+      return `It was verified${on} by ${sense ? SENSE[sense].check : 'the check'} “${check}”, on ${clearedOnWords(verification.payload)}, and closed.`;
     }
     const held = after.slice(last + 1).some((event) => event.type === 'hold.started');
     if (verification?.type !== 'verification.finished' || verification.payload.outcome !== 'cleared' || held) {
@@ -349,7 +291,7 @@ function closing(item: ItemState): string | undefined {
     const { dryRun, sense, check, version } = verification.payload;
     if (dryRun) return 'It closed on the dry run’s word: its release never shipped, so no sense looked.';
     const on = version ? ` on ${shortVersion(version)}` : '';
-    return `It was verified${on} by ${sense ? CHECK_OF[sense] : 'the check'} “${check}”, and closed.`;
+    return `It was verified${on} by ${sense ? SENSE[sense].check : 'the check'} “${check}”, and closed.`;
   }
   // Martin's reason for turning its flag off, which the close gives.
   if (close.payload.outcome === 'turned-off') {
@@ -579,7 +521,7 @@ function agents(item: ItemState): AgentRow[] {
         cost: 0,
       };
       if (!asked.has(event.payload.questionSet)) asked.set(event.payload.questionSet, event.payload.answers.length);
-      row.details = [...asked].map(([set, n]) => `${set} · ${n} ${n === 1 ? 'question' : 'questions'}`);
+      row.details = [...asked].map(([set, n]) => `${set} · ${plural(n, 'question')}`);
       row.calls += 1;
       row.cost += event.payload.costUsd;
       rows.set(key, row);
@@ -708,7 +650,7 @@ function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean
 /** How each sense is named in a sighting. */
 const SENSE_ADDED: Record<string, (evidence: NonNullable<PayloadOf<'signal.received'>['evidence']>[number]) => string> =
   {
-    logs: (e) => (e.kind === 'logs' ? `${e.lines.length} log ${e.lines.length === 1 ? 'line' : 'lines'}` : ''),
+    logs: (e) => (e.kind === 'logs' ? plural(e.lines.length, 'log line') : ''),
     metric: () => 'its series',
     http: (e) => (e.kind === 'http' ? `${e.method} ${e.url}, answered ${e.status ?? 'nothing'}` : ''),
     console: (e) => (e.kind === 'console' ? `${e.messages.length} console messages` : ''),
@@ -832,12 +774,7 @@ const where = (route: string) => (route === '*' ? 'every page' : route);
 
 /** A release's events, which the scrubber draws as one chapter for each release. */
 const releaseOf = (event: PublicEvent) =>
-  event.type === 'release.started' ||
-  event.type === 'canary.stepped' ||
-  event.type === 'release.promoted' ||
-  event.type === 'release.rolled-back' ||
-  event.type === 'release.errored' ||
-  event.type === 'release.aborted'
+  event.type === 'release.started' || event.type === 'canary.stepped' || endsRelease(event)
     ? event.payload.release
     : undefined;
 
@@ -854,29 +791,15 @@ function releaseChapter(r: Release): { label: string; tone: Chapter['tone']; tex
     end?.kind === 'promoted'
       ? ['PROMOTED', 'ok', `${v} promoted to all traffic${passed.length ? `, after ${listed(passed)} passed` : ''}`]
       : end?.kind === 'rolled-back'
-        ? ['ROLLED BACK', 'attn', `${v} rolled back at ${end.weight}%`]
+        ? ['ROLLED BACK', 'attn', `${v} ${endedAt(end)}`]
         : end && by
-          ? [CHAPTERS[by], 'attn', `${v} ${endedWords(end)} at ${end.weight}%`]
+          ? [CHAPTERS[by], 'attn', `${v} ${endedAt(end)}`]
           : ['CANARY', 'signal', `${v} on the canary at ${r.weight}%`];
   return r.dryRun ? { label, tone: 'faint', text: `${text}, in a dry run` } : { label, tone, text };
 }
 
-/** A list in words: "a, b and c". */
-const listed = (words: readonly string[]) =>
-  words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : (words[0] ?? '');
-
 /** The senses that look at no page, so that nothing on one is their finding. */
 const PAGELESS = new Set<string | undefined>(['logs', 'metrics', 'canary']);
-
-/** The sense's own name, as the Verify block says it. */
-export const SENSE_NAME: Record<Sense, string> = {
-  probe: 'the probe',
-  crawler: 'the crawler',
-  metrics: 'the metrics',
-  logs: 'the log watcher',
-  canary: 'the canary',
-  report: 'a report',
-};
 
 /**
  * What the Verify block says under its pages: the pages left out, and whose marks they carry, or that the sense looks
@@ -884,10 +807,10 @@ export const SENSE_NAME: Record<Sense, string> = {
  */
 export function marksNote(v: Verified): string {
   const more = v.more.count
-    ? `And ${v.more.count} more ${v.more.count === 1 ? 'page' : 'pages'}${v.more.same ? ', the same to the pixel' : ''}. `
+    ? `And ${plural(v.more.count, 'more page')}${v.more.same ? ', the same to the pixel' : ''}. `
     : '';
   if (!v.marked)
-    return `${more}No marks: ${v.sense ? SENSE_NAME[v.sense] : 'the sense'} looks at no page, so nothing on one is its finding.`;
+    return `${more}No marks: ${v.sense ? SENSE[v.sense].the : 'the sense'} looks at no page, so nothing on one is its finding.`;
   return v.pages.some((page) => page.screenshot?.boxes.length)
     ? `${more}The mark is the sense’s own check, on its own page.`
     : more.trim();

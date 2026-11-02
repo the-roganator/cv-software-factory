@@ -53,7 +53,7 @@ interface Page {
 }
 
 /** The bird itself: where it is, what it is doing, and what waits for it to land. */
-export class Flyer {
+class Flyer {
   readonly #layer: HTMLElement;
   readonly #el: HTMLElement;
   readonly #page: Page;

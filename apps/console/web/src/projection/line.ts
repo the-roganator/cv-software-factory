@@ -4,13 +4,13 @@
  */
 import type { Autonomy, PayloadOf, PublicEvent, Sense, Stage } from '@software-factory/events';
 import { isSense, returnWords, SENSES, STAGES } from '@software-factory/events';
-import { DEFAULT_CONTROLS } from '../../../../../policy/line.ts';
-import { shortVersion, startOfDay } from '../format.ts';
-import { deployWords, endedSinceMerge } from './fixing.ts';
+import { DEFAULT_CONTROLS } from '@software-factory/policy/line';
+import { capital, lower, plural, shortVersion, startOfDay } from '../format.ts';
+import { deployCaption, endedSinceMerge } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
 import type { ItemState } from './items.ts';
 import { holdKicker } from './needs.ts';
-import { endedWords, inFlight, type Release, SIGNALLED, stopWait, stopWords } from './release.ts';
+import { endedAt, inFlight, type Release, SIGNALLED } from './release.ts';
 
 export type Status = 'idle' | 'working' | 'returning' | 'passing' | 'blocked' | 'failed';
 /** A person should look at a station that is still at work: an item in it failed, or waits on them. */
@@ -21,7 +21,7 @@ export const RETURNING_MS = 5 * 60_000;
 /** How long a stage reads "passed" after an item leaves it, with nothing else in it. */
 export const PASSING_MS = 15 * 60_000;
 /** How far back returns are kept: drawn one at a time while still true, and rows in their senders' panels. */
-export const RETURNS_MS = 24 * 3_600_000;
+const RETURNS_MS = 24 * 3_600_000;
 
 type Cap = 'day' | 'month';
 type ProviderCapped = Extract<PayloadOf<'spend.capped'>, { cap: 'provider' }>;
@@ -226,18 +226,16 @@ function leavers(items: readonly ItemState[], stage: Stage): { item: ItemState; 
   });
 }
 
-const NOUNS: Record<Stage, [one: string, many: string]> = {
-  sense: ['signal', 'signals'],
-  triage: ['signal', 'signals'],
-  plan: ['spec', 'specs'],
-  build: ['change', 'changes'],
-  gates: ['PR', 'PRs'],
-  review: ['PR', 'PRs'],
-  release: ['release', 'releases'],
-  verify: ['check', 'checks'],
+const NOUNS: Record<Stage, string> = {
+  sense: 'signal',
+  triage: 'signal',
+  plan: 'spec',
+  build: 'change',
+  gates: 'PR',
+  review: 'PR',
+  release: 'release',
+  verify: 'check',
 };
-
-const count = (n: number, [one, many]: [string, string]) => `${n} ${n === 1 ? one : many}`;
 
 /**
  * A station's state at t, by the first rule that matches (the design system's README, "From events to a station's
@@ -292,7 +290,7 @@ export function station(
     // A deploy not Martin's yet waits here as a held one would: counted, as a held one is, beside the canary's share.
     const deploys = queued.filter(deploying).length;
     figure = deploys ? `${share} · ${deploys} waiting` : share;
-  } else if (here.length) figure = count(here.length, NOUNS[stage]);
+  } else if (here.length) figure = plural(here.length, NOUNS[stage]);
   else if (queued.length) figure = `${queued.length} waiting`;
   else figure = today ? `${today} today` : 'none';
   return { stage, status, beacon, figure, queued: queued.length, cappedUntil: capped?.resets };
@@ -373,7 +371,7 @@ function noteOf(item: ItemState, stage: Stage, behind = false): string {
  * A kicker after "Needs you · ", in lower case but for the one that opens with a station's name: "held by a gate",
  * "Verify asks you". The line's tests hold that one to its capital.
  */
-const midSentence = (words: string) => (words.startsWith('Verify') ? words : words[0]?.toLowerCase() + words.slice(1));
+const midSentence = (words: string) => (words.startsWith('Verify') ? words : lower(words));
 
 /** Whether a work item waits on Martin where it is: a hold, or an improvement's flag waiting for him to widen it. */
 const waitsOnMartin = (item: ItemState) => item.hold !== undefined || item.outcome === 'needs-you';
@@ -386,7 +384,8 @@ function holdNote(item: ItemState, stage: Stage, behind: boolean): string {
   }
   // Held for a deploy that is not Martin's yet: what it waits for, and the deploy pull request by number.
   if (item.outcome === 'deploying') {
-    return `${endedSinceMerge(item) ? 'Rolled back' : 'Merged'} · ${deployWords(item.deploy).short}`;
+    const [done, waiting] = deployCaption(endedSinceMerge(item), item.deploy, false);
+    return `${capital(done)} · ${waiting}`;
   }
   if (item.queued) return item.stage === 'release' ? 'Merged · waiting for release' : 'Waiting for the planner';
   if (item.hold?.cause === 'merge') return 'Needs you · waiting for Martin’s merge';
@@ -394,9 +393,8 @@ function holdNote(item: ItemState, stage: Stage, behind: boolean): string {
   // stopped by an analysis error, or for Martin's retry of that release.
   if (item.hold?.cause === 'deploy') {
     const ended = endedSinceMerge(item);
-    if (!ended) return 'Needs you · waiting for Martin’s deploy';
-    if (!ended.stopped) return 'Needs you · rolled back, waiting for Martin’s retry or next deploy';
-    return `Needs you · ${stopWords(ended.stopped)}, ${stopWait(ended.stopped)}`;
+    const [done, waiting] = deployCaption(ended, item.deploy, true);
+    return `Needs you · ${ended ? `${done}, ` : ''}${waiting}`;
   }
   // Every other hold in its card's words, never the agent's own: those are on its sheet and its card.
   if (item.hold) return `Needs you · ${midSentence(holdKicker(item, item.hold))}`;
@@ -413,7 +411,7 @@ function holdNote(item: ItemState, stage: Stage, behind: boolean): string {
 }
 
 /** Where a return went, and why, as a row's note: "Sent back to Build · round 2 · 2 blocking". */
-const sentTo = (r: Return) => `Sent back to ${r.to[0]?.toUpperCase()}${r.to.slice(1)} · ${r.detail}`;
+const sentTo = (r: Return) => `Sent back to ${capital(r.to)} · ${r.detail}`;
 
 /** Returns kept in a row as earlier states: "sent back", or "sent back 2 times". */
 const sentBackWords = (n: number) => (n === 1 ? 'sent back' : `sent back ${n} times`);
@@ -543,11 +541,9 @@ function ownRow(r: Release): PanelRow {
     ? r.weight
       ? `canary at ${r.weight}%`
       : 'canary starting'
-    : end.kind === 'promoted'
-      ? 'promoted'
-      : end.kind !== 'rolled-back'
-        ? `${endedWords(end)} at ${end.weight}%`
-        : `rolled back at ${end.weight}%${end.ticket ? ` · ${SIGNALLED[end.ticket.how]} #${end.ticket.number}` : ''}`;
+    : end.kind === 'rolled-back'
+      ? `rolled back at ${end.weight}%${end.ticket ? ` · ${SIGNALLED[end.ticket.how]} #${end.ticket.number}` : ''}`
+      : endedAt(end);
   const tone = !end ? 'signal' : end.kind === 'promoted' ? 'faint' : 'attn';
   return {
     item: r.version,
@@ -567,7 +563,7 @@ function ownRow(r: Release): PanelRow {
  * ticket, or the first time a sense added its evidence to one), and the tickets each sense's signal opened. A sense
  * seeing an open ticket's problem again is counted by the inbox, which is not events, so not here.
  */
-export function senseCounts(items: readonly ItemState[], events: readonly PublicEvent[]): SenseCount[] {
+function senseCounts(items: readonly ItemState[], events: readonly PublicEvent[]): SenseCount[] {
   const counts = new Map<Sense, SenseCount>(
     SENSES.map((sense) => [
       sense,

@@ -12,12 +12,13 @@ import type {
   Stage,
 } from '@software-factory/events';
 import { isSense, STAGES } from '@software-factory/events';
+import { capital, startOfDay } from '../format.ts';
 import { waitPicture } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
-import { type Capture, type ItemState, type Outcome, summaryOf } from './items.ts';
+import { type Capture, type ItemState, type Outcome, ofType, stopsRelease, summaryOf } from './items.ts';
 import type { Release, StoppedBy } from './release.ts';
 
-export type Segment = 'passed' | 'skipped' | 'now' | 'queued' | 'stopped' | 'waiting' | 'closed' | 'none';
+type Segment = 'passed' | 'skipped' | 'now' | 'queued' | 'stopped' | 'waiting' | 'closed' | 'none';
 
 export type Tag = 'BEFORE' | 'BROKEN' | 'FIXED' | 'AFTER' | 'NOW' | 'SEEN';
 
@@ -262,7 +263,7 @@ export function segmentsLabel(list: readonly Segment[]): string {
   );
   if (at < 0) return list.every((s) => s === 'none') ? 'Not on the line yet' : 'Every stage passed';
   const stage = STAGES[at] as Stage;
-  const name = stage[0]?.toUpperCase() + stage.slice(1);
+  const name = capital(stage);
   return {
     now: `Now at ${name}`,
     queued: stage === 'plan' ? 'Waiting at Plan for the planner' : `Waiting at ${name}`,
@@ -273,9 +274,6 @@ export function segmentsLabel(list: readonly Segment[]): string {
 }
 
 const last = <T>(list: readonly T[], test: (value: T) => boolean) => [...list].reverse().find(test);
-
-const ofType = <K extends PublicEvent['type']>(item: ItemState, type: K) =>
-  item.events.filter((event): event is PublicEvent<K> => event.type === type);
 
 const MECHANISMS: Record<PayloadOf<'action.refused'>['mechanism'], string> = {
   'token-permission': 'Token permissions',
@@ -457,8 +455,7 @@ export function appVersion(events: readonly PublicEvent[], at: number): string |
     if (Date.parse(event.ts) > at) break;
     if ('dryRun' in event.payload && event.payload.dryRun) continue;
     if (event.type === 'release.promoted' || event.type === 'defect.injected') version = event.payload.version;
-    if (event.type === 'release.rolled-back' || event.type === 'release.errored' || event.type === 'release.aborted')
-      version = event.payload.restored;
+    if (stopsRelease(event)) version = event.payload.restored;
     if (event.type === 'release.started' && !version) version = event.payload.previous;
   }
   return version;
@@ -517,13 +514,6 @@ function flagOfCard(item: ItemState): Card['flag'] {
 const ending = (r: Release | undefined) => r?.end ?? r?.retried.at(-1);
 const endAt = (r: Release | undefined) => ending(r)?.at ?? 0;
 
-/** Days are told apart by where the viewer is: a new day starts at their midnight. */
-const dayOf = (at: number) => {
-  const day = new Date(at);
-  day.setHours(0, 0, 0, 0);
-  return day.getTime();
-};
-
 /**
  * The timeline: a card's width between work items, half one more between days, and a release marked under no card
  * takes a card's place without a card, so its version sits between the work items either side of it in time.
@@ -562,7 +552,7 @@ export function timeline(cards: readonly Card[], shipped: readonly Release[]): T
   // Days only go forwards: a card that started before a release placed ahead of it is drawn on the release's day.
   const days: { unit: number; day: number }[] = [];
   const units = entries.map((entry, i) => {
-    const day = Math.max(dayOf(entry.at), days.at(-1)?.day ?? 0);
+    const day = Math.max(startOfDay(entry.at), days.at(-1)?.day ?? 0);
     if (days.at(-1)?.day !== day) days.push({ unit: i + days.length * 0.5, day });
     return i + (days.length - 1) * 0.5;
   });

@@ -15,6 +15,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/console/package.json apps/console/
 COPY packages/events/package.json packages/events/
 COPY packages/store/package.json packages/store/
+# The rules of the line, a package the browser code imports by name.
+COPY policy/package.json policy/
 
 # The browser code, built by Vite into apps/console/dist.
 FROM base AS web

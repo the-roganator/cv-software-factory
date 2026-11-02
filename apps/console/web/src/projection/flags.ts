@@ -1,7 +1,7 @@
 /**
- * The feature flags, as everyone sees them (milestone 7, task 16): each flag an improvement ships behind, the stage
- * Martin set it at, and what each stop of its slider would take now, judged by the rules the admin service refuses a
- * move by (`policy/flag-moves.ts`), so the console says why a stop can't be taken in the service's own words.
+ * The feature flags, as everyone sees them: each flag an improvement ships behind, the stage Martin set it at, and what
+ * each stop of its slider would take now, judged by the rules the admin service refuses a move by
+ * (`policy/flag-moves.ts`), so the console says why a stop can't be taken in the service's own words.
  *
  * A flag's stage is read from Martin's `flag.staged` events, as the admin service records each move, Verify's
  * `flag.compared` at Share and its `flag.checked` at Checks and Preview; which flag is whose, from the latest spec of
@@ -24,17 +24,18 @@ import {
   type Move,
   movesOf,
   sameStage,
+  stageWords,
   turnedOffFromEveryone,
-} from '../../../../../policy/flag-moves.ts';
-import { type Share, STAGES, type Stage, type StageName } from '../../../../../policy/flags.ts';
-import { controlsInForce } from '../../../../../policy/line.ts';
-import { shortVersion } from '../format.ts';
+} from '@software-factory/policy/flag-moves';
+import { type Share, STAGES, type Stage, type StageName } from '@software-factory/policy/flags';
+import { controlsInForce } from '@software-factory/policy/line';
+import { clock, percent, shortVersion } from '../format.ts';
 import type { ItemState } from './items.ts';
 import { waited } from './needs.ts';
-import { inFlight, type Release } from './release.ts';
+import { inFlight, type Release, type Tone } from './release.ts';
 
-export type { Check, Comparison, Move } from '../../../../../policy/flag-moves.ts';
-export type { Share, Stage, StageName } from '../../../../../policy/flags.ts';
+export type { Check, Comparison, Move } from '@software-factory/policy/flag-moves';
+export type { Share, Stage, StageName } from '@software-factory/policy/flags';
 
 /** A stage's name, as the console says it everywhere. */
 export const STAGE_NAME: Record<StageName, string> = {
@@ -169,7 +170,7 @@ export interface FlagsView {
 }
 
 /** The flag an improvement's latest spec names, if it is one. */
-export function specFlag(item: ItemState): string | undefined {
+function specFlag(item: ItemState): string | undefined {
   return improvementSpec(item)?.flag;
 }
 
@@ -390,14 +391,14 @@ function nextOf(row: FlagRow): Stage {
   return stageAt(next, row.stage.stage === 'share' ? row.share : 50);
 }
 
-const percentOf = (rate: number | null) => (rate === null ? 'none' : `${(rate * 100).toFixed(2)}%`);
+const percentOf = (rate: number | null) => (rate === null ? 'none' : percent(rate, 2));
 
 /**
  * A check's result in a sentence: "22 of 24 checks passed with it on, against 22 of 24 with it off: none that passed
  * with it off failed", and at Preview what the device check found, unless the sheet draws that itself. Failed or
  * unsure, Verify's own reason.
  */
-export function checkedWords(checked: Checked, device = true): string {
+function checkedWords(checked: Checked, device = true): string {
   const { change, base } = checked.journeys;
   const counted = `${change.passed} of ${change.ran} checks passed with it on${base ? `, against ${base.passed} of ${base.ran} with it off` : ''}`;
   if (checked.outcome !== 'passed') {
@@ -448,4 +449,72 @@ function needOf(row: FlagRow, t: number): FlagNeed {
     widen,
     turnOff: stage.stage === 'off' ? undefined : moveTo(row.moves, { stage: 'off' }),
   };
+}
+
+/**
+ * One block of an improvement's flag on its sheet: its release, with the flag off, and then each move Martin made of it,
+ * with Verify's check at Checks and Preview, and its comparison at Share.
+ */
+export type FlagBlock =
+  | { kind: 'released'; at: number; version: string; release: string }
+  | {
+      kind: 'staged';
+      at: number;
+      stage: Stage;
+      from: Stage | null;
+      /** Martin widened it, narrowed it, turned it off, or turned it back on. */
+      action: PayloadOf<'flag.staged'>['action'];
+      /** Whether his passkey was given for it: every widening past Checks. */
+      passkey: boolean;
+      reason: string | undefined;
+      /** Flags set by hand outside every stage that the write dropped, and so turned off. */
+      dropped: string[];
+      /** The move the flag stands at now. */
+      current: boolean;
+      /** The revision the move wrote, which Verify's judgement of it names. */
+      revision: string;
+      /** At Share, Verify's comparison there, if it has judged. */
+      compared: Compared | undefined;
+      /** At Checks or Preview, Verify's check there with the probes, if it has run. */
+      checked: Checked | undefined;
+    };
+
+/** A block's word, in its tone: how the stage stands. */
+export function blockWord(block: FlagBlock): [string, Tone] {
+  if (block.kind === 'released') return ['Off', 'faint'];
+  const { stage } = block;
+  if (stage.stage === 'off') return ['Turned off', 'faint'];
+  if (stage.stage === 'share') {
+    if (block.compared) return block.compared.outcome === 'passed' ? ['Passed', 'ok'] : ['Failed', 'attn'];
+    return block.current ? ['Comparing', 'signal'] : ['Stopped', 'faint'];
+  }
+  if (stage.stage === 'everyone') return block.current ? ['On for everyone', 'ok'] : ['Widened past', 'faint'];
+  if (block.checked) {
+    return { passed: ['Passed', 'ok'], failed: ['Failed', 'attn'], unsure: ['Could not tell', 'faint'] }[
+      block.checked.outcome
+    ] as [string, Tone];
+  }
+  return block.current ? ['Checking', 'signal'] : ['Widened past', 'faint'];
+}
+
+/** What Verify found at Checks or Preview, in a sentence; or, before it has, what it waits for. */
+export function checkWords(block: Extract<FlagBlock, { kind: 'staged' }>, next: string): string {
+  if (block.checked) return `Checked at ${clock(block.checked.at)}: ${checkedWords(block.checked, false)}`;
+  return block.current
+    ? `Verify checks it with the probes, against a run with it off. ${next} can be taken once the check has passed.`
+    : 'Moved on before Verify had checked it.';
+}
+
+/** Each of Martin's moves of a flag, as a block of its sheet says who made it. */
+const MADE_BY: Record<PayloadOf<'flag.staged'>['action'], string> = {
+  'flag.to-checks': 'Widened by Martin',
+  'flag.widen': 'Widened by Martin',
+  'flag.back-on': 'Turned back on by Martin',
+  'flag.narrow': 'Narrowed by Martin',
+  'flag.off': 'Turned off by Martin',
+};
+
+/** How Martin made the move, in a few words: "widened by Martin, with his passkey". */
+export function byWords(block: Extract<FlagBlock, { kind: 'staged' }>): string {
+  return `${MADE_BY[block.action]}${block.from ? ` from ${stageWords(block.from)}` : ''}${block.passkey ? ', with his passkey' : ''}`;
 }

@@ -12,7 +12,7 @@
  * drawings in one colour. Tempo's is selfh.st's (`selfhst:grafana-tempo` on Iconify, CC BY 4.0), in one colour.
  */
 
-export type Logo = 'node' | 'otel' | 'trivy' | 'dependabot' | 'anthropic' | 'jev' | 'github' | 'linkedin';
+type Logo = 'node' | 'otel' | 'trivy' | 'dependabot' | 'anthropic' | 'jev' | 'github' | 'linkedin';
 
 /** Draws a logo defined by LogoSymbols. */
 export function LogoMark({ name, className }: { name: Logo; className?: string }) {

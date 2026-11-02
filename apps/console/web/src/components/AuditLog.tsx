@@ -9,8 +9,8 @@
  */
 
 import type { PublicEvent } from '@software-factory/events';
+import type { Profile } from '@software-factory/policy/spend';
 import { type ChangeEvent, useEffect, useMemo, useState } from 'react';
-import type { Profile } from '../../../../../policy/spend.ts';
 import { clockSeconds } from '../format.ts';
 import {
   ACTOR_CHOICES,

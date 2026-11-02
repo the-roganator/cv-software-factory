@@ -57,7 +57,7 @@ export interface Hold {
   since: number;
 }
 
-export interface Visit {
+interface Visit {
   /** When the item last came into the stage. */
   enteredAt: number;
   /** When it last left the stage for a later one, or closed in it, if it has. Not set by being sent back. */
@@ -238,6 +238,25 @@ export function stageOf(event: PublicEvent): Stage | null {
   }
 }
 
+/** A work item's events of one type, in order. */
+export const ofType = <K extends PublicEvent['type']>(item: ItemState, type: K) =>
+  item.events.filter((event): event is PublicEvent<K> => event.type === type);
+
+/** The events that end a release without shipping it: a rollback, an analysis error, or an abort. */
+const STOPS = ['release.rolled-back', 'release.errored', 'release.aborted'] as const;
+/** The events that end a release: a promotion, or one that stops it. */
+const ENDS = ['release.promoted', ...STOPS] as const;
+export type ReleaseStop = PublicEvent<(typeof STOPS)[number]>;
+type ReleaseEnd = PublicEvent<(typeof ENDS)[number]>;
+
+/** Whether an event ends its release without shipping it. */
+export const stopsRelease = (event: PublicEvent): event is ReleaseStop =>
+  (STOPS as readonly string[]).includes(event.type);
+
+/** Whether an event ends its release, however it ended. */
+export const endsRelease = (event: PublicEvent): event is ReleaseEnd =>
+  (ENDS as readonly string[]).includes(event.type);
+
 const isFailure = (event: PublicEvent) =>
   (event.type === 'gates.finished' && event.payload.conclusion === 'failed') ||
   event.type === 'action.refused' ||
@@ -258,7 +277,7 @@ const DEFAULT_CATEGORY: Record<Kind, Category> = {
  * later events overtake. Summaries no longer say it, and the sheet ends the story from what it projects; those
  * already in the store keep it, and triage's are fixed words, so they go exactly. The describer's own words cannot.
  */
-export function withoutStanding(summary: PayloadOf<'work-item.summarised'>): PayloadOf<'work-item.summarised'> {
+function withoutStanding(summary: PayloadOf<'work-item.summarised'>): PayloadOf<'work-item.summarised'> {
   return {
     title: summary.title,
     description: summary.description
@@ -282,10 +301,7 @@ const ENDS_A_WAIT = new Set<PublicEvent['type']>([
   'hold.started',
   'pull-request.merged',
   'release.started',
-  'release.promoted',
-  'release.rolled-back',
-  'release.aborted',
-  'release.errored',
+  ...ENDS,
   'verification.finished',
   'work-item.reopened',
 ]);
@@ -388,13 +404,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     // the ticket back up the line.
     const joining = state.ticket && (event.type === 'signal.received' || event.type === 'judgement.made');
     // A step or end of a release other than the latest to carry the item says nothing about it.
-    const stale =
-      (event.type === 'canary.stepped' ||
-        event.type === 'release.promoted' ||
-        event.type === 'release.rolled-back' ||
-        event.type === 'release.errored' ||
-        event.type === 'release.aborted') &&
-      event.payload.release !== release;
+    const stale = (event.type === 'canary.stepped' || endsRelease(event)) && event.payload.release !== release;
     if (stale) continue;
     const passedBefore = gates.passed;
     // A new push, or a fresh pass, starts its gates afresh, as the line's `fold` does.

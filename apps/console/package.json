@@ -32,6 +32,7 @@
     "@prefresh/vite": "^4.0.1",
     "@simplewebauthn/browser": "^14.0.0",
     "@software-factory/factory": "workspace:*",
+    "@software-factory/policy": "workspace:*",
     "@software-factory/testing": "workspace:*",
     "preact": "^11.0.2",
     "vite": "^8.3.5"

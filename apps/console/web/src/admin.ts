@@ -79,7 +79,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const isPasskey = (value: unknown): boolean => isRecord(value) && isString(value.id) && isString(value.name);
 
 /** Whether an answer is a whole session, every field the page reads in place, before the page takes it for Martin's. */
-export const isSession = (body: unknown): body is Session =>
+const isSession = (body: unknown): body is Session =>
   isRecord(body) &&
   isString(body.token) &&
   isTime(body.signedInAt) &&

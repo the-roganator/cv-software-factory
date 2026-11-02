@@ -1,7 +1,7 @@
 /*
- * The feature flags (milestone 7, task 16): a flag's stages as a slider of five stops, Off to Everyone, in Controls
- * and on an improvement's sheet; Controls' row per flag and the line under them saying whether the app holds them as
- * set; the slider's confirmation; and a flag's card in Needs you.
+ * The feature flags: a flag's stages as a slider of five stops, Off to Everyone, in Controls and on an improvement's
+ * sheet; Controls' row per flag and the line under them saying whether the app holds them as set; the slider's
+ * confirmation; and a flag's card in Needs you.
  */
 
 /* A flag's name in code, wherever it is named. */

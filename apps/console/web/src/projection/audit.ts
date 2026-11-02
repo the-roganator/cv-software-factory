@@ -19,9 +19,9 @@ import {
   type PublicEvent,
   SENSES,
 } from '@software-factory/events';
-import { stageWords } from '../../../../../policy/flag-moves.ts';
-import { CAP_NAMES, type CapField, changesBetween, inForce } from '../../../../../policy/settings.ts';
-import type { Profile } from '../../../../../policy/spend.ts';
+import { stageWords } from '@software-factory/policy/flag-moves';
+import { CAP_NAMES, type CapField, changesBetween, inForce } from '@software-factory/policy/settings';
+import type { Profile } from '@software-factory/policy/spend';
 import {
   CONTROL_STEP_UP,
   FLAG_STEP_UP,
@@ -32,9 +32,9 @@ import {
   SETTINGS_STEP_UP,
   STEP_UP,
 } from '../access.ts';
-import { changeWords, clock, dayLabel, modelTitle, money, startOfDay, tokens } from '../format.ts';
+import { changeWords, clock, count, dayLabel, modelTitle, money, plural, startOfDay, tokens } from '../format.ts';
 import { changeAction } from './controls.ts';
-import { SENSE_NAME } from './sheet.ts';
+import { SENSE } from './senses.ts';
 
 /** An admin action (a person), an agent's or a system's action (the arrows), or a model call (a chip). */
 export const AUDIT_KINDS = ['admin', 'agent', 'model'] as const;
@@ -50,11 +50,11 @@ export const ACTOR_NAME: Record<Actor, string> = {
   reviewer: 'the reviewer',
   describer: 'the describer',
   'red-team': 'the red-team agent',
-  probe: SENSE_NAME.probe,
-  crawler: SENSE_NAME.crawler,
-  metrics: SENSE_NAME.metrics,
-  logs: SENSE_NAME.logs,
-  canary: SENSE_NAME.canary,
+  probe: SENSE.probe.the,
+  crawler: SENSE.crawler.the,
+  metrics: SENSE.metrics.the,
+  logs: SENSE.logs.the,
+  canary: SENSE.canary.the,
   widget: 'the report widget',
   injector: 'the injector',
   actions: 'GitHub Actions',
@@ -106,13 +106,13 @@ export interface AuditRow {
 }
 
 /** What a visitor wrote, left out of every public view. */
-export const VISITOR_WROTE = 'Its text is left out: a visitor wrote it.';
+const VISITOR_WROTE = 'Its text is left out: a visitor wrote it.';
 /** The planner's finding, which the public view leaves out as it does a visitor's report. */
-export const PLANNER_WROTE = 'Its text is left out, as a visitor’s is: the planner wrote it from a page.';
+const PLANNER_WROTE = 'Its text is left out, as a visitor’s is: the planner wrote it from a page.';
 /** Martin's words on a hold about a visitor's report, which stay his. */
-export const MARTIN_KEPT = 'His words stay his: the hold was about a visitor’s report.';
+const MARTIN_KEPT = 'His words stay his: the hold was about a visitor’s report.';
 /** Any words he gave with an approval or a rejection on such a hold, which the public view leaves out as well. */
-export const MARTIN_ANY_KEPT = 'Any words of his stay his: the hold was about a visitor’s report.';
+const MARTIN_ANY_KEPT = 'Any words of his stay his: the hold was about a visitor’s report.';
 
 /** The mechanisms' refusals: an action the platform or the scope fence stopped, and the gateway's at a spend cap. */
 const REFUSALS = new Set<string>(['action.refused', 'spend.capped']);
@@ -120,7 +120,7 @@ const REFUSALS = new Set<string>(['action.refused', 'spend.capped']);
 const FRESH_MS = FRESH_MINUTES * 60_000;
 
 /** The kind of row an event is. */
-export function kindOf(event: PublicEvent): AuditKind {
+function kindOf(event: PublicEvent): AuditKind {
   if (event.actor === 'martin' || ADMIN_TYPES.includes(event.type)) return 'admin';
   if (event.type === 'model.called' || event.type === 'judgement.made') return 'model';
   return 'agent';
@@ -197,7 +197,7 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
         const p = event.payload;
         parts.push(
           `Jev ${p.model.slice('jev-'.length)} · ${p.questionSet}`,
-          plural(p.answers.length),
+          plural(p.answers.length, 'question'),
           money(p.costUsd),
         );
         withheld = (event.work_item && reporters.get(event.work_item)) || VISITOR_WROTE;
@@ -259,8 +259,6 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
   return rows.reverse();
 }
 
-const plural = (n: number) => `${n} ${n === 1 ? 'question' : 'questions'}`;
-
 /** Whether the access table asks for Martin's passkey again for what this event records (`policy/access.ts`). */
 function askedForPasskey(
   event: PublicEvent,
@@ -315,7 +313,7 @@ export const NO_FILTER: AuditFilter = { actor: '', item: '', kinds: { admin: tru
 /** How many rows a page shows, and Show older adds. */
 export const PAGE = 100;
 
-export interface AuditDay {
+interface AuditDay {
   /** Midnight, where the viewer is. */
   day: number;
   /** Today, Yesterday, or Thu 1 Oct. */
@@ -323,7 +321,7 @@ export interface AuditDay {
   rows: AuditRow[];
 }
 
-export interface AuditView {
+interface AuditView {
   days: AuditDay[];
   /** Rows shown. */
   shown: number;
@@ -341,10 +339,8 @@ export interface AuditView {
 }
 
 /** Whether a filter narrows the log at all. */
-export const filtering = (filter: AuditFilter) =>
+const filtering = (filter: AuditFilter) =>
   filter.actor !== '' || filter.item.trim() !== '' || AUDIT_KINDS.some((kind) => !filter.kinds[kind]);
-
-const count = new Intl.NumberFormat('en-GB');
 
 /**
  * The rows that match a filter, from the newest down to a floor: the newest page of them when there is none, and every
@@ -400,12 +396,11 @@ export function auditView(
 
 /** How many rows show, of how many. */
 function captionOf(shown: number, matching: number, total: number, filtered: boolean): string {
-  const all = `${count.format(total)} in all`;
+  const all = `${count(total)} in all`;
   if (!total) return 'Nothing has happened yet.';
-  if (!filtered)
-    return shown === total ? `Showing all ${all}.` : `Showing the latest ${count.format(shown)}, of ${all}.`;
+  if (!filtered) return shown === total ? `Showing all ${all}.` : `Showing the latest ${count(shown)}, of ${all}.`;
   if (!matching) return `None of the ${all} match.`;
   return shown === matching
-    ? `Showing the ${matching === 1 ? 'one' : count.format(matching)} that ${matching === 1 ? 'matches' : 'match'}, of ${all}.`
-    : `Showing the latest ${count.format(shown)} of ${count.format(matching)} that match, of ${all}.`;
+    ? `Showing the ${matching === 1 ? 'one' : count(matching)} that ${matching === 1 ? 'matches' : 'match'}, of ${all}.`
+    : `Showing the latest ${count(shown)} of ${count(matching)} that match, of ${all}.`;
 }

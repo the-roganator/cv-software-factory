@@ -11,11 +11,13 @@
  */
 import { Suspense, useState } from 'react';
 import type { Admin } from '../admin.ts';
-import { clock, shortVersion, shortWhen } from '../format.ts';
+import { changedShare, clock, lower, shortVersion, shortWhen } from '../format.ts';
 import { previewHref } from '../profile.ts';
 import {
+  blockWord,
+  byWords,
   type Checked,
-  checkedWords,
+  checkWords,
   comparedWords,
   type FlagBlock,
   type FlagSheet,
@@ -24,33 +26,9 @@ import {
   shotOf,
   stageSays,
 } from '../projection/index.ts';
-import type { Tone } from './Canary.tsx';
+import { msCell, shareCell } from '../projection/release.ts';
 import { FlagDialog, FlagSlider, stageWords } from './Flags.tsx';
 import { Shot } from './Pictures.tsx';
-
-const lower = (text: string) => `${text[0]?.toLowerCase() ?? ''}${text.slice(1)}`;
-
-/** A block's word, in its tone: how the stage stands. */
-function wordOf(block: FlagBlock): [string, Tone] {
-  if (block.kind === 'released') return ['Off', 'faint'];
-  const { stage } = block;
-  if (stage.stage === 'off') return ['Turned off', 'faint'];
-  if (stage.stage === 'share') {
-    if (block.compared) return block.compared.outcome === 'passed' ? ['Passed', 'ok'] : ['Failed', 'attn'];
-    return block.current ? ['Comparing', 'signal'] : ['Stopped', 'faint'];
-  }
-  if (stage.stage === 'everyone') return block.current ? ['On for everyone', 'ok'] : ['Widened past', 'faint'];
-  if (block.checked) {
-    return { passed: ['Passed', 'ok'], failed: ['Failed', 'attn'], unsure: ['Could not tell', 'faint'] }[
-      block.checked.outcome
-    ] as [string, Tone];
-  }
-  return block.current ? ['Checking', 'signal'] : ['Widened past', 'faint'];
-}
-
-/** A share of pixels changed: to a tenth of a point, a hundredth below one point, and never a change shown as none. */
-const percentOf = (share: number) =>
-  share < 0.0001 ? 'under 0.01%' : `${(share * 100).toFixed(share < 0.01 ? 2 : 1)}%`;
 
 /**
  * The pages a check pictured, each side by side with the flag off and on, and where they differ when they do: a row for
@@ -105,7 +83,7 @@ function CheckedPages({ checked }: { checked: Checked & { stage: 'checks' } }) {
                   {page.changed === undefined
                     ? 'not compared'
                     : page.changed
-                      ? `${percentOf(page.changed)} changed`
+                      ? `${changedShare(page.changed)} changed`
                       : 'the same'}
                 </span>
               </figcaption>
@@ -135,26 +113,6 @@ function CheckedPages({ checked }: { checked: Checked & { stage: 'checks' } }) {
       </p>
     </div>
   );
-}
-
-/** What Verify found at Checks or Preview, in a sentence; or, before it has, what it waits for. */
-function checkWords(block: Extract<FlagBlock, { kind: 'staged' }>, next: string): string {
-  if (block.checked) return `Checked at ${clock(block.checked.at)}: ${checkedWords(block.checked, false)}`;
-  return block.current
-    ? `Verify checks it with the probes, against a run with it off. ${next} can be taken once the check has passed.`
-    : 'Moved on before Verify had checked it.';
-}
-
-/** How Martin made the move, in a few words: "widened by Martin, with his passkey". */
-function byWords(block: Extract<FlagBlock, { kind: 'staged' }>): string {
-  const how = {
-    'flag.to-checks': 'Widened by Martin',
-    'flag.widen': 'Widened by Martin',
-    'flag.back-on': 'Turned back on by Martin',
-    'flag.narrow': 'Narrowed by Martin',
-    'flag.off': 'Turned off by Martin',
-  }[block.action];
-  return `${how}${block.from ? ` from ${stageWords(block.from)}` : ''}${block.passkey ? ', with his passkey' : ''}`;
 }
 
 /** Flags set by hand outside every stage that a move's write dropped, and so turned off, in a sentence. */
@@ -260,15 +218,15 @@ function Body({ block, flag, app }: { block: FlagBlock; flag: FlagSheet; app: st
                   <td>
                     Errors<small>share of 5xx answers</small>
                   </td>
-                  <td className="num">{percent(compared.sides.on.errorRate)}</td>
-                  <td className="num base">{percent(compared.sides.off.errorRate)}</td>
+                  <td className="num">{shareCell(compared.sides.on.errorRate)}</td>
+                  <td className="num base">{shareCell(compared.sides.off.errorRate)}</td>
                 </tr>
                 <tr>
                   <td>
                     Latency<small>p99</small>
                   </td>
-                  <td className="num">{ms(compared.sides.on.p99Ms)}</td>
-                  <td className="num base">{ms(compared.sides.off.p99Ms)}</td>
+                  <td className="num">{msCell(compared.sides.on.p99Ms)}</td>
+                  <td className="num base">{msCell(compared.sides.off.p99Ms)}</td>
                 </tr>
               </tbody>
             </table>
@@ -293,9 +251,6 @@ function Body({ block, flag, app }: { block: FlagBlock; flag: FlagSheet; app: st
   }
 }
 
-const percent = (rate: number | null) => (rate === null ? '—' : `${(rate * 100).toFixed(2)}%`);
-const ms = (value: number | null) => (value === null ? '—' : `${value} ms`);
-
 function Block({
   block,
   flag,
@@ -307,7 +262,7 @@ function Block({
   app: string | undefined;
   folded: boolean;
 }) {
-  const [word, tone] = wordOf(block);
+  const [word, tone] = blockWord(block);
   const label =
     block.kind === 'released'
       ? `Released · ${shortVersion(block.version)}`

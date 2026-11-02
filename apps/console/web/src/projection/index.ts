@@ -29,22 +29,31 @@ import { type CanaryView, canaryView, inFlight, releases } from './release.ts';
 import { type Sheet, sheet } from './sheet.ts';
 
 export type { ControlsView } from './controls.ts';
-export type { Attempt, DeployRecord, Finding, RoundsNow, ThreadReview } from './fixing.ts';
-export { deployWords } from './fixing.ts';
+export type { Attempt, RoundsNow, ThreadReview } from './fixing.ts';
+export { deployCaption, deployWords } from './fixing.ts';
 export type {
   Checked,
-  Compared,
+  FlagBlock,
   FlagNeed,
   FlagRow,
   FlagsView,
   Move,
   Share,
   Stage as FlagStage,
-  StageName as FlagStageName,
   Stop,
 } from './flags.ts';
-export { checkedWords, comparedWords, moveTo, STAGE_NAME, shotOf, stageAt, stageSays } from './flags.ts';
-export type { Capture, ItemState, Outcome } from './items.ts';
+export {
+  blockWord,
+  byWords,
+  checkWords,
+  comparedWords,
+  moveTo,
+  STAGE_NAME,
+  shotOf,
+  stageAt,
+  stageSays,
+} from './flags.ts';
+export type { Outcome } from './items.ts';
 export type {
   CapSpell,
   Header,
@@ -59,30 +68,26 @@ export type {
   Status,
 } from './line.ts';
 export { whileSending } from './line.ts';
-export type { Answered, AnswerRow, CanaryNeed, Evidence, Need, NeedsView } from './needs.ts';
-export { stageName } from './needs.ts';
-export type { Card, Picture, Segment, Source, Tag, Timeline, Versions } from './reel.ts';
+export type { Answered, CanaryNeed, Evidence, Need, NeedsView } from './needs.ts';
+export type { Card, Picture, Source, Tag, Timeline, Versions } from './reel.ts';
 export { QUARANTINE_AT, segmentsLabel } from './reel.ts';
-export type { CanaryView, Carried, End, Measured, Release, Signalled, Step } from './release.ts';
+export type { CanaryView, Carried, End, Measured, Release, Step } from './release.ts';
+export { SENSE } from './senses.ts';
 export type { Meter, SettingsView, SpendView } from './settings.ts';
 export { settingsView } from './settings.ts';
 export type {
   After,
   AgentRow,
   Chapter,
-  FlagBlock,
   FlagSheet,
   GateRow,
-  PageComparison,
-  ScopeRow,
-  SenseEvidence,
   Sheet,
   Shipped,
   Shown,
   Sighting,
   Verified,
 } from './sheet.ts';
-export { marksNote, SENSE_NAME, scrubbed, TARGET } from './sheet.ts';
+export { marksNote, scrubbed, TARGET } from './sheet.ts';
 
 export interface View {
   t: number;
@@ -117,7 +122,7 @@ export interface ImproveView {
 }
 
 /** What the "+" says, from the work items. */
-export function improveView(items: readonly ItemState[]): ImproveView {
+function improveView(items: readonly ItemState[]): ImproveView {
   let latest: ImproveView['latest'];
   for (const item of items) {
     const { request } = item;

@@ -3,7 +3,7 @@
  * one at a time, and a panel per stage listing what is in it. Plan carries the "+", a `signal` disc, and its panel ends
  * with the same: Martin asks for an improvement there, and everyone else reads how he does (`ImproveDialog.tsx`).
  */
-import type { Sense, Stage } from '@software-factory/events';
+import type { Stage } from '@software-factory/events';
 import { STAGES } from '@software-factory/events';
 import {
   type CSSProperties,
@@ -24,6 +24,7 @@ import {
   type PanelRow,
   type Return,
   type RowState,
+  SENSE,
   type SenseCount,
   type Station,
   type Status,
@@ -55,16 +56,6 @@ const BLURB: Record<Stage, string> = {
   review: 'The reviewer’s rounds, the describer, and the wait for Martin’s merge.',
   release: 'Signed images behind a canary that can roll itself back.',
   verify: 'Has the original signal cleared in production? New problems it finds go back to Sense.',
-};
-
-/** Where Triage takes work from: the senses, each with what it watches. */
-const SENSES: Record<Sense, [name: string, watches: string]> = {
-  probe: ['Probes', 'a visitor’s journeys'],
-  crawler: ['Crawler', 'every page and file'],
-  metrics: ['Metrics', 'the app’s objectives'],
-  logs: ['Logs', 'new error patterns'],
-  canary: ['Canary', 'a release against its baseline'],
-  report: ['Reports', 'from the widget'],
 };
 
 /** Sources not built for the demo, shown as such. */
@@ -380,8 +371,8 @@ function Sources({ senses }: { senses: SenseCount[] }) {
           {senses.map((row) => (
             <tr key={row.sense}>
               <th scope="row">
-                {SENSES[row.sense][0]}
-                <small>{row.sense === 'report' && routes.length ? routes.join(' · ') : SENSES[row.sense][1]}</small>
+                {SENSE[row.sense].group}
+                <small>{row.sense === 'report' && routes.length ? routes.join(' · ') : SENSE[row.sense].watches}</small>
               </th>
               <td className={`num ${row.signals ? '' : 'zero'}`}>{row.signals}</td>
               <td className={`num ${row.tickets ? '' : 'zero'}`}>{row.tickets}</td>

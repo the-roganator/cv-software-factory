@@ -16,6 +16,7 @@
 !docs/design/system/tokens.css
 !docs/design/system/station.ts
 !docs/design/system/mark/icon.svg
+!policy/package.json
 !policy/access.ts
 !policy/store-grants.ts
 !policy/models.ts

@@ -90,10 +90,12 @@ jobs:
           persist-credentials: false
       # mise itself at one named release in every workflow (scripts/toolchain.test.ts). With mise.lock beside mise.toml,
       # the action installs with `--locked`: the versions and checksums the lock holds, and it fails when the lock has
-      # none for a request, rather than resolve that day's release.
+      # none for a request, rather than resolve that day's release. Every use saves its cache on main alone: a run reads
+      # only its own branch's caches and main's, so a copy saved anywhere else would serve nobody (toolchain-cache.yml).
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm kustomize
       - run: pnpm install --frozen-lockfile
       - run: make check-static
@@ -119,6 +121,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           # kustomize, step and promtool for the tests that render the manifests, make a local certificate authority
           # and run the alerts on the flags (scripts/image-pins.test.ts, scripts/local-ca.test.ts,
           # apps/factory/test/flag-alerts.test.ts).
@@ -290,6 +293,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --filter @software-factory/console build

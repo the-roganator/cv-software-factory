@@ -145,6 +145,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node
       - run: node factory/apps/factory/src/gates/test-integrity.ts base change
@@ -185,6 +186,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: base
           install_args: node pnpm
       # The test files go through a file, one a line, so a name with a space is still one name.
@@ -263,6 +265,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

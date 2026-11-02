@@ -102,6 +102,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node
       # A token for checks alone: with it, the gate can post a check run and do nothing else.
       - id: app

@@ -12,11 +12,11 @@ const axe = (page: Page) =>
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
     .exclude('.card[data-place="side"]');
 
-// WCAG 2.2 AA, in both themes, at all three widths, with motion off, as the console is tested everywhere unless a
-// test is about motion: motion changes how things move, not the contrast, roles, names and structure axe checks. The
-// page and its open stage panel are scanned from one load; the sheet is reached through its address, as the reel
-// would otherwise have to be stepped to its work item. Each scan fails softly, by name, so one finding does not hide
-// another's.
+// WCAG 2.2 AA, in both themes, at all three widths: the page and its open stage panel from one load with motion off,
+// as the console is tested unless a test is about motion, and the sheet, reached through its address, with motion on,
+// as its Replay button is enabled only then and axe passes over a disabled control's contrast. With motion off the
+// line draws only the newest return, where motion on cycles through each in turn. Each scan fails softly, by name,
+// so one finding does not hide another's.
 for (const [width, viewport] of Object.entries(WIDTHS)) {
   for (const theme of THEMES) {
     test.describe(`${width}, ${theme}`, () => {
@@ -34,7 +34,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
           expect.soft((await axe(page).analyze()).violations, 'an open stage panel').toEqual([]);
         });
         await test.step('an open sheet', async () => {
-          await page.goto(consoleUrl({ theme, item: '1296', sheet: true }));
+          await page.goto(consoleUrl({ theme, motion: true, item: '1296', sheet: true }));
           await page.getByRole('dialog', { name: 'Prices go negative' }).waitFor();
           await page.evaluate(() => document.fonts.ready);
           expect.soft((await axe(page).include('.sheet').analyze()).violations, 'an open sheet').toEqual([]);

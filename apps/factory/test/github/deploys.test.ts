@@ -816,7 +816,7 @@ describe('the pull requests a deploy brings', () => {
       sent,
     );
     const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
-    const read = (await brings(client_, APP.repo, APP, [move], [])) as Brings;
+    const read = await brings(client_, APP.repo, APP, [move], []);
     expect(calls(sent).map((s) => /page=(\d+)$/.exec(s.path)?.[1])).toEqual(['1', '3', '2']);
     expect(read.count).toBe(250);
     expect(read.whole).toBe(true);
@@ -845,7 +845,7 @@ describe('the pull requests a deploy brings', () => {
       sent,
     );
     const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
-    const read = (await brings(client_, APP.repo, APP, [move], [])) as Brings;
+    const read = await brings(client_, APP.repo, APP, [move], []);
     expect(calls(sent)).toHaveLength(MAX_RANGE_PAGES);
     expect(read).toMatchObject({ count: total, whole: false });
     expect(read.commits[0]?.sha).toBe((total - 1).toString(16).padStart(40, '0'));
@@ -882,10 +882,7 @@ describe('the pull requests a deploy brings', () => {
       { pin: FACTORY_PINS, proposal: { commit: commit('5'), pinned: commit('b'), digests: [] } },
     ];
     // Main's newest commits know 5 and 3 only.
-    const read = (await brings(client_, FACTORY.repo, FACTORY, moves, [
-      { sha: commit('5') },
-      { sha: commit('3') },
-    ])) as Brings;
+    const read = await brings(client_, FACTORY.repo, FACTORY, moves, [{ sha: commit('5') }, { sha: commit('3') }]);
     expect(read.commits.map((c) => c.sha[0])).toEqual(['5', '3', '4', '2', '1']);
     expect(read.commits[0]?.reaches).toEqual([CONSOLE_PIN, FACTORY_PINS]);
     expect(read).toMatchObject({ count: 5, whole: true });
@@ -909,7 +906,7 @@ describe('the pull requests a deploy brings', () => {
       { pin: CONSOLE_PIN, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
       { pin: FACTORY_PINS, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
     ];
-    const read = (await brings(client_, FACTORY.repo, FACTORY, moves, [])) as Brings;
+    const read = await brings(client_, FACTORY.repo, FACTORY, moves, []);
     expect(calls(sent)).toHaveLength(1);
     expect(read.commits.map((c) => c.reaches)).toEqual([[CONSOLE_PIN, FACTORY_PINS]]);
   });
@@ -928,7 +925,7 @@ describe('the pull requests a deploy brings', () => {
       { pin: CONSOLE_PIN, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
       { pin: FACTORY_PINS, proposal: { commit: commit('5'), pinned: undefined, digests: [] } },
     ];
-    const read = (await brings(client_, FACTORY.repo, FACTORY, moves, [])) as Brings;
+    const read = await brings(client_, FACTORY.repo, FACTORY, moves, []);
     expect(read.unranged).toEqual([FACTORY_PINS]);
     expect(bringsSection(FACTORY, read)).toContain(
       'What the factory brings is not listed: no commit is pinned for it to compare with.',
@@ -936,7 +933,7 @@ describe('the pull requests a deploy brings', () => {
     // Its rows still say which of the deploy's pins they reach.
     expect(bringsSection(FACTORY, read)).toContain('| #5 | console | fix | – | x |');
     expect(bringsSection(FACTORY, read)).toContain(
-      'Console brings one pull request merged since the commit pinned for it, newest first:',
+      'Console brings one pull request merged since the commit pinned for console, newest first:',
     );
   });
 
@@ -960,14 +957,18 @@ describe('the pull requests a deploy brings', () => {
     expect(updates(gh.sent)).toHaveLength(1);
     expect(retitle(gh.sent)?.body).toMatchObject({ title });
     gh.compares();
+    const commits = () => calls(gh.sent).filter((s) => s.path === '/graphql').length;
+    const before = commits();
     await pass();
+    // Only the list was left: it is not moved again.
+    expect(commits()).toBe(before);
     expect(bringsIn(updates(gh.sent).at(-1)?.body.body)).toBe(true);
   });
 
   it('says what the others bring by name when a pin has no range, and nothing for the deploy as a whole', () => {
     const read: Brings = { pins: [CONSOLE_PIN], unranged: [FACTORY_PINS], commits: [], count: 0, whole: true };
     expect(bringsSection(FACTORY, read)).toContain(
-      'Nothing merged since the commit pinned for console.\n\nWhat the factory brings is not listed',
+      'Console brings no pull request: nothing merged since the commit pinned for console.\n\nWhat the factory brings is not listed',
     );
     expect(bringsSection(FACTORY, read)).not.toContain('It brings');
   });

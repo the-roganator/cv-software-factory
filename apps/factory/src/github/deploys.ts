@@ -389,29 +389,27 @@ export function bringsSection(target: DeployTarget, brings: Brings): string {
     rows.push(`| ${cells.join(' | ')} |`.replace(/ {2}/g, ' '));
   }
   // The app's one pin has no name of its own: it is the deploy.
-  const names = (pins: readonly Pin[]) => pins.map((p) => p.what || 'the deploy').join(' and ');
-  const unranged = brings.unranged ?? [];
-  const ranged = brings.pins;
-  const all = `${brings.whole ? '' : 'at least '}${brings.count === 1 ? 'one pull request' : `${brings.count} pull requests`}`;
-  const table = `| ${head.join(' | ')} |
-|${head.map(() => '---').join('|')}|
-${rows.join('\n')}`;
-  // With a pin it cannot list, it says only what the others bring, by name, so no sentence speaks for the whole deploy.
-  const named = names(ranged).replace(/^./, (c) => c.toUpperCase());
-  const pinnedFor = `the commit${ranged.length > 1 ? 's' : ''} pinned for ${ranged.length > 1 ? 'them' : 'it'}`;
-  const said = !ranged.length
-    ? []
-    : unranged.length
+  const names = (pins: readonly Pin[]) =>
+    new Intl.ListFormat('en', { type: 'conjunction' }).format(pins.map((p) => p.what || 'the deploy'));
+  const { pins: ranged, unranged } = brings;
+  const said: string[] = [];
+  if (ranged.length) {
+    // With a pin it cannot list, it speaks only for the others, by name, so no sentence speaks for the whole deploy.
+    const many = ranged.length > 1;
+    const [who, since] = unranged.length
       ? [
-          brings.count
-            ? `${named} ${ranged.length > 1 ? 'bring' : 'brings'} ${all} merged since ${pinnedFor}, newest first:\n\n${table}`
-            : `Nothing merged since the commit${ranged.length > 1 ? 's' : ''} pinned for ${names(ranged)}.`,
+          names(ranged).replace(/^./, (c) => c.toUpperCase()),
+          `the commit${many ? 's' : ''} pinned for ${names(ranged)}`,
         ]
-      : [
-          brings.count
-            ? `It brings ${all} merged since ${ranged.length > 1 ? 'the commits pinned now' : 'the pinned commit'}, newest first:\n\n${table}`
-            : `It brings no pull request: nothing merged since ${ranged.length > 1 ? 'the commits pinned now' : 'the pinned commit'}.`,
-        ];
+      : ['It', many ? 'the commits pinned now' : 'the pinned commit'];
+    const all = `${brings.whole ? '' : 'at least '}${brings.count === 1 ? 'one pull request' : `${brings.count} pull requests`}`;
+    const bring = who === 'It' || !many ? 'brings' : 'bring';
+    said.push(
+      brings.count
+        ? `${who} ${bring} ${all} merged since ${since}, newest first:\n\n| ${head.join(' | ')} |\n|${head.map(() => '---').join('|')}|\n${rows.join('\n')}`
+        : `${who} ${bring} no pull request: nothing merged since ${since}.`,
+    );
+  }
   if (unranged.length) {
     const many = unranged.length > 1;
     said.push(
@@ -598,7 +596,9 @@ export async function newerBuild(
 
 /**
  * The commits one pin's move brings, `pinned...commit` as GitHub compares them, oldest first a hundred to a page: the
- * first page, which says how many there are, then the newest pages one at a time, up to `MAX_RANGE_PAGES` in all.
+ * first page, which says how many there are, then the newest pages one at a time, up to `MAX_RANGE_PAGES` in all:
+ * never a burst of them, which GitHub's secondary rate limit would answer for every read the worker makes. The list
+ * is written after the pull request is opened or moved, so the time this takes holds no deploy back.
  * A comparison of two commits never changes, and once listed is not read again, so it is read, not polled: its
  * entries would only push the polls' own out of their cache.
  */
@@ -619,8 +619,7 @@ async function range(github: GitHub, repo: string, pinned: string, commit: strin
 
 /**
  * What a deploy brings: the commits in the range of each pin it moves from a known commit, each once, with the pins
- * it reaches, newest first, and the pins it moves with no range, whose changes it cannot list; undefined when it moves
- * no pin. Main's history is linear, so each commit's place in it
+ * it reaches, newest first, and the pins it moves with no range, whose changes it cannot list. Main's history is linear, so each commit's place in it
  * (`order`, main's newest commits from the head the pass read, newest first) orders them; one older than those is
  * ordered by when it was committed.
  */
@@ -630,11 +629,10 @@ export async function brings(
   target: DeployTarget,
   moves: readonly Pick<Move, 'pin' | 'proposal'>[],
   order: readonly { sha: string }[],
-): Promise<Brings | undefined> {
+): Promise<Brings> {
   const ranged = moves.flatMap(({ pin, proposal }) =>
     proposal.pinned ? [{ pin, pinned: proposal.pinned, commit: proposal.commit }] : [],
   );
-  if (!moves.length) return undefined;
   const unranged = moves.filter((m) => !m.proposal.pinned).map((m) => m.pin);
   if (!ranged.length) return { pins: [], unranged, commits: [], count: 0, whole: true };
   // Pins moved from the same commit to the same commit, as pins built together are, share one read.
@@ -734,10 +732,7 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
    * What a deploy brings, or null when it could not be read: the pull request goes without its list, rather than wait
    * for it, and a later pass fills it in.
    */
-  const broughtBy = async (
-    moves: readonly Move[],
-    order: readonly { sha: string }[],
-  ): Promise<Brings | undefined | null> => {
+  const broughtBy = async (moves: readonly Move[], order: readonly { sha: string }[]): Promise<Brings | null> => {
     try {
       return await brings(github, repo, target, moves, order);
     } catch (error) {
@@ -758,12 +753,7 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
   ): Promise<boolean> => {
     const read = await broughtBy(moves, order);
     if (read === null) return false;
-    if (read) {
-      await actions.updatePullRequest(repo, number, {
-        body: deployBody(target, moves, body, read),
-        keepCarries: true,
-      });
-    }
+    await actions.updatePullRequest(repo, number, { body: deployBody(target, moves, body, read), keepCarries: true });
     return true;
   };
 

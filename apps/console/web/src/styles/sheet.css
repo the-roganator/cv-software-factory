@@ -221,9 +221,11 @@ html[data-motion="off"] .scrim {
   min-height: 40px;
   min-width: 84px;
 }
-/* Replay, waiting at the end with motion off, keeps its full strength rather than the faded disabled look (base.css). */
+/* Replay, waiting at the end with motion off, keeps its full strength and the browser's not-allowed pointer, rather
+   than the faded disabled look (base.css). */
 .ctl .btn:disabled {
   opacity: 1;
+  cursor: not-allowed;
 }
 .clock {
   font: 400 24px / 1 var(--font-mono);

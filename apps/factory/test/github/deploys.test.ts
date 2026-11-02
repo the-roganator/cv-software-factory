@@ -6,8 +6,13 @@ import { describe, expect, it } from 'vitest';
 import { type Actions, DryRunActions, LiveActions } from '../../src/github/actions.ts';
 import { ownsBranch } from '../../src/github/branches.ts';
 import {
+  type Brings,
+  brings,
+  bringsIn,
+  bringsSection,
   carriesIn,
   carriesSection,
+  conventional,
   DEPLOYS,
   DeployProposals,
   DeployRefused,
@@ -15,6 +20,8 @@ import {
   deployBody,
   deployedImage,
   deployWatch,
+  MAX_BROUGHT,
+  MAX_RANGE_PAGES,
   newerBuild,
   type Pin,
   PinFileError,
@@ -51,10 +58,45 @@ const FACTORY_PIN = pinFile([
 const CONSOLE_PIN_FILE = pinFile([['console', digest('3'), 'the-roganator/cv-software-factory/console']]);
 const APP_PIN_FILE = pinFile([['website', digest('1'), 'the-roganator/cv-worlds-worst-website']]);
 const BOTH = { [CONSOLE_PIN.file]: CONSOLE_PIN_FILE, [FACTORY_PINS.file]: FACTORY_PIN };
+/** The body of a deploy pull request that lists what it brings already. */
+const LISTED =
+  'Runs `bbbbbbb` on the local cluster.\n\n<!-- factory: brings -->\n### Pull requests\n<!-- factory: /brings -->';
 const CONSOLE_TITLE = 'chore(deploy): run console ccccccc on the local cluster';
 const BOTH_TITLE = 'chore(deploy): run console ccccccc and the factory bbbbbbb on the local cluster';
 /** A pin file that pins nothing yet, so it has no newer build. */
 const NO_PINS = 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\n';
+
+/** Main's history, oldest first, and each commit's message: main moves on to 0 with a merge that built no image. */
+const HISTORY = ['a', 'b', 'c', 'd', '0'];
+const MESSAGES: Record<string, string> = {
+  a: 'chore(deploy): run the factory 1111111 on the local cluster (#10)',
+  b: 'feat(line)!: take one ticket at a time (#12)\n\nBREAKING CHANGE: the take is a number.',
+  c: 'fix(console): show the take | in <b>bold</b> (#13)',
+  d: 'Tidy the docs',
+  '0': 'docs: say so (#15)',
+};
+
+/** GitHub's comparison of two of main's commits: those after the first up to the second, oldest first, paged. */
+const compareRoute = (repo: string, fail: () => boolean): Route => ({
+  method: 'GET',
+  path: new RegExp(`^/repos/${repo}/compare/`),
+  answer: ({ path }) => {
+    if (fail()) return { status: 502, body: { message: 'Server Error' } };
+    const [, base, head, page] = /compare\/(\w+)\.\.\.(\w+)\?per_page=100&page=(\d+)$/.exec(path) ?? [];
+    const of = (sha?: string) => HISTORY.findIndex((c) => commit(c) === sha);
+    const range = HISTORY.slice(of(base) + 1, of(head) + 1);
+    const commits = Number(page) === 1 ? range : [];
+    return {
+      body: {
+        total_commits: range.length,
+        commits: commits.map((c) => ({
+          sha: commit(c),
+          commit: { message: MESSAGES[c], committer: { date: `2026-11-0${HISTORY.indexOf(c) + 1}T12:00:00Z` } },
+        })),
+      },
+    };
+  },
+});
 
 interface Pull {
   number: number;
@@ -80,11 +122,14 @@ function github(
     mergeable?: boolean | null;
     /** Who opened its pull requests, by numeric id: the App's bot, unless a test says otherwise. */
     openedBy?: number;
+    /** Whether GitHub fails to compare two commits, until told otherwise. */
+    failCompare?: boolean;
   } = {},
 ) {
   const { repo } = target;
   const sent: Sent[] = [];
   let failCommit = options.failCommit ?? false;
+  let failCompare = options.failCompare ?? false;
   let main = HEAD;
   let mergeable = options.mergeable === undefined ? true : options.mergeable;
   const pulls = (options.pulls ?? []).map((p) => ({ ...p }));
@@ -127,6 +172,7 @@ function github(
       answer: () => ({ body: pulls.map((p) => ({ ...p, head: { sha: branches.get(target.branch) } })) }),
     },
     { method: 'GET', path: /\/pulls\/\d+$/, answer: () => ({ body: { mergeable } }) },
+    compareRoute(repo, () => failCompare),
     // Its deploy pull requests are the App's, as the issue guard asks before it labels or moves one.
     {
       method: 'GET',
@@ -185,13 +231,22 @@ function github(
       answer: () => ({ status: 201, body: { number: 70, html_url: 'u', node_id: 'n' } }),
     },
     { method: 'POST', path: /\/issues\/\d+\/labels$/, answer: () => ({ body: [] }) },
-    { method: 'PATCH', path: /\/pulls\/\d+$/, answer: () => ({ body: {} }) },
+    {
+      method: 'PATCH',
+      path: /\/pulls\/\d+$/,
+      answer: ({ path, body }) => {
+        const pull = pulls.find((p) => path.endsWith(`/pulls/${p.number}`));
+        if (pull) Object.assign(pull, body);
+        return { body: {} };
+      },
+    },
   ];
   return {
     ...client(routes, sent),
     pulls,
     branches,
     recover: () => (failCommit = false),
+    compares: () => (failCompare = false),
     // A merge that built no image.
     moveMain: () => (main = commit('0')),
     setMergeable: (to: boolean | null) => (mergeable = to),
@@ -307,7 +362,17 @@ describe('the deploy watch', () => {
 | \`factory\` | \`sha256:777777777777…\` |
 | \`factory-browser\` | \`sha256:888888888888…\` |
 
-Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer build moves this pull request on rather than opening another.`,
+Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer build moves this pull request on rather than opening another.
+
+<!-- factory: brings -->
+### Pull requests
+
+It brings one pull request merged since the pinned commit, newest first:
+
+| Pull request | Type | Scope | Subject |
+|---|---|---|---|
+| #12 | feat! | line | take one ticket at a time |
+<!-- factory: /brings -->`,
     );
     expect(writes(gh.sent)[5]?.body).toEqual({ labels: ['deploy: local'] });
   });
@@ -381,8 +446,28 @@ Argo CD deploys it from \`deploy/overlays/local\` once this merges. A newer buil
 | \`factory\` | \`sha256:777777777777…\` |
 | \`factory-browser\` | \`sha256:888888888888…\` |
 
-Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer build moves this pull request on rather than opening another.`,
+Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer build moves this pull request on rather than opening another.
+
+<!-- factory: brings -->
+### Pull requests
+
+It brings 2 pull requests merged since the commits pinned now, newest first:
+
+| Pull request | Reaches | Type | Scope | Subject |
+|---|---|---|---|---|
+| #13 | console | fix | console | show the take \\| in &lt;b&gt;bold&lt;/b&gt; |
+| #12 | console, the factory | feat! | line | take one ticket at a time |
+<!-- factory: /brings -->`,
     );
+    // Each pin's range is read once, and a pull request both bring is listed once.
+    expect(
+      calls(gh.sent)
+        .filter((s) => s.path.includes('/compare/'))
+        .map((s) => s.path.replace(/^.*compare\//, '')),
+    ).toEqual([
+      `${commit('a')}...${commit('c')}?per_page=100&page=1`,
+      `${commit('a')}...${commit('b')}?per_page=100&page=1`,
+    ]);
   });
 
   it('moves the pull request for one pin file on to both when the other’s build lands, keeping its number', async () => {
@@ -493,7 +578,9 @@ Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer bu
 
   it('leaves one already current, adding its label if an earlier pass did not get that far', async () => {
     const title = 'chore(deploy): run the factory bbbbbbb on the local cluster';
-    const gh = github(FACTORY, { pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: [] }] });
+    const gh = github(FACTORY, {
+      pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: [], body: LISTED }],
+    });
     await watch(gh, FACTORY)();
     expect(writes(gh.sent).map((s) => [s.path, s.body])).toEqual([
       [`/repos/${FACTORY.repo}/issues/69/labels`, { labels: ['deploy: local'] }],
@@ -503,7 +590,9 @@ Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer bu
   it('leaves its pull request behind main when main moves on with no newer build: the merge queue takes it as it is', async () => {
     const title = 'chore(deploy): run the factory bbbbbbb on the local cluster';
     const label = [{ name: 'deploy: local' }];
-    const gh = github(FACTORY, { pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: label }] });
+    const gh = github(FACTORY, {
+      pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: label, body: LISTED }],
+    });
     const pass = watch(gh, FACTORY);
     await pass();
     gh.moveMain();
@@ -515,7 +604,9 @@ Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer bu
   it('makes its commit again on main’s new head when its pull request conflicts with main, keeping its pull request', async () => {
     const title = 'chore(deploy): run the factory bbbbbbb on the local cluster';
     const label = [{ name: 'deploy: local' }];
-    const gh = github(FACTORY, { pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: label }] });
+    const gh = github(FACTORY, {
+      pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: label, body: LISTED }],
+    });
     const pass = watch(gh, FACTORY);
     await pass();
     gh.moveMain();
@@ -601,6 +692,170 @@ Argo CD deploys them from \`deploy/overlays/local\` once this merges. A newer bu
     const made = actions.branchMade(FACTORY.repo, FACTORY.branch) as string;
     expect(actions.commitMade(made)?.parent).toBe(HEAD);
     expect(actions.branchMade(FACTORY.repo, scratchBranch(FACTORY))).toBeUndefined();
+  });
+});
+
+describe('the pull requests a deploy brings', () => {
+  const label = [{ name: 'deploy: local' }];
+  const title = 'chore(deploy): run the factory bbbbbbb on the local cluster';
+  const updates = (sent: Sent[]) =>
+    writes(sent).filter((s) => s.method === 'PATCH' && /\/pulls\/\d+$/.test(s.path)) as { body: { body: string } }[];
+
+  it('opens the pull request without them when GitHub cannot compare, rather than hold the deploy back', async () => {
+    const gh = github(FACTORY, { failCompare: true });
+    await watch(gh, FACTORY)();
+    const opened = writes(gh.sent).find((s) => s.path.endsWith('/pulls')) as { body: { body: string } };
+    expect(opened.body.body).toContain('Argo CD deploys them');
+    expect(bringsIn(opened.body.body)).toBe(false);
+  });
+
+  it('fills them in on an open pull request that lacks them, keeping what the line said, and then leaves it', async () => {
+    const section = carriesSection([{ workItem: '1001', title: 'A ticket', issue: 16, pullRequest: 17 }]);
+    const gh = github(FACTORY, {
+      failCompare: true,
+      pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: label, body: `Runs it.\n\n${section}` }],
+    });
+    const pass = watch(gh, FACTORY);
+    await pass();
+    expect(updates(gh.sent)).toEqual([]);
+    // Read again at the same head of main, though whether it conflicts was settled.
+    gh.compares();
+    await pass();
+    const [update] = updates(gh.sent);
+    expect(Object.keys(update?.body ?? {})).toEqual(['body']);
+    expect(bringsIn(update?.body.body)).toBe(true);
+    expect(update?.body.body).toContain('| #12 | feat! | line | take one ticket at a time |');
+    expect(carriesIn(update?.body.body)).toBe(section);
+    // Listed, it is not written again.
+    await pass();
+    expect(updates(gh.sent)).toHaveLength(1);
+  });
+
+  it('reads nothing for a pin whose pinned commit is not known: it has no range', async () => {
+    const gh = github(APP, { pins: { [APP_PIN.file]: APP_PIN_FILE } });
+    await watch(
+      gh,
+      APP,
+      ghcr(() => undefined as unknown as string),
+    )();
+    expect(calls(gh.sent).filter((s) => s.path.includes('/compare/'))).toEqual([]);
+    const opened = writes(gh.sent).find((s) => s.path.endsWith('/pulls')) as { body: { body: string } };
+    expect(bringsIn(opened.body.body)).toBe(false);
+    expect(opened.body.body).not.toContain('the changes since');
+  });
+
+  it('lists them in a dry run’s body as in a live one', async () => {
+    const gh = github(FACTORY);
+    const bodies: string[] = [];
+    const store = {
+      put: async (bytes: Uint8Array) => {
+        const record = JSON.parse(new TextDecoder().decode(bytes));
+        if (record.action === 'openPullRequest') bodies.push(JSON.stringify(record));
+        return '0'.repeat(64);
+      },
+    };
+    await watch(gh, FACTORY, ghcr(), new DryRunActions(store as never, quiet))();
+    const live = github(FACTORY);
+    await watch(live, FACTORY)();
+    const opened = writes(live.sent).find((s) => s.path.endsWith('/pulls')) as { body: { body: string } };
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain(JSON.stringify(opened.body.body));
+  });
+
+  it('reads the first page of a long range and then its newest, and lists each once, newest first', async () => {
+    const shas = Array.from({ length: 250 }, (_, i) => i.toString(16).padStart(40, '0'));
+    const sent: Sent[] = [];
+    const { github: client_ } = client(
+      [
+        {
+          method: 'GET',
+          path: /\/compare\//,
+          answer: ({ path }) => {
+            const page = Number(/page=(\d+)$/.exec(path)?.[1]);
+            const commits = shas.slice((page - 1) * 100, page * 100).map((sha, i) => ({
+              sha,
+              commit: { message: `fix: number ${(page - 1) * 100 + i} (#${(page - 1) * 100 + i + 1})` },
+            }));
+            return { body: { total_commits: shas.length, commits } };
+          },
+        },
+      ],
+      sent,
+    );
+    const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
+    const read = (await brings(client_, APP.repo, APP, [move], [])) as Brings;
+    expect(calls(sent).map((s) => /page=(\d+)$/.exec(s.path)?.[1])).toEqual(['1', '3', '2']);
+    expect(read.count).toBe(250);
+    expect(read.whole).toBe(true);
+    expect(read.commits.map((c) => c.sha)).toEqual([...shas].reverse());
+    expect(read.commits[0]?.reaches).toEqual([APP_PIN]);
+  });
+
+  it('counts a range too long to read whole as at least its length', async () => {
+    const total = (MAX_RANGE_PAGES + 5) * 100;
+    const sent: Sent[] = [];
+    const { github: client_ } = client(
+      [
+        {
+          method: 'GET',
+          path: /\/compare\//,
+          answer: ({ path }) => {
+            const page = Number(/page=(\d+)$/.exec(path)?.[1]);
+            const commits = Array.from({ length: 100 }, (_, i) => ({
+              sha: ((page - 1) * 100 + i).toString(16).padStart(40, '0'),
+              commit: { message: 'fix: one' },
+            }));
+            return { body: { total_commits: total, commits } };
+          },
+        },
+      ],
+      sent,
+    );
+    const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
+    const read = (await brings(client_, APP.repo, APP, [move], [])) as Brings;
+    expect(calls(sent)).toHaveLength(MAX_RANGE_PAGES);
+    expect(read).toMatchObject({ count: total, whole: false });
+    expect(read.commits[0]?.sha).toBe((total - 1).toString(16).padStart(40, '0'));
+    expect(bringsSection(APP, read)).toContain(`It brings at least ${total} pull requests`);
+    expect(bringsSection(APP, read)).toContain(`| | | | and at least ${total - MAX_BROUGHT} more |`);
+  });
+
+  it('orders commits from several ranges by their place on main, then by when they were committed', async () => {
+    const at = (c: string, date: string) => ({ sha: commit(c), commit: { message: `fix: ${c}`, committer: { date } } });
+    const ranges: Record<string, unknown[]> = {
+      [commit('a')]: [
+        at('1', '2026-11-01T00:00:00Z'),
+        at('2', '2026-11-02T00:00:00Z'),
+        at('5', '2026-11-05T00:00:00Z'),
+      ],
+      [commit('b')]: [
+        at('3', '2026-11-03T00:00:00Z'),
+        at('4', '2026-11-03T00:00:00Z'),
+        at('5', '2026-11-05T00:00:00Z'),
+      ],
+    };
+    const { github: client_ } = client([
+      {
+        method: 'GET',
+        path: /\/compare\//,
+        answer: ({ path }) => {
+          const base = /compare\/(\w+)\.\.\./.exec(path)?.[1] as string;
+          return { body: { total_commits: ranges[base]?.length, commits: ranges[base] } };
+        },
+      },
+    ]);
+    const moves = [
+      { pin: CONSOLE_PIN, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
+      { pin: FACTORY_PINS, proposal: { commit: commit('5'), pinned: commit('b'), digests: [] } },
+    ];
+    // Main's newest commits know 5 and 3 only.
+    const read = (await brings(client_, FACTORY.repo, FACTORY, moves, [
+      { sha: commit('5') },
+      { sha: commit('3') },
+    ])) as Brings;
+    expect(read.commits.map((c) => c.sha[0])).toEqual(['5', '3', '4', '2', '1']);
+    expect(read.commits[0]?.reaches).toEqual([CONSOLE_PIN, FACTORY_PINS]);
+    expect(read).toMatchObject({ count: 5, whole: true });
   });
 });
 
@@ -824,11 +1079,13 @@ describe('what a deploy carries', () => {
     const { body } = (writes(gh.sent).at(-1) as { body: { body: string } }).body;
     expect(body).toContain(`/commit/${commit('b')})`);
     expect(body).not.toContain('Runs `aaaaaaa`');
-    expect(
-      body.endsWith(
-        `once this merges. A newer build moves this pull request on rather than opening another.\n\n${section}`,
-      ),
-    ).toBe(true);
+    // The pull requests it brings come before what the line said, which ends it as it did.
+    expect(body).toMatch(/opening another\.\n\n<!-- factory: brings -->\n[\s\S]*<!-- factory: \/brings -->\n\n/);
+    expect(body.endsWith(`<!-- factory: /brings -->\n\n${section}`)).toBe(true);
+    // The line says again, and only its section changes.
+    const again = withCarries(body, carriesSection([]));
+    expect(again).toBe(body.replace(section, carriesSection([])));
+    expect(bringsIn(again)).toBe(true);
     // One the line never described is moved with no section.
     const bare = github(FACTORY, {
       pulls: [{ number: 69, title: older, state: 'open', merged_at: null, labels: [{ name: 'deploy: local' }] }],
@@ -867,6 +1124,70 @@ describe('what a deploy carries', () => {
     const proposals = new DeployProposals();
     await watch(github(FACTORY), FACTORY, ghcr(), undefined, signatures(), quiet, Date.now, proposals)();
     expect(proposals.get(FACTORY.repo, FACTORY.branch)).toBeNull();
+  });
+});
+
+describe('the list of pull requests', () => {
+  const brought = (message: string, reaches: Pin[] = [APP_PIN], sha = commit('b')) => ({ sha, message, reaches });
+  const one = (commits: Brings['commits'], extra: Partial<Brings> = {}): Brings => ({
+    pins: [APP_PIN],
+    commits,
+    count: commits.length,
+    whole: true,
+    ...extra,
+  });
+
+  it('splits a Conventional Commit subject into its parts, and keeps one that is not whole', () => {
+    expect(conventional('perf(console)!: budget what the first view loads (#812)\n\nMore.')).toEqual({
+      number: 812,
+      type: 'perf',
+      scope: 'console',
+      breaking: true,
+      subject: 'budget what the first view loads',
+    });
+    expect(conventional('docs: say so')).toEqual({
+      number: null,
+      type: 'docs',
+      scope: null,
+      breaking: false,
+      subject: 'say so',
+    });
+    expect(conventional('Revert "fix: a thing (#3)" (#4)')).toEqual({
+      number: 4,
+      type: null,
+      scope: null,
+      breaking: false,
+      subject: 'Revert "fix: a thing (#3)"',
+    });
+  });
+
+  it('gives a subject that does not parse a row, with what can be said, and names a commit with no pull request', () => {
+    const section = bringsSection(
+      APP,
+      one([
+        brought('Merge branch `x` into main, @someone'),
+        brought('fix(a|b): it [works](z)', [APP_PIN], commit('c')),
+      ]),
+    );
+    expect(section.split('\n').slice(5)).toEqual([
+      '| Pull request | Type | Scope | Subject |',
+      '|---|---|---|---|',
+      `| [\`bbbbbbb\`](https://github.com/${APP.repo}/commit/${commit('b')}) | – | – | Merge branch \\\`x\\\` into main, &#64;someone |`,
+      `| [\`ccccccc\`](https://github.com/${APP.repo}/commit/${commit('c')}) | fix | a\\|b | it \\[works\\](z) |`,
+      '<!-- factory: /brings -->',
+    ]);
+  });
+
+  it('lists the latest fifty, and counts the rest', () => {
+    const commits = Array.from({ length: MAX_BROUGHT + 3 }, (_, i) => brought(`fix: ${i} (#${i + 1})`));
+    const lines = bringsSection(APP, one(commits)).split('\n');
+    expect(lines).toContain(`It brings ${MAX_BROUGHT + 3} pull requests merged since the pinned commit, newest first:`);
+    expect(lines.filter((l) => /^\| #\d+ \|/.test(l))).toHaveLength(MAX_BROUGHT);
+    expect(lines.at(-2)).toBe('| | | | and 3 more |');
+  });
+
+  it('says when a deploy brings none', () => {
+    expect(bringsSection(APP, one([]))).toContain('It brings no pull request: nothing merged since the pinned commit.');
   });
 });
 

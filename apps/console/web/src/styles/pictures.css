@@ -280,6 +280,14 @@ svg.chart {
   display: flex;
   gap: 1cqw;
 }
+.unchanged .thumbs button {
+  display: flex;
+  padding: 0;
+  border: 0;
+  border-radius: 0.5cqw;
+  background: none;
+  cursor: zoom-in;
+}
 .unchanged .thumbs img {
   width: 7cqw;
   aspect-ratio: 16 / 10;
@@ -290,6 +298,49 @@ svg.chart {
 }
 .unchanged .glyph {
   color: var(--ok);
+}
+
+/*
+ * What opens a screenshot at full size, in a sheet: the whole picture is the button, over its marks and under a wipe's
+ * handle, with a badge in its corner that shows on a hover and on the keyboard's focus, and always on a touch screen.
+ */
+.shot-open {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: var(--text);
+  cursor: zoom-in;
+}
+.shot-open:focus-visible {
+  outline-offset: -3px;
+}
+.shot-open .glyph {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--raised);
+  opacity: 0;
+}
+.shot-open:hover .glyph,
+.shot-open:focus-visible .glyph {
+  opacity: 1;
+}
+@media (hover: none) {
+  .shot-open .glyph {
+    opacity: 1;
+  }
+}
+.wipe .wipe-open {
+  z-index: 2;
 }
 
 /* A package, its version change, and a scan's findings before and after. */

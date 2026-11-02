@@ -3,7 +3,18 @@
  * illustration: screenshots with the probe's marks, a metric series, log lines, a scan, a refusal, a judgement.
  */
 import type { Evidence, PayloadOf, Screenshot } from '@software-factory/events';
-import { type KeyboardEvent, type PointerEvent, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  type KeyboardEvent,
+  lazy,
+  type PointerEvent,
+  type ReactNode,
+  Suspense,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { useArtifactUrl } from '../artifacts.ts';
 import { AGENT_NAME, axis, capital, clock, figure, inWords, money, plural, shortVersion, times } from '../format.ts';
@@ -12,6 +23,10 @@ import { deployCaption, deployWords, QUARANTINE_AT, SENSE } from '../projection/
 import { clamp } from './flight.ts';
 import { Glyph } from './Glyph.tsx';
 import { LogoMark, logoFor } from './Logos.tsx';
+import type { Opened } from './ShotViewer.tsx';
+
+// A screenshot at full size is opened from a sheet, so the first view never loads it.
+const ShotViewer = lazy(() => import('./ShotViewer.tsx').then((module) => ({ default: module.ShotViewer })));
 
 const TAG_TONE: Record<Tag, 'faint' | 'attn' | 'ok'> = {
   BEFORE: 'faint',
@@ -30,6 +45,46 @@ const PAGE_NAME: Record<string, string> = {
 };
 
 const pageName = (route: string) => PAGE_NAME[route] ?? route;
+
+/** What a screenshot is of, as its full-size view's title: the page and the version. */
+const shotTitle = (shot: Screenshot) => `Screenshot of ${pageName(shot.route)} at ${shortVersion(shot.version)}`;
+
+/** A screenshot's alternative text: what it is of, and what its marks say. */
+function altOf(shot: Screenshot, marks: Mark[]): string {
+  const named = marks.map((mark) => [mark.n, mark.label].filter(Boolean).join(' ')).filter(Boolean);
+  return `${shotTitle(shot)}${named.length ? `, marked: ${named.join('; ')}` : ''}`;
+}
+
+/**
+ * Whether a screenshot opens at full size when pressed. In a sheet it does (App.tsx says so around it); on a card in
+ * the reel or a panel, pressing the card opens its sheet, so a screenshot there opens nothing of its own.
+ */
+export const OpensShots = createContext(false);
+
+/** What opens a screenshot at full size, and the view while it is open, drawn wherever the caller puts it. */
+function useFullSize() {
+  const [opened, setOpened] = useState<Opened>();
+  const view = opened && (
+    <Suspense fallback={null}>
+      <ShotViewer opened={opened} onClose={() => setOpened(undefined)} />
+    </Suspense>
+  );
+  return [setOpened, view] as const;
+}
+
+/** The control over a picture that opens it at full size: the whole picture, with a corner badge to say so. */
+function OpenFull({ name, className = '', onOpen }: { name: string; className?: string; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      className={`shot-open ${className}`}
+      aria-label={`Open at full size: ${name}`}
+      onClick={onOpen}
+    >
+      <Glyph name="expand" />
+    </button>
+  );
+}
 
 /** A mark on a screenshot: where, whether the problem or the fix, and its label or its number in a list. */
 export interface Mark {
@@ -87,6 +142,7 @@ export function Shot({
   numbered = false,
   anchor,
   alt: said,
+  opens: openable = true,
 }: {
   shot: Screenshot;
   eager?: boolean;
@@ -97,15 +153,16 @@ export function Shot({
   anchor?: Mark | undefined;
   /** What the picture shows, when it is no plain screenshot of the page: where two pictures of it differ. */
   alt?: string;
+  /** False when what holds it opens it instead, as a wipe opens both its sides. */
+  opens?: boolean;
 }) {
   const url = useArtifactUrl();
   const [failed, setFailed] = useState(false);
   const [frame, ratio] = useFrame();
+  const [open, view] = useFullSize();
+  const opens = useContext(OpensShots) && openable;
   const marks: Mark[] = given ?? shot.boxes.map((box, i) => ({ ...box, ...(numbered && { n: i + 1 }) }));
-  const named = marks.map((mark) => [mark.n, mark.label].filter(Boolean).join(' ')).filter(Boolean);
-  const alt =
-    said ??
-    `Screenshot of ${pageName(shot.route)} at ${shortVersion(shot.version)}${named.length ? `, marked: ${named.join('; ')}` : ''}`;
+  const alt = said ?? altOf(shot, marks);
   // The shot's height the frame shows, in the shot's own pixels, from where the window starts.
   const shown = shot.width * ratio;
   const first = anchor ?? marks[0];
@@ -164,6 +221,19 @@ export function Shot({
           {above === outside ? '↑' : above ? '↕' : '↓'} {plural(outside, 'more mark')} outside the frame
         </span>
       )}
+      {!failed && opens && (
+        <OpenFull
+          name={said ?? shotTitle(shot)}
+          onOpen={() =>
+            open({
+              title: said ?? shotTitle(shot),
+              kicker: `The whole page · ${shot.width} × ${shot.height}`,
+              sides: [{ shot, marks, alt }],
+            })
+          }
+        />
+      )}
+      {view}
     </div>
   );
 }
@@ -206,14 +276,34 @@ function Wipe({ before, after, tags, interactive }: Extract<PictureData, { type:
   const [a, b] = tags;
   // Both sides show the same window, so the wipe lines up: the one around the after side's mark, or the before's.
   const anchor = after.boxes[0] ?? before.boxes[0];
+  // Pressed, the wipe opens both its sides whole, side by side, rather than the one under the pointer.
+  const opens = useContext(OpensShots);
+  const [open, view] = useFullSize();
+  const title = `${capital(pageName(after.route))}, ${a.toLowerCase()} and ${b.toLowerCase()}`;
+  const side = (shot: Screenshot, tag: Tag) => ({
+    shot,
+    marks: shot.boxes,
+    alt: altOf(shot, shot.boxes),
+    tag: { text: `${tag} · ${shortVersion(shot.version)}`, tone: TAG_TONE[tag] },
+  });
   return (
     <div className="wipe" ref={wipe}>
       <div className="wipe-before">
-        <Shot shot={before} eager={interactive} anchor={anchor} />
+        <Shot shot={before} eager={interactive} anchor={anchor} opens={false} />
       </div>
       <div className="wipe-after">
-        <Shot shot={after} eager={interactive} anchor={anchor} />
+        <Shot shot={after} eager={interactive} anchor={anchor} opens={false} />
       </div>
+      {opens && (
+        <OpenFull
+          name={title}
+          className="wipe-open"
+          onOpen={() =>
+            open({ title, kicker: 'The whole page · both sides', sides: [side(before, a), side(after, b)] })
+          }
+        />
+      )}
+      {view}
       <span className="div" />
       <span
         ref={handle}
@@ -259,14 +349,35 @@ function Wipe({ before, after, tags, interactive }: Extract<PictureData, { type:
 /** Pages that look exactly as they did, in a strip of their own screenshots. */
 function Unchanged({ pages }: { pages: Screenshot[] }) {
   const url = useArtifactUrl();
+  const opens = useContext(OpensShots);
+  const [open, view] = useFullSize();
   if (!pages.length) return null;
+  // In a sheet each one opens whole; elsewhere they are a picture of the count beside them, and say nothing.
   return (
     <div className="unchanged">
-      <span className="thumbs" aria-hidden="true">
-        {pages.map((page) => (
-          <img key={page.hash} src={url(page.hash)} alt="" loading="lazy" />
-        ))}
+      <span className="thumbs" aria-hidden={opens ? undefined : 'true'}>
+        {pages.map((page) =>
+          opens ? (
+            <button
+              type="button"
+              key={page.hash}
+              aria-label={`Open at full size: ${shotTitle(page)}`}
+              onClick={() =>
+                open({
+                  title: shotTitle(page),
+                  kicker: `No visible change · ${page.width} × ${page.height}`,
+                  sides: [{ shot: page, marks: page.boxes, alt: altOf(page, page.boxes) }],
+                })
+              }
+            >
+              <img src={url(page.hash)} alt="" loading="lazy" />
+            </button>
+          ) : (
+            <img key={page.hash} src={url(page.hash)} alt="" loading="lazy" />
+          ),
+        )}
       </span>
+      {view}
       <span>No visible change: {plural(pages.length, 'page')} match the version before, 0.0% of pixels</span>
     </div>
   );

@@ -37,6 +37,8 @@ const PATHS = {
   flag: 'M3.75 14.25V2.25 M3.75 2.75h8.5l-2 3 2 3h-8.5',
   /** An eye: preview a flag on the app. */
   eye: 'M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z M8 6a2 2 0 1 0 0 4 2 2 0 1 0 0-4',
+  /** Two corners drawn apart: open a picture at full size. */
+  expand: 'M9.5 2.5h4v4 M13.5 2.5 9.25 6.75 M6.5 13.5h-4v-4 M2.5 13.5l4.25-4.25',
   /** A laptop: a model run on Martin's own machine, where what matters is where it ran, not whose model it is. */
   local: 'M3 4h10v6.5H3z M1.5 12.5h13',
 } satisfies Record<Category | string, string>;

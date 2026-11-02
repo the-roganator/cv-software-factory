@@ -6,17 +6,22 @@
  */
 import type { PayloadOf, PublicEvent } from '@software-factory/events';
 import { VERSIONS } from '@software-factory/events';
+import type { Profile } from '@software-factory/policy/spend';
 import { describe, expect, it } from 'vitest';
 import { ACCESS } from '../../../../policy/access.ts';
 import { inForce } from '../../../../policy/settings.ts';
 import { SPEND } from '../../../../policy/spend.ts';
 import { SETTINGS_STEP_UP } from '../../web/src/access.ts';
 import { factoryOf } from '../../web/src/profile.ts';
-import { foldSettings, settingsAt, settingsView } from '../../web/src/projection/index.ts';
+import { foldAt, settingsAt } from '../../web/src/projection/index.ts';
 import { work } from './support.ts';
 
 const DAY = Date.parse('2026-10-03T00:00:00Z');
 const at = (hours: number) => DAY + hours * 3_600_000;
+
+/** Settings at t, as the console draws them: from the fold of the events by t. */
+const settingsView = (events: readonly PublicEvent[], profile: Profile, t: number) =>
+  settingsAt(foldAt(events, t).settings, profile, t);
 
 const step = (agent: PayloadOf<'model.called'>['agent'], costUsd: number): PayloadOf<'model.called'> => ({
   agent,
@@ -118,12 +123,24 @@ describe('the spend against the caps', () => {
         .add(60, 'model.called', 'reviewer', step('reviewer', 0.3)).events,
       settings(at(1), chosen({ caps: { dayUsd: 0.9, monthUsd: 10, workItemUsd: 0.5 } })),
     ];
-    const folded = foldSettings(events, 'local');
+    const folded = foldAt(events, at(12)).settings;
     // The day turns, and the week runs out, with no new event.
-    for (const t of [at(12), at(30), at(8 * 24 + 9)])
-      expect(settingsAt(folded, t)).toEqual(settingsView(events, 'local', t));
-    expect(settingsAt(folded, at(30)).spend.today.spentUsd).toBe(0);
-    expect(settingsAt(folded, at(8 * 24 + 9)).week.coder.steps).toBe(0);
+    for (const t of [at(12), at(30), at(8 * 24 + 9)]) {
+      expect(settingsAt(folded, 'local', t)).toEqual(settingsView([...events], 'local', t));
+    }
+    expect(settingsAt(folded, 'local', at(30)).spend.today.spentUsd).toBe(0);
+    expect(settingsAt(folded, 'local', at(8 * 24 + 9)).week.coder.steps).toBe(0);
+  });
+
+  it('counts nothing spent after t, from a fold made for a later time', () => {
+    const events = work('1002', at(8))
+      .open()
+      .add(0, 'model.called', 'coder', step('coder', 0.4))
+      .add(120, 'model.called', 'reviewer', step('reviewer', 0.3)).events;
+    const later = foldAt(events, at(12)).settings;
+    const between = at(9);
+    expect(settingsAt(later, 'local', between)).toEqual(settingsView([...events], 'local', between));
+    expect(settingsAt(later, 'local', between).spend.today.spentUsd).toBeCloseTo(0.4);
   });
 
   it('names no dearest work item on a day none has spent', () => {

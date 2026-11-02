@@ -320,12 +320,18 @@ export function foldFlags(seen: readonly PublicEvent[], items: readonly ItemStat
   for (const { flag, number } of specs.sort((a, b) => a.seq - b.seq)) named[flag] = number;
   const all = flagsFrom(records(seen), named);
   const chosen = seen.findLast((event) => event.type === 'controls.changed' && event.actor === 'martin');
-  const read = Object.entries(all).map(([name, now]) => ({
-    name,
-    now,
-    share: shareOf(seen, name, now),
-    ...latest(seen, name),
-  }));
+  // Each flag's moves and judgements, in one pass: what its share and its latest move are read from.
+  const byFlag = new Map<string, PublicEvent[]>();
+  for (const event of seen) {
+    if (event.type !== 'flag.staged' && event.type !== 'flag.compared' && event.type !== 'flag.checked') continue;
+    const of = byFlag.get(event.payload.flag);
+    if (of) of.push(event);
+    else byFlag.set(event.payload.flag, [event]);
+  }
+  const read = Object.entries(all).map(([name, now]) => {
+    const its = byFlag.get(name) ?? [];
+    return { name, now, share: shareOf(its, name, now), ...latest(its, name) };
+  });
   return { all, take: controlsInForce(chosen?.payload).take, read };
 }
 

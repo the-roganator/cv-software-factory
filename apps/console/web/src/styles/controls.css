@@ -218,7 +218,7 @@
   align-items: baseline;
   gap: 12px;
 }
-/* A panel's heading, but not a dialog's mounted inside one, which keeps its own (above), whatever it is in. */
+/* A panel's heading. A dialog mounted inside the panel keeps the dialog's own heading (above), whatever panel it is in. */
 .panel h2:not(.dialog *) {
   margin: 0;
   font: 400 28px / 1 var(--font-display);

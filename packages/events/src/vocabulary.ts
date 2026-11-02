@@ -340,3 +340,9 @@ export const NEED_REASON_CHARS = 200;
  * limit from those events, and the console counts against it.
  */
 export const MARTIN_REASON_CHARS = 200;
+
+/**
+ * The most Martin's answer to a hold in words may be (`hold.answered`), as he writes it in Needs you. The admin service
+ * takes its limit from here, and the console counts against it.
+ */
+export const MARTIN_ANSWER_CHARS = 300;

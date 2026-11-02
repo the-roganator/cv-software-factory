@@ -94,7 +94,8 @@ export function writer({ token, stepUp, live, show }: WriterDeps): Writer {
               }
             : async () => {
                 cancelled = !(await stepUp().ask(passkey));
-                return !cancelled;
+                // Given, but what asked has gone while the dialog was open: not sent again.
+                return !cancelled && live();
               };
       const got = await write(path, body, session, again);
       // Gone while it asked: nothing more is sent, and nothing to say.

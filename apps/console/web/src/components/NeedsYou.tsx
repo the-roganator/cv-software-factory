@@ -19,6 +19,7 @@
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
+import { MARTIN_ANSWER_CHARS } from '@software-factory/events';
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
@@ -42,9 +43,6 @@ import { Shot } from './Pictures.tsx';
 import { Key, useStepUp } from './StepUp.tsx';
 import { ReasonField, Refusal } from './Words.tsx';
 import { useWrite } from './Write.tsx';
-
-/** The most an answer in words may say, as the admin service and the event take it. */
-const WORDS = 300;
 
 const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer' } as const;
 
@@ -273,7 +271,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
                   id={`${id}-text`}
                   label={`Your answer to #${need.workItem}`}
                   labelHidden
-                  limit={WORDS}
+                  limit={MARTIN_ANSWER_CHARS}
                   rows={3}
                   value={words}
                   onChange={setWords}

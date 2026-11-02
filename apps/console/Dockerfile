@@ -4,7 +4,7 @@
 #     docker build --file apps/console/Dockerfile --build-arg GIT_COMMIT=$(git rev-parse HEAD) .
 #
 # The browser code is built in one stage and the server's production dependencies installed in another; the
-# runtime image takes the output of both, and keeps the repository's layout, so the server finds its files
+# runtime image takes the output of both, then the server's code, and keeps the repository's layout, so the server finds its files
 # where it does in development. The migration Job runs this image too.
 
 FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS base
@@ -38,22 +38,25 @@ COPY docs/design/system/mark/icon.svg docs/design/system/mark/
 ARG GIT_COMMIT=unknown
 RUN GIT_COMMIT=$GIT_COMMIT pnpm --filter @software-factory/console build
 
-# The server: TypeScript that Node runs as it is, and its production dependencies only.
-FROM base AS server
-RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/console...
-COPY apps/console/src apps/console/src
-COPY packages/events/src packages/events/src
-COPY packages/store/src packages/store/src
-COPY packages/store/migrations packages/store/migrations
+# The server's production dependencies, made readable by the unprivileged runtime user and by nobody's writes in the
+# same layer, so a change to the code alone writes none of them again.
+FROM base AS deps
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/console... \
+  && chmod -R a+rX,go-w /repo
+
+# The server: TypeScript that Node runs as it is, over its dependencies, with the browser code beside it. Each copy is
+# a layer of its own, with the same modes as the dependencies'.
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:cb606325b7ec4af55462cb0b424a53b452a5b4a894ffe841fcf1048d216fb9f8 AS runtime
+COPY --from=deps /repo /repo
+WORKDIR /repo
+COPY --chmod=a+rX,go-w apps/console/src apps/console/src
+COPY --chmod=a+rX,go-w packages/events/src packages/events/src
+COPY --chmod=a+rX,go-w packages/store/src packages/store/src
+COPY --chmod=a+rX,go-w packages/store/migrations packages/store/migrations
 # Who may do what (policy/access.ts), which the server enforces, Martin's roles in the store (store-grants.ts), and the
 # profiles and their models (spend.ts, models.ts), one of which the server tells the page.
-COPY policy/access.ts policy/store-grants.ts policy/spend.ts policy/models.ts policy/
-COPY --from=web /repo/apps/console/dist apps/console/dist
-# Readable by the unprivileged runtime user, and by nobody's writes.
-RUN chmod -R a+rX,go-w /repo
-
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:cb606325b7ec4af55462cb0b424a53b452a5b4a894ffe841fcf1048d216fb9f8
-COPY --from=server /repo /repo
+COPY --chmod=a+rX,go-w policy/access.ts policy/store-grants.ts policy/spend.ts policy/models.ts policy/
+COPY --from=web --chmod=a+rX,go-w /repo/apps/console/dist apps/console/dist
 WORKDIR /repo/apps/console
 ARG GIT_COMMIT=unknown
 ENV GIT_COMMIT=$GIT_COMMIT NODE_ENV=production PORT=8080

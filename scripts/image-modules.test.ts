@@ -19,8 +19,8 @@ const ROOT = resolve(import.meta.dirname, '..');
 interface Image {
   dockerfile: string;
   /**
-   * The stages whose copies the runtime holds: those it copies `/repo` from whole, and the stages they are built
-   * from. A stage it takes only a built output from (the console's `web`, for its `dist`) is not one.
+   * The stages whose copies the runtime holds: its own, those it copies `/repo` from whole, and the stages they are
+   * built from. A stage it takes only a built output from (the console's `web`, for its `dist`) is not one.
    */
   stages: string[];
   /** What the image runs: its command, and any other a Job runs it with. */
@@ -37,14 +37,14 @@ interface Image {
 const IMAGES: Record<string, Image> = {
   console: {
     dockerfile: 'apps/console/Dockerfile',
-    stages: ['base', 'server'],
+    stages: ['base', 'deps', 'runtime'],
     // The server, and the migration Job (deploy/base/migrate/job.yaml).
     entries: ['apps/console/src/server.ts', 'apps/console/src/telemetry.ts', 'packages/store/src/migrate.ts'],
     reaches: ['packages/store/src/flags.ts', 'policy/access.ts'],
   },
   factory: {
     dockerfile: 'apps/factory/Dockerfile',
-    stages: ['base', 'server'],
+    stages: ['base', 'deps', 'runtime'],
     entries: ['apps/factory/src/cli.ts', 'apps/factory/src/telemetry.ts'],
     // `factory line bench`'s runner steps, and `factory guardrails`, which run on the Mac alone, never in the cluster.
     hostOnly: ['apps/runner/src/agent.ts', 'apps/runner/src/prepare.ts', 'apps/factory/src/guardrails/command.ts'],
@@ -53,7 +53,7 @@ const IMAGES: Record<string, Image> = {
   },
   runner: {
     dockerfile: 'apps/runner/Dockerfile',
-    stages: ['runner'],
+    stages: ['deps', 'runtime'],
     entries: ['apps/runner/src/cli.ts'],
     reaches: ['apps/runner/src/agent.ts', 'apps/runner/src/prepare.ts'],
   },
@@ -203,13 +203,19 @@ describe('reading an image', () => {
       'COPY package.json pnpm-lock.yaml ./',
       'FROM base AS web',
       'COPY policy/flag-moves.ts policy/',
-      'FROM base AS server',
-      'COPY --chown=1000 apps/console/src apps/console/src',
-      'COPY --from=web /repo/apps/console/dist apps/console/dist',
-      'FROM distroless',
-      'COPY --from=server /repo /repo',
+      'FROM base AS deps',
+      'COPY --chown=1000 packages/store/migrations packages/store/migrations',
+      'FROM distroless AS runtime',
+      'COPY --from=deps /repo /repo',
+      'COPY --chmod=a+rX,go-w apps/console/src apps/console/src',
+      'COPY --from=web --chmod=a+rX,go-w /repo/apps/console/dist apps/console/dist',
     ].join('\n');
-    expect(copied(dockerfile, ['base', 'server'])).toEqual(['package.json', 'pnpm-lock.yaml', 'apps/console/src']);
+    expect(copied(dockerfile, ['base', 'deps', 'runtime'])).toEqual([
+      'package.json',
+      'pnpm-lock.yaml',
+      'packages/store/migrations',
+      'apps/console/src',
+    ]);
   });
 
   it('reads a .dockerignore that leaves out everything and lets paths back, and no other', () => {

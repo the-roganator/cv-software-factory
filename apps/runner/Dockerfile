@@ -26,20 +26,23 @@ COPY --from=release /opt/pnpm /opt/pnpm
 RUN ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm
 ENV npm_config_manage_package_manager_versions=false
 
-FROM node AS runner
+# The Agent SDK and the runner's other production dependencies, made readable by the unprivileged runtime user and by
+# nobody's writes in the same layer, so a change to the code alone writes none of them again.
+FROM node AS deps
 WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/runner/package.json apps/runner/
 # No lifecycle scripts: the only one is the repository's own, which installs git hooks.
-RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/runner...
-COPY apps/runner/src apps/runner/src
-# The skills a step can name, as a plugin the agent step loads (`plugin/README.md`).
-COPY apps/runner/plugin apps/runner/plugin
-# Readable by the unprivileged runtime user, and by nobody's writes.
-RUN chmod -R a+rX,go-w /repo
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/runner... \
+  && chmod -R a+rX,go-w /repo
 
-FROM node
-COPY --from=runner /repo /repo
+# The dependencies first, then the code over them, each copy a layer of its own, the code with the same modes.
+FROM node AS runtime
+COPY --from=deps /repo /repo
+WORKDIR /repo
+COPY --chmod=a+rX,go-w apps/runner/src apps/runner/src
+# The skills a step can name, as a plugin the agent step loads (`plugin/README.md`).
+COPY --chmod=a+rX,go-w apps/runner/plugin apps/runner/plugin
 USER 65532:65532
 # The job's volume is /work: the checkout, its dependencies and the agent's session.
 ENV NODE_ENV=production WORK=/work HOME=/work/home

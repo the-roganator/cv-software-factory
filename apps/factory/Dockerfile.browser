@@ -19,7 +19,9 @@
 
 FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea AS playwright
 
-FROM playwright AS server
+# The production dependencies, made readable by the unprivileged runtime user and by nobody's writes in the same
+# layer, so a change to the code alone writes none of them again.
+FROM playwright AS deps
 WORKDIR /repo
 # pnpm at the version (and hash) pinned in package.json's packageManager field.
 RUN corepack enable
@@ -29,17 +31,18 @@ COPY packages/events/package.json packages/events/
 COPY packages/store/package.json packages/store/
 COPY packages/triage/package.json packages/triage/
 # No lifecycle scripts: the only one is the repository's own, which installs git hooks. The browsers come with the image.
-RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/factory...
-COPY apps/factory/src apps/factory/src
-COPY packages/events/src packages/events/src
-COPY packages/store/src packages/store/src
-COPY packages/triage/src packages/triage/src
-COPY policy policy
-# Readable by the unprivileged runtime user, and by nobody's writes.
-RUN chmod -R a+rX,go-w /repo
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/factory... \
+  && chmod -R a+rX,go-w /repo
 
-FROM playwright
-COPY --from=server /repo /repo
+# The dependencies first, then the code over them, each copy a layer of its own, the code with the same modes.
+FROM playwright AS runtime
+COPY --from=deps /repo /repo
+WORKDIR /repo
+COPY --chmod=a+rX,go-w apps/factory/src apps/factory/src
+COPY --chmod=a+rX,go-w packages/events/src packages/events/src
+COPY --chmod=a+rX,go-w packages/store/src packages/store/src
+COPY --chmod=a+rX,go-w packages/triage/src packages/triage/src
+COPY --chmod=a+rX,go-w policy policy
 WORKDIR /repo/apps/factory
 # The same user as the factory image, so the artifacts volume looks the same to every worker that writes to it. Its
 # home is a folder the pod makes writable; the root filesystem is read-only.

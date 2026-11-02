@@ -632,11 +632,18 @@ export const PAYLOADS = {
     /**
      * What a check that failed said was wrong, each at the file it named: its annotations at the failure level, as
      * GitHub keeps them, less Actions' own line for a step that exited non-zero. The gate's words, which quote the
-     * app's code (a test's name, a path), so an agent is told them as quoted data. Absent from a check that named
-     * nothing, and from one recorded before gate.finished version 2.
+     * app's code (a test's name, a path), so an agent is told them as quoted data. A path longer than an event records
+     * is cut to fit and marked (`recordedPath`). Absent from a check that named nothing, and from one recorded before
+     * gate.finished version 2.
      */
     annotations: z
-      .array(z.strictObject({ path: text(PATH_CHARS), message: text(V.GATE_ANNOTATION_CHARS) }))
+      .array(
+        z.strictObject({
+          path: text(PATH_CHARS),
+          cut: z.literal(true).optional(),
+          message: text(V.GATE_ANNOTATION_CHARS),
+        }),
+      )
       .min(1)
       .max(V.MAX_GATE_ANNOTATIONS)
       .optional(),

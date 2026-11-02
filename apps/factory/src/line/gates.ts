@@ -24,12 +24,12 @@ import {
   GATE_ANNOTATION_CHARS,
   MAX_GATE_ANNOTATIONS,
   type NewEvent,
-  PATH_CHARS,
   type PayloadOf,
+  recordedPath,
   VERSIONS,
 } from '@software-factory/events';
 import { APP_LOGIN } from '../github/actions.ts';
-import type { CheckRun, PullRequestState } from '../github/reads.ts';
+import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { whatClearedOnLook } from './verify.ts';
 
 /** The App, as GitHub names the app behind a check run: the factory's own runs (the reviewer's) are not gates. */
@@ -77,8 +77,7 @@ export function gateRecord(events: readonly { type: string; payload: unknown }[]
   return record;
 }
 
-const outcome = (conclusion: string | null): PayloadOf<'gate.finished'>['conclusion'] =>
-  conclusion === 'success' || conclusion === 'neutral' ? 'success' : conclusion === 'skipped' ? 'skipped' : 'failure';
+const outcome: (conclusion: string | null) => PayloadOf<'gate.finished'>['conclusion'] = outcomeOf;
 
 /**
  * What a failed run said was wrong, as `gate.finished` keeps it: its first annotations, each cut to fit, or nothing
@@ -88,7 +87,7 @@ function annotationsOf(run: CheckRun): PayloadOf<'gate.finished'>['annotations']
   if (outcome(run.conclusion) !== 'failure') return undefined;
   const kept = (run.annotations ?? [])
     .map(({ path, message }) => ({
-      path: cutTo(path.trim(), PATH_CHARS),
+      ...recordedPath(path.trim()),
       message: cutTo(message.trim(), GATE_ANNOTATION_CHARS),
     }))
     .filter(({ path, message }) => path && message)

@@ -677,7 +677,7 @@ describe('the line', () => {
     github.pass(12, 'failure', []);
     await pass();
     expect((await payloads(workItem, 'gate.finished')).at(-1)).not.toHaveProperty('annotations');
-    expect(steps.requests.at(-1)?.prompt).toContain('- test: it said no more than that it failed.');
+    expect(steps.requests.at(-1)?.prompt).toContain('- test: no reason was recorded for it.');
   });
 
   it('holds for Martin, at the gates and with its reason, a coder that changes nothing after they fail, and does as he answers', async () => {

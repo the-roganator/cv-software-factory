@@ -278,7 +278,6 @@ export class FakeGitHub implements GitHubPort {
     throw new Error(`No fake read ${read}`);
   }
 
-  /** The required check, finished on the pull request's head. */
   /** The required check finishing on the pull request's head; one that fails says what was wrong, as the worker reads it. */
   pass(number = 12, conclusion = 'success', annotations?: Annotation[]): void {
     const pr = this.pulls.get(number);

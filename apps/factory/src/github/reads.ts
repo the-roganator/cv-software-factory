@@ -178,9 +178,16 @@ const ANNOTATIONS_PER_PAGE = 50;
  */
 const EXIT_CODE = /^Process completed with exit code \d+\.?$/;
 
-/** Whether a run's conclusion is a failure, as the gates judge one: anything but a success, a neutral or a skip. */
-const failed = (run: { status: string; conclusion: string | null }) =>
-  run.status === 'completed' && !['success', 'neutral', 'skipped'].includes(run.conclusion ?? '');
+/**
+ * A check run's conclusion as the gates judge it: a success or a neutral passes, a skip is skipped, and anything else
+ * (a failure, a timeout, a cancellation) fails. The one rule for it: the gates record it, and this worker reads what a
+ * failed run said by it.
+ */
+export const outcomeOf = (conclusion: string | null): 'success' | 'failure' | 'skipped' =>
+  conclusion === 'success' || conclusion === 'neutral' ? 'success' : conclusion === 'skipped' ? 'skipped' : 'failure';
+
+/** The errors a read of what a run said waits out: the next read asks again. Any other gives the run no reasons. */
+const PASSING: readonly string[] = ['rate-limited', 'server', 'network'];
 
 const RULES = z.array(
   z.object({
@@ -266,6 +273,10 @@ export class LiveReads implements Reads {
   async checkRuns(repo: string, sha: string): Promise<CheckRun[]> {
     // One page: a commit here has a dozen check runs, not a hundred.
     const { body } = await this.#github.poll(repo, `/repos/${repo}/commits/${sha}/check-runs?per_page=100`, CHECK_RUNS);
+    // What a run said is read only for the latest run of each name, as the gates take a check run again: an earlier
+    // attempt's is never recorded.
+    const latest = new Map<string, number>();
+    for (const run of body.check_runs) latest.set(run.name, Math.max(run.id, latest.get(run.name) ?? run.id));
     return Promise.all(
       body.check_runs.map(async (run) => {
         const read: CheckRun = {
@@ -278,7 +289,10 @@ export class LiveReads implements Reads {
           completedAt: run.completed_at ?? null,
           title: run.output?.title ?? null,
         };
-        return failed(run) ? { ...read, annotations: await this.#failedAnnotations(repo, run.id) } : read;
+        const failed = run.status === 'completed' && outcomeOf(run.conclusion) === 'failure';
+        return failed && latest.get(run.name) === run.id
+          ? { ...read, annotations: await this.#failedAnnotations(repo, run.id) }
+          : read;
       }),
     );
   }
@@ -286,8 +300,10 @@ export class LiveReads implements Reads {
   /**
    * A failed run's annotations at the failure level, less Actions' exit-code line: what the gate itself said was
    * wrong. A job's summary is not in its check run's output, so these are the only reasons GitHub keeps for a job.
-   * One more conditional read for each run that failed, and none for the rest; a run whose annotations are gone, as
-   * when it was run again, has none.
+   * One more conditional read for each run that failed, and none for the rest. The reasons are extras: a read that
+   * GitHub refuses, or answers with nothing or something malformed, gives none, so the runs are still read and the
+   * gates recorded. One that a rate limit or an outage stops fails the whole read, which the line asks again on its
+   * next pass, so a passing failure does not record a gate without its reasons for good.
    */
   async #failedAnnotations(repo: string, id: number): Promise<Annotation[]> {
     try {
@@ -297,8 +313,8 @@ export class LiveReads implements Reads {
         annotation_level === 'failure' && message?.trim() && !EXIT_CODE.test(message.trim()) ? [{ path, message }] : [],
       );
     } catch (error) {
-      if (error instanceof GitHubError && error.kind === 'not-found') return [];
-      throw error;
+      if (error instanceof GitHubError && PASSING.includes(error.kind)) throw error;
+      return [];
     }
   }
 

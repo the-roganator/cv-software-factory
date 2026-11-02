@@ -474,7 +474,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
           // A change written up is written up again: the next round is a different change, and its pull request
           // went back to draft with the return, until the describer readies it again.
           state.described = false;
-          state.returns.push(state.rebuild);
+          state.returns.push({ from: state.rebuild.from, reason: state.rebuild.reason });
           state.round += 1;
           if (event.payload.from === 'gates') state.gateReturns += 1;
           if (event.payload.suggestions !== undefined) state.suggestionReturns += 1;

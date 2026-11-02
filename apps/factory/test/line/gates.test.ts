@@ -106,12 +106,28 @@ describe('the gates, as events', () => {
     expect(lint).toHaveLength(MAX_GATE_ANNOTATIONS);
     expect(lint[0]?.message).toHaveLength(GATE_ANNOTATION_CHARS);
     expect(lint[0]?.message.endsWith('…')).toBe(true);
+    expect(lint[1]).not.toHaveProperty('cut');
     // Each is a valid event, as the store will take it.
     for (const draft of drafts)
       expect(validate(asEvent('1015', draft, '2026-11-02T06:50:49.000Z'))).toEqual({ ok: true });
     // The same runs again say nothing new: what a check said is recorded with it, once.
     const record = gateRecord(drafts.map(({ type, payload }) => ({ type, payload })));
     expect(gateEvents(pr(), runs, ['test integrity', 'types', 'lint', 'test'], record)).toEqual([]);
+  });
+
+  it('mark a path cut to fit what an event records, as a push marks one', () => {
+    const long = `test/${'deep/'.repeat(50)}app.test.ts`;
+    const drafts = gateEvents(
+      pr(),
+      [{ ...run(1, 'test integrity', 'failure'), annotations: [{ path: long, message: 'x' }] }],
+      ['test integrity'],
+      nothing,
+    );
+    const finished = drafts.find((d) => d.type === 'gate.finished')?.payload as PayloadOf<'gate.finished'>;
+    expect(finished.annotations?.[0]).toMatchObject({ cut: true, message: 'x' });
+    expect(finished.annotations?.[0]?.path).toHaveLength(200);
+    for (const draft of drafts)
+      expect(validate(asEvent('1015', draft, '2026-11-02T06:50:49.000Z'))).toEqual({ ok: true });
   });
 
   it('take a check run again by its latest run, and leave out the factory’s own', () => {

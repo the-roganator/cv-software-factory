@@ -373,7 +373,7 @@ test.describe('a sheet’s releases', () => {
     await expect(blocks.nth(1).locator('.verify .v')).toHaveText('Persists · back to Plan');
     await expect(blocks.nth(1)).toContainText('with #1304');
     // The page that release changed for #1304 says whose change it was.
-    await expect(blocks.nth(1).locator('.regress figure').first()).toContainText('Contact0.0% · intended for #1304');
+    await expect(blocks.nth(1).locator('.regress figure').first()).toContainText('Contact0% · intended for #1304');
   });
 
   test('folds the passes it is not in, and windows the events', async ({ page }) => {

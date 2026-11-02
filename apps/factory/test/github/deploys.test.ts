@@ -171,7 +171,14 @@ function github(
       path: /\/pulls\?state=all/,
       answer: () => ({ body: pulls.map((p) => ({ ...p, head: { sha: branches.get(target.branch) } })) }),
     },
-    { method: 'GET', path: /\/pulls\/\d+$/, answer: () => ({ body: { mergeable } }) },
+    {
+      method: 'GET',
+      path: /\/pulls\/\d+$/,
+      answer: ({ path }) => {
+        const pull = pulls.find((p) => path.endsWith(`/pulls/${p.number}`));
+        return { body: { mergeable, body: pull?.body ?? null } };
+      },
+    },
     compareRoute(repo, () => failCompare),
     // Its deploy pull requests are the App's, as the issue guard asks before it labels or moves one.
     {
@@ -762,7 +769,7 @@ describe('the pull requests a deploy brings', () => {
     expect(bodies[0]).toContain(JSON.stringify(opened.body.body));
   });
 
-  it('reads the first page of a long range and then its newest, and lists each once, newest first', async () => {
+  it('reads the first page of a long range and then its newest together, and lists each once, newest first', async () => {
     const shas = Array.from({ length: 250 }, (_, i) => i.toString(16).padStart(40, '0'));
     const sent: Sent[] = [];
     const { github: client_ } = client(
@@ -784,7 +791,9 @@ describe('the pull requests a deploy brings', () => {
     );
     const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
     const read = (await brings(client_, APP.repo, APP, [move], [])) as Brings;
-    expect(calls(sent).map((s) => /page=(\d+)$/.exec(s.path)?.[1])).toEqual(['1', '3', '2']);
+    const [first, ...later] = calls(sent).map((s) => /page=(\d+)$/.exec(s.path)?.[1]);
+    expect(first).toBe('1');
+    expect(later.sort()).toEqual(['2', '3']);
     expect(read.count).toBe(250);
     expect(read.whole).toBe(true);
     expect(read.commits.map((c) => c.sha)).toEqual([...shas].reverse());
@@ -856,6 +865,58 @@ describe('the pull requests a deploy brings', () => {
     expect(read.commits.map((c) => c.sha[0])).toEqual(['5', '3', '4', '2', '1']);
     expect(read.commits[0]?.reaches).toEqual([CONSOLE_PIN, FACTORY_PINS]);
     expect(read).toMatchObject({ count: 5, whole: true });
+  });
+
+  it('reads a range once for the pins moved from the same commit to the same commit', async () => {
+    const sent: Sent[] = [];
+    const { github: client_ } = client(
+      [
+        {
+          method: 'GET',
+          path: /\/compare\//,
+          answer: () => ({
+            body: { total_commits: 1, commits: [{ sha: commit('5'), commit: { message: 'fix: x (#5)' } }] },
+          }),
+        },
+      ],
+      sent,
+    );
+    const moves = [
+      { pin: CONSOLE_PIN, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
+      { pin: FACTORY_PINS, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
+    ];
+    const read = (await brings(client_, FACTORY.repo, FACTORY, moves, [])) as Brings;
+    expect(calls(sent)).toHaveLength(1);
+    expect(read.commits.map((c) => c.reaches)).toEqual([[CONSOLE_PIN, FACTORY_PINS]]);
+  });
+
+  it('says which pins it moves from no known commit, so a list of the others does not read as the whole', async () => {
+    const { github: client_ } = client([
+      {
+        method: 'GET',
+        path: /\/compare\//,
+        answer: () => ({
+          body: { total_commits: 1, commits: [{ sha: commit('5'), commit: { message: 'fix: x (#5)' } }] },
+        }),
+      },
+    ]);
+    const moves = [
+      { pin: CONSOLE_PIN, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } },
+      { pin: FACTORY_PINS, proposal: { commit: commit('5'), pinned: undefined, digests: [] } },
+    ];
+    const read = (await brings(client_, FACTORY.repo, FACTORY, moves, [])) as Brings;
+    expect(read.unranged).toEqual([FACTORY_PINS]);
+    expect(bringsSection(FACTORY, read)).toContain(
+      'What the factory brings is not listed: no commit is pinned for it to compare with.',
+    );
+  });
+
+  it('reads them once its commit is made, so the read never holds that commit back', async () => {
+    const gh = github(FACTORY);
+    await watch(gh, FACTORY)();
+    const order = calls(gh.sent).map((s) => (s.path.includes('/compare/') ? 'compare' : s.path));
+    expect(order.indexOf('/graphql')).toBeGreaterThan(-1);
+    expect(order.indexOf('compare')).toBeGreaterThan(order.indexOf('/graphql'));
   });
 });
 

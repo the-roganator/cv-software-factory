@@ -512,6 +512,20 @@ describe('describing a deploy', () => {
     expect(toPull().map((c) => c.method)).toEqual(['PATCH', 'GET', 'PATCH']);
     expect(pull.body()).toBe(`Runs \`bbbbbbb\` on the local cluster.\n\n${carriesSection(CARRIES)}`);
   });
+
+  it('keeps, when asked, the Carries the line wrote after the watch made its body', async () => {
+    const pull = deployPull();
+    const { github } = client(pull.routes);
+    const actions = new LiveActions(github, { guard: appsOwn() });
+    // The watch read the body before the line described it, and made its new body from that.
+    const made = 'Runs `aaaaaaa` on the local cluster.\n\nIt brings no pull request.';
+    await actions.describeDeploy(REPO, 30, { commit: SHA, carries: CARRIES });
+    await actions.updatePullRequest(REPO, 30, { body: made, keepCarries: true });
+    expect(pull.body()).toBe(`${made}\n\n${carriesSection(CARRIES)}`);
+    // Not asked, it writes the body it was given.
+    await actions.updatePullRequest(REPO, 30, { body: made });
+    expect(pull.body()).toBe(made);
+  });
 });
 
 describe('a dry run', () => {

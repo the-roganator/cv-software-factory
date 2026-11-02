@@ -148,12 +148,13 @@ A build with no signature yet is waited for, and warned of once it has waited lo
 
 A deploy pull request's body lists, between markers, the pull requests the deploy brings, in both repositories, read from GitHub:
 
-- **Each range.** For each pin file it moves from a known commit, the commits GitHub's comparison gives from that commit to the one proposed, as the watch's other reads go. A pin file whose pinned images' labels name no commit has no range, and adds nothing.
+- **Each range.** For each pin file it moves from a known commit, the commits GitHub's comparison gives from that commit to the one proposed, as the watch's other reads go. Pin files moved from the same commit to the same commit share one read. A pin file whose pinned images' labels name no commit has no range: the list says its changes are not listed.
 - **One list.** A commit in the range of more than one pin file is listed once, with each it reaches (a column only when the deploy moves more than one), newest first by its place on main.
 - **Every commit.** Every commit in a range is listed, whether or not it changed that pin file's images, so a deploy whose images were built again for changes elsewhere shows it.
 - **Its subject in columns.** Main is squash-merged, so each commit is a pull request, `type(scope)!: subject (#N)`: its number, type (`feat!` for a breaking change), scope and subject. One whose subject is not a Conventional Commit still has a row, with its whole first line, and its commit where it names no pull request.
-- **The latest fifty.** It lists the latest fifty, and a count of the rest. A range is read a hundred commits to a page, its first page and then its newest, ten pages at most; a longer one is counted as at least its length.
-- **Never in the way.** A read that fails leaves the list out, and the pull request opens or moves without it; each pass reads again until the body has it. An open pull request whose body lacks it, opened before the list or by such a pass, has it filled in, with the rest of its body kept.
+- **The latest fifty.** It lists the latest fifty, and a count of the rest. A range is read a hundred commits to a page, its first page and then its newest together, ten pages at most; a longer one is counted as at least its length.
+- **Never in the way.** It is read once the deploy's commit is made, so it never holds that commit back. A read that fails leaves the list out, and the pull request opens or moves without it; each pass reads again until the body has it. An open pull request whose body lacks it, opened before the list or by such a pass, has it filled in, with the rest of its body kept.
+- **Carries kept.** A body the watch writes keeps the Carries section the pull request has as it is written, read in the same turn as the line's own writes to it, so a description the line wrote while the list was read is not lost.
 
 #### Carries
 

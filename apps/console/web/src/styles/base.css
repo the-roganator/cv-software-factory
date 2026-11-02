@@ -59,6 +59,11 @@ a:hover {
   font-size: 10px;
   letter-spacing: 1px;
 }
+/* A table's head in label type: its cells neither bold nor centred, under any rule of the table's own. */
+:where(thead.label) th {
+  font-weight: 400;
+  text-align: left;
+}
 .muted {
   color: var(--text-muted);
 }

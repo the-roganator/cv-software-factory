@@ -11,6 +11,7 @@
 
 import { MODEL_AGENTS, type Sense } from '@software-factory/events';
 import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { STAGE_NAME } from '../../../../../docs/design/system/station.ts';
 import type { Admin } from '../admin.ts';
 import {
   AGENT_NAME,
@@ -930,7 +931,7 @@ function RoundRow({ attempt: a, followed, reviewing }: { attempt: Attempt; follo
             )}
             <span className="pill ret-pill">
               <Glyph name="back" />
-              {capital(a.returned.from)} → Build · {a.returned.detail}
+              {STAGE_NAME[a.returned.from]} → Build · {a.returned.detail}
             </span>
           </div>
         </>

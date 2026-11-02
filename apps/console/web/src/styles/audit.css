@@ -1,5 +1,5 @@
 /*
- * The audit log (`?view=audit`): the filters, then a table of every event, newest first, a `t-label` row for each day.
+ * The audit log (`?view=audit`): the filters, then a table of every event, newest first, a label row for each day.
  * Martin's own actions take a 2px `text` rule on the row's left; a refusal is in `attn`; what a public view left out
  * says so in `text-muted` italic. On a phone each row is two lines: time, actor, the kind's glyph and the work item,
  * then what happened and its detail. The page's head and its drop-down are the settings page's (`settings.css`).
@@ -74,8 +74,6 @@ table.audit {
   color: var(--text-muted);
 }
 .audit thead th {
-  text-align: left;
-  font-weight: 400;
   padding: 0 14px 8px 0;
   border-bottom: 1px solid var(--line-strong);
 }

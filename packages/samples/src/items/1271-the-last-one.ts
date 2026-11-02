@@ -1,7 +1,7 @@
 /**
  * An improvement Martin asked for: specified, approved, built behind a flag, shipped with it off, widened a stage at a
  * time to everyone (Verify's comparison at Share passing first), and closed as verified once the app held it there. Its
- * flag stays in Controls, Martin's to turn off.
+ * flag stays in Flags, Martin's to turn off.
  */
 import { commitFor, Item } from '../build.ts';
 import { changed, shot } from '../captures.ts';

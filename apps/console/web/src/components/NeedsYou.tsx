@@ -382,7 +382,7 @@ function FlagCard({
   onMoved,
 }: {
   need: FlagNeed;
-  /** The flag's row, as Controls draws it, which the confirmation judges the move from. */
+  /** The flag's row, as Flags draws it, which the confirmation judges the move from. */
   row: FlagRow | undefined;
   admin: Admin;
   app: string | undefined;

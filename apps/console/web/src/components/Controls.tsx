@@ -1,8 +1,8 @@
 /**
- * Controls, the right of the bottom row, beside Needs you (`NeedsYou.tsx`), for everyone: the line's controls
- * (Autonomy, Switches, What the line takes), Alerts, the feature flags (`Flags.tsx`), then Spend, a key to the key, and
- * links to the settings and the audit log.
- * The settings page draws the line's controls (`LineControls`) and Spend from here too.
+ * Controls and Spend, two of the three panels in the bottom row's right column, beside Needs you (`NeedsYou.tsx`), for
+ * everyone: Controls, then Flags (`Flags.tsx`), then Spend. Controls holds the line's controls (Autonomy, Switches,
+ * What the line takes) and Alerts, with a key to the key and a link to the audit log; Spend, its meters and a link to
+ * the settings. The settings page draws the line's controls (`LineControls`) and Spend's meters from here too.
  *
  * The line's controls are Martin's, in force as the latest `controls.changed` and policy's check say
  * (`projection/controls.ts`). Each change is one write to the admin service (`POST /admin/line/controls`), which
@@ -26,9 +26,7 @@ import { type ReactNode, useId, useState } from 'react';
 import { CONTROL_STEP_UP, PHONE_STEP_UP } from '../access.ts';
 import { type Admin, said as serviceSaid } from '../admin.ts';
 import { AUTONOMY, money, shortWhen } from '../format.ts';
-import type { HeldAnswer } from '../held.ts';
-import type { ControlsView, FlagsView, Meter, SpendView } from '../projection/index.ts';
-import { FlagsGroup } from './Flags.tsx';
+import type { ControlsView, Meter, SpendView } from '../projection/index.ts';
 import { Glyph } from './Glyph.tsx';
 import { type Asked, Key } from './StepUp.tsx';
 import { Refusal } from './Words.tsx';
@@ -59,14 +57,10 @@ function SpendMeter({ label, meter, note }: { label: string; meter: Meter; note?
   );
 }
 
-/** The Spend group: the three meters, as Controls and the settings page draw them. */
-export function SpendGroup({ spend }: { spend: SpendView }) {
+/** The three meters, today, this month and the dearest work item today, as the Spend panel and the settings draw them. */
+function SpendMeters({ spend }: { spend: SpendView }) {
   return (
-    <div className="ctl-group">
-      <span className="label">
-        <span>Spend</span>
-        <span>resets at 00:00 UTC</span>
-      </span>
+    <>
       <SpendMeter label="Models today" meter={spend.today} />
       <SpendMeter label="This month" meter={spend.month} />
       {spend.dearest ? (
@@ -74,7 +68,50 @@ export function SpendGroup({ spend }: { spend: SpendView }) {
       ) : (
         <p className="help">No work item has spent anything on models today.</p>
       )}
+    </>
+  );
+}
+
+/** When the day's spend starts again from nothing. */
+const RESETS = 'resets at 00:00 UTC';
+
+/** The Spend group, as the settings draw it for a visitor, under who changes them: the meters, under a label. */
+export function SpendGroup({ spend }: { spend: SpendView }) {
+  return (
+    <div className="ctl-group">
+      <span className="label">
+        <span>Spend</span>
+        <span>{RESETS}</span>
+      </span>
+      <SpendMeters spend={spend} />
     </div>
+  );
+}
+
+/**
+ * The Spend panel, the third of the bottom row's right column, for everyone: the meters, who sets the caps, and the
+ * way to them. Nothing in it is a control, so it reads the same to Martin and to a visitor but for that line.
+ */
+export function SpendPanel({ spend, admin }: { spend: SpendView; admin: Admin }) {
+  const martin = admin.kind === 'martin';
+  return (
+    <article className="panel spend" aria-labelledby="spend-title">
+      <div className="panel-head">
+        <h2 id="spend-title">Spend</h2>
+        <span className="label">{RESETS}</span>
+      </div>
+      <div className="ctl-group">
+        <SpendMeters spend={spend} />
+      </div>
+      <p className="help">
+        {martin
+          ? 'Each cap is yours to set within its ceiling in the settings. Raising one asks for your passkey again.'
+          : 'Martin sets each cap within its ceiling, signed in with his passkey, and every change is an event for all to see.'}
+      </p>
+      <div className="links">
+        <a href="?view=settings">{martin ? 'Settings' : 'Models and spend caps'}</a>
+      </div>
+    </article>
   );
 }
 
@@ -646,22 +683,12 @@ export function KeyLegend() {
 interface ControlsProps {
   /** The page's profile, whose default says whether alerts reach the phone before Martin switches them. */
   profile: Profile;
-  spend: SpendView;
   controls: ControlsView;
-  flags: FlagsView;
   admin: Admin;
-  /** The app's origin, which a flag's preview opens. */
-  app: string | undefined;
-  /** Whether the app holds the flags as set. */
-  held: HeldAnswer;
-  /** The page's time. */
-  now: number;
-  onOpen: (item: string) => void;
-  /** A flag was moved: the page asks again soon whether the app holds it. */
-  onMoved: () => void;
 }
 
-export function Controls({ profile, spend, controls, flags, admin, app, held, now, onOpen, onMoved }: ControlsProps) {
+/** The Controls panel, the first of the bottom row's right column: the line's controls and Alerts, nothing else. */
+export function Controls({ profile, controls, admin }: ControlsProps) {
   const martin = admin.kind === 'martin';
   const changer = useChange(admin);
   return (
@@ -676,8 +703,6 @@ export function Controls({ profile, spend, controls, flags, admin, app, held, no
         viewer={martin ? 'martin' : 'visitor'}
         changer={changer}
       />
-      <FlagsGroup flags={flags} admin={admin} app={app} held={held} now={now} onOpen={onOpen} onMoved={onMoved} />
-      <SpendGroup spend={spend} />
       <p className="help">
         Gates, image signing and the egress fence are always on: they have no switch.
         {martin && (
@@ -687,13 +712,12 @@ export function Controls({ profile, spend, controls, flags, admin, app, held, no
           </>
         )}
       </p>
-      <p className="help">
-        {martin
-          ? 'Each cap is yours to set within its ceiling in the settings. Raising one asks for your passkey again.'
-          : 'Only Martin changes these, signed in with his passkey, and every change is an event for all to see.'}
-      </p>
+      {!martin && (
+        <p className="help">
+          Only Martin changes these, signed in with his passkey, and every change is an event for all to see.
+        </p>
+      )}
       <div className="links">
-        <a href="?view=settings">{martin ? 'Settings' : 'Models and spend caps'}</a>
         <a href="?view=audit">Audit log</a>
       </div>
     </article>

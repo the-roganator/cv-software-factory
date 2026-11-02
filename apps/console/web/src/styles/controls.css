@@ -1,7 +1,7 @@
 /*
  * Martin's writes, and their read-only form: the dialog, the passkey again (its key and the header's pill), the label
  * an action becomes for a visitor, the header's Stop the line, the Canary panel's controls, and the bottom row's panels
- * (Controls: the autonomy level, the switches, what the line takes, and Spend), which the settings page draws too.
+ * (Controls: the autonomy level, the switches and what the line takes; and Spend), which the settings page draws too.
  */
 
 /* A dialog: the browser's own modal, a raised card on the scrim, centred on a laptop and a bottom sheet on a phone. */
@@ -192,14 +192,20 @@
   background: var(--surface);
 }
 
-/* The bottom row: Needs you and Controls, side by side, under the reel. */
+/* The bottom row: Needs you on the left, and Controls, Flags and Spend one above the other on the right, under the reel. */
 .bottom {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  /* Each panel as tall as what it holds: Needs you grows with its cards, and Controls stays its own height. */
+  /* Each column as tall as what it holds: Needs you grows with its cards, and the right column stays its own height. */
   align-items: start;
   gap: 20px;
   margin-top: 56px;
+}
+.bottom-side {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
 }
 /* A panel: a surface that holds a group of cards or controls, with its heading; the Canary panel is one too. */
 .panel {
@@ -427,7 +433,7 @@
 
 /*
  * A flag's dialog (flags.css): the move, in capitals, over who gets it on there; and its share's choice, as wide as its
- * choices. After Controls' rules, since the dialog opens from inside Controls' groups.
+ * choices. After the groups' rules, since the dialog opens from inside the Flags panel's group.
  */
 .dialog .fromto {
   display: block;

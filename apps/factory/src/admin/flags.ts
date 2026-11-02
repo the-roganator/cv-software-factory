@@ -1,5 +1,5 @@
 /**
- * Martin's stages of the feature flags, from the console's Controls: `POST /admin/flags/:flag/stage`, with the stage
+ * Martin's stages of the feature flags, from the console's Flags panel: `POST /admin/flags/:flag/stage`, with the stage
  * the slider showed the flag at, the stage he chose, and his reason, which turning it off requires. The admin service
  * writes `flags`, the one FeatureFlag flagd watches, as its own service account, whose Role may get and update that
  * one object (deploy/base/flagd/admin-stages-flags.yaml), and whose every change an admission policy holds to the

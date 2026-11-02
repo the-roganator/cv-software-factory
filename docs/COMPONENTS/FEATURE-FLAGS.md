@@ -29,7 +29,7 @@ Each step is on the page that does it:
 
 ## The stages
 
-Martin stages each flag from the console's Controls, a slider of the stages per flag ([console](CONSOLE.md#what-it-draws)), and the [admin service](ADMIN-SERVICE.md#the-flags-stages) writes his stages into `flags`. It writes typed stages, never flagd's own JSON: `policy/flags.ts` renders them, and nothing else. Each stage keeps the ones before it, and is a fixed shape of flagd's targeting over the [evaluation context](#the-evaluation-context); the share is the only parameter. A feature is `ENABLED`, with two variants, `on` (`true`) and `off` (`false`):
+Martin stages each flag from the console's Flags panel, a slider of the stages per flag ([console](CONSOLE.md#what-it-draws)), and the [admin service](ADMIN-SERVICE.md#the-flags-stages) writes his stages into `flags`. It writes typed stages, never flagd's own JSON: `policy/flags.ts` renders them, and nothing else. Each stage keeps the ones before it, and is a fixed shape of flagd's targeting over the [evaluation context](#the-evaluation-context); the share is the only parameter. A feature is `ENABLED`, with two variants, `on` (`true`) and `off` (`false`):
 
 | Stage | Default | On, by its targeting, for |
 |---|---|---|

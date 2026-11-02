@@ -1,5 +1,5 @@
 /**
- * The slider's confirmation (`Flags.tsx`), from a stop, a drag or a flag's card, in Controls, Needs you or a work
+ * The slider's confirmation (`Flags.tsx`), from a stop, a drag or a flag's card, in Flags, Needs you or a work
  * item's sheet. Only Martin opens one, so its code arrives when he first does.
  */
 

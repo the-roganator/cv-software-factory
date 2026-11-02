@@ -280,7 +280,7 @@ serverFiles:
               level: "page"
             annotations:
               summary: "The flags changed with no record"
-              description: "flagd's flags hold a stage or a revision that no move of yours recorded: they were changed outside the console, or the admin service changed them without recording it. Controls shows each flag's stage as it is: move each that differs there, which records it, and look in the admin service's log."
+              description: "flagd's flags hold a stage or a revision that no move of yours recorded: they were changed outside the console, or the admin service changed them without recording it. The console's Flags panel shows each flag's stage as it is: move each that differs there, which records it, and look in the admin service's log."
           - alert: AdminActionUncounted
             expr: "max by (action) (last_over_time(line_admin_actions_uncounted{action=\"rollout\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[1m])) == 1"
             for: 2m

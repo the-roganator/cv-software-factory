@@ -275,7 +275,7 @@ export const ADMIN_UNCOUNTED_WORDS: Record<AdminAction, { summary: string; descr
   flags: {
     summary: 'The flags changed with no record',
     description:
-      "flagd's flags hold a stage or a revision that no move of yours recorded: they were changed outside the console, or the admin service changed them without recording it. Controls shows each flag's stage as it is: move each that differs there, which records it, and look in the admin service's log.",
+      "flagd's flags hold a stage or a revision that no move of yours recorded: they were changed outside the console, or the admin service changed them without recording it. The console's Flags panel shows each flag's stage as it is: move each that differs there, which records it, and look in the admin service's log.",
   },
   rollout: {
     summary: "The app's Rollout changed with no record",

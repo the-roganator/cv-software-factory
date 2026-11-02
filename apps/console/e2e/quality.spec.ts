@@ -78,14 +78,15 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       test.use({ viewport });
 
       for (const as of ['martin', 'visitor'] as const) {
-        test(`the header and Controls, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
+        test(`the header, Controls and Spend, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
           page,
         }) => {
           await adminService(page, as);
           await page.goto(consoleUrl({ theme }));
           await ready(page);
-          await page.locator('article.controls').waitFor();
-          expect((await axe(page).include('header.top').include('article.controls').analyze()).violations).toEqual([]);
+          await page.locator('article.spend').waitFor();
+          const panels = axe(page).include('header.top').include('article.controls').include('article.spend');
+          expect((await panels.analyze()).violations).toEqual([]);
         });
       }
 
@@ -106,7 +107,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
   }
 }
 
-// The flags (milestone 7, task 16): Needs you and Controls with a flag waiting, Martin's and a visitor's, the app's
+// The flags (milestone 7, task 16): Needs you and Flags with a flag waiting, Martin's and a visitor's, the app's
 // copy lagging; each of the slider's confirmations; and an improvement's sheet, on a laptop and a phone, in both themes.
 for (const width of ['laptop', 'phone'] as const) {
   for (const theme of THEMES) {
@@ -114,7 +115,7 @@ for (const width of ['laptop', 'phone'] as const) {
       test.use({ viewport: WIDTHS[width] });
 
       for (const as of ['martin', 'visitor'] as const) {
-        test(`Needs you and Controls with a flag waiting, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
+        test(`Needs you and Flags with a flag waiting, ${as === 'martin' ? 'Martin’s' : 'a visitor’s'}, have nothing for axe to find`, async ({
           page,
         }) => {
           await heldAs(page, 'lagging');

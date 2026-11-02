@@ -11,8 +11,8 @@ import { type Admin, type Door, stillSignedIn, useAdmin } from './admin.ts';
 import { OriginContext } from './artifacts.ts';
 import { Bird } from './components/Bird.tsx';
 import { Canary } from './components/Canary.tsx';
-import { Controls } from './components/Controls.tsx';
-import { useHeld } from './components/Flags.tsx';
+import { Controls, SpendPanel } from './components/Controls.tsx';
+import { FlagsPanel, useHeld } from './components/Flags.tsx';
 import { Footer } from './components/Footer.tsx';
 import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
 import { Line } from './components/Line.tsx';
@@ -108,7 +108,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
     return live;
   }, [expiresAt]);
   const source = useEvents(from, admin.kind === 'martin' && !auditPage ? 'full' : 'public', lost);
-  // Whether the app holds the flags as set, under Controls: asked of the admin service, wherever there is one, for
+  // Whether the app holds the flags as set, under the flags: asked of the admin service, wherever there is one, for
   // everyone.
   const service = signedIn.kind === 'martin' || signedIn.kind === 'visitor';
   const held = useHeld(from.kind === 'live' && service && !settingsPage && !auditPage && !privacyPage);
@@ -282,7 +282,11 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
           {settled && (
             <section
               className="bottom"
-              aria-label={admin.kind === 'martin' ? 'Needs you and controls' : 'Waiting on Martin, and controls'}
+              aria-label={
+                admin.kind === 'martin'
+                  ? 'Needs you, controls, flags and spend'
+                  : 'Waiting on Martin, controls, flags and spend'
+              }
             >
               <NeedsYou
                 needs={view.needs}
@@ -292,18 +296,19 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                 onOpen={setOpen}
                 onMoved={held.refresh}
               />
-              <Controls
-                profile={factory.profile}
-                spend={settings.spend}
-                controls={view.controls}
-                flags={view.flags}
-                admin={admin}
-                app={factory.app}
-                held={held.answer}
-                now={view.t}
-                onOpen={setOpen}
-                onMoved={held.refresh}
-              />
+              <div className="bottom-side">
+                <Controls profile={factory.profile} controls={view.controls} admin={admin} />
+                <FlagsPanel
+                  flags={view.flags}
+                  admin={admin}
+                  app={factory.app}
+                  held={held.answer}
+                  now={view.t}
+                  onOpen={setOpen}
+                  onMoved={held.refresh}
+                />
+                <SpendPanel spend={settings.spend} admin={admin} />
+              </div>
             </section>
           )}
         </div>

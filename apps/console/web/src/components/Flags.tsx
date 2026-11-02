@@ -1,8 +1,8 @@
 /**
- * The feature flags in Controls: a row per flag, with its name, its work item's link, the preview eye from Preview up,
- * and its stages as a slider of five stops, Off to Everyone. Martin sets a stage by clicking a stop, or by dragging the
- * handle and letting go on one; either opens one confirmation, which says the move and who gets the flag on there, or
- * why that stop can't be taken now. Under the flags, whether the app holds them as set, from the admin service's last
+ * The feature flags, in a panel of their own under Controls: a row per flag, with its name, its work item's link, the
+ * preview eye from Preview up, and its stages as a slider of five stops, Off to Everyone. Martin sets a stage by
+ * clicking a stop, or by dragging the handle and letting go on one; either opens one confirmation, which says the move
+ * and who gets the flag on there, or why that stop can't be taken now. Under the flags, whether the app holds them as set, from the admin service's last
  * check of it.
  *
  * Every stop is judged by `policy/flag-moves.ts`, the rules the admin service refuses a move by (`projection/flags.ts`),
@@ -84,7 +84,7 @@ function stopName(stop: Stop, row: FlagRow): string {
 
 /**
  * A flag's stages as a slider: the stops passed filled, the one it stands at ringed, the rest hollow; a stop that
- * can't be taken now dashed. Martin's, in Controls and on the sheet, has a button for each other stop and a handle he
+ * can't be taken now dashed. Martin's, in Flags and on the sheet, has a button for each other stop and a handle he
  * can drag; a visitor's, and a closed flag's, neither.
  */
 export function FlagSlider({ row, onChoose }: { row: FlagRow; onChoose?: ((stop: Stop) => void) | undefined }) {
@@ -281,10 +281,11 @@ function FlagLine({
 }
 
 /**
- * Controls' Flags: a row per flag in the app, those turned off and closed folded at the foot, and whether the app holds
- * them as set. With no flag yet, a sentence on how one comes.
+ * The Flags panel, between Controls and Spend in the bottom row's right column, for everyone: a row per flag in the
+ * app, those turned off and closed folded at the foot, and whether the app holds them as set. With no flag yet, a
+ * sentence on how one comes. A visitor's is read-only, and says so in its head, as Controls does.
  */
-export function FlagsGroup({
+export function FlagsPanel({
   flags,
   admin,
   app,
@@ -309,38 +310,46 @@ export function FlagsGroup({
   const current = choosing && flags.flags.find((row) => row.name === choosing.row.name);
   const count = flags.flags.length;
   return (
-    <div className="ctl-group flags">
-      <span className="label">
-        <span>Flags</span>
-        {count > 0 && <span>{count} in the app</span>}
-      </span>
-      {count === 0 && !flags.closed.length ? (
-        <p className="help">
-          No flag yet. An improvement ships behind one, off, and it shows here once its release is out.
-        </p>
-      ) : (
-        flags.flags.map((row) => <FlagLine key={row.name} row={row} app={app} onOpen={onOpen} onChoose={choose(row)} />)
-      )}
-      {flags.closed.length > 0 && (
-        <details className="flags-closed">
-          <summary>Turned off and closed · {flags.closed.length}</summary>
-          {flags.closed.map((row) => (
-            <FlagLine key={row.name} row={row} app={app} onOpen={onOpen} onChoose={undefined} />
-          ))}
-        </details>
-      )}
-      <HeldLine answer={held} martin={martin} now={now} />
-      {choosing && current && admin.kind === 'martin' && (
-        <Suspense fallback={null}>
-          <FlagDialog
-            row={current}
-            to={choosing.to}
-            token={admin.session.token}
-            onClose={() => setChoosing(undefined)}
-            onMoved={onMoved}
-          />
-        </Suspense>
-      )}
-    </div>
+    <article className="panel flags-panel" aria-labelledby="flags-title">
+      <div className="panel-head">
+        <h2 id="flags-title">Flags</h2>
+        {(count > 0 || !martin) && (
+          <span className="label">
+            {[count > 0 && `${count} in the app`, !martin && 'Read only'].filter(Boolean).join(' · ')}
+          </span>
+        )}
+      </div>
+      <div className="ctl-group flags">
+        {count === 0 && !flags.closed.length ? (
+          <p className="help">
+            No flag yet. An improvement ships behind one, off, and it shows here once its release is out.
+          </p>
+        ) : (
+          flags.flags.map((row) => (
+            <FlagLine key={row.name} row={row} app={app} onOpen={onOpen} onChoose={choose(row)} />
+          ))
+        )}
+        {flags.closed.length > 0 && (
+          <details className="flags-closed">
+            <summary>Turned off and closed · {flags.closed.length}</summary>
+            {flags.closed.map((row) => (
+              <FlagLine key={row.name} row={row} app={app} onOpen={onOpen} onChoose={undefined} />
+            ))}
+          </details>
+        )}
+        <HeldLine answer={held} martin={martin} now={now} />
+        {choosing && current && admin.kind === 'martin' && (
+          <Suspense fallback={null}>
+            <FlagDialog
+              row={current}
+              to={choosing.to}
+              token={admin.session.token}
+              onClose={() => setChoosing(undefined)}
+              onMoved={onMoved}
+            />
+          </Suspense>
+        )}
+      </div>
+    </article>
   );
 }

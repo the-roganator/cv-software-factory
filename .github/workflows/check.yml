@@ -199,7 +199,7 @@ jobs:
     timeout-minutes: 15
     # The console's tests in four shards, each on a runner of its own, and the speed test on another: it is timed, so
     # it runs alone, with no other test's browser on its CPU. Playwright shards by count of tests, in file order, not
-    # by how long they take, so the slowest shard, whichever files it draws, sets the job's time. A part that fails
+    # by how long they take, so the slowest shard, whichever tests it draws, sets the job's time. A part that fails
     # stops none of the others, so a run shows every failure.
     strategy:
       fail-fast: false

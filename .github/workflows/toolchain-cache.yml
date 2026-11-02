@@ -1,9 +1,12 @@
-# main's cache of the toolchain, for each set of tools a check.yml job installs. A run reads only its own branch's
-# caches and main's, and check.yml runs on pull requests and the merge queue alone, so without this each of their
-# branches would install the toolchain from scratch, and keep a copy that only it can read in the repository's 10 GB.
+# main's cache of the toolchain, for each set of tools a workflow installs. A run reads only its own branch's caches and
+# main's, and check.yml and pr-title.yml run on pull requests and the merge queue alone, so every use of mise saves its
+# cache on main only: a copy saved on one of their branches, about 100 MB a set, would serve nobody else, and one for
+# each pull request and queued merge after a move of the toolchain would crowd the repository's 10 GB.
 # mise-action keys its cache by the tools it is asked for and the files that pin them (scripts/toolchain.test.ts holds
-# this list to check.yml's), so it runs when those move, weekly in case the cache was evicted, and by hand: on main
-# alone, since a run elsewhere would save a cache only its own branch could read.
+# this list to every workflow's), so it runs when those move, by hand, and daily: the key changes every 30 days
+# (mise-action's cache_max_age_days) and only main saves one, so a day is the longest check.yml goes without a cache
+# after it does, or after one is evicted. On main alone, since a run elsewhere would save a cache only its own branch
+# could read.
 name: toolchain cache
 
 on:
@@ -11,7 +14,7 @@ on:
     branches: [main]
     paths: [mise.toml, mise.lock, .github/workflows/check.yml, .github/workflows/toolchain-cache.yml]
   schedule:
-    - cron: '41 4 * * 1'
+    - cron: '41 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -30,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [static, tests, zap]
+        job: [static, tests, zap, node]
         include:
           - job: static
             tools: node pnpm kustomize
@@ -38,12 +41,17 @@ jobs:
             tools: node pnpm kustomize step promtool
           - job: zap
             tools: node pnpm
+          # Node alone, for the workflows that run one script: pr-title.yml, review.yml, drift-check.yml and the rest.
+          - job: node
+            tools: node
     steps:
-      # The whole checkout, as check.yml's jobs have it, so the cache's key hashes the same files.
+      # The whole checkout, as check.yml's jobs have it, so the cache's key hashes the same files: mise.toml and mise.lock,
+      # which the other workflows' sparse checkouts hold too.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: ${{ matrix.tools }}

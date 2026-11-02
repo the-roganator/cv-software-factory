@@ -112,7 +112,12 @@ describe('every use of mise in CI', () => {
     text
       .split(/\n(?= +- )/)
       .filter((step) => /^ +- uses: jdx\/mise-action@/.test(step))
-      .map((step) => ({ file, version: /^ +version: (\S+)$/m.exec(step)?.[1] })),
+      .map((step) => ({
+        file,
+        version: /^ +version: (\S+)$/m.exec(step)?.[1],
+        tools: /^ +install_args: (.+)$/m.exec(step)?.[1],
+        save: /^ +cache_save: (.+)$/m.exec(step)?.[1],
+      })),
   );
 
   it('installs one release of mise, named', () => {
@@ -123,16 +128,30 @@ describe('every use of mise in CI', () => {
     expect([...versions][0]).toMatch(/^\d{4}\.\d+\.\d+$/);
   });
 
-  it("is cached on main for each set of tools check.yml installs, which runs on no branch of main's", () => {
-    const sets = (text: string) => [...text.matchAll(/^ +install_args: (.+)$/gm)].map(([, tools = '']) => tools);
-    const check = new Set(sets(read('.github/workflows/check.yml')));
+  it("is cached on main for each set of tools any workflow installs, since a run reads only its own and main's", () => {
     const cache = read('.github/workflows/toolchain-cache.yml');
     // Each set as the matrix's include gives it, beside the job it is named for.
-    const warmed = [...cache.matchAll(/^ +- job: \w+\n +tools: (.+)$/gm)].map(([, tools = '']) => tools);
-    expect(check.size).toBeGreaterThan(0);
-    expect(warmed.sort()).toEqual([...check].sort());
+    // The tools in the order mise-action keys them by, so `pnpm node` is the same set as `node pnpm`.
+    const set = (tools = '') => tools.split(' ').filter(Boolean).sort().join(' ');
+    const warmed = [...cache.matchAll(/^ +- job: \w+\n +tools: (.+)$/gm)].map(([, tools]) => set(tools));
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow writes it.
-    expect(sets(cache)).toEqual(['${{ matrix.tools }}']);
+    const matrix = '${{ matrix.tools }}';
+    // app-gates.yml runs in the app's repository alone (it refuses anything but its pull requests and merge queue),
+    // whose caches are its own: this repository's main cannot serve it.
+    const here = uses.filter(({ file }) => file !== 'toolchain-cache.yml' && file !== 'app-gates.yml');
+    expect(here.every(({ tools }) => tools)).toBe(true);
+    const installed = new Set(here.map(({ tools }) => set(tools)));
+    expect(installed.has('node')).toBe(true);
+    expect(warmed.sort()).toEqual([...installed].sort());
+    expect(uses.filter(({ file }) => file === 'toolchain-cache.yml').map(({ tools }) => tools)).toEqual([matrix]);
+  });
+
+  it('saves its cache on main alone, where every other run can read it', () => {
+    // A copy saved on a pull request's branch or the merge queue's could be read by that branch alone.
+    for (const { file, save } of uses) {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow writes it.
+      expect({ file, save }).toEqual({ file, save: "${{ github.ref == 'refs/heads/main' }}" });
+    }
   });
 
   it('checks out mise.lock beside mise.toml, so a sparse checkout installs from the lock too', () => {

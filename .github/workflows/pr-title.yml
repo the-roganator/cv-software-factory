@@ -39,6 +39,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node
       # Dependabot writes its own titles, and a long image tag takes them past the length (commit-msg.ts); the rest of
       # the rule still holds for them. It goes by who opened the pull request, so a title edited by hand on one of

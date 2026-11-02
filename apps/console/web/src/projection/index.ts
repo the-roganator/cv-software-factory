@@ -35,6 +35,7 @@ import {
   type Release,
   releasesAt,
 } from './release.ts';
+import { foldSettings, type SettingsFold } from './settings.ts';
 import { type Sheet, sheet } from './sheet.ts';
 
 export type { ControlsView } from './controls.ts';
@@ -83,7 +84,7 @@ export { QUARANTINE_AT, segmentsLabel } from './reel.ts';
 export type { CanaryView, Carried, End, Measured, Release, Step } from './release.ts';
 export { SENSE } from './senses.ts';
 export type { Meter, SettingsView, SpendView } from './settings.ts';
-export { foldSettings, settingsAt, settingsView } from './settings.ts';
+export { settingsAt } from './settings.ts';
 export type {
   After,
   AgentRow,
@@ -142,6 +143,7 @@ export interface Fold {
   improve: ImproveView;
   releases: FoldedReleases;
   flags: FoldedFlags;
+  settings: SettingsFold;
   /** Every return, newest first: which are in the last day is a matter of t. */
   returns: Return[];
   versions: AppVersions;
@@ -188,6 +190,7 @@ export function fold(seen: readonly PublicEvent[]): Fold {
     improve: improveView(items),
     releases: folded,
     flags: foldFlags(seen, items),
+    settings: foldSettings(seen),
     returns: everyReturn(seen),
     versions,
     closed: items.map((item) => (item.closedAt === undefined ? undefined : card(item, versions, item.closedAt))),

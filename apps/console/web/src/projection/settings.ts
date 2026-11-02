@@ -57,16 +57,17 @@ interface Spent {
   agent: ModelAgent | undefined;
 }
 
-/** The settings in force by the events, and every cost they record: what no later time changes. */
+/** Martin's last save and every cost the events record, which no later time changes: what the fold of them keeps. */
 export interface SettingsFold {
-  profile: Profile;
-  settings: InForce;
   last: SettingsView['last'];
   spent: Spent[];
 }
 
-/** The settings and the costs in the events that had happened, read once for those events. */
-export function foldSettings(seen: readonly PublicEvent[], profile: Profile): SettingsFold {
+const isModelAgent = (agent: string | undefined): agent is ModelAgent =>
+  (MODEL_AGENTS as readonly (string | undefined)[]).includes(agent);
+
+/** Martin's last save and the costs in the events that had happened, read once for those events. */
+export function foldSettings(seen: readonly PublicEvent[]): SettingsFold {
   const latest = seen.findLast((event) => event.type === 'settings.changed');
   const spent: Spent[] = [];
   for (const event of seen) {
@@ -76,20 +77,19 @@ export function foldSettings(seen: readonly PublicEvent[], profile: Profile): Se
       at: Date.parse(event.ts),
       usd: event.payload.costUsd,
       workItem: event.work_item,
-      agent: (MODEL_AGENTS as readonly string[]).includes(agent ?? '') ? (agent as ModelAgent) : undefined,
+      agent: isModelAgent(agent) ? agent : undefined,
     });
   }
-  return {
-    profile,
-    settings: inForce(profile, latest?.payload),
-    last: latest && { seq: latest.seq ?? 0, at: Date.parse(latest.ts), chose: latest.payload },
-    spent,
-  };
+  return { last: latest && { seq: latest.seq ?? 0, at: Date.parse(latest.ts), chose: latest.payload }, spent };
 }
 
-/** The spend against the settings at t, from a fold of the events by t: the day, the month and the week are t's. */
-export function settingsAt(folded: SettingsFold, t: number): SettingsView {
-  const { profile, settings, last } = folded;
+/**
+ * The settings in force on the profile and the spend against them at t, from a fold of the events by t: the day, the
+ * month and the week are t's.
+ */
+export function settingsAt(folded: SettingsFold, profile: Profile, t: number): SettingsView {
+  const { last } = folded;
+  const settings = inForce(profile, last?.chose);
   const at = new Date(t);
   const dayStart = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate());
   const monthStart = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1);
@@ -99,6 +99,8 @@ export function settingsAt(folded: SettingsFold, t: number): SettingsView {
   const spentToday = new Set<string>();
   const week = Object.fromEntries(MODEL_AGENTS.map((agent) => [agent, { steps: 0, usd: 0 }])) as SettingsView['week'];
   for (const { at: when, usd, workItem, agent } of folded.spent) {
+    // A fold made for a later time may be drawn at an earlier one: what was spent after t is not counted at t.
+    if (when > t) continue;
     if (when >= monthStart) month += usd;
     if (when >= dayStart) today += usd;
     if (workItem) {
@@ -128,13 +130,3 @@ export function settingsAt(folded: SettingsFold, t: number): SettingsView {
     week,
   };
 }
-
-/** The settings in force at t, and the spend against them. */
-export const settingsView = (events: readonly PublicEvent[], profile: Profile, t: number): SettingsView =>
-  settingsAt(
-    foldSettings(
-      events.filter((event) => Date.parse(event.ts) <= t),
-      profile,
-    ),
-    t,
-  );

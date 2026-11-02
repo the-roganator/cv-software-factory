@@ -134,7 +134,12 @@ describe('the fixtures that plant instructions', () => {
           ok: true,
         });
         return (signal.evidence ?? []).flatMap((e) =>
-          e.kind === 'logs' ? [...e.lines.map((l) => l.message), ...(e.trace?.spans ?? []).map((s) => s.name)] : [],
+          e.kind === 'logs'
+            ? [
+                ...e.lines.map((l) => l.message),
+                ...(e.trace?.spans ?? []).flatMap((s) => [s.name, ...(s.note ? [s.note] : [])]),
+              ]
+            : [],
         );
       });
       const prompt = promptOf(agent, f.input as InputOf<typeof agent>);

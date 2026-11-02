@@ -145,7 +145,7 @@ test('a whole page shows the window around its first mark, and counts the marks 
   }
   await page.route('**/api/events?after=0', (route) => route.fulfill({ json: events }));
   await page.goto(consoleUrl({ item: '1296' }));
-  const after = page.locator('.card[data-place="centre"] .wipe .b .shot');
+  const after = page.locator('.card[data-place="centre"] .wipe .wipe-after .shot');
   await after.scrollIntoViewIfNeeded();
   await expect(after.locator('.fold')).toHaveText('↑ 1 more mark outside the frame');
   await expect(after.locator('.mk')).toHaveCount(1);
@@ -156,7 +156,7 @@ test('a whole page shows the window around its first mark, and counts the marks 
   // the page's 1600, each of the 1280 wide page's pixels drawn at the frame's width.
   expect(Math.abs(mark.y - frame.y - ((1200 - 800) / 1280) * frame.width)).toBeLessThan(1);
   // The before side, 800 tall, has no window further down to show: it stays at its top.
-  const before = page.locator('.card[data-place="centre"] .wipe .a .shot');
+  const before = page.locator('.card[data-place="centre"] .wipe .wipe-before .shot');
   const image = await before.locator('img').boundingBox();
   if (!image) throw new Error('No image');
   expect(Math.abs(image.y - frame.y)).toBeLessThan(1);

@@ -48,18 +48,18 @@
   align-items: center;
   gap: 8px;
 }
-.dialog .what {
+.dialog .dialog-what {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--bg);
   font-size: 13.5px;
 }
-.dialog .what b {
+.dialog .dialog-what b {
   font-weight: 500;
 }
 /* What happens to a request, as a list of facts. */
-.dialog ul.what {
+.dialog ul.dialog-what {
   margin: 0;
   padding-left: 30px;
   display: flex;
@@ -81,36 +81,12 @@
   color: var(--on-attn);
   font-weight: 600;
 }
-.dialog .btn:disabled,
-.dialog .btn[aria-disabled="true"],
-.canary-controls .btn:disabled,
-.canary-controls .btn[aria-disabled="true"],
-.take-field .btn:disabled,
-.take-field .btn[aria-disabled="true"] {
-  opacity: 0.5;
-  cursor: default;
-}
 
 /* A reason, asked for by Stop the line and Start the line: for the audit log, counted. */
 .dialog .reason {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-.dialog textarea {
-  font: inherit;
-  font-size: 14px;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-small);
-  padding: 9px 11px;
-  width: 100%;
-  resize: vertical;
-}
-.dialog textarea:focus {
-  outline: var(--stroke-rule) solid var(--signal);
-  outline-offset: 1px;
 }
 .dialog .chars {
   font-family: var(--font-mono);
@@ -120,12 +96,6 @@
   font: 12.5px var(--font-mono);
 }
 
-/* Stop the line, in the header, always one press away; Start the line in its place while it is stopped. */
-.btn.line-btn {
-  min-height: 36px;
-  padding: 0 12px;
-  font-size: 13px;
-}
 /* The reason the line stopped, in the header's status: cut short where there is no room, in full on a hover. */
 .status .why {
   display: inline-block;
@@ -136,21 +106,10 @@
   vertical-align: bottom;
 }
 
-/* The key after an action that asks for the passkey again, and the pill while it is fresh. */
+/* The key after an action that asks for the passkey again (the pill while it is fresh is base.css's). */
 .glyph.key {
   width: 13px;
   height: 13px;
-}
-.fresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  font: 11px / 1.4 var(--font-mono);
-  color: var(--text-2);
-  white-space: nowrap;
 }
 
 /* An action, read-only: a plain outlined label beside what it does. No lock, no greyed-out button. */
@@ -242,6 +201,7 @@
   gap: 20px;
   margin-top: 56px;
 }
+/* A panel: a surface that holds a group of cards or controls, with its heading; the Canary panel is one too. */
 .panel {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -344,7 +304,7 @@
   text-align: left;
   cursor: pointer;
 }
-.switch .what {
+.switch .switch-what {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -411,11 +371,6 @@
   min-height: 36px;
   padding: 6px 10px;
 }
-.take-field .btn {
-  min-height: 36px;
-  padding: 0 12px;
-  font-size: 13px;
-}
 .legend {
   display: inline;
 }
@@ -469,6 +424,23 @@
   color: var(--text);
 }
 
+/*
+ * A flag's dialog (flags.css): the move, in capitals, over who gets it on there; and its share's choice, as wide as its
+ * choices. After Controls' rules, since the dialog opens from inside Controls' groups.
+ */
+.dialog .fromto {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+.dialog .dialog-what p {
+  color: var(--text);
+}
+.dialog .seg {
+  align-self: flex-start;
+}
+
 @media (max-width: 720px) {
   .bottom {
     grid-template-columns: 1fr;
@@ -507,6 +479,7 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
+  /* Stop the line and Start the line, in the header: a small button, tighter still on a phone. */
   .btn.line-btn {
     padding: 0 10px;
   }

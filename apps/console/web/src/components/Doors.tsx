@@ -27,13 +27,13 @@ export function Doors({ door }: { door: Door }) {
         <div className="wrap">
           <a className="brand" href="/" aria-label="Software Factory: Martin Rogan, a live CV, home">
             <Mark />
-            <span className="rule" aria-hidden="true" />
+            <span className="brand-rule" aria-hidden="true" />
             <span>
               <b>Software Factory</b> <small>Martin Rogan · a live CV</small>
             </span>
           </a>
           <div className="top-right">
-            <a className="btn small" href="/">
+            <a className="btn" href="/">
               Back to the console
             </a>
           </div>
@@ -107,7 +107,7 @@ function SignIn({ heading }: Heading) {
   };
 
   return (
-    <div className="door">
+    <div className="door raised">
       <span className="label">Admin</span>
       <h1 ref={heading} tabIndex={-1}>
         Sign in
@@ -224,7 +224,7 @@ function Enrol({ heading }: Heading) {
   );
 
   return (
-    <div className="door">
+    <div className="door raised">
       <span className="label">Admin · enrolment</span>
       <h1 ref={heading} tabIndex={-1}>
         Enrol a passkey

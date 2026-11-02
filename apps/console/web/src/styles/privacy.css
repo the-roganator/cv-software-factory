@@ -1,6 +1,6 @@
 /*
  * The privacy page (`?view=privacy`): one column of prose at a reading width, a section to each question, and a table
- * of what the server keeps and for how long, its head in `t-label` type as the audit log's is. The page's head is the
+ * of what the server keeps and for how long, its head in label type as the audit log's is. The page's head is the
  * settings page's (`settings.css`).
  */
 .privacy-page {
@@ -58,12 +58,6 @@ table.privacy-kept {
   font-size: 14px;
 }
 .privacy-kept thead th {
-  text-align: left;
-  font: 10.5px / 1.4 var(--font-mono);
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  font-weight: 400;
   padding: 0 14px 8px 0;
   border-bottom: 1px solid var(--line-strong);
 }

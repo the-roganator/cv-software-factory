@@ -35,7 +35,7 @@ const KICKER = (
 function Facts({ improve, martin }: { improve: ImproveView; martin: boolean }) {
   const tickets = improve.tickets === 1 ? 'one now' : `${improve.tickets} now`;
   return (
-    <ul className="what plain">
+    <ul className="dialog-what plain">
       <li>
         It waits behind every open ticket, {tickets}, oldest first.{' '}
         {martin ? 'To take it at once, choose Just one in Controls.' : 'Martin can take it at once with Just one.'}
@@ -166,7 +166,7 @@ function HowMartinAsks({ improve, onClose }: { improve: ImproveView; onClose: ()
         <label className="label" htmlFor={`${id}-words`}>
           What he wants
         </label>
-        <textarea id={`${id}-words`} rows={4} disabled value={latest?.words ?? ''} />
+        <textarea id={`${id}-words`} className="field" rows={4} disabled value={latest?.words ?? ''} />
         <span className="help">
           {latest ? `His latest request, ${when(latest.at)}, #${latest.workItem}.` : 'He has asked for none yet.'}
         </span>

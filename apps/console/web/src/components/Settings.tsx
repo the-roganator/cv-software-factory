@@ -188,7 +188,7 @@ export function Settings({
         </p>
       )}
       <table className="agents">
-        <thead>
+        <thead className="label">
           <tr>
             <th>Agent</th>
             <th>Model</th>

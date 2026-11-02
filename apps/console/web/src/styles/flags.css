@@ -1,7 +1,8 @@
 /*
  * The feature flags: a flag's stages as a slider of five stops, Off to Everyone, in Controls and on an improvement's
- * sheet; Controls' row per flag and the line under them saying whether the app holds them as set; the slider's
- * confirmation; and a flag's card in Needs you.
+ * sheet; Controls' row per flag and the line under them saying whether the app holds them as set; and a flag's
+ * pages, on its sheet and its card in Needs you. Where a flag's dialog, card or release differs from the others of its
+ * kind, the rule is with theirs (controls.css, needs.css, sheet.css), not here.
  */
 
 /* A flag's name in code, wherever it is named. */
@@ -185,36 +186,6 @@ button.fstop:hover i {
   color: var(--attn);
 }
 
-/* The slider's confirmation: the move, in capitals, over who gets it on there. */
-.dialog .fromto {
-  display: block;
-  margin-bottom: 4px;
-  font: 11px / 1.4 var(--font-mono);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.dialog .what p {
-  color: var(--text);
-}
-.dialog .seg {
-  align-self: flex-start;
-}
-
-/* A flag's card in Needs you: a stage that can't be taken now has its button dashed, its reason beside it. */
-.answers .btn.cant,
-.answers .btn:disabled {
-  border-style: dashed;
-  color: var(--text-muted);
-  cursor: default;
-}
-.answers p.why {
-  color: var(--text);
-}
-.need .ev a.inline {
-  white-space: nowrap;
-}
-
 /* A card's line of facts: its flag's glyph and stage. */
 .meta .flagm {
   display: inline-flex;
@@ -246,9 +217,6 @@ button.fstop:hover i {
 }
 
 /* A flag's pages at Checks, on its sheet: off and on side by side, and where they differ when they do. */
-.rel .flag-pages {
-  margin-top: 0;
-}
 .flag-pages .row.pair {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

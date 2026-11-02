@@ -282,7 +282,7 @@ function Block({
   );
   if (folded)
     return (
-      <details className="rel">
+      <details className="rel raised">
         <summary className="rel-head">
           {head}
           <span className="more">Show this stage</span>
@@ -292,7 +292,7 @@ function Block({
       </details>
     );
   return (
-    <article className="rel">
+    <article className="rel raised">
       <div className="rel-head">{head}</div>
       <Body block={block} flag={flag} app={app} />
       <Dropped block={block} />

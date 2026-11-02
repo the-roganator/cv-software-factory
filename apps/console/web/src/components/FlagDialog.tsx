@@ -130,8 +130,8 @@ export function FlagDialog({
         )
       }
     >
-      <div className="what">
-        <span className="fromto">
+      <div className="dialog-what">
+        <span className="label fromto">
           {row.turnedOff ? 'Off' : stageWords(row.stage)} <span aria-hidden="true">→</span>
           <span className="sr"> to </span> {stageWords(chosen)}
         </span>

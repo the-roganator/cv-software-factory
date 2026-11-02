@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import '../../../../docs/design/system/station.ts';
-import '../../../../docs/design/system/tokens.css';
+import '../../../../docs/design/system/properties.css';
 import './styles/fonts.css';
 import './styles/base.css';
 import './styles/line.css';

@@ -9,7 +9,17 @@
  * The page's own count is a convenience: the service decides. A write it refuses for want of the passkey asks for it
  * here and is sent again (`write` in `admin.ts`), however fresh the page thought it was.
  */
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { FRESH_MINUTES } from '../access.ts';
 import { post, type Session, said } from '../admin.ts';
 import { Dialog } from './Dialog.tsx';
@@ -62,7 +72,8 @@ export function StepUpProvider({ session, children }: { session: Session | undef
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (now >= until) return;
-    const timer = setTimeout(() => setNow(Date.now()), until - now);
+    // From the clock, not from `now`: the session's own step-up moves `until` while `now` is still when it last looked.
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, until - Date.now()));
     return () => clearTimeout(timer);
   }, [until, now]);
   const [asking, setAsking] = useState<{ id: number; asked: Asked; answer: (given: boolean) => void } | undefined>(
@@ -228,7 +239,8 @@ const left = (until: number, now: number) => `${Math.max(1, Math.ceil((until - n
  */
 function useNow(until: number | undefined) {
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
+  // Before the browser paints, so a countdown that starts or moves is never drawn from the time it last looked.
+  useLayoutEffect(() => {
     if (until === undefined) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 5000);

@@ -12,7 +12,7 @@
  * - forwarded headers from anywhere but the proxy are ignored.
  */
 import type { AddressInfo } from 'node:net';
-import { type NewEvent, type PayloadOf, upcast, VERSIONS } from '@software-factory/events';
+import { MARTIN_ANSWER_CHARS, type NewEvent, type PayloadOf, upcast, VERSIONS } from '@software-factory/events';
 import { DiskArtifacts, EventWriter, nextWorkItem, readPublic } from '@software-factory/store';
 import { pino } from 'pino';
 import postgres, { type Sql } from 'postgres';
@@ -2263,8 +2263,12 @@ describe('Needs you', () => {
     expect((await browser.post(`/admin/holds/${other.workItem}/reject`, { hold: 'not-a-hold' })).status).toBe(400);
     expect((await browser.post(`/admin/holds/${other.workItem}/answer`, { hold: other.hold })).status).toBe(400);
     expect(
-      (await browser.post(`/admin/holds/${other.workItem}/answer`, { hold: other.hold, words: 'x'.repeat(301) }))
-        .status,
+      (
+        await browser.post(`/admin/holds/${other.workItem}/answer`, {
+          hold: other.hold,
+          words: 'x'.repeat(MARTIN_ANSWER_CHARS + 1),
+        })
+      ).status,
     ).toBe(400);
   });
 

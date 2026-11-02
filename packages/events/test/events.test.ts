@@ -21,7 +21,7 @@ import { PAYLOADS, validate, validateSignal } from '../src/schemas.ts';
 import type { NewEvent, PublicEvent } from '../src/types.ts';
 import { type Catalogue, upcast } from '../src/upcast.ts';
 import { ADMIN_TYPES, EVENT_TYPES, VERSIONS } from '../src/versions.ts';
-import { HOLD_CAUSES, MARTIN_REASON_CHARS, REFUSAL_MECHANISMS } from '../src/vocabulary.ts';
+import { HOLD_CAUSES, MARTIN_ANSWER_CHARS, MARTIN_REASON_CHARS, REFUSAL_MECHANISMS } from '../src/vocabulary.ts';
 import { gate, judgement, opened, REPORT_TEXT, signal, VISITOR_KEY } from './fixtures.ts';
 
 /** An event read back, as one about to be appended again: what it reads as must be valid now. */
@@ -1651,5 +1651,13 @@ describe('Martin’s own reason', () => {
   it.each(Object.entries(reasons))('%s takes as many characters as his reason may have, and no more', (_, reason) => {
     expect(reason.safeParse('a'.repeat(MARTIN_REASON_CHARS)).success).toBe(true);
     expect(reason.safeParse('a'.repeat(MARTIN_REASON_CHARS + 1)).success).toBe(false);
+  });
+});
+
+describe('Martin’s answer to a hold in words', () => {
+  it('takes as many characters as his answer may have, and no more', () => {
+    const answer = PAYLOADS['hold.answered'].shape.answer;
+    expect(answer.safeParse('a'.repeat(MARTIN_ANSWER_CHARS)).success).toBe(true);
+    expect(answer.safeParse('a'.repeat(MARTIN_ANSWER_CHARS + 1)).success).toBe(false);
   });
 });

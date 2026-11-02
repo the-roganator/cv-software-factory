@@ -28,6 +28,7 @@ import {
   answersTo,
   type HoldAnswer,
   type HoldCause,
+  MARTIN_ANSWER_CHARS,
   type NewEvent,
   type RawEvent,
   upcast,
@@ -47,7 +48,7 @@ export const WORK_ITEM = /^[1-9][0-9]{0,8}$/;
 export const ANSWER = {
   approved: z.strictObject({ hold: z.uuid() }),
   rejected: z.strictObject({ hold: z.uuid() }),
-  answered: z.strictObject({ hold: z.uuid(), words: z.string().trim().min(1).max(300) }),
+  answered: z.strictObject({ hold: z.uuid(), words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) }),
 } satisfies Record<HoldAnswer, z.ZodType>;
 
 /** What an answer did: the work item, the hold, the answer, and whether Martin's words stay his. */

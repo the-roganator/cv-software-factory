@@ -909,6 +909,9 @@ describe('the pull requests a deploy brings', () => {
     expect(bringsSection(FACTORY, read)).toContain(
       'What the factory brings is not listed: no commit is pinned for it to compare with.',
     );
+    // Its rows still say which of the deploy's pins they reach.
+    expect(bringsSection(FACTORY, read)).toContain('| #5 | console | fix | – | x |');
+    expect(bringsSection(FACTORY, read)).toContain('merged since the pinned commit');
   });
 
   it('reads them once its commit is made, so the read never holds that commit back', async () => {

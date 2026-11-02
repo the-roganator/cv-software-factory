@@ -365,7 +365,8 @@ export function conventional(message: string): {
  */
 export function bringsSection(target: DeployTarget, brings: Brings): string {
   const url = `https://github.com/${target.repo}`;
-  const several = brings.pins.length > 1;
+  // A pin with no range still counts: the column says which of the deploy's pins each pull request reaches.
+  const several = brings.pins.length + (brings.unranged?.length ?? 0) > 1;
   const shown = brings.commits.slice(0, MAX_BROUGHT);
   const more = brings.count - shown.length;
   const head = several
@@ -387,7 +388,7 @@ export function bringsSection(target: DeployTarget, brings: Brings): string {
     cells[head.length - 1] = `and ${brings.whole ? '' : 'at least '}${more} more`;
     rows.push(`| ${cells.join(' | ')} |`.replace(/ {2}/g, ' '));
   }
-  const since = several ? 'the commits pinned now' : 'the pinned commit';
+  const since = brings.pins.length > 1 ? 'the commits pinned now' : 'the pinned commit';
   const all = `${brings.whole ? '' : 'at least '}${brings.count === 1 ? 'one pull request' : `${brings.count} pull requests`}`;
   const said = brings.count
     ? `It brings ${all} merged since ${since}, newest first:

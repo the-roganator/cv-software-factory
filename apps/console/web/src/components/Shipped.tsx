@@ -3,7 +3,7 @@
  * ones folded, each with its steps against the version before, how it ended, and what Verify found after it. While a
  * merged fix waits for Martin's deploy, that wait is the section's first block.
  */
-import { clock, clockSeconds, duration, isCommit, percent, shortVersion, shortWhen } from '../format.ts';
+import { changedShare, clock, clockSeconds, duration, isCommit, shortVersion, shortWhen } from '../format.ts';
 import type { Release, Sheet as SheetData, Shipped, Verified } from '../projection/index.ts';
 import { marksNote, SENSE } from '../projection/index.ts';
 import { endedAt, figureOf, phaseOf, rollouts, standing } from '../projection/release.ts';
@@ -272,7 +272,7 @@ function Verify({ v }: { v: Verified }) {
                   <figcaption>
                     <span>{page.page}</span>
                     <span className={`mono change ${kind}`}>
-                      {percent(page.changed)} · {kind === 'theirs' ? `intended for #${page.intendedFor}` : kind}
+                      {changedShare(page.changed)} · {kind === 'theirs' ? `intended for #${page.intendedFor}` : kind}
                     </span>
                   </figcaption>
                 </figure>

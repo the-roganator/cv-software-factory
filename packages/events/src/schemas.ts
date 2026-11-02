@@ -1016,7 +1016,7 @@ export const PAYLOADS = {
     }),
   'hold.answered': z.strictObject({
     decision: z.enum(V.HOLD_ANSWERS),
-    answer: text(300).optional(),
+    answer: text(V.MARTIN_ANSWER_CHARS).optional(),
     /** The hold it answers: its `hold.started` event's id. An answer from before the admin service never named it. */
     hold: z.uuid().optional(),
     /**

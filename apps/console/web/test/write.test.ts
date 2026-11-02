@@ -164,6 +164,24 @@ describe('the passkey asked in a dialog of its own', () => {
     expect(shown.at(-1)).toEqual({ busy: false, refusal: undefined });
   });
 
+  it('given after what asked has gone, sends nothing more and draws nothing', async () => {
+    let live = true;
+    const { w, shown } = make({
+      live: () => live,
+      stepUp: () => ({
+        ask: async () => {
+          live = false;
+          return true;
+        },
+        prove: async () => undefined,
+      }),
+    });
+    answers.push(STEP_UP, { status: 200 });
+    expect((await w.send('/admin/release/promote', {}, { passkey: ASKED })).kind).toBe('gone');
+    expect(sent).toHaveLength(1);
+    expect(shown).toEqual([{ busy: true, refusal: undefined }]);
+  });
+
   it('is never asked when the service does not ask', async () => {
     const { w, asked } = make();
     await w.send('/admin/release/promote', {}, { passkey: ASKED });

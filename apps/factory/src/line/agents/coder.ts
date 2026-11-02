@@ -254,12 +254,9 @@ const UNCHANGED = `Change nothing only if what sent the work back is not your ch
 const CHECKS =
   'Before you hand back, run what CI requires of a change. AGENTS.md names it `make check`: lint and formatting, the type check and the tests. There is no `make` here, so run the commands of the Makefile’s `check` target yourself, one at a time, and leave out any whose tool is not installed; say in your note which you left out. Put right what they report that your change caused, and nothing else. A file of yours the formatter refuses is put right by the formatter alone, writing that file and no other: not by a lint fix, which changes more.';
 
-/**
- * The rule the test integrity gate holds every change to, told before the first round so it does not cost one: what a
- * criterion that contradicts a test does instead, until the line has a sanctioned way to change one.
- */
+/** The rule the test integrity gate holds every change to, told before the first round so it does not cost one. */
 const TEST_INTEGRITY =
-  'Add tests as you need, but never delete, rename or skip an existing test, or leave one with fewer assertions: the test integrity gate fails all four. If a criterion contradicts an existing test the scope allows, leave that test as it is, change nothing, and write {"unchanged"}, naming the test the spec contradicts. Martin decides.';
+  'Add tests as you need, but never delete, rename or skip an existing test, or leave one with fewer assertions: the test integrity gate fails all four.';
 
 /** The most of what a failed check said that a prompt quotes, in characters: one line each. */
 export const GATE_SAID_CHARS = 200;

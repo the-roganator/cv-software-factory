@@ -199,7 +199,7 @@ describe('the coder', () => {
     expect(coder.prompt(fresh)).toContain('Read AGENTS.md first');
   });
 
-  it('is told the test integrity rule before its first round, and to hold for Martin on a test the spec contradicts', () => {
+  it('is told the test integrity rule before its first round', () => {
     const delivery =
       FIXTURES.coder['delivery-dates']?.input ??
       (() => {
@@ -210,10 +210,8 @@ describe('the coder', () => {
       expect(prompt).toContain(
         'never delete, rename or skip an existing test, or leave one with fewer assertions: the test integrity gate fails all four',
       );
-      expect(prompt).toContain(
-        'If a criterion contradicts an existing test the scope allows, leave that test as it is',
-      );
-      expect(prompt).toContain('naming the test the spec contradicts');
+      // What to do with a test the spec contradicts is not this rule's to say.
+      expect(prompt).not.toContain('contradicts');
     }
   });
 

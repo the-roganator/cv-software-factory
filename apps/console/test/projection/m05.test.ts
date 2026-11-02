@@ -7,8 +7,9 @@
 import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { attempts } from '../../web/src/projection/fixing.ts';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { foldItem } from '../../web/src/projection/items.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, MERGE_WAITING, payloads, SAMPLES, work } from './support.ts';
 
 const view = project(SAMPLES, END);

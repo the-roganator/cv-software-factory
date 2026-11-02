@@ -4,8 +4,8 @@
  */
 import type { PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { type Chapter, marksNote, project, projectSheet, scrubbed, TARGET } from '../../web/src/projection/index.ts';
-import { spread } from '../../web/src/projection/sheet.ts';
+import { project } from '../../web/src/projection/index.ts';
+import { type Chapter, marksNote, projectSheet, scrubbed, spread, TARGET } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES } from './support.ts';
 
 const sheet = (item: string, t = END) => projectSheet(project(SAMPLES, t), item);

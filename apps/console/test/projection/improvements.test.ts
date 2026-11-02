@@ -8,9 +8,10 @@ import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { previewHref } from '../../web/src/profile.ts';
 import { auditRows } from '../../web/src/projection/audit.ts';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { needsView } from '../../web/src/projection/needs.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES, work } from './support.ts';
 
 const START = Date.parse('2026-10-03T09:00:00Z');

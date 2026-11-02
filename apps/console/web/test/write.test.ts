@@ -36,7 +36,7 @@ const STEP_UP = { status: 403, body: { refused: 'step-up', message: 'This needs 
 const ASKED: Asked = { title: 'Promote the canary', what: 'v2 takes all the traffic now.', why: 'Promoting ships' };
 
 /** A writer with its state recorded, a session, a page that stays, and passkey ways that say what they are told. */
-function make(over: Partial<WriterDeps> & { asks?: boolean[]; proves?: (string | undefined)[] } = {}) {
+function make(over: Partial<WriterDeps> & { asks?: (boolean | string)[]; proves?: (string | undefined)[] } = {}) {
   const shown: WriteState[] = [];
   const asked: Asked[] = [];
   let proved = 0;
@@ -162,6 +162,16 @@ describe('the passkey asked in a dialog of its own', () => {
     expect((await w.send('/admin/release/promote', {}, { passkey: ASKED })).kind).toBe('cancelled');
     expect(sent).toHaveLength(1);
     expect(shown.at(-1)).toEqual({ busy: false, refusal: undefined });
+  });
+
+  it('not asked, for a reason in words, sends nothing more and says why, no longer busy', async () => {
+    const why = 'The passkey’s code could not be fetched: reload the page and try again.';
+    const { w, shown } = make({ asks: [why] });
+    answers.push(STEP_UP);
+    const written = await w.send('/admin/release/promote', {}, { passkey: ASKED });
+    expect(written).toMatchObject({ kind: 'refused', text: why });
+    expect(sent).toHaveLength(1);
+    expect(shown.at(-1)).toEqual({ busy: false, refusal: why });
   });
 
   it('given after what asked has gone, sends nothing more and draws nothing', async () => {

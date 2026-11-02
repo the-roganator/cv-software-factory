@@ -1,8 +1,9 @@
 import type { PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { foldAt, foldOf, project, projectSheet, upTo } from '../../web/src/projection/index.ts';
+import { foldAt, foldOf, project, upTo } from '../../web/src/projection/index.ts';
 import { stopsRelease } from '../../web/src/projection/items.ts';
 import { appVersion, appVersions } from '../../web/src/projection/reel.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, FIXTURE, SAMPLES } from './support.ts';
 
 // The live console's clock moves t every ten seconds with no new event: the fold of the events is made once for them,

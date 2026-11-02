@@ -11,7 +11,9 @@
  */
 import {
   createContext,
+  lazy,
   type ReactNode,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -21,10 +23,28 @@ import {
   useState,
 } from 'react';
 import { FRESH_MINUTES } from '../access.ts';
-import { post, type Session, said } from '../admin.ts';
-import { Dialog } from './Dialog.tsx';
+import { MARTINS_PARTS, type Session } from '../admin.ts';
 import { Glyph } from './Glyph.tsx';
-import { Refusal } from './Words.tsx';
+
+/**
+ * The dialog and its ceremony, which only Martin uses: the session check fetches them before the page draws him signed
+ * in (`useAdmin`), so the dialog opens at once when an action asks.
+ */
+const StepUpDialog = lazy(() => MARTINS_PARTS.stepUp().then((module) => ({ default: module.StepUpDialog })));
+
+/** What an action that asks is told when the dialog's code cannot be fetched, so it never waits on it for ever. */
+export const UNFETCHED = 'The passkey’s code could not be fetched: reload the page and try again.';
+
+/** The ceremony, or why not in words if its code cannot be fetched. */
+const ceremony = async (token: string, live: () => boolean) => {
+  let code: Awaited<ReturnType<typeof MARTINS_PARTS.stepUp>>;
+  try {
+    code = await MARTINS_PARTS.stepUp();
+  } catch {
+    return UNFETCHED;
+  }
+  return code.ceremony(token, live);
+};
 
 /** What the step-up dialog says of an action: its name, what will happen, and why it asks ("Promoting ships to everyone"). */
 export interface Asked {
@@ -38,8 +58,11 @@ export interface StepUp {
   fresh: boolean;
   /** Until when, if it is: the pill counts down to it on a clock of its own. */
   until: number | undefined;
-  /** Asks for the passkey, for this action: true once given, false if Martin cancels. */
-  ask(asked: Asked): Promise<boolean>;
+  /**
+   * Asks for the passkey, for this action: true once given, false if Martin cancels, or why it could not ask, in words
+   * (the dialog's code could not be fetched).
+   */
+  ask(asked: Asked): Promise<boolean | string>;
   /**
    * The passkey sheet itself, for a dialog that says already that it asks (Start the line's "Use your passkey and
    * start"): nothing once given, or why not, in words. It opens no sheet once `live` says the dialog has gone.
@@ -77,23 +100,30 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     const timer = setTimeout(() => setNow(Date.now()), Math.max(0, until - Date.now()));
     return () => clearTimeout(timer);
   }, [until, now]);
-  const [asking, setAsking] = useState<{ id: number; asked: Asked; answer: (given: boolean) => void } | undefined>(
-    undefined,
-  );
+  const [asking, setAsking] = useState<
+    { id: number; asked: Asked; answer: (given: boolean | string) => void } | undefined
+  >(undefined);
   const asks = useRef(0);
   const hasSession = session !== undefined;
   const ask = useCallback(
     (asked: Asked) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<boolean | string>((resolve) => {
         if (!hasSession) return resolve(false);
         asks.current += 1;
         const id = asks.current;
-        // One dialog at a time: an action that asks while another is asking takes its place, and the other's answer is
-        // no, so nothing waits for an answer that never comes.
-        setAsking((before) => {
-          before?.answer(false);
-          return { id, asked, answer: resolve };
-        });
+        // The dialog's code before the dialog: the session check fetched it already, unless that failed, and if it
+        // cannot be fetched now either the action is told why, in words, rather than left waiting for a dialog that
+        // never draws.
+        MARTINS_PARTS.stepUp().then(
+          () =>
+            // One dialog at a time: an action that asks while another is asking takes its place, and the other's
+            // answer is no, so nothing waits for an answer that never comes.
+            setAsking((before) => {
+              before?.answer(false);
+              return { id, asked, answer: resolve };
+            }),
+          () => resolve(UNFETCHED),
+        );
       }),
     [hasSession],
   );
@@ -128,87 +158,16 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     <StepUpContext.Provider value={value}>
       {children}
       {asking && session && (
-        <StepUpDialog
-          key={asking.id}
-          asked={asking.asked}
-          token={session.token}
-          onAnswer={(yes) => answered(asking.id, yes)}
-        />
+        <Suspense fallback={null}>
+          <StepUpDialog
+            key={asking.id}
+            asked={asking.asked}
+            token={session.token}
+            onAnswer={(yes) => answered(asking.id, yes)}
+          />
+        </Suspense>
       )}
     </StepUpContext.Provider>
-  );
-}
-
-/**
- * The admin service's step-up ceremony: its options, the browser's own passkey sheet for the session's passkey, and
- * the answer sent back. Nothing once the service has taken it, or why not, in words. It stops before the sheet if the
- * page that asked has gone (`live`). The ceremony's code arrives when it is first asked for.
- */
-async function ceremony(token: string, live: () => boolean): Promise<string | undefined> {
-  const options = await post('/admin/step-up/options', {}, token);
-  if (options.status !== 200 || !options.body) return said(options);
-  if (!live()) return 'Closed.';
-  let response: Awaited<ReturnType<typeof import('@simplewebauthn/browser').startAuthentication>>;
-  try {
-    const { startAuthentication } = await import('@simplewebauthn/browser');
-    if (!live()) return 'Closed.';
-    response = await startAuthentication({ optionsJSON: options.body as never });
-  } catch (error) {
-    // The sheet was closed, or this device holds no passkey for the factory: the browser does not say which.
-    return error instanceof Error && error.name === 'NotAllowedError'
-      ? 'No passkey was used: the sheet was closed, or this device has none for the factory.'
-      : 'The browser could not use a passkey here.';
-  }
-  const got = await post('/admin/step-up', { response }, token);
-  return got.status === 200 ? undefined : said(got);
-}
-
-/** "Your passkey, again": the browser's own passkey sheet, for the session's own passkey, through the ceremony. */
-function StepUpDialog({ asked, token, onAnswer }: { asked: Asked; token: string; onAnswer: (given: boolean) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | undefined>(undefined);
-  const live = useRef(true);
-  useEffect(
-    () => () => {
-      live.current = false;
-    },
-    [],
-  );
-
-  const give = async () => {
-    setBusy(true);
-    setRefusal(undefined);
-    const refusal = await ceremony(token, () => live.current);
-    // Closed while it asked: nothing to say to a dialog that is gone.
-    if (!live.current) return;
-    if (refusal === undefined) return onAnswer(true);
-    setRefusal(refusal);
-    setBusy(false);
-  };
-
-  return (
-    <Dialog
-      title={asked.title}
-      kicker={
-        <>
-          <Glyph name="key" className="glyph key" />
-          <span className="label">Your passkey, again</span>
-        </>
-      }
-      onClose={() => onAnswer(false)}
-      actions={
-        <button type="button" className="btn primary" disabled={busy} onClick={() => void give()}>
-          Use your passkey
-        </button>
-      }
-    >
-      <div className="dialog-what">{asked.what}</div>
-      <p>
-        {asked.why}, so it needs your passkey again. Once given, it stays fresh for five minutes, for this and anything
-        else that asks.
-      </p>
-      <Refusal text={refusal} />
-    </Dialog>
   );
 }
 

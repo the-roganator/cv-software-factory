@@ -93,6 +93,27 @@ test('Martin’s change is a draft in words until he saves it, and raising spend
   await expect(page.getByLabel('The coder’s effort')).toHaveValue('medium');
 });
 
+test('when the passkey’s dialog cannot be fetched, saving says so and is not left busy', async ({ page }) => {
+  await adminService(page, 'martin');
+  // The dialog's code is its own chunk, which the session check fetches first: neither fetch arrives.
+  await page.route('**/*StepUpDialog*', (route) => route.abort());
+  const sent = await saves(page, () => ({
+    status: 403,
+    json: { refused: 'step-up', message: 'This needs your passkey again.' },
+  }));
+  await settings(page);
+  await page.getByLabel('The coder’s effort').selectOption('high');
+  const bar = page.locator('.save-bar');
+  const save = bar.getByRole('button', { name: 'Save (asks for your passkey)' });
+  await save.click();
+  await expect(page.getByRole('alert')).toContainText(
+    'The passkey’s code could not be fetched: reload the page and try again.',
+  );
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(save).not.toHaveAttribute('aria-disabled', 'true');
+  expect(sent).toHaveLength(1);
+});
+
 test('a cheaper model or a lower cap saves without the passkey, and a local model takes no effort', async ({
   page,
 }) => {

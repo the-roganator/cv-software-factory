@@ -6,7 +6,8 @@
 import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { REPORTS } from '../../../../policy/triage.ts';
-import { project, projectSheet, QUARANTINE_AT } from '../../web/src/projection/index.ts';
+import { project, QUARANTINE_AT } from '../../web/src/projection/index.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { VERSION } from '../fixture/captures.ts';
 import { AFTERNOON, CAPPED, CLEARED, FIXTURE, work } from './support.ts';
 

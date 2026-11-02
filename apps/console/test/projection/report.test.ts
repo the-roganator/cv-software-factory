@@ -6,8 +6,9 @@
 import type { PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { REPORT_TEXT } from '../../../../policy/triage.ts';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { REPORT_CHARS, REPORT_KEPT_DAYS, reportText } from '../../web/src/projection/report.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES } from './support.ts';
 
 describe('how long a report’s text is kept', () => {

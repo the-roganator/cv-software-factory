@@ -8,9 +8,10 @@ import { answersTo, HOLD_CAUSES, type HoldCause, type PayloadOf } from '@softwar
 import { describe, expect, it } from 'vitest';
 import { GUARDRAIL_HOLDS as TABLE } from '../../../../policy/access.ts';
 import { GUARDRAIL_HOLDS } from '../../web/src/access.ts';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { needsView } from '../../web/src/projection/needs.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, payloads, SAMPLES, work } from './support.ts';
 
 const START = Date.parse('2026-10-03T09:00:00Z');

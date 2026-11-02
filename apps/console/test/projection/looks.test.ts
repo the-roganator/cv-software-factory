@@ -4,8 +4,9 @@
  */
 import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { project, projectSheet } from '../../web/src/projection/index.ts';
+import { project } from '../../web/src/projection/index.ts';
 import { clearanceWords, foldItem } from '../../web/src/projection/items.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, payloads, SAMPLES, work } from './support.ts';
 
 const look = (outcome: PayloadOf<'signal.rechecked'>['outcome'], occasion: 'release' | 'wait' = 'release') =>

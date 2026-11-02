@@ -9,7 +9,7 @@ Deterministic gates (spec 4.1). Part of the [GitHub plane](README.md#github-plan
 
 - lint and format;
 - type-check;
-- the generated files checked against their sources, and the console's built browser code against its budget, in gzipped bytes (`apps/console/budget.json`);
+- the generated files checked against their sources, and the console's built browser code against its budget, in gzipped bytes (`apps/console/budget.json`): what its first view loads, the entry chunk and the CSS it links, held to a tenth over a build, and everything the build makes, lazy pages included, held loosely, so that moving code into a lazy chunk lowers the figure that counts and a new lazy page needs no review;
 - unit and integration tests;
 - the manifests rendered;
 - the app's gates ([shared gates](SHARED-GATES.md)), the journeys among them;

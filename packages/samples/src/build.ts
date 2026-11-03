@@ -34,6 +34,16 @@ export const commitFor = (name: string) => hex(`commit:${name}`, 40);
 export const digestFor = (name: string) => `sha256:${hex(`image:${name}`)}`;
 export const traceFor = (name: string) => hex(`trace:${name}`, 32);
 const cassetteFor = (name: string) => hex(`cassette:${name}`);
+/** A relayed refusal's artifact record, by hash, and the GitHub worker's signature over it (Ed25519, in base64). */
+export const recordFor = (name: string) => hex(`record:${name}`);
+export const signatureFor = (name: string) =>
+  Buffer.from(`${hex(`signature:${name}:r`)}${hex(`signature:${name}:s`)}`, 'hex').toString('base64');
+
+/**
+ * Each attack's end, by its event's id, and the ids of the refusals it cites: an end cites them by seq, which the store
+ * gives, so `sampleEvents` gives each its seq once every sample is in order, as the event log numbers them.
+ */
+export const CITED = new Map<string, string[]>();
 
 type Files = PayloadOf<'pull-request.pushed'>['files'];
 
@@ -338,6 +348,28 @@ export class Item {
       payload,
       artifacts,
     } as NewEvent);
+    return this;
+  }
+
+  /** The id of the last event written so far, for an attack's end to cite. */
+  get last(): string {
+    const event = this.events.at(-1);
+    if (!event) throw new Error(`${this.#name} has no events yet`);
+    return event.id;
+  }
+
+  /**
+   * The red-team harness's record of how an attack ended, citing the refusals it counted by their events' ids, in the
+   * order its attack expects them (`CITED`).
+   */
+  finished(
+    offset: string,
+    summary: string,
+    payload: Omit<PayloadOf<'attack.finished'>, 'refusals'>,
+    cites: readonly string[],
+  ): this {
+    this.at(offset, 'attack.finished', 'factory', summary, { ...payload, refusals: cites.map((_, i) => i + 1) });
+    CITED.set(this.last, [...cites]);
     return this;
   }
 

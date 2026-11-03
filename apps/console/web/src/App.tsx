@@ -14,6 +14,7 @@ import { Canary } from './components/Canary.tsx';
 import { Controls, SpendPanel } from './components/Controls.tsx';
 import { FlagsPanel, useHeld } from './components/Flags.tsx';
 import { Footer } from './components/Footer.tsx';
+import { Guardrails } from './components/Guardrails.tsx';
 import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
 import { Line } from './components/Line.tsx';
 import { LogoSymbols } from './components/Logos.tsx';
@@ -311,6 +312,8 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
               </div>
             </section>
           )}
+          {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under the bottom row. */}
+          {settled && <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />}
         </div>
       </main>
       <Footer signIn={signedIn.kind === 'visitor'} />

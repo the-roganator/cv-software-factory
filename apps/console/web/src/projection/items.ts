@@ -14,6 +14,7 @@ import type {
 } from '@software-factory/events';
 import { clearedOnWords, SENSES, STAGES, sameVersion, WORDS_LEAVE_HELD } from '@software-factory/events';
 import { shortVersion } from '../format.ts';
+import { ATTACK_RULES, type AttackState, citedElsewhere, isFinish, isLaunch, unconfirmed } from './attacks.ts';
 import { flagWaits } from './flags.ts';
 import type { StoppedBy } from './release.ts';
 
@@ -23,7 +24,8 @@ import type { StoppedBy } from './release.ts';
  * whose spec shares its files is verified or closed; `merged`, a fix Martin merged, queued at Release for a release to
  * take it; `deploying`, a fix Martin merged, held for a deploy whose pull request is not his to merge yet (not open,
  * its checks running or failed, or already merged); `quarantined`, a report that gave orders to the system;
- * `no-ticket`, a report that described nothing wrong.
+ * `no-ticket`, a report that described nothing wrong. A red-team attack ends `refused`, `not-refused`, `unfinished`, or
+ * `unconfirmed`: refused, as its harness recorded, but not as the stream bears out (`attacks.ts`).
  */
 export type Outcome =
   | 'verified'
@@ -32,6 +34,10 @@ export type Outcome =
   | 'quarantined'
   | 'no-ticket'
   | 'turned-off'
+  | 'refused'
+  | 'not-refused'
+  | 'unfinished'
+  | 'unconfirmed'
   | 'held'
   | 'needs-you'
   | 'waiting'
@@ -158,15 +164,22 @@ export interface ItemState {
    * started since: Martin may retry it.
    */
   releaseStopped: boolean;
+  /** A red-team attack Martin launched: which, when, and how it ended, checked. */
+  attack: AttackState | undefined;
 }
 
+/**
+ * Where each mechanism stands on the line, as an attack's segments stop at it: the GitHub worker's guard, GitHub and
+ * the egress policy at Build, where an agent's step would meet them; the review gate at Review, where a pull request
+ * waits to merge; admission control at Release; triage's typed judgement at Triage.
+ */
 const REFUSED_AT: Record<PayloadOf<'action.refused'>['mechanism'], Stage | null> = {
   'scope-fence': 'build',
   'github-guard': 'build',
   'token-permission': 'build',
   'egress-policy': 'build',
   ruleset: 'build',
-  'review-gate': 'gates',
+  'review-gate': 'review',
   'admission-control': 'release',
   'typed-judgement': 'triage',
   gateway: null,
@@ -314,10 +327,10 @@ const CLOSED: Record<PayloadOf<'work-item.closed'>['outcome'], Outcome> = {
   quarantined: 'quarantined',
   discarded: 'no-ticket',
   'turned-off': 'turned-off',
-  // A red-team attack's work item, closed as the attack ended: closed, as one that changed nothing.
-  refused: 'closed',
-  'not-refused': 'closed',
-  unfinished: 'closed',
+  // A red-team attack's work item, closed as the attack ended: as the console reads its end (`attacks.ts`), below.
+  refused: 'refused',
+  'not-refused': 'not-refused',
+  unfinished: 'unfinished',
 };
 
 /** Folds one work item's events (all at or before t, in order) into its state. */
@@ -364,6 +377,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     cleared: undefined,
     deploy: undefined,
     releaseStopped: false,
+    attack: undefined,
   };
   /** Moves the item into a stage: leaving the one it was in, if this is further along the line. */
   const enter = (stage: Stage, time: number) => {
@@ -444,6 +458,31 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     }
 
     switch (event.type) {
+      case 'attack.launched':
+        // Only Martin's launch makes an attack of the work item, the first: it meets its mechanism where it stands on
+        // the line, the stages before it skipped, and is named by its attack until something names it otherwise.
+        if (!isLaunch(event) || state.attack) break;
+        state.attack = { attack: event.payload.attack, launchedAt: time, launchedSeq: event.seq, finished: undefined };
+        if (!state.description) state.title = ATTACK_RULES[event.payload.attack].name;
+        {
+          const stage = REFUSED_AT[ATTACK_RULES[event.payload.attack].expects[0]] ?? 'build';
+          enter(stage, time);
+          state.latest[stage] = event;
+        }
+        break;
+      case 'attack.finished':
+        // The harness's word, once, checked against the refusals it cites.
+        if (!isFinish(event) || !state.attack || state.attack.finished) break;
+        {
+          const { outcome, attempts } = event.payload;
+          const refusals = state.events.filter((e): e is PublicEvent<'action.refused'> => e.type === 'action.refused');
+          const why =
+            outcome === 'refused'
+              ? unconfirmed(state.attack.attack, state.attack.launchedSeq, event.payload, refusals)
+              : undefined;
+          state.attack.finished = { at: time, verdict: why ? 'unconfirmed' : outcome, why, attempts };
+        }
+        break;
       case 'work-item.summarised': {
         const { title, description, story } = event.actor === 'triage' ? withoutStanding(event.payload) : event.payload;
         state.title = title;
@@ -627,7 +666,8 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.sentBack = undefined;
         state.reopened = undefined;
         state.queued = false;
-        state.outcome = CLOSED[event.payload.outcome];
+        // An attack ends as the console reads its end, not as its close says.
+        state.outcome = state.attack?.finished ? state.attack.finished.verdict : CLOSED[event.payload.outcome];
         if (state.stage) state.visits[state.stage] = { ...(state.visits[state.stage] as Visit), leftAt: time };
         if (event.payload.outcome === 'discarded') state.category = 'not-a-defect';
         break;
@@ -656,7 +696,8 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     });
   }
 
-  if (!state.closedAt) {
+  if (!state.closedAt && state.attack?.finished) state.outcome = state.attack.finished.verdict;
+  else if (!state.closedAt) {
     if (state.hold?.cause === 'deploy' && !deployWaitsForMartin(state)) state.outcome = 'deploying';
     else if (state.hold) state.outcome = state.hold.kind === 'held' ? 'held' : 'needs-you';
     // An improvement out behind its flag waits for Martin to widen it, as its card in Needs you says.
@@ -755,7 +796,10 @@ export function summaryOf(event: PublicEvent): string {
   return words && event.summary === 'Waiting for Martin to merge' ? words : event.summary;
 }
 
-/** Groups events by work item, keeping their order, and folds each. Events with no work item are left out. */
+/**
+ * Groups events by work item, keeping their order, and folds each. Events with no work item are left out, but for the
+ * refusals an attack cites, which its own work item takes too, in their place (`citedElsewhere`).
+ */
 export function foldItems(events: readonly PublicEvent[]): ItemState[] {
   const byItem = new Map<string, PublicEvent[]>();
   for (const event of events) {
@@ -763,6 +807,14 @@ export function foldItems(events: readonly PublicEvent[]): ItemState[] {
     const list = byItem.get(event.work_item);
     if (list) list.push(event);
     else byItem.set(event.work_item, [event]);
+  }
+  for (const [item, cited] of citedElsewhere(events)) {
+    const list = byItem.get(item);
+    if (list)
+      byItem.set(
+        item,
+        [...list, ...cited].sort((a, b) => a.seq - b.seq),
+      );
   }
   return [...byItem.values()].flatMap((list) => foldItem(list) ?? []).sort((a, b) => a.openedAt - b.openedAt);
 }

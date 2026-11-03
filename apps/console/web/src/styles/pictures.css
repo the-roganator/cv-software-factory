@@ -593,10 +593,71 @@ svg.chart {
   color: var(--attn);
 }
 
-/* A refusal is printed as it came, wrapping rather than cut off. */
-.vis-refusal .term {
+/*
+ * A red-team attack's refusals, verbatim: one block per refusal, headed by who refused and its mechanism, stacked in
+ * the order they happened. Each wraps, breaking anywhere, never scrolled sideways. Its type is sized so a line holds 80
+ * characters at every width, so a refusal past five lines is cut on a card where the text alone says, fading out; the
+ * sheet's Evidence shows it whole, its picture as tall as its refusals.
+ */
+.refusals {
+  display: flex;
+  flex-direction: column;
+  gap: 1.6cqw;
+  flex: 1;
+  min-height: 0;
+}
+.refusals .rhead {
+  display: flex;
+  gap: 1.4cqw;
+  align-items: baseline;
+  margin-bottom: 0.8cqw;
+  font: 1.8cqw / 1.3 var(--font-mono);
+  color: var(--text-2);
+}
+.refusals .rhead b {
+  font-weight: 500;
+  color: var(--text);
+}
+.refusals .term {
+  flex: none;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  font-size: 1.75cqw;
+  padding: 1.8cqw 2.4cqw;
+}
+.refusals .term.cut {
+  max-height: calc(1.75cqw * 1.6 * 5 + 3.6cqw);
+  mask-image: linear-gradient(#000 70%, transparent);
+}
+.refusals .attack-waits {
+  margin: auto 0;
+  font: 400 3.2cqw / 1.2 var(--font-display);
+  color: var(--text-2);
+}
+.refusals .cutnote {
+  margin-top: 0.6cqw;
+  font: 1.6cqw / 1.3 var(--font-mono);
+  color: var(--text-muted);
+}
+.evidence-big .vis-refusal {
+  aspect-ratio: auto;
+  min-height: 0;
+}
+.evidence-big .vis-refusal .pad {
+  position: relative;
+  inset: auto;
+}
+.evidence-big .refusals .term.cut {
+  max-height: none;
+  mask-image: none;
+}
+.evidence-big .refusals .attack-waits {
+  margin: auto 0;
+  font: 400 3.2cqw / 1.2 var(--font-display);
+  color: var(--text-2);
+}
+.refusals .cutnote {
+  display: none;
 }
 
 /* What a dependency update changed in the repository, and that every check passed. */
@@ -1142,4 +1203,13 @@ svg.chart {
   .vis .waits .foot {
     display: none;
   }
+}
+
+/* An attack's caption and foot when nothing refused it: in the alarm colour, and its ring while it runs, in signal. */
+.vis .notheld,
+.vis .unchanged.notheld .glyph {
+  color: var(--attn);
+}
+.vis .unchanged .glyph.running {
+  color: var(--signal);
 }

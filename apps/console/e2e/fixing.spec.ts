@@ -211,7 +211,7 @@ test.describe('tool marks', () => {
     // Admission control's refusal is Kyverno's, on an image without the pipeline's Sigstore signature.
     await page.goto(consoleUrl({ item: '1293', sheet: true }));
     const sheet = page.getByRole('dialog');
-    const source = sheet.locator('.source', { hasText: 'Kyverno’s own refusal' });
+    const source = sheet.locator('.source', { hasText: 'Kyverno admits only' });
     await expect(source.locator('.toolmark')).toHaveCount(2);
     await expect(source.locator('.toolmark-kyverno')).toHaveAttribute('aria-hidden', 'true');
     await expect(source.locator('.toolmark-sigstore')).toBeVisible();

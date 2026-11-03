@@ -32,9 +32,10 @@ describe('the samples', () => {
     expect(new Set(of('work-item.opened').map((event) => event.payload.kind))).toEqual(new Set(kinds));
   });
 
-  it('have model calls from every agent, on Claude and on the local model, and a Jev judgement', () => {
+  it('have model calls from every agent but the red team, on Claude and on the local model, and a Jev judgement', () => {
+    // Milestone 7's attacks are scripted, with fixed content and no agent: nothing calls a model as the red team yet.
     const agents = new Set([...of('model.called').map((event) => event.payload.agent), 'triage']);
-    expect(agents).toEqual(new Set(AGENTS));
+    expect(agents).toEqual(new Set(AGENTS.filter((agent) => agent !== 'red-team')));
     expect(new Set(of('model.called').map((event) => event.payload.provider))).toEqual(new Set(['anthropic', 'local']));
     expect(of('judgement.made').length).toBeGreaterThan(0);
   });
@@ -173,12 +174,42 @@ describe('the samples', () => {
         expect(mayAppend(event.payload.mechanism, event.appended_by ?? ''), event.payload.mechanism).toBe(true);
       }
     }
-    expect(of('action.refused').map((event) => event.appended_by)).toEqual([
-      'factory_line',
-      'factory_line',
-      'factory_line',
-    ]);
+    // The coder's scope fence and admission control are the line's to record; triage records its own quarantine; the
+    // harness relays what the GitHub worker, GitHub and the review check refused an attack, and records the egress
+    // attack's own refusals.
+    expect(
+      Object.fromEntries(
+        Object.entries(Object.groupBy(of('action.refused'), (event) => event.payload.mechanism)).map(
+          ([mechanism, list]) => [mechanism, [...new Set(list?.map((event) => event.appended_by))]],
+        ),
+      ),
+    ).toEqual({
+      'scope-fence': ['factory_line'],
+      'admission-control': ['factory_line'],
+      'typed-judgement': ['factory_triage'],
+      'review-gate': ['factory_redteam'],
+      'github-guard': ['factory_redteam'],
+      'token-permission': ['factory_redteam'],
+      'egress-policy': ['factory_redteam'],
+    });
+    // An attack's end is the harness's alone, and so is its work item's close.
+    expect(new Set(of('attack.finished').map((event) => event.appended_by))).toEqual(new Set(['factory_redteam']));
+    for (const end of of('attack.finished')) {
+      const close = of('work-item.closed').find((event) => event.work_item === end.work_item);
+      expect(close?.appended_by).toBe('factory_redteam');
+    }
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
+  });
+
+  it('end each attack citing its refusals by their seqs in the log, as the store numbers them, after its launch', () => {
+    const ends = of('attack.finished');
+    expect(ends.length).toBeGreaterThan(0);
+    for (const end of ends) {
+      const launch = of('attack.launched').find((event) => event.work_item === end.work_item);
+      const cited = end.payload.refusals.map((seq) => published.find((event) => event.seq === seq));
+      expect(cited.map((event) => event?.type)).toEqual(end.payload.refusals.map(() => 'action.refused'));
+      for (const event of cited) expect(event?.seq).toBeGreaterThan(launch?.seq ?? Infinity);
+    }
   });
 
   it("give a guardrail's proof to the proofs' role, the only one that may append it", () => {

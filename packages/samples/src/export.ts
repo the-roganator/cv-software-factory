@@ -25,8 +25,11 @@ export function publicSamples(): PublicEvent[] {
     return [...(result.ok ? [] : result.problems), ...missing].map((p) => `#${event.work_item} ${event.type}: ${p}`);
   });
   if (problems.length) throw new Error(`The samples are not valid:\n  ${problems.join('\n  ')}`);
+  const attacks = new Set(
+    events.flatMap((event) => (event.type === 'attack.launched' && event.work_item ? [event.work_item] : [])),
+  );
   return events.map((event, i) => {
-    const appendedBy = appenderOf(event);
+    const appendedBy = appenderOf(event, attacks);
     return {
       ...event,
       ...publicView(event.type, event),

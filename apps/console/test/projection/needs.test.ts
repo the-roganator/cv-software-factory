@@ -64,10 +64,33 @@ describe('Needs you', () => {
     expect(gate?.answers.map((a) => [a.answer, a.stepUp])).toEqual([
       ['approved', true],
       ['answered', false],
+      ['replanned', false],
       ['rejected', false],
     ]);
     expect(gate?.answers[0]?.does).toBe('Sends it back to the coder for one more round, past the gates’ limit.');
     expect(gate?.answers[1]?.does).toBe('Sends it back to the coder, with your words as the reason.');
+    expect(gate?.answers[2]).toMatchObject({
+      label: 'Back to the planner',
+      does: 'The planner writes the spec again from your words, and the coder rebuilds the change on it.',
+    });
+  });
+
+  it('says a hold sent back to the planner went there, with his words, in Answered today', () => {
+    const t = Date.parse('2026-10-03T15:00:00Z');
+    const review = work('2030', Date.parse('2026-10-03T10:00:00Z'))
+      .open()
+      .add(1, 'hold.started', 'factory', hold('review', { stage: 'review' }))
+      .add(60, 'hold.answered', 'martin', { decision: 'replanned', answer: 'The spec contradicts a test' });
+    const { holds, answered } = needsView(foldItems(review.events), t);
+    expect(holds).toEqual([]);
+    expect(answered).toEqual([
+      expect.objectContaining({
+        workItem: '2030',
+        how: 'Sent back to the planner',
+        words: 'The spec contradicts a test',
+        did: undefined,
+      }),
+    ]);
   });
 
   it('offers only the answers that do something, and says what each does for every cause', () => {
@@ -386,7 +409,14 @@ describe('Needs you', () => {
       ['1321', 'deploy'],
     ]);
     const merge = needs.holds.find((need) => need.cause === 'merge');
-    expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'rejected']);
+    expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'replanned', 'rejected']);
+    const review = needs.holds.find((need) => need.cause === 'review');
+    expect(review?.answers.map((a) => a.label)).toEqual([
+      'Approve',
+      'Answer in words',
+      'Back to the planner',
+      'Reject',
+    ]);
     // A sample's pull request never existed: the card's way names it, and links nowhere, as the sheet does.
     const nowhere = 'A sample’s pull request: it never existed, so it links nowhere.';
     expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, why: nowhere });

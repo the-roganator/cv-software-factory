@@ -521,6 +521,14 @@ function heDid(replan: Extract<Replan, { approved: boolean }>): string {
     : 'Martin sent it back to you.';
 }
 
+/** Where a change was held that Martin sent back to the planner rather than the coder. */
+const HELD_AT = {
+  gates: 'at the gates',
+  review: 'at review',
+  merge: 'for his merge',
+  'tests-first': 'as its new tests pass without the fix',
+} as const;
+
 /** Why the work came back to Plan, in plain words, by its cause, and what to change for it. */
 function whyBack(replan: Replan, asked: Asked['kind']): string[] {
   const it = asked === 'ticket' ? 'the ticket' : 'what Martin asked';
@@ -567,6 +575,17 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
       return [
         `Why it came back: the change was merged and released, and at Verify it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`,
         heDid(replan),
+      ];
+    // Held after the coder's work, where his words would have gone to the coder: he sent them to you instead, as the
+    // spec is what he judges wrong.
+    case 'gates':
+    case 'review':
+    case 'merge':
+    case 'tests-first':
+      return [
+        `Why it came back: the change was held for Martin ${HELD_AT[replan.cause]}: ${replan.reason.replace(/[.\s]+$/, '')}.`,
+        `${heDid(replan)} He sent it to you rather than to the coder: the spec is what he judges must change.`,
+        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
       ];
     default:
       return [`Why it came back: it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`, heDid(replan)];

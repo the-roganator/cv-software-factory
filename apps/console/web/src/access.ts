@@ -40,7 +40,7 @@ export const SETTINGS_STEP_UP = {
 
 /**
  * The holds whose cause is a guardrail, `GUARDRAIL_HOLDS`: approving one overrides it, so it asks for the passkey again
- * (`hold.approve-guardrail`). Rejecting one, or answering it in words, never does.
+ * (`hold.approve-guardrail`). Rejecting one, answering it in words, or sending it back to the planner, never does.
  */
 export const GUARDRAIL_HOLDS: readonly HoldCause[] = [
   'scope',

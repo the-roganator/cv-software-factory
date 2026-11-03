@@ -21,7 +21,7 @@
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
-import { MARTIN_ANSWER_CHARS } from '@software-factory/events';
+import { type HoldAnswer, MARTIN_ANSWER_CHARS, WORDED_ANSWERS } from '@software-factory/events';
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
@@ -47,7 +47,13 @@ import { Key, useStepUp } from './StepUp.tsx';
 import { ReasonField, Refusal } from './Words.tsx';
 import { useWrite } from './Write.tsx';
 
-const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer' } as const;
+const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer', replanned: 'replan' } as const;
+
+/** What the field of each answer that goes with words (`WORDED_ANSWERS`) asks for, as its placeholder. */
+const ASKS: Partial<Record<HoldAnswer, string>> = {
+  answered: 'What the line should know',
+  replanned: 'What the planner should change in the spec',
+};
 
 function Evidence({ need }: { need: Need }) {
   const { evidence, link } = need;
@@ -236,12 +242,15 @@ function Kick({ need }: { need: Need }) {
   );
 }
 
-/** Martin's card: his answers, the words field when he opens it, and what the service said if it refused. */
+/**
+ * Martin's card: his answers, the words field of the one he opens, and what the service said if it refused. One field
+ * is open at a time, and what he has written stays as he moves it from one answer to the other.
+ */
 function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Placed) {
   const id = useId();
   const writes = useWrite(token);
   const { busy } = writes;
-  const [writing, setWriting] = useState(false);
+  const [writing, setWriting] = useState<HoldAnswer | undefined>(undefined);
   const [words, setWords] = useState('');
   const field = useRef<HTMLTextAreaElement>(null);
   // The field takes focus as it opens, so he can write at once.
@@ -250,7 +259,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   }, [writing]);
 
   const send = async (answer: Need['answers'][number]) => {
-    const body = { hold: need.hold, ...(answer.answer === 'answered' && { words: words.trim() }) };
+    const body = { hold: need.hold, ...(WORDED_ANSWERS.includes(answer.answer) && { words: words.trim() }) };
     await writes.send(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, {
       passkey: answer.stepUp
         ? {
@@ -264,7 +273,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
         : undefined,
       // Answered: the card moves to Answered today as the event arrives, unless words left it held.
       done: () => {
-        setWriting(false);
+        setWriting(undefined);
         setWords('');
         return undefined;
       },
@@ -280,14 +289,14 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
         <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
-            {row.answer === 'answered' ? (
+            {WORDED_ANSWERS.includes(row.answer) ? (
               <button
                 type="button"
                 className="btn small"
-                aria-expanded={writing}
-                aria-controls={`${id}-words`}
+                aria-expanded={writing === row.answer}
+                aria-controls={`${id}-${row.answer}`}
                 aria-disabled={busy || undefined}
-                onClick={() => !busy && setWriting(!writing)}
+                onClick={() => !busy && setWriting(writing === row.answer ? undefined : row.answer)}
               >
                 {row.label}
               </button>
@@ -303,10 +312,10 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
               </button>
             )}
             <p>{row.does}</p>
-            {row.answer === 'answered' && writing && (
+            {writing === row.answer && (
               <form
                 className="words-form"
-                id={`${id}-words`}
+                id={`${id}-${row.answer}`}
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (words.trim()) void send(row);
@@ -314,13 +323,17 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
               >
                 <ReasonField
                   id={`${id}-text`}
-                  label={`Your answer to #${need.workItem}`}
+                  label={
+                    row.answer === 'replanned'
+                      ? `Why #${need.workItem} goes back to the planner`
+                      : `Your answer to #${need.workItem}`
+                  }
                   labelHidden
                   limit={MARTIN_ANSWER_CHARS}
                   rows={3}
                   value={words}
                   onChange={setWords}
-                  placeholder="What the line should know"
+                  placeholder={ASKS[row.answer] ?? ''}
                   help={
                     need.aboutReport
                       ? 'Your words stay yours: a visitor’s report opened this, so no visitor and no agent reads them.'

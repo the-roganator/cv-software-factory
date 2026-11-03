@@ -7,7 +7,7 @@
  *
  * - **No passkey.** An attack loosens nothing and asks the line for no work: every attack's content is fixed in code,
  *   and the line builds nothing from it. So it is `attack.launch` in the access table, which asks for nothing more.
- * - **Only one available now** (`AVAILABLE_ATTACKS` in `policy/attacks.ts`). One that is not is refused (403) before
+ * - **Only an available attack** (`AVAILABLE_ATTACKS` in `policy/attacks.ts`). One that is not is refused (403) before
  *   anything is asked of the store.
  * - **One at a time.** A launch is refused (409) while the last one his roles launched has neither an `attack.finished`
  *   appended by the harness's role nor passed its limit (`policy/attacks.ts`), by the store's clock: so attacks never

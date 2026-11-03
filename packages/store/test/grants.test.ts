@@ -23,7 +23,13 @@ import type { JSONValue, Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ENROLMENT_CODE, PASSKEYS, SESSION } from '../../../policy/access.ts';
 import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../policy/refusals.ts';
-import { MARTINS_ROLES, PROOFS_ONLY_ROWS, REDTEAM_ONLY_ROWS, STORE_GRANTS } from '../../../policy/store-grants.ts';
+import {
+  ATTACK_CLOSE_ROWS,
+  MARTINS_ROLES,
+  PROOFS_ONLY_ROWS,
+  REDTEAM_ONLY_ROWS,
+  STORE_GRANTS,
+} from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
@@ -776,6 +782,30 @@ describe("an attack's end", () => {
     }
   });
 
+  it('is the only close as an attack ended: no other role closes any work item so, but as a sample', async () => {
+    const real = await freshDatabase('attack_closes');
+    const samples = await freshDatabase('attack_closes_samples');
+    try {
+      for (const outcome of ['refused', 'not-refused', 'unfinished']) {
+        for (const [role, sql] of [...Object.entries(real.as), ['admin', real.admin], ['operator', real.operator]] as [
+          string,
+          Sql,
+        ][]) {
+          await expect(
+            insert(sql, 'work-item.closed', '4030', false, { outcome, reason: 'Made up' }),
+            `${role}: ${outcome}`,
+          ).rejects.toThrow('row-level security');
+        }
+        await insert(samples.operator, 'work-item.closed', '4031', true, { outcome, reason: 'A sample' });
+      }
+      // Its other closes are as they were.
+      await insert(real.as.line, 'work-item.closed', '4030', false, { outcome: 'verified', reason: 'Shipped' });
+    } finally {
+      await real.end();
+      await samples.end();
+    }
+  });
+
   it('is with the harness’s other appends only on a work item one of Martin’s roles launched an attack on', async () => {
     const real = await freshDatabase('redteam_appends');
     try {
@@ -967,6 +997,13 @@ describe('a refusal', () => {
         .replace(/\s+/g, ' ')
         .replace(/^\((.*)\)$/, '$1');
     expect(restrictive.map((policy) => ({ ...policy, check: check(policy.check) }))).toEqual([
+      {
+        name: 'events_closed_as_an_attack_by_the_harness',
+        table: 'events',
+        command: 'insert',
+        roles: ['public'],
+        check: ATTACK_CLOSE_ROWS,
+      },
       {
         name: 'events_finished_by_the_harness',
         table: 'events',

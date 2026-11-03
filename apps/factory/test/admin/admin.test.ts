@@ -2894,19 +2894,19 @@ describe('an attack launched', () => {
     expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({ status: 200, body: { attack: 'egress' } });
   });
 
-  it('refuses an attack the catalogue holds back, having appended nothing', async () => {
+  it('refuses an attack not available yet, having appended nothing', async () => {
+    // The catalogue makes every attack available now, since the harness and the GitHub worker's door make all five;
+    // the route's refusal of one not available is tested through the service's seam, which a later version would use
+    // to stage a new attack before its attempt is built.
+    expect(ATTACKS.every((attack) => attackAvailable(attack))).toBe(true);
     await service.stop();
-    await start();
+    await start({ attackAvailable: (attack) => attack !== 'egress' });
     const { browser } = await signedIn();
     const before = (await launches()).length;
-    const held = ATTACKS.filter((attack) => !attackAvailable(attack));
-    expect(held.length).toBeGreaterThan(0);
-    for (const attack of held) {
-      expect(await browser.post(`/admin/attacks/${attack}`, {}), attack).toMatchObject({
-        status: 403,
-        body: { refused: 'attack', message: 'This attack is not available yet.' },
-      });
-    }
+    expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({
+      status: 403,
+      body: { refused: 'attack', message: 'This attack is not available yet.' },
+    });
     expect(await launches()).toHaveLength(before);
   });
 

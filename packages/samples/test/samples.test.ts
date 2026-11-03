@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ADMIN_TYPES, AGENTS, KINDS, type PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { AVAILABLE_ATTACKS } from '../../../policy/attacks.ts';
 import { mayAppend } from '../../../policy/refusals.ts';
 import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { LOG } from '../src/captures.ts';
@@ -189,10 +188,9 @@ describe('the samples', () => {
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
   });
 
-  it('hold no red-team attack while none can be launched, as the cluster can produce none', () => {
-    // When policy makes one available (`AVAILABLE_ATTACKS`), the samples may show it; until then the console's browser
-    // tests bring their own (apps/console/test/attacks).
-    expect(AVAILABLE_ATTACKS).toEqual([]);
+  it('hold no red-team attack: the samples never fabricate one, as Martin launches each live', () => {
+    // Every attack is available now (the harness makes all five), but the samples stage none: a red-team attack is
+    // Martin's live launch, not a sample. The console's browser tests bring their own (apps/console/test/attacks).
     expect(published.filter((event) => event.type.startsWith('attack.'))).toEqual([]);
     expect(of('work-item.opened').filter((event) => event.payload.kind === 'red-team')).toEqual([]);
   });

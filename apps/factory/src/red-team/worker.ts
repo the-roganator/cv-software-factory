@@ -16,7 +16,7 @@
  * refused in time, is a finding, and the line pages it.
  */
 import { randomUUID } from 'node:crypto';
-import { type Attack, type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
+import { ATTACKS, type Attack, type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
 import type { EventWriter } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { ATTACK_RULES, attackLimitMs, expectedRefusals } from '../../../../policy/attacks.ts';
@@ -109,7 +109,7 @@ export class RedTeam {
     const [row] = await this.#o.sql<{ seq: string; work_item: string; attack: string; at: Date }[]>`
       select l.seq::text as seq, l.work_item, l.payload->>'attack' as attack, l.appended_at as at
       from events l
-      where l.type = 'attack.launched'
+      where l.type = 'attack.launched' and l.payload->>'attack' = any(${this.#o.sql(ATTACKS as unknown as string[])})
         and not exists (select 1 from events f
                         where f.work_item = l.work_item and f.type = 'attack.finished'
                           and f.appended_by = 'factory_redteam' and f.seq > l.seq)
@@ -119,20 +119,23 @@ export class RedTeam {
   }
 
   async #act(launch: Launch, signal: AbortSignal): Promise<void> {
+    const attempt = isAttack(launch.attack) ? this.#o.attempts[launch.attack] : undefined;
+    if (!attempt) {
+      // An attack this code does not know, launched by a newer version: left for the line to page unfinished and a
+      // newer harness to make. #next does not pick one; this guards the edge, and never loops (once() is one pass).
+      this.#o.log.warn({ workItem: launch.workItem, attack: launch.attack }, 'skipping a launch of an unknown attack');
+      return;
+    }
     const limitMs = attackLimitMs(launch.attack);
     const ageMs = this.#now().getTime() - launch.at.getTime();
-    const attempt = isAttack(launch.attack) ? this.#o.attempts[launch.attack] : undefined;
-    // A launch past its limit, or of an attack this code cannot make, is left unfinished rather than run late: a
-    // second attack never meets the first's refusals, and the line has already begun to page it.
-    if (!attempt || ageMs >= limitMs) {
-      const why = attempt
-        ? 'it was already past its limit when the harness reached it'
-        : 'the harness does not know this attack';
+    // A launch past its limit is left unfinished rather than run late: a second attack never meets the first's
+    // refusals, and the line has already begun to page it.
+    if (ageMs >= limitMs) {
       await this.#finish(launch, {
         outcome: 'unfinished',
         refusals: [],
         attempts: [],
-        reason: `The attack was left unfinished: ${why}.`,
+        reason: 'The attack was already past its limit when the harness reached it.',
       });
       return;
     }
@@ -166,7 +169,8 @@ export class RedTeam {
 
   /** Appends `attack.finished` and the work item's close, in one batch: that ends the attack's work item. */
   async #finish(launch: Launch, result: AttemptResult): Promise<void> {
-    if (!isAttack(launch.attack)) return;
+    // Only a known attack reaches here (#act skips the rest): a guard, never hit, that also narrows the type.
+    if (!isAttack(launch.attack)) throw new Error(`cannot finish an unknown attack: ${launch.attack}`);
     const finished: PayloadOf<'attack.finished'> = {
       attack: launch.attack,
       outcome: result.outcome,

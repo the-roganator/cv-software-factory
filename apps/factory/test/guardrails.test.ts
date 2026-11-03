@@ -166,8 +166,8 @@ describe('the guardrail catalogue', () => {
     expect(attackLimitMs('not-an-attack')).toBe(LONGEST_ATTACK_MINUTES * 60_000);
   });
 
-  it('holds back the workflow and the pull request, which keep their rules and limits for when they are launched', () => {
-    expect(AVAILABLE_ATTACKS).toEqual(['report', 'egress', 'image']);
+  it('holds every attack back until the harness makes it, each keeping its rules and limit for then', () => {
+    expect(AVAILABLE_ATTACKS).toEqual([]);
     expect(ATTACKS.filter((attack) => attackAvailable(attack))).toEqual([...AVAILABLE_ATTACKS]);
     expect(attackAvailable('workflow')).toBe(false);
     expect(attackAvailable('not-an-attack')).toBe(false);

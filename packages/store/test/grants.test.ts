@@ -795,11 +795,23 @@ describe("an attack's end", () => {
         insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
         values (${crypto.randomUUID()}, now(), ${workItem}, 'action.refused', 3, 'red-team', 'Refused',
                 ${real.redteam.json(refusal)}, '[]', ${real.redteam.json({ payload: refusal } as JSONValue)}, false)`;
-      for (const type of ['attack.finished', 'work-item.closed']) await insert(real.redteam, type, '4010');
+      const ended = { outcome: 'refused', reason: 'Every attempt was refused.' };
+      await insert(real.redteam, 'attack.finished', '4010');
+      await insert(real.redteam, 'work-item.closed', '4010', false, ended);
+      // Its close only as an attack ends, never as work the line did.
+      for (const outcome of ['verified', 'quarantined', 'turned-off']) {
+        await expect(
+          insert(real.redteam, 'work-item.closed', '4010', false, { ...ended, outcome }),
+          outcome,
+        ).rejects.toThrow('row-level security');
+      }
       await refused('4010');
       for (const workItem of ['4011', '4012']) {
-        for (const type of ['attack.finished', 'work-item.closed']) {
-          await expect(insert(real.redteam, type, workItem), `${type} on ${workItem}`).rejects.toThrow(
+        for (const [type, payload] of [
+          ['attack.finished', {}],
+          ['work-item.closed', ended],
+        ] as const) {
+          await expect(insert(real.redteam, type, workItem, false, payload), `${type} on ${workItem}`).rejects.toThrow(
             'row-level security',
           );
         }
@@ -811,6 +823,20 @@ describe("an attack's end", () => {
       )) {
         await expect(insert(real.redteam, type, '4010'), type).rejects.toThrow('row-level security');
       }
+      // Nor by a temporary table of its own called events, standing in for the store's where it looks for a launch.
+      await real.redteam.begin(async (tx) => {
+        await tx`create temp table events (work_item text, type text, appended_by text) on commit drop`;
+        await tx`insert into pg_temp.events values ('4012', 'attack.launched', 'factory_admin')`;
+        await expect(
+          tx.savepoint(
+            (sp) => sp`
+              insert into public.events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public,
+                                         sample)
+              values (${crypto.randomUUID()}, now(), '4012', 'work-item.closed', 3, 'red-team', 'Closed',
+                      ${sp.json(ended)}, '[]', '{}', false)`,
+          ),
+        ).rejects.toThrow('row-level security');
+      });
       const typed = { mechanism: 'typed-judgement', action: 'A report', output: 'Quarantined.', guardrails: [8] };
       await expect(
         real.redteam`
@@ -848,7 +874,7 @@ describe("an attack's end", () => {
         await appended(real.as.line, 'action.refused', null, refused('admission-control', [3])),
         await appended(real.redteam, 'action.refused', '4020', refused('egress-policy', [5])),
         await appended(real.redteam, 'attack.finished', '4020'),
-        await appended(real.redteam, 'work-item.closed', '4020'),
+        await appended(real.redteam, 'work-item.closed', '4020', { outcome: 'refused' }),
       ];
       // What it does not wait for: another refusal, another work item, Martin's other commands, a worker's events.
       await appended(real.as.line, 'action.refused', '4022', refused('scope-fence', [11]));

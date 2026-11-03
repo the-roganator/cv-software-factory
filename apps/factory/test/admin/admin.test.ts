@@ -39,6 +39,7 @@ import {
 import { ATTACK_RULES, attackAvailable } from '../../../../policy/attacks.ts';
 import { flagsSpec, readFlags } from '../../../../policy/flags.ts';
 import { CONTENT_SECURITY_POLICY, COOKIE } from '../../src/admin/app.ts';
+import { lastLaunch } from '../../src/admin/attacks.ts';
 import type { AdminConfig } from '../../src/admin/config.ts';
 import { proxies } from '../../src/admin/config.ts';
 import { described, enrol } from '../../src/admin/enrol.ts';
@@ -2893,6 +2894,22 @@ describe('an attack launched', () => {
     expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({
       body: { message: expect.stringContaining(`or in ${minutes} minutes`) },
     });
+  });
+
+  it('counts a sample’s end in a store of samples, as Martin’s command line records one', async () => {
+    const samples = await freshDatabase('attack_samples');
+    try {
+      const append = (sql: Sql, workItem: string, type: string, version: number, payload: object) => sql`
+        insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+        values (${crypto.randomUUID()}, now(), ${workItem}, ${type}, ${version}, 'martin', 'A sample',
+                ${sql.json(payload as never)}, '[]', '{}', true)`;
+      await append(samples.operator, '1293', 'attack.launched', 2, { attack: 'image' });
+      expect(await samples.admin.begin((tx) => lastLaunch(tx))).toMatchObject({ workItem: '1293', finished: false });
+      await append(samples.operator, '1293', 'attack.finished', 1, { attack: 'image', outcome: 'refused' });
+      expect(await samples.admin.begin((tx) => lastLaunch(tx))).toMatchObject({ workItem: '1293', finished: true });
+    } finally {
+      await samples.end();
+    }
   });
 
   it('takes one of the five attacks, by its id, and nothing from the body', async () => {

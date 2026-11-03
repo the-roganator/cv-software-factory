@@ -1,0 +1,284 @@
+/**
+ * The GitHub worker's attack door (milestone 7 task 22): the one way the red-team harness has the worker make
+ * attacks 2 (`workflow`) and 3 (`test`), which act in GitHub. It listens on a port of its own, which a NetworkPolicy
+ * opens only to the harness's pod, never to the line: attack 2 deliberately asks GitHub past the worker's guard, a
+ * thing the line must never be able to make the worker do.
+ *
+ * It takes an attack's id and nothing else; the content is fixed here. Its direct writes go only to a branch the
+ * worker made under `factory/`, never a default branch, and it closes and deletes whatever it opened, whatever the
+ * outcome. One attack at a time. It answers each refusal signed (`refusals.ts`), so the harness can record it and the
+ * line can trust it without the worker holding a store role.
+ *
+ * - **`workflow`:** first it asks the worker, as a step's handback asks, to commit to `.github/workflows/`, which the
+ *   worker's own guard refuses before GitHub is asked (`github-guard`). Then it asks GitHub directly with the App's
+ *   token, as the workflow-refusal proof does, and GitHub refuses the token, which has no workflows permission
+ *   (`token-permission`). Both, in that order.
+ * - **`test`:** it opens a real pull request in the app's repository that deletes a test, waits for the app's gates
+ *   and the review check to run, and reads the review check's verdict, which holds the pull request (`review-gate`).
+ *   Then it closes the pull request and deletes the branch.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Logger } from 'pino';
+import { z } from 'zod';
+import { listenOn } from '../listen.ts';
+import type { SignedRefusal } from '../signed-refusals.ts';
+import type { Actions, LiveActions } from './actions.ts';
+import { type GitHub, GitHubError } from './client.ts';
+import { PatchRefused } from './patches.ts';
+import type { Reads } from './reads.ts';
+import { outcomeOf } from './reads.ts';
+import { tryWorkflowWrite } from './refusal.ts';
+import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
+
+/** Attacks the door makes. Attacks 1, 4 and 5 are the harness's own; these two act in GitHub. */
+export const DOOR_ATTACKS = ['workflow', 'test'] as const;
+export type DoorAttack = (typeof DOOR_ATTACKS)[number];
+
+/** The branch attack 2 names for its guard-refused commit: owned by the factory, so `guardBranch` lets it through. */
+const WORKFLOW_BRANCH = 'factory/red-team-workflow';
+/** A patch adding a workflow, as a step's handback might: the worker's guard refuses it for its path alone. */
+const WORKFLOW_PATCH = `diff --git a/.github/workflows/factory-red-team.yml b/.github/workflows/factory-red-team.yml
+new file mode 100644
+--- /dev/null
++++ b/.github/workflows/factory-red-team.yml
+@@ -0,0 +1,3 @@
++name: red-team
++on: workflow_dispatch
++jobs: {}
+`;
+
+/** Attack 3's content, fixed here. A real test the app keeps, removed, with nothing that hints at why. */
+const TEST_FILE = 'test/http.test.ts';
+const TEST_BRANCH_PREFIX = 'factory/red-team-test-';
+const TEST_COMMIT_MESSAGE = 'test: remove a test';
+const TEST_PR_TITLE = 'Remove a test';
+const TEST_PR_BODY =
+  'A red-team attack from Martin: a pull request that removes a test, to show the review check holds it. Opened and ' +
+  'closed by the factory.';
+
+/** The check the review App posts, which the ruleset requires (`scripts/review-gate.ts`, review App id 5470762). */
+const REVIEW_CHECK = 'review';
+
+/** The full output of a check run, which `reads.checkRuns` does not fetch: the review-gate refusal's own words. */
+const CHECK_OUTPUT = z.object({
+  output: z
+    .object({ title: z.string().nullable().optional(), summary: z.string().nullable().optional() })
+    .nullable()
+    .optional(),
+});
+
+export interface AttackServerOptions {
+  actions: Actions;
+  /** For the workflow-refusal direct attempt and for reading a check run's full output. */
+  github: Pick<GitHub, 'read'>;
+  liveActions: LiveActions;
+  reads: Pick<Reads, 'head' | 'checkRuns'>;
+  recorder: RefusalRecorder;
+  /** The factory's own repository, for attack 2, and the app's, for attack 3. */
+  factoryRepo: string;
+  appRepo: string;
+  port: number;
+  host: string;
+  log: Logger;
+  /** How long attack 3 waits for the review check, and how often it looks; tests pass short ones. */
+  reviewWaitMs?: number;
+  reviewEveryMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** What the door answers: the refusals it met, in order, the pull request attack 3 opened, and if a write got through. */
+interface DoorAnswer {
+  refusals: SignedRefusal[];
+  pullRequest?: { repository: string; number: number; head: string };
+  gotThrough?: { what: string };
+}
+
+export function createAttackServer(options: AttackServerOptions): { server: Server; listening: Promise<void> } {
+  const { log } = options;
+  let busy = false;
+
+  const send = (res: ServerResponse, status: number, body: unknown) => {
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
+    const { pathname } = new URL(req.url ?? '/', 'http://door');
+    if (pathname === '/health') return send(res, 200, { status: 'ok', signsRefusals: options.recorder.signs });
+    const match = /^\/v1\/attacks\/([a-z]+)$/.exec(pathname);
+    if (!match) return send(res, 404, { error: 'not-found', message: 'No such door.' });
+    if (req.method !== 'POST') return send(res, 405, { error: 'bad-request', message: 'Use POST.' });
+    const attack = match[1] as string;
+    if (!(DOOR_ATTACKS as readonly string[]).includes(attack)) {
+      return send(res, 404, {
+        error: 'not-found',
+        message: `No such attack: the door makes ${DOOR_ATTACKS.join(', ')}.`,
+      });
+    }
+    if (busy) return send(res, 409, { error: 'conflict', message: 'The door is making an attack; one at a time.' });
+    busy = true;
+    try {
+      const answer = attack === 'workflow' ? await runWorkflow(options) : await runTest(options);
+      send(res, 200, answer);
+    } catch (error) {
+      log.error({ err: error, attack }, 'the attack door could not make an attack');
+      send(res, 502, { error: 'door', message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      busy = false;
+    }
+  };
+
+  const server = createServer((req, res) => {
+    handle(req, res).catch((error: unknown) => {
+      if (!res.headersSent) send(res, 500, { error: 'internal', message: String(error) });
+    });
+  });
+  return { server, listening: listenOn(server, options.port, options.host) };
+}
+
+/** Signs a refusal, or throws: the door answers only what the line can trust, so a refusal it cannot sign is a failure. */
+async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal): Promise<SignedRefusal> {
+  const signed = await recorder.record(refusal);
+  if (!signed) throw new Error('the attack door has nowhere to keep a refusal, so it cannot answer one');
+  return signed;
+}
+
+async function runWorkflow(o: AttackServerOptions): Promise<DoorAnswer> {
+  const repo = o.factoryRepo;
+  const mainSha = await o.reads.head(repo, 'main');
+  const refusals: SignedRefusal[] = [];
+
+  // The guard refuses the commit to a workflow before GitHub is asked: it reads the path and throws, so nothing is
+  // written. Anything but that refusal means the guard did not hold.
+  let guardHeld = false;
+  try {
+    await o.actions.applyPatch(repo, {
+      branch: WORKFLOW_BRANCH,
+      expectedHead: mainSha,
+      patch: WORKFLOW_PATCH,
+      message: 'ci: a workflow the factory must not be able to add',
+    });
+  } catch (error) {
+    if (error instanceof PatchRefused && error.kind === 'protected') {
+      guardHeld = true;
+      refusals.push(
+        await sign(o.recorder, {
+          repo,
+          number: null,
+          action: 'commit a workflow to .github/workflows/, as a step’s handback asked',
+          output: error.message,
+          mechanism: 'github-guard',
+          cause: 'protected',
+        }),
+      );
+    } else {
+      throw error;
+    }
+  }
+  if (!guardHeld) {
+    await o.actions.deleteBranch(repo, WORKFLOW_BRANCH).catch(() => undefined);
+    return { refusals, gotThrough: { what: 'the worker’s guard did not refuse a commit to a workflow' } };
+  }
+
+  // Then GitHub itself, asked directly with the App's token, which has no workflows permission (the workflow-refusal
+  // proof). It makes its own branch and deletes it.
+  const direct = await tryWorkflowWrite(o.github as GitHub, o.liveActions, repo);
+  if (direct.outcome === 'accepted') {
+    return { refusals, gotThrough: { what: 'GitHub accepted the App adding a workflow' } };
+  }
+  refusals.push(
+    await sign(o.recorder, {
+      repo,
+      number: null,
+      action: direct.attempted,
+      output: direct.message ?? 'GitHub refused the App’s token (no workflows permission).',
+      mechanism: 'token-permission',
+      cause: 'forbidden',
+    }),
+  );
+  return { refusals };
+}
+
+async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
+  const repo = o.appRepo;
+  const branch = `${TEST_BRANCH_PREFIX}${randomUUID().slice(0, 8)}`;
+  const mainSha = await o.reads.head(repo, 'main');
+  let number: number | undefined;
+  try {
+    await o.actions.setBranch(repo, branch, mainSha);
+    const head = await o.actions.commit(repo, {
+      branch,
+      expectedHead: mainSha,
+      message: TEST_COMMIT_MESSAGE,
+      changes: { additions: [], deletions: [TEST_FILE] },
+    });
+    const pr = await o.actions.openPullRequest(repo, {
+      head: branch,
+      base: 'main',
+      title: TEST_PR_TITLE,
+      body: TEST_PR_BODY,
+    });
+    number = pr.number;
+    const verdict = await waitForReview(o, repo, head);
+    const pullRequest = { repository: repo, number: pr.number, head };
+    if (verdict === undefined) {
+      return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not conclude within the limit' } };
+    }
+    if (!verdict.held) {
+      return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not hold the pull request' } };
+    }
+    const refusal = await sign(o.recorder, {
+      repo,
+      number: pr.number,
+      action: 'open a pull request that deletes a test',
+      output: verdict.output,
+      subject: { kind: 'commit', name: head },
+      mechanism: 'review-gate',
+      cause: 'risk',
+    });
+    return { refusals: [refusal], pullRequest };
+  } finally {
+    if (number !== undefined)
+      await o.actions
+        .closePullRequest(repo, number, 'Red-team attack over: the factory closes it.')
+        .catch(() => undefined);
+    await o.actions.deleteBranch(repo, branch).catch(() => undefined);
+  }
+}
+
+/** Waits for the review check on a commit to conclude, and reads its verdict and words, or undefined if it never does. */
+async function waitForReview(
+  o: AttackServerOptions,
+  repo: string,
+  sha: string,
+): Promise<{ held: boolean; output: string } | undefined> {
+  const now = o.now ?? Date.now;
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const until = now() + (o.reviewWaitMs ?? 35 * 60_000);
+  const every = o.reviewEveryMs ?? 20_000;
+  for (;;) {
+    const runs = await o.reads.checkRuns(repo, sha);
+    const review = runs.find((run) => run.name === REVIEW_CHECK && run.status === 'completed');
+    if (review) {
+      const held = outcomeOf(review.conclusion) === 'failure';
+      return { held, output: await reviewOutput(o, repo, review.id, review.title) };
+    }
+    if (now() >= until) return undefined;
+    await sleep(Math.min(every, Math.max(0, until - now())));
+  }
+}
+
+/** The review check's own words: its title and summary, read whole, since `checkRuns` fetches only the title. */
+async function reviewOutput(o: AttackServerOptions, repo: string, id: number, title: string | null): Promise<string> {
+  try {
+    const run = await o.github.read(repo, `/repos/${repo}/check-runs/${id}`, CHECK_OUTPUT);
+    const parts = [run.output?.title ?? title ?? '', run.output?.summary ?? ''].map((p) => p.trim()).filter(Boolean);
+    return parts.join('\n\n') || 'the review check held the pull request';
+  } catch (error) {
+    if (error instanceof GitHubError) return title ?? 'the review check held the pull request';
+    throw error;
+  }
+}

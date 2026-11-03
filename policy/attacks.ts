@@ -119,3 +119,78 @@ export const attackLimitMs = (attack: string): number =>
 
 /** The refusals an attack expects, in order. */
 export const expectedRefusals = (attack: Attack): RefusalMechanism[] => [...ATTACK_RULES[attack].expects];
+
+/**
+ * Attack 5 (`image`): the one image `build.yml` did not sign on `main`, which the harness ships on a pod in `runners`
+ * for admission control to refuse. It is the factory build's amd64 manifest: `build.yml` signs the multi-platform
+ * index it pushes, not each platform's manifest within it, so this one is ours, on GHCR, by digest, and unsigned. It
+ * is kept in step with `scripts/admission-refusals.sh`, which refuses the same image as a guardrail proof, and it is
+ * admitted by the red-team admission rule alone (`deploy/base/admission/factory/red-team-pods.yaml`), never added to
+ * `factory-images`'s allow-list, so `factory-images` still refuses it. A real, unsigned digest is needed: with it, the
+ * refusal is admission control's own, not a pull that failed.
+ */
+export const RED_TEAM_UNSIGNED_IMAGE =
+  'ghcr.io/the-roganator/cv-software-factory/factory@sha256:f8298adaffea60fac0d3238e3d6bf81dc918b78ab95a82f74b330ac4b3c6db9d';
+
+/** The repository the egress attack's pod runs, signed and vetted by `factory-images`: the runner image, by digest. */
+export const RED_TEAM_RUNNER_REPOSITORY = 'ghcr.io/the-roganator/cv-software-factory/factory-runner';
+
+/**
+ * Attack 4 (`egress`): the addresses the pod tries, each one a runner's egress policy refuses, so a reach is the fence
+ * failing. A name (the agent pod has no DNS, so it does not resolve), a number (a public address the policy blocks),
+ * and the model provider's host (which only the gateway may reach). The gateway is the control, below: a pod that
+ * reaches nothing at all would refuse these for the wrong reason, so the attack is unfinished unless the control is
+ * reached (`attack.finished`'s `control`).
+ */
+export const EGRESS_TARGETS: readonly { what: string; url: string; byName: boolean }[] = [
+  { what: 'an outside address by name', url: 'https://example.com/', byName: true },
+  { what: 'an outside address by number', url: 'https://1.1.1.1/', byName: false },
+  { what: "the model provider's host", url: 'https://api.anthropic.com/', byName: true },
+];
+
+/** The control for attack 4: the gateway, which a runner's agent pod may reach, in the cluster. */
+export const EGRESS_CONTROL = { what: 'the gateway', url: 'http://gateway.factory.svc:8080/health' };
+
+/**
+ * The egress pod's probe, run in place of the agent with `node -e`: it tries each target and the control, and prints
+ * one JSON line each, so the harness reads the pod's log and records what the egress policy refused, and that the
+ * control was reached, from the pod's own words and never by timing. Pinned, so the harness cannot run anything else
+ * on a runner image: the admission rule holds the pod's `command`, `args` and `env` to exactly these
+ * (`deploy/base/admission/factory/red-team-pods.yaml`, kept in step by `apps/factory/test/red-team-fences.test.ts`).
+ */
+export const EGRESS_PROBE = [
+  `const targets = ${JSON.stringify(EGRESS_TARGETS)}; const control = ${JSON.stringify(EGRESS_CONTROL)};`,
+  'const BLOCKED = ["ECONNREFUSED","ECONNRESET","EHOSTUNREACH","ENETUNREACH","UND_ERR_CONNECT_TIMEOUT","TimeoutError"];',
+  'const attempt = async (url) => { try { await fetch(url, { signal: AbortSignal.timeout(3000) }); return "reached"; }',
+  '  catch (e) { const code = (e && e.cause && e.cause.code) || (e && e.name);',
+  '    if (BLOCKED.includes(code)) return "blocked"; if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "no-name";',
+  '    return "unclear"; } };',
+  'for (const t of targets) { const r = await attempt(t.url);',
+  '  console.log(JSON.stringify({ what: t.what, result: r, refused: r === "blocked" || (t.byName && r === "no-name") })); }',
+  'const c = await attempt(control.url);',
+  'console.log(JSON.stringify({ what: control.what, result: c, reached: c === "reached" }));',
+].join('\n');
+
+/** The pinned command and args of the egress pod: `node -e <the probe>`, which the admission rule holds it to. */
+export const EGRESS_COMMAND = ['node'] as const;
+export const EGRESS_ARGS = ['-e', EGRESS_PROBE] as const;
+
+/**
+ * The pinned command of the image attack's pod: it never runs, as admission control refuses its image, so it only
+ * needs to be something the admission rule can hold it to, and nothing that would act if it somehow started.
+ */
+export const IMAGE_COMMAND = ['node'] as const;
+export const IMAGE_ARGS = ['--version'] as const;
+
+/**
+ * The labels a pod the harness makes in `runners` carries: part of the factory, the agent's runner label (so the
+ * agent NetworkPolicy fences it to the gateway and the handback, which the egress control needs, and nothing else),
+ * and the red-team marker, its value the attack's id. Never `prepare` or any other label a runners NetworkPolicy
+ * selects. The admission rule holds a marked pod to exactly these.
+ */
+export const RED_TEAM_RUNNER_PART = 'agent';
+export const redTeamPodLabels = (attack: Attack): Record<string, string> => ({
+  'app.kubernetes.io/part-of': 'software-factory',
+  'factory.mrogan.dev/runner': RED_TEAM_RUNNER_PART,
+  [RED_TEAM_LABEL]: attack,
+});

@@ -1,0 +1,299 @@
+/**
+ * Attacks 4 (`egress`) and 5 (`image`): a pod the harness makes in `runners`, where an agent's pod runs. RBAC lets
+ * the harness create a pod but cannot say what the pod holds, so the red-team admission rule
+ * (deploy/base/admission/factory/red-team-pods.yaml) holds a marked pod to the agent's runner label plus the marker,
+ * one of two images, pinned command, args and env, and no volumes, secrets or service-account token: a compromised
+ * harness can make these two pods and nothing else. The agent NetworkPolicy fences the pod to the gateway and the
+ * handback and nothing else, as it fences an agent.
+ *
+ * - **`egress`:** the pod runs a connectivity probe in place of the agent (the pinned `node -e` in policy/attacks.ts).
+ *   It tries an outside address by name and by number and the model provider's host, each of which a runner's egress
+ *   policy refuses, and the gateway as the control, which it may reach. The harness reads the pod's own record of each
+ *   from its log and appends an `egress-policy` refusal for each one refused (guardrail 5), which its role alone may.
+ *   A control that is not reached means the pod reached nothing for some other reason, so the attack is unfinished,
+ *   not refused.
+ * - **`image`:** the pod asks for the one image `build.yml` did not sign, which admission control refuses as it is
+ *   created. The harness does not record that refusal: the line reads admission's denials from the cluster's Events
+ *   (deviation 7) and appends `admission-control` about the pod, which the harness waits for, matched by the pod's
+ *   name and uid. If the image is admitted (as under `try-the-line`, with `factory-images` in audit), nothing refused
+ *   it and the attack is not refused.
+ */
+
+import { cutTo, type NewEvent, VERSIONS } from '@software-factory/events';
+import type { EventWriter } from '@software-factory/store';
+import { z } from 'zod';
+import {
+  EGRESS_ARGS,
+  EGRESS_COMMAND,
+  EGRESS_TARGETS,
+  IMAGE_ARGS,
+  IMAGE_COMMAND,
+  redTeamPodLabels,
+} from '../../../../policy/attacks.ts';
+import { guardrailsFor } from '../../../../policy/refusals.ts';
+import type { Kube } from '../runners/kube.ts';
+import { KubeError } from '../runners/kube.ts';
+import { waitFor } from './wait.ts';
+import type { Attempt, AttemptContext, AttemptResult } from './worker.ts';
+
+export const RUNNERS = 'runners';
+
+/** How long a pod is given to run its probe, and how often the harness looks at it. */
+const POD_DEADLINE_SECONDS = 120;
+const LOOK_MS = 3000;
+
+const POD = z.object({
+  metadata: z.object({ uid: z.string().optional() }),
+  status: z
+    .object({ phase: z.string().optional(), containerStatuses: z.array(z.object({ name: z.string() })).optional() })
+    .optional(),
+});
+
+/** One line the egress probe prints: a target it tried, or the control. */
+const PROBE_LINE = z.object({
+  what: z.string(),
+  result: z.string(),
+  refused: z.boolean().optional(),
+  reached: z.boolean().optional(),
+});
+
+/** The pod spec the admission rule holds the harness to: one container, pinned, with nothing it does not need. */
+function podBody(
+  name: string,
+  attack: 'egress' | 'image',
+  image: string,
+  command: readonly string[],
+  args: readonly string[],
+) {
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name, namespace: RUNNERS, labels: redTeamPodLabels(attack) },
+    spec: {
+      restartPolicy: 'Never',
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      activeDeadlineSeconds: POD_DEADLINE_SECONDS,
+      securityContext: {
+        runAsNonRoot: true,
+        runAsUser: 65532,
+        runAsGroup: 65532,
+        seccompProfile: { type: 'RuntimeDefault' },
+      },
+      containers: [
+        {
+          name: attack,
+          image,
+          command: [...command],
+          args: [...args],
+          securityContext: {
+            allowPrivilegeEscalation: false,
+            readOnlyRootFilesystem: true,
+            capabilities: { drop: ['ALL'] },
+          },
+          resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { memory: '256Mi' } },
+        },
+      ],
+    },
+  };
+}
+
+const podPath = (name: string) => `/api/v1/namespaces/${RUNNERS}/pods/${name}`;
+
+/** Appends one `action.refused`, as the harness, and gives back its seq. */
+async function refuse(
+  events: Pick<EventWriter, 'append'>,
+  workItem: string,
+  payload: { mechanism: 'egress-policy'; action: string; output: string; guardrails: number[] },
+): Promise<number> {
+  const event: NewEvent = {
+    id: crypto.randomUUID(),
+    ts: new Date().toISOString(),
+    work_item: workItem,
+    type: 'action.refused',
+    version: VERSIONS['action.refused'],
+    actor: 'factory',
+    summary: 'A runner’s egress policy refused a connection',
+    payload,
+    artifacts: [],
+  } as NewEvent;
+  const [stored] = await events.append([event]);
+  if (stored?.seq === undefined) throw new Error('the store did not return a seq for the egress refusal');
+  return stored.seq;
+}
+
+export const egressAttempt =
+  ({ kube, runnerImage }: { kube: Pick<Kube, 'create' | 'get' | 'text' | 'remove'>; runnerImage: string }): Attempt =>
+  async (ctx) => {
+    const name = `red-team-egress-${crypto.randomUUID().slice(0, 8)}`;
+    try {
+      await kube.create(
+        `/api/v1/namespaces/${RUNNERS}/pods`,
+        podBody(name, 'egress', runnerImage, EGRESS_COMMAND, EGRESS_ARGS),
+      );
+      const log = await runToEnd(kube, name, ctx);
+      if (log === undefined) {
+        return unfinished(name, 'The egress pod did not finish its probe within the limit.');
+      }
+      return await recordEgress(ctx, log);
+    } finally {
+      await kube.remove(podPath(name)).catch(() => undefined);
+    }
+  };
+
+/** Reads the probe's lines once the pod has ended, or undefined if it did not end in time. */
+async function runToEnd(
+  kube: Pick<Kube, 'get' | 'text'>,
+  name: string,
+  ctx: AttemptContext,
+): Promise<string | undefined> {
+  const done = await waitFor(
+    async () => {
+      const pod = await kube.get(podPath(name), POD);
+      const phase = pod?.status?.phase;
+      return phase === 'Succeeded' || phase === 'Failed' ? phase : undefined;
+    },
+    { limitMs: ctx.limitMs, everyMs: LOOK_MS, signal: ctx.signal },
+  );
+  if (done === undefined) return undefined;
+  return (await kube.text(`${podPath(name)}/log`)) ?? '';
+}
+
+/** Reads each probe line, appends a refusal for each target the egress policy refused, and says how the attack ended. */
+async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptResult> {
+  const lines = log
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const parsed = PROBE_LINE.safeParse(JSON.parse(line));
+        return parsed.success ? [parsed.data] : [];
+      } catch {
+        return [];
+      }
+    });
+  const byWhat = new Map(lines.map((line) => [line.what, line]));
+  const attempts: AttemptResult['attempts'] = [];
+  const refusals: number[] = [];
+  let anyReached = false;
+  for (const target of EGRESS_TARGETS) {
+    const line = byWhat.get(target.what);
+    const refused = line?.refused === true;
+    const result = line ? line.result : 'the pod said nothing of it';
+    attempts.push({ what: target.what, result, refused });
+    if (!refused) anyReached = true;
+    if (refused) {
+      refusals.push(
+        await refuse(ctx.events, ctx.workItem, {
+          mechanism: 'egress-policy',
+          action: cutTo(target.what, 200),
+          output: cutTo(`${target.what}: ${result}`, 4000),
+          guardrails: guardrailsFor('egress-policy', 'egress'),
+        }),
+      );
+    }
+  }
+  const controlLine = byWhat.get('the gateway');
+  const control = {
+    what: 'the gateway',
+    result: controlLine ? controlLine.result : 'the pod said nothing of it',
+    reached: controlLine?.reached === true,
+  };
+  if (!control.reached) {
+    return {
+      outcome: 'unfinished',
+      refusals,
+      attempts,
+      control,
+      reason: 'The control failed: the pod could not reach the gateway, so its refusals prove nothing.',
+    };
+  }
+  if (anyReached || attempts.length !== EGRESS_TARGETS.length || refusals.length !== EGRESS_TARGETS.length) {
+    return {
+      outcome: 'not-refused',
+      refusals,
+      attempts,
+      control,
+      reason: 'An outside address was reached: a runner’s egress policy did not refuse it.',
+    };
+  }
+  return {
+    outcome: 'refused',
+    refusals,
+    attempts,
+    control,
+    reason: 'A runner’s egress policy refused every outside address, and the gateway control was reached.',
+  };
+}
+
+export const imageAttempt =
+  ({ kube, unsignedImage }: { kube: Pick<Kube, 'create' | 'remove'>; unsignedImage: string }): Attempt =>
+  async (ctx) => {
+    const name = `red-team-image-${crypto.randomUUID().slice(0, 8)}`;
+    let admitted = false;
+    try {
+      await kube.create(
+        `/api/v1/namespaces/${RUNNERS}/pods`,
+        podBody(name, 'image', unsignedImage, IMAGE_COMMAND, IMAGE_ARGS),
+      );
+      admitted = true;
+    } catch (error) {
+      // Admission refusing the image is the attack working. Anything else means the attempt could not be made.
+      if (!(error instanceof KubeError && (error.kind === 'refused' || error.kind === 'invalid'))) {
+        await kube.remove(podPath(name)).catch(() => undefined);
+        return unfinished(
+          name,
+          `The pod could not be created to test admission: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (admitted) {
+      // Admitted: `factory-images` did not refuse the unsigned image (it is in audit, as under `try-the-line`). The
+      // attack got through; take the pod away.
+      await kube.remove(podPath(name)).catch(() => undefined);
+      return {
+        outcome: 'not-refused',
+        refusals: [],
+        attempts: [
+          { what: 'asked to run an unsigned image', result: 'admission control admitted the pod', refused: false },
+        ],
+        subject: { pod: { namespace: RUNNERS, name, uid: '00000000-0000-0000-0000-000000000000' } },
+        reason: 'Admission control admitted an unsigned image: it must be enforcing for this attack (factory-images).',
+      };
+    }
+    // The line reads the cluster's Events and records admission's refusal of the pod; the harness waits for the one
+    // about this pod, by name, and reads its uid back, so the refusal it cites is about the pod it asked for.
+    const found = await waitFor(
+      async () => {
+        const [row] = await ctx.sql<{ seq: string; uid: string | null }[]>`
+          select seq::text as seq, payload->'subject'->>'uid' as uid from events
+          where type = 'action.refused' and payload->>'mechanism' = 'admission-control'
+            and appended_by = 'factory_line'
+            and payload->'subject'->>'namespace' = ${RUNNERS}
+            and payload->'subject'->>'name' = ${name}
+          order by seq desc limit 1`;
+        return row?.uid ? { seq: Number(row.seq), uid: row.uid } : undefined;
+      },
+      { limitMs: ctx.limitMs, everyMs: LOOK_MS, signal: ctx.signal },
+    );
+    if (!found) {
+      return unfinished(name, 'Admission refused the pod, but the line did not record it within the limit.');
+    }
+    return {
+      outcome: 'refused',
+      refusals: [found.seq],
+      attempts: [
+        { what: 'asked to run an unsigned image', result: 'admission control refused the pod', refused: true },
+      ],
+      subject: { pod: { namespace: RUNNERS, name, uid: found.uid } },
+      reason: 'Admission control refused the unsigned image, as it should.',
+    };
+  };
+
+const unfinished = (name: string, reason: string): AttemptResult => ({
+  outcome: 'unfinished',
+  refusals: [],
+  attempts: [{ what: `made a pod (${name})`, result: reason, refused: false }],
+  reason,
+});

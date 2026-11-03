@@ -6,8 +6,9 @@ import { DiskArtifacts } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { listenOn } from '../listen.ts';
 import { type Actions, contentsReader, DryRunActions, LiveActions } from './actions.ts';
+import { createAttackServer } from './attacks.ts';
 import { GitHub } from './client.ts';
-import type { GitHubConfig } from './config.ts';
+import { type GitHubConfig, REPOSITORIES } from './config.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
@@ -82,8 +83,37 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     `github worker listening on ${config.host}:${config.port}`,
   );
 
+  // The red-team harness's attack door (github/attacks.ts), on a port of its own, for attacks 2 and 3. It makes
+  // real attempts in GitHub, so it is served only when the worker can write; a NetworkPolicy opens the port to the
+  // harness's pod alone, never the line.
+  let attackDoor: ReturnType<typeof createAttackServer> | undefined;
+  if (config.attackPort !== undefined && github.writable) {
+    const doorActions = new LiveActions(github, { guard });
+    attackDoor = createAttackServer({
+      actions: doorActions,
+      liveActions: doorActions,
+      github,
+      reads: liveReads,
+      recorder,
+      factoryRepo: REPOSITORIES[0],
+      appRepo: REPOSITORIES[1],
+      port: config.attackPort,
+      host: config.host,
+      log,
+    });
+    await attackDoor.listening;
+    log.info({ port: config.attackPort }, 'red-team attack door listening');
+  } else if (config.attackPort !== undefined) {
+    log.warn('ATTACK_PORT is set but the worker cannot write: the attack door is not served.');
+  }
+
   const stop = async () => {
     await poller.stop();
+    if (attackDoor)
+      await new Promise<void>((resolve) => {
+        attackDoor.server.close(() => resolve());
+        attackDoor.server.closeIdleConnections();
+      });
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
       server.closeIdleConnections();

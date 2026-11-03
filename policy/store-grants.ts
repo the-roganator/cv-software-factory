@@ -233,6 +233,7 @@ export const STORE_GRANTS = {
       'may speak for it; and its own events, so an append may be retried and a restart picks up where it left off. No ' +
       'other table. Its password is in `postgres-redteam`.',
     on: { events: ['select', 'insert'], store: ['select', 'insert'] },
+    calls: ['red_team_report_signal(text)'],
     rows: {
       events: {
         select:

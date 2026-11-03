@@ -301,6 +301,21 @@ describe('the line’s judgement of an attack', () => {
       '5070',
     );
     expect(await kinds()).toMatchObject({ 'attack-not-refused': 1, 'attack-unfinished': 0 });
+    // Nor once its limit has passed: the end came within it.
+    const limit = ATTACK_RULES.egress.minutes * 60_000;
+    await launch('5071', 'egress', new Date(Date.now() - limit - 300_000));
+    await append(
+      database.redteam,
+      'attack.finished',
+      finished('egress', [], {
+        outcome: 'unfinished',
+        control: undefined,
+        attempts: [{ what: 'Reach example.com by name', result: 'HTTP/1.1 200 OK', refused: false }],
+      }),
+      '5071',
+      { appendedAt: new Date(Date.now() - limit - 240_000) },
+    );
+    expect(await kinds()).toMatchObject({ 'attack-not-refused': 2, 'attack-unfinished': 0 });
   });
 });
 

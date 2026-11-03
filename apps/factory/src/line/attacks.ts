@@ -347,6 +347,11 @@ const LIMITS = Object.fromEntries(ATTACKS.map((attack) => [attack, attackLimitMs
  * never falls.
  */
 export async function countUnfinished(sql: Sql): Promise<number> {
+  // An end that records an attempt that got through: counted as not refused (`judge`), and so never as unfinished.
+  const through = sql`exists (select 1 from jsonb_array_elements(
+                                case when jsonb_typeof(f.payload->'attempts') = 'array' then f.payload->'attempts'
+                                     else '[]'::jsonb end) a
+                              where a->'refused' = 'false'::jsonb)`;
   const [row] = await sql<{ unfinished: number }[]>`
     with launches as (
       select l.seq, l.work_item, l.appended_at,
@@ -355,18 +360,16 @@ export async function countUnfinished(sql: Sql): Promise<number> {
       from events l
       where l.type = 'attack.launched' and ${byMartin(sql, 'l')})
     select count(*)::int as unfinished from launches l
-    where exists (select 1 from events f
-                  where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq and not f.sample
-                    and f.appended_by = ${HARNESS_ROLE} and f.payload->>'outcome' = 'unfinished'
-                    -- One with an attempt that got through is counted as not refused, and only so.
-                    and not exists (select 1 from jsonb_array_elements(
-                                      case when jsonb_typeof(f.payload->'attempts') = 'array' then f.payload->'attempts'
-                                           else '[]'::jsonb end) a
-                                    where a->'refused' = 'false'::jsonb))
-       or (l.due <= now()
-           and not exists (select 1 from events f
-                           where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq
-                             and not f.sample and f.appended_by = ${HARNESS_ROLE}
-                             and f.payload->>'outcome' in ('refused', 'not-refused') and f.appended_at <= l.due))`;
+    where not exists (select 1 from events f
+                      where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq
+                        and not f.sample and f.appended_by = ${HARNESS_ROLE} and f.appended_at <= l.due and ${through})
+      and (exists (select 1 from events f
+                   where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq and not f.sample
+                     and f.appended_by = ${HARNESS_ROLE} and f.payload->>'outcome' = 'unfinished' and not ${through})
+           or (l.due <= now()
+               and not exists (select 1 from events f
+                               where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq
+                                 and not f.sample and f.appended_by = ${HARNESS_ROLE}
+                                 and f.payload->>'outcome' in ('refused', 'not-refused') and f.appended_at <= l.due)))`;
   return row?.unfinished ?? 0;
 }

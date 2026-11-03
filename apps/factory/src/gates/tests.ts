@@ -20,7 +20,7 @@ export interface TestCase {
   /**
    * Each of those calls as text, in order: the whole chain, such as `expect(res.status).not.toBe(500)`, with the
    * spacing, line breaks and comments outside strings taken out (one space kept between two words), a trailing comma
-   * dropped and every string in double quotes, so a test reformatted asserts what it did.
+   * dropped and every plain string in single quotes, so a test reformatted asserts what it did.
    */
   calls: string[];
   /** The test's call as written, for telling whether a test changed. */

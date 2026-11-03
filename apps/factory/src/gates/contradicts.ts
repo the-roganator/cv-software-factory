@@ -39,8 +39,11 @@ const INTRO = [
 ];
 
 // Markers as a person might type them, in any case and spacing, so that none is missed by the reader or the remover.
-const START_MARK = /<!--\s*factory:contradicts\s*-->/gi;
-const END_MARK = /<!--\s*\/\s*factory:contradicts\s*-->/gi;
+// `--!>` ends a comment in HTML as `-->` does, so it ends a marker too.
+const START_MARK = /<!--\s*factory:contradicts\s*--!?>/gi;
+const END_MARK = /<!--\s*\/\s*factory:contradicts\s*--!?>/gi;
+/** What starts or ends a comment in HTML. */
+const COMMENT_MARK = /<!--|--!?>/;
 const ENTRY = /^- `([^`]+)`: (.+)$/;
 
 /** Why an entry cannot be written or read, or undefined when it can. */
@@ -58,7 +61,7 @@ export function entryProblem({ file, test }: Contradicted): string | undefined {
   }
   if (/[\r\n]/.test(test)) return "its test's name is on more than one line";
   // Nothing that reads as a comment's start or end, so an entry can never make or break a marker.
-  if (/<!--|-->/.test(file) || /<!--|-->/.test(test)) return 'it has "<!--" or "-->" in it';
+  if (COMMENT_MARK.test(file) || COMMENT_MARK.test(test)) return 'it has "<!--", "-->" or "--!>" in it';
   // A name is written as plain Markdown, where GitHub would turn these into a mention or a link.
   if (/@\w/.test(test) || /#\d/.test(test)) {
     return "its test's name has an @ before a word or a # before a digit, which GitHub would make a mention or a link";

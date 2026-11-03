@@ -9,7 +9,8 @@
  *
  * In Actions it reads the description through the API when it runs, never from the event's payload, which holds the
  * description as it was when the run was triggered: on `pull_request` by the pull request's number, and on
- * `merge_group` by the number in the queue's branch. It needs `pull-requests: read` for that. It asks only when
+ * `merge_group` by the number in the queue's branch, each of which the workflow passes it in the environment. It
+ * needs `pull-requests: read` for that. It asks only when
  * the change would fail without the description; then a description it cannot read, or a section it cannot parse,
  * fails the gate. Outside Actions, `--description` names a file to read
  * it from instead, for trying the gate by hand; with none, no test is excused.
@@ -26,30 +27,24 @@ type Env = Record<string, string | undefined>;
 /** The queue's branch for a pull request: `gh-readonly-queue/<base>/pr-<number>-<head sha>`. */
 const QUEUE_BRANCH = /^(?:refs\/heads\/)?gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]{40}$/;
 
-/** The number of the pull request a run judges, from its event, or why it cannot be known. */
-export async function pullRequestNumber(env: Env): Promise<number | { error: string }> {
-  const { GITHUB_EVENT_NAME: event, GITHUB_EVENT_PATH: path } = env;
-  if (event !== 'pull_request' && event !== 'merge_group') {
-    return { error: `Test integrity reads a pull request's description on pull_request or merge_group, not ${event}` };
-  }
-  let payload: { pull_request?: { number?: unknown }; merge_group?: { head_ref?: unknown } };
-  try {
-    payload = JSON.parse(await readFile(path ?? '', 'utf-8'));
-  } catch (error) {
-    return { error: `The run's event could not be read: ${(error as Error).message}` };
-  }
-  if (typeof payload !== 'object' || payload === null) return { error: "The run's event is not an object" };
+/**
+ * The number of the pull request a run judges, from what the workflow passes it, or why it cannot be known: on
+ * `pull_request` its number (`PR_NUMBER`), and on `merge_group` the queue's branch (`MERGE_GROUP_HEAD_REF`).
+ */
+export function pullRequestNumber(env: Env): number | { error: string } {
+  const { GITHUB_EVENT_NAME: event, PR_NUMBER: number, MERGE_GROUP_HEAD_REF: branch } = env;
   if (event === 'pull_request') {
-    const number = payload.pull_request?.number;
-    return Number.isSafeInteger(number) && (number as number) > 0
-      ? (number as number)
-      : { error: "The pull request's number is not in the run's event" };
+    return number && /^[1-9]\d{0,9}$/.test(number)
+      ? Number(number)
+      : { error: `The pull request's number, ${JSON.stringify(number ?? '')}, is not a number` };
   }
-  const branch = payload.merge_group?.head_ref;
-  const match = typeof branch === 'string' ? QUEUE_BRANCH.exec(branch) : null;
-  return match
-    ? Number(match[1])
-    : { error: `The merge queue's branch, ${JSON.stringify(branch)}, does not name a pull request` };
+  if (event === 'merge_group') {
+    const match = branch ? QUEUE_BRANCH.exec(branch) : null;
+    return match && /^[1-9]\d{0,9}$/.test(match[1] as string)
+      ? Number(match[1])
+      : { error: `The merge queue's branch, ${JSON.stringify(branch ?? '')}, does not name a pull request` };
+  }
+  return { error: `Test integrity reads a pull request's description on pull_request or merge_group, not ${event}` };
 }
 
 /** The pull request's description as it is now, through the API, or why it could not be read. */
@@ -58,7 +53,7 @@ export async function description(
   fetcher: typeof fetch = fetch,
   pause: (ms: number) => Promise<unknown> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<string | { error: string }> {
-  const number = await pullRequestNumber(env);
+  const number = pullRequestNumber(env);
   if (typeof number !== 'number') return number;
   const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo } = env;
   if (!token || !repo)

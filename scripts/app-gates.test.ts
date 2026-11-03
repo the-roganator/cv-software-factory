@@ -31,8 +31,16 @@ describe("the app's gates (ADR 0014)", () => {
     expect(workflow).toMatch(
       /^ {2}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.event\.merge_group\.base_sha \}\}$/m,
     );
-    // Nothing reads the pull request's event alone, which a merge group does not carry.
-    expect(workflow.match(/github\.event\.\w+/g)).toEqual(['github.event.pull_request', 'github.event.merge_group']);
+    // Nothing reads the pull request's event alone, which a merge group does not carry: test integrity is given both.
+    expect(workflow.match(/github\.event\.\w+/g)).toEqual([
+      'github.event.pull_request',
+      'github.event.merge_group',
+      'github.event.pull_request',
+      'github.event.merge_group',
+    ]);
+    expect(jobs['test-integrity']).toMatch(
+      /^ {10}PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}\n {10}MERGE_GROUP_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \}\}$/m,
+    );
   });
 
   it('hold a read-only token and no secret, which test integrity alone may read pull requests with', () => {

@@ -24,6 +24,14 @@ import { annotate, cell, summarise } from './report.ts';
 
 type Env = Record<string, string | undefined>;
 
+/**
+ * The docs' account of the description's section, which the summary links to when a change fails for weakening a test,
+ * so a person who wrote the change finds how to name the tests its spec contradicts. A link only, never the section's
+ * text or markers: the summary hands no one a section to paste. On `main`, as the docs say how the gate works now.
+ */
+export const CONTRADICTS_DOC =
+  'https://github.com/the-roganator/cv-software-factory/blob/main/docs/COMPONENTS/TEST-INTEGRITY.md#tests-the-spec-contradicts';
+
 /** The queue's branch for a pull request: `gh-readonly-queue/<base>/pr-<number>-<head sha>`. */
 const QUEUE_BRANCH = /^(?:refs\/heads\/)?gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]{40}$/;
 
@@ -157,7 +165,7 @@ export async function main(
       '## Test integrity',
       unread ? `The tests the spec contradicts could not be read, so none is excused: ${cell(unread)}.` : '',
       problems.length
-        ? `This change weakens ${problems.length === 1 ? 'a test' : `${problems.length} tests`}. Existing tests may not be deleted, skipped or lose an assertion, unless the description names them as tests the spec contradicts.\n\n${table('What changed', findings(problems))}`
+        ? `This change weakens ${problems.length === 1 ? 'a test' : `${problems.length} tests`}. Existing tests may not be deleted, skipped or lose an assertion, unless the description names them as [tests the spec contradicts](${CONTRADICTS_DOC}).\n\n${table('What changed', findings(problems))}`
         : contradicted.length
           ? 'No other existing test was deleted, skipped or lost an assertion.'
           : 'No existing test was deleted, skipped or lost an assertion.',

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -14,7 +14,7 @@ import {
   withContradicted,
 } from '../../src/gates/contradicts.ts';
 import { compare } from '../../src/gates/integrity.ts';
-import { description, main, pullRequestNumber } from '../../src/gates/test-integrity.ts';
+import { CONTRADICTS_DOC, description, main, pullRequestNumber } from '../../src/gates/test-integrity.ts';
 import { testsIn } from '../../src/gates/tests.ts';
 
 const NAMED: Contradicted = { file: 'test/app.test.ts', test: 'files > keeps nothing of the other files' };
@@ -423,6 +423,9 @@ describe('the gate, reading the description', () => {
       expect(unnamed.output).toContain(
         '::error file=test/app.test.ts::"files > keeps nothing of the other files" was deleted',
       );
+      // The summary links to how the description names a test, and never shows the section itself.
+      expect(unnamed.output).toContain(`names them as [tests the spec contradicts](${CONTRADICTS_DOC}).`);
+      expect(unnamed.output).not.toContain('factory:contradicts');
       // Unreadable or malformed, it fails closed, saying why.
       const down = await run([base, change], env, (async () => answer(503, {})) as typeof fetch);
       expect(down.code).toBe(1);
@@ -435,6 +438,25 @@ describe('the gate, reading the description', () => {
       const file = join(await dirs({ 'd.md': SECTION }), 'd.md');
       expect((await run([base, change, '--description', file], env, fetch)).code).toBe(1);
     }
+  });
+
+  it('links the summary to the heading in the docs that describes the section', async () => {
+    const link = new URL(CONTRADICTS_DOC);
+    const prefix = '/the-roganator/cv-software-factory/blob/main/';
+    expect(link.pathname.startsWith(prefix)).toBe(true);
+    const doc = await readFile(new URL(`../../../../${link.pathname.slice(prefix.length)}`, import.meta.url), 'utf8');
+    // GitHub's anchor for a heading: lower case, punctuation dropped, spaces as hyphens. An example in a code fence,
+    // of backticks or tildes, is no heading, and a second heading of the name would take the anchor with a suffix, so
+    // exactly one must have it.
+    const headings = doc.replace(/^(```|~~~)[\s\S]*?^\1$/gm, '').match(/^#{1,6} .+$/gm) ?? [];
+    const anchor = (heading: string) =>
+      `#${heading
+        .replace(/^#+ /, '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N} _-]/gu, '')
+        .replaceAll(' ', '-')}`;
+    expect(headings.filter((h) => anchor(h) === link.hash)).toHaveLength(1);
   });
 
   it('asks GitHub nothing for a change that weakens no test', async () => {

@@ -8,7 +8,7 @@ import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { proved } from '../../src/guardrails/command.ts';
-import { abortedByStop, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
+import { abortedByStop, age, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
 
 let database: Database;
 beforeEach(async () => {
@@ -43,12 +43,37 @@ const aborted = (by: string) => ({
   by,
 });
 
+describe('how long ago', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+  const before = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+
+  it('counts minutes below two hours, hours below two days, and days after', () => {
+    expect(age(before(119), now)).toBe('119 minutes ago');
+    expect(age(before(120), now)).toBe('2 hours ago');
+    expect(age(before(47 * 60 + 59), now)).toBe('47 hours ago');
+    expect(age(before(48 * 60), now)).toBe('2 days ago');
+  });
+
+  it('takes whole minutes, so a millisecond short of two hours is still minutes', () => {
+    expect(age(new Date(before(120).getTime() + 1), now)).toBe('119 minutes ago');
+  });
+
+  it('reads a time ahead of now as no time ago', () => {
+    expect(age(before(-5), now)).toBe('0 minutes ago');
+  });
+});
+
 describe('the rollback proof', () => {
   it('reads the last real rollback the line recorded, its verdict verbatim, and how long ago', async () => {
     expect((await rollback(database.proofs, new Date())).held).toBe(false);
     await append(database.as.line, 'release.rolled-back', rolledBack(false, 'errors 20% over 5%'));
     await append(database.as.line, 'release.rolled-back', rolledBack(true, 'a dry run'));
-    const taken = await rollback(database.proofs, new Date(Date.now() + 3 * 3_600_000));
+    // Three hours after the store stamped it, by the store's clock: the Mac's may be ahead of or behind the clock of
+    // the VM Postgres runs in, and a millisecond behind would read 179 minutes, "2 hours ago".
+    const [real] = await database.owner<{ appended_at: Date }[]>`
+      select appended_at from events where type = 'release.rolled-back' order by seq limit 1`;
+    if (!real) throw new Error('The real rollback was not appended.');
+    const taken = await rollback(database.proofs, new Date(real.appended_at.getTime() + 3 * 3_600_000));
     expect(taken.held).toBe(true);
     expect(taken.output).toMatch(
       /version 1\.2\.0 rolled back to 1\.1\.0 at 20% of the traffic, by analysis, 3 hours ago/,

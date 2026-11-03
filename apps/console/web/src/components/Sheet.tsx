@@ -1064,7 +1064,8 @@ function ReviewThread({ reviews, start, open }: { reviews: ThreadReview[]; start
                 <div className="cites">
                   <span className="n">TICKET</span>
                   <span>
-                    Beyond or short of what the ticket asks: the coder cannot put a spec right, so Martin decides.
+                    Beyond what the ticket asks, or short of Martin’s answer: the coder cannot put a spec right, so
+                    Martin decides.
                   </span>
                 </div>
               )}

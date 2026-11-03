@@ -160,7 +160,7 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
     case 'review':
       return 'Held by review';
     case 'beyond-ticket':
-      return 'Beyond its ticket';
+      return 'Beyond or short of ticket';
     case 'merge':
       return 'Waiting for your merge';
     case 'deploy':

@@ -42,7 +42,8 @@
  * spec so tagged, a rewritten one too. Approving carries on to Build; answering sends it back to the planner with what
  * he said.
  *
- * A review whose findings cite the ticket (the spec or the change goes beyond what it asks) holds as `beyond-ticket`:
+ * A review whose findings cite the ticket (the spec or the change goes beyond what it asks, or the spec lacks what
+ * Martin's answer asks) holds as `beyond-ticket`:
  * the coder cannot put a spec right, so his answer sends it back to the planner, and his approval stands in for the
  * reviewer's. A spec written again once there is a pull request sends the work back to the coder, held to the new one.
  *

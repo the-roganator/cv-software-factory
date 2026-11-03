@@ -754,6 +754,8 @@ const WHOLE_POUNDS_FILES = [
   { path: 'src/money.ts', added: 0, removed: 1 },
   { path: 'test/money.test.ts', added: 2, removed: 2 },
 ];
+/** What the second round changed: the test's assertion alone, which the first review asked for and the second found the same. */
+const WHOLE_POUNDS_SECOND_ROUND = [{ path: 'test/money.test.ts', added: 1, removed: 1 }];
 
 /**
  * Martin's words on the whole pound's review hold, sending it back to the planner: an ask about the change itself,
@@ -761,7 +763,7 @@ const WHOLE_POUNDS_FILES = [
  */
 const KEEP_THE_TEST_NAME = 'Leave the test’s name as it is and rewrite only what it asserts: £6.00 for 600 pence.';
 
-/** A review of the whole pound that asked for changes: the rewritten test shows nothing the base does not. */
+/** The first review of the whole pound, which asked for changes: the rewritten test shows nothing the base does not. */
 const WHOLE_POUNDS_REVIEW: PayloadOf<'review.submitted'> = {
   pullRequest: WHOLE_POUNDS_PULL_REQUEST,
   verdict: 'changes-requested',
@@ -776,6 +778,12 @@ const WHOLE_POUNDS_REVIEW: PayloadOf<'review.submitted'> = {
         'toContain("£6") passes on the base, where pounds(600) is £6: nothing shows criterion 1. Assert toBe("£6.00").',
     },
   ],
+};
+
+/** The second review, of the second round, which holds the first's finding again: the assertion is as it was. */
+const WHOLE_POUNDS_REVIEW_AGAIN: PayloadOf<'review.submitted'> = {
+  ...WHOLE_POUNDS_REVIEW,
+  findings: WHOLE_POUNDS_REVIEW.findings.map((f) => ({ ...f, holds: 1 })),
 };
 
 /**
@@ -804,14 +812,26 @@ const WHOLE_POUNDS_REVIEW_RETURN: LineEvent[] = [
     type: 'work.returned',
     payload: { from: 'review', to: 'build', reason: `Review asked for changes: ${WHOLE_POUNDS_REVIEW.note}` },
   },
-  { type: 'review.submitted', payload: WHOLE_POUNDS_REVIEW },
+  {
+    type: 'pull-request.pushed',
+    payload: {
+      number: WHOLE_POUNDS_PULL_REQUEST,
+      title: 'fix(money): show two zeros of pence for a whole pound',
+      branch: `factory/${FIXTURE_WORK_ITEM}-a-wrong-result-on-products-slug`,
+      attempt: 2,
+      testsFirst: true,
+      files: WHOLE_POUNDS_SECOND_ROUND,
+      whole: WHOLE_POUNDS_FILES,
+    },
+  },
+  { type: 'review.submitted', payload: WHOLE_POUNDS_REVIEW_AGAIN },
   {
     type: 'hold.started',
     payload: {
       stage: 'review',
       kind: 'held',
       cause: 'review',
-      reason: `Review asked for changes: ${WHOLE_POUNDS_REVIEW.note}`,
+      reason: `Review asked for changes: ${WHOLE_POUNDS_REVIEW_AGAIN.note}`,
     },
   },
   { type: 'hold.answered', payload: { decision: 'replanned', answer: KEEP_THE_TEST_NAME } },

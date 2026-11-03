@@ -50,10 +50,10 @@
  * Only Martin's own words in an answer are his. What the line reads into an answer (that an approval of a scope hold
  * lets the scope take in the files), and what an agent said that he read with it, are told beside them, and no
  * criterion may quote either (`sourcesOf`). What his answer asks for reaches the coder through the spec alone: the
- * coder is never told his answers, and the last hold's words are cleared when a spec is written (`MOVES_ON`), so the
- * planner carries each ask into the spec as a criterion from his answer that quotes his words, a constraint on the
- * change itself (a test's name to keep) as much as a behaviour a page shows. The reviewer holds the spec to his
- * words, and the change to the spec alone.
+ * coder is never told the answers at Plan, and the last hold's words, which it is told only when he sends the work
+ * back to it, are cleared when a spec is written (`MOVES_ON`), so the planner carries each ask into the spec as a
+ * criterion from his answer that quotes his words, a constraint on the change itself (a test's name to keep) as much
+ * as a behaviour a page shows. The reviewer holds the spec to his words, and the change to the spec alone.
  *
  * A finding is an extra for triage: one that does not fit (a page that is not a path, a field too long, one past the
  * most a plan leaves) is left out, logged and counted in the spec's summary, and the result stands.
@@ -571,10 +571,10 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
       ];
     case 'beyond-ticket':
       return [
-        `Why it came back: the reviewer found the spec, or the change, goes beyond ${it}, or that the spec lacks what his answer asks${replan.beyond?.length ? ':' : `: ${replan.reason}`}`,
+        `Why it came back: the reviewer found the spec, or the change, goes beyond ${it}, or that the spec lacks what his answer asks${replan.beyond?.length ? ', each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:' : `: ${replan.reason}`}`,
         ...(replan.beyond ?? []).map((f) => `- Criterion ${f.criterion}: ${f.comment}`),
         heDid(replan),
-        `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as his answer says, and keep the rest of the spec as it is.`,
+        `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.`,
       ];
     case 'nothing-to-fix':
       return [

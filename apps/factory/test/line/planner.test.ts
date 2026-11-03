@@ -889,10 +889,10 @@ describe('the planner planning again', () => {
       },
     ];
     expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
-      'the reviewer found the spec, or the change, goes beyond the ticket, or that the spec lacks what his answer asks:\n- Criterion 2: No signal asks for separators.',
+      'the reviewer found the spec, or the change, goes beyond the ticket, or that the spec lacks what his answer asks, each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:\n- Criterion 2: No signal asks for separators.',
     );
     expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
-      'So take out what goes beyond the ticket, or carry in what his answer asks and the spec lacks, as his answer says, and keep the rest of the spec as it is.',
+      'So take out what goes beyond the ticket, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.',
     );
     expect(
       why({ ...held, cause: 'nothing-to-fix', reason: 'The coder found nothing to fix: it pads already' }),

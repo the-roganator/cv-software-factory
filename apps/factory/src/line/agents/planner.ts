@@ -49,7 +49,11 @@
  *
  * Only Martin's own words in an answer are his. What the line reads into an answer (that an approval of a scope hold
  * lets the scope take in the files), and what an agent said that he read with it, are told beside them, and no
- * criterion may quote either (`sourcesOf`).
+ * criterion may quote either (`sourcesOf`). What his answer asks for reaches the coder through the spec alone: the
+ * coder is never told his answers, and the last hold's words are cleared when a spec is written (`MOVES_ON`), so the
+ * planner carries each ask into the spec as a criterion from his answer that quotes his words, a constraint on the
+ * change itself (a test's name to keep) as much as a behaviour a page shows. The reviewer holds the spec to his
+ * words, and the change to the spec alone.
  *
  * A finding is an extra for triage: one that does not fit (a page that is not a path, a field too long, one past the
  * most a plan leaves) is left out, logged and counted in the spec's summary, and the result stands.
@@ -153,7 +157,10 @@ const answered = (a: Answer) => (a.answer ? `${a.asked} He said: ${a.answer}` : 
 /** One of Martin's answers as the prompt tells it: with what an agent said that he read with it, and the line's reading. */
 const told = (a: Answer) => [a.asked, a.said, heAnswered(a)].filter(Boolean).join(' ');
 
-/** Martin's answers as the prompt tells them, and, when any carries words not his, which of them a criterion may quote. */
+/**
+ * Martin's answers as the prompt tells them; that everything they ask for goes into the spec, since the coder reads
+ * the spec and never his answers; and, when any carries words not his, which of them a criterion may quote.
+ */
 function answerLines(answers: readonly Answer[]): string[] {
   if (!answers.length) return [];
   const notHis = answers.some((a) => a.said || a.line || !a.answer);
@@ -161,6 +168,7 @@ function answerLines(answers: readonly Answer[]): string[] {
     '',
     'Martin was asked, and answered:',
     ...answers.map((a) => `- ${told(a)}`),
+    'Everything his answer asks for goes into the spec, as a criterion from Martin’s answer that quotes his words: an ask about the change itself that no page shows too, such as a test or a file to keep as it is, or its name. The coder reads the spec and never his answer, and is held to nothing the spec does not say.',
     ...(notHis
       ? [
           'Only his own words, after “He said:”, are his answer, which a criterion from Martin’s answer may quote, with what he was asked. What the coder said, and what the line reads his answer as, are not his words: no criterion quotes them.',
@@ -484,7 +492,7 @@ const CONTRADICTS_RULE = `- \`contradicts\`: the existing tests a criterion cont
 
 const SPEC_TEMPLATE = [
   '- `outcome`: one sentence, what is true once the fix is in.',
-  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. Each is a test the coder can write with the repository’s own tests: it fails at this commit and passes once the fix is in. `from` names what above asks for it: `the ticket`, a signal by its number (`signal 1`), or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. A criterion nothing above asks for does not belong in the spec, however wrong the code it would mend.',
+  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. Each is a test the coder can write with the repository’s own tests: it fails at this commit and passes once the fix is in. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask. `from` names what above asks for it: `the ticket`, a signal by its number (`signal 1`), or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. A criterion nothing above asks for does not belong in the spec, however wrong the code it would mend.',
   '- `scope`: the files the coder may change, its tests among them, and no more than the fix needs: a path from the top of the repository, a folder ending in `/`, or a pattern with `*`.',
   CONTRADICTS_RULE,
   `- \`risks\`: a list of tags, each exactly one of these words, for what the fix itself does; usually it is empty. ${RISKS.map((r) => `${r}: ${RISK_MEANINGS[r]}`).join('; ')}.`,
@@ -512,13 +520,21 @@ export function findingSignal(
   };
 }
 
-/** What Martin did with the hold that sent the work back, as the prompt says it. */
-function heDid(replan: Extract<Replan, { approved: boolean }>): string {
-  if (replan.approved)
-    return `Martin approved that${replan.answered ? ', with the words last among his answers above' : ''}.`;
-  return replan.answered
-    ? 'Martin answered it in words: the last of his answers above.'
-    : 'Martin sent it back to you.';
+/** What his answer asks for goes into the spec, since the coder is told nothing of it: said once, by every cause he answered in words. */
+const CARRIED =
+  'Everything his answer asks for is carried into the spec as criteria from Martin’s answer that quote his words, since the coder is told nothing of his answer.';
+
+/**
+ * What Martin did with the hold that sent the work back, as the prompt says it, and what a cause adds to that (`then`);
+ * when he answered in words, that everything they ask for goes into the spec.
+ */
+function heDid(replan: Extract<Replan, { approved: boolean }>, then?: string): string {
+  const did = replan.approved
+    ? `Martin approved that${replan.answered ? ', with the words last among his answers above' : ''}.`
+    : replan.answered
+      ? 'Martin answered it in words: the last of his answers above.'
+      : 'Martin sent it back to you.';
+  return [did, then, replan.answered ? CARRIED : undefined].filter(Boolean).join(' ');
 }
 
 /** Where a change was held that Martin sent back to the planner rather than the coder. */
@@ -555,10 +571,10 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
       ];
     case 'beyond-ticket':
       return [
-        `Why it came back: the reviewer found the spec, or the change, goes beyond ${it}${replan.beyond?.length ? ':' : `: ${replan.reason}`}`,
+        `Why it came back: the reviewer found the spec, or the change, goes beyond ${it}, or that the spec lacks what his answer asks${replan.beyond?.length ? ':' : `: ${replan.reason}`}`,
         ...(replan.beyond ?? []).map((f) => `- Criterion ${f.criterion}: ${f.comment}`),
         heDid(replan),
-        `So take out what goes beyond ${it}, as his answer says, and keep the rest of the spec as it is.`,
+        `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as his answer says, and keep the rest of the spec as it is.`,
       ];
     case 'nothing-to-fix':
       return [
@@ -584,7 +600,7 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
     case 'tests-first':
       return [
         `Why it came back: the change was held for Martin ${HELD_AT[replan.cause]}: ${replan.reason.replace(/[.\s]+$/, '')}.`,
-        `${heDid(replan)} He sent it to you rather than to the coder: the spec is what he judges must change.`,
+        heDid(replan, 'He sent it to you rather than to the coder: the spec is what he judges must change.'),
         `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
       ];
     default:
@@ -680,7 +696,7 @@ const improvementTemplate = (flagsTaken: readonly string[], keeps?: string) => [
   '- `outcome`: one sentence, what a visitor sees once the flag is on.',
   flagRule(flagsTaken, keeps),
   '- `pages`: one to six pages of the app a visitor opens to see the change, each as the path from the root without a query, such as `/products/blue-mug` for a product’s page: Verify takes pictures of them with the flag off and on.',
-  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `withFlag`, `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. `withFlag` is the side of the flag it holds on: `on` for what the change does, `off` for what stays as it is now. Give at least one of each: one `off` criterion says that, with the flag off, the pages are exactly as they are now. Each is a test the coder can write with the repository’s own tests, with the flag as its side says: an `on` criterion fails at this commit and passes once the change is in; an `off` one passes at both. `from` names what above asks for it: `the request`, or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. An `off` criterion quotes the words of the request whose change it keeps back, since Martin asked for the change and not for the flag: never these instructions. A criterion Martin did not ask for does not belong in the spec, however much better it would make the app.',
+  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `withFlag`, `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. `withFlag` is the side of the flag it holds on: `on` for what the change does, `off` for what stays as it is now. Give at least one of each: one `off` criterion says that, with the flag off, the pages are exactly as they are now. Each is a test the coder can write with the repository’s own tests, with the flag as its side says: an `on` criterion fails at this commit and passes once the change is in; an `off` one passes at both. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask. `from` names what above asks for it: `the request`, or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. An `off` criterion quotes the words of the request whose change it keeps back, since Martin asked for the change and not for the flag: never these instructions. A criterion Martin did not ask for does not belong in the spec, however much better it would make the app.',
   '- `scope`: the files the coder may change, its tests among them, and no more than the change needs: a path from the top of the repository, a folder ending in `/`, or a pattern with `*`.',
   CONTRADICTS_RULE,
   `- \`risks\`: a list of tags, each exactly one of these words, for what the change itself does; usually it is empty. ${RISKS.map((r) => `${r}: ${IMPROVEMENT_RISK_MEANINGS[r]}`).join('; ')}.`,

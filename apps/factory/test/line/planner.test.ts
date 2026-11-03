@@ -505,6 +505,19 @@ describe('the planner’s prompt', () => {
     expect(prompt).toContain('Martin was asked, and answered:\n- Is the shop open on Tuesdays? He said: Yes, all day.');
   });
 
+  it('carries everything his answer asks for into the spec, since the coder reads the spec and never his answer', () => {
+    const answers = [{ asked: 'Is the shop open on Tuesdays?', answer: 'Yes, all day.' }];
+    const prompt = planner.prompt({ ...INPUT, answers });
+    expect(prompt).toContain(
+      'Everything his answer asks for goes into the spec, as a criterion from Martin’s answer that quotes his words: an ask about the change itself that no page shows too, such as a test or a file to keep as it is, or its name. The coder reads the spec and never his answer, and is held to nothing the spec does not say.',
+    );
+    // A criterion on the change itself is not refused by what a criterion is: the test or file it names shows it.
+    expect(prompt).toContain(
+      'it fails at this commit and passes once the fix is in. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask.',
+    );
+    expect(planner.prompt(INPUT)).not.toContain('never his answer');
+  });
+
   it('tells what the coder said of the files it needs beside his answer, and takes no quote from its words', () => {
     const asked = 'The coder needs a file outside the spec’s scope to meet its criteria: test/home.test.ts.';
     const said = 'The coder said of test/home.test.ts: the form must also post its data elsewhere.';
@@ -680,6 +693,12 @@ describe('the planner’s prompt for an improvement', () => {
       'the app’s flag context among them: .github/, deploy/, Dockerfile, **/AGENTS.md, docs/REVIEWERS.md, src/flags/.',
     );
     expect(prompt).toContain('Reject it when it would keep anything on a visitor’s device');
+  });
+
+  it('takes a criterion from his answer about the change itself, shown by the test or file it names', () => {
+    expect(planner.prompt(REQUEST)).toContain(
+      'an `off` one passes at both. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask.',
+    );
   });
 
   it('leaves a ticket’s prompt as it was', () => {
@@ -870,7 +889,10 @@ describe('the planner planning again', () => {
       },
     ];
     expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
-      'the reviewer found the spec, or the change, goes beyond the ticket:\n- Criterion 2: No signal asks for separators.',
+      'the reviewer found the spec, or the change, goes beyond the ticket, or that the spec lacks what his answer asks:\n- Criterion 2: No signal asks for separators.',
+    );
+    expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
+      'So take out what goes beyond the ticket, or carry in what his answer asks and the spec lacks, as his answer says, and keep the rest of the spec as it is.',
     );
     expect(
       why({ ...held, cause: 'nothing-to-fix', reason: 'The coder found nothing to fix: it pads already' }),
@@ -899,6 +921,37 @@ describe('the planner planning again', () => {
     expect(kept).toContain('Martin sent it back to you. He sent it to you rather than to the coder');
     expect(kept).toContain('So change the spec for why it was held,');
     expect(kept).not.toContain('as his answer asks');
+  });
+
+  it('says, for every cause he answered in words, that everything his answer asks for is carried into the spec', () => {
+    const carried =
+      'Everything his answer asks for is carried into the spec as criteria from Martin’s answer that quote his words, since the coder is told nothing of his answer.';
+    const why = (replan: PlannerInput['replan']) => planner.prompt({ ...AGAIN, replan });
+    const held = { approved: false, answered: true, reason: 'Held for Martin' };
+    // Sent back from a review hold in words, where they would have gone to the coder: after why he sent it here.
+    expect(why({ ...held, cause: 'review', reason: 'Review asked for changes' })).toContain(
+      `Martin answered it in words: the last of his answers above. He sent it to you rather than to the coder: the spec is what he judges must change. ${carried}`,
+    );
+    const causes = [
+      'scope',
+      'beyond-ticket',
+      'nothing-to-fix',
+      'spec',
+      'verify',
+      'gates',
+      'merge',
+      'tests-first',
+    ] as const;
+    for (const cause of causes) expect(why({ ...held, cause }), cause).toContain(carried);
+    expect(why({ ...held, cause: 'scope', approved: true })).toContain(
+      `Martin approved that, with the words last among his answers above. ${carried}`,
+    );
+    // Approved in no words, words that stay his, or no answer at all: nothing of his to carry.
+    expect(prompt).not.toContain('carried into the spec');
+    expect(why({ ...held, answered: false, cause: 'review' })).not.toContain('carried into the spec');
+    expect(why({ cause: 'returned', from: 'verify', reason: 'The probe still saw it.' })).not.toContain(
+      'carried into the spec',
+    );
   });
 
   it('tells the line’s reading of an approval as the line’s, and takes no quote from it', () => {
@@ -988,6 +1041,39 @@ describe('the bench’s replans', () => {
     );
     const last = input.lastSpec as PayloadOf<'spec.written'>;
     expect(fits(input, { ...last, scope: [...last.scope, 'src/pages/cards.ts'] }).success).toBe(true);
+  });
+
+  it('plans the whole pound again from a review hold answered in words that ask to keep the contradicted test’s name', () => {
+    const { commit, seed, input } = fixture('test-name-kept');
+    expect(seed).toBe(fixture('whole-pounds').seed);
+    expect(input.change).toMatchObject({ pullRequest: 108, commit });
+    expect(input.replan).toMatchObject({ cause: 'review', approved: false, answered: true });
+    const words = 'Leave the test’s name as it is and rewrite only what it asserts: £6.00 for 600 pence.';
+    expect(input.answers.at(-1)).toMatchObject({ answer: words });
+    const prompt = planner.prompt(input);
+    expect(prompt).toContain(`He said: ${words}`);
+    expect(prompt).toContain(
+      'He sent it to you rather than to the coder: the spec is what he judges must change. Everything his answer asks for is carried into the spec',
+    );
+    const last = input.lastSpec as PayloadOf<'spec.written'>;
+    const test = { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' };
+    expect(last.contradicts).toEqual([test]);
+    // The spec the line wants: his ask carried as a criterion that quotes him, with the test still named.
+    const kept = {
+      given: 'the test drops the pence of a whole pound in test/money.test.ts',
+      when: 'the change rewrites it to assert £6.00 for 600 pence',
+      expect: 'it keeps its name',
+      from: 'Martin’s answer',
+      quote: 'Leave the test’s name as it is',
+    };
+    const carried = { ...last, criteria: [...last.criteria, kept] };
+    expect(carried.contradicts).toEqual([test]);
+    expect(fits(input, carried).success).toBe(true);
+    // Never in words he did not write.
+    const invented = { ...last, criteria: [...last.criteria, { ...kept, quote: 'rename the test' }] };
+    expect(fits(input, invented).error?.issues[0]?.message).toBe(
+      'the quote is not in Martin’s answer: copy the words that ask for the criterion from there, word for word',
+    );
   });
 });
 

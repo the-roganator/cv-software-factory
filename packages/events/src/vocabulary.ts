@@ -244,8 +244,8 @@ export const HOLD_CAUSES = [
   /** The reviewer escalated, or still asked for changes after the last review the line allows. */
   'review',
   /**
-   * The reviewer found the spec or the change going beyond what the ticket asks: the coder cannot put a spec right, so
-   * Martin's answer sends it back to the planner.
+   * The reviewer found the spec or the change going beyond what the ticket asks, or the spec short of what Martin's
+   * answer asks: the coder cannot put a spec right, so Martin's answer sends it back to the planner.
    */
   'beyond-ticket',
   /** The change passed its gates and review, and waits for Martin to merge it. */

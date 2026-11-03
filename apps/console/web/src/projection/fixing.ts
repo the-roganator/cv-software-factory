@@ -91,7 +91,7 @@ export interface Finding {
   rule: { number: number; title: string | undefined; text: string | undefined } | undefined;
   /** The spec's criterion it cites, in full. */
   criterion: { number: number; text: string | undefined } | undefined;
-  /** Whether it cites the ticket: the spec or the change goes beyond what the ticket asks. */
+  /** Whether it cites the ticket: the spec or the change goes beyond what the ticket asks, or short of Martin's answer. */
   ticket: boolean;
 }
 

@@ -186,7 +186,7 @@ Each hold names its cause, and Martin's answer does what `ANSWERS` says for that
 | `failures` | A step failed twice, or its effects failed six times | Runs the step again | Runs the step again, with his words |
 | `gates` | Gates failed after two returns, or the coder changed nothing after gates | Sends the work back to the coder | Sends the work back to the coder, with his words |
 | `review` | Still blocking after two reviews, or after the round for an approval's suggestions, an escalation whose findings do not cite the ticket, or the coder changed nothing after a review | Stands in for the reviewer's approval: the review's open threads are answered and resolved as his acceptance | Sends the work back to the coder, with his words; the threads stay open for it |
-| `beyond-ticket` | The reviewer escalates a spec that goes beyond its ticket | Stands in for the reviewer's approval: the review's open threads are answered and resolved as his acceptance | Sends the spec back to the planner |
+| `beyond-ticket` | The reviewer escalates a spec that goes beyond its ticket, or lacks what Martin's answer asks | Stands in for the reviewer's approval: the review's open threads are answered and resolved as his acceptance | Sends the spec back to the planner |
 | `merge` | The fix has passed its gates and review | Waits for his merge | Sends the work back to the coder |
 | `tests-first` | The change's new tests pass without the fix (the line makes no such hold yet) | Carries on with the tests as they are | Sends the work back to the coder, with what to test |
 | `deploy` | The merged fix waits for a release ([Release](RELEASE-AND-VERIFY.md#release)) | Waits: he settles it by merging the deploy pull request, his once its checks have passed | Waits |

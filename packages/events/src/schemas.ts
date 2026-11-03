@@ -686,7 +686,11 @@ export const PAYLOADS = {
             blocking: z.boolean(),
             rule: z.number().int().min(1).max(50).optional(),
             criterion: z.number().int().min(1).max(12).optional(),
-            /** The criterion it cites is one the ticket does not ask for: only a criterion goes beyond the ticket. */
+            /**
+             * The criterion it cites is one the ticket does not ask for, or the one the change was meeting where it went
+             * against what Martin's answer asks and the spec lacks: only a criterion goes beyond the ticket, or short of
+             * his answer.
+             */
             ticket: z.literal(true).optional(),
             /**
              * The finding of the review before that this one holds again, in its words or new, by its place among that

@@ -11,6 +11,7 @@ An agent: reviews the fix, or the improvement, once the gates pass. Part of the 
 - **The rules as they are at the base,** so a change cannot loosen them.
 - **The diff,** against the coder's claims.
 - **The spec, against the ticket,** with Martin's answers as part of the ticket (his own words; what the line reads into an approval is told as the line's), as well as the diff against the spec. Each criterion comes with the words the planner quoted for it, which the line found where it said; the reviewer judges whether they ask for it.
+- **The tests the spec contradicts,** which the change may delete, rename or rewrite and no other, each by its file and full name, quoted as data. Each is held to the ticket as a criterion is: a test no criterion the ticket asks for needs changed is a contradiction the ticket does not ask for, blocking and citing the criterion said to contradict it and the ticket; a named test changed further than its criteria need blocks too, and goes back to the coder.
 
 | It finds | Finding | Goes to |
 |---|---|---|

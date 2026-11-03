@@ -1183,6 +1183,23 @@ table.scope th {
 .spec-dl dd {
   margin: 0;
 }
+.contradicts {
+  margin-top: 12px;
+}
+.contradicts ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.contradicts .help {
+  margin-top: 6px;
+}
 .criteria small.side {
   display: block;
   margin-top: 3px;

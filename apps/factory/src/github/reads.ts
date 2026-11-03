@@ -1,10 +1,11 @@
 /**
  * What the other workers may read from GitHub through the worker: a pull request's state, the check runs on a commit
  * (with what each that failed said was wrong), the checks a branch's ruleset requires, a branch's head, the paths no
- * patch may change at a commit, and how a commit compares with a branch. The line reads them to see its pull requests
- * through their gates and to Martin's merge, and appends what it sees as events; holds a spec's scope to the protected
- * paths; and gives the reviewer the base its change is measured from, and anchors its findings to lines the change
- * shows. The worker itself touches no store.
+ * patch may change at a commit, a file at a commit, and how a commit compares with a branch. The line reads them to
+ * see its pull requests through their gates and to Martin's merge, and appends what it sees as events; holds a spec's
+ * scope to the protected paths, and the tests it says it contradicts to those their files have; and gives the
+ * reviewer the base its change is measured from, and anchors its findings to lines the change shows. The worker
+ * itself touches no store.
  *
  * After the merge, the line reads what a release is made of through the worker too, since only it reaches GitHub and
  * GHCR: the commits between two commits, and whether one is an ancestor of the other; the commit an image was built
@@ -101,6 +102,12 @@ export interface Signed {
   reason: string | null;
 }
 
+/**
+ * A file at a commit, as the line checks a spec against it: not there (no such path, or a folder), there as text, or
+ * there and not text the API sends whole (`text` null), such as a file over a megabyte.
+ */
+export type FileAt = { found: false } | { found: true; text: string | null };
+
 /** The most files GitHub's comparison lists, which `comparison` reads every page of. */
 export const MAX_COMPARED_FILES = 300;
 
@@ -121,6 +128,8 @@ export interface Reads {
    * repository's CODEOWNERS gives a person (`paths.ts`, as the worker's guard reads them).
    */
   protectedPaths(repo: string, ref: string): Promise<string[]>;
+  /** A file at a commit: the line reads a test file there to check the tests a spec names are in it. */
+  file(repo: string, ref: string, path: string): Promise<FileAt>;
   /** How a commit compares with a branch: its merge base, and the files it changes since. */
   comparison(repo: string, base: string, head: string): Promise<Comparison>;
   /** Where a step checks a commit out from: GitHub has every commit but a dry run's. */
@@ -200,6 +209,8 @@ const RULES = z.array(
 );
 
 const REF = z.object({ object: z.object({ sha: SHA }) });
+
+const UTF8 = new TextDecoder('utf-8', { fatal: true });
 
 /** What the contents API answers for a path: a file, or a folder's listing. */
 const CONTENTS = z.union([
@@ -334,6 +345,23 @@ export class LiveReads implements Reads {
   async protectedPaths(repo: string, ref: string): Promise<string[]> {
     const files = await Promise.all(CODEOWNERS_PATHS.map((path) => this.#text(repo, path, ref)));
     return protectedFrom(files.find((text) => text !== null) ?? null);
+  }
+
+  async file(repo: string, ref: string, path: string): Promise<FileAt> {
+    const url = `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${ref}`;
+    try {
+      const { body } = await this.#github.poll(repo, url, CONTENTS);
+      if (Array.isArray(body) || body.type !== 'file') return { found: false };
+      if (body.encoding !== 'base64' || body.content === undefined) return { found: true, text: null };
+      try {
+        return { found: true, text: UTF8.decode(Buffer.from(body.content, 'base64')) };
+      } catch {
+        return { found: true, text: null };
+      }
+    } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found') return { found: false };
+      throw error;
+    }
   }
 
   /** A text file at a commit, or null where there is none: no such path, a folder, or a file the API will not send. */

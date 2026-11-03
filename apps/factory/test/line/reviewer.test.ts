@@ -357,3 +357,17 @@ describe('Martin’s acceptance of a held review', () => {
     ]);
   });
 });
+
+describe('the reviewer of a spec that contradicts a test', () => {
+  const contradicts = [{ file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' }];
+
+  it('is told the tests, quoted as data, and holds each to the ticket as a criterion', () => {
+    const prompt = reviewer.prompt({ ...input, spec: { ...input.spec, contradicts } });
+    expect(prompt).toContain('- at test/money.test.ts: “pounds > drops the pence of a whole pound”');
+    expect(prompt).toContain(
+      'Hold each to the ticket as you hold a criterion: is the contradiction one the ticket asks for?',
+    );
+    expect(prompt).toContain('blocking finding with `"ticket":true` that cites the criterion said to contradict it');
+    expect(reviewer.prompt(input)).not.toContain('the criteria contradict');
+  });
+});

@@ -55,7 +55,9 @@ export default new Item('1310', '2026-10-05T13:10:00+01:00')
       { given: 'the products sorted by price', when: 'the page is shown', expect: 'nothing has changed' },
     ],
     scope: ['src/pages/products.ts', 'test/products.test.ts'],
-    risks: [],
+    // The existing test pinned the order the probe found wrong, so the spec names it: the coder may rewrite it.
+    contradicts: [{ file: 'test/products.test.ts', test: 'the products page > sorts by name, capitals first' }],
+    risks: ['test-loosening'],
     rollout: 'A normal release behind the canary.',
   })
   .calls('coder', '7:00', '41:20', { calls: 24, input: 410_000, output: 10_200, cached: 0.84 }, LOCAL)
@@ -67,7 +69,7 @@ export default new Item('1310', '2026-10-05T13:10:00+01:00')
     testsFirst: true,
     files: [
       { path: 'src/pages/products.ts', added: 1, removed: 1 },
-      { path: 'test/products.test.ts', added: 15, removed: 0 },
+      { path: 'test/products.test.ts', added: 15, removed: 4 },
     ],
   })
   .gates('41:40', { pullRequest: PULL_REQUEST, testsFirst: { failing: 1, of: 1 } })

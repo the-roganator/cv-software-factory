@@ -2,7 +2,6 @@
 name: issue
 description: Draft and file a GitHub issue for Software Factory to the project's standard — a title that states the problem, one line that says what is wrong, and only as much more as it needs.
 argument-hint: "[what's wrong, in your own words]"
-disable-model-invocation: true
 ---
 
 # Filing an issue

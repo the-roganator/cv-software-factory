@@ -246,9 +246,10 @@ test.describe('tool marks', () => {
     ] as const) {
       const answers = card(workItem).locator('.answers');
       const way = answers.locator('.answer').first().locator('.way');
-      // The pull request's number is for a screen reader, who does not see the card's kicker beside it.
-      await expect(way).toHaveText(`${verb} #${pullRequest}`);
-      await expect(way.locator('.sr')).toHaveText(` #${pullRequest}`);
+      // A screen reader hears the pull request's number too, as it does not see the card's kicker beside it.
+      await expect(way.locator('.way-words')).toHaveText(verb);
+      await expect(way.locator('.way-words')).toHaveAttribute('aria-hidden', 'true');
+      await expect(way.locator('.sr')).toHaveText(`${verb} #${pullRequest}`);
       await expect(way.locator('.toolmark-github')).toBeVisible();
       await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
       await expect(answers).toContainText('A sample’s pull request: it never existed, so it links nowhere.');

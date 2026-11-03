@@ -94,6 +94,11 @@
   color: var(--text);
   text-decoration: underline;
 }
+.answers .way-words {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .answers span.way {
   grid-column: auto;
   cursor: default;

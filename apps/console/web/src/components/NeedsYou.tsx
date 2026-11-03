@@ -88,18 +88,22 @@ function Evidence({ need }: { need: Need }) {
  */
 function WayForward({ way }: { way: Need['way'] }) {
   if (!way) return null;
-  const words = (
-    <>
+  // What shows is hidden from a screen reader, which hears the words in full instead, in a span of their own, so no
+  // space between the two parts is left to layout.
+  const shown = (
+    <span className="way-words" aria-hidden="true">
       {way.verb}
       <ToolMark name="github" />
-    </>
+    </span>
   );
   if (way.href === undefined) {
     return (
       <div className="answer">
         <span className="btn small way">
-          {words}
-          <span className="sr"> #{way.pullRequest}</span>
+          {shown}
+          <span className="sr">
+            {way.verb} #{way.pullRequest}
+          </span>
         </span>
         <p className="nowhere">{way.why}</p>
       </div>
@@ -107,8 +111,10 @@ function WayForward({ way }: { way: Need['way'] }) {
   }
   return (
     <a className="btn small way" href={way.href} target="_blank" rel="noopener">
-      {words}
-      <span className="sr"> #{way.pullRequest} on GitHub (opens GitHub in a new tab)</span>
+      {shown}
+      <span className="sr">
+        {way.verb} #{way.pullRequest} on GitHub (opens GitHub in a new tab)
+      </span>
     </a>
   );
 }

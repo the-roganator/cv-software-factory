@@ -19,8 +19,8 @@ export interface TestCase {
   assertions: number;
   /**
    * Each of those calls as text, in order: the whole chain, such as `expect(res.status).not.toBe(500)`, with the
-   * spacing and line breaks outside strings taken out (one space kept between two words) and a trailing comma
-   * dropped, so a test reformatted asserts what it did.
+   * spacing, line breaks and comments outside strings taken out (one space kept between two words), a trailing comma
+   * dropped and every string in double quotes, so a test reformatted asserts what it did.
    */
   calls: string[];
   /** The test's call as written, for telling whether a test changed. */
@@ -149,21 +149,58 @@ interface Block {
   to: number;
 }
 
+/** The index of the first code character at or after `at` that is not a space: past spacing and comments. */
+function skipGap(source: string, code: boolean[], at: number): number {
+  let i = at;
+  while (i < source.length) {
+    if (code[i] && /\s/.test(source[i] ?? '')) i++;
+    else if (!code[i] && source.startsWith('//', i))
+      i = source.indexOf('\n', i) === -1 ? source.length : source.indexOf('\n', i);
+    else if (!code[i] && source.startsWith('/*', i))
+      i = source.indexOf('*/', i) === -1 ? source.length : source.indexOf('*/', i) + 2;
+    else return i;
+  }
+  return i;
+}
+
 /** Where the chain of calls and properties that starts with the call opening at `open` ends: `(…).not.toBe(…)`. */
 function chainEnd(source: string, code: boolean[], open: number): number {
   let end = closing(source, code, open);
   for (;;) {
-    const link = /^\s*\??\.\s*[A-Za-z_$][\w$]*/.exec(source.slice(end, end + 200));
-    if (!link) return end;
-    end += link[0].length;
-    const call = /^\s*\(/.exec(source.slice(end, end + 200));
-    if (call) end = closing(source, code, end + call[0].length - 1);
+    const at = skipGap(source, code, end);
+    const link = /^\??\.\s*[A-Za-z_$][\w$]*/.exec(source.slice(at, at + 200));
+    if (!link || !code[at]) return end;
+    end = at + link[0].length;
+    const call = skipGap(source, code, end);
+    if (source[call] === '(' && code[call]) end = closing(source, code, call);
   }
 }
 
 /**
- * A call's text as `TestCase.calls` keeps it: strings, comments and regular expressions as written, and in the code
- * between them no spacing (but one space between two words, as in `typeof x`) and no trailing comma.
+ * A string literal's text, from its opening quote, always in single quotes, so that a change of quote style is no
+ * change: `'a'`, `"a"` and `` `a` `` are all `'a'`. Other escapes are kept as written. Undefined for a template literal with
+ * an expression in it, which is kept as written.
+ */
+function quoted(source: string, at: number): { text: string; end: number } | undefined {
+  const quote = source[at] as string;
+  let text = '';
+  for (let i = at + 1; i < source.length; i++) {
+    const c = source[i] as string;
+    if (c === '\\') {
+      const next = source[i + 1] ?? '';
+      text += next === '"' || next === '`' ? next : `\\${next}`;
+      i++;
+    } else if (c === quote) return { text: `'${text}'`, end: i + 1 };
+    else if (quote === '`' && c === '$' && source[i + 1] === '{') return undefined;
+    else text += c === "'" ? "\\'" : c;
+  }
+  return undefined;
+}
+
+/**
+ * A call's text as `TestCase.calls` keeps it. Strings are in single quotes, comments are left out, and regular
+ * expressions and templates with expressions are as written. In the code between them there is no spacing (but one
+ * space between two words, as in `typeof x`) and no trailing comma.
  */
 function callText(source: string, code: boolean[], from: number, to: number): string {
   const isSpace = (i: number) => code[i] === true && /\s/.test(source[i] ?? '');
@@ -171,7 +208,22 @@ function callText(source: string, code: boolean[], from: number, to: number): st
   for (let i = from; i < to; i++) {
     const c = source[i] as string;
     if (!code[i]) {
-      text += c;
+      const literal = c === "'" || c === '"' || c === '`' ? quoted(source, i) : undefined;
+      const comment = source.startsWith('//', i) || source.startsWith('/*', i);
+      if (literal && literal.end <= to) {
+        text += literal.text;
+        i = literal.end - 1;
+      } else if (comment) {
+        const end = skipGap(source, code, i);
+        if (/[\w$]$/.test(text) && /^[\w$]/.test(source[end] ?? '')) text += ' ';
+        i = end - 1;
+      } else {
+        // A regular expression, or a template's text around its expressions: as written, up to the code after it.
+        let end = i + 1;
+        while (end < to && !code[end]) end++;
+        text += source.slice(i, end);
+        i = end - 1;
+      }
       continue;
     }
     let next = i;
@@ -182,8 +234,7 @@ function callText(source: string, code: boolean[], from: number, to: number): st
       continue;
     }
     if (c === ',') {
-      let after = i + 1;
-      while (after < to && isSpace(after)) after++;
+      const after = skipGap(source, code, i + 1);
       if (code[after] && ')]}'.includes(source[after] ?? '')) continue;
     }
     text += c;

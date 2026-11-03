@@ -5,8 +5,8 @@
  * `toMatch(/max-age/)`, is one lost. Adding tests, and adding assertions, pass.
  *
  * The tests the change's spec contradicts (`contradicts.ts`) are the exception: each may be deleted, renamed or
- * rewritten, and is named in the summary instead of failing. Skipping one, or `.only`, still fails: a test the spec
- * contradicts is put right or removed, not left dead.
+ * rewritten, and is named in the summary instead of failing. Skipping one, `.only`, or rewriting it to assert nothing
+ * still fails: a test the spec contradicts is put right or removed, not left dead.
  *
  * A test is known by its file and its name. A test that moved to a new file under the same name has moved, not gone.
  */
@@ -90,9 +90,11 @@ export function compare(
       });
       continue;
     }
-    for (const was of cases) {
+    for (const [index, was] of cases.entries()) {
       const excused = named(file, was.name);
-      const same = now?.find((t) => t.name === was.name);
+      // Two tests of one name in a file are matched in order: the second with the second.
+      const nth = cases.slice(0, index).filter((t) => t.name === was.name).length;
+      const same = now?.filter((t) => t.name === was.name)[nth];
       const found = same ? { file, test: same } : moved.get(was.name);
       if (!found) {
         if (excused)
@@ -104,9 +106,11 @@ export function compare(
       if (is.disabled && !was.disabled) {
         problems.push({ file: where, test: was.name, message: `"${was.name}" ${DISABLED[is.disabled]}` });
       }
-      const gone = lost(was, is);
       if (excused) {
-        if (gone.length || is.calls.length !== was.calls.length || is.source !== was.source) {
+        if (is.calls.length === 0 && was.calls.length > 0) {
+          // Rewritten to assert nothing, it would pass whatever the code does: left dead, not put right.
+          problems.push({ file: where, test: was.name, message: `"${was.name}" was rewritten to assert nothing` });
+        } else if (is.source !== was.source) {
           contradicted.push({
             file: where,
             test: was.name,
@@ -114,7 +118,10 @@ export function compare(
             message: `"${was.name}" was rewritten`,
           });
         } else unchanged.push({ file, test: was.name });
-      } else if (gone.length) {
+        continue;
+      }
+      const gone = lost(was, is);
+      if (gone.length) {
         const more = gone.length > 1 ? `, and ${gone.length - 1} more of its assertions` : '';
         problems.push({
           file: where,

@@ -1146,17 +1146,24 @@ export const PAYLOADS = {
       message: 'a canary’s hold, and only one, names the release',
       path: ['release'],
     }),
-  'hold.answered': z.strictObject({
-    decision: z.enum(V.HOLD_ANSWERS),
-    answer: text(V.MARTIN_ANSWER_CHARS).optional(),
-    /** The hold it answers: its `hold.started` event's id. An answer from before the admin service never named it. */
-    hold: z.uuid().optional(),
-    /**
-     * The hold is on a work item a visitor's report opened, so the answer's words stay Martin's: its public view leaves
-     * them out, since a paraphrase of a report would pass any redactor. An answer from before never said.
-     */
-    report: z.literal(true).optional(),
-  }),
+  'hold.answered': z
+    .strictObject({
+      decision: z.enum(V.HOLD_ANSWERS),
+      answer: text(V.MARTIN_ANSWER_CHARS).optional(),
+      /** The hold it answers: its `hold.started` event's id. An answer from before the admin service never named it. */
+      hold: z.uuid().optional(),
+      /**
+       * The hold is on a work item a visitor's report opened, so the answer's words stay Martin's: its public view
+       * leaves them out, since a paraphrase of a report would pass any redactor. An answer from before never said.
+       */
+      report: z.literal(true).optional(),
+    })
+    // Sending the work back to the planner is his reason for it, in words; the public view of one about a visitor's
+    // report leaves them out, and says so.
+    .refine((answer) => answer.decision !== 'replanned' || answer.answer !== undefined || answer.report, {
+      message: 'sending the work back to the planner takes his words',
+      path: ['answer'],
+    }),
   /**
    * A mechanism stopped an action: the platform's (a token's permissions, a ruleset, the egress policy, admission
    * control), the coder's scope fence, the GitHub worker's own guard, the review check, the gateway, or triage

@@ -8,7 +8,7 @@ import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { proved } from '../../src/guardrails/command.ts';
-import { abortedByStop, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
+import { abortedByStop, age, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
 
 let database: Database;
 beforeEach(async () => {
@@ -23,6 +23,16 @@ async function append(sql: Sql, type: string, payload: object): Promise<void> {
     insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
     values (${crypto.randomUUID()}, now(), null, ${type}, ${version}, 'martin', ${type},
             ${sql.json(payload as never)}, '[]', ${sql.json({ summary: type, payload, artifacts: [] } as never)}, false)`;
+}
+
+/** When the store stamped the newest event of a type the line's role appended that `where` picks, as the proofs read it. */
+async function stampOfLast(type: string, where: string): Promise<Date> {
+  const [row] = await database.owner<{ appended_at: Date }[]>`
+    select appended_at from events
+    where type = ${type} and appended_by = 'factory_line' and ${database.owner.unsafe(where)}
+    order by seq desc limit 1`;
+  if (!row) throw new Error(`No ${type} was appended.`);
+  return row.appended_at;
 }
 
 const rolledBack = (dryRun: boolean, reason: string) => ({
@@ -43,12 +53,35 @@ const aborted = (by: string) => ({
   by,
 });
 
+describe('how long ago', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+  const before = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+
+  it('counts minutes below two hours, hours below two days, and days after', () => {
+    expect(age(before(119), now)).toBe('119 minutes ago');
+    expect(age(before(120), now)).toBe('2 hours ago');
+    expect(age(before(47 * 60 + 59), now)).toBe('47 hours ago');
+    expect(age(before(48 * 60), now)).toBe('2 days ago');
+  });
+
+  it('takes whole minutes, so a millisecond short of two hours is still minutes', () => {
+    expect(age(new Date(before(120).getTime() + 1), now)).toBe('119 minutes ago');
+  });
+
+  it('reads a time ahead of now as no time ago', () => {
+    expect(age(before(-5), now)).toBe('0 minutes ago');
+  });
+});
+
 describe('the rollback proof', () => {
   it('reads the last real rollback the line recorded, its verdict verbatim, and how long ago', async () => {
     expect((await rollback(database.proofs, new Date())).held).toBe(false);
     await append(database.as.line, 'release.rolled-back', rolledBack(false, 'errors 20% over 5%'));
     await append(database.as.line, 'release.rolled-back', rolledBack(true, 'a dry run'));
-    const taken = await rollback(database.proofs, new Date(Date.now() + 3 * 3_600_000));
+    // Three hours after the store stamped it, by the store's clock: the Mac's may be ahead of or behind the clock of
+    // the VM Postgres runs in, and a millisecond behind would read 179 minutes, "2 hours ago".
+    const real = await stampOfLast('release.rolled-back', `payload->>'dryRun' = 'false'`);
+    const taken = await rollback(database.proofs, new Date(real.getTime() + 3 * 3_600_000));
     expect(taken.held).toBe(true);
     expect(taken.output).toMatch(
       /version 1\.2\.0 rolled back to 1\.1\.0 at 20% of the traffic, by analysis, 3 hours ago/,
@@ -71,9 +104,11 @@ describe('the last canary a stop aborted', () => {
     await append(database.as.line, 'release.aborted', aborted('martin'));
     expect((await abortedByStop(database.proofs, new Date())).held).toBe(false);
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const taken = await abortedByStop(database.proofs, new Date());
+    // Two days after the store stamped it, by the store's clock, as in the rollback proof.
+    const stamped = await stampOfLast('release.aborted', `payload->>'by' = 'stop'`);
+    const taken = await abortedByStop(database.proofs, new Date(stamped.getTime() + 48 * 3_600_000));
     expect(taken).toMatchObject({ held: true });
-    expect(taken.output).toMatch(/aborted by Stop the line at 2026-10-30T10:00:00Z/);
+    expect(taken.output).toMatch(/aborted by Stop the line at 2026-10-30T10:00:00Z, back to 1\.2\.0, 2 days ago\./);
   });
 });
 

@@ -38,6 +38,7 @@ export async function pullRequestNumber(env: Env): Promise<number | { error: str
   } catch (error) {
     return { error: `The run's event could not be read: ${(error as Error).message}` };
   }
+  if (typeof payload !== 'object' || payload === null) return { error: "The run's event is not an object" };
   if (event === 'pull_request') {
     const number = payload.pull_request?.number;
     return Number.isSafeInteger(number) && (number as number) > 0
@@ -78,7 +79,9 @@ export async function description(
         signal: AbortSignal.timeout(20_000),
       });
       if (response.ok) {
-        const pull = (await response.json()) as { number?: unknown; body?: unknown };
+        // An answer that is not a pull request will not become one if asked again.
+        const pull = (await response.json().catch(() => null)) as { number?: unknown; body?: unknown } | null;
+        if (typeof pull !== 'object' || pull === null) return { error: "GitHub's answer is not a pull request" };
         if (pull.number !== number) return { error: `GitHub answered for another pull request than #${number}` };
         return typeof pull.body === 'string' ? pull.body : '';
       }
@@ -104,7 +107,11 @@ async function named(
     text = file
       ? { error: 'Test integrity reads the description from GitHub in Actions, not from a file' }
       : await description(env, fetcher, pause);
-  } else text = file ? await readFile(file, 'utf-8') : '';
+  } else if (file) {
+    text = await readFile(file, 'utf-8').catch((error: Error) => ({
+      error: `The description could not be read from ${file}: ${error.message}`,
+    }));
+  } else text = '';
   if (typeof text !== 'string') return text;
   return parse(text);
 }

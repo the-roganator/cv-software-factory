@@ -67,6 +67,15 @@ export type Resolution =
  * to do instead: either way the planner writes the spec again, told both. Where the coder's first round found nothing
  * to fix, approving agrees with it and closes the work item; answering sends the spec back to the planner, told what
  * the coder said and what Martin did.
+ *
+ * Sending the work back to the planner (`replanned`, always with his words) is for the holds before a merge where the
+ * change's own words go to the coder, but the spec may be what is wrong: a gate the change cannot pass under its spec,
+ * as when the spec contradicts a test the app has and names none, a review it cannot satisfy, a change he will not
+ * merge as it stands, or tests that cannot fail. The planner writes the spec again from his words, and the coder
+ * rebuilds the pull request on it. It means nothing elsewhere: where his words already go to the planner (`spec`,
+ * `scope`, `nothing-to-fix`, `beyond-ticket`, `verify`), on a question, a ticket the planner rejected or a step that
+ * kept failing, where his words already rerun the step that was held, and on triage's holds, a deploy, a canary and
+ * the spend cap, where there is no spec yet or none left to change.
  */
 export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
   // Triage's: a suggestion never comes onto the line, nor does a defect only the planner has seen until Martin approves
@@ -74,35 +83,36 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
   // Triage then opens their tickets, and the line carries each on from there as any other. Triage closes a suggestion
   // he rejects. A suggestion never starts work, so approving one does nothing: Martin, having read one, asks for the
   // improvement himself with the console's "+", in his own words (spec 5.3: a report only ever leads to a defect fix).
-  suggestion: { approved: 'wait', rejected: 'close', answered: 'wait' },
-  finding: { approved: 'carry-on', rejected: 'close', answered: 'wait' },
-  burst: { approved: 'carry-on', rejected: 'close', answered: 'wait' },
-  environment: { approved: 'carry-on', rejected: 'close', answered: 'wait' },
-  spec: { approved: 'carry-on', rejected: 'close', answered: 'replan' },
-  question: { approved: 'carry-on', rejected: 'close', answered: 'carry-on' },
-  'ticket-rejected': { approved: 'close', rejected: 'close', answered: 'carry-on' },
-  scope: { approved: 'replan', rejected: 'close', answered: 'replan' },
-  'nothing-to-fix': { approved: 'close', rejected: 'close', answered: 'replan' },
-  failures: { approved: 'carry-on', rejected: 'close', answered: 'carry-on' },
-  gates: { approved: 'return', rejected: 'close', answered: 'return' },
-  review: { approved: 'approve', rejected: 'close', answered: 'return' },
-  'beyond-ticket': { approved: 'approve', rejected: 'close', answered: 'replan' },
-  // Martin merges on GitHub, which answers the hold; his words send the work back to the coder.
-  merge: { approved: 'wait', rejected: 'close', answered: 'return' },
+  suggestion: { approved: 'wait', rejected: 'close', answered: 'wait', replanned: 'wait' },
+  finding: { approved: 'carry-on', rejected: 'close', answered: 'wait', replanned: 'wait' },
+  burst: { approved: 'carry-on', rejected: 'close', answered: 'wait', replanned: 'wait' },
+  environment: { approved: 'carry-on', rejected: 'close', answered: 'wait', replanned: 'wait' },
+  spec: { approved: 'carry-on', rejected: 'close', answered: 'replan', replanned: 'wait' },
+  question: { approved: 'carry-on', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
+  'ticket-rejected': { approved: 'close', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
+  scope: { approved: 'replan', rejected: 'close', answered: 'replan', replanned: 'wait' },
+  'nothing-to-fix': { approved: 'close', rejected: 'close', answered: 'replan', replanned: 'wait' },
+  failures: { approved: 'carry-on', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
+  gates: { approved: 'return', rejected: 'close', answered: 'return', replanned: 'replan' },
+  review: { approved: 'approve', rejected: 'close', answered: 'return', replanned: 'replan' },
+  'beyond-ticket': { approved: 'approve', rejected: 'close', answered: 'replan', replanned: 'wait' },
+  // Martin merges on GitHub, which answers the hold; his words send the work back to the coder, or to the planner.
+  merge: { approved: 'wait', rejected: 'close', answered: 'return', replanned: 'replan' },
   // A deploy is merged by Martin, not answered: a release that carries the change ends the hold by itself.
-  deploy: { approved: 'wait', rejected: 'close', answered: 'wait' },
+  deploy: { approved: 'wait', rejected: 'close', answered: 'wait', replanned: 'wait' },
   // A canary paused for Martin is answered from the Canary panel, by promoting it fully or aborting it: the release
   // that ends ends the hold. No answer of the holds' does anything.
-  canary: { approved: 'wait', rejected: 'wait', answered: 'wait' },
+  canary: { approved: 'wait', rejected: 'wait', answered: 'wait', replanned: 'wait' },
   // At Verify, when no sense can tell or the signal persisted again: approving says the fix is verified, and answering
   // sends the work back to the planner with what he said.
-  verify: { approved: 'verified', rejected: 'close', answered: 'replan' },
+  verify: { approved: 'verified', rejected: 'close', answered: 'replan', replanned: 'wait' },
   // The cap is Martin's, within policy: approving carries on, and the line holds again until the cap is raised. Raising
   // the work item's cap past what it has spent approves it (the admin service, `admin/settings.ts`).
-  spend: { approved: 'carry-on', rejected: 'close', answered: 'carry-on' },
-  // The line makes no such hold yet: approving accepts the tests as they are, answering says what to test.
-  'tests-first': { approved: 'carry-on', rejected: 'close', answered: 'return' },
-  unknown: { approved: 'carry-on', rejected: 'close', answered: 'carry-on' },
+  spend: { approved: 'carry-on', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
+  // The line makes no such hold yet: approving accepts the tests as they are, answering says what to test, and sending
+  // it back to the planner says the criteria ask for what the app already does.
+  'tests-first': { approved: 'carry-on', rejected: 'close', answered: 'return', replanned: 'replan' },
+  unknown: { approved: 'carry-on', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
 };
 
 /**
@@ -111,7 +121,7 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
  * rejection), but for words on one of triage's holds, which are kept with it while it stays held.
  */
 export const answersTo = (cause: HoldCause): HoldAnswer[] =>
-  (['approved', 'answered', 'rejected'] as const).filter(
+  (['approved', 'answered', 'replanned', 'rejected'] as const).filter(
     (answer) => ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)),
   );
 

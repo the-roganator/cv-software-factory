@@ -2,11 +2,12 @@
  * Needs you, end to end: the bottom row's cards against the real admin service on a throwaway store holding the
  * samples, on one origin behind a proxy standing in for Traefik (`admin.ts`), with a virtual passkey. A visitor sees
  * answers the planner's question and its card moves to Answered today; answers the visitor's suggestion in words, which
- * leave it held; and approving the gate's hold asks for his passkey again first. A refusal shows on the card. Then a
- * visitor sees the same cards, read only, as Waiting on Martin, with his answers today but not his words on the
- * visitor's suggestion. Martin answers from a work item's sheet too, through the same card, the passkey asked there
- * as here, and the card leaves both. Answered today is the viewer's own day, so the answers checked are the ones made here, now. Snapshots are
- * `visual.spec.ts`'s. Needs Postgres: TEST_DATABASE_URL, or Docker.
+ * leave it held; sends a merge's hold back to the planner with his words; and approving the gate's hold asks for his
+ * passkey again first. A refusal shows on the card. Then a visitor sees the same cards, read only, as Waiting on
+ * Martin, with his answers today but not his words on the visitor's suggestion. Martin answers from a work item's sheet
+ * too, through the same card, the passkey asked there as here, and the card leaves both. Answered today is the viewer's
+ * own day, so the answers checked are the ones made here, now. Snapshots are `visual.spec.ts`'s. Needs Postgres:
+ * TEST_DATABASE_URL, or Docker.
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
@@ -92,6 +93,35 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
     await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
   });
 
+  await test.step('Back to the planner on a merge’s hold opens a field of its own, and sends his words', async () => {
+    const merge = card(page, '1311');
+    const words = merge.getByRole('button', { name: 'Answer in words' });
+    const back = merge.getByRole('button', { name: 'Back to the planner' });
+    await expect(merge).toContainText(
+      'The planner writes the spec again from your words, and the coder rebuilds the change on it.',
+    );
+    // One field at a time: opening the other closes the first, and what he wrote moves with it.
+    await words.click();
+    await merge.getByLabel('Your answer to #1311').fill('The spec contradicts a test');
+    await back.click();
+    await expect(words).toHaveAttribute('aria-expanded', 'false');
+    await expect(back).toHaveAttribute('aria-expanded', 'true');
+    await expect(merge.getByLabel('Your answer to #1311')).toHaveCount(0);
+    const field = merge.getByLabel('Why #1311 goes back to the planner');
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue('The spec contradicts a test');
+    await expect(field).toHaveAttribute('placeholder', 'What the planner should change in the spec');
+    await field.fill('The spec contradicts the basket test: name it');
+    await merge.getByRole('button', { name: 'Send' }).click();
+    await expect
+      .poll(async () => (await answers('1311')).map((a) => [a.payload.decision, a.payload.answer]))
+      .toEqual([['replanned', 'The spec contradicts the basket test: name it']]);
+    await expect(merge).toHaveCount(0);
+    await expect(panel(page).locator('.answered')).toContainText(
+      '#1311 · Sent back to the planner. The spec contradicts the basket test: name it',
+    );
+  });
+
   await test.step('a refusal shows on the card', async () => {
     // Answered from elsewhere meanwhile: the service refuses, and the card says why.
     const scope = card(page, '1315');
@@ -109,11 +139,11 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
 test('a visitor sees what waits on Martin, read only, and not his words on a visitor’s report', async ({ page }) => {
   await page.goto('/?motion=off');
   await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Waiting on Martin');
-  // Two of the samples' nine holds that wait on him Martin answered above; #1294's flag waits too.
-  await expect(panel(page).locator('.count-attn')).toHaveText('8 waiting');
+  // Three of the samples' nine holds that wait on him Martin answered above; #1294's flag waits too.
+  await expect(panel(page).locator('.count-attn')).toHaveText('7 waiting');
   const review = card(page, '1323');
   await expect(review.locator('.kick b')).toHaveText('Held by review');
-  await expect(review.locator('.ro')).toHaveText(['Approve', 'Answer in words', 'Reject']);
+  await expect(review.locator('.ro')).toHaveText(['Approve', 'Answer in words', 'Back to the planner', 'Reject']);
   await expect(review).toContainText('Martin answers, signed in');
   await expect(panel(page).getByRole('button', { name: 'Approve' })).toHaveCount(0);
   // A deploy takes only his rejection: approving or words would leave it waiting just the same.

@@ -18,6 +18,7 @@ import {
   type PayloadOf,
   type PublicEvent,
   SENSES,
+  WORDED_ANSWERS,
 } from '@software-factory/events';
 import { stageWords } from '@software-factory/policy/flag-moves';
 import { CAP_NAMES, type CapField, changesBetween, inForce } from '@software-factory/policy/settings';
@@ -208,7 +209,8 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
         break;
       case 'hold.answered':
         if (event.payload.answer) parts.push(quoted(event.payload.answer));
-        else if (event.payload.report) withheld = event.payload.decision === 'answered' ? MARTIN_KEPT : MARTIN_ANY_KEPT;
+        else if (event.payload.report)
+          withheld = WORDED_ANSWERS.includes(event.payload.decision) ? MARTIN_KEPT : MARTIN_ANY_KEPT;
         break;
       case 'settings.changed':
         parts.push(event.payload.changes.map(changeWords).join('; '));

@@ -57,8 +57,10 @@ export const ENROLMENT_CODE = { bits: 128, minutes: 10, tries: 5 } as const;
 export const PASSKEYS = { most: 2 } as const;
 
 /**
- * The holds whose cause is a guardrail: approving one overrides it, so it needs the passkey again. Rejecting one, or
- * answering it in words, never does.
+ * The holds whose cause is a guardrail: approving one overrides it, so it needs the passkey again. Rejecting one,
+ * answering it in words, or sending it back to the planner with his words, never does: each sends the change round the
+ * line again, through every gate, and the planner may name no test the gates excuse that it could not name on any plan
+ * of its own.
  */
 export const GUARDRAIL_HOLDS = [
   'scope',
@@ -175,6 +177,11 @@ export const ACCESS = {
     ...admin('Answer a hold in words'),
     server: 'admin',
     routes: ['POST /admin/holds/:workItem/answer'],
+  },
+  'hold.replan': {
+    ...admin('Send a held work item back to the planner, with his words, where the spec may be what is wrong'),
+    server: 'admin',
+    routes: ['POST /admin/holds/:workItem/replan'],
   },
 
   // The line. Stopping aborts the canary in flight too; `make stop-the-line` does the same without the console.

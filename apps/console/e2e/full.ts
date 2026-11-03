@@ -3,7 +3,7 @@
  * the samples are public views, so each visitor's report is given back the text a visitor wrote. Everything else in
  * them is the same in both.
  */
-import type { RawEvent } from '@software-factory/events';
+import { type HoldAnswer, type RawEvent, WORDED_ANSWERS } from '@software-factory/events';
 
 /** What the samples' visitor wrote, with a link, an address and markup, which the console leaves out. */
 export const REPORT_TEXT =
@@ -25,12 +25,13 @@ export function full<T extends RawEvent>(event: T): T {
     const state = { ...payload.state, report: { ...payload.state.report, text: REPORT_TEXT } };
     return { ...event, payload: { ...payload, state } };
   }
-  const answer = event.payload as { decision?: string; report?: boolean; answer?: string };
-  // Only an answer in words had words to leave out.
+  const answer = event.payload as { decision?: HoldAnswer; report?: boolean; answer?: string };
+  // Only an answer that goes with words had words to leave out.
   if (
     event.type === 'hold.answered' &&
     answer.report &&
-    answer.decision === 'answered' &&
+    answer.decision !== undefined &&
+    WORDED_ANSWERS.includes(answer.decision) &&
     answer.answer === undefined
   ) {
     return { ...event, payload: { ...answer, answer: MARTINS_WORDS } };

@@ -45,7 +45,7 @@ export const VERSIONS = {
   // Anywhere on the line
   'work.returned': 3,
   'hold.started': 10,
-  'hold.answered': 2,
+  'hold.answered': 3,
   'action.refused': 3,
   'model.called': 2,
   // The line as a whole, with no work item

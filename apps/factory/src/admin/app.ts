@@ -21,8 +21,9 @@
  * - The feature flags' stages (`flags.ts`): `POST /admin/flags/:flag/stage` with the stage the slider showed, the one
  *   chosen and, to turn it off, Martin's reason, with the passkey again when the move widens past Checks.
  * - `GET /admin/flags/held`, public: whether the app holds the flags as set (`flags-held.ts`), as last checked.
- * - Needs you (`holds.ts`): `POST /admin/holds/:workItem/approve`, `/reject` and `/answer` (with his words), each
- *   naming the hold the card showed, with the passkey again to approve a guardrail's, or an improvement's spec.
+ * - Needs you (`holds.ts`): `POST /admin/holds/:workItem/approve`, `/reject`, `/answer` and `/replan` (both with his
+ *   words), each naming the hold the card showed, with the passkey again to approve a guardrail's, or an improvement's
+ *   spec.
  * - The "+" (`improvements.ts`): `POST /admin/improvements` with Martin's words and the request's id, with the passkey
  *   again, which opens a work item of kind improvement with his request.
  * - A red-team attack (`attacks.ts`): `POST /admin/attacks/:attack`, one at a time and with no passkey, which opens a
@@ -36,7 +37,7 @@
  */
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { type HoldAnswer, REQUEST_WORDS, type ReleaseControl } from '@software-factory/events';
+import { type HoldAnswer, REQUEST_WORDS, type ReleaseControl, WORDED_ANSWERS } from '@software-factory/events';
 import { z } from 'zod';
 import { ACCESS, ENROLMENT_CODE, PASSKEYS, routeOf, SESSION, type ServedBy } from '../../../../policy/access.ts';
 import type { Logger } from '../log.ts';
@@ -215,7 +216,11 @@ export function createAdminApp({
     const workItem = values.workItem ?? '';
     const given = ANSWER[decision].safeParse(body);
     if (!WORK_ITEM.test(workItem) || !given.success) {
-      return refused(400, 'body', decision === 'answered' ? 'Send the hold, and your words.' : 'Send the hold.');
+      return refused(
+        400,
+        'body',
+        WORDED_ANSWERS.includes(decision) ? 'Send the hold, and your words.' : 'Send the hold.',
+      );
     }
     return { status: 200, body: await answerHold(store, session as Session, workItem, decision, given.data) };
   };
@@ -437,6 +442,7 @@ export function createAdminApp({
     'hold.approve': (context) => answer('approved', context),
     'hold.reject': (context) => answer('rejected', context),
     'hold.answer': (context) => answer('answered', context),
+    'hold.replan': (context) => answer('replanned', context),
 
     'passkey.revoke': async ({ values, session }) => {
       const live = session as Session;

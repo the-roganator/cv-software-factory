@@ -23,7 +23,7 @@
 import type { ArtifactStore } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import { type Contradicted, withContradicted } from '../gates/contradicts.ts';
+import { type Contradicted, render, strip } from '../gates/contradicts.ts';
 import { guardBranch } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import {
@@ -148,13 +148,25 @@ export interface PullRequestChange {
   contradicts?: Contradicted[];
 }
 
+/** The words every marker of the section has, which a body the worker is given may not carry in any form. */
+const MARKER_WORDS = /factory:contradicts/gi;
+const HAS_MARKER_WORDS = /factory:contradicts/i;
+
 /**
- * A body as the worker publishes it: with the section for the tests given, and only that section. A body with no list
- * keeps none: markers in it, from an agent or anyone, are taken out, so only `render` writes what the gate reads.
+ * A body as the worker publishes it: with the section for the tests given, and only that section, after the rest. A
+ * section the body has is taken out, and then whatever is left of a marker's words is broken, again until none is
+ * left, so no text, an agent's or anyone's, can splice a marker the gate reads out of pieces the taking-out joins. A
+ * body with no marker's words is kept as it was, but for the end it meets the section at.
  */
 export function described(body: string, contradicts: readonly Contradicted[] | undefined): string {
-  if (contradicts === undefined && !/factory:contradicts/i.test(body)) return body;
-  return withContradicted(body, contradicts ?? []);
+  let rest = body;
+  if (HAS_MARKER_WORDS.test(rest)) {
+    rest = strip(rest);
+    while (HAS_MARKER_WORDS.test(rest)) rest = rest.replace(MARKER_WORDS, 'factory: contradicts');
+  }
+  const section = render(contradicts ?? []);
+  if (!section) return rest;
+  return rest.trim() ? `${rest.replace(/\s+$/, '')}\n\n${section}` : section;
 }
 
 export interface PullRequestRef {
@@ -893,7 +905,8 @@ export class DryRunActions implements Actions {
           ? described(pull.body, contradicts)
           : undefined;
     if (body !== undefined && pull?.repo === repo) {
-      if (body === pull.body && change.title === undefined) return;
+      // The section alone, unchanged, is no write; a body given is recorded as a live worker would write it.
+      if (change.body === undefined && body === pull.body && change.title === undefined) return;
       pull.body = body;
     }
     // A pull request it never opened has no body it knows: it records the list, which says what it would have set.

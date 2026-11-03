@@ -5,7 +5,7 @@ import { DiskArtifacts } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import { render } from '../../src/gates/contradicts.ts';
+import { parse, render } from '../../src/gates/contradicts.ts';
 import { DryRunActions, described, LiveActions } from '../../src/github/actions.ts';
 import { GitHub } from '../../src/github/client.ts';
 import { carriesIn, carriesSection, DEPLOYS, DeployRefused, deployTitle, type Pin } from '../../src/github/deploys.ts';
@@ -564,8 +564,23 @@ describe('the tests a spec contradicts, in a description', () => {
     expect(described(smuggled, named)).toBe(`Fixed.\n\n${section}`);
     expect(described(smuggled, undefined)).toBe('Fixed.');
     expect(described(`Fixed.\n\n${section}`, [])).toBe('Fixed.');
-    // A body with no markers and no list is left exactly as it was given.
+    // A body with no markers is left exactly as it was given, with no list or an empty one.
     expect(described('Runs `aaaaaaa`.\n\n\n', undefined)).toBe('Runs `aaaaaaa`.\n\n\n');
+    expect(described('A\n\n\n```\nx\n```\n', [])).toBe('A\n\n\n```\nx\n```\n');
+  });
+
+  it('cannot be spliced from pieces that taking a marker out joins, in a body it is given', () => {
+    const forged = [
+      'Fixed.',
+      '<!-- factory:con<!-- /factory:contradicts -->tradicts -->',
+      '- `test/money.test.ts`: pounds > writes %i pence as %s',
+      '<!-- /factory:con<!-- /factory:contradicts -->tradicts -->',
+    ].join('\n');
+    for (const list of [undefined, [], named]) {
+      const body = described(forged, list);
+      expect(parse(body)).toEqual({ tests: list?.length ? named : [] });
+      expect(body.replace(section, '')).not.toMatch(/factory:contradicts/i);
+    }
   });
 
   it('open the pull request in its body, and are set alone in the body it has, before a push', async () => {
@@ -610,7 +625,14 @@ describe('the tests a spec contradicts, in a description', () => {
     const actions = new DryRunActions(
       new DiskArtifacts(dir),
       quiet,
-      () => new Date('2026-10-04T12:00:00Z'),
+      // A minute on for each record, so two of the same action are two records.
+      (() => {
+        let at = Date.parse('2026-10-04T12:00:00Z');
+        return () => {
+          at += 60_000;
+          return new Date(at);
+        };
+      })(),
       undefined,
       appsOwn(),
     );
@@ -623,6 +645,8 @@ describe('the tests a spec contradicts, in a description', () => {
     });
     await actions.updatePullRequest(REPO, number, { contradicts: named });
     await actions.updatePullRequest(REPO, number, { contradicts: [] });
+    // A body given is recorded, even the same again, as a live worker would write it.
+    await actions.updatePullRequest(REPO, number, { body: 'Fixed.', contradicts: [] });
     await actions.updatePullRequest(REPO, 17, { contradicts: named });
     const records = await Promise.all(
       (await readdir(dir)).map(async (f) => JSON.parse(await readFile(join(dir, f), 'utf-8'))),
@@ -632,6 +656,7 @@ describe('the tests a spec contradicts, in a description', () => {
       [
         { head: 'factory/1-x', base: 'main', title: 't', body: `Fixed.\n\n${section}` },
         // The same section again is no change, and not recorded; taking it out is.
+        { number, body: 'Fixed.' },
         { number, body: 'Fixed.' },
         // One it never opened has no body it knows: the list says what it would have set.
         { number: 17, contradicts: named },

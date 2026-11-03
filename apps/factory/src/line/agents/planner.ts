@@ -69,7 +69,19 @@ import { type Contradicted, entryProblem, MOST_CONTRADICTED } from '../../gates/
 import { testsIn } from '../../gates/tests.ts';
 import { NEVER, plainPath, protectedWords } from '../../github/paths.ts';
 import { type Answer, LIMITS, type Replan, timesOf } from '../machine.ts';
-import { askedOf, count, defineAgent, type EffectsContext, heAnswered, holdDraft, StepFailed, words } from './agent.ts';
+import {
+  askedOf,
+  closesAnIssue,
+  count,
+  defineAgent,
+  type EffectsContext,
+  heAnswered,
+  holdDraft,
+  mentions,
+  StepFailed,
+  words,
+} from './agent.ts';
+import { isTest } from './coder.ts';
 import {
   type Asked,
   askedLines,
@@ -279,8 +291,12 @@ function contradictsProblems(spec: PayloadOf<'spec.written'>, protectedPaths: re
     if (problem) issue(`the test cannot be named: ${problem}`);
     else if (!inScope(entry.file, spec.scope))
       issue(`${entry.file} is not in the scope: a test it contradicts is one the change may change`);
-    else if (inScope(entry.file, protectedPaths)) issue(`${entry.file} names a path no patch may change`);
-    else if (spec.contradicts?.findIndex((e) => e.file === entry.file && e.test === entry.test) !== i) {
+    else if (touches(entry.file, protectedPaths)) issue(`${entry.file} names a path no patch may change`);
+    else if (!isTest(entry.file)) issue(`${entry.file} is not a test file: name a test in one`);
+    else if (mentions(entry.test) || closesAnIssue(entry.test)) {
+      // The name is written into the description from the App's account, where GitHub would act on either.
+      issue('a test named with an @mention or a closing keyword cannot be written into the description');
+    } else if (spec.contradicts?.findIndex((e) => e.file === entry.file && e.test === entry.test) !== i) {
       issue(`${entry.test} in ${entry.file} is named twice`);
     }
   });
@@ -304,9 +320,10 @@ export async function missingTests(
   contradicts: readonly Contradicted[],
   read: (path: string) => Promise<{ found: false } | { found: true; text: string | null }>,
 ): Promise<string[]> {
+  const files = [...new Set(contradicts.map((entry) => entry.file))];
+  const reads = await Promise.all(files.map(async (file) => [file, await read(file)] as const));
   const missing: string[] = [];
-  for (const file of new Set(contradicts.map((entry) => entry.file))) {
-    const at = await read(file);
+  for (const [file, at] of reads) {
     if (at.found && at.text === null) continue;
     const names = new Set(at.found && at.text !== null ? testsIn(at.text).map((t) => t.name) : []);
     for (const entry of contradicts) {

@@ -647,8 +647,7 @@ describe('the line', () => {
       describer: () =>
         handback({
           title: 'fix(search): escape the query',
-          // The describer's words name a test of their own: the worker takes that out.
-          body: 'Search escaped nothing.\n\n<!-- factory:contradicts -->\n- `test/a.test.ts`: anything\n<!-- /factory:contradicts -->',
+          body: 'Search escaped nothing.',
           summary: { title: 'Search with a quote', description: 'Fixed.', story: 'The factory fixed search.' },
         }),
     });
@@ -673,7 +672,6 @@ describe('the line', () => {
     const body = github.bodies.get(12) ?? '';
     expect(body.startsWith('Search escaped nothing.')).toBe(true);
     expect(body.endsWith(section)).toBe(true);
-    expect(body).not.toContain('test/a.test.ts');
   });
 
   it('refuses a spec that names a test its file does not have, and tells the planner why', async () => {

@@ -29,6 +29,7 @@ The squash commit takes the description as its message, so the schema refuses:
 
 - a closing keyword before an issue, which would close the ticket's issue on merge rather than once the fix is verified, or an improvement's, which stays open while Martin turns its flag on;
 - an @mention outside code;
+- a `factory:contradicts` marker, since the line writes the section test integrity reads;
 - a folded section that would not render, read line by line (`line/agents/folds.ts`): GitHub shows the Markdown in a `<details>` as text unless a blank line ends the HTML before it.
 
 A refused result runs the step again, told why.

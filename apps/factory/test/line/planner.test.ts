@@ -326,6 +326,15 @@ describe('the tests a spec contradicts', () => {
       'src/AGENTS.md names a path no patch may change',
     );
     expect(issue(contradicting([named, named]))?.message).toContain('is named twice');
+    expect(issue(contradicting([{ ...named, file: 'src/money.ts' }]))?.message).toBe(
+      'src/money.ts is not a test file: name a test in one',
+    );
+    // Written into the description from the App's account, a name may not notify anyone or close an issue.
+    for (const test of ['pounds > warns @admin', 'pounds > fixes #12']) {
+      expect(issue(contradicting([{ ...named, test }]))?.message, test).toBe(
+        'a test named with an @mention or a closing keyword cannot be written into the description',
+      );
+    }
     expect(contradicting(Array.from({ length: 11 }, (_, i) => ({ ...named, test: `test ${i}` }))).success).toBe(false);
   });
 

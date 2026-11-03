@@ -291,7 +291,7 @@ export function contradictedList(contradicts: NonNullable<PayloadOf<'spec.writte
 export function contradictedLines({ contradicts }: PayloadOf<'spec.written'>): string[] {
   if (!contradicts?.length) {
     return [
-      'If a criterion contradicts an existing test, leave that test as it is and say in your note which test, and why: the gate fails the round, and Martin decides.',
+      'If a criterion contradicts an existing test, leave that test as it is, failing, even though the checks then report it, and say in your note which test, and why: the gate fails the round, and Martin decides.',
     ];
   }
   return [
@@ -501,7 +501,8 @@ function again(input: CoderInput): string[] {
     '',
     'The spec you are held to:',
     ...specLines(input),
-    ...(input.spec.contradicts?.length ? contradictedLines(input.spec) : []),
+    // Told again, named or not: a spec written afresh may have taken back a test the session was told it may change.
+    ...contradictedLines(input.spec),
     ...(answer ? ['', `Martin answered: ${answer}`] : []),
     '',
     `${declineAll ? 'If you take any suggestion, then write' : 'Then write'} the result again, {"title","note"${suggestions?.length ? ',"declined"' : ''}}: the note says what the whole change does, not only this round.`,
@@ -792,7 +793,7 @@ function pullRequestBody(
 }
 
 /** Whether a path is a test, by the conventions Vitest and Jest find tests by. */
-const isTest = (path: string) =>
+export const isTest = (path: string) =>
   /(^|\/)(test|tests|__tests__)\//.test(path) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
 
 /** Each file a patch changes, with the lines it adds and removes. */

@@ -213,7 +213,7 @@ describe('the coder', () => {
       );
       // With none named, a test the criteria contradict is left, and said in the note, so Martin decides.
       expect(prompt).toContain(
-        'If a criterion contradicts an existing test, leave that test as it is and say in your note which test, and why',
+        'If a criterion contradicts an existing test, leave that test as it is, failing, even though the checks then report it, and say in your note which test, and why',
       );
       expect(prompt).not.toContain('You may delete, rename or rewrite exactly these');
     }
@@ -258,7 +258,10 @@ describe('the coder', () => {
     };
     expect(coder.resume?.(resumed)).toBe('s1');
     expect(coder.prompt(resumed)).toContain('- at test/money.test.ts: “pounds > drops the pence of a whole pound”');
-    expect(coder.prompt({ ...resumed, spec: input.spec })).not.toContain('The spec contradicts these');
+    // One whose spec, written afresh, names none is told so: what its session was told it may change, it may not now.
+    const withdrawn = coder.prompt({ ...resumed, spec: input.spec });
+    expect(withdrawn).not.toContain('The spec contradicts these');
+    expect(withdrawn).toContain('If a criterion contradicts an existing test, leave that test as it is, failing');
   });
 
   it('is told what each failed gate said, from GitHub’s annotations to its prompt, quoted, and not Actions’ exit code', async () => {

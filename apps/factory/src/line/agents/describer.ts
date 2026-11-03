@@ -77,6 +77,10 @@ export const describerResultFor = (title: z.ZodType<string>) =>
     body: words(30_000)
       .refine((body) => !closesAnIssue(body), 'no closing keyword before an issue: the issue closes once verified')
       .refine((body) => !mentions(body), 'no @mention outside code: it would notify someone from the App’s account')
+      .refine(
+        (body) => !/factory\s*:\s*contradicts/i.test(body),
+        'no factory:contradicts marker: the line writes the section that names the tests the spec contradicts',
+      )
       .superRefine((body, ctx) => {
         for (const message of unrenderedFolds(body)) ctx.addIssue({ code: 'custom', message });
       }),

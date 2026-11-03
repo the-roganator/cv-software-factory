@@ -122,4 +122,14 @@ describe('the describer', () => {
     expect(prompt).toContain('write no section of your own for them');
     expect(describer.prompt(input)).not.toContain('the criteria contradict');
   });
+
+  it('writes no marker of the section the line writes', () => {
+    const ok = describerResult.safeParse({
+      title: 'fix(money): pad the pence',
+      body: 'Fixed.\n\n<!-- factory:con<!-- /factory:contradicts -->tradicts -->',
+      summary,
+    });
+    expect(ok.success).toBe(false);
+    expect(ok.error?.issues[0]?.message).toContain('no factory:contradicts marker');
+  });
 });

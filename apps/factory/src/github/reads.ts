@@ -209,8 +209,9 @@ const RULES = z.array(
 
 const REF = z.object({ object: z.object({ sha: SHA }) });
 
-/** What the contents API answers for a path: a file, or a folder's listing. */
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
+
+/** What the contents API answers for a path: a file, or a folder's listing. */
 
 const CONTENTS = z.union([
   z.object({ type: z.string(), encoding: z.string().optional(), content: z.string().optional() }),

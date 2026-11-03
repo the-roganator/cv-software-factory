@@ -13,7 +13,7 @@ It reads each test file of the base and the change (`gates/tests.ts`: Vitest's a
 - a test newly skipped, left to do, or narrowed with `.only`;
 - a test that loses any `expect` or `assert` call it made. Each call is kept as text, the whole chain (`expect(res.status).not.toBe(500)`), with spacing, line breaks and comments between code and a trailing comma taken out, and every plain string in single quotes, so a test reformatted still asserts what it did. A call changed is one lost: keeping a test's name and turning its expectation around (`toBe('no-store')` to `toMatch(/max-age/)`) fails, as it is the weakening the gate exists to stop, and leaves a test named for what it no longer checks. Assertions added pass, and a call made twice must still be made twice.
 
-A test that moved file under its name has moved, not been deleted.
+A test that moved file under its name has moved, not been deleted. Two tests of one name in a file are each matched with their own: first with one left exactly as it was, wherever it now is, then in order. So reordering them changes nothing, and deleting one of them fails as a deletion, where once the one left counted for both.
 
 Each failure is an annotation on its file, such as `"a product page > says when it was last dusted" was deleted` or `"files > keeps nothing of the other files" no longer asserts expect(headers('/site.css').get('cache-control')).toBe('no-store')`. When the gate sends a change back, the line gives the [coder](CODER.md#its-prompt) these words, and the coder is told the rule before its first round.
 

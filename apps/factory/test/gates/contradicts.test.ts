@@ -257,7 +257,7 @@ ${body}
     ]);
   });
 
-  it('matches two tests of one name in a file in order', () => {
+  it('matches two tests of one name in a file to their own, in any order', () => {
     const two =
       "describe('a', () => { it('x', () => { expect(1).toBe(1); }); });\nit('a > x', () => { expect(2).toBe(2); });";
     const same = new Map([['test/a.test.ts', two]]);
@@ -265,6 +265,12 @@ ${body}
     const second = new Map([['test/a.test.ts', two.replace('expect(2).toBe(2)', 'expect(2).toBeDefined()')]]);
     expect(compare(same, second).problems.map((p) => p.message)).toEqual([
       '"a > x" no longer asserts expect(2).toBe(2)',
+    ]);
+    // Reordered, they assert what they did; one of them deleted, it has gone.
+    const [first, last] = two.split('\n');
+    expect(compare(same, new Map([['test/a.test.ts', `${last}\n${first}`]])).problems).toEqual([]);
+    expect(compare(same, new Map([['test/a.test.ts', first as string]])).problems.map((p) => p.message)).toEqual([
+      '"a > x" was deleted',
     ]);
   });
 

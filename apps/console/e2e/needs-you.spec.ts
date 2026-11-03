@@ -4,9 +4,10 @@
  * answers the planner's question and its card moves to Answered today; answers the visitor's suggestion in words, which
  * leave it held; sends a merge's hold back to the planner with his words; and approving the gate's hold asks for his
  * passkey again first. A refusal shows on the card. Then a visitor sees the same cards, read only, as Waiting on
- * Martin, with his answers today but not his words on the visitor's suggestion. Martin answers from a work item's sheet too, through the same card, the passkey asked there
- * as here, and the card leaves both. Answered today is the viewer's own day, so the answers checked are the ones made here, now. Snapshots are
- * `visual.spec.ts`'s. Needs Postgres: TEST_DATABASE_URL, or Docker.
+ * Martin, with his answers today but not his words on the visitor's suggestion. Martin answers from a work item's sheet
+ * too, through the same card, the passkey asked there as here, and the card leaves both. Answered today is the viewer's
+ * own day, so the answers checked are the ones made here, now. Snapshots are `visual.spec.ts`'s. Needs Postgres:
+ * TEST_DATABASE_URL, or Docker.
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Page } from '@playwright/test';

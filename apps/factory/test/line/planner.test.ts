@@ -894,6 +894,11 @@ describe('the planner planning again', () => {
       'held for Martin at the gates: Test integrity failed.',
     );
     expect(why({ ...held, approved: false, cause: 'merge' })).toContain('held for Martin for his merge');
+    // On a work item a visitor's report opened, his words stay his: the planner is told to change it for why it was held.
+    const kept = why({ ...held, approved: false, answered: false, cause: 'review', reason: 'Test integrity failed' });
+    expect(kept).toContain('Martin sent it back to you. He sent it to you rather than to the coder');
+    expect(kept).toContain('So change the spec for why it was held,');
+    expect(kept).not.toContain('as his answer asks');
   });
 
   it('tells the line’s reading of an approval as the line’s, and takes no quote from it', () => {

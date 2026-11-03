@@ -28,6 +28,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   answersTo,
+  HOLD_ANSWERS,
   type HoldAnswer,
   type HoldCause,
   MARTIN_ANSWER_CHARS,
@@ -35,6 +36,7 @@ import {
   type RawEvent,
   upcast,
   VERSIONS,
+  WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { fromMartin, LINE_ROLE, lockAppends, openedAsImprovement } from '@software-factory/store';
@@ -46,21 +48,13 @@ import { type AdminStore, Refused, type Session, steppedUpNow } from './store.ts
 /** A work item's number, as the store keeps it. */
 export const WORK_ITEM = /^[1-9][0-9]{0,8}$/;
 
-/** What an answer sends: the hold the card showed, and for words, the words. */
-export const ANSWER = {
-  approved: z.strictObject({ hold: z.uuid() }),
-  rejected: z.strictObject({ hold: z.uuid() }),
-  answered: z.strictObject({ hold: z.uuid(), words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) }),
-  replanned: z.strictObject({ hold: z.uuid(), words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) }),
-} satisfies Record<HoldAnswer, z.ZodType>;
+const hold = z.strictObject({ hold: z.uuid() });
+const withWords = hold.extend({ words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) });
 
-/** Whether an answer goes with words: in words, and back to the planner, whose reason they are. */
-export const TAKES_WORDS: Record<HoldAnswer, boolean> = {
-  approved: false,
-  rejected: false,
-  answered: true,
-  replanned: true,
-};
+/** What an answer sends: the hold the card showed, and for those that go with words (`WORDED_ANSWERS`), the words. */
+export const ANSWER = Object.fromEntries(
+  HOLD_ANSWERS.map((answer) => [answer, WORDED_ANSWERS.includes(answer) ? withWords : hold]),
+) as Record<HoldAnswer, typeof hold | typeof withWords>;
 
 /** What an answer did: the work item, the hold, the answer, and whether Martin's words stay his. */
 export interface Answered {

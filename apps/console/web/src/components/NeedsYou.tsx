@@ -21,7 +21,7 @@
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
-import { type HoldAnswer, MARTIN_ANSWER_CHARS } from '@software-factory/events';
+import { type HoldAnswer, MARTIN_ANSWER_CHARS, WORDED_ANSWERS } from '@software-factory/events';
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
@@ -49,13 +49,8 @@ import { useWrite } from './Write.tsx';
 
 const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer', replanned: 'replan' } as const;
 
-/** The answers that go with words, each opening a field of its own: in words, and back to the planner. */
-const WITH_WORDS: readonly HoldAnswer[] = ['answered', 'replanned'];
-
-/** What each field asks for, as its placeholder. */
-const ASKS: Record<HoldAnswer, string> = {
-  approved: '',
-  rejected: '',
+/** What the field of each answer that goes with words (`WORDED_ANSWERS`) asks for, as its placeholder. */
+const ASKS: Partial<Record<HoldAnswer, string>> = {
   answered: 'What the line should know',
   replanned: 'What the planner should change in the spec',
 };
@@ -264,7 +259,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   }, [writing]);
 
   const send = async (answer: Need['answers'][number]) => {
-    const body = { hold: need.hold, ...(WITH_WORDS.includes(answer.answer) && { words: words.trim() }) };
+    const body = { hold: need.hold, ...(WORDED_ANSWERS.includes(answer.answer) && { words: words.trim() }) };
     await writes.send(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, {
       passkey: answer.stepUp
         ? {
@@ -294,7 +289,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
         <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
-            {WITH_WORDS.includes(row.answer) ? (
+            {WORDED_ANSWERS.includes(row.answer) ? (
               <button
                 type="button"
                 className="btn small"
@@ -338,7 +333,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
                   rows={3}
                   value={words}
                   onChange={setWords}
-                  placeholder={ASKS[row.answer]}
+                  placeholder={ASKS[row.answer] ?? ''}
                   help={
                     need.aboutReport
                       ? 'Your words stay yours: a visitor’s report opened this, so no visitor and no agent reads them.'

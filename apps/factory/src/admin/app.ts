@@ -35,7 +35,7 @@
  */
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { type HoldAnswer, REQUEST_WORDS, type ReleaseControl } from '@software-factory/events';
+import { type HoldAnswer, REQUEST_WORDS, type ReleaseControl, WORDED_ANSWERS } from '@software-factory/events';
 import { z } from 'zod';
 import { ACCESS, ENROLMENT_CODE, PASSKEYS, routeOf, SESSION, type ServedBy } from '../../../../policy/access.ts';
 import type { Logger } from '../log.ts';
@@ -44,7 +44,7 @@ import type { AdminConfig } from './config.ts';
 import { type FlagStages, MOVE } from './flags.ts';
 import type { FlagsHeld } from './flags-held.ts';
 import { fromConsole, type Guard, guardOf, refuseWrite } from './guard.ts';
-import { ANSWER, answerHold, TAKES_WORDS, WORK_ITEM } from './holds.ts';
+import { ANSWER, answerHold, WORK_ITEM } from './holds.ts';
 import { REQUEST, requestImprovement } from './improvements.ts';
 import { CHANGE, changeControls, REASON, startLine, stopLine } from './line.ts';
 import { SWITCH, switchPhone } from './phone.ts';
@@ -213,7 +213,11 @@ export function createAdminApp({
     const workItem = values.workItem ?? '';
     const given = ANSWER[decision].safeParse(body);
     if (!WORK_ITEM.test(workItem) || !given.success) {
-      return refused(400, 'body', TAKES_WORDS[decision] ? 'Send the hold, and your words.' : 'Send the hold.');
+      return refused(
+        400,
+        'body',
+        WORDED_ANSWERS.includes(decision) ? 'Send the hold, and your words.' : 'Send the hold.',
+      );
     }
     return { status: 200, body: await answerHold(store, session as Session, workItem, decision, given.data) };
   };

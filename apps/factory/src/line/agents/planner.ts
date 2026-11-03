@@ -585,7 +585,7 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
       return [
         `Why it came back: the change was held for Martin ${HELD_AT[replan.cause]}: ${replan.reason.replace(/[.\s]+$/, '')}.`,
         `${heDid(replan)} He sent it to you rather than to the coder: the spec is what he judges must change.`,
-        'So change the spec as his answer asks, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in `contradicts`.',
+        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
       ];
     default:
       return [`Why it came back: it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`, heDid(replan)];

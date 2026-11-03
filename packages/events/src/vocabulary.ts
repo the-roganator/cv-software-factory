@@ -287,6 +287,9 @@ export type DeployState = (typeof DEPLOY_STATES)[number];
 export const HOLD_ANSWERS = ['approved', 'rejected', 'answered', 'replanned'] as const;
 export type HoldAnswer = (typeof HOLD_ANSWERS)[number];
 
+/** The answers that go with his words, which each needs: in words, and back to the planner, whose reason they are. */
+export const WORDED_ANSWERS: readonly HoldAnswer[] = ['answered', 'replanned'];
+
 export const AUTONOMY = ['supervised', 'guarded', 'lights-out'] as const;
 export type Autonomy = (typeof AUTONOMY)[number];
 

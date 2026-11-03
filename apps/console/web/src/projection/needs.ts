@@ -22,6 +22,7 @@ import {
   type PublicEvent,
   type Resolution,
   type Stage,
+  WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
@@ -253,6 +254,8 @@ const HOW: Record<HoldAnswer, string> = {
 function didOf(cause: HoldCause | undefined, decision: HoldAnswer): string | undefined {
   if (!cause) return undefined;
   if (decision === 'answered' && WORDS_LEAVE_HELD.includes(cause)) return undefined;
+  // How he answered says already where it went.
+  if (decision === 'replanned') return undefined;
   const resolution = ANSWERS[cause][decision];
   if (decision === 'approved' && (cause === 'finding' || cause === 'burst' || cause === 'environment')) {
     return 'Triage opened its tickets.';
@@ -456,9 +459,8 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words: answer ?? (report && (decision === 'answered' || decision === 'replanned') ? 'kept' : undefined),
-        // How he answered says already where it went.
-        did: decision === 'replanned' ? undefined : didOf(cause, decision),
+        words: answer ?? (report && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
+        did: didOf(cause, decision),
       });
     }
   }

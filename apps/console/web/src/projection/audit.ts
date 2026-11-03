@@ -18,6 +18,7 @@ import {
   type PayloadOf,
   type PublicEvent,
   SENSES,
+  WORDED_ANSWERS,
 } from '@software-factory/events';
 import { stageWords } from '@software-factory/policy/flag-moves';
 import { CAP_NAMES, type CapField, changesBetween, inForce } from '@software-factory/policy/settings';
@@ -113,8 +114,6 @@ const PLANNER_WROTE = 'Its text is left out, as a visitor’s is: the planner wr
 const MARTIN_KEPT = 'His words stay his: the hold was about a visitor’s report.';
 /** Any words he gave with an approval or a rejection on such a hold, which the public view leaves out as well. */
 const MARTIN_ANY_KEPT = 'Any words of his stay his: the hold was about a visitor’s report.';
-/** The answers that always carry his words: in words, and back to the planner. */
-const TAKES_WORDS = new Set(['answered', 'replanned']);
 
 /** The mechanisms' refusals: an action the platform or the scope fence stopped, and the gateway's at a spend cap. */
 const REFUSALS = new Set<string>(['action.refused', 'spend.capped']);
@@ -211,7 +210,7 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
       case 'hold.answered':
         if (event.payload.answer) parts.push(quoted(event.payload.answer));
         else if (event.payload.report)
-          withheld = TAKES_WORDS.has(event.payload.decision) ? MARTIN_KEPT : MARTIN_ANY_KEPT;
+          withheld = WORDED_ANSWERS.includes(event.payload.decision) ? MARTIN_KEPT : MARTIN_ANY_KEPT;
         break;
       case 'settings.changed':
         parts.push(event.payload.changes.map(changeWords).join('; '));

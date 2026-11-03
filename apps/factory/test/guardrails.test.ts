@@ -7,7 +7,13 @@ import { matchesGlob, posix } from 'node:path';
 import { GUARDRAIL_COUNT } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { ATTACK_RULES, attackLimitMs, LONGEST_ATTACK_MINUTES } from '../../../policy/attacks.ts';
+import {
+  ATTACK_RULES,
+  AVAILABLE_ATTACKS,
+  attackAvailable,
+  attackLimitMs,
+  LONGEST_ATTACK_MINUTES,
+} from '../../../policy/attacks.ts';
 import {
   ATTACKS,
   CI_PROOFS,
@@ -158,6 +164,16 @@ describe('the guardrail catalogue', () => {
     expect(LONGEST_ATTACK_MINUTES).toBe(ATTACK_RULES.test.minutes);
     expect(attackLimitMs('test')).toBe(ATTACK_RULES.test.minutes * 60_000);
     expect(attackLimitMs('not-an-attack')).toBe(LONGEST_ATTACK_MINUTES * 60_000);
+  });
+
+  it('holds back the workflow and the pull request, which keep their rules and limits for when they are launched', () => {
+    expect(AVAILABLE_ATTACKS).toEqual(['report', 'egress', 'image']);
+    expect(ATTACKS.filter((attack) => attackAvailable(attack))).toEqual([...AVAILABLE_ATTACKS]);
+    expect(attackAvailable('workflow')).toBe(false);
+    expect(attackAvailable('not-an-attack')).toBe(false);
+    // A launch recorded of one held back is waited out for its own limit, and the longest counts it.
+    expect(LONGEST_ATTACK_MINUTES).toBe(ATTACK_RULES.test.minutes);
+    expect(attackLimitMs('workflow')).toBe(ATTACK_RULES.workflow.minutes * 60_000);
   });
 });
 

@@ -12,7 +12,14 @@
  * - forwarded headers from anywhere but the proxy are ignored.
  */
 import type { AddressInfo } from 'node:net';
-import { MARTIN_ANSWER_CHARS, type NewEvent, type PayloadOf, upcast, VERSIONS } from '@software-factory/events';
+import {
+  ATTACKS,
+  MARTIN_ANSWER_CHARS,
+  type NewEvent,
+  type PayloadOf,
+  upcast,
+  VERSIONS,
+} from '@software-factory/events';
 import { DiskArtifacts, EventWriter, nextWorkItem, readPublic } from '@software-factory/store';
 import { pino } from 'pino';
 import postgres, { type Sql } from 'postgres';
@@ -29,6 +36,7 @@ import {
   SESSION,
   STEP_UP,
 } from '../../../../policy/access.ts';
+import { ATTACK_RULES, attackAvailable } from '../../../../policy/attacks.ts';
 import { flagsSpec, readFlags } from '../../../../policy/flags.ts';
 import { CONTENT_SECURITY_POLICY, COOKIE } from '../../src/admin/app.ts';
 import type { AdminConfig } from '../../src/admin/config.ts';
@@ -2765,8 +2773,8 @@ describe('an attack launched', () => {
   it('needs no passkey again, and opens a work item of kind red-team with his launch, in one transaction', async () => {
     const { browser } = await signedIn();
     const before = (await launches()).length;
-    const launched = await browser.post('/admin/attacks/workflow', {});
-    expect(launched).toMatchObject({ status: 200, body: { attack: 'workflow' } });
+    const launched = await browser.post('/admin/attacks/egress', {});
+    expect(launched).toMatchObject({ status: 200, body: { attack: 'egress' } });
     const [opened, launch] = (await launches()).slice(before);
     expect(opened).toMatchObject({
       work_item: launched.body.workItem,
@@ -2778,13 +2786,13 @@ describe('an attack launched', () => {
       work_item: launched.body.workItem,
       type: 'attack.launched',
       appended_by: 'factory_admin',
-      payload: { attack: 'workflow' },
+      payload: { attack: 'egress' },
     });
     expect(Number(launch?.seq)).toBe(Number(opened?.seq) + 1);
     const [event] = await lastEvents(1);
     expect(event).toMatchObject({
       actor: 'martin',
-      summary: 'Martin launched an attack: “Fix CI” by editing a workflow',
+      summary: 'Martin launched an attack: Data to an outside URL',
     });
   });
 
@@ -2811,13 +2819,13 @@ describe('an attack launched', () => {
 
   it('lets the next through once the last has passed its limit, by the store’s clock', async () => {
     const { browser } = await signedIn();
-    const first = await browser.post('/admin/attacks/test', {});
+    const first = await browser.post('/admin/attacks/report', {});
     expect(first.status).toBe(200);
     await db.owner`alter table events disable trigger user`;
     try {
-      await db.owner`update events set appended_at = appended_at - interval '44 minutes'
+      await db.owner`update events set appended_at = appended_at - interval '19 minutes'
                      where work_item = ${String(first.body.workItem)}`;
-      expect(await browser.post('/admin/attacks/report', {})).toMatchObject({
+      expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({
         status: 409,
         body: { message: expect.stringContaining('or in a minute, when it counts as unfinished') },
       });
@@ -2826,7 +2834,55 @@ describe('an attack launched', () => {
     } finally {
       await db.owner`alter table events enable trigger user`;
     }
-    expect(await browser.post('/admin/attacks/report', {})).toMatchObject({ status: 200, body: { attack: 'report' } });
+    expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({ status: 200, body: { attack: 'egress' } });
+  });
+
+  it('refuses an attack not available yet, having appended nothing', async () => {
+    const { browser } = await signedIn();
+    const before = (await launches()).length;
+    for (const attack of ATTACKS.filter((attack) => !attackAvailable(attack))) {
+      expect(await browser.post(`/admin/attacks/${attack}`, {}), attack).toMatchObject({
+        status: 403,
+        body: { refused: 'attack', message: 'This attack is not available yet.' },
+      });
+    }
+    expect(await launches()).toHaveLength(before);
+  });
+
+  it('waits out a launch already recorded of an attack held back since, for its own limit', async () => {
+    const { browser } = await signedIn();
+    const held = ATTACKS.find((attack) => !attackAvailable(attack));
+    expect(held).toBeDefined();
+    const workItem = await nextWorkItem(db.admin);
+    const event = (type: string, payload: object) =>
+      ({
+        id: crypto.randomUUID(),
+        ts: new Date().toISOString(),
+        work_item: workItem,
+        type,
+        version: VERSIONS[type as keyof typeof VERSIONS],
+        actor: 'martin',
+        summary: `${type} for the test`,
+        payload,
+        artifacts: [],
+      }) as NewEvent;
+    await new EventWriter(db.admin, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }).append([
+      event('work-item.opened', {
+        kind: 'red-team',
+        category: 'red-team',
+        title: 'Red-team attack by Martin',
+        sample: false,
+      }),
+      event('attack.launched', { attack: held }),
+    ]);
+    const minutes = held ? ATTACK_RULES[held].minutes : 0;
+    expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({
+      status: 409,
+      body: { message: expect.stringContaining(`#${workItem} has not finished`) },
+    });
+    expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({
+      body: { message: expect.stringContaining(`or in ${minutes} minutes`) },
+    });
   });
 
   it('takes one of the five attacks, by its id, and nothing from the body', async () => {

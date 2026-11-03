@@ -140,9 +140,11 @@ test.describe('a screenshot at full size', () => {
     const buttons = sheetOf(page)
       .locator('.flag-pages')
       .getByRole('button', { name: /^Open at full size: / });
-    // The sheet is a chunk of its own, loaded as it opens: `evaluateAll` reads once, so wait for the pages first.
-    await expect.poll(() => buttons.count()).toBeGreaterThan(1);
+    // The sheet is a chunk of its own, loaded as it opens, and `evaluateAll` reads once: wait for every page first,
+    // the home page off and on in light and dark.
+    await expect(buttons).toHaveCount(4);
     const names = await buttons.evaluateAll((all) => all.map((button) => button.getAttribute('aria-label')));
+    expect(names).toHaveLength(4);
     expect(new Set(names).size).toBe(names.length);
     expect(names.some((name) => /, (light|dark), the flag off$/.test(name ?? ''))).toBe(true);
   });

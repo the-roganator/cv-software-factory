@@ -121,6 +121,7 @@ test('a visitor sees what waits on Martin, read only, and not his words on a vis
   await expect(card(page, '1321').locator('.kick b')).toHaveText('Its deploy’s checks are running');
   // A sample's deploy pull request never existed: the card names it, and links nowhere.
   await expect(card(page, '1321').locator('.way')).toHaveText('Deploy #1331');
+  await expect(card(page, '1321').locator('.way .toolmark-github')).toBeVisible();
   await expect(card(page, '1321').getByRole('link')).toHaveCount(0);
   // His words on the visitor's suggestion stay his; his approval of the planner's question is public.
   const today = panel(page).locator('.answered');

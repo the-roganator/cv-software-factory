@@ -343,15 +343,16 @@ describe('Needs you', () => {
       ).toBe(text);
       // The deploy pull request is the way on only while its checks run or have passed: failed, closed or merged, a
       // newer build or Argo CD moves the fix on, and the card offers no way there.
-      expect(need?.link).toEqual(
+      expect(need?.way).toEqual(
         change.state === 'checking' || change.state === 'passed'
           ? {
+              verb: 'Deploy',
+              pullRequest: change.pullRequest,
               href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
-              label: `Deploy #${change.pullRequest} on GitHub`,
-              github: true,
             }
           : undefined,
       );
+      expect(need?.link).toBeUndefined();
       // Only once its checks pass is it Martin's: then its card says Needs you, flashing, and Needs you counts it.
       expect(outcome).toBe(change.state === 'passed' ? 'needs-you' : 'deploying');
       expect(need?.forMartin).toBe(change.state === 'passed');
@@ -387,20 +388,19 @@ describe('Needs you', () => {
     ]);
     const merge = needs.holds.find((need) => need.cause === 'merge');
     expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'rejected']);
-    // A sample's pull request never existed: the card names it, not as GitHub's, and links nowhere, as the sheet does.
-    const nowhere = 'A sample’s pull request, which never existed, so it links nowhere.';
-    expect(merge?.link).toEqual({ href: undefined, label: 'Merge #1312', github: false, why: nowhere });
-    expect(needs.holds.find((need) => need.cause === 'deploy')?.link).toEqual({
+    // A sample's pull request never existed: the card's way names it, and links nowhere, as the sheet does.
+    const nowhere = 'A sample’s pull request: it never existed, so it links nowhere.';
+    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, why: nowhere });
+    expect(needs.holds.find((need) => need.cause === 'deploy')?.way).toEqual({
+      verb: 'Deploy',
+      pullRequest: 1331,
       href: undefined,
-      label: 'Deploy #1331',
-      github: false,
       why: nowhere,
     });
-    expect(needs.holds.find((need) => need.cause === 'spend')?.link).toEqual({
-      href: '?view=settings',
-      label: 'Raise the cap in the settings',
-      github: false,
-    });
+    // A spend cap's settings are a link beside its evidence, not a way: the card's way is GitHub's only.
+    const spend = needs.holds.find((need) => need.cause === 'spend');
+    expect(spend?.link).toEqual({ href: '?view=settings', label: 'Raise the cap in the settings' });
+    expect(spend?.way).toBeUndefined();
     expect(needs.answered).toEqual([
       expect.objectContaining({ workItem: '1329', how: 'Answered in words, still held', words: 'kept' }),
     ]);

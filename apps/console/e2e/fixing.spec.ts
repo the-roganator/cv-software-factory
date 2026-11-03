@@ -231,35 +231,41 @@ test.describe('tool marks', () => {
     await expect(ran).toContainText('Kubernetes pod of its own in the runners namespace');
   });
 
-  test('a hold that ends elsewhere heads its answers with the way there, and a sample’s pull request links nowhere', async ({
+  test('a merge or a deploy heads its answers with the way there, and a sample’s pull request links nowhere', async ({
     page,
   }) => {
     await page.goto(consoleUrl({}));
     await ready(page);
     const card = (workItem: string) =>
       page.locator('article.needs .need').filter({ has: page.getByText(`#${workItem} ·`, { exact: false }) });
-    // A sample's merge and deploy: their pull requests never existed, so the way comes first, named and dashed, with
-    // why beside it, and neither links to GitHub nor carries its mark, as the sheet's facts do not.
-    for (const [workItem, name] of [
-      ['1311', 'Merge #1312'],
-      ['1321', 'Deploy #1331'],
+    // A sample's merge and deploy: the way comes first, "Merge" and GitHub's mark as on any card, but their pull
+    // requests never existed, so it links nowhere, as the sheet's facts do not, and says why.
+    for (const [workItem, verb, pullRequest] of [
+      ['1311', 'Merge', 1312],
+      ['1321', 'Deploy', 1331],
     ] as const) {
       const answers = card(workItem).locator('.answers');
-      await expect(answers.locator('.way').first()).toHaveText(name);
-      await expect(answers.locator('.answer').first().locator('.way.nowhere')).toBeVisible();
-      await expect(answers).toContainText('A sample’s pull request, which never existed, so it links nowhere.');
+      const way = answers.locator('.answer').first().locator('.way');
+      // The pull request's number is for a screen reader, who does not see the card's kicker beside it.
+      await expect(way).toHaveText(`${verb} #${pullRequest}`);
+      await expect(way.locator('.sr')).toHaveText(` #${pullRequest}`);
+      await expect(way.locator('.toolmark-github')).toBeVisible();
+      await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
+      await expect(answers).toContainText('A sample’s pull request: it never existed, so it links nowhere.');
       await expect(answers.getByRole('link')).toHaveCount(0);
-      await expect(answers.locator('.toolmark')).toHaveCount(0);
     }
-    // A spend cap's way is the console's own settings: a link, first, with no mark.
-    const answers = card('1319').locator('.answers');
-    const raise = answers.getByRole('link', { name: 'Raise the cap in the settings' });
-    await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
-    await expect(raise).toHaveAttribute('href', '?view=settings');
-    await expect(raise.locator('.toolmark')).toHaveCount(0);
+    // A spend cap's settings are a plain link beside its evidence, not a way.
+    const spend = card('1319');
+    await expect(spend.locator('.way')).toHaveCount(0);
+    await expect(spend.locator('p.ev').getByRole('link', { name: 'Raise the cap in the settings' })).toHaveAttribute(
+      'href',
+      '?view=settings',
+    );
   });
 
-  test('a real pull request’s way is GitHub’s: its mark, and a new tab, said to a screen reader', async ({ page }) => {
+  test('a real pull request’s way is GitHub’s: “Merge” and its mark, in a new tab, said to a screen reader', async ({
+    page,
+  }) => {
     // #1311 as a work item of the factory's own rather than a sample's, so its pull request is GitHub's.
     await page.route('**/api/events?after=0', async (route) => {
       const response = await route.fetch();
@@ -286,8 +292,7 @@ test.describe('tool marks', () => {
     await expect(way).toHaveAttribute('rel', 'noopener');
     await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
     await expect(way.locator('.toolmark-github')).toBeVisible();
-    await expect(way).toContainText('↗');
-    await expect(answers.locator('.way.nowhere')).toHaveCount(0);
+    await expect(answers.locator('span.way')).toHaveCount(0);
     // Its drawing is an image of this origin's, which the policy lets the stylesheet use.
     const url = await way
       .locator('.toolmark-github')

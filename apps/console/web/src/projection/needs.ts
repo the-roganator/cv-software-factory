@@ -62,14 +62,15 @@ export interface Need {
   since: number;
   title: string;
   evidence: Evidence;
+  /** A link the card offers beside its evidence: the settings, to raise a spend cap. */
+  link: { href: string; label: string } | undefined;
   /**
-   * The way the hold ends, which the card offers first: the pull request to merge, on GitHub (`github`, so the card
-   * marks it as GitHub's and opens it in a new tab), or the settings to raise a cap. One that links nowhere says
-   * `why`: a sample's pull request, which never existed, as the sheet's facts link it nowhere too.
+   * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it.
+   * A sample's never existed, so it has no `href` and says `why`, as the sheet's facts link it nowhere too.
    */
-  link:
-    | { href: string; label: string; github: boolean }
-    | { href: undefined; label: string; github: false; why: string }
+  way:
+    | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: string }
+    | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: undefined; why: string }
     | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
@@ -327,26 +328,26 @@ function deployEvidence(item: ItemState): string {
   return `${at} ${deployWords(item.deploy).evidence}`;
 }
 
-const SAMPLE_PULL = 'A sample’s pull request, which never existed, so it links nowhere.';
+const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it links nowhere.';
 
-/**
- * The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed; the
- * settings for a spend cap.
- */
-function linkOf(item: ItemState, cause: HoldCause): Need['link'] {
-  const pull = (verb: string, n: number): Need['link'] =>
+/** The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed. */
+function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
+  const pull = (verb: 'Merge' | 'Deploy', pullRequest: number): Need['way'] =>
     item.sample
-      ? { href: undefined, label: `${verb} #${n}`, github: false, why: SAMPLE_PULL }
-      : { href: `${APP_REPO}/pull/${n}`, label: `${verb} #${n} on GitHub`, github: true };
+      ? { verb, pullRequest, href: undefined, why: SAMPLE_PULL }
+      : { verb, pullRequest, href: `${APP_REPO}/pull/${pullRequest}` };
   if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
   // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
   // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
   if (cause === 'deploy' && (item.deploy?.state === 'checking' || item.deploy?.state === 'passed')) {
     return pull('Deploy', item.deploy.pullRequest);
   }
-  if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings', github: false };
   return undefined;
 }
+
+/** The settings, for a spend cap. */
+const linkOf = (cause: HoldCause): Need['link'] =>
+  cause === 'spend' ? { href: '?view=settings', label: 'Raise the cap in the settings' } : undefined;
 
 /** Whole units: "1d", "50min", the first part of a duration. */
 /** How long something has waited, to its largest unit: "1d", "50min". */
@@ -404,7 +405,8 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           since,
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
-          link: linkOf(item, hold.cause),
+          link: linkOf(hold.cause),
+          way: wayOf(item, hold.cause),
           answers: answersTo(hold.cause).map((answer) => ({
             answer,
             label: LABEL[answer],

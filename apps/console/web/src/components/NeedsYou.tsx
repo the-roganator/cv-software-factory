@@ -2,9 +2,9 @@
  * Needs you, the left of the bottom row: one card per hold, the line's and triage's, oldest first, so what has waited
  * longest is on top. Each says what the hold is, shows the one piece of evidence that explains it, and lists each
  * answer it takes beside what that answer does, from the line's own table. The buttons are all outlined: the console
- * does not suggest an answer. A hold that ends elsewhere (a merge or a deploy, on GitHub; a spend cap, in the settings)
- * heads its answers with the way there, a link drawn as a button and bolder, since it is the way forward and the
- * answers are the ways back. Under the cards, Martin's answers today.
+ * does not suggest an answer. A merge or a deploy, which Martin ends on GitHub, heads its answers with the way there,
+ * "Merge" and GitHub's mark drawn as a button and bolder, since it is the way forward and the answers are the ways
+ * back. Under the cards, Martin's answers today.
  *
  * For Martin, each answer is a write to the admin service, naming the hold the card showed, so the service answers
  * that hold or none. Approving a guardrail's hold asks for his passkey again (the key shows while it is not fresh);
@@ -50,7 +50,7 @@ import { useWrite } from './Write.tsx';
 const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer' } as const;
 
 function Evidence({ need }: { need: Need }) {
-  const { evidence } = need;
+  const { evidence, link } = need;
   return (
     <>
       {evidence.kind === 'output' ? (
@@ -70,38 +70,45 @@ function Evidence({ need }: { need: Need }) {
       ) : (
         <p className="ev">{evidence.text}</p>
       )}
+      {link && (
+        <p className="ev">
+          <a href={link.href}>{link.label}</a>
+        </p>
+      )}
     </>
   );
 }
 
 /**
- * The way the hold ends, first among the answers: the pull request to merge, marked as GitHub's, or the settings to
- * raise a cap. A link, as it opens a page, drawn as the buttons beside it are, in the text's weight. A sample's pull
- * request never existed: it keeps the row, dashed as what can't be taken, named without GitHub, and says why. GitHub's
- * mark sits inside the button-shaped link, hidden from a screen reader, before words that name GitHub; the sheet's
- * facts put theirs before the link instead.
+ * The way a merge or a deploy ends, first among the answers: "Merge" or "Deploy" and GitHub's mark, drawn as the
+ * buttons beside it are, in the text's weight, since it is the way forward and they are the ways back. The card names
+ * the pull request already, so the words a reader hears add it and where it goes, the mark being hidden from them. A
+ * link, as it opens a page, in a tab of its own, so words half written on the card stay. A sample's pull request never
+ * existed: the same look, not a link, with why beside it.
  */
-function WayForward({ link }: { link: Need['link'] }) {
-  if (!link) return null;
-  if (link.href === undefined) {
+function WayForward({ way }: { way: Need['way'] }) {
+  if (!way) return null;
+  const words = (
+    <>
+      {way.verb}
+      <ToolMark name="github" />
+    </>
+  );
+  if (way.href === undefined) {
     return (
       <div className="answer">
-        <span className="btn small way nowhere">{link.label}</span>
-        <p className="why">{link.why}</p>
+        <span className="btn small way">
+          {words}
+          <span className="sr"> #{way.pullRequest}</span>
+        </span>
+        <p className="nowhere">{way.why}</p>
       </div>
     );
   }
-  // GitHub opens in a tab of its own, so words half written on the card, or the sheet, are still here after.
-  return link.github ? (
-    <a className="btn small way" href={link.href} target="_blank" rel="noopener">
-      <ToolMark name="github" />
-      {link.label}
-      <span aria-hidden="true">↗</span>
-      <span className="sr"> (opens GitHub in a new tab)</span>
-    </a>
-  ) : (
-    <a className="btn small way" href={link.href}>
-      {link.label}
+  return (
+    <a className="btn small way" href={way.href} target="_blank" rel="noopener">
+      {words}
+      <span className="sr"> #{way.pullRequest} on GitHub (opens GitHub in a new tab)</span>
     </a>
   );
 }
@@ -195,7 +202,7 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
-        <WayForward link={need.link} />
+        <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -264,7 +271,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
-        <WayForward link={need.link} />
+        <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {row.answer === 'answered' ? (

@@ -115,7 +115,12 @@ function proofResult(event: PublicEvent<'guardrail.proved'>): ProofResult {
 const proves = (verdict: Verdict) => verdict === 'refused' || verdict === 'not-refused' || verdict === 'unconfirmed';
 
 /** The checklist at t. */
-export function guardrailsView(proofs: FoldedProofs, items: readonly ItemState[], t: number): GuardrailsView {
+export function guardrailsView(
+  proofs: FoldedProofs,
+  items: readonly ItemState[],
+  t: number,
+  available: (attack: Attack) => boolean = attackAvailable,
+): GuardrailsView {
   // Each attack's runs, oldest first, as their work items opened.
   const runs = new Map<Attack, (AttackRun & { why: string | undefined })[]>();
   for (const item of items) {
@@ -139,8 +144,8 @@ export function guardrailsView(proofs: FoldedProofs, items: readonly ItemState[]
   const rows = GUARDRAILS.map((guardrail): GuardrailRow => {
     const results = [...(proofs.get(guardrail.n)?.values() ?? [])].map(proofResult);
     const attack = 'attack' in guardrail ? guardrail.attack : undefined;
-    const available = attack !== undefined && attackAvailable(attack);
-    const ran = available ? (runs.get(attack) ?? []) : [];
+    const offered = attack !== undefined && available(attack);
+    const ran = offered ? (runs.get(attack) ?? []) : [];
     const result = ran.findLast((run) => proves(run.verdict));
     if (attack && result) {
       results.push({
@@ -165,7 +170,7 @@ export function guardrailsView(proofs: FoldedProofs, items: readonly ItemState[]
         attack,
         name: ATTACK_RULES[attack].name,
         tries: ATTACK_RULES[attack].tries,
-        available,
+        available: offered,
         last: last && { verdict: last.verdict, at: last.at, workItem: last.workItem, until: last.until },
       },
     };

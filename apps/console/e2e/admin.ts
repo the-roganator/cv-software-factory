@@ -28,6 +28,8 @@ import { full } from './full.ts';
 const HERE = fileURLToPath(new URL('..', import.meta.url));
 const SAMPLES = fileURLToPath(new URL('../../../packages/samples/log', import.meta.url));
 const ARTIFACTS = fileURLToPath(new URL('../../../packages/samples/log/artifacts', import.meta.url));
+/** The red-team attacks' test data, which `attacks.spec.ts` loads in place of the samples. */
+const ATTACKS = fileURLToPath(new URL('../test/attacks/log', import.meta.url));
 
 export interface Harness {
   /** The one origin the browser sees, such as `http://localhost:18325`. */
@@ -42,12 +44,14 @@ export interface Harness {
 
 /**
  * Starts the store, the admin service, the console's server and the proxy, with the proxy listening on `port`. With
- * `release`, the admin service controls that Rollout, through a stand-in for Kubernetes.
+ * `release`, the admin service controls that Rollout, through a stand-in for Kubernetes. With `attacks`, the store holds
+ * the attacks' test data instead of the samples, and the service lets every attack be launched, as the flag will.
  */
 export async function startHarness(
   port: number,
   name = 'admin',
   release?: { rollout: RolloutRef; kube: KubeWriter },
+  attacks = false,
 ): Promise<Harness> {
   const given = process.env.TEST_DATABASE_URL;
   const postgres = given ? { url: given, stop: () => {} } : await startPostgres();
@@ -64,7 +68,7 @@ export async function startHarness(
   };
   try {
     // The same object, not a copy: the proxy counts cookies on it.
-    return Object.assign(await startOn(postgres.url, started, port, name, release), { stop });
+    return Object.assign(await startOn(postgres.url, started, port, name, release, attacks), { stop });
   } catch (error) {
     // Why it could not start, not what stopping the rest said.
     await stop().catch(() => {});
@@ -78,7 +82,8 @@ async function startOn(
   started: (() => Promise<void> | void)[],
   port: number,
   name: string,
-  release?: { rollout: RolloutRef; kube: KubeWriter },
+  release: { rollout: RolloutRef; kube: KubeWriter } | undefined,
+  attacks: boolean,
 ): Promise<Omit<Harness, 'stop'>> {
   const database = await createDatabase(postgresUrl, name);
   started.push(() => database.end());
@@ -90,8 +95,8 @@ async function startOn(
   const { startAdmin } = await import('../../factory/src/admin/service.ts');
   const { endingAt, readLog } = await import('../../factory/src/events.ts');
 
-  // The samples, as `make samples` loads them, by Martin's command line's role, ending now.
-  const events = endingAt(readLog(SAMPLES).map(full<NewEvent>), Date.now());
+  // The samples (or the attacks' test data), as `make samples` loads them, by Martin's command line's role, ending now.
+  const events = endingAt(readLog(attacks ? ATTACKS : SAMPLES).map(full<NewEvent>), Date.now());
   await new EventWriter(database.operator, { kind: 'sample', artifacts: new DiskArtifacts(ARTIFACTS) }).append(events);
 
   // The admin service as its Deployment runs it, connected as its own role; `localhost` is a secure context, so a
@@ -104,6 +109,7 @@ async function startOn(
       port: 0,
       profile: 'local',
       ...(release && { rollout: release.rollout }),
+      ...(attacks && { attackAvailable: () => true }),
     },
     { sql: database.admin, port: 0, host: '127.0.0.1', ...(release && { kube: release.kube }) },
   );

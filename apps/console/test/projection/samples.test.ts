@@ -12,15 +12,13 @@ const card = (number: string) => view.cards.find((c) => c.number === number);
 const WHOLE_TIMELINE = 30_000;
 
 describe('the samples, projected', () => {
-  it('show every outcome but closed with no change, and an attack unfinished or not confirmed', () => {
+  it('show every outcome but closed with no change, and an attack’s (the attacks’ test data has those)', () => {
     expect(new Set(view.cards.map((c) => c.outcome))).toEqual(
       new Set([
         'verified',
         'rolled-back',
         'held',
         'quarantined',
-        'refused',
-        'not-refused',
         'no-ticket',
         'turned-off',
         'needs-you',
@@ -36,7 +34,8 @@ describe('the samples, projected', () => {
     // And none for #1308, the canary's ticket, whose rollback picture the console does not draw yet.
     expect(new Set(view.cards.map((c) => c.picture.type))).toEqual(
       new Set([
-        ...['wipe', 'metric', 'logs', 'package', 'scan', 'rollback', 'refusal', 'judgement', 'quarantine', 'spec'],
+        // An attack's refusal picture is the attacks' test data's.
+        ...['wipe', 'metric', 'logs', 'package', 'scan', 'rollback', 'judgement', 'quarantine', 'spec'],
         'http',
         ...['merge', 'deploy', 'scope', 'tests-pass', 'spend', 'blocking', 'suggestion', 'none'],
       ]),
@@ -86,10 +85,6 @@ describe('the samples, projected', () => {
       'stopped',
       'none',
     ]);
-    // An attack skips to its mechanism's stage: refused there, or stopped there when nothing refused it.
-    expect(card('1293')?.segments).toEqual([...Array(6).fill('skipped'), 'refused', 'none']);
-    expect(card('1333')?.segments).toEqual([...Array(3).fill('skipped'), 'stopped', ...Array(4).fill('none')]);
-    expect(card('1335')?.segments).toEqual([...Array(6).fill('skipped'), 'now', 'none']);
     expect(card('1268')?.segments).toEqual(['passed', 'closed', ...Array(6).fill('none')]);
     expect(card('1300')?.segments).toEqual(['skipped', 'skipped', 'waiting', ...Array(5).fill('none')]);
     expect(card('1302')?.segments).toEqual(Array(8).fill('passed'));

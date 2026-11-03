@@ -5,7 +5,7 @@
  * answered. Nothing refused it, so the attack failed: guardrail 5 reads "did not hold", and the line pages Martin.
  * No model was called.
  */
-import { Item, uuidFor } from '../build.ts';
+import { Item, uuidFor } from '../../../../../packages/samples/src/build.ts';
 
 const POD = { namespace: 'runners', name: 'red-team-1333', uid: uuidFor('pod:red-team-1333') };
 

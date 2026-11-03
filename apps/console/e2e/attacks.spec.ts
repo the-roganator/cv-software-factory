@@ -1,6 +1,8 @@
 /**
- * Launching a red-team attack, end to end (milestone 7, task 22): the console against the real admin service on a
- * throwaway store holding the samples, on one origin behind a proxy standing in for Traefik (`admin.ts`), with a
+ * Launching a red-team attack, end to end (milestone 7, task 22), as it will be once the flag makes the attacks
+ * available: policy holds them all back now, so the service here is told every attack may be launched, and the page is
+ * too (`attacksAvailable`). The console against the real admin service on a throwaway store holding the attacks' test
+ * data, on one origin behind a proxy standing in for Traefik (`admin.ts`), with a
  * virtual passkey. Martin launches an attack from its guardrail's row, with no passkey asked; the service opens its
  * work item and records his launch on it, and its card and its row's Running arrive with those events, every other
  * Launch waiting. Needs Postgres: TEST_DATABASE_URL, or Docker.
@@ -13,7 +15,7 @@ import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import { enrolThroughTheDoor, type Harness, startHarness, virtualPasskey } from './admin.ts';
-import { expect, test } from './support.ts';
+import { attacksAvailable, expect, test } from './support.ts';
 
 const PORT = 18_342;
 
@@ -23,7 +25,7 @@ test.describe.configure({ mode: 'serial' });
 let harness: Harness;
 
 test.beforeAll(async () => {
-  harness = await startHarness(PORT, 'attacks');
+  harness = await startHarness(PORT, 'attacks', undefined, true);
 });
 test.afterAll(async () => {
   await harness?.stop();
@@ -33,10 +35,10 @@ const rowButton = (page: Page, n: number) =>
   page.locator('#guardrails .gr > button').filter({ has: page.locator(`.n:text-is("${n}")`) });
 
 /**
- * The samples end with an attack in flight, their times moved so the last is now: the harness's role records it
- * unfinished, as a harness that restarts would, so the next launch need not wait out its 10 minutes.
+ * The attacks' test data ends with an attack in flight, its times moved so the last is now: the harness's role records
+ * it unfinished, as a harness that restarts would, so the next launch need not wait out its 10 minutes.
  */
-async function endTheSamplesAttack() {
+async function endTheAttackInFlight() {
   const writer = new EventWriter(harness.database.redteam, {
     kind: 'sample',
     artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
@@ -55,7 +57,8 @@ async function endTheSamplesAttack() {
 }
 
 test('Martin launches an attack from its guardrail’s row, and every other Launch waits for it', async ({ page }) => {
-  await endTheSamplesAttack();
+  await endTheAttackInFlight();
+  await attacksAvailable(page);
   await virtualPasskey(page);
   await enrolThroughTheDoor(page, await harness.code());
   await page.goto('/?motion=off');

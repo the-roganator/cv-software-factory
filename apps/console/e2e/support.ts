@@ -29,6 +29,33 @@ const fixtureLines = readFileSync(fixtureLog, 'utf-8').trim().split('\n');
 /** When the test data's last event happened: its server is told it is now. */
 export const FIXTURE_END = Date.parse((JSON.parse(fixtureLines.at(-1) ?? '{}') as { ts: string }).ts);
 
+/**
+ * A third server, with the red-team attacks' test data (test/attacks) instead of the samples: no attack can be
+ * launched yet, so the samples hold none, and the tests of an attack's card, sheet and Launch read these.
+ */
+export const ATTACKS_PORT = 18_323;
+const ATTACKS_ORIGIN = `http://localhost:${ATTACKS_PORT}`;
+const attacksLog = fileURLToPath(new URL('../test/attacks/log/events.ndjson', import.meta.url));
+const attackLines = readFileSync(attacksLog, 'utf-8').trim().split('\n');
+
+/** When the attacks' last event happened: their server is told it is now. */
+export const ATTACKS_END = Date.parse((JSON.parse(attackLines.at(-1) ?? '{}') as { ts: string }).ts);
+
+/** The console showing the attacks' test data, at their last moment or another, with motion off unless asked for. */
+export function attacksUrl(options: Parameters<typeof consoleUrl>[0] = {}): string {
+  return `${ATTACKS_ORIGIN}${consoleUrl({ ...options, at: options.at ?? ATTACKS_END })}`;
+}
+
+/**
+ * Stands in for the flag that makes an attack available (`web/src/attacks-seam.ts`), so the page draws every attack's
+ * Launch and dialog as it will once the harness is built. Call it before `goto`.
+ */
+export async function attacksAvailable(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    (globalThis as { __attacksAvailable?: boolean }).__attacksAvailable = true;
+  });
+}
+
 /** Moments in the test data's day, in London: the afternoon's work done, the cap reached, and the cap cleared. */
 export const MOMENTS = {
   afternoon: '2026-10-03T16:10:00+01:00',
@@ -237,21 +264,22 @@ export async function adminService(
   page: Page,
   as: 'visitor' | 'martin',
   extra: readonly RawEvent[] = [],
+  from: 'samples' | 'attacks' = 'samples',
 ): Promise<void> {
   await page.route('**/admin/session', (route) =>
     as === 'martin'
       ? route.fulfill({ json: SESSION })
       : route.fulfill({ status: 401, json: { refused: 'session', message: 'Sign in first.' } }),
   );
-  if (as === 'martin') await fullStream(page, extra);
+  if (as === 'martin') await fullStream(page, extra, from === 'attacks' ? attackLines : lines);
 }
 
 /**
- * The full-event stream, standing in for the admin service's: the samples, each visitor's report with its text, and any
+ * The full-event stream, standing in for the admin service's: the samples (or the attacks' test data), each visitor's report with its text, and any
  * events a test adds after them, sent once and then held open, as the service's is while nothing new happens. Every other stream is the browser's own.
  */
-async function fullStream(page: Page, extra: readonly RawEvent[]): Promise<void> {
-  const events = [...lines.map((line) => full(JSON.parse(line) as RawEvent)), ...extra].map((e) => JSON.stringify(e));
+async function fullStream(page: Page, extra: readonly RawEvent[], log: readonly string[]): Promise<void> {
+  const events = [...log.map((line) => full(JSON.parse(line) as RawEvent)), ...extra].map((e) => JSON.stringify(e));
   await page.addInitScript((events: string[]) => {
     const Real = globalThis.EventSource;
     class Full extends EventTarget {
@@ -335,7 +363,7 @@ export const test = base.extend<{ guard: Guard }>({
   guard: [
     async ({ page, browser, baseURL }, use) => {
       const guard: Guard = { violations: [], foreign: [], served: [] };
-      const origins = [new URL(baseURL ?? '').origin, FIXTURE_ORIGIN];
+      const origins = [new URL(baseURL ?? '').origin, FIXTURE_ORIGIN, ATTACKS_ORIGIN];
       const open = new Set<BrowserContext>();
       const watchPage = (watched: Page) => {
         watched.on('console', (message) => {

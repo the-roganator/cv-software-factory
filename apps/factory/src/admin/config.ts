@@ -23,6 +23,7 @@
  * - PORT: where it listens (8080).
  */
 import { BlockList, isIP } from 'node:net';
+import type { Attack } from '@software-factory/events';
 import { PROFILES, type Profile } from '../../../../policy/spend.ts';
 import { type RolloutRef, rolloutRefOf } from '../release/rollout-ref.ts';
 
@@ -40,6 +41,11 @@ export interface AdminConfig {
   profile: Profile;
   /** This deployment's tools, for Martin's account menu. */
   tools?: Tools;
+  /**
+   * Which attacks may be launched: `attackAvailable` (`policy/attacks.ts`) unless given. No setting reads it, so the
+   * service in a cluster always holds to the catalogue; the tests give one to launch attacks the catalogue holds back.
+   */
+  attackAvailable?: (attack: Attack) => boolean;
 }
 
 /** The deployment's tools Martin's account menu links to, each when it is set. */

@@ -2768,6 +2768,10 @@ describe('an attack launched', () => {
                         and f.appended_by = 'factory_redteam')
       order by seq desc limit 1`;
     if (last) await finish(last.work_item);
+    // The catalogue holds every attack back until the harness makes it; the route's rules are tested as if each were
+    // available, through the service's seam, which no setting reaches, and its refusal of one held back below.
+    await service.stop();
+    await start({ attackAvailable: () => true });
   });
 
   it('needs no passkey again, and opens a work item of kind red-team with his launch, in one transaction', async () => {
@@ -2837,10 +2841,14 @@ describe('an attack launched', () => {
     expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({ status: 200, body: { attack: 'egress' } });
   });
 
-  it('refuses an attack not available yet, having appended nothing', async () => {
+  it('refuses an attack the catalogue holds back, having appended nothing', async () => {
+    await service.stop();
+    await start();
     const { browser } = await signedIn();
     const before = (await launches()).length;
-    for (const attack of ATTACKS.filter((attack) => !attackAvailable(attack))) {
+    const held = ATTACKS.filter((attack) => !attackAvailable(attack));
+    expect(held.length).toBeGreaterThan(0);
+    for (const attack of held) {
       expect(await browser.post(`/admin/attacks/${attack}`, {}), attack).toMatchObject({
         status: 403,
         body: { refused: 'attack', message: 'This attack is not available yet.' },
@@ -2850,9 +2858,11 @@ describe('an attack launched', () => {
   });
 
   it('waits out a launch already recorded of an attack held back since, for its own limit', async () => {
+    const held = 'test';
+    await service.stop();
+    await start({ attackAvailable: (attack) => attack !== held });
     const { browser } = await signedIn();
-    const held = ATTACKS.find((attack) => !attackAvailable(attack));
-    expect(held).toBeDefined();
+    expect(await browser.post(`/admin/attacks/${held}`, {})).toMatchObject({ status: 403 });
     const workItem = await nextWorkItem(db.admin);
     const event = (type: string, payload: object) =>
       ({
@@ -2875,7 +2885,7 @@ describe('an attack launched', () => {
       }),
       event('attack.launched', { attack: held }),
     ]);
-    const minutes = held ? ATTACK_RULES[held].minutes : 0;
+    const minutes = ATTACK_RULES[held].minutes;
     expect(await browser.post('/admin/attacks/egress', {})).toMatchObject({
       status: 409,
       body: { message: expect.stringContaining(`#${workItem} has not finished`) },

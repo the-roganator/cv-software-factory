@@ -1,5 +1,6 @@
 /**
- * Events for the projection's tests: the samples' event log, and a small builder for hand-made cases.
+ * Events for the projection's tests: the samples' event log, the attacks' test data, and a small builder for hand-made
+ * cases.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +23,20 @@ export const SAMPLES: PublicEvent[] = parseLog(
 });
 
 export const END = Date.parse(SAMPLES.at(-1)?.ts ?? '');
+
+/**
+ * The red-team attacks' test data (`test/attacks`): no attack can be launched yet, so the samples hold none, and the
+ * tests of an attack as it will be read these.
+ */
+export const ATTACKS: PublicEvent[] = parseLog(
+  readFileSync(fileURLToPath(new URL('../attacks/log/events.ndjson', import.meta.url)), 'utf-8'),
+).map((raw) => {
+  const result = upcast(raw);
+  if (!result.ok) throw new Error(`The attacks' test data holds an event the console does not understand: ${raw.type}`);
+  return result.event;
+});
+
+export const ATTACKS_END = Date.parse(ATTACKS.at(-1)?.ts ?? '');
 
 /**
  * A moment the samples show a merge waiting at Release, unheld: #1310's, in a dry run, which no deploy can carry, half

@@ -7,8 +7,8 @@
  *
  * - **No passkey.** An attack loosens nothing and asks the line for no work: every attack's content is fixed in code,
  *   and the line builds nothing from it. So it is `attack.launch` in the access table, which asks for nothing more.
- * - **Only one available now** (`AVAILABLE_ATTACKS` in `policy/attacks.ts`). One held back is refused (403) before
- *   anything is asked of the store: it is in the catalogue, but the harness does not make it yet.
+ * - **Only one available now** (`AVAILABLE_ATTACKS` in `policy/attacks.ts`), and none is yet, as the harness that
+ *   makes them is still to come. One held back is refused (403) before anything is asked of the store.
  * - **One at a time.** A launch is refused (409) while the last one his roles launched has neither an `attack.finished`
  *   appended by the harness's role nor passed its limit (`policy/attacks.ts`), by the store's clock: so attacks never
  *   meet each other's refusals, and a harness that is down blocks nothing for longer than the attack it missed. Asked
@@ -64,12 +64,19 @@ export async function lastLaunch(tx: TransactionSql): Promise<LastLaunch | undef
   return { workItem: row.work_item, attack, finished: row.finished, ageMs: row.age_ms };
 }
 
-/** Opens the attack's work item and records Martin's launch of it, or refuses having opened nothing. */
-export async function launchAttack(store: AdminStore, attack: string): Promise<Launched> {
+/**
+ * Opens the attack's work item and records Martin's launch of it, or refuses having opened nothing. Whether an attack
+ * may be launched is the catalogue's (`attackAvailable`) unless the caller gives another, as only the tests do.
+ */
+export async function launchAttack(
+  store: AdminStore,
+  attack: string,
+  available: (attack: Attack) => boolean = attackAvailable,
+): Promise<Launched> {
   if (!isAttack(attack)) {
     throw new Refused('attack', 404, `There is no such attack: the attacks are ${ATTACKS.join(', ')}.`);
   }
-  if (!attackAvailable(attack)) throw new Refused('attack', 403, 'This attack is not available yet.');
+  if (!available(attack)) throw new Refused('attack', 403, 'This attack is not available yet.');
   const { workItem } = await store.record(
     async (tx) => {
       await lockAppends(tx);

@@ -19,7 +19,7 @@ import { ACCESS } from '../../../../policy/access.ts';
 import { full, MARTINS_WORDS, REPORT_TEXT } from '../../e2e/full.ts';
 import { dayLabel, startOfDay } from '../../web/src/format.ts';
 import { type AuditFilter, type AuditRow, auditRows, auditView, NO_FILTER } from '../../web/src/projection/audit.ts';
-import { END, SAMPLES } from './support.ts';
+import { ATTACKS, ATTACKS_END, END, SAMPLES } from './support.ts';
 
 const START = Date.parse('2026-10-05T12:00:00Z');
 let seq = 0;
@@ -112,9 +112,14 @@ describe('the rows', () => {
       expect.arrayContaining(['action.refused']),
     );
     expect(refused.every((row) => /refused/i.test(row.what))).toBe(true);
-    expect(refused.map((row) => row.item)).toEqual(expect.arrayContaining(['1315', '1293']));
-    // Admission control's refusal is Kyverno's, and only it carries Kyverno's mark.
-    expect(all.filter((row) => row.admission).map((row) => row.item)).toEqual(['1293']);
+    expect(refused.map((row) => row.item)).toEqual(expect.arrayContaining(['1315', '1291']));
+    // Admission control's refusal is Kyverno's, and only it carries Kyverno's mark: an attack's, in the attacks' data.
+    expect(all.filter((row) => row.admission)).toEqual([]);
+    expect(
+      rows(ATTACKS, ATTACKS_END)
+        .filter((row) => row.admission)
+        .map((row) => row.item),
+    ).toEqual(['1293']);
     const capped = event(0, 'spend.capped', 'factory', {
       cap: 'day',
       limitUsd: 5,

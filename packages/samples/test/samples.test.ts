@@ -28,8 +28,8 @@ describe('the samples', () => {
     expect(of('work-item.opened').every((event) => event.payload.sample)).toBe(true);
   });
 
-  it('cover every kind of work item but a planner’s finding', () => {
-    const kinds = KINDS.filter((kind) => kind !== 'planner-finding');
+  it('cover every kind of work item but a planner’s finding and a red-team attack', () => {
+    const kinds = KINDS.filter((kind) => kind !== 'planner-finding' && kind !== 'red-team');
     expect(new Set(of('work-item.opened').map((event) => event.payload.kind))).toEqual(new Set(kinds));
   });
 
@@ -175,8 +175,7 @@ describe('the samples', () => {
         expect(mayAppend(event.payload.mechanism, event.appended_by ?? ''), event.payload.mechanism).toBe(true);
       }
     }
-    // The coder's scope fence and admission control are the line's to record; triage records its own quarantine; the
-    // harness records the egress attack's own refusals.
+    // The coder's scope fence is the line's to record; triage records its own quarantine.
     expect(
       Object.fromEntries(
         Object.entries(Object.groupBy(of('action.refused'), (event) => event.payload.mechanism)).map(
@@ -185,33 +184,22 @@ describe('the samples', () => {
       ),
     ).toEqual({
       'scope-fence': ['factory_line'],
-      'admission-control': ['factory_line'],
       'typed-judgement': ['factory_triage'],
-      'egress-policy': ['factory_redteam'],
     });
-    // An attack's end is the harness's alone, and so is its work item's close.
-    expect(new Set(of('attack.finished').map((event) => event.appended_by))).toEqual(new Set(['factory_redteam']));
-    for (const end of of('attack.finished')) {
-      const close = of('work-item.closed').find((event) => event.work_item === end.work_item);
-      expect(close?.appended_by).toBe('factory_redteam');
-    }
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
   });
 
-  it('launch only the attacks Martin can launch yet, each of them, as the cluster can', () => {
-    const launched = new Set(of('attack.launched').map((event) => event.payload.attack));
-    expect(launched).toEqual(new Set(AVAILABLE_ATTACKS));
+  it('hold no red-team attack while none can be launched, as the cluster can produce none', () => {
+    // When policy makes one available (`AVAILABLE_ATTACKS`), the samples may show it; until then the console's browser
+    // tests bring their own (apps/console/test/attacks).
+    expect(AVAILABLE_ATTACKS).toEqual([]);
+    expect(published.filter((event) => event.type.startsWith('attack.'))).toEqual([]);
+    expect(of('work-item.opened').filter((event) => event.payload.kind === 'red-team')).toEqual([]);
   });
 
-  it('end each attack citing its refusals by their seqs in the log, as the store numbers them, after its launch', () => {
-    const ends = of('attack.finished');
-    expect(ends.length).toBeGreaterThan(0);
-    for (const end of ends) {
-      const launch = of('attack.launched').find((event) => event.work_item === end.work_item);
-      const cited = end.payload.refusals.map((seq) => published.find((event) => event.seq === seq));
-      expect(cited.map((event) => event?.type)).toEqual(end.payload.refusals.map(() => 'action.refused'));
-      for (const event of cited) expect(event?.seq).toBeGreaterThan(launch?.seq ?? Infinity);
-    }
+  it('keep a guardrail that did not hold, from make guardrails’ own proof', () => {
+    const failed = of('guardrail.proved').filter((event) => !event.payload.held);
+    expect(failed.map((event) => [event.payload.proof, event.appended_by])).toEqual([['egress', 'factory_proofs']]);
   });
 
   it("give a guardrail's proof to the proofs' role, the only one that may append it", () => {

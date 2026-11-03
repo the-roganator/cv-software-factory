@@ -4,8 +4,9 @@
  *
  * Plain TypeScript with no components in it, so Node tests it directly.
  */
-import type { PublicEvent, Stage } from '@software-factory/events';
+import type { Attack, PublicEvent, Stage } from '@software-factory/events';
 import { STAGES } from '@software-factory/events';
+import { attackAvailable } from '@software-factory/policy/attacks';
 import { type ControlsView, controlsOf } from './controls.ts';
 import { type FlagsView, type FoldedFlags, flagsView, foldFlags } from './flags.ts';
 import { type FoldedProofs, foldProofs, type GuardrailsView, guardrailsView } from './guardrails.ts';
@@ -245,7 +246,11 @@ export const foldOf = (view: View): Fold => {
 };
 
 /** The console at t, from a fold of the events by t: what depends on the time. */
-export function viewAt(folded: Fold, t: number): View {
+/**
+ * The view at t. `available` says which attacks Martin can launch: policy's (`attackAvailable`), unless a browser test
+ * stands in for the flag (`attacks-seam.ts`).
+ */
+export function viewAt(folded: Fold, t: number, available: (attack: Attack) => boolean = attackAvailable): View {
   const { items, header: line } = folded;
   const sent = returnsWithin(folded.returns, t);
   const shipped = releasesAt(folded.releases, t);
@@ -271,10 +276,14 @@ export function viewAt(folded: Fold, t: number): View {
     flags: flagsView(folded.flags, items, shipped, t),
     improve: folded.improve,
     releases: shipped,
-    guardrails: guardrailsView(folded.proofs, items, t),
+    guardrails: guardrailsView(folded.proofs, items, t, available),
   };
   drawnFrom.set(shown, folded);
   return shown;
 }
 
-export const project = (events: readonly PublicEvent[], t: number): View => viewAt(foldAt(events, t), t);
+export const project = (
+  events: readonly PublicEvent[],
+  t: number,
+  available: (attack: Attack) => boolean = attackAvailable,
+): View => viewAt(foldAt(events, t), t, available);

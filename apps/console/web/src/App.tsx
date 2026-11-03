@@ -9,6 +9,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Admin, type Door, stillSignedIn, useAdmin } from './admin.ts';
 import { OriginContext } from './artifacts.ts';
+import { attacksOffered } from './attacks-seam.ts';
 import { Bird } from './components/Bird.tsx';
 import { Canary } from './components/Canary.tsx';
 import { Controls, SpendPanel } from './components/Controls.tsx';
@@ -115,7 +116,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   const held = useHeld(from.kind === 'live' && service && !settingsPage && !auditPage && !privacyPage);
   const latest = source.events.length ? Date.parse(source.events.at(-1)?.ts ?? '') : undefined;
   const t = useTime(latest, from.kind === 'live');
-  const view = useMemo(() => project(source.events, t), [source.events, t]);
+  const view = useMemo(() => project(source.events, t, attacksOffered), [source.events, t]);
   // Whether the canary bird is out of its cage, keeping the Canary panel company.
   const [birdOut, setBirdOut] = useState(false);
   const flying = view.canary.state === 'shown' && !view.canary.release.end ? view.canary.release : undefined;

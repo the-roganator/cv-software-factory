@@ -9,9 +9,15 @@ import { describe, expect, it } from 'vitest';
 import { MARTINS_ROLES as STORE_MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 import { MARTINS_ROLES } from '../../web/src/projection/attacks.ts';
 import { project } from '../../web/src/projection/index.ts';
-import { END, SAMPLES, work } from './support.ts';
+import { ATTACKS, ATTACKS_END, work } from './support.ts';
 
 const START = Date.parse('2026-10-03T09:00:00Z');
+
+/**
+ * Every attack available, as the flag will make them once the harness is built: policy holds them all back now
+ * (`policy/attacks.ts`), and an attack's run is read the same way then.
+ */
+const ALL = () => true;
 const MINUTE = 60_000;
 
 /** Events as the role that appended them. */
@@ -73,9 +79,9 @@ function workflow(number = '2001', { guard = refusal('github-guard', [1], SIGNED
 }
 
 const row = (events: readonly PublicEvent[], n: number, t = START + 5 * MINUTE) =>
-  project(events, t).guardrails.rows.find((r) => r.n === n);
+  project(events, t, ALL).guardrails.rows.find((r) => r.n === n);
 const card = (events: readonly PublicEvent[], number: string, t = START + 5 * MINUTE) =>
-  project(events, t).cards.find((c) => c.number === number);
+  project(events, t, ALL).cards.find((c) => c.number === number);
 
 describe('an attack', () => {
   it('keeps Martin’s roles as the store’s grants name them', () => {
@@ -92,8 +98,9 @@ describe('an attack', () => {
       verdict: 'refused',
       refusals: [{ mechanism: 'github-guard' }, { mechanism: 'token-permission' }],
     });
-    // Not available yet (`policy/attacks.ts`): its run proves nothing, and its guardrail reads by its other proofs.
-    expect(row(events, 1)).toMatchObject({
+    expect(row(events, 1)).toMatchObject({ state: 'held', attack: { available: true, last: { workItem: '2001' } } });
+    // Not available, as policy holds it now: its run proves nothing, and its guardrail reads by its other proofs.
+    expect(project(events, START + 5 * MINUTE).guardrails.rows.find((r) => r.n === 1)).toMatchObject({
       state: 'unproved',
       proof: undefined,
       attack: { attack: 'workflow', available: false, last: undefined },
@@ -126,10 +133,10 @@ describe('an attack', () => {
 
   it('runs until its limit, every Launch waiting for it, and is unfinished after, proving nothing', () => {
     const { events } = launched('2004', 'image');
-    const running = project(events, START + 9 * MINUTE).guardrails;
+    const running = project(events, START + 9 * MINUTE, ALL).guardrails;
     expect(running.running).toMatchObject({ attack: 'image', workItem: '2004', until: START + 10 * MINUTE });
     expect(running.rows.find((r) => r.n === 3)?.attack?.last?.verdict).toBe('running');
-    const after = project(events, START + 11 * MINUTE);
+    const after = project(events, START + 11 * MINUTE, ALL);
     expect(after.guardrails.running).toBeUndefined();
     expect(after.guardrails.rows.find((r) => r.n === 3)).toMatchObject({
       state: 'unproved',
@@ -300,7 +307,11 @@ describe('the Guardrails checklist', () => {
     const { events: first } = launched('2012', 'egress');
     const notRefused = [...first, ...finished('2012', 'egress', 'not-refused', [])];
     expect(row(notRefused, 5)).toMatchObject({ state: 'not-held', proof: { source: { verdict: 'not-refused' } } });
-    expect(project(notRefused, START + 5 * MINUTE).guardrails).toMatchObject({ held: 0, notHeld: 1, unproved: 10 });
+    expect(project(notRefused, START + 5 * MINUTE, ALL).guardrails).toMatchObject({
+      held: 0,
+      notHeld: 1,
+      unproved: 10,
+    });
     // An unfinished run after it proves nothing: the failure stands.
     const { events: second } = launched('2013', 'egress', START + 10 * MINUTE);
     expect(row([...notRefused, ...second], 5, START + 30 * MINUTE)?.state).toBe('not-held');
@@ -309,7 +320,8 @@ describe('the Guardrails checklist', () => {
   it('reads a guardrail whose attack is not available yet by its other proofs alone, with no Launch', () => {
     const { events } = workflow('2015');
     const proof = proved(1, 'workflow-refusal', true, [1]);
-    expect(row([...proof, ...events], 1)).toMatchObject({
+    const held = project([...proof, ...events], START + 5 * MINUTE).guardrails.rows.find((r) => r.n === 1);
+    expect(held).toMatchObject({
       state: 'held',
       proof: { source: { kind: 'make', proof: 'workflow-refusal' } },
       attack: { available: false, last: undefined },
@@ -319,8 +331,25 @@ describe('the Guardrails checklist', () => {
     expect(project(test, START + MINUTE).guardrails.running).toMatchObject({ attack: 'test', workItem: '2016' });
   });
 
-  it('reads the samples as the designs draw them: guardrail 5 did not hold, and attack 5 is in flight', () => {
-    const { guardrails } = project(SAMPLES, END);
+  it('reads none of an attack while policy holds them all back: every guardrail by its proofs alone', () => {
+    const { guardrails, cards } = project(ATTACKS, ATTACKS_END);
+    // A launch recorded before they were held back still makes every Launch wait, until its limit.
+    expect(guardrails.running).toMatchObject({ attack: 'image', workItem: '1335' });
+    expect(guardrails.rows.filter((r) => r.attack).map((r) => [r.n, r.attack?.available, r.attack?.last])).toEqual([
+      [1, false, undefined],
+      [2, false, undefined],
+      [3, false, undefined],
+      [5, false, undefined],
+      [8, false, undefined],
+    ]);
+    expect(guardrails.rows.find((r) => r.n === 5)?.proof?.source).toMatchObject({ kind: 'make', proof: 'egress' });
+    expect(guardrails.rows.find((r) => r.n === 8)?.state).toBe('unproved');
+    // Its work items are still drawn on the reel as attacks: the store holds what it holds.
+    expect(cards.find((c) => c.number === '1293')?.picture.type).toBe('refusal');
+  });
+
+  it('reads the attacks’ test data as the designs draw them: guardrail 5 did not hold, and attack 5 is in flight', () => {
+    const { guardrails, cards } = project(ATTACKS, ATTACKS_END, ALL);
     expect(guardrails).toMatchObject({
       held: 10,
       notHeld: 1,
@@ -333,6 +362,14 @@ describe('the Guardrails checklist', () => {
         guardrails.rows.flatMap((r) => (r.attack?.last ? [[r.attack.attack, r.attack.last.verdict]] : [])),
       ),
     ).toEqual({ image: 'running', egress: 'not-refused', report: 'refused' });
-    expect(guardrails.rows.filter((r) => r.attack && !r.attack.available).map((r) => r.n)).toEqual([1, 2]);
+    // An attack skips to its mechanism's stage: refused there, or stopped there when nothing refused it.
+    const segments = (number: string) => cards.find((c) => c.number === number)?.segments;
+    expect(segments('1293')).toEqual([...Array(6).fill('skipped'), 'refused', 'none']);
+    expect(segments('1333')).toEqual([...Array(3).fill('skipped'), 'stopped', ...Array(4).fill('none')]);
+    expect(segments('1335')).toEqual([...Array(6).fill('skipped'), 'now', 'none']);
+    expect(cards.find((c) => c.number === '1333')?.picture).toMatchObject({
+      verdict: 'not-refused',
+      control: { reached: true },
+    });
   });
 });

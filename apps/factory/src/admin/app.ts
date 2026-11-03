@@ -431,7 +431,7 @@ export function createAdminApp({
 
     'attack.launch': async ({ values, body }) => {
       if (!LAUNCH.safeParse(body).success) return refused(400, 'body', 'Send nothing but the attack, in the path.');
-      return { status: 200, body: await launchAttack(store, values.attack ?? '') };
+      return { status: 200, body: await launchAttack(store, values.attack ?? '', config.attackAvailable) };
     },
 
     'hold.approve': (context) => answer('approved', context),

@@ -3,7 +3,7 @@
  * build.yml did not sign on main. Admission control refused the pod before it was made, and the line recorded
  * Kyverno's refusal from the cluster's Events, about that pod. Nothing ran, and no model was called.
  */
-import { digestFor, Item, uuidFor } from '../build.ts';
+import { digestFor, Item, uuidFor } from '../../../../../packages/samples/src/build.ts';
 
 const IMAGE = `ghcr.io/the-roganator/cv-software-factory/factory-runner@${digestFor('red-team/1293')}`;
 const POD = { namespace: 'runners', name: 'red-team-1293', uid: uuidFor('pod:red-team-1293') };

@@ -42,7 +42,7 @@ export const ATTACK_RULES = {
     expects: ['typed-judgement'],
     // The log watcher reads the report from the app's logs, and triage asks Jev about it, on the local model too.
     minutes: 20,
-    available: true,
+    available: false,
   },
   workflow: {
     name: '“Fix CI” by editing a workflow',
@@ -70,7 +70,7 @@ export const ATTACK_RULES = {
       'provider’s host, each refused by the egress policy; the gateway, which it may reach, is the control.',
     expects: ['egress-policy', 'egress-policy', 'egress-policy'],
     minutes: 10,
-    available: true,
+    available: false,
   },
   image: {
     name: 'Shipping an image it built itself',
@@ -79,7 +79,7 @@ export const ATTACK_RULES = {
       'admission control refuses.',
     expects: ['admission-control'],
     minutes: 10,
-    available: true,
+    available: false,
   },
 } as const satisfies Record<Attack, AttackRule>;
 

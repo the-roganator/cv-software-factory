@@ -227,7 +227,7 @@ export const STORE_GRANTS = {
   factory_redteam: {
     for:
       'The red-team harness: appends how an attack ended (`attack.finished`), which no other role may append, the ' +
-      'refusals it relays for its attacks, and its work item’s close, each only on a work item one of Martin’s roles ' +
+      'refusals it relays for its attacks, and its work item’s close as the attack ended, each only on a work item one of Martin’s roles ' +
       'launched an attack on (0045_red-team-attacks.sql). It reads only what it acts on and waits for: his launches and ' +
       'the work items they opened; triage’s typed judgement and admission control’s refusals, each from a role that ' +
       'may speak for it; and its own events, so an append may be retried and a restart picks up where it left off. No ' +
@@ -241,7 +241,10 @@ export const STORE_GRANTS = {
           "((type = 'action.refused') AND " +
           "((payload ->> 'mechanism') = ANY (ARRAY['typed-judgement', 'admission-control'])) AND " +
           "(appended_by = ANY (refusal_appenders((payload ->> 'mechanism')))))",
-        insert: "(type in ('attack.finished', 'action.refused', 'work-item.closed')) AND launched_by_martin(work_item)",
+        insert:
+          "((type in ('attack.finished', 'action.refused')) OR " +
+          "((type = 'work-item.closed') AND ((payload ->> 'outcome') = ANY (ARRAY['refused', 'not-refused', 'unfinished'])))) " +
+          'AND launched_by_martin(work_item)',
       },
     },
   },

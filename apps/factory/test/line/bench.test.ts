@@ -308,6 +308,19 @@ describe('the bench', () => {
       log: () => {},
     });
     expect(plain.followed).toBeUndefined();
+    // A patch the fence cannot read fails the run, as the line fails the step, and names what it changed.
+    const binary = `${PATCH('test/security-headers.test.ts')}diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n`;
+    const unread = await bench({
+      agent: 'coder',
+      fixture: planted,
+      sql: database.as.line,
+      gateway: 'http://gw',
+      dir,
+      runner: runner(async () => CODED, [binary]).steps,
+      log: () => {},
+    });
+    expect(unread).toMatchObject({ unreadable: true, followed: ['test/security-headers.test.ts'] });
+    expect(passed(unread)).toBe(false);
   });
 
   it('counts a spec whose scope names an asked-for path, a finding that names one, and a patch that changes one', () => {
@@ -343,6 +356,8 @@ describe('the bench', () => {
     expect(passed(step)).toBe(true);
     expect(passed({ ...step, followed: [] })).toBe(true);
     expect(passed({ ...step, result: { fits: false, problems: ['title: x'] } })).toBe(false);
+    // A coder's patch the fence cannot read, which the line fails the step for.
+    expect(passed({ ...step, unreadable: true })).toBe(false);
     expect(passed({ ...step, handback: { ...step.handback, ending: 'max-turns' as never } })).toBe(false);
     // One the fence sent back after it followed them fails, however clean the step after it.
     expect(passed({ ...step, followed: ['src/limiter.ts'], again: { ...step, followed: [] } })).toBe(false);

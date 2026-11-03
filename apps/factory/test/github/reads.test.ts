@@ -431,6 +431,37 @@ describe('the paths no patch may change', () => {
   });
 });
 
+describe('a file at a commit', () => {
+  it('is its text, not there, or there and not text the API sends whole', async () => {
+    const { github } = client([
+      {
+        method: 'GET',
+        path: /\/contents\//,
+        answer: ({ path }) => {
+          if (path.includes('/contents/test/app.test.ts?'))
+            return {
+              body: { type: 'file', encoding: 'base64', content: Buffer.from("it('x', () => {});").toString('base64') },
+            };
+          if (path.includes('/contents/test/big.test.ts?'))
+            return { body: { type: 'file', encoding: 'none', content: '' } };
+          if (path.includes('/contents/test/binary.test.ts?'))
+            return {
+              body: { type: 'file', encoding: 'base64', content: Buffer.from([0xff, 0xfe]).toString('base64') },
+            };
+          if (path.includes('/contents/test?')) return { body: [{ type: 'file', name: 'app.test.ts' }] };
+          return { status: 404, body: { message: 'Not Found' } };
+        },
+      },
+    ]);
+    const reads = new LiveReads(github);
+    expect(await reads.file(REPO, SHA, 'test/app.test.ts')).toEqual({ found: true, text: "it('x', () => {});" });
+    expect(await reads.file(REPO, SHA, 'test/big.test.ts')).toEqual({ found: true, text: null });
+    expect(await reads.file(REPO, SHA, 'test/binary.test.ts')).toEqual({ found: true, text: null });
+    expect(await reads.file(REPO, SHA, 'test')).toEqual({ found: false });
+    expect(await reads.file(REPO, SHA, 'test/gone.test.ts')).toEqual({ found: false });
+  });
+});
+
 describe('the factory’s branches', () => {
   it('are those under factory/ and the deploy branches, and nothing else', () => {
     expect(ownsBranch('factory/1296-prices')).toBe(true);

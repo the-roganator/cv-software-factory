@@ -5,6 +5,8 @@
  */
 import type { Sql } from 'postgres';
 import type { Handback } from '../../../runner/src/step.ts';
+import type { Contradicted } from '../../src/gates/contradicts.ts';
+import { described } from '../../src/github/actions.ts';
 import type { DeployProposal } from '../../src/github/deploys.ts';
 import type { Annotation, CheckRun, Comparison, PullRequestState } from '../../src/github/reads.ts';
 import type {
@@ -124,6 +126,10 @@ export class FakeGitHub implements GitHubPort {
    * stays one a finding can be anchored to, as it is on GitHub unless a later round removed it.
    */
   diff: Comparison['files'] = [];
+  /** The app's files at every commit, by path, as a read of one finds them: a test file the spec names, say. */
+  readonly files = new Map<string, string>();
+  /** Each pull request's description, as the worker would have published it, with its section. */
+  readonly bodies = new Map<number, string>();
   /** The app's open deploy pull request, as the deploy watch has it, and the commits it runs since the pinned one. */
   deploy: DeployProposal | null = null;
   deployCommits: string[] = [];
@@ -196,6 +202,7 @@ export class FakeGitHub implements GitHubPort {
       }
       case 'openPullRequest': {
         const number = 12;
+        this.bodies.set(number, described(String(args.body), args.contradicts as Contradicted[] | undefined));
         this.pulls.set(number, {
           number,
           state: 'open',
@@ -220,6 +227,13 @@ export class FakeGitHub implements GitHubPort {
         if (pr?.state === 'open') pr.state = 'closed';
         return undefined;
       }
+      case 'updatePullRequest': {
+        const number = Number(args.number);
+        const body = args.body === undefined ? this.bodies.get(number) : String(args.body);
+        const contradicts = args.contradicts as Contradicted[] | undefined;
+        if (body !== undefined) this.bodies.set(number, described(body, contradicts));
+        return undefined;
+      }
       default:
         return undefined;
     }
@@ -238,6 +252,10 @@ export class FakeGitHub implements GitHubPort {
         return answer(this.required);
       case 'protectedPaths':
         return answer(this.protectedPaths);
+      case 'file': {
+        const text = this.files.get(String(args.path));
+        return answer(text === undefined ? { found: false } : { found: true, text });
+      }
       case 'comparison':
         return answer({ mergeBase: MAIN, files: this.diff });
       case 'checkRuns':

@@ -2,7 +2,6 @@
 name: implement
 description: Take issues, or a part of this conversation, to pull requests ready for Martin to merge, through sub-agents, each report checked before it is believed.
 argument-hint: "#123 [#456 …] | <what from this conversation>"
-disable-model-invocation: true
 ---
 
 # Implement work items to pull requests

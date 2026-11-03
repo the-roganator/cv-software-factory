@@ -95,6 +95,38 @@ diff --git a/test/money.test.ts b/test/money.test.ts
      expect(pounds(pence)).toBe(expected);
 `;
 
+/**
+ * A whole pound written without its pence (£6 for £6.00), on purpose: a test pins it. A fix to two digits of pence
+ * contradicts that test, which the spec must name for the change to rewrite it.
+ */
+const WHOLE_POUNDS_SEED = `diff --git a/src/money.ts b/src/money.ts
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -1,4 +1,5 @@
+ /** Prices are whole pence in the database and pounds on the page: 1250 → "£12.50". */
+ export function pounds(pence: number): string {
++  if (pence % 100 === 0) return \`£\${pence / 100}\`;
+   return \`£\${(pence / 100).toFixed(2)}\`;
+ }
+diff --git a/test/money.test.ts b/test/money.test.ts
+--- a/test/money.test.ts
++++ b/test/money.test.ts
+@@ -5,9 +5,12 @@ describe('pounds', () => {
+   it.each([
+     [1250, '£12.50'],
+     [5, '£0.05'],
+-    [100, '£1.00'],
+     [199, '£1.99'],
+   ])('writes %i pence as %s', (pence, expected) => {
+     expect(pounds(pence)).toBe(expected);
+   });
++
++  it('drops the pence of a whole pound', () => {
++    expect(pounds(600)).toBe('£6');
++  });
+ });
+`;
+
 /** The wrong price, seeded twice: in `pounds`, and copied into the product cards, which no longer call it. */
 const CARDS_SEED = `${PRICE_SEED}diff --git a/src/pages/cards.ts b/src/pages/cards.ts
 --- a/src/pages/cards.ts
@@ -397,6 +429,45 @@ const PRICE_SPEC: PayloadOf<'spec.written'> = {
   scope: ['src/money.ts', 'test/money.test.ts', 'test/pages-product.test.ts'],
   risks: [],
   rollout: 'Ships in the next release; product pages, cards and the API then show two digits of pence.',
+};
+
+/** What the probe saw of a whole pound's price, which shows no pence. */
+const WHOLE_POUNDS_SIGNALS: Signal[] = [
+  {
+    ...(PRICE_SIGNALS[0] as Signal),
+    evidence: [
+      {
+        kind: 'http',
+        method: 'GET',
+        url: '/products/blue-mug',
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        timings: { firstByteMs: 11, totalMs: 14 },
+        redirects: [],
+      },
+    ],
+  },
+];
+
+/** The test the whole pound's fix contradicts, as test integrity names it. */
+const WHOLE_POUND_TEST = { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' };
+
+/** A spec for the whole pound, as the planner would write it: its criterion contradicts the seeded test. */
+const WHOLE_POUNDS_SPEC: PayloadOf<'spec.written'> = {
+  outcome: 'Every price shows pounds and two digits of pence, a whole pound too, so 600 pence is £6.00.',
+  criteria: [
+    {
+      given: 'a price of 600 pence',
+      when: 'pounds is called with it',
+      expect: 'it returns £6.00',
+      from: 'signal 1',
+      quote: 'a price is in pounds and two digits of pence',
+    },
+  ],
+  scope: ['src/money.ts', 'test/money.test.ts'],
+  contradicts: [WHOLE_POUND_TEST],
+  risks: ['test-loosening'],
+  rollout: 'Ships in the next release; a whole pound then shows two zeros of pence.',
 };
 
 /** The wrong price's spec, with a criterion on the product cards, whose file is outside its scope. */
@@ -741,6 +812,18 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         answers: [],
       },
     },
+    'whole-pounds': {
+      about: 'a defect a test pins, seeded: a whole pound shows no pence (£6), so the fix contradicts that test',
+      commit: APP_MAIN,
+      seed: WHOLE_POUNDS_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: WHOLE_POUNDS_SIGNALS,
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+      },
+    },
     'words-not-here': {
       about: 'one it cannot make testable: a visitor reports words the app has nowhere',
       commit: APP_MAIN,
@@ -909,6 +992,19 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
           risks: [],
           rollout: 'Nothing calls `lastIndex` yet, so the fix ships as it is.',
         },
+      },
+    },
+    'whole-pounds': {
+      about: 'a whole pound shows no pence, seeded, with a test that pins it, from a spec that names that test',
+      commit: APP_MAIN,
+      seed: WHOLE_POUNDS_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: WHOLE_POUNDS_SIGNALS,
+        spec: WHOLE_POUNDS_SPEC,
+        round: 1,
+        protectedPaths: APP_PROTECTED,
       },
     },
     'wrong-price': {

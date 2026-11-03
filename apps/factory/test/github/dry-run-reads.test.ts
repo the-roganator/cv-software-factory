@@ -49,6 +49,10 @@ function live(asked: string[] = []): Reads {
       return ['.github/', 'deploy/'];
     },
     comparison: no('comparison'),
+    file: async (_repo, ref, path) => {
+      asked.push(`file ${path} ${ref}`);
+      return path === 'test/cart.test.ts' ? { found: true, text: "it('counts', () => {});\n" } : { found: false };
+    },
     checkout: async (_repo, sha) => ({ commit: sha, commits: [] }),
     commits: async (_repo, base, head) => {
       asked.push(`commits ${base}...${head}`);
@@ -199,6 +203,20 @@ describe('a dry run’s reads', () => {
     expect((await reads.pullRequest(REPO, 7)).nodeId).toBe('PR_real');
     await reads.checkRuns(REPO, SHA);
     expect(asked).toContain(`checkRuns ${SHA}`);
+  });
+
+  it('read a file as its commits left it, and one it never touched where its commits went', async () => {
+    const asked: string[] = [];
+    const { reads, commit } = await dryRun(asked);
+    expect(await reads.file(REPO, commit, 'src/cart.ts')).toEqual({
+      found: true,
+      text: 'const a = 1;\nconst b = 20;\nconst c = 3;\n',
+    });
+    expect(await reads.file(REPO, commit, 'test/cart.test.ts')).toEqual({
+      found: true,
+      text: "it('counts', () => {});\n",
+    });
+    expect(asked).toEqual([`file test/cart.test.ts ${SHA}`]);
   });
 
   it('read what a release is made of as it really is: no image was built from a commit the dry run made', async () => {

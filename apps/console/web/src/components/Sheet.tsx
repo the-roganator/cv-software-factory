@@ -468,11 +468,14 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                 )}
                 {card.pullRequest && (
                   <Fact name="Pull request">
-                    {/* A sample's pull request never existed, so it links nowhere. */}
+                    {/* A sample's pull request never existed, so it links nowhere, and has no mark: GitHub holds none. */}
                     {card.sample ? (
                       `#${card.pullRequest}`
                     ) : (
-                      <a href={`${APP_REPO}/pull/${card.pullRequest}`}>#{card.pullRequest} on GitHub</a>
+                      <>
+                        <ToolMark name="github" />{' '}
+                        <a href={`${APP_REPO}/pull/${card.pullRequest}`}>#{card.pullRequest} on GitHub</a>
+                      </>
                     )}
                   </Fact>
                 )}
@@ -482,9 +485,12 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                     {card.sample ? (
                       `#${sheet.deploy.deploy.pullRequest}`
                     ) : (
-                      <a href={`${APP_REPO}/pull/${sheet.deploy.deploy.pullRequest}`}>
-                        #{sheet.deploy.deploy.pullRequest} on GitHub
-                      </a>
+                      <>
+                        <ToolMark name="github" />{' '}
+                        <a href={`${APP_REPO}/pull/${sheet.deploy.deploy.pullRequest}`}>
+                          #{sheet.deploy.deploy.pullRequest} on GitHub
+                        </a>
+                      </>
                     )}{' '}
                     · {deployWords(sheet.deploy.deploy).fact}
                   </Fact>
@@ -664,9 +670,10 @@ function Request({ request }: { request: NonNullable<SheetData['request']> }) {
 }
 
 /**
- * The spec: its outcome, its criteria, and its scope, with what the pull request changes in it, or what the last
- * patch the fence refused would have. An improvement's says, in a box, what it changes, the flag it goes behind and
- * the pages it changes, and under each criterion the side of the flag it is tested with.
+ * The spec: its outcome, its criteria, the existing tests they contradict, and its scope, with what the pull request
+ * changes in it, or what the last patch the fence refused would have. An improvement's says, in a box, what it
+ * changes, the flag it goes behind and the pages it changes, and under each criterion the side of the flag it is
+ * tested with. The tests' names are the app's, public as its code is, so a visitor sees them too.
  */
 function SpecSection({ sheet }: { sheet: SheetData }) {
   const { spec, scope, card } = sheet;
@@ -723,6 +730,21 @@ function SpecSection({ sheet }: { sheet: SheetData }) {
           </li>
         ))}
       </ul>
+      {spec.contradicts && (
+        <div className="contradicts">
+          <span className="label small">Tests it contradicts</span>
+          <ul>
+            {spec.contradicts.map((t) => (
+              <li key={`${t.file} ${t.test}`}>
+                <span className="mono">{t.file}</span> · {t.test}
+              </li>
+            ))}
+          </ul>
+          <p className="help">
+            The change may delete, rename or rewrite these existing tests, and no other. Test integrity names each one.
+          </p>
+        </div>
+      )}
       {scope && (
         <table className="scope raised">
           <thead className="label small">

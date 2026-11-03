@@ -10,6 +10,7 @@
  * Kubernetes', Argo's (Argo CD's and Argo Rollouts' alike), Prometheus' and Playwright's are theSVG's one-colour
  * versions, the last Simple Icons' (CC0); Loki's, Kyverno's (its symbol, without the name) and Sigstore's are theSVG's
  * drawings in one colour. Tempo's is selfh.st's (`selfhst:grafana-tempo` on Iconify, CC BY 4.0), in one colour.
+ * GitHub's is the footer's drawing, beside a pull request GitHub holds.
  */
 
 type Logo = 'node' | 'otel' | 'trivy' | 'dependabot' | 'anthropic' | 'jev' | 'github' | 'linkedin';
@@ -35,7 +36,16 @@ const VIEWBOX: Record<Logo, string> = {
 };
 
 /** The tools whose marks stand beside what they made, in `base.css` as `.toolmark-<name>`. */
-export type ToolName = 'kubernetes' | 'argo' | 'prometheus' | 'loki' | 'tempo' | 'playwright' | 'kyverno' | 'sigstore';
+export type ToolName =
+  | 'kubernetes'
+  | 'argo'
+  | 'prometheus'
+  | 'loki'
+  | 'tempo'
+  | 'playwright'
+  | 'kyverno'
+  | 'sigstore'
+  | 'github';
 
 /**
  * A tool's mark, at text height in `text-muted`, hidden from a screen reader: the words beside it name the tool. It

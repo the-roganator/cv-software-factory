@@ -119,7 +119,10 @@ test('a visitor sees what waits on Martin, read only, and not his words on a vis
   // A deploy takes only his rejection: approving or words would leave it waiting just the same.
   await expect(card(page, '1321').locator('.ro')).toHaveText(['Reject']);
   await expect(card(page, '1321').locator('.kick b')).toHaveText('Its deploy’s checks are running');
-  await expect(card(page, '1321').getByRole('link', { name: 'Deploy #1331 on GitHub' })).toBeVisible();
+  // A sample's deploy pull request never existed: the card names it, and links nowhere.
+  await expect(card(page, '1321').locator('.way .way-words')).toHaveText('Deploy');
+  await expect(card(page, '1321').locator('.way .toolmark-github')).toBeVisible();
+  await expect(card(page, '1321').getByRole('link')).toHaveCount(0);
   // His words on the visitor's suggestion stay his; his approval of the planner's question is public.
   const today = panel(page).locator('.answered');
   await expect(today).toContainText(

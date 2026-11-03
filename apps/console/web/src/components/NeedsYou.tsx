@@ -2,7 +2,9 @@
  * Needs you, the left of the bottom row: one card per hold, the line's and triage's, oldest first, so what has waited
  * longest is on top. Each says what the hold is, shows the one piece of evidence that explains it, and lists each
  * answer it takes beside what that answer does, from the line's own table. The buttons are all outlined: the console
- * does not suggest an answer. Under the cards, Martin's answers today.
+ * does not suggest an answer. A merge or a deploy, which Martin ends on GitHub, heads its answers with the way there,
+ * "Merge" and GitHub's mark drawn as a button and bolder, since it is the way forward and the answers are the ways
+ * back. Under the cards, Martin's answers today.
  *
  * For Martin, each answer is a write to the admin service, naming the hold the card showed, so the service answers
  * that hold or none. Approving a guardrail's hold asks for his passkey again (the key shows while it is not fresh);
@@ -39,6 +41,7 @@ import {
 } from '../projection/index.ts';
 import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
+import { ToolMark } from './Logos.tsx';
 import { Shot } from './Pictures.tsx';
 import { Key, useStepUp } from './StepUp.tsx';
 import { ReasonField, Refusal } from './Words.tsx';
@@ -73,6 +76,46 @@ function Evidence({ need }: { need: Need }) {
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * The way a merge or a deploy ends, first among the answers: "Merge" or "Deploy" and GitHub's mark, drawn as the
+ * buttons beside it are, in the text's weight, since it is the way forward and they are the ways back. The card names
+ * the pull request already, so the words a reader hears add it and where it goes, the mark being hidden from them. A
+ * link, as it opens a page, in a tab of its own, so words half written on the card stay. A sample's pull request never
+ * existed: the same look, not a link, with why beside it.
+ */
+function WayForward({ way }: { way: Need['way'] }) {
+  if (!way) return null;
+  // What shows is hidden from a screen reader, which hears the words in full instead, in a span of their own, so no
+  // space between the two parts is left to layout.
+  const shown = (
+    <span className="way-words" aria-hidden="true">
+      {way.verb}
+      <ToolMark name="github" />
+    </span>
+  );
+  if (way.href === undefined) {
+    return (
+      <div className="answer">
+        <span className="btn small way">
+          {shown}
+          <span className="sr">
+            {way.verb} #{way.pullRequest}
+          </span>
+        </span>
+        <p className="nowhere">{way.why}</p>
+      </div>
+    );
+  }
+  return (
+    <a className="btn small way" href={way.href} target="_blank" rel="noopener">
+      {shown}
+      <span className="sr">
+        {way.verb} #{way.pullRequest} on GitHub (opens GitHub in a new tab)
+      </span>
+    </a>
   );
 }
 
@@ -165,6 +208,7 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
+        <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -233,6 +277,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
+        <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {row.answer === 'answered' ? (

@@ -69,12 +69,16 @@ export interface StoredFinished {
   workItem: string;
   version: number;
   payload: unknown;
+  /** When the store took it, by its own clock. */
+  at: Date;
 }
 
 /** The launch it ends: the latest `attack.launched` one of Martin's roles appended on its work item before it. */
 export interface StoredLaunch {
   seq: number;
   attack: string;
+  /** When the store took it, by its own clock. */
+  at: Date;
 }
 
 /** A refusal an attack's end cites, as stored, with what the line made of its signature. */
@@ -88,11 +92,31 @@ export interface StoredRefusal {
   sample: boolean;
   payload: unknown;
   /**
-   * For a refusal that carries a signature: the repository and number its signed record names, once its record and
-   * signature verify, or null when they do not. Undefined for one with no signature.
+   * For a refusal that carries a signature: the repository, number and time its signed record names, once its record
+   * and signature verify, or null when they do not. Undefined for one with no signature.
    */
-  signed?: { repo: string; number: number | null } | null;
+  signed?: SignedFacts | null;
 }
+
+/** What a verified signed record says of a refusal, beyond its payload. */
+export interface SignedFacts {
+  repo: string;
+  number: number | null;
+  /** When the mechanism refused, as it signed it. */
+  at: Date;
+}
+
+/**
+ * The mechanisms whose refusals are relayed, and so must verify: the GitHub worker's guard, GitHub's 403, and the review
+ * check, whose run the GitHub worker reads and signs (`policy/refusals.ts`).
+ */
+const RELAYED: readonly string[] = [...SIGNED_MECHANISMS, 'review-gate'];
+
+/**
+ * How far the GitHub worker's clock, by which it signs a refusal's time, may be from the store's: a minute, so a
+ * refusal signed in the attack is never taken for an earlier one, and one from an earlier attack still is.
+ */
+const SKEW_MS = 60_000;
 
 type Finished = PayloadOf<'attack.finished'>;
 type Refusal = PayloadOf<'action.refused'>;
@@ -110,8 +134,7 @@ function read<T extends 'attack.finished' | 'action.refused'>(
 }
 
 /** Whether a refusal must carry a signature that verifies: a relayed mechanism's always, and any that carries one. */
-const mustVerify = (refusal: Refusal) =>
-  refusal.signature !== undefined || (SIGNED_MECHANISMS as readonly string[]).includes(refusal.mechanism);
+const mustVerify = (refusal: Refusal) => refusal.signature !== undefined || RELAYED.includes(refusal.mechanism);
 
 /** Why a cited refusal is not about the attack's own subject, or undefined when it is. */
 function offSubject(finished: Finished, workItem: string, stored: StoredRefusal, refusal: Refusal): string | undefined {
@@ -191,6 +214,14 @@ export function judge(
       return wrong(`${at} was appended by ${cited.appendedBy ?? 'no role'}, which may not record ${refusal.mechanism}`);
     }
     if (mustVerify(refusal) && !cited.signed) return wrong(`${at} does not verify`);
+    // A signed refusal says when it was made: one from before the launch, appended again, is another attack's.
+    const signedAt = cited.signed?.at.getTime();
+    if (
+      signedAt !== undefined &&
+      (signedAt < launch.at.getTime() - SKEW_MS || signedAt > stored.at.getTime() + SKEW_MS)
+    ) {
+      return wrong(`${at} was signed outside its launch and end`);
+    }
     const off = offSubject(finished, stored.workItem, cited, refusal);
     if (off) return wrong(`${at}: ${off}`);
   }
@@ -211,10 +242,7 @@ const MOST_RECORD_BYTES = 64 * 1024;
  * refusal as stored, and its signature verifies with the GitHub worker's key; null if not, or with no key or no
  * store to verify it by. A store that cannot be read throws, so the read is tried again rather than judged.
  */
-export async function verifyStored(
-  verifier: Verifier,
-  payload: unknown,
-): Promise<{ repo: string; number: number | null } | null> {
+export async function verifyStored(verifier: Verifier, payload: unknown): Promise<SignedFacts | null> {
   const { record, signature, count: _count, lastAt: _lastAt, ...signed } = (payload ?? {}) as Record<string, unknown>;
   if (typeof record !== 'string' || typeof signature !== 'string' || !verifier.key || !verifier.artifacts) return null;
   const opened = await verifier.artifacts.open(record);
@@ -239,7 +267,8 @@ export async function verifyStored(
     record,
     signature,
   });
-  return verified.ok ? { repo: verified.refusal.repo, number: verified.refusal.number } : null;
+  if (!verified.ok) return null;
+  return { repo: verified.refusal.repo, number: verified.refusal.number, at: new Date(verified.refusal.at) };
 }
 
 /**
@@ -254,8 +283,8 @@ export async function judgeStored(
 ): Promise<Map<number, Verdict>> {
   const verdicts = new Map<number, Verdict>();
   for (const end of finished) {
-    const [launch] = await sql<{ seq: string; attack: string }[]>`
-      select l.seq::text as seq, l.payload->>'attack' as attack from events l
+    const [launch] = await sql<{ seq: string; attack: string; at: Date }[]>`
+      select l.seq::text as seq, l.payload->>'attack' as attack, l.appended_at as at from events l
       where l.work_item = ${end.workItem} and l.type = 'attack.launched' and l.seq < ${end.seq}
         and ${byMartin(sql, 'l')}
       order by l.seq desc limit 1`;
@@ -279,7 +308,11 @@ export async function judgeStored(
       : [];
     const refusals = new Map<number, StoredRefusal>();
     for (const row of rows) {
-      const signed = (row.payload as { signature?: unknown } | null)?.signature;
+      // Only a refusal is verified: anything else cited is judged without opening a record.
+      const signed =
+        row.type === 'action.refused' && !row.sample
+          ? (row.payload as { signature?: unknown } | null)?.signature
+          : undefined;
       refusals.set(Number(row.seq), {
         seq: Number(row.seq),
         id: row.id,
@@ -292,7 +325,7 @@ export async function judgeStored(
         ...(signed !== undefined && { signed: await verifyStored(verifier, row.payload) }),
       });
     }
-    verdicts.set(end.seq, judge(end, { seq: Number(launch.seq), attack: launch.attack }, refusals));
+    verdicts.set(end.seq, judge(end, { seq: Number(launch.seq), attack: launch.attack, at: launch.at }, refusals));
   }
   return verdicts;
 }
@@ -324,7 +357,12 @@ export async function countUnfinished(sql: Sql): Promise<number> {
     select count(*)::int as unfinished from launches l
     where exists (select 1 from events f
                   where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq and not f.sample
-                    and f.appended_by = ${HARNESS_ROLE} and f.payload->>'outcome' = 'unfinished')
+                    and f.appended_by = ${HARNESS_ROLE} and f.payload->>'outcome' = 'unfinished'
+                    -- One with an attempt that got through is counted as not refused, and only so.
+                    and not exists (select 1 from jsonb_array_elements(
+                                      case when jsonb_typeof(f.payload->'attempts') = 'array' then f.payload->'attempts'
+                                           else '[]'::jsonb end) a
+                                    where a->'refused' = 'false'::jsonb))
        or (l.due <= now()
            and not exists (select 1 from events f
                            where f.work_item = l.work_item and f.type = 'attack.finished' and f.seq > l.seq

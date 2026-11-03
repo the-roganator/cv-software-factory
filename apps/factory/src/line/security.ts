@@ -330,6 +330,7 @@ export async function readOn(
       last: string | null;
       seq: string | null;
       work_item: string | null;
+      appended_at: Date | null;
       version: number | null;
       finished: unknown;
       type: string | null;
@@ -348,7 +349,7 @@ export async function readOn(
     }[]
   >`
     with upto as (select max(seq) as last from events)
-    select upto.last::text as last, e.seq::text as seq, e.work_item, e.version,
+    select upto.last::text as last, e.seq::text as seq, e.work_item, e.version, e.appended_at,
            case when e.type = 'attack.finished' then e.payload end as finished,
            e.type, e.payload->>'action' as action, e.payload->>'decision' as decision,
            e.payload->'change' as change, e.payload->'phone' as phone, e.payload->'autoRollback' as auto_rollback,
@@ -377,6 +378,7 @@ export async function readOn(
       workItem: row.work_item as string,
       version: row.version ?? 1,
       payload: row.finished,
+      at: row.appended_at as Date,
     }));
   const verdicts = ends.length ? await judgeStored(sql, ends, verifier) : new Map<number, Verdict>();
   for (const [seq, verdict] of verdicts) {

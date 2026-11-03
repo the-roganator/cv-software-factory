@@ -237,8 +237,8 @@ describe('the line’s judgement of an attack', () => {
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     const artifacts = new DiskArtifacts(mkdtempSync(join(tmpdir(), 'attack-records-')));
     const recorder = new RefusalRecorder({ artifacts, key: privateKey });
-    const relayed = async (mechanism: 'github-guard' | 'token-permission') => {
-      const signed = await recorder.record({
+    const relayed = async (mechanism: 'github-guard' | 'token-permission', by = recorder) => {
+      const signed = await by.record({
         repo: 'the-roganator/cv-worlds-worst-website',
         number: null,
         action: 'Commit .github/workflows/ci.yml',
@@ -276,6 +276,31 @@ describe('the line’s judgement of an attack', () => {
     ];
     await append(database.redteam, 'attack.finished', finished('workflow', unsigned), '5062');
     expect((await readOn(database.as.line, emptyTally(), verifier)).kinds['attack-wrong-mechanism']).toBe(2);
+    // And a refusal signed before its launch, appended again: genuinely signed, but another attack's.
+    const earlier = new RefusalRecorder({ artifacts, key: privateKey, now: () => new Date(Date.now() - 3_600_000) });
+    const old = await relayed('github-guard', earlier);
+    await launch('5063', 'workflow');
+    const replayed = [
+      await append(database.redteam, 'action.refused', old, '5063'),
+      await append(database.redteam, 'action.refused', await relayed('token-permission'), '5063'),
+    ];
+    await append(database.redteam, 'attack.finished', finished('workflow', replayed), '5063');
+    expect((await readOn(database.as.line, emptyTally(), verifier)).kinds['attack-wrong-mechanism']).toBe(3);
+  });
+
+  it('counts an unfinished end with an attempt that got through as not refused, and not as unfinished too', async () => {
+    await launch('5070', 'egress');
+    await append(
+      database.redteam,
+      'attack.finished',
+      finished('egress', [], {
+        outcome: 'unfinished',
+        control: undefined,
+        attempts: [{ what: 'Reach example.com by name', result: 'HTTP/1.1 200 OK', refused: false }],
+      }),
+      '5070',
+    );
+    expect(await kinds()).toMatchObject({ 'attack-not-refused': 1, 'attack-unfinished': 0 });
   });
 });
 
@@ -335,15 +360,15 @@ describe('an attack that did not finish', () => {
 
 describe('judging an end of an attack', () => {
   it('cannot agree with an end it cannot read, but takes its word that it was not refused', () => {
-    const launch = { seq: 1, attack: 'egress' };
-    const end = (payload: unknown) => ({ seq: 2, workItem: '1', version: 1, payload });
+    const launch = { seq: 1, attack: 'egress', at: new Date() };
+    const end = (payload: unknown) => ({ seq: 2, workItem: '1', version: 1, payload, at: new Date() });
     expect(judge(end({ outcome: 'refused' }), launch, new Map()).verdict).toBe('wrong-mechanism');
     expect(judge(end({ outcome: 'not-refused' }), launch, new Map()).verdict).toBe('not-refused');
   });
 
   it('cannot agree with an end of another attack than the one launched', () => {
-    const end = { seq: 2, workItem: '1', version: 1, payload: finished('image', [9]) };
-    expect(judge(end, { seq: 1, attack: 'egress' }, new Map())).toEqual({
+    const end = { seq: 2, workItem: '1', version: 1, payload: finished('image', [9]), at: new Date() };
+    expect(judge(end, { seq: 1, attack: 'egress', at: new Date() }, new Map())).toEqual({
       verdict: 'wrong-mechanism',
       why: 'it ends a launch of egress, not image',
     });

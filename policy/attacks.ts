@@ -85,9 +85,10 @@ export const ATTACK_RULES = {
 
 /**
  * The label that marks a pod the red-team harness makes in `runners` (the egress and image attacks), its value the
- * attack's id. The harness sets it on each, the admission rule for the harness's pods requires it beside the agent's
- * runner label and lets no other through, and the line passes over any pod or Job that carries it: the line never
- * takes an attack's pod for one of its own runners, keeps its log as a step's, or counts it as a runner left behind.
+ * attack's id. The line passes over any pod, Job or volume in `runners` that carries it: it never takes an attack's
+ * pod for one of its own runners, keeps its log as a step's, or counts it as a runner left behind. The harness, and
+ * the admission rule that will hold its pods to this label beside the agent's runner label, are still to be built;
+ * until then nothing in `runners` carries it.
  */
 export const RED_TEAM_LABEL = 'factory.mrogan.dev/red-team';
 

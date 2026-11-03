@@ -8,7 +8,8 @@
  * Launch opens the attack's dialog (`AttackDialog.tsx`, which arrives when it first opens). Attacks run one at a time:
  * while one is in flight its Launch reads Running and every other is dashed and disabled, saying which is running. For
  * a visitor, Launch is a label, which opens the same dialog read-only: what the attack does, and that Martin launches
- * it, with only Close.
+ * it, with only Close. An attack not available yet has no Launch at all, for anyone: its card says so, with what it
+ * tries.
  */
 import { lazy, Suspense, useId, useState } from 'react';
 import type { Admin } from '../admin.ts';
@@ -115,6 +116,25 @@ function Attack({
   onOpen: (item: string) => void;
 }) {
   const { last } = row;
+  if (!row.available) {
+    // Held back for now (`available` in `policy/attacks.ts`): what it tries, said here as the dialog would, and no
+    // Launch, for Martin or anyone, until policy makes it available.
+    return (
+      <div>
+        <span className="label">Its attack</span>
+        <div className="gr-attack unavailable">
+          <b>{row.name}</b>
+          <p className="last">
+            <span className="v tone-faint">
+              <Glyph name="dash" />
+              Not available yet
+            </span>
+          </p>
+          <p className="help tries">{row.tries}</p>
+        </div>
+      </div>
+    );
+  }
   const mine = running?.attack === row.attack;
   const [word, tone, glyph]: [string, string, GlyphName] = last
     ? LAST_RUN[last.verdict]
@@ -204,7 +224,7 @@ function Row({
                 {proof.held ? 'Held' : <span className="tone-attn">Did not hold</span>}:{' '}
                 <From source={proof.source} onOpen={onOpen} />, {ago(proof.at, now)}.
               </>
-            ) : row.attack ? (
+            ) : row.attack?.available ? (
               'None yet: its attack, or make guardrails, proves it.'
             ) : (
               'None yet: make guardrails proves it.'
@@ -277,7 +297,7 @@ export function Guardrails({
         <div className="gr-col">{view.rows.slice(6).map(row)}</div>
       </div>
       <p className="help">Only auto-rollback can be switched off, in Controls. Stop the line always works.</p>
-      {launching?.attack && (
+      {launching?.attack?.available && (
         <Suspense fallback={null}>
           <AttackDialog
             guardrail={launching.n}

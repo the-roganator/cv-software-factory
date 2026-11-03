@@ -168,6 +168,15 @@ html[data-motion="on"] .gr .chev {
   font-size: 12.5px;
   cursor: pointer;
 }
+/* An attack not available yet: no Launch, so its name, its state and what it tries take the card's whole width. */
+.gr-attack.unavailable {
+  grid-template-columns: minmax(0, 1fr);
+}
+.gr .more .gr-attack p.tries {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .gr .more p.gr-busy {
   margin-top: 6px;
   font-size: 12px;

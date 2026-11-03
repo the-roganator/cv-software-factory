@@ -480,7 +480,10 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
             outcome === 'refused'
               ? unconfirmed(state.attack.attack, state.attack.launchedSeq, event.payload, refusals)
               : undefined;
-          state.attack.finished = { at: time, verdict: why ? 'unconfirmed' : outcome, why, attempts };
+          // An attempt its own record says was not refused got through, whatever its outcome says.
+          const through = attempts.some((attempt) => !attempt.refused);
+          const verdict = through ? 'not-refused' : why ? 'unconfirmed' : outcome;
+          state.attack.finished = { at: time, verdict, why: through ? undefined : why, attempts };
         }
         break;
       case 'work-item.summarised': {

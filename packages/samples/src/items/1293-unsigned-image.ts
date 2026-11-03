@@ -45,7 +45,11 @@ export default attack
       outcome: 'refused',
       expected: ['admission-control'],
       attempts: [
-        { what: `Create Pod runners/${POD.name} on an image build.yml did not sign`, result: 'denied by admission' },
+        {
+          what: `Create Pod runners/${POD.name} on an image build.yml did not sign`,
+          result: 'denied by admission',
+          refused: true,
+        },
       ],
       subject: { pod: POD },
     },

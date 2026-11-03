@@ -15,7 +15,9 @@
  *   carries its record and signature, which the line verifies with the worker's public key; the console has no key,
  *   so it checks only that both are there. A refused attack that fails any of these reads as **not confirmed**: its
  *   guardrail reads as not held, as when nothing refused it, since the line pages Martin for both.
- * - **Not refused** and **unfinished** are the harness's word, and stand as it says: neither can hide a failure.
+ * - **Not refused** and **unfinished** are the harness's word, and stand as it says: neither can hide a failure. And
+ *   any attempt its own record marks not refused (`refused: false`) makes it **not refused**, whatever its outcome
+ *   says: the store refuses a refused outcome with one, and the console does not lean on that alone.
  * - **Running** while no end is recorded and its limit (`policy/attacks.ts`) has not passed; **unfinished** once it has,
  *   as the admin service lets another launch through then, and the line pages Martin. So the two are told apart by the
  *   time alone, at t.

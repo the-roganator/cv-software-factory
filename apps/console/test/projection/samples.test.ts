@@ -87,9 +87,9 @@ describe('the samples, projected', () => {
       'none',
     ]);
     // An attack skips to its mechanism's stage: refused there, or stopped there when nothing refused it.
-    expect(card('1274')?.segments).toEqual([...Array(5).fill('skipped'), 'refused', 'none', 'none']);
+    expect(card('1293')?.segments).toEqual([...Array(6).fill('skipped'), 'refused', 'none']);
     expect(card('1333')?.segments).toEqual([...Array(3).fill('skipped'), 'stopped', ...Array(4).fill('none')]);
-    expect(card('1335')?.segments).toEqual([...Array(5).fill('skipped'), 'now', 'none', 'none']);
+    expect(card('1335')?.segments).toEqual([...Array(6).fill('skipped'), 'now', 'none']);
     expect(card('1268')?.segments).toEqual(['passed', 'closed', ...Array(6).fill('none')]);
     expect(card('1300')?.segments).toEqual(['skipped', 'skipped', 'waiting', ...Array(5).fill('none')]);
     expect(card('1302')?.segments).toEqual(Array(8).fill('passed'));
@@ -99,7 +99,7 @@ describe('the samples, projected', () => {
 
   it('strike through a version that was rolled back, on the timeline', () => {
     expect(view.timeline.versions).toContainEqual(
-      expect.objectContaining({ card: 5, version: 'v0.9.1', rolledBack: true }),
+      expect.objectContaining({ card: 4, version: 'v0.9.1', rolledBack: true }),
     );
     expect(view.timeline.days).toHaveLength(8);
   });

@@ -12,11 +12,14 @@
  * - **An attack's result** is how its latest run ended, as `attacks.ts` reads it: refused holds; not refused, or a
  *   refused the stream does not bear out, fails. One running, or unfinished, proves nothing either way, and leaves the
  *   attack's result before it standing.
+ * - **An attack not available yet** (`available` in `policy/attacks.ts`) proves nothing, and its row shows no run of
+ *   it: its guardrail reads by its other proofs alone. One of its launches still in flight, recorded before it was held
+ *   back, still makes every Launch wait, as the admin service does.
  *
  * Plain TypeScript, so Node tests it directly.
  */
 import type { Attack, PublicEvent } from '@software-factory/events';
-import { ATTACK_RULES } from '@software-factory/policy/attacks';
+import { ATTACK_RULES, attackAvailable } from '@software-factory/policy/attacks';
 import { GUARDRAILS } from '@software-factory/policy/guardrails';
 import { limitOf, type Verdict, verdictAt } from './attacks.ts';
 import type { ItemState } from './items.ts';
@@ -51,6 +54,8 @@ export interface AttackRow {
   attack: Attack;
   name: string;
   tries: string;
+  /** Whether Martin can launch it yet: one that is not has no Launch, and no run. */
+  available: boolean;
   last: AttackRun | undefined;
 }
 
@@ -134,7 +139,8 @@ export function guardrailsView(proofs: FoldedProofs, items: readonly ItemState[]
   const rows = GUARDRAILS.map((guardrail): GuardrailRow => {
     const results = [...(proofs.get(guardrail.n)?.values() ?? [])].map(proofResult);
     const attack = 'attack' in guardrail ? guardrail.attack : undefined;
-    const ran = attack ? (runs.get(attack) ?? []) : [];
+    const available = attack !== undefined && attackAvailable(attack);
+    const ran = available ? (runs.get(attack) ?? []) : [];
     const result = ran.findLast((run) => proves(run.verdict));
     if (attack && result) {
       results.push({
@@ -159,6 +165,7 @@ export function guardrailsView(proofs: FoldedProofs, items: readonly ItemState[]
         attack,
         name: ATTACK_RULES[attack].name,
         tries: ATTACK_RULES[attack].tries,
+        available,
         last: last && { verdict: last.verdict, at: last.at, workItem: last.workItem, until: last.until },
       },
     };

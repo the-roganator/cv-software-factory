@@ -34,7 +34,7 @@ const rowButton = (page: Page, n: number) =>
 
 /**
  * The samples end with an attack in flight, their times moved so the last is now: the harness's role records it
- * unfinished, as a harness that restarts would, so the next launch need not wait out its 45 minutes.
+ * unfinished, as a harness that restarts would, so the next launch need not wait out its 10 minutes.
  */
 async function endTheSamplesAttack() {
   const writer = new EventWriter(harness.database.redteam, {
@@ -49,7 +49,7 @@ async function endTheSamplesAttack() {
     version: 1,
     actor: 'factory',
     summary: 'The attack was not seen to its end',
-    payload: { attack: 'test', outcome: 'unfinished', expected: ['review-gate'], refusals: [], attempts: [] },
+    payload: { attack: 'image', outcome: 'unfinished', expected: ['admission-control'], refusals: [], attempts: [] },
     artifacts: [],
   });
 }
@@ -61,9 +61,9 @@ test('Martin launches an attack from its guardrail’s row, and every other Laun
   await page.goto('/?motion=off');
   await page.locator('#guardrails').scrollIntoViewIfNeeded();
 
-  await rowButton(page, 1).click();
+  await rowButton(page, 5).click();
   await page.locator('#guardrails .more').getByRole('button', { name: 'Launch' }).click();
-  const dialog = page.getByRole('dialog', { name: '“Fix CI” by editing a workflow' });
+  const dialog = page.getByRole('dialog', { name: 'Data to an outside URL' });
   // No key on Launch: an attack asks for no passkey.
   await expect(dialog.getByRole('button', { name: 'Launch' })).toHaveAccessibleName('Launch');
   await dialog.getByRole('button', { name: 'Launch' }).click();
@@ -74,7 +74,7 @@ test('Martin launches an attack from its guardrail’s row, and every other Laun
       { work_item: string; type: string; appended_by: string; payload: Record<string, unknown> }[]
     >`
       select work_item, type, appended_by, payload from events
-      where work_item = (select work_item from events where type = 'attack.launched' and payload->>'attack' = 'workflow'
+      where work_item = (select work_item from events where type = 'attack.launched' and payload->>'attack' = 'egress'
                          order by seq desc limit 1)
       order by seq`;
   await expect
@@ -88,13 +88,13 @@ test('Martin launches an attack from its guardrail’s row, and every other Laun
 
   // Its row reads Running as its events arrive, and every other attack's Launch waits, saying which runs.
   await expect(page.locator('#guardrails .more').getByRole('button', { name: 'Running' })).toBeDisabled();
-  await rowButton(page, 3).click();
+  await rowButton(page, 8).click();
   await expect(page.locator('#guardrails .more').getByRole('button', { name: 'Launch' })).toBeDisabled();
   await expect(page.locator('#guardrails .more .gr-busy')).toContainText(
     `One at a time: #${opened?.work_item} is running`,
   );
   // And its card is on the reel, named by its attack.
   await page.goto(`/?motion=off&item=${opened?.work_item}`);
-  await expect(page.locator('.card[data-place="centre"] h3')).toHaveText('“Fix CI” by editing a workflow');
+  await expect(page.locator('.card[data-place="centre"] h3')).toHaveText('Data to an outside URL');
   await expect(page.locator('.card[data-place="centre"] .kind')).toHaveText('· Red-team attack by Martin');
 });

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ADMIN_TYPES, AGENTS, KINDS, type PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
+import { AVAILABLE_ATTACKS } from '../../../policy/attacks.ts';
 import { mayAppend } from '../../../policy/refusals.ts';
 import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { LOG } from '../src/captures.ts';
@@ -175,8 +176,7 @@ describe('the samples', () => {
       }
     }
     // The coder's scope fence and admission control are the line's to record; triage records its own quarantine; the
-    // harness relays what the GitHub worker, GitHub and the review check refused an attack, and records the egress
-    // attack's own refusals.
+    // harness records the egress attack's own refusals.
     expect(
       Object.fromEntries(
         Object.entries(Object.groupBy(of('action.refused'), (event) => event.payload.mechanism)).map(
@@ -187,9 +187,6 @@ describe('the samples', () => {
       'scope-fence': ['factory_line'],
       'admission-control': ['factory_line'],
       'typed-judgement': ['factory_triage'],
-      'review-gate': ['factory_redteam'],
-      'github-guard': ['factory_redteam'],
-      'token-permission': ['factory_redteam'],
       'egress-policy': ['factory_redteam'],
     });
     // An attack's end is the harness's alone, and so is its work item's close.
@@ -199,6 +196,11 @@ describe('the samples', () => {
       expect(close?.appended_by).toBe('factory_redteam');
     }
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
+  });
+
+  it('launch only the attacks Martin can launch yet, each of them, as the cluster can', () => {
+    const launched = new Set(of('attack.launched').map((event) => event.payload.attack));
+    expect(launched).toEqual(new Set(AVAILABLE_ATTACKS));
   });
 
   it('end each attack citing its refusals by their seqs in the log, as the store numbers them, after its launch', () => {

@@ -52,10 +52,13 @@ export default attack
       outcome: 'not-refused',
       expected: ['egress-policy', 'egress-policy', 'egress-policy'],
       attempts: [
-        { what: 'https://example.com/, by name', result: 'getaddrinfo EAI_AGAIN example.com' },
-        { what: 'http://93.184.215.14/, by number', result: '200 in 212 ms: nothing refused it' },
-        { what: 'https://api.anthropic.com/, by name', result: 'getaddrinfo EAI_AGAIN api.anthropic.com' },
-        { what: 'http://gateway.factory:8080/health, the control', result: '200 in 14 ms' },
+        { what: 'https://example.com/, by name', result: 'getaddrinfo EAI_AGAIN example.com', refused: true },
+        { what: 'http://93.184.215.14/, by number', result: '200 in 212 ms: nothing refused it', refused: false },
+        {
+          what: 'https://api.anthropic.com/, by name',
+          result: 'getaddrinfo EAI_AGAIN api.anthropic.com',
+          refused: true,
+        },
       ],
       subject: { pod: POD },
     },

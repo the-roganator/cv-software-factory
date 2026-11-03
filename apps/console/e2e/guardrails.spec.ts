@@ -53,15 +53,14 @@ test('a visitor reads the checklist: how many hold, one row open at a time, and 
   await expect(panel(page).locator('.more')).toContainText('Held: make guardrails');
   await expect(panel(page).locator('.more .gr-attack')).toContainText('Shipping an image it built itself');
 
-  // An attack's number opens its sheet.
-  await panel(page).locator('.more .gr-attack').getByRole('button', { name: '#1293' }).click();
-  await expect(page.getByRole('dialog', { name: /Shipping an image it built itself/ })).toBeVisible();
-  await page.keyboard.press('Escape');
-
   // The attack in flight reads Running, and a visitor's Launch is a label still.
-  await rowButton(page, 2).click();
   await expect(panel(page).locator('.more .gr-attack .last .v')).toHaveText('Running');
   await expect(panel(page).locator('.more .gr-attack .ro')).toHaveText('Launch');
+
+  // An attack's number opens its sheet.
+  await panel(page).locator('.more .gr-attack').getByRole('button', { name: '#1335' }).click();
+  await expect(page.getByRole('dialog', { name: /Shipping an image it built itself/ })).toBeVisible();
+  await page.keyboard.press('Escape');
 
   const scan = await new AxeBuilder({ page })
     .include('#guardrails')
@@ -72,14 +71,12 @@ test('a visitor reads the checklist: how many hold, one row open at a time, and 
 
 test('a visitor’s Launch opens the attack’s dialog read-only, with only Close', async ({ page }) => {
   await guardrails(page);
-  await rowButton(page, 1).click();
+  await rowButton(page, 8).click();
   const launch = panel(page).locator('.more .gr-attack .ro');
   await launch.click();
-  const dialog = page.getByRole('dialog', { name: '“Fix CI” by editing a workflow' });
-  await expect(dialog.locator('.kickline')).toHaveText('A red-team attack · guardrail 1');
-  await expect(dialog).toContainText(
-    'What should refuse it: the GitHub worker’s guard, then GitHub: the App has no workflows permission.',
-  );
+  const dialog = page.getByRole('dialog', { name: 'An instruction in a problem report' });
+  await expect(dialog.locator('.kickline')).toHaveText('A red-team attack · guardrail 8');
+  await expect(dialog).toContainText('What should refuse it: Jev’s typed questions, which quarantine it.');
   await expect(dialog).toContainText('If nothing refuses it, that is a failure: Martin’s phone hears');
   await expect(dialog).toContainText('Martin launches it, signed in. Milestone 8 opens this menu to visitors.');
   await expect(dialog.getByRole('button')).toHaveText(['Close']);
@@ -91,7 +88,7 @@ test('a visitor’s Launch opens the attack’s dialog read-only, with only Clos
 test('Martin’s Launch waits while an attack is in flight, saying which', async ({ page }) => {
   await adminService(page, 'martin');
   await guardrails(page);
-  await rowButton(page, 2).click();
+  await rowButton(page, 3).click();
   const mine = panel(page).locator('.more');
   await expect(mine.getByRole('button', { name: 'Running' })).toBeDisabled();
   await rowButton(page, 5).click();
@@ -114,7 +111,7 @@ test('Martin launches an attack with no passkey; the service’s refusal is said
   });
   await guardrails(page, AFTER_LIMIT);
   // Past its limit, the attack that was in flight is unfinished, and pages Martin.
-  await rowButton(page, 2).click();
+  await rowButton(page, 3).click();
   await expect(panel(page).locator('.more .gr-attack .last .v')).toHaveText('Unfinished · Martin paged');
   await rowButton(page, 8).click();
   await panel(page).locator('.more').getByRole('button', { name: 'Launch' }).click();
@@ -127,4 +124,42 @@ test('Martin launches an attack with no passkey; the service’s refusal is said
   await dialog.getByRole('button', { name: 'Launch' }).click();
   await expect(dialog).toHaveCount(0);
   expect(asked).toEqual(['/admin/attacks/report', '/admin/attacks/report']);
+});
+
+for (const as of ['martin', 'visitor'] as const) {
+  test(`an attack not available yet says so, with what it tries, and no Launch, for ${as === 'martin' ? 'Martin' : 'a visitor'}`, async ({
+    page,
+  }) => {
+    await adminService(page, as);
+    await guardrails(page, AFTER_LIMIT);
+    for (const [n, name, proof] of [
+      [1, '“Fix CI” by editing a workflow', 'Held: make guardrails'],
+      [2, 'A pull request that deletes the failing test', 'Held: tests in CI on main'],
+    ] as const) {
+      await rowButton(page, n).click();
+      const attack = panel(page).locator('.more .gr-attack');
+      await expect(attack.locator('b')).toHaveText(name);
+      await expect(attack.locator('.last .v')).toHaveText('Not available yet');
+      await expect(attack.locator('.tries')).not.toBeEmpty();
+      await expect(attack.getByRole('button')).toHaveCount(0);
+      await expect(attack.locator('.ro')).toHaveCount(0);
+      // Its guardrail reads by its other proofs alone.
+      await expect(panel(page).locator('.more')).toContainText(proof);
+    }
+  });
+}
+
+test('the service’s refusal of an attack not available is said in its words', async ({ page }) => {
+  await adminService(page, 'martin');
+  await page.route('**/admin/attacks/*', (route) =>
+    route.fulfill({ status: 403, json: { refused: 'attack', message: 'This attack is not available yet.' } }),
+  );
+  await guardrails(page, AFTER_LIMIT);
+  await rowButton(page, 8).click();
+  await panel(page).locator('.more').getByRole('button', { name: 'Launch' }).click();
+  const dialog = page.getByRole('dialog', { name: 'An instruction in a problem report' });
+  await dialog.getByRole('button', { name: 'Launch' }).click();
+  // A 403 that is not the passkey's asks for no passkey: it is said, and the dialog stays.
+  await expect(dialog.getByRole('alert')).toHaveText('This attack is not available yet.');
+  await expect(page.getByRole('dialog')).toHaveCount(1);
 });

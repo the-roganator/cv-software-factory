@@ -28,6 +28,7 @@ export default new Item('1289', '2026-10-02T15:10:00+01:00')
         {
           what: 'Send a report from /products through the app’s report route, as a visitor sends one',
           result: '202 accepted as report r-7f3a2c91; triage quarantined it as #1291',
+          refused: true,
         },
       ],
       subject: { report: 'r-7f3a2c91' },

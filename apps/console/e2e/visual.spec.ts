@@ -142,7 +142,7 @@ const PICTURES = {
   package: '1262',
   scan: '1282',
   rollback: '1276',
-  refusal: '1274',
+  refusal: '1293',
   judgement: '1268',
   spec: '1300',
 };
@@ -1193,7 +1193,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     });
 
     test('the checklist for Martin, the attack in flight in its row', async ({ page }) => {
-      const panel = await guardrailsAt(page, 'martin', 2);
+      const panel = await guardrailsAt(page, 'martin', 3);
       await expect(panel).toHaveScreenshot(`m07-guardrails-martin-${width}.png`);
     });
 
@@ -1216,7 +1216,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
 }
 
 /** An attack's card for each way it stands, and a sheet's refusals whole. */
-const ATTACK_CARDS = { 'refused-twice': '1278', cut: '1289', 'not-refused': '1333', running: '1335' };
+const ATTACK_CARDS = { cut: '1289', 'not-refused': '1333', running: '1335' };
 
 test.describe('attacks on the desktop', () => {
   test.use({ viewport: WIDTHS.desktop });
@@ -1236,6 +1236,15 @@ test.describe('attacks on the desktop', () => {
     await evidence.waitFor();
     await page.evaluate(() => document.fonts.ready);
     await expect(evidence).toHaveScreenshot('m07-attack-sheet-evidence.png');
+  });
+});
+
+test.describe('Guardrails on the desktop', () => {
+  test.use({ viewport: WIDTHS.desktop });
+
+  test('an attack not available yet, in its guardrail’s row', async ({ page }) => {
+    const panel = await guardrailsAt(page, 'martin', 1);
+    await expect(panel.locator('.gr:has(.more)')).toHaveScreenshot('m07-guardrail-unavailable.png');
   });
 });
 

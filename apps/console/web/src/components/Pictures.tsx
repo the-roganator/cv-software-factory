@@ -771,13 +771,13 @@ function RefusalPicture(picture: Extract<PictureData, { type: 'refusal' }>) {
               <b>The attack’s own record of each attempt</b>
             </div>
             <pre className={wraps(attemptsText(picture.attempts)) > CUT_AT ? 'term cut' : 'term'}>
-              {keyed(picture.attempts, ({ what }) => what).map(({ value: { what, result }, key }) => (
+              {keyed(picture.attempts, ({ what }) => what).map(({ value: { what, result, refused }, key }) => (
                 <span key={key}>
                   {what}
                   {'\n'}
                   <span className="t-dim">{'  → '}</span>
-                  {/* What got through, in the attack's own words, in the alarm colour. */}
-                  <span className={/nothing refused/i.test(result) ? 't-bad' : undefined}>{result}</span>
+                  {/* What got through, as the attack's own record marks it, in the alarm colour. */}
+                  <span className={refused ? undefined : 't-bad'}>{result}</span>
                   {'\n'}
                 </span>
               ))}

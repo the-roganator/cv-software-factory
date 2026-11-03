@@ -1,5 +1,5 @@
 /**
- * The samples: thirty-four hand-written work items over eight days, with work still on the line at the end, and the
+ * The samples: thirty-two hand-written work items over eight days, with work still on the line at the end, and the
  * line's own events beside them. They cover every kind of work item but a planner's finding, every outcome but a close
  * with no change and an attack unfinished or not confirmed, every picture the design system draws and every station
  * state. Seven are fixes as milestone 5's line makes them: rounds of
@@ -9,10 +9,10 @@
  * round again, a reopened ticket, a dry run, the line stopped with a canary in flight, and a canary in flight at the
  * end, the line at Guarded and taking the next five, a spec waiting for work in flight on the same page, an improvement
  * out to everyone a stage at a time behind its flag, another part way out, a third turned off at Checks and closed and
- * a fourth whose spec waits for Martin, and a visitor's suggestion Martin answered in words, which keep it held. Six are
- * red-team attacks Martin launched from Guardrails, each of the five once, refused, but the egress attack, which nothing
- * refused, and the test attack again, in flight at the end; with the report the first sent, which triage quarantined,
- * and a run of `make guardrails` on the last morning. The scoreboard counts them against an invented key. Nothing in them happened: the console labels each as a sample.
+ * a fourth whose spec waits for Martin, and a visitor's suggestion Martin answered in words, which keep it held. Four are
+ * red-team attacks Martin launched from Guardrails, each of the three he can launch yet once, refused, but the egress
+ * attack, which nothing refused, and the image attack again, in flight at the end; with the report the first sent,
+ * which triage quarantined, and a run of `make guardrails` on the last morning. The scoreboard counts them against an invented key. Nothing in them happened: the console labels each as a sample.
  */
 import type { NewEvent } from '@software-factory/events';
 import { CITED, uuidFor } from './build.ts';
@@ -20,9 +20,7 @@ import pino from './items/1262-pino.ts';
 import searchLogs from './items/1265-search-logs.ts';
 import readsOnThursday from './items/1268-reads-on-thursday.ts';
 import theLastOne from './items/1271-the-last-one.ts';
-import deleteTheTest from './items/1274-delete-the-test.ts';
 import otelRollback from './items/1276-otel-rollback.ts';
-import fixCi from './items/1278-fix-ci.ts';
 import nodeSecurity from './items/1282-node-security.ts';
 import homePageSpeed from './items/1288-home-page-speed.ts';
 import reportAttack from './items/1289-report-attack.ts';
@@ -49,7 +47,7 @@ import searchPages from './items/1327-search-pages.ts';
 import searchByColour from './items/1329-search-by-colour.ts';
 import outsideUrl from './items/1333-outside-url.ts';
 import freeDelivery from './items/1334-free-delivery.ts';
-import deleteTheTestAgain from './items/1335-delete-the-test-again.ts';
+import unsignedImageAgain from './items/1335-unsigned-image-again.ts';
 import releases from './items/line.ts';
 import { PROOFS } from './proofs.ts';
 import { scoreEvents } from './score.ts';
@@ -59,9 +57,7 @@ export const ITEMS = [
   searchLogs,
   readsOnThursday,
   theLastOne,
-  deleteTheTest,
   otelRollback,
-  fixCi,
   nodeSecurity,
   homePageSpeed,
   reportAttack,
@@ -88,7 +84,7 @@ export const ITEMS = [
   searchByColour,
   outsideUrl,
   freeDelivery,
-  deleteTheTestAgain,
+  unsignedImageAgain,
 ];
 
 /** The line, running from before the first sample. */

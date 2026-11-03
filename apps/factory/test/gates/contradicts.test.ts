@@ -445,9 +445,10 @@ describe('the gate, reading the description', () => {
     const prefix = '/the-roganator/cv-software-factory/blob/main/';
     expect(link.pathname.startsWith(prefix)).toBe(true);
     const doc = await readFile(new URL(`../../../../${link.pathname.slice(prefix.length)}`, import.meta.url), 'utf8');
-    // GitHub's anchor for a heading: lower case, punctuation dropped, spaces as hyphens. An example in a code fence
-    // is no heading, and a second heading of the name would take the anchor with a suffix, so exactly one must have it.
-    const headings = doc.replace(/^```[\s\S]*?^```$/gm, '').match(/^#{1,6} .+$/gm) ?? [];
+    // GitHub's anchor for a heading: lower case, punctuation dropped, spaces as hyphens. An example in a code fence,
+    // of backticks or tildes, is no heading, and a second heading of the name would take the anchor with a suffix, so
+    // exactly one must have it.
+    const headings = doc.replace(/^(```|~~~)[\s\S]*?^\1$/gm, '').match(/^#{1,6} .+$/gm) ?? [];
     const anchor = (heading: string) =>
       `#${heading
         .replace(/^#+ /, '')

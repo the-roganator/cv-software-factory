@@ -119,6 +119,20 @@ describe('assertions as text', () => {
   });
 });
 
+describe('assertions as text, reformatted', () => {
+  const calls = (body: string) => testsIn(`it('x', () => { ${body} });`)[0]?.calls;
+
+  it('is the same with other quotes, comments or line breaks, and different with another matcher', () => {
+    const plain = calls("expect(res.status).toBe(200); expect(a).toBe('it\\'s');");
+    expect(calls('expect(res.status) // the status\n  .toBe(200);\nexpect(a).toBe("it\'s");')).toEqual(plain);
+    expect(calls("expect(res.status) /* a */ .toBe(200); expect(a).toBe(`it's`);")).toEqual(plain);
+    expect(calls('expect(res.status) // the status\n  .toBeDefined();')?.[0]).toBe('expect(res.status).toBeDefined()');
+    // A template's text around its expressions stays as written, slashes and all.
+    const template = 'expect(url).toBe(`$' + '{proto}//host`)';
+    expect(calls(`${template};`)).toEqual([template]);
+  });
+});
+
 describe('test integrity, with tests the spec contradicts', () => {
   const app = (body: string) => `describe('files', () => {
   it('keeps the page', () => {
@@ -197,6 +211,24 @@ ${body}
     expect(compare(base, new Map(), both).contradicted).toHaveLength(2);
   });
 
+  it('fails a named test rewritten to assert nothing', () => {
+    const empty = new Map([['test/app.test.ts', app("  it('keeps nothing of the other files', () => {});")]]);
+    expect(compare(base, empty, [NAMED]).problems.map((p) => p.message)).toEqual([
+      `"${NAMED.test}" was rewritten to assert nothing`,
+    ]);
+  });
+
+  it('matches two tests of one name in a file in order', () => {
+    const two =
+      "describe('a', () => { it('x', () => { expect(1).toBe(1); }); });\nit('a > x', () => { expect(2).toBe(2); });";
+    const same = new Map([['test/a.test.ts', two]]);
+    expect(compare(same, new Map(same)).problems).toEqual([]);
+    const second = new Map([['test/a.test.ts', two.replace('expect(2).toBe(2)', 'expect(2).toBeDefined()')]]);
+    expect(compare(same, second).problems.map((p) => p.message)).toEqual([
+      '"a > x" no longer asserts expect(2).toBe(2)',
+    ]);
+  });
+
   it('still fails a named test skipped, or narrowed with .only', () => {
     for (const modifier of ['skip', 'only']) {
       const change = new Map([
@@ -236,7 +268,7 @@ describe('the gate, reading the description', () => {
     // The summary goes to the job's page in Actions; here, to the output.
     vi.stubEnv('GITHUB_STEP_SUMMARY', '');
     try {
-      const code = await main(args, env, fetcher);
+      const code = await main(args, env, fetcher, async () => {});
       return { code, output: output.join('\n') };
     } finally {
       log.mockRestore();
@@ -281,7 +313,7 @@ describe('the gate, reading the description', () => {
       asked.push([url, init]);
       return replies.shift() as Response;
     }) as typeof fetch;
-    expect(await description(env, fetcher)).toBe(SECTION);
+    expect(await description(env, fetcher, async () => {})).toBe(SECTION);
     expect(asked.map(([url]) => url)).toEqual([
       'https://api.example/repos/the-roganator/cv-worlds-worst-website/pulls/155',
       'https://api.example/repos/the-roganator/cv-worlds-worst-website/pulls/155',
@@ -348,6 +380,14 @@ describe('the gate, reading the description', () => {
       const file = join(await dirs({ 'd.md': SECTION }), 'd.md');
       expect((await run([base, change, '--description', file], env, fetch)).code).toBe(1);
     }
+  });
+
+  it('asks GitHub nothing for a change that weakens no test', async () => {
+    const base = await dirs({ 'test/a.test.ts': "it('x', () => { expect(1).toBe(1); });" });
+    const never = vi.fn(async () => answer(503, {}));
+    const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: '/nowhere' };
+    expect((await run([base, base], env, never as typeof fetch)).code).toBe(0);
+    expect(never).not.toHaveBeenCalled();
   });
 
   it('outside Actions, reads a description from a file, or excuses nothing', async () => {

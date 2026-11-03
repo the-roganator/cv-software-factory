@@ -9,8 +9,9 @@
  *
  * In Actions it reads the description through the API when it runs, never from the event's payload, which holds the
  * description as it was when the run was triggered: on `pull_request` by the pull request's number, and on
- * `merge_group` by the number in the queue's branch. It needs `pull-requests: read` for that. A description it
- * cannot read, or a section it cannot parse, fails the gate. Outside Actions, `--description` names a file to read
+ * `merge_group` by the number in the queue's branch. It needs `pull-requests: read` for that. It asks only when
+ * the change would fail without the description; then a description it cannot read, or a section it cannot parse,
+ * fails the gate. Outside Actions, `--description` names a file to read
  * it from instead, for trying the gate by hand; with none, no test is excused.
  */
 
@@ -51,7 +52,11 @@ export async function pullRequestNumber(env: Env): Promise<number | { error: str
 }
 
 /** The pull request's description as it is now, through the API, or why it could not be read. */
-export async function description(env: Env, fetcher: typeof fetch = fetch): Promise<string | { error: string }> {
+export async function description(
+  env: Env,
+  fetcher: typeof fetch = fetch,
+  pause: (ms: number) => Promise<unknown> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<string | { error: string }> {
   const number = await pullRequestNumber(env);
   if (typeof number !== 'number') return number;
   const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo } = env;
@@ -60,7 +65,9 @@ export async function description(env: Env, fetcher: typeof fetch = fetch): Prom
   const api = env.GITHUB_API_URL || 'https://api.github.com';
   const url = `${api}/repos/${repo}/pulls/${number}`;
   let problem = '';
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Three tries, a second and then three apart, so a moment's trouble at GitHub does not fail the gate.
+  for (const wait of [0, 1_000, 3_000]) {
+    if (wait) await pause(wait);
     try {
       const response = await fetcher(url, {
         headers: {
@@ -86,18 +93,28 @@ export async function description(env: Env, fetcher: typeof fetch = fetch): Prom
 }
 
 /** The tests the description names, or the problem that fails the gate instead. */
-async function named(env: Env, fetcher: typeof fetch, file: string | undefined) {
+async function named(
+  env: Env,
+  fetcher: typeof fetch,
+  file: string | undefined,
+  pause?: (ms: number) => Promise<unknown>,
+): Promise<{ tests: Contradicted[] } | { error: string }> {
   let text: string | { error: string };
   if (env.GITHUB_ACTIONS === 'true') {
     text = file
       ? { error: 'Test integrity reads the description from GitHub in Actions, not from a file' }
-      : await description(env, fetcher);
+      : await description(env, fetcher, pause);
   } else text = file ? await readFile(file, 'utf-8') : '';
   if (typeof text !== 'string') return text;
   return parse(text);
 }
 
-export async function main(args: string[], env: Env = process.env, fetcher: typeof fetch = fetch): Promise<number> {
+export async function main(
+  args: string[],
+  env: Env = process.env,
+  fetcher: typeof fetch = fetch,
+  pause?: (ms: number) => Promise<unknown>,
+): Promise<number> {
   const at = args.indexOf('--description');
   const file = at === -1 ? undefined : args[at + 1];
   const [base, change] = at === -1 ? args : args.filter((_, i) => i !== at && i !== at + 1);
@@ -105,14 +122,17 @@ export async function main(args: string[], env: Env = process.env, fetcher: type
     console.error('Usage: test-integrity.ts <base checkout> <change checkout> [--description <file>]');
     return 2;
   }
-  const list = await named(env, fetcher, file);
+  const before = await filesIn(base, TEST_FILE);
+  const after = await filesIn(change, TEST_FILE);
+  // The description matters only to a change that would fail without it: one that weakens no test passes without
+  // asking GitHub, so a gate that has nothing to excuse never fails on reading it.
+  const strict = compare(before, after);
+  const list = strict.problems.length ? await named(env, fetcher, file, pause) : { tests: [] };
   const unread = 'error' in list ? list.error : undefined;
   const contradicts: Contradicted[] = 'tests' in list ? list.tests : [];
-  const { problems, added, contradicted, unchanged, unknown } = compare(
-    await filesIn(base, TEST_FILE),
-    await filesIn(change, TEST_FILE),
-    contradicts,
-  );
+  const { problems, added, contradicted, unchanged, unknown } = contradicts.length
+    ? compare(before, after, contradicts)
+    : strict;
   if (unread) annotate('error', unread);
   for (const p of problems) annotate('error', p.message, p.file);
   for (const c of contradicted) {
@@ -133,7 +153,7 @@ export async function main(args: string[], env: Env = process.env, fetcher: type
   await summarise(
     [
       '## Test integrity',
-      unread ? `The tests the spec contradicts could not be read, so none is excused: ${unread}.` : '',
+      unread ? `The tests the spec contradicts could not be read, so none is excused: ${cell(unread)}.` : '',
       problems.length
         ? `This change weakens ${problems.length === 1 ? 'a test' : `${problems.length} tests`}. Existing tests may not be deleted, skipped or lose an assertion, unless the description names them as tests the spec contradicts.\n\n${table('What changed', findings(problems))}`
         : contradicted.length

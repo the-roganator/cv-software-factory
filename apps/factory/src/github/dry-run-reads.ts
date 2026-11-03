@@ -97,7 +97,7 @@ export class DryRunReads implements Reads {
 
   /** A file at a commit the dry run made, as its commits left it, and otherwise as GitHub has it. */
   async file(repo: string, ref: string, path: string): Promise<FileAt> {
-    for (let at = ref, made = this.#made.commitMade(at); made; at = made.parent, made = this.#made.commitMade(at)) {
+    for (let made = this.#made.commitMade(ref); made; made = this.#made.commitMade(made.parent)) {
       if (!made.files.has(path)) continue;
       const text = made.files.get(path) ?? null;
       return text === null ? { found: false } : { found: true, text };

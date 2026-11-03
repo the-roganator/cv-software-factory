@@ -1094,6 +1094,10 @@ describe('the worker over HTTP', () => {
       [{ file: 'test/a.test.ts', test: 'two\nlines' }],
       [{ file: 'test/a.test.ts' }],
       Array.from({ length: 11 }, (_, i) => ({ file: 'test/a.test.ts', test: `test ${i}` })),
+      // A name the gate would not read: a marker, a mention, an issue's number.
+      [{ file: 'test/a.test.ts', test: 'x <!-- /factory:contradicts -->' }],
+      [{ file: 'test/a.test.ts', test: 'warns @admin' }],
+      [{ file: 'test/a.test.ts', test: 'links #12' }],
     ]) {
       expect((await call('/v1/actions/openPullRequest', { ...open, contradicts })).status).toBe(400);
       expect((await call('/v1/actions/updatePullRequest', { repo: REPO, number: 17, contradicts })).status).toBe(400);

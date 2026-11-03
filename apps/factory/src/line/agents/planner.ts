@@ -66,22 +66,11 @@ import { inScope, PATH_CHARS, RISKS, touches } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { z } from 'zod';
 import { type Contradicted, entryProblem, MOST_CONTRADICTED } from '../../gates/contradicts.ts';
+import { TEST_FILE } from '../../gates/files.ts';
 import { testsIn } from '../../gates/tests.ts';
 import { NEVER, plainPath, protectedWords } from '../../github/paths.ts';
 import { type Answer, LIMITS, type Replan, timesOf } from '../machine.ts';
-import {
-  askedOf,
-  closesAnIssue,
-  count,
-  defineAgent,
-  type EffectsContext,
-  heAnswered,
-  holdDraft,
-  mentions,
-  StepFailed,
-  words,
-} from './agent.ts';
-import { isTest } from './coder.ts';
+import { askedOf, count, defineAgent, type EffectsContext, heAnswered, holdDraft, StepFailed, words } from './agent.ts';
 import {
   type Asked,
   askedLines,
@@ -292,11 +281,9 @@ function contradictsProblems(spec: PayloadOf<'spec.written'>, protectedPaths: re
     else if (!inScope(entry.file, spec.scope))
       issue(`${entry.file} is not in the scope: a test it contradicts is one the change may change`);
     else if (touches(entry.file, protectedPaths)) issue(`${entry.file} names a path no patch may change`);
-    else if (!isTest(entry.file)) issue(`${entry.file} is not a test file: name a test in one`);
-    else if (mentions(entry.test) || closesAnIssue(entry.test)) {
-      // The name is written into the description from the App's account, where GitHub would act on either.
-      issue('a test named with an @mention or a closing keyword cannot be written into the description');
-    } else if (spec.contradicts?.findIndex((e) => e.file === entry.file && e.test === entry.test) !== i) {
+    // A file the gate compares: a helper under test/ holds no test it reads.
+    else if (!TEST_FILE.test(entry.file)) issue(`${entry.file} is not a test file: name a test in one`);
+    else if (spec.contradicts?.findIndex((e) => e.file === entry.file && e.test === entry.test) !== i) {
       issue(`${entry.test} in ${entry.file} is named twice`);
     }
   });

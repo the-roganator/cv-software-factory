@@ -329,11 +329,14 @@ describe('the tests a spec contradicts', () => {
     expect(issue(contradicting([{ ...named, file: 'src/money.ts' }]))?.message).toBe(
       'src/money.ts is not a test file: name a test in one',
     );
-    // Written into the description from the App's account, a name may not notify anyone or close an issue.
-    for (const test of ['pounds > warns @admin', 'pounds > fixes #12']) {
-      expect(issue(contradicting([{ ...named, test }]))?.message, test).toBe(
-        'a test named with an @mention or a closing keyword cannot be written into the description',
-      );
+    // A helper under test/ is no file the gate compares.
+    expect(issue(contradicting([{ ...named, file: 'test/support/shop.ts' }], ['src/money.ts', 'test/']))?.message).toBe(
+      'test/support/shop.ts is not a test file: name a test in one',
+    );
+    // Written into the description from the App's account, a name may not notify anyone, link an issue or carry a
+    // marker: the gate's own rule for an entry says so.
+    for (const test of ['pounds > warns @admin', 'pounds > fixes #12', 'pounds > <!-- factory:contradicts -->']) {
+      expect(issue(contradicting([{ ...named, test }]))?.message, test).toMatch(/^the test cannot be named: /);
     }
     expect(contradicting(Array.from({ length: 11 }, (_, i) => ({ ...named, test: `test ${i}` }))).success).toBe(false);
   });

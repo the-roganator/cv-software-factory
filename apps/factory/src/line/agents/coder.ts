@@ -793,7 +793,7 @@ function pullRequestBody(
 }
 
 /** Whether a path is a test, by the conventions Vitest and Jest find tests by. */
-export const isTest = (path: string) =>
+const isTest = (path: string) =>
   /(^|\/)(test|tests|__tests__)\//.test(path) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
 
 /** Each file a patch changes, with the lines it adds and removes. */

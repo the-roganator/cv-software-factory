@@ -52,7 +52,7 @@ import { FlagSection } from './FlagSheet.tsx';
 import { CATEGORY_NAME, Glyph } from './Glyph.tsx';
 import { LogoMark, ToolMark, type ToolName } from './Logos.tsx';
 import { WaitsOnMartin } from './NeedsYou.tsx';
-import { keyed, Picture, Shot, useMeasured } from './Pictures.tsx';
+import { keyed, OpensShots, Picture, Shot, useMeasured } from './Pictures.tsx';
 import { ShippedSection } from './Shipped.tsx';
 import '../styles/sheet.css';
 
@@ -158,7 +158,12 @@ export function Sheet({ view, item, ...props }: SheetProps) {
   const sheet = useMemo(() => projectSheet(view, item), [view, item]);
   if (!sheet) return null;
   const index = view.cards.findIndex((card) => card.number === sheet.card.number);
-  return <Raised sheet={sheet} index={index} count={view.cards.length} {...props} />;
+  // In a sheet, a screenshot opens at full size when pressed.
+  return (
+    <OpensShots>
+      <Raised sheet={sheet} index={index} count={view.cards.length} {...props} />
+    </OpensShots>
+  );
 }
 
 type RaisedProps = Omit<SheetProps, 'view' | 'item'> & { sheet: SheetData; index: number; count: number };

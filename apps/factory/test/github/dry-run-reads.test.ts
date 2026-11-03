@@ -128,6 +128,9 @@ describe('a dry run’s reads', () => {
     expect(drafts.at(-1)?.payload).toMatchObject({ commit, conclusion: 'passed', passed: 2, failed: [] });
     // Nothing ran, and the gate says so.
     expect(drafts[1]?.payload).toMatchObject({ check: 'Unit tests', required: true, summary: DRY_RUN_CHECK_TITLE });
+    // And it said nothing was wrong.
+    expect((await reads.checkRuns(REPO, commit)).some((run) => 'annotations' in run)).toBe(false);
+    expect(drafts.some((d) => d.type === 'gate.finished' && 'annotations' in d.payload)).toBe(false);
   });
 
   it('never merge it while it is a draft, and merge it as the App a while after it is readied', async () => {

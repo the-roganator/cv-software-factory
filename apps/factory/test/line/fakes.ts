@@ -6,7 +6,7 @@
 import type { Sql } from 'postgres';
 import type { Handback } from '../../../runner/src/step.ts';
 import type { DeployProposal } from '../../src/github/deploys.ts';
-import type { CheckRun, Comparison, PullRequestState } from '../../src/github/reads.ts';
+import type { Annotation, CheckRun, Comparison, PullRequestState } from '../../src/github/reads.ts';
 import type {
   ActingFor,
   ActionArgs,
@@ -278,8 +278,8 @@ export class FakeGitHub implements GitHubPort {
     throw new Error(`No fake read ${read}`);
   }
 
-  /** The required check, finished on the pull request's head. */
-  pass(number = 12, conclusion = 'success'): void {
+  /** The required check finishing on the pull request's head; one that fails says what was wrong, as the worker reads it. */
+  pass(number = 12, conclusion = 'success', annotations?: Annotation[]): void {
     const pr = this.pulls.get(number);
     if (!pr) throw new Error(`No pull request #${number}`);
     this.checks.set(pr.head.sha, [
@@ -292,6 +292,7 @@ export class FakeGitHub implements GitHubPort {
         startedAt: '2026-10-05T10:00:00Z',
         completedAt: '2026-10-05T10:01:00Z',
         title: null,
+        ...(annotations ? { annotations } : {}),
       },
     ]);
   }

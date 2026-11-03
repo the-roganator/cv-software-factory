@@ -77,7 +77,7 @@ export const gate: NewEvent<'gate.finished'> = {
   ts: '2026-10-02T12:20:00.000Z',
   work_item: '1284',
   type: 'gate.finished',
-  version: 1,
+  version: 2,
   actor: 'actions',
   summary: 'Unit tests failed',
   payload: {
@@ -89,6 +89,10 @@ export const gate: NewEvent<'gate.finished'> = {
     durationMs: 23_000,
     output:
       'FAIL test/money.test.ts\n  env: ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnop\n  token=ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+    annotations: [
+      { path: 'test/money.test.ts', message: '"pounds > writes 5 pence as £0.05" was deleted' },
+      { path: 'test/env.test.ts', message: '"reads token=ghp_abcdefghijklmnopqrstuvwxyz0123456789" was deleted' },
+    ],
   },
   artifacts: [],
 };

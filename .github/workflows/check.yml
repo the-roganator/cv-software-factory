@@ -90,10 +90,14 @@ jobs:
           persist-credentials: false
       # mise itself at one named release in every workflow (scripts/toolchain.test.ts). With mise.lock beside mise.toml,
       # the action installs with `--locked`: the versions and checksums the lock holds, and it fails when the lock has
-      # none for a request, rather than resolve that day's release.
+      # none for a request, rather than resolve that day's release. Every use saves its cache on main alone: a run reads
+      # only its own branch's caches and main's, so a copy saved anywhere else would serve that branch's later runs and
+      # nobody else's, at about 100 MB each (toolchain-cache.yml). A pull request that moves the toolchain installs it
+      # afresh on each run for that.
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm kustomize
       - run: pnpm install --frozen-lockfile
       - run: make check-static
@@ -119,6 +123,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           # kustomize, step and promtool for the tests that render the manifests, make a local certificate authority
           # and run the alerts on the flags (scripts/image-pins.test.ts, scripts/local-ca.test.ts,
           # apps/factory/test/flag-alerts.test.ts).
@@ -197,20 +202,23 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON('["release", "deploy", "manifests"]'), needs.kind.outputs.kind) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
-    # The console's tests in three shards, each on a runner of its own, and the speed test on another: it is timed, so
-    # it runs alone, with no other test's browser on its CPU. A part that fails stops none of the others, so a run
-    # shows every failure.
+    # The console's tests in four shards, each on a runner of its own, and the speed test on another: it is timed, so
+    # it runs alone, with no other test's browser on its CPU. Playwright shards by count of tests, in file order, not
+    # by how long they take, so the slowest shard, whichever tests it draws, sets the job's time. A part that fails
+    # stops none of the others, so a run shows every failure.
     strategy:
       fail-fast: false
       matrix:
-        part: [1/3, 2/3, 3/3, speed]
+        part: [1/4, 2/4, 3/4, 4/4, speed]
         include:
-          - part: 1/3
-            tests: --project console --project live --shard 1/3
-          - part: 2/3
-            tests: --project console --project live --shard 2/3
-          - part: 3/3
-            tests: --project console --project live --shard 3/3
+          - part: 1/4
+            tests: --project console --project live --shard 1/4
+          - part: 2/4
+            tests: --project console --project live --shard 2/4
+          - part: 3/4
+            tests: --project console --project live --shard 3/4
+          - part: 4/4
+            tests: --project console --project live --shard 4/4
           - part: speed
             tests: --project speed --no-deps
     container:
@@ -290,6 +298,7 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --filter @software-factory/console build

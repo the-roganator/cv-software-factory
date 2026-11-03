@@ -1,0 +1,74 @@
+/*
+ * A screenshot at full size (ShotViewer.tsx): the console's dialog, as wide as the screen allows up to the page's own
+ * width, or two pages' for a wipe's sides, and as tall. Its title and Close stay; the page scrolls between them.
+ */
+.dialog.viewer {
+  width: calc(100vw - 32px);
+  max-width: 1328px;
+  /* The card inside is held to the dialog's height, so the dialog never scrolls as well as the page. */
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+.dialog.viewer:has(.viewer-sides.two) {
+  max-width: 2648px;
+}
+.viewer .dialog-card {
+  max-height: calc(100dvh - 34px);
+}
+.viewer-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.viewer-sides {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+}
+.viewer-sides.two {
+  grid-template-columns: 1fr 1fr;
+}
+.viewer-side {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+.viewer-side figcaption {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 8px 12px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--line);
+}
+/* The page at the width it is given, its marks in shares of it, and their labels scaled to it as on a card. */
+.viewer-page {
+  position: relative;
+  width: 100%;
+  margin-inline: auto;
+  container-type: inline-size;
+}
+.viewer-page img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+@media (max-width: 720px) {
+  .dialog.viewer {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100dvh - 16px);
+  }
+  .viewer .dialog-card {
+    max-height: calc(100dvh - 18px);
+  }
+  .viewer-sides.two {
+    grid-template-columns: 1fr;
+  }
+}

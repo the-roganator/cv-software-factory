@@ -18,19 +18,22 @@ COPY packages/events/package.json packages/events/
 COPY packages/store/package.json packages/store/
 COPY packages/triage/package.json packages/triage/
 
-FROM base AS server
+# The production dependencies, readable by the unprivileged runtime user and writable by root alone, set in the layer
+# that installs them, so a change to the code alone writes none of them again.
+FROM base AS deps
 # No lifecycle scripts: the only one is the repository's own, which installs git hooks.
-RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/factory...
-COPY apps/factory/src apps/factory/src
-COPY packages/events/src packages/events/src
-COPY packages/store/src packages/store/src
-COPY packages/triage/src packages/triage/src
-COPY policy policy
-# Readable by the unprivileged runtime user, and by nobody's writes.
-RUN chmod -R a+rX,go-w /repo
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-factory/factory... \
+  && chmod -R a+rX,go-w /repo
 
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:cb606325b7ec4af55462cb0b424a53b452a5b4a894ffe841fcf1048d216fb9f8
-COPY --from=server /repo /repo
+# The dependencies first, then the code over them, each copy a layer of its own, the code with the same modes.
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:cb606325b7ec4af55462cb0b424a53b452a5b4a894ffe841fcf1048d216fb9f8 AS runtime
+COPY --from=deps /repo /repo
+WORKDIR /repo
+COPY --chmod=a+rX,go-w apps/factory/src apps/factory/src
+COPY --chmod=a+rX,go-w packages/events/src packages/events/src
+COPY --chmod=a+rX,go-w packages/store/src packages/store/src
+COPY --chmod=a+rX,go-w packages/triage/src packages/triage/src
+COPY --chmod=a+rX,go-w policy policy
 WORKDIR /repo/apps/factory
 ENV NODE_ENV=production PORT=8080
 EXPOSE 8080

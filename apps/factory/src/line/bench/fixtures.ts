@@ -677,6 +677,56 @@ const CARDS_FENCE_RETURN: LineEvent[] = [
   APPROVED,
 ];
 
+/**
+ * The fix for the wrong price, as a first round that also deleted a test it had no need to touch: the test
+ * integrity gate fails it.
+ */
+const PRICE_FIX_DELETES_TEST = `${PRICE_FIX}@@ -26,10 +30,6 @@ describe('a product page', () => {
+     expect(textOf(body)).toContain('To buy it, write to us and mention item 5.');
+   });
+ 
+-  it('says when it was last dusted', async () => {
+-    expect(textOf((await shop.get('/products/thing-5')).body)).toContain('Last dusted Tuesday 29 September');
+-  });
+-
+   it('answers 404 for a product we do not stock', async () => {
+     expect((await shop.get('/products/thing-99')).status).toBe(404);
+   });
+`;
+
+/** The check that fails it, by its name in the app's gates. */
+const TEST_INTEGRITY = 'gates / test integrity';
+
+/**
+ * That round's gates, and the return they send to the coder, as the line records them: test integrity failed, with
+ * what it said (`test-integrity.ts`, run on the change), and Actions' exit-code line already left out by the worker.
+ */
+const TEST_DELETED_RETURN: LineEvent[] = [
+  { type: 'gates.started', payload: { pullRequest: 1, commit: APP_MAIN, checks: ['gates / tests', TEST_INTEGRITY] } },
+  {
+    type: 'gate.finished',
+    payload: {
+      pullRequest: 1,
+      commit: APP_MAIN,
+      check: TEST_INTEGRITY,
+      conclusion: 'failure',
+      required: true,
+      durationMs: 9_000,
+      annotations: [
+        { path: 'test/pages-product.test.ts', message: '"a product page > says when it was last dusted" was deleted' },
+      ],
+    },
+  },
+  {
+    type: 'gates.finished',
+    payload: { pullRequest: 1, commit: APP_MAIN, conclusion: 'failed', passed: 1, failed: [TEST_INTEGRITY] },
+  },
+  {
+    type: 'work.returned',
+    payload: { from: 'gates', to: 'build', reason: `The gates failed: ${TEST_INTEGRITY}`, failed: [TEST_INTEGRITY] },
+  },
+];
+
 export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
   planner: {
     'wrong-price': {
@@ -889,6 +939,22 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         returned: { from: 'review', reason: 'The review approved, with 2 suggestions to take or decline' },
         findings: [],
         suggestions: PRICE_SUGGESTIONS,
+        protectedPaths: APP_PROTECTED,
+      },
+    },
+    'test-deleted': {
+      about:
+        'the fix for the wrong price, sent back by test integrity: its first round deleted an existing test on the product page, which the gate names',
+      commit: APP_MAIN,
+      seed: PRICE_SEED,
+      change: { patch: PRICE_FIX_DELETES_TEST, message: PRICE_FIX_MESSAGE },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: PRICE_SIGNALS,
+        spec: PRICE_SPEC,
+        round: 2,
+        returned: fold(TEST_DELETED_RETURN).rebuild,
         protectedPaths: APP_PROTECTED,
       },
     },

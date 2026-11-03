@@ -45,6 +45,20 @@ describe('make check in CI', () => {
     );
   });
 
+  it('runs every shard of the console’s browser tests, and the speed test alone', () => {
+    const job = jobs.get('console-browser') ?? '';
+    const parts = job.match(/part: \[([^\]]*)\]/)?.[1]?.split(', ') ?? [];
+    const shards = parts.filter((part) => part !== 'speed');
+    expect(shards.length).toBeGreaterThan(1);
+    expect(parts).toEqual([...shards.map((_, i) => `${i + 1}/${shards.length}`), 'speed']);
+    // Each part runs the tests its name says: a shard that ran another's would leave a share of the tests unrun.
+    const tests = [...job.matchAll(/- part: (\S+)\n\s+tests: (.*)/g)].map(([, part, flags]) => [part, flags]);
+    expect(tests).toEqual([
+      ...shards.map((shard) => [shard, `--project console --project live --shard ${shard}`]),
+      ['speed', '--project speed --no-deps'],
+    ]);
+  });
+
   it('runs the required check whatever its parts did, a cancelled run included', () => {
     const check = jobs.get('check') ?? '';
     expect(check).toMatch(/^ {4}name: lint, types, tests$/m);

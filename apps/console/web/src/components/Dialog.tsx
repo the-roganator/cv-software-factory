@@ -3,8 +3,8 @@
  * sheet on a phone. It is the browser's own modal `<dialog>`, so the page behind it cannot be reached and focus stays
  * in it; its title takes focus as it opens, and the control that opened it gets it back as it closes. Escape, the
  * scrim or Cancel close it. Every write that asks before it acts uses one: the passkey again (`StepUp.tsx`), aborting
- * a canary, and the actions to come. It draws its Cancel itself, first in the row at its foot, as `onClose` implies;
- * a dialog with nothing to do has only Close.
+ * a canary, and the actions to come; so does a screenshot at full size, wider. It draws its Cancel itself, first in
+ * the row at its foot, as `onClose` implies; a dialog with nothing to do has only Close.
  */
 import { type ReactNode, useEffect, useId, useRef } from 'react';
 
@@ -16,9 +16,11 @@ interface DialogProps {
   /** What it does, after its Cancel, in the row at its foot; with none, the row has only Close. */
   actions?: ReactNode;
   onClose: () => void;
+  /** A class beside `dialog`, for a dialog of another size: a screenshot at full size (`ShotViewer.tsx`). */
+  className?: string;
 }
 
-export function Dialog({ title, kicker, children, actions, onClose }: DialogProps) {
+export function Dialog({ title, kicker, children, actions, onClose, className }: DialogProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const id = useId();
@@ -50,7 +52,7 @@ export function Dialog({ title, kicker, children, actions, onClose }: DialogProp
     // biome-ignore lint/a11y/useKeyWithClickEvents: Escape closes it, through the dialog's own cancel event
     <dialog
       ref={dialog}
-      className="dialog"
+      className={className ? `dialog ${className}` : 'dialog'}
       aria-labelledby={id}
       // The dialog's own box is its backdrop's edge: a press on it, and not on the card inside, is on the scrim.
       onClick={(event) => {

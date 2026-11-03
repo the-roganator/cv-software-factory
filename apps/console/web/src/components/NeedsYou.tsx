@@ -450,12 +450,12 @@ function FlagCard({
       {need.pictures && (
         <div className="pair-mini">
           <figure>
-            <div className="vis">{need.pictures.off && <Shot shot={need.pictures.off} />}</div>
+            <div className="vis">{need.pictures.off && <Shot shot={need.pictures.off} of="the flag off" />}</div>
             <figcaption>{need.pictures.off ? 'flag off' : 'flag off · no picture'}</figcaption>
           </figure>
           <figure>
             <div className="vis">
-              <Shot shot={need.pictures.on} />
+              <Shot shot={need.pictures.on} of="the flag on" />
             </div>
             <figcaption>flag on</figcaption>
           </figure>

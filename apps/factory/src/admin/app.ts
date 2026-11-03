@@ -21,8 +21,9 @@
  * - The feature flags' stages (`flags.ts`): `POST /admin/flags/:flag/stage` with the stage the slider showed, the one
  *   chosen and, to turn it off, Martin's reason, with the passkey again when the move widens past Checks.
  * - `GET /admin/flags/held`, public: whether the app holds the flags as set (`flags-held.ts`), as last checked.
- * - Needs you (`holds.ts`): `POST /admin/holds/:workItem/approve`, `/reject` and `/answer` (with his words), each
- *   naming the hold the card showed, with the passkey again to approve a guardrail's, or an improvement's spec.
+ * - Needs you (`holds.ts`): `POST /admin/holds/:workItem/approve`, `/reject`, `/answer` and `/replan` (both with his
+ *   words), each naming the hold the card showed, with the passkey again to approve a guardrail's, or an improvement's
+ *   spec.
  * - The "+" (`improvements.ts`): `POST /admin/improvements` with Martin's words and the request's id, with the passkey
  *   again, which opens a work item of kind improvement with his request.
  * - `GET /admin/session`, with the token the session's writes carry and the deployment's tools Martin's menu links to,
@@ -43,7 +44,7 @@ import type { AdminConfig } from './config.ts';
 import { type FlagStages, MOVE } from './flags.ts';
 import type { FlagsHeld } from './flags-held.ts';
 import { fromConsole, type Guard, guardOf, refuseWrite } from './guard.ts';
-import { ANSWER, answerHold, WORK_ITEM } from './holds.ts';
+import { ANSWER, answerHold, TAKES_WORDS, WORK_ITEM } from './holds.ts';
 import { REQUEST, requestImprovement } from './improvements.ts';
 import { CHANGE, changeControls, REASON, startLine, stopLine } from './line.ts';
 import { SWITCH, switchPhone } from './phone.ts';
@@ -212,7 +213,7 @@ export function createAdminApp({
     const workItem = values.workItem ?? '';
     const given = ANSWER[decision].safeParse(body);
     if (!WORK_ITEM.test(workItem) || !given.success) {
-      return refused(400, 'body', decision === 'answered' ? 'Send the hold, and your words.' : 'Send the hold.');
+      return refused(400, 'body', TAKES_WORDS[decision] ? 'Send the hold, and your words.' : 'Send the hold.');
     }
     return { status: 200, body: await answerHold(store, session as Session, workItem, decision, given.data) };
   };
@@ -429,6 +430,7 @@ export function createAdminApp({
     'hold.approve': (context) => answer('approved', context),
     'hold.reject': (context) => answer('rejected', context),
     'hold.answer': (context) => answer('answered', context),
+    'hold.replan': (context) => answer('replanned', context),
 
     'passkey.revoke': async ({ values, session }) => {
       const live = session as Session;

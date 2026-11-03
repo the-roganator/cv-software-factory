@@ -346,7 +346,7 @@ test('a visitor reads an improvement’s flag and a held work item’s answers o
   await page.goto(consoleUrl({ item: '1323', sheet: true }));
   await expect(waits).toHaveAccessibleName('Waiting on Martin');
   await expect(waits.locator('.need')).toHaveAccessibleName('Held by review');
-  await expect(waits.locator('.ro')).toHaveText(['Approve', 'Answer in words', 'Reject']);
+  await expect(waits.locator('.ro')).toHaveText(['Approve', 'Answer in words', 'Back to the planner', 'Reject']);
   await expect(waits.getByRole('button')).toHaveCount(0);
   // Nothing waits on a work item that is done.
   await page.goto(consoleUrl({ item: '1271', sheet: true }));

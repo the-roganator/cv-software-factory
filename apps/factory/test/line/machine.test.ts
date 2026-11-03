@@ -1017,7 +1017,7 @@ describe('Martin’s answer to a hold', () => {
 
   it('has a rule for every cause and every answer', () => {
     for (const cause of HOLD_CAUSES) {
-      expect(Object.keys(ANSWERS[cause]).sort()).toEqual(['answered', 'approved', 'rejected']);
+      expect(Object.keys(ANSWERS[cause]).sort()).toEqual(['answered', 'approved', 'rejected', 'replanned']);
     }
   });
 
@@ -1338,6 +1338,41 @@ describe('Martin’s answer to a hold', () => {
     // Once it has gone back, the coder works the next round.
     const back = [...gates, answer('answered', 'The test is wrong'), returned('gates')];
     expect(decide(back, facts).next).toEqual({ do: 'step', agent: 'coder', round: 2 });
+  });
+
+  it('sends the work back to the planner, with his words, from a review or gates hold, and rebuilds its pull request', () => {
+    const words = 'The spec contradicts files > keeps nothing of the other files: name it';
+    const escalated = [ticket, spec, pushed(), started(), finished('passed'), review('escalated')];
+    const gates = [ticket, spec, pushed(), started(), finished('failed')];
+    for (const [cause, before] of [
+      ['review', escalated],
+      ['gates', gates],
+    ] as const) {
+      const back = [...before, held(cause, cause), answer('replanned', words)];
+      const state = fold(back);
+      // The line's own way to Plan, as from any hold that replans: the spec is cleared, his words go to the planner
+      // with what he was asked, and the planner is told why it came back.
+      expect(state.spec, cause).toBeUndefined();
+      expect(state.answers, cause).toEqual([{ asked: 'Held for Martin', answer: words }]);
+      expect(state.replan, cause).toEqual({ cause, approved: false, answered: true, reason: 'Held for Martin' });
+      expect(decide(back, facts).next, cause).toEqual({ do: 'step', agent: 'planner', round: 1 });
+      // The new spec meets the pull request already open: the coder is sent to rebuild it, not to open another.
+      expect(decide([...back, spec], facts).next, cause).toEqual({
+        do: 'return',
+        from: 'review',
+        to: 'build',
+        reason: 'The planner wrote the spec again: the change is held to the new one',
+      });
+      expect(decide([...back, spec, returned('review')], facts).next, cause).toEqual({
+        do: 'step',
+        agent: 'coder',
+        round: 2,
+      });
+      expect(fold([...back, spec, returned('review')]).pullRequest, cause).toEqual(pushed().payload);
+    }
+    // At a merge too, before it is merged: the work goes back to Plan with no return of its own.
+    const merging = [...approvedAndDescribed, held('merge', 'review'), answer('replanned', words)];
+    expect(decide(merging, facts).next).toEqual({ do: 'step', agent: 'planner', round: 1 });
   });
 
   it('takes his approval of a held review in place of the reviewer’s', () => {

@@ -648,7 +648,7 @@ describe('public views', () => {
       ({
         ...opened,
         type: 'hold.answered',
-        version: 2,
+        version: 3,
         actor: 'martin',
         summary: 'Martin answered #1306 in words',
         payload,
@@ -669,6 +669,15 @@ describe('public views', () => {
     expect(JSON.stringify(kept)).not.toContain('old error page');
     expect(validate({ ...report, ...kept })).toEqual({ ok: true });
     expect(viewOf({ ...report, ...kept } as NewEvent)).toEqual(kept);
+    // Sent back to the planner, the same: his words are left out, and the view still reads as his answer.
+    const replanned = answer({ decision: 'replanned', answer: words, hold: opened.id, report: true });
+    const back = viewOf(replanned);
+    expect(back).toMatchObject({
+      summary: 'Martin sent the hold back to the planner',
+      payload: { decision: 'replanned', report: true },
+    });
+    expect(JSON.stringify(back)).not.toContain('old error page');
+    expect(validate({ ...replanned, ...back })).toEqual({ ok: true });
   });
 
   it('redact anything secret-shaped, wherever it is', () => {
@@ -1086,16 +1095,30 @@ describe('upcasting the real catalogue', () => {
     expect(hold({ ...scope, cause: 'gates', needs }).ok).toBe(false);
   });
 
-  it('reads version 1 of hold.answered as it was, and names the hold and a report’s at 2', () => {
+  it('reads versions 1 and 2 of hold.answered as they were, and names the hold and a report’s at 2', () => {
     const approved = { decision: 'approved', answer: 'Go on' };
     expect(upcast({ type: 'hold.answered', version: 1, payload: approved })).toMatchObject({
-      event: { version: 2, payload: approved },
+      event: { version: 3, payload: approved },
     });
     const answer = (payload: object) =>
-      validate({ ...opened, type: 'hold.answered', version: 2, actor: 'martin', payload });
+      validate({ ...opened, type: 'hold.answered', version: 3, actor: 'martin', payload });
     expect(answer({ ...approved, hold: opened.id, report: true })).toEqual({ ok: true });
     expect(answer({ ...approved, hold: 'hold-1' }).ok).toBe(false);
     expect(answer({ ...approved, report: false }).ok).toBe(false);
+    const words = { decision: 'answered', answer: 'Keep the old page', hold: opened.id, report: true };
+    expect(upcast({ type: 'hold.answered', version: 2, payload: words })).toMatchObject({
+      event: { version: 3, payload: words },
+    });
+  });
+
+  it('takes sending the work back to the planner at version 3, only with his words', () => {
+    const answer = (payload: object) =>
+      validate({ ...opened, type: 'hold.answered', version: 3, actor: 'martin', payload });
+    const back = { decision: 'replanned', hold: opened.id };
+    expect(answer({ ...back, answer: 'The spec contradicts a test the app has' })).toEqual({ ok: true });
+    expect(answer(back).ok).toBe(false);
+    // A public view of one about a visitor's report has left his words out, and says why.
+    expect(answer({ ...back, report: true })).toEqual({ ok: true });
   });
 
   it('reads version 1 of line.started as it was, and takes a reason, and no autonomy level, at 2', () => {
@@ -1489,14 +1512,27 @@ describe('the answers a hold takes', () => {
         if (!kept) expect(ANSWERS[cause][answer], `${cause}: ${answer}`).not.toBe('wait');
       }
     }
-    expect(answersTo('gates')).toEqual(['approved', 'answered', 'rejected']);
+    expect(answersTo('gates')).toEqual(['approved', 'answered', 'replanned', 'rejected']);
     // A fix waiting for Martin's deploy, which a release carrying it ends by itself, takes only his rejection.
     expect(answersTo('deploy')).toEqual(['rejected']);
     // He merges on GitHub: his words send the work back, and nothing here approves it.
-    expect(answersTo('merge')).toEqual(['answered', 'rejected']);
+    expect(answersTo('merge')).toEqual(['answered', 'replanned', 'rejected']);
     // Approving a suggestion does nothing: a suggestion never starts work, and Martin asks with the "+".
     expect(answersTo('suggestion')).toEqual(['answered', 'rejected']);
     expect(answersTo('finding')).toEqual(['approved', 'answered', 'rejected']);
+  });
+
+  it('send the work back to the planner only from a hold whose words would go to the coder', () => {
+    const replans = HOLD_CAUSES.filter((cause) => answersTo(cause).includes('replanned'));
+    expect(replans).toEqual(['gates', 'review', 'merge', 'tests-first']);
+    for (const cause of replans) {
+      expect(ANSWERS[cause].answered, cause).toBe('return');
+      expect(ANSWERS[cause].replanned, cause).toBe('replan');
+    }
+    // Where words already reach the planner, or rerun the step held, or there is no spec to change, it means nothing.
+    for (const cause of HOLD_CAUSES.filter((c) => !replans.includes(c))) {
+      expect(ANSWERS[cause].replanned, cause).toBe('wait');
+    }
   });
 });
 

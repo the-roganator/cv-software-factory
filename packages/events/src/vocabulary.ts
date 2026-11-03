@@ -280,8 +280,11 @@ export type HoldCause = (typeof HOLD_CAUSES)[number];
 export const DEPLOY_STATES = ['checking', 'passed', 'failed', 'merged', 'closed'] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
 
-/** Martin's answers to a hold: approve it, reject it, or answer it in words. */
-export const HOLD_ANSWERS = ['approved', 'rejected', 'answered'] as const;
+/**
+ * Martin's answers to a hold: approve it, reject it, answer it in words, or send it back to the planner with his words,
+ * where the spec may be what is wrong.
+ */
+export const HOLD_ANSWERS = ['approved', 'rejected', 'answered', 'replanned'] as const;
 export type HoldAnswer = (typeof HOLD_ANSWERS)[number];
 
 export const AUTONOMY = ['supervised', 'guarded', 'lights-out'] as const;

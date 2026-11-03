@@ -1,8 +1,8 @@
 /**
- * Answering a hold from Needs you: Martin approves it, rejects it, or answers it in words, and the admin service
- * appends his `hold.answered`, which the line or triage acts on as `ANSWERS` says for the hold's cause. One route each,
- * `POST /admin/holds/:workItem/approve`, `/reject` and `/answer`, each naming the hold the card showed (its
- * `hold.started` event's id).
+ * Answering a hold from Needs you: Martin approves it, rejects it, answers it in words, or sends it back to the planner
+ * with his words, and the admin service appends his `hold.answered`, which the line or triage acts on as `ANSWERS` says
+ * for the hold's cause. One route each, `POST /admin/holds/:workItem/approve`, `/reject`, `/answer` and `/replan`, each
+ * naming the hold the card showed (its `hold.started` event's id).
  *
  * - **Only the hold the card showed.** The answer is refused, having changed nothing, unless that hold is the work
  *   item's open one as the answer is taken, as the line reads it: its latest hold, with nothing since that answered
@@ -13,7 +13,9 @@
  *   appends meanwhile is the one answered next.
  * - **Only an answer that does something.** One the line would only wait after is refused (`answersTo`): approving a
  *   merge, which Martin does on GitHub, a deploy, which a release ends by itself, or a suggestion, which never starts
- *   work: Martin asks for an improvement himself with the console's "+".
+ *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is
+ *   taken only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests
+ *   first), and only with his words, which are his reason for it.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
@@ -49,7 +51,16 @@ export const ANSWER = {
   approved: z.strictObject({ hold: z.uuid() }),
   rejected: z.strictObject({ hold: z.uuid() }),
   answered: z.strictObject({ hold: z.uuid(), words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) }),
+  replanned: z.strictObject({ hold: z.uuid(), words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) }),
 } satisfies Record<HoldAnswer, z.ZodType>;
+
+/** Whether an answer goes with words: in words, and back to the planner, whose reason they are. */
+export const TAKES_WORDS: Record<HoldAnswer, boolean> = {
+  approved: false,
+  rejected: false,
+  answered: true,
+  replanned: true,
+};
 
 /** What an answer did: the work item, the hold, the answer, and whether Martin's words stay his. */
 export interface Answered {
@@ -200,10 +211,11 @@ async function openedByReport(tx: TransactionSql, workItem: string): Promise<boo
   return first?.sense === 'report';
 }
 
-const DID: Record<HoldAnswer, string> = {
-  approved: 'approved',
-  rejected: 'rejected',
-  answered: 'answered in words',
+const DID: Record<HoldAnswer, (workItem: string) => string> = {
+  approved: (workItem) => `approved the hold on #${workItem}`,
+  rejected: (workItem) => `rejected the hold on #${workItem}`,
+  answered: (workItem) => `answered the hold on #${workItem} in words`,
+  replanned: (workItem) => `sent the hold on #${workItem} back to the planner`,
 };
 
 /** Martin's answer, as he gave it. */
@@ -215,7 +227,7 @@ function answerEvent(workItem: string, decision: HoldAnswer, hold: string, repor
     type: 'hold.answered',
     version: VERSIONS['hold.answered'],
     actor: 'martin',
-    summary: `Martin ${DID[decision]} the hold on #${workItem}`,
+    summary: `Martin ${DID[decision](workItem)}`,
     payload: { decision, ...(words !== undefined && { answer: words }), hold, ...(report && { report: true }) },
     artifacts: [],
   } as NewEvent;

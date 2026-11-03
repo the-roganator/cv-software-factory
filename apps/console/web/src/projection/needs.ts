@@ -208,6 +208,10 @@ function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvem
     if (cause === 'question') return 'The line carries on with the spec as it stands.';
   }
   if (answer === 'answered' && cause === 'question') return 'The planner reads your answer, and carries on with it.';
+  // Words that would go to the coder go to the planner instead: the spec, not the change, is what is wrong.
+  if (answer === 'replanned') {
+    return 'The planner writes the spec again from your words, and the coder rebuilds the change on it.';
+  }
   switch (resolution) {
     case 'carry-on':
       return answer === 'answered'
@@ -230,7 +234,20 @@ function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvem
   }
 }
 
-const LABEL: Record<HoldAnswer, string> = { approved: 'Approve', answered: 'Answer in words', rejected: 'Reject' };
+const LABEL: Record<HoldAnswer, string> = {
+  approved: 'Approve',
+  answered: 'Answer in words',
+  replanned: 'Back to the planner',
+  rejected: 'Reject',
+};
+
+/** How Martin answered, for Answered today. */
+const HOW: Record<HoldAnswer, string> = {
+  approved: 'Approved',
+  rejected: 'Rejected',
+  answered: 'Answered in words',
+  replanned: 'Sent back to the planner',
+};
 
 /** What an answer did, in a few words, for Answered today. */
 function didOf(cause: HoldCause | undefined, decision: HoldAnswer): string | undefined {
@@ -434,13 +451,14 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       if (at < from || at > t) continue;
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
-      const how = { approved: 'Approved', rejected: 'Rejected', answered: 'Answered in words' }[decision];
+      const how = HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words: answer ?? (report && decision === 'answered' ? 'kept' : undefined),
-        did: didOf(cause, decision),
+        words: answer ?? (report && (decision === 'answered' || decision === 'replanned') ? 'kept' : undefined),
+        // How he answered says already where it went.
+        did: decision === 'replanned' ? undefined : didOf(cause, decision),
       });
     }
   }

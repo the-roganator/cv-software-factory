@@ -56,6 +56,7 @@ const ANSWERED = {
   approved: 'Martin approved the hold',
   rejected: 'Martin rejected the hold',
   answered: 'Martin answered the hold in words',
+  replanned: 'Martin sent the hold back to the planner',
 } as const;
 
 export const PUBLIC_VIEWS = {

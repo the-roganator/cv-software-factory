@@ -883,6 +883,17 @@ describe('the planner planning again', () => {
       'Why it came back: the work returned from verify: The probe still saw it.',
     );
     expect(why({ ...held, answered: false, cause: 'spec' })).toContain('Martin sent it back to you.');
+    // Sent back from a hold whose words would have gone to the coder: the spec is what he judges wrong.
+    const review = why({ ...held, approved: false, cause: 'review', reason: 'Test integrity failed' });
+    expect(review).toContain('the change was held for Martin at review: Test integrity failed.');
+    expect(review).toContain(
+      'Martin answered it in words: the last of his answers above. He sent it to you rather than to the coder',
+    );
+    expect(review).toContain('Where a criterion means an existing test must change, name that test in `contradicts`.');
+    expect(why({ ...held, approved: false, cause: 'gates', reason: 'Test integrity failed' })).toContain(
+      'held for Martin at the gates: Test integrity failed.',
+    );
+    expect(why({ ...held, approved: false, cause: 'merge' })).toContain('held for Martin for his merge');
   });
 
   it('tells the line’s reading of an approval as the line’s, and takes no quote from it', () => {

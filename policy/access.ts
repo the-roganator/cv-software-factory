@@ -176,6 +176,11 @@ export const ACCESS = {
     server: 'admin',
     routes: ['POST /admin/holds/:workItem/answer'],
   },
+  'hold.replan': {
+    ...admin('Send a held work item back to the planner, with his words, where the spec may be what is wrong'),
+    server: 'admin',
+    routes: ['POST /admin/holds/:workItem/replan'],
+  },
 
   // The line. Stopping aborts the canary in flight too; `make stop-the-line` does the same without the console.
   'line.stop': { ...admin('Stop the line'), server: 'admin', routes: ['POST /admin/line/stop'] },

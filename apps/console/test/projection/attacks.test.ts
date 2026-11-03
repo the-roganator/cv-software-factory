@@ -183,6 +183,44 @@ describe('an attack', () => {
     expect(card(swapped, '2007')?.outcome).toBe('unconfirmed');
   });
 
+  it('is unfinished once its work item closes with no end recorded, whatever the time or the close says', () => {
+    const { item, events } = launched('2018', 'image');
+    const closed = by(
+      'factory_redteam',
+      item.add(1, 'work-item.closed', 'factory', { outcome: 'refused', reason: 'Closed' }).events.slice(2),
+    );
+    const all = [...events, ...closed];
+    expect(card(all, '2018', START + 2 * MINUTE)).toMatchObject({ outcome: 'unfinished' });
+    expect(card(all, '2018', START + 2 * MINUTE)?.picture).toMatchObject({ verdict: 'unfinished' });
+    expect(row(all, 3, START + 2 * MINUTE)?.attack?.last?.verdict).toBe('unfinished');
+    // A red-team work item with no launch of Martin's on it is closed, not refused, whatever its close says.
+    const notHis = [...by('factory_line', item.events.slice(0, 2)), ...closed];
+    expect(card(notHis, '2018', START + 2 * MINUTE)?.outcome).toBe('closed');
+  });
+
+  it('is not confirmed by a refusal recorded after its end', () => {
+    const pod = { namespace: 'runners', name: 'red-team-2019', uid: '00000000-0000-4000-8000-000000002019' };
+    const { events } = launched('2019', 'image');
+    const end = finished('2019', 'image', 'refused', [0], 1, { subject: { pod } });
+    const kyverno = by(
+      'factory_line',
+      work('2019', START).add(
+        2,
+        'action.refused',
+        'factory',
+        refusal('admission-control', [3], { subject: { ...pod, kind: 'Pod' } }),
+      ).events,
+    );
+    const seq = kyverno[0]?.seq ?? 0;
+    const cited = end.map((event) =>
+      event.type === 'attack.finished' ? { ...event, payload: { ...event.payload, refusals: [seq] } } : event,
+    ) as PublicEvent[];
+    expect(card([...events, ...cited, ...kyverno], '2019')?.picture).toMatchObject({
+      verdict: 'unconfirmed',
+      why: `refusal ${seq} was recorded after the attack’s end`,
+    });
+  });
+
   it('is refused by the egress policy only when its control, the gateway, answered', () => {
     const { events } = launched('2017', 'egress');
     const policy = by(
@@ -265,6 +303,32 @@ describe('the Guardrails checklist', () => {
         commit: 'b'.repeat(40),
       }).events,
     ).map((event) => ({ ...event, work_item: null }));
+
+  it('counts its result from its end, not its launch', () => {
+    const { events } = launched('2020', 'egress');
+    const proof = proved(5, 'egress', true, [5]);
+    const policy = by(
+      'factory_redteam',
+      work('2020', START)
+        .add(6, 'action.refused', 'factory', refusal('egress-policy', [5]))
+        .add(6, 'action.refused', 'factory', refusal('egress-policy', [5]))
+        .add(6, 'action.refused', 'factory', refusal('egress-policy', [5])).events,
+    );
+    const control = { what: 'http://gateway.factory:8080/health', result: '200 in 14 ms', reached: true };
+    const end = finished(
+      '2020',
+      'egress',
+      'refused',
+      policy.map((e) => e.seq),
+      8,
+      { control },
+    );
+    // Launched before make guardrails' proof, ended after it: the attack is the newest proof.
+    expect(row([...events, ...proof, ...policy, ...end], 5, START + 9 * MINUTE)?.proof).toMatchObject({
+      at: START + 8 * MINUTE,
+      source: { kind: 'attack', workItem: '2020' },
+    });
+  });
 
   it('reads not proved until something proves it, and trusts only the proofs’ role', () => {
     expect(row([], 4)).toMatchObject({ state: 'unproved', proof: undefined });

@@ -122,7 +122,7 @@ export function guardrailsView(
   available: (attack: Attack) => boolean = attackAvailable,
 ): GuardrailsView {
   // Each attack's runs, oldest first, as their work items opened.
-  const runs = new Map<Attack, (AttackRun & { why: string | undefined })[]>();
+  const runs = new Map<Attack, (AttackRun & { why: string | undefined; endedAt: number })[]>();
   for (const item of items) {
     const { attack } = item;
     if (!attack) continue;
@@ -132,6 +132,8 @@ export function guardrailsView(
       workItem: item.number,
       until: limitOf(attack),
       why: attack.finished?.why,
+      // When it proved anything: its end, which is when its result was known.
+      endedAt: attack.finished?.at ?? attack.launchedAt,
     };
     runs.set(attack.attack, [...(runs.get(attack.attack) ?? []), run]);
   }
@@ -151,7 +153,7 @@ export function guardrailsView(
       results.push({
         held: result.verdict === 'refused',
         source: { kind: 'attack', attack, workItem: result.workItem, verdict: result.verdict, why: result.why },
-        at: result.at,
+        at: result.endedAt,
         output: undefined,
       });
     }

@@ -230,7 +230,7 @@ function Row({
               'None yet: make guardrails proves it.'
             )}
           </p>
-          {/* Task 23's panel puts its refusals here, between its last proof and its attack: the last three in seven days. */}
+          {/* The place the designs give a guardrail's refusals (milestone 7's plan, task 23, "Blocked actions"). */}
           {row.attack && (
             <Attack
               row={row.attack}

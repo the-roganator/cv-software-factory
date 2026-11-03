@@ -15,7 +15,7 @@ import { publicView } from '@software-factory/events/public';
 import { validate } from '@software-factory/events/schemas';
 import { ARTIFACTS, LOG } from './captures.ts';
 import { sampleEvents } from './index.ts';
-import { appenderOf } from './roles.ts';
+import { appenderOf, attackItems } from './roles.ts';
 
 export function publicSamples(): PublicEvent[] {
   const events = sampleEvents();
@@ -25,9 +25,7 @@ export function publicSamples(): PublicEvent[] {
     return [...(result.ok ? [] : result.problems), ...missing].map((p) => `#${event.work_item} ${event.type}: ${p}`);
   });
   if (problems.length) throw new Error(`The samples are not valid:\n  ${problems.join('\n  ')}`);
-  const attacks = new Set(
-    events.flatMap((event) => (event.type === 'attack.launched' && event.work_item ? [event.work_item] : [])),
-  );
+  const attacks = attackItems(events);
   return events.map((event, i) => {
     const appendedBy = appenderOf(event, attacks);
     return {

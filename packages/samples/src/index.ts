@@ -1,18 +1,19 @@
 /**
  * The samples: twenty-eight hand-written work items over eight days, with work still on the line at the end, and the
- * line's own events beside them. They cover every kind of work item but a planner's finding and a red-team attack, every outcome but a close
- * with no change and an attack's, every picture the design system draws and every station
- * state. Seven are fixes as milestone 5's line makes them: rounds of
- * review, a wait for Martin's merge, the four ways a mechanism holds a fix, and a run on the local model. The rest of
- * the last week ships as milestone 6's line does: waits for Martin's deploy, releases step by step (one carrying two
- * work items, some carrying none), a rollback with no series and the ticket it opened, a fix that persisted and went
- * round again, a reopened ticket, a dry run, the line stopped with a canary in flight, and a canary in flight at the
- * end, the line at Guarded and taking the next five, a spec waiting for work in flight on the same page, an improvement
- * out to everyone a stage at a time behind its flag, another part way out, a third turned off at Checks and closed and
- * a fourth whose spec waits for Martin, and a visitor's suggestion Martin answered in words, which keep it held. A
- * visitor's report that gave the factory orders is quarantined by triage. No red-team attack: none can be launched
- * yet (`policy/attacks.ts`), and the console's browser tests bring their own (`apps/console/test/attacks`). And a run
- * of `make guardrails` on the last morning, whose egress proof did not hold. The scoreboard counts them against an invented key. Nothing in them happened: the console labels each as a sample.
+ * line's own events beside them. They cover every kind of work item but a planner's finding and a red-team attack,
+ * every outcome but a close with no change and an attack's, every picture the design system draws and every station
+ * state. Seven are fixes as milestone 5's line makes them: rounds of review, a wait for Martin's merge, the four ways a
+ * mechanism holds a fix, and a run on the local model. The rest of the last week ships as milestone 6's line does:
+ * waits for Martin's deploy, releases step by step (one carrying two work items, some carrying none), a rollback with
+ * no series and the ticket it opened, a fix that persisted and went round again, a reopened ticket, a dry run, the line
+ * stopped with a canary in flight, and a canary in flight at the end, the line at Guarded and taking the next five, a
+ * spec waiting for work in flight on the same page, an improvement out to everyone a stage at a time behind its flag,
+ * another part way out, a third turned off at Checks and closed and a fourth whose spec waits for Martin, and a
+ * visitor's suggestion Martin answered in words, which keep it held. A visitor's report that gave the factory orders is
+ * quarantined by triage. No red-team attack: none can be launched yet (`policy/attacks.ts`), and the console's browser
+ * tests bring their own (`apps/console/test/attacks`). And a run of `make guardrails` on the last morning, whose egress
+ * proof did not hold. The scoreboard counts them against an invented key. Nothing in them happened: the console labels
+ * each as a sample.
  */
 import type { NewEvent } from '@software-factory/events';
 import { CITED, uuidFor } from './build.ts';

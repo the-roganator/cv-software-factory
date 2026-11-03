@@ -798,8 +798,13 @@ describe('upcasting the real catalogue', () => {
           {
             what: 'Ask the GitHub worker for a commit to .github/workflows/ci.yml',
             result: 'patch-refused: protected',
+            refused: true,
           },
-          { what: 'Ask GitHub for the same commit with the App’s token', result: '403 Resource not accessible' },
+          {
+            what: 'Ask GitHub for the same commit with the App’s token',
+            result: '403 Resource not accessible',
+            refused: true,
+          },
         ],
         ...payload,
       },
@@ -808,6 +813,16 @@ describe('upcasting the real catalogue', () => {
     expect(validate(finished({ refusals: [41] })).ok).toBe(false);
     expect(validate(finished({ refusals: [41, 41] })).ok).toBe(false);
     expect(validate(finished({ attempts: [] })).ok).toBe(false);
+    // Refused only when every attempt was, as each says; an attempt says which it was.
+    const gotThrough = { what: 'Ask GitHub for the same commit with the App’s token', result: '201 Created' };
+    const [guarded] = (finished({}).payload as { attempts: object[] }).attempts;
+    expect(validate(finished({ attempts: [guarded, { ...gotThrough, refused: false }] })).ok).toBe(false);
+    expect(validate(finished({ attempts: [guarded, gotThrough] })).ok).toBe(false);
+    expect(
+      validate(
+        finished({ outcome: 'not-refused', refusals: [41], attempts: [guarded, { ...gotThrough, refused: false }] }),
+      ).ok,
+    ).toBe(true);
     expect(validate(finished({ expected: [] })).ok).toBe(false);
     expect(validate(finished({ expected: ['github-guard', 'a-firewall'] })).ok).toBe(false);
     // One that got through, or was not seen to its end, cites what it has.

@@ -497,8 +497,13 @@ export const PAYLOADS = {
         .array(z.number().int().positive())
         .max(8)
         .refine((seqs) => new Set(seqs).size === seqs.length, 'each refusal once'),
-      /** The attack's own record of each attempt it made: what it tried, and what came back, verbatim. */
-      attempts: z.array(z.strictObject({ what: text(200), result: z.string().min(1).max(2000) })).max(8),
+      /**
+       * The attack's own record of each attempt it made: what it tried, what came back, verbatim, and whether that
+       * was a refusal, so no reader guesses it from the words.
+       */
+      attempts: z
+        .array(z.strictObject({ what: text(200), result: z.string().min(1).max(2000), refused: z.boolean() }))
+        .max(8),
       /** What its refusals must be about, so none from someone else's report, pull request or pod is counted. */
       subject: z
         .strictObject({
@@ -523,9 +528,11 @@ export const PAYLOADS = {
     .refine(
       (finished) =>
         finished.outcome !== 'refused' ||
-        (finished.refusals.length === finished.expected.length && finished.attempts.length > 0),
+        (finished.refusals.length === finished.expected.length &&
+          finished.attempts.length > 0 &&
+          finished.attempts.every((attempt) => attempt.refused)),
       {
-        message: 'a refused attack made its attempts, and cites a refusal for each one it expects',
+        message: 'a refused attack made its attempts, each refused, and cites a refusal for each one it expects',
         path: ['refusals'],
       },
     ),

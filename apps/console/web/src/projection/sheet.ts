@@ -352,7 +352,9 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return { label: { approval: 'WAITING', question: 'QUESTION', held: 'HELD' }[event.payload.kind], tone: 'attn' };
     case 'hold.answered':
       return {
-        label: { approved: 'APPROVED', rejected: 'REJECTED', answered: 'ANSWERED' }[event.payload.decision],
+        label: { approved: 'APPROVED', rejected: 'REJECTED', answered: 'ANSWERED', replanned: 'TO THE PLANNER' }[
+          event.payload.decision
+        ],
         tone: 'signal',
       };
     case 'pull-request.pushed':

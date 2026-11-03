@@ -25,6 +25,16 @@ async function append(sql: Sql, type: string, payload: object): Promise<void> {
             ${sql.json(payload as never)}, '[]', ${sql.json({ summary: type, payload, artifacts: [] } as never)}, false)`;
 }
 
+/** When the store stamped the newest event of a type the line's role appended that `where` picks, as the proofs read it. */
+async function stampOfLast(type: string, where: string): Promise<Date> {
+  const [row] = await database.owner<{ appended_at: Date }[]>`
+    select appended_at from events
+    where type = ${type} and appended_by = 'factory_line' and ${database.owner.unsafe(where)}
+    order by seq desc limit 1`;
+  if (!row) throw new Error(`No ${type} was appended.`);
+  return row.appended_at;
+}
+
 const rolledBack = (dryRun: boolean, reason: string) => ({
   release: 'r-1',
   version: '1.2.0',
@@ -70,10 +80,8 @@ describe('the rollback proof', () => {
     await append(database.as.line, 'release.rolled-back', rolledBack(true, 'a dry run'));
     // Three hours after the store stamped it, by the store's clock: the Mac's may be ahead of or behind the clock of
     // the VM Postgres runs in, and a millisecond behind would read 179 minutes, "2 hours ago".
-    const [real] = await database.owner<{ appended_at: Date }[]>`
-      select appended_at from events where type = 'release.rolled-back' order by seq limit 1`;
-    if (!real) throw new Error('The real rollback was not appended.');
-    const taken = await rollback(database.proofs, new Date(real.appended_at.getTime() + 3 * 3_600_000));
+    const real = await stampOfLast('release.rolled-back', `payload->>'dryRun' = 'false'`);
+    const taken = await rollback(database.proofs, new Date(real.getTime() + 3 * 3_600_000));
     expect(taken.held).toBe(true);
     expect(taken.output).toMatch(
       /version 1\.2\.0 rolled back to 1\.1\.0 at 20% of the traffic, by analysis, 3 hours ago/,
@@ -96,9 +104,11 @@ describe('the last canary a stop aborted', () => {
     await append(database.as.line, 'release.aborted', aborted('martin'));
     expect((await abortedByStop(database.proofs, new Date())).held).toBe(false);
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const taken = await abortedByStop(database.proofs, new Date());
+    // Two days after the store stamped it, by the store's clock, as in the rollback proof.
+    const stamped = await stampOfLast('release.aborted', `payload->>'by' = 'stop'`);
+    const taken = await abortedByStop(database.proofs, new Date(stamped.getTime() + 48 * 3_600_000));
     expect(taken).toMatchObject({ held: true });
-    expect(taken.output).toMatch(/aborted by Stop the line at 2026-10-30T10:00:00Z/);
+    expect(taken.output).toMatch(/aborted by Stop the line at 2026-10-30T10:00:00Z, back to 1\.2\.0, 2 days ago\./);
   });
 });
 

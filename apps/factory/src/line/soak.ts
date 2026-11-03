@@ -17,7 +17,7 @@ import { type RawEvent, upcast } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import { NAMESPACE } from '../runners/jobs.ts';
+import { isRedTeam, NAMESPACE, NOT_RED_TEAM } from '../runners/jobs.ts';
 import type { Kube } from '../runners/kube.ts';
 import { decide, fold, type LineEvent, type QueueStage } from './machine.ts';
 
@@ -365,12 +365,15 @@ export async function soakFacts({
   let runners: SoakFacts['runners'];
   try {
     const client = kube();
+    // What the red-team harness makes in runners is its own, and no runner the line left behind.
     const list = async (kind: Runner['kind'], path: string) =>
-      ((await client.get(path, LIST))?.items ?? []).map((item) => ({
-        kind,
-        name: item.metadata.name,
-        workItem: item.metadata.labels?.[WORK_ITEM_LABEL],
-      }));
+      ((await client.get(`${path}?labelSelector=${encodeURIComponent(NOT_RED_TEAM)}`, LIST))?.items ?? [])
+        .filter((item) => !isRedTeam(item.metadata.labels))
+        .map((item) => ({
+          kind,
+          name: item.metadata.name,
+          workItem: item.metadata.labels?.[WORK_ITEM_LABEL],
+        }));
     runners = [
       ...(await list('job', `/apis/batch/v1/namespaces/${NAMESPACE}/jobs`)),
       ...(await list('volume', `/api/v1/namespaces/${NAMESPACE}/persistentvolumeclaims`)),

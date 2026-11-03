@@ -260,9 +260,12 @@ describe('the alerts to Martin', () => {
     }
   });
 
-  it('page for what loosens a guardrail or finds one not held, changes who can sign in or keeps alerts from the phone, notify of what widens the line’s work or a flag or acts on a release, and inform of the rest', () => {
+  it('page for what loosens a guardrail or finds one not held, an attack not refused as it should be or not finished, changes who can sign in or keeps alerts from the phone, notify of what widens the line’s work or a flag or acts on a release, and inform of the rest', () => {
     const at = (level: string) => SECURITY_KINDS.filter((kind) => SECURITY_LEVELS[kind] === level).sort();
     expect(at(LEVELS.page)).toEqual([
+      'attack-not-refused',
+      'attack-unfinished',
+      'attack-wrong-mechanism',
       'auto-rollback-off',
       'autonomy-loosened',
       'guardrail-approved',

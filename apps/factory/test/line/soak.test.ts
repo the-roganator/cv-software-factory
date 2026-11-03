@@ -1,6 +1,7 @@
 import { VERSIONS } from '@software-factory/events';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { RED_TEAM_LABEL } from '../../../../policy/attacks.ts';
 import {
   endOf,
   type LineRow,
@@ -13,6 +14,7 @@ import {
   soakText,
   stageMinutes,
 } from '../../src/line/soak.ts';
+import type { Kube } from '../../src/runners/kube.ts';
 
 const at = (time: string) => `2026-10-06T${time}:00.000Z`;
 const COMMIT = 'c'.repeat(40);
@@ -293,5 +295,46 @@ describe('the spend, as read from the gateway’s audit log', () => {
       { workItem: '7', calls: 2, usd: 3.5 },
       { workItem: '8', calls: 1, usd: 0.25 },
     ]);
+  });
+});
+
+describe('the runners, as read from the cluster', () => {
+  let database: Database;
+  beforeEach(async () => {
+    database = await freshDatabase('soak_runners');
+  });
+  afterEach(() => database?.end());
+
+  it('counts none of the red-team harness’s pods or Jobs as a runner, whatever else their labels say', async () => {
+    const asked: string[] = [];
+    const runner = { 'factory.mrogan.dev/runner': 'agent', 'factory.mrogan.dev/work-item': '7' };
+    const attack = { ...runner, [RED_TEAM_LABEL]: 'egress' };
+    const kube = {
+      async get<T>(path: string) {
+        asked.push(path);
+        const [where, query = ''] = path.split('?');
+        const selector = decodeURIComponent(new URLSearchParams(query).get('labelSelector') ?? '');
+        const items = where?.endsWith('/jobs')
+          ? [
+              { metadata: { name: 'coder-7-1-1-agent', labels: runner } },
+              { metadata: { name: 'attack-egress', labels: attack } },
+            ]
+          : [{ metadata: { name: 'work-7', labels: runner } }];
+        // Each, as an API that took no notice of the selector would give them: the line reads the labels too.
+        expect(selector).toBe(`!${RED_TEAM_LABEL}`);
+        return { items } as T;
+      },
+    } as unknown as Kube;
+    const facts = await soakFacts({
+      sql: database.as.line,
+      kube: () => kube,
+      now: new Date(at('23:59')),
+      since: new Date(at('21:30')),
+    });
+    expect(facts.runners).toEqual([
+      { kind: 'job', name: 'coder-7-1-1-agent', workItem: '7' },
+      { kind: 'volume', name: 'work-7', workItem: '7' },
+    ]);
+    expect(asked).toHaveLength(2);
   });
 });

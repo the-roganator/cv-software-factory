@@ -96,7 +96,7 @@ export type Level = (typeof LEVELS)[keyof typeof LEVELS];
 
 /**
  * How loudly each kind of security event reaches Martin. What loosens a guardrail, a guardrail's proof that did not
- * hold, or what changes who can sign in, pages him; what widens what the line does (asking for an improvement, or
+ * hold, a red-team attack not refused as it should be or not finished, or what changes who can sign in, pages him; what widens what the line does (asking for an improvement, or
  * approving its spec, among those), acts on a release, or widens a feature flag, notifies him; what tightens, or only
  * records his own use, informs him, but for tightening autonomy, which notifies him. Every kind still reaches his
  * phone: only how loudly changes.
@@ -120,6 +120,11 @@ export const SECURITY_LEVELS: Record<SecurityKind, Level> = {
   'auto-rollback-on': LEVELS.inform,
   // A guardrail's proof that did not hold: the guardrail may not be holding. One that holds tells him nothing.
   'guardrail-not-held': LEVELS.page,
+  // A red-team attack the line judges not refused, refused by what should not have refused it, or not seen to its
+  // end: its guardrail may not be holding, or cannot be shown to. One refused as it should be tells him nothing.
+  'attack-not-refused': LEVELS.page,
+  'attack-wrong-mechanism': LEVELS.page,
+  'attack-unfinished': LEVELS.page,
   'release-control': LEVELS.notify,
   'setting-changed': LEVELS.notify,
   'line-started': LEVELS.notify,
@@ -227,6 +232,21 @@ const SECURITY_WORDS: Record<SecurityKind, { summary: string; description: strin
     summary: 'A guardrail did not hold',
     description:
       'A proof make guardrails took did not hold, so its guardrail may not be holding. make guardrails said which, and why, and the audit log records it.',
+  },
+  'attack-not-refused': {
+    summary: 'A red-team attack was not refused',
+    description:
+      'An attack you launched from the console got through: an attempt it made was not refused, so its guardrail did not hold. Its card shows each attempt and what came back, and the line’s log says which.',
+  },
+  'attack-wrong-mechanism': {
+    summary: 'A red-team attack was not refused as it should be',
+    description:
+      'The harness says an attack you launched was refused, but the line, reading the refusals it cites again, cannot agree: one is missing, by another mechanism, from a role that may not record it, unverified, or about something else. The line’s log says why.',
+  },
+  'attack-unfinished': {
+    summary: 'A red-team attack did not finish',
+    description:
+      'An attack you launched from the console was not seen to its end within its limit, so it proves nothing. The red-team harness’s log says why; you can launch it again.',
   },
 };
 

@@ -310,9 +310,13 @@ async function serve(): Promise<number> {
     flagChecks: probes,
   });
   // Martin's security events and the holds waiting for him, from the store, whatever LINE_MODE is: the alerts that page
-  // him read them (line/security.ts).
+  // him read them (line/security.ts). Its judgement of each red-team attack verifies a relayed refusal with the GitHub
+  // worker's key, against the record that worker kept in the artifact store (line/attacks.ts).
   const { observeSecurity } = await import('../line/security.ts');
-  const unobserveSecurity = observeSecurity(sql, log);
+  const unobserveSecurity = observeSecurity(sql, log, {
+    key: refusalKey,
+    artifacts: artifactsDir ? new DiskArtifacts(artifactsDir) : undefined,
+  });
   // And whether every change the admin service makes is named by an event (line/admin-actions.ts).
   const { observeAdminActions } = await import('../line/admin-actions.ts');
   const unobserveAdminActions = observeAdminActions({ sql, kube, flags, rollout }, log);

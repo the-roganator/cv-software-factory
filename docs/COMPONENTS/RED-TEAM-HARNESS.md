@@ -4,3 +4,23 @@ Runs curated attacks against real mechanisms and records the refusals. Part of t
 
 - **v1:** a Job that launches an adversarial agent or scripted action per attack.
 - **v1:** Martin launches spec 5.3's attacks, each from its guardrail's row in the console, one at a time and with no passkey, through the [admin service](ADMIN-SERVICE.md#a-red-team-attack), which opens the attack's work item with his `attack.launched`. What each tries, the refusals it expects in order, how long it may take before it counts as unfinished, and whether it can be launched yet are [`policy/attacks.ts`](../../policy/attacks.ts)'s. Three can: the report (`report`), data to an outside URL (`egress`) and the image it built itself (`image`). Two are not available yet, editing a workflow (`workflow`) and the pull request that deletes a test (`test`): they stay in the catalogue, and the admin service refuses their launch. The harness records how an attack ended as `attack.finished` on that work item, as its own role, `factory_redteam`, alone may ([event store](EVENT-STORE.md#martins-commands)).
+
+## How the line judges an attack
+
+The harness does not grade itself: the line reads each attack's end again from the event stream (`apps/factory/src/line/attacks.ts`), as it counts Martin's [security events](ALERTING.md#security-events), and pages him when an attack was not refused, was refused by what should not have refused it, or did not finish. A refusal itself, or an attack refused as it should be, pages nobody: it is the guardrail working.
+
+- **What it judges:** an `attack.finished` appended by `factory_redteam`, on a work item with an `attack.launched` before it by one of Martin's roles. Row security holds both to those roles, and the line reads `appended_by` too, so a hole in a policy is not the only lock.
+- **Not refused** (`attack-not-refused`): the harness says so, or an attempt it records got through (`refused: false`), whatever it says of the attack as a whole.
+- **By the wrong mechanism** (`attack-wrong-mechanism`): it says refused, and the line cannot agree. The refusals it expects must be the attack's own (`expects` in `policy/attacks.ts`), in order, one cited for each. Each cited refusal must be in the store, an `action.refused` from between the launch and the end, by the mechanism expected at its place, and appended by a role `policy/refusals.ts` lets append that mechanism's refusals. A relayed one (the GitHub worker's guard, GitHub's 403, and any refusal that carries a signature) must verify: its record is read from the artifact store by its hash, must be the refusal as stored, and its signature must verify with the GitHub worker's public key (`REFUSAL_PUBLIC_KEY`). And it must be about the attack's own subject, so none from a visitor's report, another pull request or another pod counts:
+  - the report attack's, triage's refusal of the very report it sent: the attack's `subject.report` is that report's inbox id, and the refusal's event id is the one triage gives a quarantine's refusal of that signal;
+  - the image attack's, admission control's refusal of the pod it asked for, by namespace, name and uid;
+  - the pull request attack's, on the attack's own work item, its signed record naming the attack's repository and pull request;
+  - the workflow and egress attacks', which the harness records itself, on the attack's own work item.
+
+  An end the line cannot read at all is judged so too. The line logs why it disagrees.
+- **Unfinished** (`attack-unfinished`): no end saying how the attack went (refused or not) came from the harness's role within the attack's limit, or the harness says it could not see it to its end (its control failed, or it found its launch past its limit). There is no event to react to for a harness that never answers, so each time it reads, the line counts the launches whose limit has passed with no such end within it, by the store's clock (`appended_at`): a count never falls, and two replicas agree. An end that comes late does not undo it. A launch of an attack this code does not know is given the longest limit any attack has.
+
+## Its pods in `runners`
+
+The harness marks each pod it makes in `runners` (the egress and image attacks) with the label `factory.mrogan.dev/red-team`, its value the attack's id (`RED_TEAM_LABEL` in `policy/attacks.ts`). The line passes over anything that carries it: it asks the Kubernetes API for its runners' pods, Jobs and volumes with `!factory.mrogan.dev/red-team` in the selector, and reads the labels it gets back as well. So it never keeps an attack pod's log as a step's, takes its deadline for a step's, or counts it as a runner left behind in `line soak-check`.
+

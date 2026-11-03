@@ -661,6 +661,51 @@ describe('the alert that a guardrail’s proof did not hold', () => {
   });
 });
 
+describe('the alerts that a red-team attack was not refused as it should be, or did not finish', () => {
+  const counted = (kind: string, values: string, pod = 'line-1') => ({
+    series: line('line_security_events_total', `kind="${kind}", pod="${pod}"`),
+    values,
+  });
+  const at = (eval_time: string, exp_alerts: unknown[]) => ({ eval_time, alertname: 'SecurityEvent', exp_alerts });
+
+  for (const kind of ['attack-not-refused', 'attack-wrong-mechanism', 'attack-unfinished']) {
+    const rule = martinRules().find((r) => r.alert === 'SecurityEvent' && r.labels.kind === kind);
+    const fires = { exp_labels: rule?.labels, exp_annotations: rule?.annotations };
+
+    it(`pages Martin on the first ${kind} and each after, and for no count standing still or another worker’s`, () => {
+      expect(rule?.labels).toEqual({ level: LEVELS.page, kind });
+      expectPasses(
+        promtool(
+          [
+            {
+              interval: '1m',
+              input_series: [counted(kind, each(0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2))],
+              alert_rule_test: [at('1m', []), at('2m', [fires]), at('5m', [fires]), at('6m', []), at('10m', [fires])],
+            },
+            {
+              // A line restarted on a store whose attacks it has already counted.
+              interval: '1m',
+              input_series: [counted(kind, each('_', '_', 3, 3, 3, 3), 'line-2')],
+              alert_rule_test: [at('2m', []), at('5m', [])],
+            },
+            {
+              interval: '1m',
+              input_series: [
+                {
+                  series: other('line_security_events_total', `kind="${kind}", pod="triage-1"`),
+                  values: each(0, 1, 2),
+                },
+              ],
+              alert_rule_test: [at('2m', [])],
+            },
+          ],
+          'martin',
+        ),
+      );
+    });
+  }
+});
+
 describe('the alert that alerts do not reach the phone', () => {
   const rule = martinRules().find((r) => r.alert === PHONE_OFF);
   const fires = { exp_labels: {}, exp_annotations: rule?.annotations };

@@ -162,6 +162,9 @@ describe('the count of Martin’s security events', () => {
       'phone-on': 2,
       'phone-off': 1,
       'guardrail-not-held': 2,
+      'attack-not-refused': 0,
+      'attack-unfinished': 0,
+      'attack-wrong-mechanism': 0,
     });
   });
 

@@ -1,7 +1,8 @@
 /**
  * A refusal signed by the mechanism that made it, so that a worker relaying it cannot make one up or change one. The
- * GitHub worker has no role in the event store (deviation 5), so what its guard refuses, and what GitHub refuses its
- * token, is recorded by the worker that asked: it answers each refusal with this, and the line appends it as
+ * GitHub worker has no role in the event store (deviation 5), so what its guard refuses, what GitHub refuses its
+ * token, and the review check's refusal it reads for the red-team harness, are recorded by the worker that asked: the
+ * GitHub worker answers each refusal with this, and the line, or the harness for an attack, appends it as
  * `action.refused` only once it verifies.
  *
  * The record is the refusal as the artifact store keeps it: its repository, its issue or pull request (or none), when
@@ -22,6 +23,7 @@ import { z } from 'zod';
 export const SIGNED_MECHANISMS = [
   'github-guard',
   'token-permission',
+  'review-gate',
 ] as const satisfies (typeof REFUSAL_MECHANISMS)[number][];
 
 /** A refusal as it is signed: the payload without what the relay adds (its record, its signature, its fold). */

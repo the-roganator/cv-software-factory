@@ -49,6 +49,10 @@ export const KYVERNO_EVENTS = 'default';
 
 type Mechanism = 'github-guard' | 'token-permission' | 'admission-control';
 
+/** The mechanisms the line relays from the GitHub worker's answers to its own requests. */
+const RELAYED = ['github-guard', 'token-permission'] as const satisfies Mechanism[];
+type Relayed = (typeof RELAYED)[number];
+
 const SUMMARIES: Record<Mechanism, string> = {
   'github-guard': "The GitHub worker's guard refused an action",
   'token-permission': "GitHub refused the factory App's token",
@@ -113,6 +117,15 @@ export class LineRefusals {
       return;
     }
     const { repo, number, at, payload, record, signature } = verified.refusal;
+    // Only what the worker answers the line's own requests with: the review check's verdict it signs is for the
+    // red-team harness, which asks for it, and is never the line's to record.
+    if (!RELAYED.includes(payload.mechanism as Relayed)) {
+      this.#o.log.warn(
+        { workItem, mechanism: payload.mechanism },
+        'the GitHub worker answered a refusal the line does not relay: not recorded',
+      );
+      return;
+    }
     const subject = {
       kind: number === null ? 'repository' : 'issue or pull request',
       name: number === null ? repo : `${repo}#${number}`,

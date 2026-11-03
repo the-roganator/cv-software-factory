@@ -39,7 +39,7 @@ describe('cart', () => {
 
 describe('reading tests', () => {
   it('finds each test with its describe blocks, what disables it, and its assertions', () => {
-    expect(testsIn(FILE).map(({ source: _, ...t }) => t)).toEqual([
+    expect(testsIn(FILE).map(({ source: _, calls: __, ...t }) => t)).toEqual([
       { name: 'cart > counts items', disabled: false, assertions: 2 },
       { name: 'cart > names %i as %s', disabled: false, assertions: 1 },
       { name: 'cart > rounds pence', disabled: 'skip', assertions: 1 },
@@ -96,7 +96,7 @@ describe('test integrity', () => {
     expect(compare(base, change).problems.map((p) => p.message)).toEqual([
       '"cart > counts items" is narrowed with .only, which skips every other test in its file',
       '"cart > names %i as %s" is skipped',
-      '"adds" has 1 assertion, down from 2',
+      '"adds" no longer asserts expect(2).toBe(2)',
       '"subtracts" was deleted',
       'test/old.test.ts was deleted, with its 1 test',
     ]);
@@ -468,9 +468,9 @@ describe('the gates’ scripts, end to end', () => {
     // In Actions the summary goes to the job's page instead.
     vi.stubEnv('GITHUB_STEP_SUMMARY', '');
     try {
-      expect(await main([base, kept])).toBe(0);
+      expect(await main([base, kept], {})).toBe(0);
       expect(output.join('\n')).toContain('"later" was added, but is skipped');
-      expect(await main([base, lost])).toBe(1);
+      expect(await main([base, lost], {})).toBe(1);
       expect(output.join('\n')).toContain('"b > x" was deleted');
     } finally {
       console.log = log;

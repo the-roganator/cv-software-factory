@@ -4,6 +4,7 @@
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
+import type { RawEvent } from '@software-factory/events';
 import { attacksUrl, consoleUrl, expect, MERGE_WAITING, ready, THEMES, test, WIDTHS } from './support.ts';
 
 const axe = (page: Page) =>
@@ -70,6 +71,26 @@ test.describe('fixing', () => {
     await expect(sheet.locator('.gates .sub')).toHaveText('Signals, not required');
     await expect(sheet).toContainText('Attempt 1 passed every required check; the reviewer sent it back.');
     await expect(sheet.locator('.scrub')).toContainText('DESCRIBED');
+  });
+
+  test('a fix’s spec names the existing tests it contradicts, under its criteria, and a spec that names none shows none', async ({
+    page,
+  }) => {
+    await page.goto(consoleUrl({ item: '1310', sheet: true, at: MERGE_WAITING }));
+    const sheet = page.getByRole('dialog', { name: 'Sorting by name puts lower case last' });
+    await sheet.waitFor();
+    const contradicts = sheet.locator('.contradicts');
+    await expect(contradicts.locator('.label')).toHaveText('Tests it contradicts');
+    await expect(contradicts.locator('li')).toHaveText([
+      'test/products.test.ts · the products page > sorts by name, capitals first',
+    ]);
+    await expect(contradicts).toContainText(
+      'The change may delete, rename or rewrite these existing tests, and no other.',
+    );
+    await expect(sheet.locator('.risks')).toContainText('it loosens a test');
+    await page.goto(consoleUrl({ item: '1311', sheet: true }));
+    await page.getByRole('dialog', { name: 'Quantities over nine are refused' }).waitFor();
+    await expect(page.locator('.contradicts')).toHaveCount(0);
   });
 
   test('a return’s next round shows before the coder pushes it, and a step in hand moves, unless motion is reduced', async ({
@@ -228,5 +249,75 @@ test.describe('tool marks', () => {
     await expect(ran).toHaveCount(1);
     await expect(ran.locator('.toolmark-kubernetes')).toBeVisible();
     await expect(ran).toContainText('Kubernetes pod of its own in the runners namespace');
+  });
+
+  test('a merge or a deploy heads its answers with the way there, and a sample’s pull request links nowhere', async ({
+    page,
+  }) => {
+    await page.goto(consoleUrl({}));
+    await ready(page);
+    const card = (workItem: string) =>
+      page.locator('article.needs .need').filter({ has: page.getByText(`#${workItem} ·`, { exact: false }) });
+    // A sample's merge and deploy: the way comes first, "Merge" and GitHub's mark as on any card, but their pull
+    // requests never existed, so it links nowhere, as the sheet's facts do not, and says why.
+    for (const [workItem, verb, pullRequest] of [
+      ['1311', 'Merge', 1312],
+      ['1321', 'Deploy', 1331],
+    ] as const) {
+      const answers = card(workItem).locator('.answers');
+      const way = answers.locator('.answer').first().locator('.way');
+      // A screen reader hears the pull request's number too, as it does not see the card's kicker beside it.
+      await expect(way.locator('.way-words')).toHaveText(verb);
+      await expect(way.locator('.way-words')).toHaveAttribute('aria-hidden', 'true');
+      await expect(way.locator('.sr')).toHaveText(`${verb} #${pullRequest}`);
+      await expect(way.locator('.toolmark-github')).toBeVisible();
+      await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
+      await expect(answers).toContainText('A sample’s pull request: it never existed, so it links nowhere.');
+      await expect(answers.getByRole('link')).toHaveCount(0);
+    }
+    // A spend cap's settings are a plain link beside its evidence, not a way.
+    const spend = card('1319');
+    await expect(spend.locator('.way')).toHaveCount(0);
+    await expect(spend.locator('p.ev').getByRole('link', { name: 'Raise the cap in the settings' })).toHaveAttribute(
+      'href',
+      '?view=settings',
+    );
+  });
+
+  test('a real pull request’s way is GitHub’s: “Merge” and its mark, in a new tab, said to a screen reader', async ({
+    page,
+  }) => {
+    // #1311 as a work item of the factory's own rather than a sample's, so its pull request is GitHub's.
+    await page.route('**/api/events?after=0', async (route) => {
+      const response = await route.fetch();
+      const events = (await response.json()) as (RawEvent & { work_item?: string })[];
+      route.fulfill({
+        response,
+        json: events.map((event) =>
+          event.type === 'work-item.opened' && event.work_item === '1311'
+            ? { ...event, payload: { ...(event.payload as object), sample: false } }
+            : event,
+        ),
+      });
+    });
+    await page.goto(consoleUrl({}));
+    await ready(page);
+    const answers = page
+      .locator('article.needs .need')
+      .filter({ has: page.getByText('#1311 ·', { exact: false }) })
+      .locator('.answers');
+    const way = answers.getByRole('link', { name: 'Merge #1312 on GitHub (opens GitHub in a new tab)' });
+    await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
+    await expect(way).toHaveAttribute('href', 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1312');
+    await expect(way).toHaveAttribute('target', '_blank');
+    await expect(way).toHaveAttribute('rel', 'noopener');
+    await expect(way.locator('.toolmark-github')).toHaveAttribute('aria-hidden', 'true');
+    await expect(way.locator('.toolmark-github')).toBeVisible();
+    await expect(answers.locator('span.way')).toHaveCount(0);
+    // Its drawing is an image of this origin's, which the policy lets the stylesheet use.
+    const url = await way
+      .locator('.toolmark-github')
+      .evaluate((mark) => getComputedStyle(mark).maskImage.replace(/^url\("?|"?\)$/g, ''));
+    expect((await page.request.get(url)).headers()['content-type']).toContain('image/svg+xml');
   });
 });

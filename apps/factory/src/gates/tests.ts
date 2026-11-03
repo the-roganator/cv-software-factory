@@ -17,6 +17,12 @@ export interface TestCase {
   disabled: false | 'skip' | 'todo' | 'only' | 'conditional';
   /** Calls to `expect` and `assert` inside the test's body, including in helpers it defines there. */
   assertions: number;
+  /**
+   * Each of those calls as text, in order: the whole chain, such as `expect(res.status).not.toBe(500)`, with the
+   * spacing, line breaks and comments outside strings taken out (one space kept between two words), a trailing comma
+   * dropped and every plain string in single quotes, so a test reformatted asserts what it did.
+   */
+  calls: string[];
   /** The test's call as written, for telling whether a test changed. */
   source: string;
 }
@@ -103,13 +109,13 @@ function codeMask(source: string): boolean[] {
   return code;
 }
 
-/** The index just after the parenthesis that closes the one at `open`, counting only code. */
-function closing(source: string, code: boolean[], open: number): number {
+/** The index just after the parenthesis (or other bracket) that closes the one at `open`, counting only code. */
+function closing(source: string, code: boolean[], open: number, [left, right] = '()'): number {
   let depth = 0;
   for (let i = open; i < source.length; i++) {
     if (!code[i]) continue;
-    if (source[i] === '(') depth++;
-    else if (source[i] === ')') {
+    if (source[i] === left) depth++;
+    else if (source[i] === right) {
       depth--;
       if (depth === 0) return i + 1;
     }
@@ -141,6 +147,104 @@ interface Block {
   /** Where the call's arguments start and end. */
   from: number;
   to: number;
+}
+
+/** The index of the first code character at or after `at` that is not a space: past spacing and comments. */
+function skipGap(source: string, code: boolean[], at: number): number {
+  let i = at;
+  while (i < source.length) {
+    if (code[i] && /\s/.test(source[i] ?? '')) i++;
+    else if (!code[i] && source.startsWith('//', i))
+      i = source.indexOf('\n', i) === -1 ? source.length : source.indexOf('\n', i);
+    else if (!code[i] && source.startsWith('/*', i))
+      i = source.indexOf('*/', i) === -1 ? source.length : source.indexOf('*/', i) + 2;
+    else return i;
+  }
+  return i;
+}
+
+/** Where the chain of calls and properties that starts with the call opening at `open` ends: `(…).not.toBe(…)`. */
+function chainEnd(source: string, code: boolean[], open: number): number {
+  let end = closing(source, code, open);
+  for (;;) {
+    const at = skipGap(source, code, end);
+    if (!code[at]) return end;
+    // A property by name, `.not`, or computed, `[matcher]` or `?.[matcher]`.
+    const computed = /^(?:\?\.\s*)?\[/.exec(source.slice(at, at + 20));
+    const link = computed ? undefined : /^\??\.\s*[A-Za-z_$][\w$]*/.exec(source.slice(at, at + 200));
+    if (computed) end = closing(source, code, at + computed[0].length - 1, '[]');
+    else if (link) end = at + link[0].length;
+    else return end;
+    const call = skipGap(source, code, end);
+    if (source[call] === '(' && code[call]) end = closing(source, code, call);
+  }
+}
+
+/**
+ * A string literal's text, from its opening quote, always in single quotes, so that a change of quote style is no
+ * change: `'a'`, `"a"` and `` `a` `` are all `'a'`. Other escapes are kept as written. Undefined for a template literal with
+ * an expression in it, which is kept as written.
+ */
+function quoted(source: string, at: number): { text: string; end: number } | undefined {
+  const quote = source[at] as string;
+  let text = '';
+  for (let i = at + 1; i < source.length; i++) {
+    const c = source[i] as string;
+    if (c === '\\') {
+      const next = source[i + 1] ?? '';
+      text += next === '"' || next === '`' ? next : `\\${next}`;
+      i++;
+    } else if (c === quote) return { text: `'${text}'`, end: i + 1 };
+    else if (quote === '`' && c === '$' && source[i + 1] === '{') return undefined;
+    else text += c === "'" ? "\\'" : c;
+  }
+  return undefined;
+}
+
+/**
+ * A call's text as `TestCase.calls` keeps it. Strings are in single quotes, comments are left out, and regular
+ * expressions and templates with expressions are as written. In the code between them there is no spacing (but one
+ * space between two words, as in `typeof x`) and no trailing comma.
+ */
+function callText(source: string, code: boolean[], from: number, to: number): string {
+  const isSpace = (i: number) => code[i] === true && /\s/.test(source[i] ?? '');
+  let text = '';
+  for (let i = from; i < to; i++) {
+    const c = source[i] as string;
+    if (!code[i]) {
+      const literal = c === "'" || c === '"' || c === '`' ? quoted(source, i) : undefined;
+      const comment = source.startsWith('//', i) || source.startsWith('/*', i);
+      if (literal && literal.end <= to) {
+        text += literal.text;
+        i = literal.end - 1;
+      } else if (comment) {
+        const end = skipGap(source, code, i);
+        if (/[\w$]$/.test(text) && /^[\w$]/.test(source[end] ?? '')) text += ' ';
+        i = end - 1;
+      } else {
+        // A regular expression, or a template's text around its expressions: as written, up to the code after it.
+        let end = i + 1;
+        while (end < to && !code[end]) end++;
+        text += source.slice(i, end);
+        i = end - 1;
+      }
+      continue;
+    }
+    let next = i;
+    while (next < to && isSpace(next)) next++;
+    if (next > i) {
+      if (/[\w$]$/.test(text) && /^[\w$]/.test(source[next] ?? '')) text += ' ';
+      i = next - 1;
+      continue;
+    }
+    // A trailing comma, but not a hole in an array (`[a,,]`, `[,]`), which changes what it holds.
+    if (c === ',' && !/[,[]$/.test(text)) {
+      const after = skipGap(source, code, i + 1);
+      if (code[after] && ')]}'.includes(source[after] ?? '')) continue;
+    }
+    text += c;
+  }
+  return text;
 }
 
 export function testsIn(source: string): TestCase[] {
@@ -189,16 +293,23 @@ export function testsIn(source: string): TestCase[] {
     });
   }
 
-  const assertions = [...source.matchAll(ASSERTION)].map((m) => m.index).filter((i) => code[i]);
+  const assertions = [...source.matchAll(ASSERTION)]
+    .filter((m) => code[m.index])
+    .map((m) => ({
+      at: m.index,
+      text: callText(source, code, m.index, chainEnd(source, code, m.index + m[0].length - 1)),
+    }));
   return blocks
     .filter((b) => b.kind === 'test')
     .map((test) => {
       const around = blocks.filter((b) => b.kind === 'describe' && b.from < test.from && b.to >= test.to);
       const describedDisabled = around.find((b) => b.disabled)?.disabled ?? false;
+      const calls = assertions.filter((a) => a.at > test.from && a.at < test.to).map((a) => a.text);
       return {
         name: [...around.map((b) => b.name), test.name].join(' > '),
         disabled: test.disabled || describedDisabled,
-        assertions: assertions.filter((i) => i > test.from && i < test.to).length,
+        assertions: calls.length,
+        calls,
         source: source.slice(test.from, test.to),
       };
     });

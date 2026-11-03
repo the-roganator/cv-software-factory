@@ -396,7 +396,7 @@ describe('validation', () => {
   it('takes where each criterion of a spec comes from and the words it quotes there, and a spec that never said', () => {
     const criterion = { given: 'a price of 600 pence', when: 'it is shown', expect: 'it reads £6.00' };
     const spec = { outcome: 'Prices show two digits of pence.', scope: ['src/money.ts'], risks: [], rollout: 'Ships.' };
-    const written = { ...opened, type: 'spec.written', version: 4, actor: 'planner' };
+    const written = { ...opened, type: 'spec.written', version: 5, actor: 'planner' };
     const quoted = { ...criterion, from: 'signal 1', quote: 'a price is in pounds and two digits of pence' };
     expect(validate({ ...written, payload: { ...spec, criteria: [quoted] } })).toEqual({ ok: true });
     expect(validate({ ...written, payload: { ...spec, criteria: [{ ...quoted, quote: ' ' }] } }).ok).toBe(false);
@@ -404,11 +404,36 @@ describe('validation', () => {
       [1, criterion],
       [2, { ...criterion, from: 'signal 1' }],
       [3, quoted],
+      [4, quoted],
     ] as const) {
       expect(upcast({ type: 'spec.written', version, payload: { ...spec, criteria: [older] } })).toMatchObject({
-        event: { version: 4, payload: { criteria: [older] } },
+        event: { version: 5, payload: { criteria: [older] } },
       });
     }
+  });
+
+  it('takes the existing tests a spec contradicts, by file and full name, from one to ten, and a spec that names none', () => {
+    const spec = {
+      outcome: 'Every asset may be cached.',
+      criteria: [{ given: 'site.css', when: 'it is fetched', expect: 'it may be cached' }],
+      scope: ['src/app.ts', 'test/app.test.ts'],
+      risks: ['test-loosening'],
+      rollout: 'Ships.',
+    };
+    const written = { ...opened, type: 'spec.written', version: 5, actor: 'planner' };
+    const test = { file: 'test/app.test.ts', test: 'files > keeps nothing of the other files' };
+    const valid = (contradicts: unknown) => validate({ ...written, payload: { ...spec, contradicts } }).ok;
+    expect(validate({ ...written, payload: spec })).toEqual({ ok: true });
+    expect(valid([test])).toBe(true);
+    expect(valid([])).toBe(false);
+    expect(valid(Array.from({ length: 11 }, (_, i) => ({ ...test, test: `test ${i}` })))).toBe(false);
+    expect(valid([{ ...test, test: 'x'.repeat(301) }])).toBe(false);
+    expect(valid([{ ...test, file: 'x'.repeat(201) }])).toBe(false);
+    expect(valid([{ file: test.file }])).toBe(false);
+    expect(upcast({ type: 'spec.written', version: 4, payload: spec })).toEqual({
+      ok: true,
+      event: { type: 'spec.written', version: 5, payload: spec },
+    });
   });
 
   it('takes an improvement’s title, flag, pages and each criterion’s side of the flag', () => {
@@ -429,7 +454,7 @@ describe('validation', () => {
       flag: 'delivery-dates',
       pages: ['/products/blue-mug', '/'],
     };
-    const written = { ...opened, type: 'spec.written', version: 4, actor: 'planner' };
+    const written = { ...opened, type: 'spec.written', version: 5, actor: 'planner' };
     expect(validate({ ...written, payload: spec })).toEqual({ ok: true });
     const refused = (payload: object) => validate({ ...written, payload: { ...spec, ...payload } }).ok;
     expect(refused({ pages: [] })).toBe(false);

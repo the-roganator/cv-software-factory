@@ -623,7 +623,8 @@ export const PAYLOADS = {
   /**
    * The planner's spec. An improvement's names its title, which replaces the one made from Martin's words, the flag its
    * change goes behind, the pages it changes, which Verify pictures with the flag off and on, and on each criterion
-   * the side of the flag it holds on. A version 3 spec named none of them.
+   * the side of the flag it holds on. A version 3 spec named none of them. `contradicts` names the existing tests the
+   * criteria contradict, which a version 4 spec never named.
    */
   'spec.written': z.strictObject({
     title: text(120).optional(),
@@ -654,6 +655,16 @@ export const PAYLOADS = {
     flag: flagName.optional(),
     /** The app's pages the change shows on, by path, as many as Verify pictures (`flag.checked` keeps six, in two schemes). */
     pages: z.array(page).min(1).max(6).optional(),
+    /**
+     * The existing tests the criteria contradict, each by its file and its full name (its `describe` names and its own
+     * joined with " > ", as test integrity names it): the only tests the change may delete, rename or rewrite. Absent
+     * when the spec contradicts none, and from every spec before spec.written version 5.
+     */
+    contradicts: z
+      .array(z.strictObject({ file: text(PATH_CHARS), test: text(300) }))
+      .min(1)
+      .max(10)
+      .optional(),
   }),
   /** A change pushed for review: a new pull request, or another attempt on one that was sent back. */
   'pull-request.pushed': z.strictObject({

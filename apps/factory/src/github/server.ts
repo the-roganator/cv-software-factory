@@ -25,6 +25,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { entryProblem, MOST_CONTRADICTED } from '../gates/contradicts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
 import { BranchRefused } from './branches.ts';
@@ -70,6 +71,15 @@ const carry = z.strictObject({
   issue: number.nullable(),
   pullRequest: number,
 });
+/** The tests a spec contradicts, as the section of a description names them: each one the gate would read. */
+const contradicts = z
+  .array(
+    z.strictObject({ file: z.string(), test: z.string() }).superRefine((entry, ctx) => {
+      const problem = entryProblem(entry);
+      if (problem) ctx.addIssue({ code: 'custom', message: problem });
+    }),
+  )
+  .max(MOST_CONTRADICTED);
 const pullRequestRef = z.strictObject({ number, url: z.string(), nodeId: z.string().min(1) });
 const checkRun = z.strictObject({
   name: text(100).min(1),
@@ -114,8 +124,14 @@ const ARGS = {
     body: text(65_535),
     draft: z.boolean().optional(),
     labels: z.array(text(50)).max(10).optional(),
+    contradicts: contradicts.optional(),
   }),
-  updatePullRequest: z.strictObject({ number, title: text(256).min(1).optional(), body: text(65_535).optional() }),
+  updatePullRequest: z.strictObject({
+    number,
+    title: text(256).min(1).optional(),
+    body: text(65_535).optional(),
+    contradicts: contradicts.optional(),
+  }),
   describeDeploy: z.strictObject({
     number,
     commit: sha,
@@ -228,6 +244,7 @@ const READS = {
   head: z.strictObject({ branch }),
   pullRequestFrom: z.strictObject({ branch }),
   protectedPaths: z.strictObject({ ref: sha }),
+  file: z.strictObject({ ref: sha, path }),
   comparison: z.strictObject({ base: branch, head: sha }),
   checkout: z.strictObject({ sha }),
   commits: z.strictObject({ base: sha, head: sha }),
@@ -252,6 +269,7 @@ const READ_CALLS: {
   head: (r, repo, { branch }) => r.head(repo, branch),
   pullRequestFrom: (r, repo, { branch }) => r.pullRequestFrom(repo, branch),
   protectedPaths: (r, repo, { ref }) => r.protectedPaths(repo, ref),
+  file: (r, repo, { ref, path }) => r.file(repo, ref, path),
   comparison: (r, repo, { base, head }) => r.comparison(repo, base, head),
   checkout: (r, repo, { sha }) => r.checkout(repo, sha),
   commits: (r, repo, { base, head }) => r.commits(repo, base, head),

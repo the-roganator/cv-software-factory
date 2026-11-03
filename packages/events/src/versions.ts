@@ -18,7 +18,7 @@ export const VERSIONS = {
   'judgement.made': 1,
   'ticket.opened': 1,
   // Plan and build
-  'spec.written': 4,
+  'spec.written': 5,
   'pull-request.pushed': 3,
   'suggestions.answered': 1,
   'wait.started': 1,

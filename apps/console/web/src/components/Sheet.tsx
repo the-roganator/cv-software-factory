@@ -670,9 +670,10 @@ function Request({ request }: { request: NonNullable<SheetData['request']> }) {
 }
 
 /**
- * The spec: its outcome, its criteria, and its scope, with what the pull request changes in it, or what the last
- * patch the fence refused would have. An improvement's says, in a box, what it changes, the flag it goes behind and
- * the pages it changes, and under each criterion the side of the flag it is tested with.
+ * The spec: its outcome, its criteria, the existing tests they contradict, and its scope, with what the pull request
+ * changes in it, or what the last patch the fence refused would have. An improvement's says, in a box, what it
+ * changes, the flag it goes behind and the pages it changes, and under each criterion the side of the flag it is
+ * tested with. The tests' names are the app's, public as its code is, so a visitor sees them too.
  */
 function SpecSection({ sheet }: { sheet: SheetData }) {
   const { spec, scope, card } = sheet;
@@ -729,6 +730,21 @@ function SpecSection({ sheet }: { sheet: SheetData }) {
           </li>
         ))}
       </ul>
+      {spec.contradicts && (
+        <div className="contradicts">
+          <span className="label small">Tests it contradicts</span>
+          <ul>
+            {spec.contradicts.map((t) => (
+              <li key={`${t.file} ${t.test}`}>
+                <span className="mono">{t.file}</span> · {t.test}
+              </li>
+            ))}
+          </ul>
+          <p className="help">
+            The change may delete, rename or rewrite these existing tests, and no other. Test integrity names each one.
+          </p>
+        </div>
+      )}
       {scope && (
         <table className="scope raised">
           <thead className="label small">

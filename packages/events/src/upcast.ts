@@ -181,7 +181,13 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 3 adds the words each criterion quotes from there; a version 2 spec quoted none.
   // Version 4 adds an improvement's title, pages and each criterion's side of its flag; a version 3 spec named none, and
   // its flag, if it named one, reads as it was.
-  'spec.written': { 1: (payload) => payload, 2: (payload) => payload, 3: (payload) => payload },
+  // Version 5 adds the existing tests the criteria contradict; a version 4 spec named none, so it contradicts none.
+  'spec.written': {
+    1: (payload) => payload,
+    2: (payload) => payload,
+    3: (payload) => payload,
+    4: (payload) => payload,
+  },
   // Version 2 adds the pull request's whole change. A version 1 push recorded only its own files, which are the whole
   // change for a first push, and the nearest the event has for a later one.
   // Version 3 marks a path in the whole change cut to what an event records; a version 2 push cut none.

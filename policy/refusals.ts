@@ -2,8 +2,9 @@
  * Who may record a refusal (`action.refused`), by its mechanism, and which of spec 6's guardrails each shows. A
  * mechanism with a role of its own in the event store appends its own refusals; one with none (the GitHub worker,
  * admission control, GitHub itself) is relayed by the worker that asked it, which holds a role. Row security holds
- * every refusal to the roles named here (`packages/store/migrations/0040_refusals-by-mechanism.sql`, its table rewritten
- * by `0046_red-team-refusals.sql`), and to the guardrails named here (`0041_refusals-as-they-read.sql`, rewritten by `0042_refusals-before-guardrails.sql`);
+ * every refusal to the roles named here (`packages/store/migrations/0040_refusals-by-mechanism.sql`, its table
+ * rewritten by `0046_red-team-refusals.sql`), and to the guardrails named here (`0041_refusals-as-they-read.sql`,
+ * rewritten by `0042_refusals-before-guardrails.sql`);
  * `packages/store/test/grants.test.ts` fails unless the store's tables equal these, and inserts each mechanism as every
  * role.
  *

@@ -646,7 +646,7 @@ table.models {
   margin-top: 10px;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1179.98px) {
   .sheet-body {
     grid-template-columns: 1fr;
   }

@@ -418,7 +418,7 @@ p.words {
   color: var(--text-muted);
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1179.98px) {
   .canary-body {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
     gap: 0 28px;

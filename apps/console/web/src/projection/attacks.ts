@@ -9,24 +9,25 @@
  * - **How it ended** is the first `attack.finished` after the launch appended by the harness's role. Any other role's
  *   is no word on it at all.
  * - **Refused** stands only when every refusal it cites is in the stream, in the order of the refusals its attack
- *   expects (`policy/attacks.ts`): each an `action.refused` after the launch, by the mechanism expected at its place,
- *   appended by a role that may append that mechanism (`policy/refusals.ts`), showing the guardrail the attack is made
- *   against, and, for the image attack, about the pod the harness asked for; and for the egress attack, its control,
- *   the gateway, answered. A refusal relayed from the GitHub worker
- *   carries its record and signature, which the line verifies with the worker's public key; the console has no key,
- *   so it checks only that both are there. A refused attack that fails any of these reads as **not confirmed**: its
- *   guardrail reads as not held, as when nothing refused it, since the line pages Martin for both.
+ *   expects (`policy/attacks.ts`): each an `action.refused` after the launch and before the end, by the mechanism
+ *   expected at its place, appended by a role that may append that mechanism (`policy/refusals.ts`), showing the
+ *   guardrail the attack is made against; for the image attack, about the pod the harness asked for; and for the egress
+ *   attack, with its control, the gateway, answering. A refusal relayed from the GitHub worker carries its record and
+ *   signature, which the line verifies with the worker's public key; the console has no key, so it checks only that
+ *   both are there. Which report triage's quarantine was about is not in the public record either, so the console
+ *   cannot match it to the report attack's own: the line, which reads it, does. A refused attack that fails any of
+ *   these checks reads as **not confirmed**: its guardrail reads as not held, as when nothing refused it, since the
+ *   line pages Martin for both.
  * - **Not refused** and **unfinished** are the harness's word, and stand as it says: neither can hide a failure. And
  *   any attempt its own record marks not refused (`refused: false`) makes it **not refused**, whatever its outcome
  *   says: the store refuses a refused outcome with one, and the console does not lean on that alone.
  * - **Running** while no end is recorded and its limit (`policy/attacks.ts`) has not passed; **unfinished** once it has,
- *   as the admin service lets another launch through then, and the line pages Martin. So the two are told apart by the
- *   time alone, at t.
+ *   as the admin service lets another launch through then, and the line pages Martin; and unfinished too once its work
+ *   item is closed with no end recorded, as nothing is left to end it.
  *
  * Plain TypeScript, so Node tests it directly.
  */
 import type { Attack, PayloadOf, PublicEvent, RefusalMechanism } from '@software-factory/events';
-import { ATTACKS } from '@software-factory/events';
 import { ATTACK_RULES, attackLimitMs, expectedRefusals } from '@software-factory/policy/attacks';
 import { guardrailAttacked } from '@software-factory/policy/guardrails';
 import { mayAppend } from '@software-factory/policy/refusals';
@@ -51,10 +52,14 @@ export interface AttackState {
   attack: Attack;
   launchedAt: number;
   launchedSeq: number;
+  /** Whether its work item was closed: one closed with no end recorded is unfinished, whatever the time. */
+  closed: boolean;
   /** The harness's record of how it ended, checked: none while none is recorded. */
   finished:
     | {
         at: number;
+        /** Its event's seq: no refusal recorded after it is the attack's. */
+        seq: number;
         /** How it ended, once checked: `refused` only if the stream bears it out. */
         verdict: Exclude<Verdict, 'running'>;
         /** Why a refused attack reads as not confirmed. */
@@ -102,6 +107,8 @@ export function unconfirmed(
   launchedSeq: number,
   finished: PayloadOf<'attack.finished'>,
   refusals: readonly PublicEvent<'action.refused'>[],
+  /** The end's own seq: a refusal recorded after it cannot have been what the harness counted. */
+  finishedSeq: number,
 ): string | undefined {
   if (finished.attack !== attack) return `it names the ${finished.attack} attack, and the launch was of ${attack}`;
   const expected = expectedRefusals(attack);
@@ -110,6 +117,10 @@ export function unconfirmed(
   }
   if (finished.refusals.length !== expected.length) {
     return `it cites ${finished.refusals.length} of the ${expected.length} refusals it expects`;
+  }
+  // One attempt for each refusal it expects: an attempt left out of its record is one nothing shows was refused.
+  if (finished.attempts.length !== expected.length) {
+    return `it records ${finished.attempts.length} attempt${finished.attempts.length === 1 ? '' : 's'}, and expects ${expected.length} refusals`;
   }
   // The egress attack's refusals are the policy's only if its control, the gateway, answered (the schema says so too).
   if (attack === 'egress' && !finished.control?.reached) return 'its control, the gateway, was not seen to answer';
@@ -120,6 +131,7 @@ export function unconfirmed(
     const mechanism = expected[i] as RefusalMechanism;
     if (!refusal) return `refusal ${seq}, which it cites, is not in the record`;
     if (seq <= after) return `refusal ${seq} is out of order, or before the launch`;
+    if (seq >= finishedSeq) return `refusal ${seq} was recorded after the attack’s end`;
     after = seq;
     if (refusal.payload.mechanism !== mechanism) {
       return `refusal ${seq} is by ${refusal.payload.mechanism}, where ${mechanism} is expected`;
@@ -145,15 +157,13 @@ export function unconfirmed(
 /** How an attack stands at t: as its checked end says, or running until its limit has passed, and unfinished after. */
 export function verdictAt(state: AttackState, t: number): Verdict {
   if (state.finished) return state.finished.verdict;
+  if (state.closed) return 'unfinished';
   return t - state.launchedAt < attackLimitMs(state.attack) ? 'running' : 'unfinished';
 }
 
 /** When an attack in flight counts as unfinished. */
 export const limitOf = (state: Pick<AttackState, 'attack' | 'launchedAt'>) =>
   state.launchedAt + attackLimitMs(state.attack);
-
-/** Whether a word names one of the five attacks. */
-export const isAttack = (word: string): word is Attack => (ATTACKS as readonly string[]).includes(word);
 
 /** Each attack's name, what it tries and the refusals it expects: policy's. */
 export { ATTACK_RULES };

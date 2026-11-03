@@ -311,7 +311,7 @@ button.srow:hover {
   font: normal 10.5px var(--font-mono);
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1179.98px) {
   .stage .name {
     font-size: 20px;
   }
@@ -427,7 +427,7 @@ button.srow:hover {
 }
 
 /* A spend cap's reset time stays in Triage's caption at every width: it is the station's one figure. */
-@media (max-width: 1180px) {
+@media (max-width: 1179.98px) {
   .stage .fig.keep {
     display: inline;
   }

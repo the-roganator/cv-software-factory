@@ -31,6 +31,10 @@ const HARNESS_APPENDS = (event: NewEvent): boolean =>
   (event.type === 'action.refused' &&
     (REFUSALS[event.payload.mechanism].appendedBy as readonly string[]).includes('factory_redteam'));
 
+/** The work items Martin launched an attack on, whose refusals and close the harness appends (`appenderOf`). */
+export const attackItems = (events: readonly NewEvent[]): ReadonlySet<string> =>
+  new Set(events.flatMap((event) => (event.type === 'attack.launched' && event.work_item ? [event.work_item] : [])));
+
 /**
  * The role that would append a sample, or none for one nothing in the factory appends (a defect's injection). `attacks`
  * are the work items Martin launched an attack on, whose refusals and close the harness appends.

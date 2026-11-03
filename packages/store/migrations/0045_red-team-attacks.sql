@@ -50,9 +50,11 @@ create function opens_attack(type text, payload jsonb) returns boolean language 
 $$;
 
 -- Whether one of Martin's roles launched an attack on a work item. It reads the events as the role that asks, under
--- its own row security: the harness's role reads his launches.
-create function launched_by_martin(item text) returns boolean language sql stable parallel safe as $$
-  select exists (select 1 from events l
+-- its own row security: the harness's role reads his launches. The table is named by its schema, and the search path
+-- fixed with pg_temp last, so no role can stand a temporary table of its own called `events` in for the store's.
+create function launched_by_martin(item text) returns boolean language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as $$
+  select exists (select 1 from public.events l
                  where l.work_item = item and l.type = 'attack.launched'
                    and l.appended_by in ('factory_admin', 'factory_operator', 'factory_enrol'))
 $$;
@@ -71,8 +73,11 @@ create policy events_redteam_read on events for select to factory_redteam
              and (type = 'attack.launched' or opens_attack(type, payload)))
          or (type = 'action.refused' and payload->>'mechanism' in ('typed-judgement', 'admission-control')
              and appended_by = any (refusal_appenders(payload->>'mechanism'))));
+-- Its close only as an attack ends: refused, not refused or unfinished, never as work the line did.
 create policy events_redteam_append on events for insert to factory_redteam
-  with check (type in ('attack.finished', 'action.refused', 'work-item.closed') and launched_by_martin(work_item));
+  with check ((type in ('attack.finished', 'action.refused')
+               or (type = 'work-item.closed' and payload->>'outcome' in ('refused', 'not-refused', 'unfinished')))
+              and launched_by_martin(work_item));
 
 -- A restrictive policy, so it holds whatever the permissive ones let through: Postgres ORs permissive policies, and
 -- ANDs each restrictive one with them. It applies to every role, Martin's included: his command line appends an
@@ -80,3 +85,10 @@ create policy events_redteam_append on events for insert to factory_redteam
 create policy events_finished_by_the_harness on events as restrictive for insert
   with check (type <> 'attack.finished' or current_user = 'factory_redteam'
               or (current_user = 'factory_operator' and sample));
+
+-- And a close as an attack ends (refused, not refused, unfinished) is the harness's alone in the same way, so no
+-- worker's permissive policy lets one close its own work, or any other, as an attack's result.
+create policy events_closed_as_an_attack_by_the_harness on events as restrictive for insert
+  with check (type <> 'work-item.closed'
+              or coalesce(payload->>'outcome', '') not in ('refused', 'not-refused', 'unfinished')
+              or current_user = 'factory_redteam' or (current_user = 'factory_operator' and sample));

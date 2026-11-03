@@ -23,7 +23,13 @@ import type { JSONValue, Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ENROLMENT_CODE, PASSKEYS, SESSION } from '../../../policy/access.ts';
 import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../policy/refusals.ts';
-import { MARTINS_ROLES, PROOFS_ONLY_ROWS, REDTEAM_ONLY_ROWS, STORE_GRANTS } from '../../../policy/store-grants.ts';
+import {
+  ATTACK_CLOSE_ROWS,
+  MARTINS_ROLES,
+  PROOFS_ONLY_ROWS,
+  REDTEAM_ONLY_ROWS,
+  STORE_GRANTS,
+} from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
@@ -776,6 +782,30 @@ describe("an attack's end", () => {
     }
   });
 
+  it('is the only close as an attack ended: no other role closes any work item so, but as a sample', async () => {
+    const real = await freshDatabase('attack_closes');
+    const samples = await freshDatabase('attack_closes_samples');
+    try {
+      for (const outcome of ['refused', 'not-refused', 'unfinished']) {
+        for (const [role, sql] of [...Object.entries(real.as), ['admin', real.admin], ['operator', real.operator]] as [
+          string,
+          Sql,
+        ][]) {
+          await expect(
+            insert(sql, 'work-item.closed', '4030', false, { outcome, reason: 'Made up' }),
+            `${role}: ${outcome}`,
+          ).rejects.toThrow('row-level security');
+        }
+        await insert(samples.operator, 'work-item.closed', '4031', true, { outcome, reason: 'A sample' });
+      }
+      // Its other closes are as they were.
+      await insert(real.as.line, 'work-item.closed', '4030', false, { outcome: 'verified', reason: 'Shipped' });
+    } finally {
+      await real.end();
+      await samples.end();
+    }
+  });
+
   it('is with the harness’s other appends only on a work item one of Martin’s roles launched an attack on', async () => {
     const real = await freshDatabase('redteam_appends');
     try {
@@ -795,11 +825,23 @@ describe("an attack's end", () => {
         insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
         values (${crypto.randomUUID()}, now(), ${workItem}, 'action.refused', 3, 'red-team', 'Refused',
                 ${real.redteam.json(refusal)}, '[]', ${real.redteam.json({ payload: refusal } as JSONValue)}, false)`;
-      for (const type of ['attack.finished', 'work-item.closed']) await insert(real.redteam, type, '4010');
+      const ended = { outcome: 'refused', reason: 'Every attempt was refused.' };
+      await insert(real.redteam, 'attack.finished', '4010');
+      await insert(real.redteam, 'work-item.closed', '4010', false, ended);
+      // Its close only as an attack ends, never as work the line did.
+      for (const outcome of ['verified', 'quarantined', 'turned-off']) {
+        await expect(
+          insert(real.redteam, 'work-item.closed', '4010', false, { ...ended, outcome }),
+          outcome,
+        ).rejects.toThrow('row-level security');
+      }
       await refused('4010');
       for (const workItem of ['4011', '4012']) {
-        for (const type of ['attack.finished', 'work-item.closed']) {
-          await expect(insert(real.redteam, type, workItem), `${type} on ${workItem}`).rejects.toThrow(
+        for (const [type, payload] of [
+          ['attack.finished', {}],
+          ['work-item.closed', ended],
+        ] as const) {
+          await expect(insert(real.redteam, type, workItem, false, payload), `${type} on ${workItem}`).rejects.toThrow(
             'row-level security',
           );
         }
@@ -811,6 +853,20 @@ describe("an attack's end", () => {
       )) {
         await expect(insert(real.redteam, type, '4010'), type).rejects.toThrow('row-level security');
       }
+      // Nor by a temporary table of its own called events, standing in for the store's where it looks for a launch.
+      await real.redteam.begin(async (tx) => {
+        await tx`create temp table events (work_item text, type text, appended_by text) on commit drop`;
+        await tx`insert into pg_temp.events values ('4012', 'attack.launched', 'factory_admin')`;
+        await expect(
+          tx.savepoint(
+            (sp) => sp`
+              insert into public.events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public,
+                                         sample)
+              values (${crypto.randomUUID()}, now(), '4012', 'work-item.closed', 3, 'red-team', 'Closed',
+                      ${sp.json(ended)}, '[]', '{}', false)`,
+          ),
+        ).rejects.toThrow('row-level security');
+      });
       const typed = { mechanism: 'typed-judgement', action: 'A report', output: 'Quarantined.', guardrails: [8] };
       await expect(
         real.redteam`
@@ -848,7 +904,7 @@ describe("an attack's end", () => {
         await appended(real.as.line, 'action.refused', null, refused('admission-control', [3])),
         await appended(real.redteam, 'action.refused', '4020', refused('egress-policy', [5])),
         await appended(real.redteam, 'attack.finished', '4020'),
-        await appended(real.redteam, 'work-item.closed', '4020'),
+        await appended(real.redteam, 'work-item.closed', '4020', { outcome: 'refused' }),
       ];
       // What it does not wait for: another refusal, another work item, Martin's other commands, a worker's events.
       await appended(real.as.line, 'action.refused', '4022', refused('scope-fence', [11]));
@@ -941,6 +997,13 @@ describe('a refusal', () => {
         .replace(/\s+/g, ' ')
         .replace(/^\((.*)\)$/, '$1');
     expect(restrictive.map((policy) => ({ ...policy, check: check(policy.check) }))).toEqual([
+      {
+        name: 'events_closed_as_an_attack_by_the_harness',
+        table: 'events',
+        command: 'insert',
+        roles: ['public'],
+        check: ATTACK_CLOSE_ROWS,
+      },
       {
         name: 'events_finished_by_the_harness',
         table: 'events',

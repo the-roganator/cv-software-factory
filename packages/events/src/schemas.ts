@@ -538,10 +538,10 @@ export const PAYLOADS = {
       (finished) =>
         finished.outcome !== 'refused' ||
         (finished.refusals.length === finished.expected.length &&
-          finished.attempts.length > 0 &&
+          finished.attempts.length === finished.expected.length &&
           finished.attempts.every((attempt) => attempt.refused)),
       {
-        message: 'a refused attack made its attempts, each refused, and cites a refusal for each one it expects',
+        message: 'a refused attack made one attempt for each refusal it expects, each refused, and cites each refusal',
         path: ['refusals'],
       },
     )

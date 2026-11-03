@@ -227,7 +227,7 @@ export const STORE_GRANTS = {
   factory_redteam: {
     for:
       'The red-team harness: appends how an attack ended (`attack.finished`), which no other role may append, the ' +
-      'refusals it relays for its attacks, and its work item’s close, each only on a work item one of Martin’s roles ' +
+      'refusals it relays for its attacks, and its work item’s close as the attack ended, each only on a work item one of Martin’s roles ' +
       'launched an attack on (0045_red-team-attacks.sql). It reads only what it acts on and waits for: his launches and ' +
       'the work items they opened; triage’s typed judgement and admission control’s refusals, each from a role that ' +
       'may speak for it; and its own events, so an append may be retried and a restart picks up where it left off. No ' +
@@ -241,7 +241,10 @@ export const STORE_GRANTS = {
           "((type = 'action.refused') AND " +
           "((payload ->> 'mechanism') = ANY (ARRAY['typed-judgement', 'admission-control'])) AND " +
           "(appended_by = ANY (refusal_appenders((payload ->> 'mechanism')))))",
-        insert: "(type in ('attack.finished', 'action.refused', 'work-item.closed')) AND launched_by_martin(work_item)",
+        insert:
+          "((type in ('attack.finished', 'action.refused')) OR " +
+          "((type = 'work-item.closed') AND ((payload ->> 'outcome') = ANY (ARRAY['refused', 'not-refused', 'unfinished'])))) " +
+          'AND launched_by_martin(work_item)',
       },
     },
   },
@@ -280,6 +283,15 @@ export const STORE_GRANTS = {
 export const PROOFS_ONLY_ROWS =
   "(type <> 'guardrail.proved') OR (CURRENT_USER = 'factory_proofs'::name) OR " +
   "((CURRENT_USER = 'factory_operator'::name) AND sample)";
+
+/**
+ * The restrictive insert policy on `events` that holds a close as an attack ended (refused, not refused, unfinished)
+ * to the red-team harness's role (`0045_red-team-attacks.sql`), as the grants test reads it from the store, so no
+ * worker closes any work item as an attack's result. Martin's command line closes one so only as a sample.
+ */
+export const ATTACK_CLOSE_ROWS =
+  "(type <> 'work-item.closed') OR (COALESCE((payload ->> 'outcome'), '') <> ALL (ARRAY['refused', 'not-refused', " +
+  "'unfinished'])) OR (CURRENT_USER = 'factory_redteam'::name) OR ((CURRENT_USER = 'factory_operator'::name) AND sample)";
 
 /**
  * The restrictive insert policy on `events` that holds an attack's end to the red-team harness's role

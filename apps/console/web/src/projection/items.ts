@@ -170,8 +170,8 @@ export interface ItemState {
 
 /**
  * Where each mechanism stands on the line, as an attack's segments stop at it: the GitHub worker's guard, GitHub and
- * the egress policy at Build, where an agent's step would meet them; the review gate at Review, where a pull request
- * waits to merge; admission control at Release; triage's typed judgement at Triage.
+ * the egress policy at Build, where an agent's step would meet them; the review gate at Gates, as a required check;
+ * admission control at Release; triage's typed judgement at Triage.
  */
 const REFUSED_AT: Record<PayloadOf<'action.refused'>['mechanism'], Stage | null> = {
   'scope-fence': 'build',
@@ -179,7 +179,7 @@ const REFUSED_AT: Record<PayloadOf<'action.refused'>['mechanism'], Stage | null>
   'token-permission': 'build',
   'egress-policy': 'build',
   ruleset: 'build',
-  'review-gate': 'review',
+  'review-gate': 'gates',
   'admission-control': 'release',
   'typed-judgement': 'triage',
   gateway: null,
@@ -327,10 +327,11 @@ const CLOSED: Record<PayloadOf<'work-item.closed'>['outcome'], Outcome> = {
   quarantined: 'quarantined',
   discarded: 'no-ticket',
   'turned-off': 'turned-off',
-  // A red-team attack's work item, closed as the attack ended: as the console reads its end (`attacks.ts`), below.
-  refused: 'refused',
-  'not-refused': 'not-refused',
-  unfinished: 'unfinished',
+  // A red-team attack's work item, closed as the attack ended. Its outcome is the console's reading of its end
+  // (`attacks.ts`), below, never the close's own word: closed, where no attack of Martin's is recorded on it.
+  refused: 'closed',
+  'not-refused': 'closed',
+  unfinished: 'closed',
 };
 
 /** Folds one work item's events (all at or before t, in order) into its state. */
@@ -462,7 +463,13 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         // Only Martin's launch makes an attack of the work item, the first: it meets its mechanism where it stands on
         // the line, the stages before it skipped, and is named by its attack until something names it otherwise.
         if (!isLaunch(event) || state.attack) break;
-        state.attack = { attack: event.payload.attack, launchedAt: time, launchedSeq: event.seq, finished: undefined };
+        state.attack = {
+          attack: event.payload.attack,
+          launchedAt: time,
+          launchedSeq: event.seq,
+          closed: false,
+          finished: undefined,
+        };
         if (!state.description) state.title = ATTACK_RULES[event.payload.attack].name;
         {
           const stage = REFUSED_AT[ATTACK_RULES[event.payload.attack].expects[0]] ?? 'build';
@@ -478,12 +485,19 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
           const refusals = state.events.filter((e): e is PublicEvent<'action.refused'> => e.type === 'action.refused');
           const why =
             outcome === 'refused'
-              ? unconfirmed(state.attack.attack, state.attack.launchedSeq, event.payload, refusals)
+              ? unconfirmed(state.attack.attack, state.attack.launchedSeq, event.payload, refusals, event.seq)
               : undefined;
           // An attempt its own record says was not refused got through, whatever its outcome says.
           const through = attempts.some((attempt) => !attempt.refused);
           const verdict = through ? 'not-refused' : why ? 'unconfirmed' : outcome;
-          state.attack.finished = { at: time, verdict, why: through ? undefined : why, attempts, control };
+          state.attack.finished = {
+            at: time,
+            seq: event.seq,
+            verdict,
+            why: through ? undefined : why,
+            attempts,
+            control,
+          };
         }
         break;
       case 'work-item.summarised': {
@@ -669,8 +683,9 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.sentBack = undefined;
         state.reopened = undefined;
         state.queued = false;
-        // An attack ends as the console reads its end, not as its close says.
-        state.outcome = state.attack?.finished ? state.attack.finished.verdict : CLOSED[event.payload.outcome];
+        // An attack ends as the console reads its end, not as its close says: closed with none, it is unfinished.
+        if (state.attack) state.attack.closed = true;
+        state.outcome = state.attack ? (state.attack.finished?.verdict ?? 'unfinished') : CLOSED[event.payload.outcome];
         if (state.stage) state.visits[state.stage] = { ...(state.visits[state.stage] as Visit), leftAt: time };
         if (event.payload.outcome === 'discarded') state.category = 'not-a-defect';
         break;

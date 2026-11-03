@@ -7,8 +7,8 @@
  *
  * - **No passkey.** An attack loosens nothing and asks the line for no work: every attack's content is fixed in code,
  *   and the line builds nothing from it. So it is `attack.launch` in the access table, which asks for nothing more.
- * - **Only one available now** (`AVAILABLE_ATTACKS` in `policy/attacks.ts`), and none is yet, as the harness that
- *   makes them is still to come. One held back is refused (403) before anything is asked of the store.
+ * - **Only an available attack** (`AVAILABLE_ATTACKS` in `policy/attacks.ts`). One that is not is refused (403) before
+ *   anything is asked of the store.
  * - **One at a time.** A launch is refused (409) while the last one his roles launched has neither an `attack.finished`
  *   appended by the harness's role nor passed its limit (`policy/attacks.ts`), by the store's clock: so attacks never
  *   meet each other's refusals, and a harness that is down blocks nothing for longer than the attack it missed. Asked
@@ -47,13 +47,15 @@ const isAttack = (attack: string): attack is Attack => (ATTACKS as readonly stri
 
 /**
  * The last attack one of Martin's roles launched, with whether the harness's role finished it, by the store's clock:
- * the one a new launch waits for. Undefined when none has been launched.
+ * the one a new launch waits for. Undefined when none has been launched. In a store of samples, a sample's end counts
+ * too: only the harness's role and Martin's command line may append one (0045_red-team-attacks.sql), and a store holds
+ * samples or real events, never both.
  */
 export async function lastLaunch(tx: TransactionSql): Promise<LastLaunch | undefined> {
   const [row] = await tx<{ work_item: string; version: number; payload: unknown; finished: boolean; age_ms: number }[]>`
     select l.work_item, l.version, l.payload,
            exists (select 1 from events f where f.work_item = l.work_item and f.type = 'attack.finished'
-                   and f.appended_by = 'factory_redteam') as finished,
+                   and (f.appended_by = 'factory_redteam' or f.sample)) as finished,
            (extract(epoch from clock_timestamp() - l.appended_at) * 1000)::float8 as age_ms
     from events l
     where l.type = 'attack.launched' and l.appended_by = any(${MARTINS_ROLES})

@@ -838,6 +838,10 @@ describe('upcasting the real catalogue', () => {
     expect(validate(finished({ refusals: [41] })).ok).toBe(false);
     expect(validate(finished({ refusals: [41, 41] })).ok).toBe(false);
     expect(validate(finished({ attempts: [] })).ok).toBe(false);
+    // One attempt for each refusal it expects: neither fewer nor more.
+    const [first, second] = (finished({}).payload as { attempts: object[] }).attempts;
+    expect(validate(finished({ attempts: [first] })).ok).toBe(false);
+    expect(validate(finished({ attempts: [first, second, second] })).ok).toBe(false);
     // Refused only when every attempt was, as each says; an attempt says which it was.
     const gotThrough = { what: 'Ask GitHub for the same commit with the App’s token', result: '201 Created' };
     const [guarded] = (finished({}).payload as { attempts: object[] }).attempts;
@@ -859,6 +863,7 @@ describe('upcasting the real catalogue', () => {
           attack: 'test',
           expected: ['review-gate'],
           refusals: [43],
+          attempts: [{ what: 'Open a pull request that deletes a test', result: 'review: refused', refused: true }],
           subject: {
             pullRequest: { repository: 'the-roganator/cv-worlds-worst-website', number: 412, head: 'a'.repeat(40) },
           },

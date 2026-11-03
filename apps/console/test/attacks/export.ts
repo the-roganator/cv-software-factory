@@ -15,7 +15,7 @@ import type { PublicEvent } from '@software-factory/events';
 import { EVENTS_FILE, formatLog, writeLogEvents } from '@software-factory/events/log';
 import { publicView } from '@software-factory/events/public';
 import { validate } from '@software-factory/events/schemas';
-import { appenderOf } from '../../../../packages/samples/src/roles.ts';
+import { appenderOf, attackItems } from '../../../../packages/samples/src/roles.ts';
 import { attackEvents } from './events.ts';
 
 export const LOG = fileURLToPath(new URL('./log/', import.meta.url));
@@ -27,9 +27,7 @@ export function publicAttacks(): PublicEvent[] {
     return (result.ok ? [] : result.problems).map((p) => `#${event.work_item} ${event.type}: ${p}`);
   });
   if (problems.length) throw new Error(`The attacks' test data is not valid:\n  ${problems.join('\n  ')}`);
-  const attacks = new Set(
-    events.flatMap((event) => (event.type === 'attack.launched' && event.work_item ? [event.work_item] : [])),
-  );
+  const attacks = attackItems(events);
   return events.map((event, i) => {
     const appendedBy = appenderOf(event, attacks);
     return {

@@ -76,6 +76,15 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
 
   The GitHub worker signs each refusal it answers (its guard's, and GitHub's 403s) so the line can record it: `make refusal-key` (and so `make up`) makes its Ed25519 key once, through stdin, the Secret `refusal-signing-key` in `factory`, which only the worker reads, and its public half, the ConfigMap `refusal-key`, which the line reads. On the host, `REFUSAL_SIGNING_KEY` and `REFUSAL_PUBLIC_KEY` take them as PEM; without them the worker answers unsigned and the line records none. On a cluster made before it, run it once.
 
+  The red-team harness (`factory red-team`) makes each of spec 5.3's attacks Martin launches (`docs/COMPONENTS/RED-TEAM-HARNESS.md`). It connects as its own role, `factory_redteam` (`make up` makes `postgres-redteam`), and acts only on an `attack.launched` of Martin's. It makes the egress and image attacks' pods in `runners`, so it needs the Kubernetes API (`kubectl proxy`, as the line's `soak-check` uses it); attack 1 posts a report through the app's front door (`APP_URL`, `INGRESS_URL`); attacks 2 and 3 ask the GitHub worker's attack door (`GITHUB_ATTACK_URL`, the worker's `ATTACK_PORT` above). Scale the cluster's copy to nothing first (`kubectl -n factory scale deployment/red-team --replicas=0`), and back to one after, so two do not take the same launch:
+
+  ```sh
+  kubectl proxy --port=8001 &
+  (store_role redteam && KUBE_API_URL=http://127.0.0.1:8001 ARTIFACTS_DIR=/tmp/artifacts \
+    APP_URL=http://website.localhost:8080 RUNNER_IMAGE="$(kubectl --context k3d-software-factory -n factory get deploy red-team -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUNNER_IMAGE")].value}')" \
+    GITHUB_ATTACK_URL=http://localhost:8082 node apps/factory/src/cli.ts red-team)
+  ```
+
   Runners need the cluster: their agent pods reach the cluster's gateway and the line's handback, and nothing else. The smoke run asks the line, through a port-forward to its step API, to have a coder fix an off-by-one seeded in a scratch copy of the app; the GitHub worker records the commit it would have made, and nothing reaches GitHub. The coder works on Claude, through the cluster's gateway, and the run costs money; with `ALL_LOCAL=true` on that gateway and LM Studio running, it works on Qwen, for nothing:
 
   ```sh

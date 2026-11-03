@@ -4,7 +4,7 @@
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
-import { consoleUrl, expect, MERGE_WAITING, ready, THEMES, test, WIDTHS } from './support.ts';
+import { attacksUrl, consoleUrl, expect, MERGE_WAITING, ready, THEMES, test, WIDTHS } from './support.ts';
 
 const axe = (page: Page) =>
   new AxeBuilder({ page })
@@ -208,8 +208,8 @@ test.describe('tool marks', () => {
   test('a tool’s mark stands beside what it made, hidden from a screen reader, and its drawing loads', async ({
     page,
   }) => {
-    // Admission control's refusal is Kyverno's, on an image without the pipeline's Sigstore signature.
-    await page.goto(consoleUrl({ item: '1293', sheet: true }));
+    // Admission control's refusal is Kyverno's, on an image without the pipeline's Sigstore signature: an attack's.
+    await page.goto(attacksUrl({ item: '1293', sheet: true }));
     const sheet = page.getByRole('dialog');
     const source = sheet.locator('.source', { hasText: 'Kyverno admits only' });
     await expect(source.locator('.toolmark')).toHaveCount(2);

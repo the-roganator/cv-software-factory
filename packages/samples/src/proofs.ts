@@ -1,8 +1,9 @@
 /**
  * `make guardrails`, run once from a clean checkout of main on the last morning: each proof the catalogue lists
- * (`policy/guardrails.ts`), held, as the proofs' role appends it. Those read from CI name the merge-group run of
- * main's tests they read. The attacks prove the rest, on their own work items, and the egress attack's later failure
- * stands over the egress proof's pass: a failure stands until that same proof holds again.
+ * (`policy/guardrails.ts`), as the proofs' role appends it. Those read from CI name the merge-group run of main's tests
+ * they read. Every one held but the egress proof: an outside address by number answered from the runners, so
+ * guardrail 5 reads "did not hold" until that same proof holds again. Guardrail 8 has no proof but its attack, which
+ * cannot be launched yet, so it reads "not proved".
  */
 import type { NewEvent } from '@software-factory/events';
 import { PROOFS as CATALOGUE, CI_PROOFS, guardrailsProvedBy, type ProofId } from '../../../policy/guardrails.ts';
@@ -25,7 +26,8 @@ const OUTPUT: Record<ProofId, string> = {
     'unsigned image: refused · signed by another identity: refused · third-party image not named by digest: refused\nheld',
   'production-writes':
     'rollout patch, flag write, flag stage, share key, route and mark: each refused · telemetry proxy: reads only\nheld',
-  egress: 'runners → example.com, 93.184.215.14, api.anthropic.com: refused · runners → gateway, line: allowed\nheld',
+  egress:
+    'runners → example.com, api.anthropic.com: refused · runners → 93.184.215.14: allowed · runners → gateway, line: allowed\nnot held',
   'ci:one-gateway': 'tests passed: credentials.test.ts, runner-fences.test.ts, one-gateway.runners.test.ts',
   'ci:spend-caps': 'tests passed: spend-caps.gateway.test.ts',
   'ci:public-hostile': 'tests passed: workflows.test.ts, public-hostile.issues.test.ts, review-gate.test.ts',
@@ -48,12 +50,12 @@ export const PROOFS: NewEvent<'guardrail.proved'>[] = (Object.keys(CATALOGUE) as
     type: 'guardrail.proved',
     version: 1,
     actor: 'factory',
-    summary: `make guardrails: ${proof} held`,
+    summary: `make guardrails: ${proof} ${proof === 'egress' ? 'did not hold' : 'held'}`,
     payload: {
       guardrails: guardrailsProvedBy(proof),
       proof,
       mechanism: CATALOGUE[proof].mechanism,
-      held: true,
+      held: proof !== 'egress',
       output: OUTPUT[proof],
       commit: MAIN,
       ...(ci

@@ -4,8 +4,8 @@
  * quarantined it on its own work item (#1291), and the attack's end cites that refusal by the report's id, so this one
  * card tells the whole attack. Jev's calls are triage's; the attack calls no model.
  */
-import { Item } from '../build.ts';
-import { quarantined } from './1291-instruction-report.ts';
+import { Item } from '../../../../../packages/samples/src/build.ts';
+import { quarantined } from '../../../../../packages/samples/src/items/1291-instruction-report.ts';
 
 export default new Item('1289', '2026-10-02T15:10:00+01:00')
   .at('0:00', 'work-item.opened', 'martin', 'Martin launched a red-team attack from the console', {

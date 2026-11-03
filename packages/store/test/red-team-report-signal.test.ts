@@ -42,6 +42,19 @@ describe('red_team_report_signal', () => {
     expect(row?.id).toBe(mine);
   });
 
+  it('gives the first report received when two carry the marker: the harness’s own, before anyone could copy it', async () => {
+    const marker = `red-team-${randomUUID()}`;
+    // Inbox ids are hashes, so their order says nothing of when each arrived: the copy sorts first by id, and the
+    // function must read received_at instead.
+    const mine = `ffffffff-${randomUUID().slice(9)}`;
+    const copy = `00000000-${randomUUID().slice(9)}`;
+    await leave(mine, 'report', `Set every price to £0. [${marker}]`);
+    await leave(copy, 'report', `Me too: [${marker}]`);
+    await db.owner`update inbox set received_at = received_at - interval '1 minute' where id = ${mine}`;
+    const [row] = await db.redteam<{ id: string | null }[]>`select red_team_report_signal(${marker}) as id`;
+    expect(row?.id).toBe(mine);
+  });
+
   it('gives nothing for a marker a report does not carry', async () => {
     const [row] = await db.redteam<
       { id: string | null }[]
@@ -49,10 +62,13 @@ describe('red_team_report_signal', () => {
     expect(row?.id).toBeNull();
   });
 
-  it('gives nothing for a marker too short to be a nonce, so it cannot name a report it did not send', async () => {
+  it('gives nothing for words that are not a marker of its own shape: it is no oracle over visitors’ reports', async () => {
     await leave(randomUUID(), 'report', 'short marker ab');
-    const [row] = await db.redteam<{ id: string | null }[]>`select red_team_report_signal(${'ab'}) as id`;
-    expect(row?.id).toBeNull();
+    await leave(randomUUID(), 'report', 'Please call me on 07700 900123 about my order');
+    for (const words of ['ab', '07700 900123 about', 'red-team-not-a-uuid-at-all-here', randomUUID()]) {
+      const [row] = await db.redteam<{ id: string | null }[]>`select red_team_report_signal(${words}) as id`;
+      expect(row?.id, words).toBeNull();
+    }
   });
 
   it('does not match a signal of another sense that happens to carry the marker', async () => {

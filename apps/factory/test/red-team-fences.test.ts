@@ -5,6 +5,7 @@ import {
   EGRESS_PROBE,
   IMAGE_ARGS,
   IMAGE_COMMAND,
+  RED_TEAM_HOST_ALIAS,
   RED_TEAM_LABEL,
   RED_TEAM_RUNNER_REPOSITORY,
   RED_TEAM_UNSIGNED_IMAGE,
@@ -97,6 +98,15 @@ describe('the red-team harness’s Deployment', () => {
       if (secret?.startsWith('postgres-')) expect(secret).toBe('postgres-redteam');
     }
   });
+  it('mounts the artifact store read-only: its events cite no artifact, and the store holds every worker’s', () => {
+    const container = (
+      deployment.spec.template.spec.containers as {
+        name: string;
+        volumeMounts?: { name: string; readOnly?: boolean }[];
+      }[]
+    ).find((c) => c.name === 'red-team');
+    for (const mount of container?.volumeMounts ?? []) expect(mount.readOnly, mount.name).toBe(true);
+  });
   it('is no worker: its component is its own, so the workers’ policy does not fence it', () => {
     expect(deployment.spec.template.metadata.labels['app.kubernetes.io/component']).toBe('red-team');
   });
@@ -167,7 +177,7 @@ describe('the red-team harness’s Role in runners', () => {
 describe('the red-team pods’ admission rule', () => {
   const policy = one<ValidatingPolicy>('ValidatingPolicy', 'factory-red-team-pods');
   const text = () => policy.spec.validations.map((v) => v.expression).join('\n');
-  it('guards pods in runners, and only those carrying the marker', () => {
+  it('guards pods in runners: every pod the harness’s account creates, and any pod carrying the marker', () => {
     expect(policy, 'the admission policy is rendered').toBeTruthy();
     expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': 'runners' })).toBe(
       true,
@@ -175,7 +185,11 @@ describe('the red-team pods’ admission rule', () => {
     expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': 'factory' })).toBe(
       false,
     );
-    expect(policy.spec.matchConditions.some((c) => c.expression.includes(RED_TEAM_LABEL))).toBe(true);
+    const match = policy.spec.matchConditions.map((c) => c.expression).join('\n');
+    expect(match).toContain(RED_TEAM_LABEL);
+    // RBAC lets the account create any pod in runners: one without the marker must meet this rule too, and fail it.
+    expect(match).toContain("request.userInfo.username == 'system:serviceaccount:factory:red-team'");
+    expect(text()).toContain(`'${RED_TEAM_LABEL}' in object.metadata.labels`);
   });
   it('pins the command, args and images exactly as policy/attacks.ts holds them', () => {
     const expr = text();
@@ -189,6 +203,13 @@ describe('the red-team pods’ admission rule', () => {
       RED_TEAM_UNSIGNED_IMAGE,
     );
     expect(JSON.stringify(policy.spec)).toContain(RED_TEAM_RUNNER_REPOSITORY);
+  });
+  it('holds the pod to an agent’s DNS: no resolver, and one host alias, the control’s name', () => {
+    const expr = text();
+    expect(expr).toContain("object.spec.dnsPolicy == 'None'");
+    expect(expr).toContain("object.spec.dnsConfig.nameservers == ['127.0.0.1']");
+    expect(expr).toContain(`object.spec.hostAliases[0].hostnames == ['${RED_TEAM_HOST_ALIAS}']`);
+    expect(expr).toContain('size(object.spec.hostAliases) == 1');
   });
   it('forbids a token, volumes, environment and extra labels', () => {
     const expr = text();

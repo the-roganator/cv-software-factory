@@ -126,8 +126,11 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            # Read-only: the writer checks the artifacts an event cites, and the harness's events cite none. The store
+            # holds every worker's artifacts and the GitHub worker's signed records, which it must not be able to touch.
             - name: artifacts
               mountPath: /var/lib/factory/artifacts
+              readOnly: true
       volumes:
         - name: artifacts
           persistentVolumeClaim:

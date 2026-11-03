@@ -84,10 +84,11 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   );
 
   // The red-team harness's attack door (github/attacks.ts), on a port of its own, for attacks 2 and 3. It makes
-  // real attempts in GitHub, so it is served only when the worker can write; a NetworkPolicy opens the port to the
-  // harness's pod alone, never the line.
+  // real attempts in GitHub, so it is served only when the worker can write and is not in a dry run, which must touch
+  // nothing in GitHub: with the door closed the harness records those two attacks unfinished. A NetworkPolicy opens
+  // the port to the harness's pod alone, never the line.
   let attackDoor: ReturnType<typeof createAttackServer> | undefined;
-  if (config.attackPort !== undefined && github.writable) {
+  if (config.attackPort !== undefined && github.writable && !config.dryRun) {
     const doorActions = new LiveActions(github, { guard });
     attackDoor = createAttackServer({
       actions: doorActions,
@@ -104,7 +105,11 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     await attackDoor.listening;
     log.info({ port: config.attackPort }, 'red-team attack door listening');
   } else if (config.attackPort !== undefined) {
-    log.warn('ATTACK_PORT is set but the worker cannot write: the attack door is not served.');
+    log.warn(
+      config.dryRun
+        ? 'ATTACK_PORT is set but the worker is in a dry run, which touches nothing in GitHub: the attack door is not served.'
+        : 'ATTACK_PORT is set but the worker cannot write: the attack door is not served.',
+    );
   }
 
   const stop = async () => {

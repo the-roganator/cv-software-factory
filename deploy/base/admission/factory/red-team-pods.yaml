@@ -1,10 +1,12 @@
 # The red-team harness creates the egress and image attacks' pods in `runners` (apps/factory/src/red-team/pods.ts).
-# RBAC lets it create a pod but cannot say what the pod holds, so this rule holds every pod that carries the red-team
-# marker (`factory.mrogan.dev/red-team`) to a shape the harness cannot stray from: the agent's runner label and the marker and
-# nothing else, one of two images, the pinned command and args of one of the two attacks, no environment, no volumes,
-# no image pull secrets, and no service-account token. So a harness that untrusted input had turned could make these
-# two pods and nothing more. The command, args and images are kept in step with `policy/attacks.ts` by
-# `apps/factory/test/red-team-fences.test.ts`; this file is generated from it and must not be edited by hand.
+# RBAC lets it create a pod but cannot say what the pod holds, so this rule holds every pod the harness's account
+# creates, and every pod that carries the red-team marker (`factory.mrogan.dev/red-team`) whoever creates it, to a
+# shape the harness cannot stray from: the marker, the agent's runner label and the part-of label and nothing else,
+# one of two images, the pinned command and args of one of the two attacks, no environment, no volumes, no image pull
+# secrets, and no service-account token. So a harness that untrusted input had turned could make these two pods and
+# nothing more: a pod of its own without the marker is refused for want of it, not left to the line's rules. The
+# command, args and images are kept in step with `policy/attacks.ts` by `apps/factory/test/red-team-fences.test.ts`,
+# which fails when either moves without the other; the probe is pasted here verbatim from `EGRESS_PROBE`.
 #
 # Two images: the signed runner image (by digest, from that repository), which `factory-images` admits, and the one
 # unsigned image attack 5 ships, which this rule admits in shape but `factory-images` still refuses by its signature,
@@ -37,12 +39,14 @@ spec:
         apiVersions: [v1]
         operations: [CREATE, UPDATE]
         resources: [pods]
-  # Only a pod the harness makes: one carrying the red-team marker. Every other pod in `runners` (the line's runners)
-  # is left to the image policy and the Pod Security Standard, as before.
+  # A pod the harness's account creates, marked or not, and any pod carrying the red-team marker. Every other pod in
+  # `runners` (the line's runners, made by the Job controller) is left to the image policy and the Pod Security
+  # Standard, as before.
   matchConditions:
     - name: red-team
       expression: >-
-        has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels
+        request.userInfo.username == 'system:serviceaccount:factory:red-team' ||
+        (has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels)
   variables:
     - name: labels
       expression: object.metadata.labels
@@ -57,6 +61,11 @@ spec:
     - name: unsignedImage
       expression: "'ghcr.io/the-roganator/cv-software-factory/factory@sha256:f8298adaffea60fac0d3238e3d6bf81dc918b78ab95a82f74b330ac4b3c6db9d'"
   validations:
+    # The marker, whose value is the attack's id: a pod of the harness's without it would escape this rule's shape.
+    - expression: >-
+        has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels &&
+        object.metadata.labels['factory.mrogan.dev/red-team'] in ['egress', 'image']
+      message: a red-team pod carries the red-team marker, its value the egress or image attack
     # Exactly the agent's runner label, the part-of label and the marker: never `prepare` or another label a runners
     # NetworkPolicy selects, which would give the pod a different fence.
     - expression: >-
@@ -99,6 +108,19 @@ spec:
         (!has(variables.c.volumeMounts) || size(variables.c.volumeMounts) == 0) &&
         (!has(object.spec.imagePullSecrets) || size(object.spec.imagePullSecrets) == 0)
       message: a red-team pod mounts no volume and holds no image pull secret
+    # An agent's DNS and nothing more: no resolver, so no name of the pod's choosing is a way out, and one host alias,
+    # the control's name (the gateway's), at whatever address the harness looked up; the agent NetworkPolicy lets it
+    # reach the gateway alone.
+    - expression: >-
+        has(object.spec.dnsPolicy) && object.spec.dnsPolicy == 'None' &&
+        has(object.spec.dnsConfig) && has(object.spec.dnsConfig.nameservers) &&
+        object.spec.dnsConfig.nameservers == ['127.0.0.1'] &&
+        (!has(object.spec.dnsConfig.searches) || size(object.spec.dnsConfig.searches) == 0) &&
+        (!has(object.spec.dnsConfig.options) || size(object.spec.dnsConfig.options) == 0) &&
+        has(object.spec.hostAliases) && size(object.spec.hostAliases) == 1 &&
+        object.spec.hostAliases[0].hostnames == ['gateway.factory.svc']
+      message: >-
+        a red-team pod has no resolver (dnsPolicy None, nameserver 127.0.0.1) and one host alias, the gateway's name
     # No service-account token: it acts on nothing through the Kubernetes API.
     - expression: >-
         has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false

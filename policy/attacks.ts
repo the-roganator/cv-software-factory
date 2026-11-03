@@ -86,9 +86,9 @@ export const ATTACK_RULES = {
 /**
  * The label that marks a pod the red-team harness makes in `runners` (the egress and image attacks), its value the
  * attack's id. The line passes over any pod, Job or volume in `runners` that carries it: it never takes an attack's
- * pod for one of its own runners, keeps its log as a step's, or counts it as a runner left behind. The harness, and
- * the admission rule that will hold its pods to this label beside the agent's runner label, are still to be built;
- * until then nothing in `runners` carries it.
+ * pod for one of its own runners, keeps its log as a step's, or counts it as a runner left behind. The admission rule
+ * (`deploy/base/admission/factory/red-team-pods.yaml`) holds every pod the harness's account makes, and any pod that
+ * carries this label, to the label beside the agent's runner label and the shape below.
  */
 export const RED_TEAM_LABEL = 'factory.mrogan.dev/red-team';
 
@@ -150,6 +150,15 @@ export const EGRESS_TARGETS: readonly { what: string; url: string; byName: boole
 
 /** The control for attack 4: the gateway, which a runner's agent pod may reach, in the cluster. */
 export const EGRESS_CONTROL = { what: 'the gateway', url: 'http://gateway.factory.svc:8080/health' };
+
+/**
+ * The pods' DNS, as an agent's (`runners/jobs.ts`): no resolver, so a name of the pod's choosing is not a way out and
+ * does not resolve, and the one name it needs, the control's, given as a host alias, whose address the harness looks
+ * up before it makes the pod. The admission rule holds a pod to exactly this; the agent NetworkPolicy lets the alias
+ * reach the gateway alone, whatever address it names.
+ */
+export const RED_TEAM_DNS = { dnsPolicy: 'None', nameservers: ['127.0.0.1'] } as const;
+export const RED_TEAM_HOST_ALIAS = new URL(EGRESS_CONTROL.url).hostname;
 
 /**
  * The egress pod's probe, run in place of the agent with `node -e`: it tries each target and the control, and prints

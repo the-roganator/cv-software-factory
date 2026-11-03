@@ -23,6 +23,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { listenOn } from '../listen.ts';
+import { waitFor } from '../red-team/wait.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions, LiveActions } from './actions.ts';
 import { type GitHub, GitHubError } from './client.ts';
@@ -89,11 +90,15 @@ export interface AttackServerOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** What the door answers: the refusals it met, in order, the pull request attack 3 opened, and if a write got through. */
+/**
+ * What the door answers: the refusals it met, in order, the pull request attack 3 opened, whether a write got through,
+ * and whether the attempt could not be seen to its end (the review check never concluded), which is neither.
+ */
 interface DoorAnswer {
   refusals: SignedRefusal[];
   pullRequest?: { repository: string; number: number; head: string };
   gotThrough?: { what: string };
+  unconcluded?: { what: string };
 }
 
 export function createAttackServer(options: AttackServerOptions): { server: Server; listening: Promise<void> } {
@@ -139,10 +144,17 @@ export function createAttackServer(options: AttackServerOptions): { server: Serv
   return { server, listening: listenOn(server, options.port, options.host) };
 }
 
-/** Signs a refusal, or throws: the door answers only what the line can trust, so a refusal it cannot sign is a failure. */
+/**
+ * Keeps and signs a refusal, or throws: the door answers only what the line can trust, so a refusal it has nowhere to
+ * keep, or no key to sign, is a failure of the attempt, which the harness records unfinished, never an unsigned answer
+ * the line would judge as the wrong mechanism.
+ */
 async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal): Promise<SignedRefusal> {
   const signed = await recorder.record(refusal);
   if (!signed) throw new Error('the attack door has nowhere to keep a refusal, so it cannot answer one');
+  if (signed.signature === undefined) {
+    throw new Error('the attack door has no key to sign a refusal (REFUSAL_SIGNING_KEY), so it cannot answer one');
+  }
   return signed;
 }
 
@@ -225,7 +237,8 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
     const verdict = await waitForReview(o, repo, head);
     const pullRequest = { repository: repo, number: pr.number, head };
     if (verdict === undefined) {
-      return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not conclude within the limit' } };
+      // Not judged in time: nothing got through, and nothing refused it. The harness records the attack unfinished.
+      return { refusals: [], pullRequest, unconcluded: { what: 'the review check did not conclude within the limit' } };
     }
     if (!verdict.held) {
       return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not hold the pull request' } };
@@ -255,20 +268,23 @@ async function waitForReview(
   repo: string,
   sha: string,
 ): Promise<{ held: boolean; output: string } | undefined> {
-  const now = o.now ?? Date.now;
-  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const until = now() + (o.reviewWaitMs ?? 35 * 60_000);
-  const every = o.reviewEveryMs ?? 20_000;
-  for (;;) {
-    const runs = await o.reads.checkRuns(repo, sha);
-    const review = runs.find((run) => run.name === REVIEW_CHECK && run.status === 'completed');
-    if (review) {
-      const held = outcomeOf(review.conclusion) === 'failure';
-      return { held, output: await reviewOutput(o, repo, review.id, review.title) };
-    }
-    if (now() >= until) return undefined;
-    await sleep(Math.min(every, Math.max(0, until - now())));
-  }
+  const review = await waitFor(
+    async () => {
+      const runs = await o.reads.checkRuns(repo, sha);
+      return runs.find((run) => run.name === REVIEW_CHECK && run.status === 'completed');
+    },
+    {
+      limitMs: o.reviewWaitMs ?? 35 * 60_000,
+      everyMs: o.reviewEveryMs ?? 20_000,
+      // The door holds its request until the attempt is done: nothing stops it but the limit.
+      signal: new AbortController().signal,
+      ...(o.now && { now: o.now }),
+      ...(o.sleep && { sleep: o.sleep }),
+    },
+  );
+  if (!review) return undefined;
+  const held = outcomeOf(review.conclusion) === 'failure';
+  return { held, output: await reviewOutput(o, repo, review.id, review.title) };
 }
 
 /** The review check's own words: its title and summary, read whole, since `checkRuns` fetches only the title. */

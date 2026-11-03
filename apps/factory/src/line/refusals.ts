@@ -201,10 +201,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A runner's Job (`../runners/jobs.ts`): its agent, its work item, its round and step, and its part. */
 const RUNNER_JOB = new RegExp(`^(?:${AGENTS.join('|')})-([1-9]\\d{0,8})-\\d+-\\d+-(?:prepare|agent)$`);
 /** A webhook's or the API server's own answer refusing a request. */
-const DENIED =
+/** How the API server words a request admission denied, in an Event's message or an error's. */
+export const DENIED =
   /admission webhook "[^"]+" denied the request|ValidatingAdmissionPolicy '[^']+' with binding '[^']+' denied request/;
 /** Kyverno's image policies answer through webhooks of their own (`ivpol.…`). */
-const IMAGE_WEBHOOK = /admission webhook "ivpol\./;
+export const IMAGE_WEBHOOK = /admission webhook "ivpol\./;
 
 /** How many times an Event says it happened. */
 export const timesOf = (event: KubeEvent): number => Math.max(1, event.series?.count ?? event.count ?? 1);

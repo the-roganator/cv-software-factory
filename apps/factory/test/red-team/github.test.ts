@@ -27,7 +27,7 @@ const refusal = (
   at: '2026-11-03T12:00:00.000Z',
   payload: { mechanism, action: `${mechanism} action`, output: `${mechanism} output`, guardrails: [1] },
   record: 'a'.repeat(64),
-  signature: 'c2ln'.repeat(22).slice(0, 86) + '==',
+  signature: `${'c2ln'.repeat(22).slice(0, 86)}==`,
 });
 
 const door =
@@ -66,6 +66,14 @@ describe('attack 3 (test)', () => {
     );
     expect(result.outcome).toBe('refused');
     expect(result.refusals).toEqual([100]);
+    expect(result.subject).toEqual({ pullRequest });
+  });
+
+  it('is unfinished, not a finding, when the review check never concluded', async () => {
+    const result = await testAttempt({
+      door: door({ refusals: [], pullRequest, unconcluded: { what: 'the review check did not conclude' } }),
+    })(ctx());
+    expect(result.outcome).toBe('unfinished');
     expect(result.subject).toEqual({ pullRequest });
   });
 

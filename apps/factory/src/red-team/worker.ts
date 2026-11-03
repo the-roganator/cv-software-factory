@@ -16,10 +16,11 @@
  * refused in time, is a finding, and the line pages it.
  */
 import { randomUUID } from 'node:crypto';
-import { ATTACKS, type Attack, type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
+import { ATTACKS, type Attack, cutTo, type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
 import type { EventWriter } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { ATTACK_RULES, attackLimitMs, expectedRefusals } from '../../../../policy/attacks.ts';
+import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 import type { Logger } from '../log.ts';
 
 /** How an attack ended, as the harness saw it: what the line re-derives again from the refusals it cites. */
@@ -104,12 +105,18 @@ export class RedTeam {
     await this.#act(launch, signal);
   }
 
-  /** The oldest `attack.launched` of Martin's with no `attack.finished` of the harness's after it. */
+  /**
+   * The oldest `attack.launched` one of Martin's roles appended, real and not a sample, with no `attack.finished` of
+   * the harness's after it. Row security already shows the harness no other role's launch; read again here, as the
+   * line does, so a hole in a policy is not the only lock. A sample's launch is no attack to make (`make samples`
+   * loads a store of them): a store holds samples or real work, and the harness appends real work alone.
+   */
   async #next(): Promise<Launch | undefined> {
     const [row] = await this.#o.sql<{ seq: string; work_item: string; attack: string; at: Date }[]>`
       select l.seq::text as seq, l.work_item, l.payload->>'attack' as attack, l.appended_at as at
       from events l
       where l.type = 'attack.launched' and l.payload->>'attack' = any(${this.#o.sql(ATTACKS as unknown as string[])})
+        and not l.sample and l.appended_by = any(${this.#o.sql(MARTINS_ROLES as unknown as string[])})
         and not exists (select 1 from events f
                         where f.work_item = l.work_item and f.type = 'attack.finished'
                           and f.appended_by = 'factory_redteam' and f.seq > l.seq)
@@ -152,17 +159,26 @@ export class RedTeam {
         signal,
       });
     } catch (error) {
+      if (signal.aborted) {
+        this.#o.log.info({ workItem: launch.workItem, attack: launch.attack }, 'stopping: the launch is left as it is');
+        return;
+      }
       // An attempt must never leave a launch without an end, or the loop would make it again (a second pull request,
       // a second pod). What it could not finish is recorded unfinished, with why, and the line judges it.
       this.#o.log.warn({ workItem: launch.workItem, attack: launch.attack, err: error }, 'a red-team attempt failed');
+      const said = error instanceof Error ? error.message : String(error);
       result = {
         outcome: 'unfinished',
         refusals: [],
-        attempts: [
-          { what: 'made the attack', result: error instanceof Error ? error.message : String(error), refused: false },
-        ],
+        attempts: [{ what: 'made the attack', result: said || 'it failed without saying why', refused: false }],
         reason: 'The attack could not be made to its end; the harness logged why.',
       };
+    }
+    // Stopped while the attempt waited: its waits gave up, not the attack. The launch is left for the next harness,
+    // within its limit, rather than ended unfinished and paged for a restart.
+    if (signal.aborted) {
+      this.#o.log.info({ workItem: launch.workItem, attack: launch.attack }, 'stopping: the launch is left as it is');
+      return;
     }
     await this.#finish(launch, result);
   }
@@ -176,11 +192,18 @@ export class RedTeam {
       outcome: result.outcome,
       expected: expectedRefusals(launch.attack),
       refusals: result.refusals,
-      attempts: result.attempts,
-      ...(result.control && { control: result.control }),
+      // Each attempt's record as the schema takes it: what came back, cut to its length, and never empty.
+      attempts: result.attempts.map((attempt) => ({
+        ...attempt,
+        what: cutTo(attempt.what, 200),
+        result: cutTo(attempt.result || 'nothing came back', 2000),
+      })),
+      ...(result.control && {
+        control: { ...result.control, result: cutTo(result.control.result || 'nothing came back', 2000) },
+      }),
       ...(result.subject && { subject: result.subject }),
     };
-    const closed: PayloadOf<'work-item.closed'> = { outcome: result.outcome, reason: cut(result.reason, 200) };
+    const closed: PayloadOf<'work-item.closed'> = { outcome: result.outcome, reason: cutTo(result.reason, 200) };
     await this.#o.events.append([
       event(launch.workItem, 'attack.finished', summaryOf(launch.attack, result.outcome), finished),
       event(launch.workItem, 'work-item.closed', closedSummary(result.outcome), closed),
@@ -193,8 +216,6 @@ export class RedTeam {
 }
 
 const isAttack = (attack: string): attack is Attack => Object.hasOwn(ATTACK_RULES, attack);
-
-const cut = (text: string, max: number): string => (text.length > max ? text.slice(0, max) : text);
 
 function event<K extends 'attack.finished' | 'work-item.closed'>(
   workItem: string,

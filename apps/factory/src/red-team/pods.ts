@@ -19,6 +19,7 @@
  *   it and the attack is not refused.
  */
 
+import { lookup } from 'node:dns/promises';
 import { cutTo, type NewEvent, VERSIONS } from '@software-factory/events';
 import type { EventWriter } from '@software-factory/store';
 import { z } from 'zod';
@@ -28,9 +29,12 @@ import {
   EGRESS_TARGETS,
   IMAGE_ARGS,
   IMAGE_COMMAND,
+  RED_TEAM_DNS,
+  RED_TEAM_HOST_ALIAS,
   redTeamPodLabels,
 } from '../../../../policy/attacks.ts';
 import { guardrailsFor } from '../../../../policy/refusals.ts';
+import { DENIED, IMAGE_WEBHOOK } from '../line/refusals.ts';
 import type { Kube } from '../runners/kube.ts';
 import { KubeError } from '../runners/kube.ts';
 import { waitFor } from './wait.ts';
@@ -57,13 +61,23 @@ const PROBE_LINE = z.object({
   reached: z.boolean().optional(),
 });
 
-/** The pod spec the admission rule holds the harness to: one container, pinned, with nothing it does not need. */
+/** Finds the address of a name, for the pod's one host alias: `node:dns` unless a test gives another. */
+export type Lookup = (hostname: string) => Promise<string>;
+const resolve: Lookup = async (hostname) => (await lookup(hostname)).address;
+
+/**
+ * The pod spec the admission rule holds the harness to: one container, pinned, with nothing it does not need, and an
+ * agent's DNS (`runners/jobs.ts`): no resolver, and the control's name as a host alias at the address the harness
+ * looked up. Without it the pod could resolve nothing, the control would fail, and the attack would end unfinished
+ * every time.
+ */
 function podBody(
   name: string,
   attack: 'egress' | 'image',
   image: string,
   command: readonly string[],
   args: readonly string[],
+  controlIp: string,
 ) {
   return {
     apiVersion: 'v1',
@@ -74,6 +88,9 @@ function podBody(
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       activeDeadlineSeconds: POD_DEADLINE_SECONDS,
+      dnsPolicy: RED_TEAM_DNS.dnsPolicy,
+      dnsConfig: { nameservers: [...RED_TEAM_DNS.nameservers] },
+      hostAliases: [{ ip: controlIp, hostnames: [RED_TEAM_HOST_ALIAS] }],
       securityContext: {
         runAsNonRoot: true,
         runAsUser: 65532,
@@ -123,13 +140,21 @@ async function refuse(
 }
 
 export const egressAttempt =
-  ({ kube, runnerImage }: { kube: Pick<Kube, 'create' | 'get' | 'text' | 'remove'>; runnerImage: string }): Attempt =>
+  ({
+    kube,
+    runnerImage,
+    find = resolve,
+  }: {
+    kube: Pick<Kube, 'create' | 'get' | 'text' | 'remove'>;
+    runnerImage: string;
+    find?: Lookup;
+  }): Attempt =>
   async (ctx) => {
     const name = `red-team-egress-${crypto.randomUUID().slice(0, 8)}`;
     try {
       await kube.create(
         `/api/v1/namespaces/${RUNNERS}/pods`,
-        podBody(name, 'egress', runnerImage, EGRESS_COMMAND, EGRESS_ARGS),
+        podBody(name, 'egress', runnerImage, EGRESS_COMMAND, EGRESS_ARGS, await find(RED_TEAM_HOST_ALIAS)),
       );
       const log = await runToEnd(kube, name, ctx);
       if (log === undefined) {
@@ -228,24 +253,35 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
 }
 
 export const imageAttempt =
-  ({ kube, unsignedImage }: { kube: Pick<Kube, 'create' | 'remove'>; unsignedImage: string }): Attempt =>
+  ({
+    kube,
+    unsignedImage,
+    find = resolve,
+  }: {
+    kube: Pick<Kube, 'create' | 'remove'>;
+    unsignedImage: string;
+    find?: Lookup;
+  }): Attempt =>
   async (ctx) => {
     const name = `red-team-image-${crypto.randomUUID().slice(0, 8)}`;
     let admitted = false;
+    // The same shape as the egress pod's, alias included, so the rule holds one shape and the refusal is the image's.
+    const controlIp = await find(RED_TEAM_HOST_ALIAS);
     try {
       await kube.create(
         `/api/v1/namespaces/${RUNNERS}/pods`,
-        podBody(name, 'image', unsignedImage, IMAGE_COMMAND, IMAGE_ARGS),
+        podBody(name, 'image', unsignedImage, IMAGE_COMMAND, IMAGE_ARGS, controlIp),
       );
       admitted = true;
     } catch (error) {
-      // Admission refusing the image is the attack working. Anything else means the attempt could not be made.
-      if (!(error instanceof KubeError && (error.kind === 'refused' || error.kind === 'invalid'))) {
+      // Only an image policy's denial is the attack working: the API server words one as the line reads it from the
+      // cluster's Events. Anything else (RBAC, a body the red-team rule refused, a name taken, a server error) means
+      // the attempt could not be made, and says why rather than wait for a record the line will never make.
+      const message = error instanceof Error ? error.message : String(error);
+      const imageRefused = error instanceof KubeError && DENIED.test(message) && IMAGE_WEBHOOK.test(message);
+      if (!imageRefused) {
         await kube.remove(podPath(name)).catch(() => undefined);
-        return unfinished(
-          name,
-          `The pod could not be created to test admission: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        return unfinished(name, `The pod could not be created to test admission: ${message}`);
       }
     }
     if (admitted) {

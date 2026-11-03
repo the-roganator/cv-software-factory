@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EGRESS_CONTROL, EGRESS_TARGETS } from '../../../../policy/attacks.ts';
+import { EGRESS_CONTROL, EGRESS_TARGETS, RED_TEAM_HOST_ALIAS } from '../../../../policy/attacks.ts';
 import { egressAttempt, imageAttempt, RUNNERS } from '../../src/red-team/pods.ts';
 import type { AttemptContext } from '../../src/red-team/worker.ts';
 import { type Kube, KubeError } from '../../src/runners/kube.ts';
@@ -29,12 +29,19 @@ function log(targets: { refused: boolean }[], control: { reached: boolean }): st
   return text.join('\n');
 }
 
+const find = async (hostname: string) => {
+  expect(hostname).toBe(RED_TEAM_HOST_ALIAS);
+  return '10.43.0.9';
+};
+
 function egressKube(body: string) {
   const removed: string[] = [];
+  const created: Record<string, unknown>[] = [];
   return {
     removed,
+    created,
     kube: {
-      create: async () => {},
+      create: async (_path: string, pod: Record<string, unknown>) => void created.push(pod),
       get: async () => ({ status: { phase: 'Succeeded' } }),
       text: async () => body,
       remove: async (path: string) => void removed.push(path),
@@ -43,12 +50,24 @@ function egressKube(body: string) {
 }
 
 describe('attack 4 (egress)', () => {
+  it('makes the pod with an agent’s DNS: no resolver, and the gateway’s name aliased to the address it looked up', async () => {
+    const { kube, created } = egressKube(
+      log([{ refused: true }, { refused: true }, { refused: true }], { reached: true }),
+    );
+    await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(ctx(fakeSql(() => [])));
+    const spec = created[0]?.spec as Record<string, unknown>;
+    expect(spec.dnsPolicy).toBe('None');
+    expect(spec.dnsConfig).toEqual({ nameservers: ['127.0.0.1'] });
+    expect(spec.hostAliases).toEqual([{ ip: '10.43.0.9', hostnames: [RED_TEAM_HOST_ALIAS] }]);
+    expect(spec.automountServiceAccountToken).toBe(false);
+  });
+
   it('is refused when every outside address is refused and the gateway control is reached', async () => {
     const { kube, removed } = egressKube(
       log([{ refused: true }, { refused: true }, { refused: true }], { reached: true }),
     );
     const events = fakeEvents();
-    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc' })(
+    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(
       ctx(
         fakeSql(() => []),
         events,
@@ -63,13 +82,13 @@ describe('attack 4 (egress)', () => {
 
   it('is not refused when an outside address was reached', async () => {
     const { kube } = egressKube(log([{ refused: true }, { refused: false }, { refused: true }], { reached: true }));
-    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc' })(ctx(fakeSql(() => [])));
+    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(ctx(fakeSql(() => [])));
     expect(result.outcome).toBe('not-refused');
   });
 
   it('is unfinished when the gateway control was not reached', async () => {
     const { kube } = egressKube(log([{ refused: true }, { refused: true }, { refused: true }], { reached: false }));
-    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc' })(ctx(fakeSql(() => [])));
+    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(ctx(fakeSql(() => [])));
     expect(result.outcome).toBe('unfinished');
   });
 });
@@ -80,12 +99,15 @@ describe('attack 5 (image)', () => {
     const removed: string[] = [];
     const kube = {
       create: async () => {
-        throw new KubeError(403, 'admission webhook denied the request');
+        throw new KubeError(
+          403,
+          'admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-factory-images" denied the request: Policy factory-images failed',
+        );
       },
       remove: async (path: string) => void removed.push(path),
     };
     const sql = fakeSql((query) => (query.includes('admission-control') ? [{ seq: '77', uid: UID }] : []));
-    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned' })(ctx(sql));
+    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned', find })(ctx(sql));
     expect(result.outcome).toBe('refused');
     expect(result.refusals).toEqual([77]);
     expect(result.subject?.pod).toEqual({
@@ -101,19 +123,48 @@ describe('attack 5 (image)', () => {
       create: async () => {},
       remove: async (path: string) => void removed.push(path),
     };
-    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned' })(ctx(fakeSql(() => [])));
+    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned', find })(
+      ctx(fakeSql(() => [])),
+    );
     expect(result.outcome).toBe('not-refused');
     expect(removed.length).toBe(1);
+  });
+
+  it('is unfinished, saying why, when the pod could not be made for a reason that is not the image policy’s', async () => {
+    const kube = {
+      create: async () => {
+        throw new KubeError(
+          403,
+          'pods is forbidden: User "system:serviceaccount:factory:red-team" cannot create resource "pods"',
+        );
+      },
+      remove: async () => {},
+    } as unknown as Pick<Kube, 'create' | 'remove'>;
+    let looked = 0;
+    const sql = fakeSql(() => {
+      looked += 1;
+      return [];
+    });
+    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned', find })(ctx(sql));
+    expect(result.outcome).toBe('unfinished');
+    expect(result.attempts[0]?.result).toContain('cannot create resource "pods"');
+    // It did not wait for a record the line would never make.
+    expect(looked).toBe(0);
   });
 
   it('is unfinished when admission refused the pod but the line did not record it in time', async () => {
     const kube = {
       create: async () => {
-        throw new KubeError(403, 'denied');
+        throw new KubeError(
+          403,
+          'admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-factory-images" denied the request: Policy factory-images failed',
+        );
       },
       remove: async () => {},
     };
-    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned' })(ctx(fakeSql(() => [])));
+    const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned', find })(
+      ctx(fakeSql(() => [])),
+    );
     expect(result.outcome).toBe('unfinished');
   });
 });

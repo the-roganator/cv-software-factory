@@ -28,10 +28,21 @@ export interface DoorResult {
   pullRequest?: { repository: string; number: number; head: string };
   /** Set when a direct attempt was not refused: the door has undone what it made, and the attack got through. */
   gotThrough?: { what: string };
+  /**
+   * Set when the door could not see the attempt to its end (the review check never concluded): nothing got through,
+   * and nothing refused it, so the attack is unfinished. The door has undone what it made.
+   */
+  unconcluded?: { what: string };
 }
 
-/** The GitHub worker's attack door, over its own port; tests pass a fake. */
-export type AttackDoor = (attack: 'workflow' | 'test') => Promise<DoorResult>;
+/**
+ * The GitHub worker's attack door, over its own port, asked within the attack's remaining limit and giving up when the
+ * worker stops; tests pass a fake.
+ */
+export type AttackDoor = (
+  attack: 'workflow' | 'test',
+  within: { signal: AbortSignal; limitMs: number },
+) => Promise<DoorResult>;
 
 /** Appends one relayed refusal, as the harness, with the signed record and signature, and gives back its seq. */
 async function relay(events: Pick<EventWriter, 'append'>, workItem: string, refusal: SignedRefusal): Promise<number> {
@@ -66,7 +77,7 @@ async function relayAll(ctx: AttemptContext, result: DoorResult): Promise<number
 export const workflowAttempt =
   ({ door }: { door: AttackDoor }): Attempt =>
   async (ctx) => {
-    const result = await door('workflow');
+    const result = await door('workflow', { signal: ctx.signal, limitMs: ctx.limitMs });
     const refusals = await relayAll(ctx, result);
     const attempts: AttemptResult['attempts'] = result.refusals.map((refusal) => ({
       what: refusal.payload.action,
@@ -92,7 +103,7 @@ export const workflowAttempt =
 export const testAttempt =
   ({ door }: { door: AttackDoor }): Attempt =>
   async (ctx) => {
-    const result = await door('test');
+    const result = await door('test', { signal: ctx.signal, limitMs: ctx.limitMs });
     const refusals = await relayAll(ctx, result);
     const pullRequest = result.pullRequest;
     const attempts: AttemptResult['attempts'] = result.refusals.map((refusal) => ({
@@ -100,6 +111,18 @@ export const testAttempt =
       result: refusal.payload.output,
       refused: true,
     }));
+    if (result.unconcluded) {
+      return {
+        outcome: 'unfinished',
+        refusals,
+        attempts: [
+          ...attempts,
+          { what: result.unconcluded.what, result: 'it was not seen to its end', refused: false },
+        ],
+        ...(pullRequest && { subject: { pullRequest } }),
+        reason: `The pull request that deletes a test was not judged in time: ${result.unconcluded.what}.`,
+      };
+    }
     if (result.gotThrough || !pullRequest) {
       return {
         outcome: 'not-refused',

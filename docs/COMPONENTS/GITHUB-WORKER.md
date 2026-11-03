@@ -82,12 +82,12 @@ The worker touches no store, so what it refuses is recorded by the worker that a
 
 ## The attack door
 
-For the [red-team harness](RED-TEAM-HARNESS.md), on a port of its own (`ATTACK_PORT`, 8082), which a NetworkPolicy opens to the harness's pod alone and never the line: attack 2 deliberately asks GitHub past the guard, a thing the line must never be able to make the worker do. It is served only when the worker can write.
+For the [red-team harness](RED-TEAM-HARNESS.md), on a port of its own (`ATTACK_PORT`, 8082), which a NetworkPolicy opens to the harness's pod alone and never the line: attack 2 deliberately asks GitHub past the guard, a thing the line must never be able to make the worker do. It is served only when the worker can write and is not in a dry run, which touches nothing in GitHub.
 
-`POST /v1/attacks/<workflow|test>` takes the attack's id and nothing else; the content is fixed here, its direct writes go only to a branch under `factory/` the worker made, and it closes and deletes whatever it opened, whatever the outcome. One attack at a time.
+`POST /v1/attacks/<workflow|test>` takes the attack's id and nothing else; the content is fixed here, its direct writes go only to a branch under `factory/` the worker made, and it closes and deletes whatever it opened, whatever the outcome. One attack at a time. It answers only refusals it has signed: without the signing key it answers 502 before it writes anything, and the harness records the attack unfinished.
 
 - **`workflow`:** it asks itself, as a step's handback asks, to commit to `.github/workflows/`, which the guard refuses (`github-guard`); then it asks GitHub directly with the App's token, which GitHub refuses (`token-permission`), as the [workflow-refusal proof](#proving-the-app-cannot-touch-workflows) does. Both, in order.
-- **`test`:** it opens a real pull request in the app's repository that deletes a test, waits for the app's gates and the review check to run, reads the review check's verdict (which holds the pull request, `review-gate`), then closes the pull request and deletes the branch.
+- **`test`:** it opens a real pull request in the app's repository that deletes a test, waits for the app's gates and the review check to run, reads the review check's verdict (which holds the pull request, `review-gate`), then closes the pull request and deletes the branch. A check that has not concluded in 35 minutes is answered as unconcluded, which is neither a refusal nor a write that got through.
 
 It answers each refusal signed, as above, and the harness relays them; a direct attempt that got through (GitHub took the workflow commit, or the review check did not hold the pull request) is reported so, with whatever it made undone.
 

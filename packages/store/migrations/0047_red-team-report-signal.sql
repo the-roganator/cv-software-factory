@@ -9,13 +9,17 @@
 -- `factory_redteam` has no right to read the `inbox`, which holds visitors' reports. The function runs as its owner,
 -- the role the migrations run as, so it does only what it says: it returns one id and never a report's words, matches
 -- a `report` signal alone, and matches by a literal substring (`strpos`, not `like`, so no wildcard in the marker
--- widens it) of at least sixteen characters, so a short or empty marker cannot name a report the harness did not send.
--- Only `factory_redteam` may call it; `public` may not.
+-- widens it) that has the shape of the harness's own marker, `red-team-` and a UUID, so no other words can name a
+-- report the harness did not send, nor ask whether any visitor's report holds them.
+-- Should two reports carry the marker (a visitor who copied the harness's words), the first the inbox received is the
+-- harness's own, which arrived before anyone could read it. Only `factory_redteam` may call it; `public` may not.
 create function red_team_report_signal(marker text) returns uuid
 language sql security definer set search_path = pg_catalog, public, pg_temp as $$
   select id from inbox
-  where sense = 'report' and char_length(marker) >= 16 and strpos(signal -> 'report' ->> 'text', marker) > 0
-  order by id
+  where sense = 'report'
+    and marker ~ '^red-team-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    and strpos(signal -> 'report' ->> 'text', marker) > 0
+  order by received_at, id
   limit 1
 $$;
 

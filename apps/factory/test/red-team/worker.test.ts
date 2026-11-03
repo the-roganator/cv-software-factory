@@ -10,9 +10,13 @@ const LAUNCH = { seq: '10', work_item: '1274', attack: 'report', at: new Date('2
 /** A store that offers one launch of `attack` taken at `at`, and then none (the harness finished it). */
 function storeWith(attack: string, at: Date) {
   let gave = false;
-  return fakeSql((query) => {
+  return fakeSql((query, params) => {
     if (query.includes('attack.launched') && !gave) {
       gave = true;
+      // Real launches of Martin's roles alone: a sample's is no attack to make, and row security is not the only lock.
+      expect(query).toContain('not l.sample');
+      expect(query).toContain('l.appended_by = any(');
+      expect(params.length).toBeGreaterThan(0);
       return [{ seq: '10', work_item: '1274', attack, at }];
     }
     return [];
@@ -104,6 +108,26 @@ describe('the red-team worker', () => {
     await harness.once(never);
     expect(events.appended.map((e) => e.type)).toEqual(['attack.finished', 'work-item.closed']);
     expect((events.appended[0]?.payload as PayloadOf<'attack.finished'> | undefined)?.outcome).toBe('unfinished');
+  });
+
+  it('leaves a launch as it is when stopped while the attempt waited, rather than end it unfinished', async () => {
+    const events = fakeEvents();
+    const stopping = new AbortController();
+    const report: Attempt = async (ctx) => {
+      stopping.abort();
+      // A wait that gave up on the stop signal looks like a limit passed; the worker must tell the two apart.
+      expect(ctx.signal.aborted).toBe(true);
+      return { outcome: 'unfinished', refusals: [], attempts: [], reason: 'the wait gave up' };
+    };
+    const harness = new RedTeam({
+      sql: storeWith('report', LAUNCH.at),
+      events,
+      attempts: { report, egress: report, image: report, workflow: report, test: report },
+      log: silent,
+      now: () => new Date(LAUNCH.at.getTime() + 60_000),
+    });
+    await harness.once(stopping.signal);
+    expect(events.appended).toEqual([]);
   });
 
   it('knows an attempt for every attack in the catalogue', () => {

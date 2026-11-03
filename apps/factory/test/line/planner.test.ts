@@ -888,12 +888,29 @@ describe('the planner planning again', () => {
         comment: 'No signal asks for separators.',
       },
     ];
-    expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
+    // A lack is of his words, so it is told only where the planner can read any: here, his answer to the hold.
+    const withWords = (replan: PlannerInput['replan']) =>
+      planner.prompt({
+        ...AGAIN,
+        answers: [...AGAIN.answers, { asked: 'Held for Martin', answer: 'Keep the test’s name.' }],
+        replan,
+      });
+    expect(withWords({ ...held, cause: 'beyond-ticket', beyond })).toContain(
       'the reviewer found the spec, or the change, goes beyond the ticket, or that the spec lacks what his answer asks, each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:\n- Criterion 2: No signal asks for separators.',
     );
-    expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
+    expect(withWords({ ...held, cause: 'beyond-ticket', beyond })).toContain(
       'So take out what goes beyond the ticket, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.',
     );
+    // With no words of his to read (an approval in none, or a work item a visitor's report opened, whose words stay
+    // his), nothing of a lack: it would have the planner invent a criterion from words it cannot read.
+    const none = why({ ...held, answered: false, cause: 'beyond-ticket', beyond });
+    expect(none).toContain(
+      'the reviewer found the spec, or the change, goes beyond the ticket:\n- Criterion 2: No signal asks for separators.',
+    );
+    expect(none).toContain(
+      'So take out what goes beyond the ticket, as his answer says, and keep the rest of the spec as it is.',
+    );
+    expect(none).not.toContain('lack');
     expect(
       why({ ...held, cause: 'nothing-to-fix', reason: 'The coder found nothing to fix: it pads already' }),
     ).toContain('the coder found nothing to fix at your spec: The coder found nothing to fix: it pads already.');

@@ -539,7 +539,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
           state.answers.push({ ...askedOf(state.hold, state.fenced), ...reading });
         }
         if (resolution === 'replan') {
-          // What the reviewer found beyond the ticket, when its escalation is what he answered.
+          // The reviewer's findings that cite the ticket (beyond it, or short of Martin's answer), when its escalation
+          // is what he answered.
           const beyond = cause === 'beyond-ticket' ? state.review?.findings.filter((f) => f.ticket) : undefined;
           state.replan = {
             cause,
@@ -702,7 +703,7 @@ export type Replan =
       needs?: NonNullable<PayloadOf<'hold.started'>['needs']>;
       /** What the scope fence printed of the coder's last patch, for a `scope` hold the fence made. */
       fenced?: string;
-      /** The review's findings that cite the ticket, for a `beyond-ticket` hold. */
+      /** The review's findings that cite the ticket, beyond it or short of Martin's answer, for a `beyond-ticket` hold. */
       beyond?: PayloadOf<'review.submitted'>['findings'];
     }
   /** Returned from a stage after the merge, as when the signal persisted after the fix was released. */

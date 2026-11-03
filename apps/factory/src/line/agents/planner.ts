@@ -53,7 +53,9 @@
  * coder is never told the answers at Plan, and the last hold's words, which it is told only when he sends the work
  * back to it, are cleared when a spec is written (`MOVES_ON`), so the planner carries each ask into the spec as a
  * criterion from his answer that quotes his words, a constraint on the change itself (a test's name to keep) as much
- * as a behaviour a page shows. The reviewer holds the spec to his words, and the change to the spec alone.
+ * as a behaviour a page shows. The reviewer holds the spec to his words, and the change to the spec alone: a lack it
+ * finds holds as `beyond-ticket` and comes back here with the finding, told as a lack only where his words can be
+ * read, which on a work item a visitor's report opened they cannot (they stay his).
  *
  * A finding is an extra for triage: one that does not fit (a page that is not a path, a field too long, one past the
  * most a plan leaves) is left out, logged and counted in the spec's summary, and the result stands.
@@ -545,8 +547,12 @@ const HELD_AT = {
   'tests-first': 'as its new tests pass without the fix',
 } as const;
 
-/** Why the work came back to Plan, in plain words, by its cause, and what to change for it. */
-function whyBack(replan: Replan, asked: Asked['kind']): string[] {
+/**
+ * Why the work came back to Plan, in plain words, by its cause, and what to change for it. A lack of what his answer
+ * asks is told only where the planner can read any words of his (`hisWords`): on a work item a visitor's report
+ * opened they stay his, so none can be lacked.
+ */
+function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): string[] {
   const it = asked === 'ticket' ? 'the ticket' : 'what Martin asked';
   switch (replan.cause) {
     case 'returned':
@@ -569,13 +575,20 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
         heDid(replan),
         `So put the scope right for what the criteria need${replan.answered ? ', as his answer says' : ''}, and keep the rest of the spec as it is.`,
       ];
-    case 'beyond-ticket':
+    case 'beyond-ticket': {
+      const found = `the reviewer found the spec, or the change, goes beyond ${it}${hisWords ? ', or that the spec lacks what his answer asks' : ''}`;
+      const listed = hisWords
+        ? ', each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:'
+        : ':';
       return [
-        `Why it came back: the reviewer found the spec, or the change, goes beyond ${it}, or that the spec lacks what his answer asks${replan.beyond?.length ? ', each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:' : `: ${replan.reason}`}`,
+        `Why it came back: ${found}${replan.beyond?.length ? listed : `: ${replan.reason}`}`,
         ...(replan.beyond ?? []).map((f) => `- Criterion ${f.criterion}: ${f.comment}`),
         heDid(replan),
-        `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.`,
+        hisWords
+          ? `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.`
+          : `So take out what goes beyond ${it}, as his answer says, and keep the rest of the spec as it is.`,
       ];
+    }
     case 'nothing-to-fix':
       return [
         `Why it came back: the coder found nothing to fix at your spec: ${replan.reason.replace(/[.\s]+$/, '')}.`,
@@ -612,7 +625,7 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
  * What the planner is told when the work has come back to it: its last spec, as it wrote it, why the work came back,
  * the pull request that holds the work so far, and to keep what still holds. Nothing on a first plan.
  */
-function replanLines({ asked, lastSpec, replan, change }: PlannerInput): string[] {
+function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput): string[] {
   if (!lastSpec) return [];
   const kind = asked.kind === 'ticket' ? 'ticket' : 'improvement';
   return [
@@ -621,7 +634,13 @@ function replanLines({ asked, lastSpec, replan, change }: PlannerInput): string[
     '```json',
     JSON.stringify(lastSpec, null, 2),
     '```',
-    ...(replan ? whyBack(replan, asked.kind) : []),
+    ...(replan
+      ? whyBack(
+          replan,
+          asked.kind,
+          answers.some((a) => a.answer),
+        )
+      : []),
     ...(change
       ? [
           `Pull request #${change.pullRequest} holds the work so far, which is this ${kind}’s own: no other change’s. It changes ${change.files.length ? change.files.join(', ') : 'no file yet'}. Your checkout is not that work: it is ${change.commit}, where the pull request’s branch left main, which the coder’s tests are judged against, as your first plan was. Plan against this commit: what the pull request adds is not in it.`,

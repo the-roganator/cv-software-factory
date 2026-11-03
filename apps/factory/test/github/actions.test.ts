@@ -5,13 +5,14 @@ import { DiskArtifacts } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parse, render } from '../../src/gates/contradicts.ts';
+import { END as GATE_END, START as GATE_START, parse, render, strip } from '../../src/gates/contradicts.ts';
 import { DryRunActions, described, LiveActions } from '../../src/github/actions.ts';
 import { GitHub } from '../../src/github/client.ts';
 import { carriesIn, carriesSection, DEPLOYS, DeployRefused, deployTitle, type Pin } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker } from '../../src/github/worker-client.ts';
+import { describerResult } from '../../src/line/agents/describer.ts';
 import {
   CLIENT_ID,
   calls,
@@ -529,6 +530,8 @@ describe('describing a deploy', () => {
   });
 });
 
+const SUMMARY = { title: 'Pence', description: 'Fixed.', story: 'The factory fixed it.' };
+
 describe('the tests a spec contradicts, in a description', () => {
   const named = [{ file: 'test/app.test.ts', test: 'files > keeps nothing of the other files' }];
   const section = render(named);
@@ -567,6 +570,53 @@ describe('the tests a spec contradicts, in a description', () => {
     // A body with no markers is left exactly as it was given, with no list or an empty one.
     expect(described('Runs `aaaaaaa`.\n\n\n', undefined)).toBe('Runs `aaaaaaa`.\n\n\n');
     expect(described('A\n\n\n```\nx\n```\n', [])).toBe('A\n\n\n```\nx\n```\n');
+  });
+
+  it('leaves no marker the gate reads, in any form it reads one, and the describer writes none', () => {
+    // The forms of a marker the gate takes: any case, any spacing inside the comment, and either way to end it.
+    const forms = (words: string, slash: string) => [
+      `<!-- ${slash}${words} -->`,
+      `<!--${slash}${words}-->`,
+      `<!--\n  ${slash}${words}\n-->`,
+      `<!-- ${slash}${words} --!>`,
+      `<!-- ${slash.toUpperCase()}${words.toUpperCase()} -->`,
+    ];
+    const words = 'factory:contradicts';
+    const variants = [
+      ...forms(words, ''),
+      ...forms(words, '/'),
+      ...forms(words, '/ '),
+      ...forms('Factory:Contradicts', ''),
+    ];
+    const real = `${GATE_START}\n- \`test/b.test.ts\`: one\n${GATE_END}`;
+    for (const variant of variants) {
+      // Each is one the gate reads as a marker: beside the entry, it names a test, or is a second end.
+      expect(
+        parse(`${variant}\n${real.split('\n')[1]}\n${variant.includes('/') ? variant : GATE_END}`),
+        variant,
+      ).not.toEqual({
+        tests: [],
+      });
+      for (const body of [
+        variant,
+        `Fixed.\n${variant}\n- \`test/a.test.ts\`: x\n${variant}`,
+        `a${variant}b${variant}c`,
+      ]) {
+        for (const list of [undefined, [], named]) {
+          const published = described(body, list);
+          // With the worker's own section, if any, taken out, nothing it published reads as a marker, and the
+          // gate's own taking-out finds nothing left to take: a section added after reads as exactly that one.
+          const rest = published.replace(section, '');
+          expect(parse(rest), variant).toEqual({ tests: [] });
+          expect(parse(strip(rest)), variant).toEqual({ tests: [] });
+          expect(parse(`${rest}\n\n${real}`), variant).toEqual({ tests: [{ file: 'test/b.test.ts', test: 'one' }] });
+        }
+        expect(
+          describerResult.safeParse({ title: 'fix(money): pad the pence', body, summary: SUMMARY }).success,
+          variant,
+        ).toBe(false);
+      }
+    }
   });
 
   it('cannot be spliced from pieces that taking a marker out joins, in a body it is given', () => {

@@ -1,6 +1,7 @@
 import { PATH_CHARS, type PayloadOf } from '@software-factory/events';
-import { validateSignal } from '@software-factory/events/schemas';
+import { PAYLOADS, validateSignal } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
+import * as GATE from '../../src/gates/contradicts.ts';
 import type { EffectsContext } from '../../src/line/agents/agent.ts';
 import { evidenceLines, seen, ticketLines } from '../../src/line/agents/evidence.ts';
 import {
@@ -301,6 +302,22 @@ describe('the tests a spec contradicts', () => {
     '  });',
     '});',
   ].join('\n');
+
+  it('are held by the event to the gate’s own limits, which the events cannot import', () => {
+    expect(PATH_CHARS).toBe(GATE.PATH_CHARS);
+    const takes = (contradicts: unknown) => PAYLOADS['spec.written'].safeParse({ ...SPEC, contradicts }).success;
+    const entry = (file: string, test: string) => ({ file, test });
+    const at = (n: number) => `test/${'a'.repeat(n - 'test/.test.ts'.length)}.test.ts`;
+    expect(takes([entry(at(GATE.PATH_CHARS), 'x')])).toBe(true);
+    expect(takes([entry(at(GATE.PATH_CHARS + 1), 'x')])).toBe(false);
+    expect(takes([entry('test/a.test.ts', 'x'.repeat(GATE.TEST_CHARS))])).toBe(true);
+    expect(takes([entry('test/a.test.ts', 'x'.repeat(GATE.TEST_CHARS + 1))])).toBe(false);
+    const many = (n: number) => Array.from({ length: n }, (_, i) => entry('test/a.test.ts', `test ${i}`));
+    expect(takes(many(GATE.MOST_CONTRADICTED))).toBe(true);
+    expect(takes(many(GATE.MOST_CONTRADICTED + 1))).toBe(false);
+    // What the event takes, the gate reads and renders.
+    expect(GATE.entryProblem(entry(at(GATE.PATH_CHARS), 'x'.repeat(GATE.TEST_CHARS)))).toBeUndefined();
+  });
 
   it('are asked for by file and full name, as test integrity names them, and are usually none', () => {
     for (const prompt of [planner.prompt(INPUT), planner.prompt(REQUEST)]) {

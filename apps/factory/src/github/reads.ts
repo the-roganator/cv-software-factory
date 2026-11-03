@@ -3,8 +3,9 @@
  * (with what each that failed said was wrong), the checks a branch's ruleset requires, a branch's head, the paths no
  * patch may change at a commit, a file at a commit, and how a commit compares with a branch. The line reads them to
  * see its pull requests through their gates and to Martin's merge, and appends what it sees as events; holds a spec's
- * scope to the protected paths, and the tests it says it contradicts to those their files have; and gives the reviewer the base its change is measured from, and anchors its findings to lines the change
- * shows. The worker itself touches no store.
+ * scope to the protected paths, and the tests it says it contradicts to those their files have; and gives the
+ * reviewer the base its change is measured from, and anchors its findings to lines the change shows. The worker
+ * itself touches no store.
  *
  * After the merge, the line reads what a release is made of through the worker too, since only it reaches GitHub and
  * GHCR: the commits between two commits, and whether one is an ancestor of the other; the commit an image was built
@@ -212,7 +213,6 @@ const REF = z.object({ object: z.object({ sha: SHA }) });
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
 
 /** What the contents API answers for a path: a file, or a folder's listing. */
-
 const CONTENTS = z.union([
   z.object({ type: z.string(), encoding: z.string().optional(), content: z.string().optional() }),
   z.array(z.unknown()),

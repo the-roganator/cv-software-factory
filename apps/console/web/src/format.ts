@@ -39,6 +39,20 @@ export function countdown(ms: number): string {
 /** Thu 16:20 */
 export const shortWhen = (at: number) => `${weekday.format(at)} ${time.format(at)}`;
 
+/**
+ * How long ago something was, as a guardrail's proof says it: now, 12min ago, 3h ago, yesterday, then its day and
+ * time. Days are the viewer's, as the timeline's are.
+ */
+export function ago(at: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}min ago`;
+  const today = startOfDay(now);
+  if (at >= today || minutes < 6 * 60) return `${Math.floor(minutes / 60)}h ago`;
+  if (at >= startOfDay(today - 1)) return 'yesterday';
+  return shortWhen(at);
+}
+
 /** Thu 1 Oct */
 export const dayLabel = (at: number) => day.format(at);
 

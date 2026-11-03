@@ -504,6 +504,15 @@ export const PAYLOADS = {
       attempts: z
         .array(z.strictObject({ what: text(200), result: z.string().min(1).max(2000), refused: z.boolean() }))
         .max(8),
+      /**
+       * The egress attack's control, kept apart from its attempts: the gateway, which its pod may reach, asked as the
+       * attempts ask the outside, so a refusal is the egress policy's and not a pod that reaches nothing. What it
+       * tried, what came back, verbatim, and whether it reached the gateway. Only the egress attack has one, and it
+       * has one whenever it was seen to its end; one past its limit, recorded unfinished with nothing made, may not.
+       */
+      control: z
+        .strictObject({ what: text(200), result: z.string().min(1).max(2000), reached: z.boolean() })
+        .optional(),
       /** What its refusals must be about, so none from someone else's report, pull request or pod is counted. */
       subject: z
         .strictObject({
@@ -535,7 +544,19 @@ export const PAYLOADS = {
         message: 'a refused attack made its attempts, each refused, and cites a refusal for each one it expects',
         path: ['refusals'],
       },
-    ),
+    )
+    .refine(
+      (finished) =>
+        finished.attack === 'egress'
+          ? finished.control !== undefined || finished.outcome === 'unfinished'
+          : finished.control === undefined,
+      { message: 'the egress attack alone has a control, and records it unless it is unfinished', path: ['control'] },
+    )
+    .refine((finished) => finished.outcome !== 'refused' || finished.control?.reached !== false, {
+      // A control that failed proves nothing of the refusals: the attack is unfinished, not refused.
+      message: 'an attack whose control failed is unfinished, not refused',
+      path: ['control'],
+    }),
 
   /**
    * What a sense found, what a visitor reported, or what the planner noticed outside its ticket. A sense's signal

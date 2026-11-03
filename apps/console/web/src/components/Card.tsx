@@ -21,10 +21,13 @@ const KIND_NAME: Record<CardData['kind'], string> = {
   'planner-finding': 'Planner’s finding',
 };
 
-/** The kind of work, saying when a visitor started it: never which visitor. */
+/**
+ * The kind of work, saying when a visitor started it, never which visitor; and an attack, who launched it: Martin,
+ * from Guardrails, until milestone 8 opens the attacks to visitors.
+ */
 export function kindName({ kind, byVisitor }: Pick<CardData, 'kind' | 'byVisitor'>): string {
   if (byVisitor && kind === 'injected-defect') return 'Injected by a visitor';
-  if (byVisitor && kind === 'red-team') return 'Red-team attack by a visitor';
+  if (kind === 'red-team') return byVisitor ? 'Red-team attack by a visitor' : 'Red-team attack by Martin';
   return KIND_NAME[kind];
 }
 
@@ -32,7 +35,8 @@ export function kindName({ kind, byVisitor }: Pick<CardData, 'kind' | 'byVisitor
  * An outcome's word and tone, and whether it waits on a human. Work nobody needs to act on is in the quiet tone:
  * closed work, a quarantined report (a guardrail that worked), a ticket waiting for the planner, and a fix Martin
  * merged, waiting for a release, or for a deploy pull request that is not his to merge yet: not green, because nothing
- * has verified it.
+ * has verified it. An attack refused is green, as its guardrail held; one not refused, not seen to its end, or refused
+ * as the record does not bear out, is in the alarm colour, ringed, as each pages Martin.
  */
 export const OUTCOME: Record<Outcome, [word: string, tone: 'ok' | 'attn' | 'faint' | 'signal', waits: boolean]> = {
   verified: ['Verified', 'ok', false],
@@ -42,6 +46,10 @@ export const OUTCOME: Record<Outcome, [word: string, tone: 'ok' | 'attn' | 'fain
   quarantined: ['Quarantined', 'faint', false],
   'no-ticket': ['Closed · no ticket', 'faint', false],
   'turned-off': ['Turned off', 'faint', false],
+  refused: ['Refused', 'ok', false],
+  'not-refused': ['Not refused', 'attn', false],
+  unfinished: ['Unfinished', 'attn', false],
+  unconfirmed: ['Not confirmed', 'attn', false],
   'needs-you': ['Needs you', 'attn', true],
   waiting: ['Waiting for the planner', 'faint', false],
   'waits-on-work': ['Waiting on overlapping work', 'faint', false],
@@ -135,6 +143,7 @@ const SEGMENT_CLASS = {
   waiting: 'w',
   closed: 'k',
   queued: 'q',
+  refused: 'r',
   none: '',
 } as const;
 

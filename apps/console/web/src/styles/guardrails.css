@@ -1,0 +1,221 @@
+/*
+ * Guardrails: a checklist of spec 6's eleven, full width under the bottom row, in two columns from 1180 up and one
+ * below. A row is one line and a button that opens its details in place, one at a time: what holds it, its last proof,
+ * and its attack, a `raised` card with Launch. A guardrail that did not hold takes the `attn` rule down its row's left
+ * edge, as an attack that was not refused does down its card's.
+ */
+.guardrails {
+  margin-top: 20px;
+  gap: 14px;
+}
+.guardrails .panel-head .label.tone-attn,
+.gr .more .tone-attn {
+  color: var(--attn);
+}
+.gr-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 40px;
+  align-items: start;
+}
+.gr-col {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.gr {
+  border-bottom: 1px solid var(--line);
+}
+.gr > button {
+  display: grid;
+  grid-template-columns: 104px 26px minmax(0, 1fr) auto 16px;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gr .v {
+  font-size: 12.5px;
+}
+.gr .n {
+  font: 12px / 1.4 var(--font-mono);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.gr .name {
+  font-size: 14px;
+  line-height: 1.35;
+}
+.gr > button:hover .name {
+  text-decoration: underline 1px var(--line-strong);
+  text-underline-offset: 4px;
+}
+.gr .age {
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.gr .chev {
+  width: 12px;
+  height: 12px;
+  align-self: center;
+  color: var(--text-muted);
+}
+.gr > button[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+html[data-motion="on"] .gr .chev {
+  transition: transform 0.15s;
+}
+.gr.failed {
+  border-left: var(--stroke-rule) solid var(--attn);
+  padding-left: 10px;
+  margin-left: -12px;
+}
+.gr .more {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 0 16px 140px;
+}
+.gr .more p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.gr .more p.attn {
+  color: var(--attn);
+}
+.gr .more .label {
+  display: block;
+  margin-bottom: 4px;
+}
+.gr .more code,
+.gr .more .mono {
+  font: 12px var(--font-mono);
+}
+.gr .more a {
+  color: var(--text);
+}
+
+/* An attack, in its guardrail's row: its name and last run on the left, Launch on the right. */
+.gr-attack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 14px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+.gr-attack.failed {
+  border-left: var(--stroke-rule) solid var(--attn);
+  border-radius: var(--radius-rule) var(--radius-card) var(--radius-card) var(--radius-rule);
+}
+.gr-attack b {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.gr-attack .last {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: center;
+  margin: 0;
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.gr .more .gr-attack .last {
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.gr-attack .last .v {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.gr-attack .last .linkish {
+  color: var(--text);
+}
+.gr-attack .btn,
+.gr-attack .ro {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.gr-attack .btn {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+/* One at a time: the others' Launch is dashed while one runs, not faded, and the line under says which. */
+.gr-attack .btn:disabled {
+  border-style: dashed;
+  color: var(--text-muted);
+  opacity: 1;
+}
+.gr-attack button.ro {
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+/* An attack not available yet: no Launch, so its name, its state and what it tries take the card's whole width. */
+.gr-attack.unavailable {
+  grid-template-columns: minmax(0, 1fr);
+}
+.gr .more .gr-attack p.tries {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.gr .more p.gr-busy {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .gr-list {
+    grid-template-columns: 1fr;
+  }
+  .gr-col + .gr-col {
+    border-top: 0;
+  }
+}
+
+/* On a phone the row keeps its word, number and name, with the proof's age under the name. */
+@media (max-width: 720px) {
+  .gr > button {
+    grid-template-columns: 92px 18px minmax(0, 1fr) 14px;
+    gap: 2px 6px;
+  }
+  .gr .age {
+    grid-column: 3;
+    grid-row: 2;
+  }
+  .gr .chev {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .gr .more {
+    padding-left: 0;
+  }
+  .gr-attack {
+    grid-template-columns: 1fr;
+  }
+  .gr-attack .btn,
+  .gr-attack .ro {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: stretch;
+    justify-content: center;
+  }
+}

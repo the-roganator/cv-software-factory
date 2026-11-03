@@ -17,6 +17,9 @@
  * and the sheet, its card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan,
  * for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
  * Part C's canary paused for Martin, with auto-rollback off: the Canary panel, its card in Needs you, and the switch.
+ * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, the
+ * attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
+ * each way one stands (refused twice, a refusal cut at five lines, not refused, running), and a sheet's refusals whole.
  */
 import type { Page } from '@playwright/test';
 import { STAGES as KINDS } from '@software-factory/events';
@@ -139,7 +142,7 @@ const PICTURES = {
   package: '1262',
   scan: '1282',
   rollback: '1276',
-  refusal: '1274',
+  refusal: '1293',
   judgement: '1268',
   spec: '1300',
 };
@@ -613,23 +616,23 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
 
     test('a held fix’s sheet, for Martin: its card from Needs you at its head', async ({ page }) => {
       await adminService(page, 'martin');
-      await page.goto(consoleUrl({ item: '1274', sheet: true }));
+      await page.goto(consoleUrl({ item: '1319', sheet: true }));
       const needs = page.locator('.sheet .sheet-needs');
       await needs.getByRole('button', { name: /^Approve/ }).waitFor();
       await page.evaluate(() => document.fonts.ready);
       await expect(needs).toHaveScreenshot(`m07-sheet-needs-hold-${width}.png`);
     });
 
-    test('Approve on a gate’s hold, asking for the passkey again', async ({ page }) => {
+    test('Approve on a guardrail’s hold, asking for the passkey again', async ({ page }) => {
       await adminService(page, 'martin');
       await page.route('**/admin/holds/**', (route) =>
         route.fulfill({ status: 403, json: { refused: 'step-up', message: 'This needs your passkey again.' } }),
       );
       await page.goto(consoleUrl());
       await ready(page);
-      const card = page.locator('.need').filter({ hasText: '#1274 ·' });
+      const card = page.locator('.need').filter({ hasText: '#1319 ·' });
       await card.getByRole('button', { name: 'Approve (asks for your passkey)' }).click();
-      await page.getByRole('dialog', { name: 'Approve #1274' }).waitFor();
+      await page.getByRole('dialog', { name: 'Approve #1319' }).waitFor();
       await expect(page).toHaveScreenshot(`m07-needs-step-up-${width}.png`);
     });
 
@@ -1167,3 +1170,98 @@ async function settingsPage(page: Page, theme: 'paper' | 'ink' = 'paper') {
   await page.getByRole('heading', { level: 1 }).waitFor();
   await page.evaluate(() => document.fonts.ready);
 }
+
+/** Task 22: Guardrails, opened at a row (`?open=`), for a visitor or for Martin. */
+async function guardrailsAt(page: Page, as: 'martin' | 'visitor', open: number, theme: 'paper' | 'ink' = 'paper') {
+  await adminService(page, as);
+  await page.goto(`${consoleUrl({ theme })}&open=${open}`);
+  await ready(page);
+  const panel = page.locator('#guardrails');
+  await panel.locator('.more').waitFor();
+  await panel.scrollIntoViewIfNeeded();
+  await page.evaluate(() => document.fonts.ready);
+  return panel;
+}
+
+for (const [width, viewport] of Object.entries(WIDTHS)) {
+  test.describe(`${width}, Guardrails`, () => {
+    test.use({ viewport });
+
+    test('the checklist, a guardrail that did not hold opened, for a visitor', async ({ page }) => {
+      const panel = await guardrailsAt(page, 'visitor', 5);
+      await expect(panel).toHaveScreenshot(`m07-guardrails-visitor-${width}.png`);
+    });
+
+    test('the checklist for Martin, the attack in flight in its row', async ({ page }) => {
+      const panel = await guardrailsAt(page, 'martin', 3);
+      await expect(panel).toHaveScreenshot(`m07-guardrails-martin-${width}.png`);
+    });
+
+    test('Launch’s dialog, for Martin and for a visitor', async ({ page }) => {
+      await adminService(page, 'martin');
+      // After the attack in flight has passed its limit, so Launch is free.
+      await page.goto(`${consoleUrl({ at: END + 60 * 60_000 })}&open=5`);
+      await ready(page);
+      await page.locator('#guardrails .more').getByRole('button', { name: 'Launch' }).click();
+      await page.getByRole('dialog', { name: 'Data to an outside URL' }).waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      await expect(page).toHaveScreenshot(`m07-attack-dialog-${width}.png`);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      const panel = await guardrailsAt(page, 'visitor', 5);
+      await panel.locator('.more .gr-attack .ro').click();
+      await page.getByRole('dialog', { name: 'Data to an outside URL' }).waitFor();
+      await expect(page).toHaveScreenshot(`m07-attack-dialog-visitor-${width}.png`);
+    });
+  });
+}
+
+/** An attack's card for each way it stands, and a sheet's refusals whole. */
+const ATTACK_CARDS = { cut: '1289', 'not-refused': '1333', running: '1335' };
+
+test.describe('attacks on the desktop', () => {
+  test.use({ viewport: WIDTHS.desktop });
+
+  for (const [state, item] of Object.entries(ATTACK_CARDS)) {
+    test(`an attack’s card, ${state}`, async ({ page }) => {
+      await page.goto(consoleUrl({ item }));
+      await ready(page);
+      const card = page.locator('.card[data-place="centre"]');
+      await expect(card).toHaveScreenshot(`m07-attack-card-${state}.png`);
+    });
+  }
+
+  test('an attack’s sheet: every refusal whole', async ({ page }) => {
+    await page.goto(consoleUrl({ item: '1289', sheet: true }));
+    const evidence = page.locator('.sheet .evidence-big');
+    await evidence.waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await expect(evidence).toHaveScreenshot('m07-attack-sheet-evidence.png');
+  });
+
+  test('an attack’s sheet: what got through, and the egress attack’s control apart', async ({ page }) => {
+    await page.goto(consoleUrl({ item: '1333', sheet: true }));
+    const evidence = page.locator('.sheet .evidence-big');
+    await evidence.waitFor();
+    await expect(evidence.locator('.control')).toContainText('The control');
+    await page.evaluate(() => document.fonts.ready);
+    await expect(evidence).toHaveScreenshot('m07-attack-sheet-not-refused.png');
+  });
+});
+
+test.describe('Guardrails on the desktop', () => {
+  test.use({ viewport: WIDTHS.desktop });
+
+  test('an attack not available yet, in its guardrail’s row', async ({ page }) => {
+    const panel = await guardrailsAt(page, 'martin', 1);
+    await expect(panel.locator('.gr:has(.more)')).toHaveScreenshot('m07-guardrail-unavailable.png');
+  });
+});
+
+test.describe('Guardrails in Ink', () => {
+  test.use({ viewport: WIDTHS.desktop });
+
+  test('the checklist, a guardrail that did not hold opened', async ({ page }) => {
+    const panel = await guardrailsAt(page, 'martin', 5, 'ink');
+    await expect(panel).toHaveScreenshot('m07-guardrails-ink.png');
+  });
+});

@@ -74,6 +74,8 @@ const finished = (attack: keyof typeof ATTACK_RULES, refusals: number[], extra: 
     result: `Refused by ${mechanism}`,
     refused: true,
   })),
+  // The egress attack's control: the gateway, which its pod may reach.
+  ...(attack === 'egress' && { control: { what: 'Reach the gateway', result: 'HTTP/1.1 200 OK', reached: true } }),
   ...extra,
 });
 
@@ -156,6 +158,19 @@ describe('the line’s judgement of an attack', () => {
       '5015',
     );
     expect(await kinds()).toMatchObject({ 'attack-not-refused': 0, 'attack-wrong-mechanism': 5 });
+  });
+
+  it('cannot agree that an egress attack was refused without its control reached, however its refusals read', async () => {
+    const without = await egressRefused('5016');
+    await append(database.redteam, 'attack.finished', finished('egress', without, { control: undefined }), '5016');
+    const failed = await egressRefused('5017');
+    await append(
+      database.redteam,
+      'attack.finished',
+      finished('egress', failed, { control: { what: 'Reach the gateway', result: 'ECONNREFUSED', reached: false } }),
+      '5017',
+    );
+    expect(await kinds()).toMatchObject({ 'attack-not-refused': 0, 'attack-wrong-mechanism': 2 });
   });
 
   it('counts a refusal only from a role the table lets append its mechanism, were row security to let another', async () => {
@@ -293,7 +308,8 @@ describe('an attack that did not finish', () => {
       'attack.finished',
       finished('egress', [], {
         outcome: 'unfinished',
-        attempts: [{ what: 'Reach the gateway', result: 'ECONNREFUSED', refused: true }],
+        attempts: [],
+        control: { what: 'Reach the gateway', result: 'ECONNREFUSED', reached: false },
       }),
       '5112',
     );

@@ -26,3 +26,6 @@
 !policy/phone.ts
 !policy/flags.ts
 !policy/flag-moves.ts
+!policy/guardrails.ts
+!policy/attacks.ts
+!policy/refusals.ts

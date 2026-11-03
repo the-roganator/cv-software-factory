@@ -295,9 +295,10 @@ describe('a refusal, by its mechanism', () => {
   });
 
   it('moves it to its mechanism’s stage, and fails it there, for every other mechanism', () => {
+    // The review gate holds a pull request at Review, where it waits to merge, as the designs draw an attack on it.
     const item = foldItem(built().add(3, 'action.refused', 'factory', refused('review-gate', [2])).events);
-    expect(item?.stage).toBe('gates');
-    expect(item?.failure?.stage).toBe('gates');
+    expect(item?.stage).toBe('review');
+    expect(item?.failure?.stage).toBe('review');
   });
 });
 

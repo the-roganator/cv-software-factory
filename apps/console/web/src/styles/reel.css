@@ -197,7 +197,8 @@
   border-radius: 2px;
   background: var(--line);
 }
-.prog i.o {
+.prog i.o,
+.prog i.r {
   background: var(--ok);
 }
 .prog i.k {

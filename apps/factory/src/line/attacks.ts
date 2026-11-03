@@ -16,7 +16,8 @@
  *   that mechanism's refusals (`policy/refusals.ts`), does not verify where it is signed, or is about something other
  *   than the attack's own subject: its report, by the id triage gives the report's refusal; its pod, by its uid; its
  *   pull request, by the repository and number the signed record names; or, for an attack whose refusals the harness
- *   records itself, its own work item. A record the line cannot read at all is judged so too, as the line cannot agree;
+ *   records itself, its own work item. The egress attack must have reached its control, the gateway, too. A record
+ *   the line cannot read at all is judged so too, as the line cannot agree;
  * - **unfinished** (`attack-unfinished`) when the harness says so (its control failed, or it found its own launch past
  *   its limit), or when no `attack.finished` that says how it ended came from the harness's role within its limit
  *   (`attackLimitMs`). There is no event to react to for that: the line counts, each time it reads, the launches whose
@@ -165,6 +166,11 @@ export function judge(
   const expected = expectedRefusals(finished.attack);
   if (canonical(finished.expected) !== canonical(expected)) {
     return wrong(`it expects ${finished.expected.join(', ')}, not ${expected.join(', ')}`);
+  }
+  // The schema holds a refused egress attack to a control it reached; read again, as a record the line cannot agree
+  // with otherwise fails closed.
+  if (finished.attack === 'egress' && finished.control?.reached !== true) {
+    return wrong(finished.control ? 'its control, the gateway, was not reached' : 'it records no control');
   }
   if (finished.refusals.length !== expected.length) {
     return wrong(`it cites ${finished.refusals.length} refusals for the ${expected.length} expected`);

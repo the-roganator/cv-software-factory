@@ -109,13 +109,13 @@ function codeMask(source: string): boolean[] {
   return code;
 }
 
-/** The index just after the parenthesis that closes the one at `open`, counting only code. */
-function closing(source: string, code: boolean[], open: number): number {
+/** The index just after the parenthesis (or other bracket) that closes the one at `open`, counting only code. */
+function closing(source: string, code: boolean[], open: number, [left, right] = '()'): number {
   let depth = 0;
   for (let i = open; i < source.length; i++) {
     if (!code[i]) continue;
-    if (source[i] === '(') depth++;
-    else if (source[i] === ')') {
+    if (source[i] === left) depth++;
+    else if (source[i] === right) {
       depth--;
       if (depth === 0) return i + 1;
     }
@@ -168,9 +168,13 @@ function chainEnd(source: string, code: boolean[], open: number): number {
   let end = closing(source, code, open);
   for (;;) {
     const at = skipGap(source, code, end);
-    const link = /^\??\.\s*[A-Za-z_$][\w$]*/.exec(source.slice(at, at + 200));
-    if (!link || !code[at]) return end;
-    end = at + link[0].length;
+    if (!code[at]) return end;
+    // A property by name, `.not`, or computed, `[matcher]` or `?.[matcher]`.
+    const computed = /^(?:\?\.\s*)?\[/.exec(source.slice(at, at + 20));
+    const link = computed ? undefined : /^\??\.\s*[A-Za-z_$][\w$]*/.exec(source.slice(at, at + 200));
+    if (computed) end = closing(source, code, at + computed[0].length - 1, '[]');
+    else if (link) end = at + link[0].length;
+    else return end;
     const call = skipGap(source, code, end);
     if (source[call] === '(' && code[call]) end = closing(source, code, call);
   }
@@ -233,7 +237,8 @@ function callText(source: string, code: boolean[], from: number, to: number): st
       i = next - 1;
       continue;
     }
-    if (c === ',') {
+    // A trailing comma, but not a hole in an array (`[a,,]`, `[,]`), which changes what it holds.
+    if (c === ',' && !/[,[]$/.test(text)) {
       const after = skipGap(source, code, i + 1);
       if (code[after] && ')]}'.includes(source[after] ?? '')) continue;
     }

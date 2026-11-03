@@ -86,6 +86,30 @@ describe('the section of tests the spec contradicts', () => {
     expect(entryProblem(NAMED)).toBeUndefined();
   });
 
+  it('never names a test with comment marks in it, or what GitHub would make a mention or a link', () => {
+    for (const test of [
+      'a <!-- /factory:contradicts --> b',
+      'a <!--FACTORY:CONTRADICTS--> b',
+      'ends a comment -->',
+      'tells @martin',
+      'closes #12',
+    ]) {
+      expect(entryProblem({ file: 'test/a.test.ts', test })).toBeDefined();
+      expect(() => render([{ file: 'test/a.test.ts', test }])).toThrow();
+    }
+    expect(entryProblem({ file: 'test/<!--a.test.ts', test: 'x' })).toBeDefined();
+    // An @ or # alone is a name like any other.
+    expect(entryProblem({ file: 'test/a.test.ts', test: 'sends mail to a @ sign and # signs' })).toBeUndefined();
+  });
+
+  it('takes out a marker that taking out another one would make', () => {
+    const spliced = 'Text <!-- factory:con<!-- /factory:contradicts -->tradicts --> more';
+    expect(strip(spliced)).toBe('Text  more');
+    expect(parse(strip(spliced))).toEqual({ tests: [] });
+    const nested = `${START.slice(0, 10)}${START}\n- \`test/a.test.ts\`: a\n${END}${START.slice(10)}`;
+    expect(parse(strip(nested))).toEqual({ tests: [] });
+  });
+
   it('is taken out of the describer’s text, whole or as stray markers, and replaced by the line’s', () => {
     const describer = `The change makes every asset cacheable.\n\n${SECTION}\n\n## Risk\n\nNone.\n\n<!-- FACTORY:contradicts -->\n- \`test/b.test.ts\`: b\n<!-- /factory:contradicts -->\n\n<!-- factory:contradicts -->`;
     const stripped = strip(describer);
@@ -121,6 +145,21 @@ describe('assertions as text', () => {
 
 describe('assertions as text, reformatted', () => {
   const calls = (body: string) => testsIn(`it('x', () => { ${body} });`)[0]?.calls;
+
+  it('follows a computed matcher, and keeps a hole in an array apart from a trailing comma', () => {
+    expect(calls("expect(v)[matcher](x); expect(v)?.['not'].toBe(1);")).toEqual([
+      'expect(v)[matcher](x)',
+      "expect(v)?.['not'].toBe(1)",
+    ]);
+    expect(
+      calls('expect(a).toEqual([,]); expect(a).toEqual([]); expect(a).toEqual([1,,]); expect(a).toEqual([1,]);'),
+    ).toEqual([
+      'expect(a).toEqual([,])',
+      'expect(a).toEqual([])',
+      'expect(a).toEqual([1,,])',
+      'expect(a).toEqual([1])',
+    ]);
+  });
 
   it('is the same with other quotes, comments or line breaks, and different with another matcher', () => {
     const plain = calls("expect(res.status).toBe(200); expect(a).toBe('it\\'s');");
@@ -295,6 +334,9 @@ describe('the gate, reading the description', () => {
     }
     expect(await pullRequestNumber({ GITHUB_EVENT_NAME: 'push', GITHUB_EVENT_PATH: queued })).toHaveProperty('error');
     expect(
+      await pullRequestNumber({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: await event(null) }),
+    ).toEqual({ error: "The run's event is not an object" });
+    expect(
       await pullRequestNumber({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: '/nowhere' }),
     ).toHaveProperty('error');
   });
@@ -330,6 +372,12 @@ describe('the gate, reading the description', () => {
     ).toHaveProperty('error');
     expect(await description({ ...env, GITHUB_TOKEN: '' }, refused as typeof fetch)).toHaveProperty('error');
     expect(await description(env, (async () => answer(200, { number: 155, body: null })) as typeof fetch)).toBe('');
+    // An answer that is not a pull request is not asked for again.
+    const garbled = vi.fn(async () => new Response('<html>', { status: 200 }));
+    expect(await description(env, garbled as typeof fetch, async () => {})).toEqual({
+      error: "GitHub's answer is not a pull request",
+    });
+    expect(garbled).toHaveBeenCalledTimes(1);
   });
 
   it('passes the #1015 change with the section, warning on the test, and fails it without, on either event', async () => {
@@ -403,5 +451,9 @@ describe('the gate, reading the description', () => {
     expect((await run([base, change, '--description', file], { GITHUB_STEP_SUMMARY: '' }, never)).code).toBe(0);
     expect((await run([base, change], { GITHUB_STEP_SUMMARY: '' }, never)).code).toBe(1);
     expect((await run([base, change, '--description'], {}, never)).code).toBe(2);
+    // A file that cannot be read fails, saying so, rather than throwing.
+    const missing = await run([base, change, '--description', `${file}.gone`], {}, never);
+    expect(missing.code).toBe(1);
+    expect(missing.output).toContain('The description could not be read from');
   });
 });

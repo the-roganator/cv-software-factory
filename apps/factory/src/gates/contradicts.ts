@@ -57,6 +57,12 @@ export function entryProblem({ file, test }: Contradicted): string | undefined {
     return `its test's name is empty, longer than ${TEST_CHARS} characters, or starts or ends with a space`;
   }
   if (/[\r\n]/.test(test)) return "its test's name is on more than one line";
+  // Nothing that reads as a comment's start or end, so an entry can never make or break a marker.
+  if (/<!--|-->/.test(file) || /<!--|-->/.test(test)) return 'it has "<!--" or "-->" in it';
+  // A name is written as plain Markdown, where GitHub would turn these into a mention or a link.
+  if (/@\w/.test(test) || /#\d/.test(test)) {
+    return "its test's name has an @ before a word or a # before a digit, which GitHub would make a mention or a link";
+  }
   return undefined;
 }
 
@@ -83,13 +89,18 @@ export function strip(description: string): string {
   const intro = INTRO.map((line) => line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
   const heading = HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pair = new RegExp(`${START_MARK.source}[\\s\\S]*?${END_MARK.source}`, 'gi');
-  return description
-    .replace(new RegExp(`^${heading}\\s*(?:${intro}\\s*)?(?=<!--)`, 'gim'), '')
-    .replace(pair, '')
-    .replace(START_MARK, '')
-    .replace(END_MARK, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  // Again until none is left: taking one marker out can join the text either side of it into another.
+  let text = description;
+  for (;;) {
+    const next = text
+      .replace(new RegExp(`^${heading}\\s*(?:${intro}\\s*)?(?=<!--)`, 'gim'), '')
+      .replace(pair, '')
+      .replace(START_MARK, '')
+      .replace(END_MARK, '');
+    if (next === text) break;
+    text = next;
+  }
+  return text.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /** A description with its section replaced by one for these tests, or with none when there are none. */

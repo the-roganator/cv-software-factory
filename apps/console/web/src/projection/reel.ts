@@ -86,6 +86,8 @@ export type Picture =
       verdict: Verdict;
       refusals: Refused[];
       attempts: PayloadOf<'attack.finished'>['attempts'];
+      /** The egress attack's control, the gateway its pod may reach, apart from its refusals. */
+      control: PayloadOf<'attack.finished'>['control'];
       /** The guardrail it is made against, which reads as not held when it is not refused. */
       guardrail: number | undefined;
       /** Why a refused attack is not confirmed, from the check of its refusals. */
@@ -332,6 +334,7 @@ function attackPicture(item: ItemState, attack: AttackState, t: number): Picture
     verdict: verdictAt(attack, t),
     refusals,
     attempts: attack.finished?.attempts ?? [],
+    control: attack.finished?.control,
     guardrail: guardrailAttacked(attack.attack),
     why: attack.finished?.why,
     minutes: attackLimitMs(attack.attack) / 60_000,

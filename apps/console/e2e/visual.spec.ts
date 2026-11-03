@@ -1237,6 +1237,15 @@ test.describe('attacks on the desktop', () => {
     await page.evaluate(() => document.fonts.ready);
     await expect(evidence).toHaveScreenshot('m07-attack-sheet-evidence.png');
   });
+
+  test('an attack’s sheet: what got through, and the egress attack’s control apart', async ({ page }) => {
+    await page.goto(consoleUrl({ item: '1333', sheet: true }));
+    const evidence = page.locator('.sheet .evidence-big');
+    await evidence.waitFor();
+    await expect(evidence.locator('.control')).toContainText('The control');
+    await page.evaluate(() => document.fonts.ready);
+    await expect(evidence).toHaveScreenshot('m07-attack-sheet-not-refused.png');
+  });
 });
 
 test.describe('Guardrails on the desktop', () => {

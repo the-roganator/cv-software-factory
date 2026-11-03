@@ -784,6 +784,7 @@ function RefusalPicture(picture: Extract<PictureData, { type: 'refusal' }>) {
             </pre>
           </div>
         )}
+        {picture.control && <Control {...picture.control} />}
       </div>
       <div className={`unchanged${failed ? ' notheld' : ''}`}>
         <Glyph
@@ -792,6 +793,30 @@ function RefusalPicture(picture: Extract<PictureData, { type: 'refusal' }>) {
         />
         <span>{attackFoot(picture)}</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The egress attack's control, apart from its refusals: the gateway, which an agent's pod may reach, asked as the
+ * attempts ask the outside, so its refusals are the policy's and not a pod that reaches nothing. Quiet when it answered,
+ * as the design draws it; in the alarm colour when it did not.
+ */
+function Control({ what, result, reached }: NonNullable<Extract<PictureData, { type: 'refusal' }>['control']>) {
+  return (
+    <div className="control">
+      <div className="rhead">
+        <b>The control</b>
+        <span className={reached ? undefined : 'tone-attn'}>{reached ? 'reached' : 'not reached'}</span>
+      </div>
+      <pre className="term">
+        <span className={reached ? 't-dim' : 't-bad'}>
+          {reached ? '✓' : '✕'} {what}
+          {'\n'}
+          {'  → '}
+          {result}
+        </span>
+      </pre>
     </div>
   );
 }

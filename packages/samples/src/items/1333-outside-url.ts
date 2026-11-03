@@ -60,6 +60,7 @@ export default attack
           refused: true,
         },
       ],
+      control: { what: 'http://gateway.factory:8080/health, the control', result: '200 in 14 ms', reached: true },
       subject: { pod: POD },
     },
     [byName, provider],

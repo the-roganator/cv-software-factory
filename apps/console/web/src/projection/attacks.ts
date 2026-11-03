@@ -11,7 +11,8 @@
  * - **Refused** stands only when every refusal it cites is in the stream, in the order of the refusals its attack
  *   expects (`policy/attacks.ts`): each an `action.refused` after the launch, by the mechanism expected at its place,
  *   appended by a role that may append that mechanism (`policy/refusals.ts`), showing the guardrail the attack is made
- *   against, and, for the image attack, about the pod the harness asked for. A refusal relayed from the GitHub worker
+ *   against, and, for the image attack, about the pod the harness asked for; and for the egress attack, its control,
+ *   the gateway, answered. A refusal relayed from the GitHub worker
  *   carries its record and signature, which the line verifies with the worker's public key; the console has no key,
  *   so it checks only that both are there. A refused attack that fails any of these reads as **not confirmed**: its
  *   guardrail reads as not held, as when nothing refused it, since the line pages Martin for both.
@@ -59,6 +60,7 @@ export interface AttackState {
         /** Why a refused attack reads as not confirmed. */
         why: string | undefined;
         attempts: PayloadOf<'attack.finished'>['attempts'];
+        control: PayloadOf<'attack.finished'>['control'];
       }
     | undefined;
 }
@@ -109,6 +111,8 @@ export function unconfirmed(
   if (finished.refusals.length !== expected.length) {
     return `it cites ${finished.refusals.length} of the ${expected.length} refusals it expects`;
   }
+  // The egress attack's refusals are the policy's only if its control, the gateway, answered (the schema says so too).
+  if (attack === 'egress' && !finished.control?.reached) return 'its control, the gateway, was not seen to answer';
   const guardrail = guardrailAttacked(attack);
   let after = launchedSeq;
   for (const [i, seq] of finished.refusals.entries()) {

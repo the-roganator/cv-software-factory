@@ -176,6 +176,31 @@ describe('an attack', () => {
     expect(card(swapped, '2007')?.outcome).toBe('unconfirmed');
   });
 
+  it('is refused by the egress policy only when its control, the gateway, answered', () => {
+    const { events } = launched('2017', 'egress');
+    const policy = by(
+      'factory_redteam',
+      work('2017', START)
+        .add(1, 'action.refused', 'factory', refusal('egress-policy', [5]))
+        .add(1, 'action.refused', 'factory', refusal('egress-policy', [5]))
+        .add(1, 'action.refused', 'factory', refusal('egress-policy', [5])).events,
+    );
+    const seqs = policy.map((event) => event.seq);
+    const control = { what: 'http://gateway.factory:8080/health', result: '200 in 14 ms', reached: true };
+    const ended = (extra: Partial<PayloadOf<'attack.finished'>>) => [
+      ...events,
+      ...policy,
+      ...finished('2017', 'egress', 'refused', seqs, 2, extra),
+    ];
+    expect(card(ended({ control }), '2017')?.picture).toMatchObject({ verdict: 'refused', control });
+    for (const extra of [{}, { control: { ...control, reached: false } }]) {
+      expect(card(ended(extra), '2017')?.picture).toMatchObject({
+        verdict: 'unconfirmed',
+        why: 'its control, the gateway, was not seen to answer',
+      });
+    }
+  });
+
   it('is refused by admission control only about the pod it asked for', () => {
     const pod = { namespace: 'runners', name: 'red-team-2008', uid: '00000000-0000-4000-8000-000000002008' };
     const { events } = launched('2008', 'image');
@@ -259,7 +284,7 @@ describe('the Guardrails checklist', () => {
       'refused',
       refused.map((e) => e.seq),
       2,
-      {},
+      { control: { what: 'http://gateway.factory:8080/health', result: '200 in 14 ms', reached: true } },
       START + 2 * MINUTE,
     );
     const all = [...failed, ...attack, ...refused, ...end];

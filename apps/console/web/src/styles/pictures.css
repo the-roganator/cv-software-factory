@@ -651,6 +651,13 @@ svg.chart {
   max-height: none;
   mask-image: none;
 }
+/* The egress attack's control is the sheet's: a card has no room for it under the refusals and the attempts. */
+.refusals .control {
+  display: none;
+}
+.evidence-big .refusals .control {
+  display: block;
+}
 .evidence-big .refusals .attack-waits {
   margin: auto 0;
   font: 400 3.2cqw / 1.2 var(--font-display);

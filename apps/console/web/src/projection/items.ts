@@ -474,7 +474,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         // The harness's word, once, checked against the refusals it cites.
         if (!isFinish(event) || !state.attack || state.attack.finished) break;
         {
-          const { outcome, attempts } = event.payload;
+          const { outcome, attempts, control } = event.payload;
           const refusals = state.events.filter((e): e is PublicEvent<'action.refused'> => e.type === 'action.refused');
           const why =
             outcome === 'refused'
@@ -483,7 +483,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
           // An attempt its own record says was not refused got through, whatever its outcome says.
           const through = attempts.some((attempt) => !attempt.refused);
           const verdict = through ? 'not-refused' : why ? 'unconfirmed' : outcome;
-          state.attack.finished = { at: time, verdict, why: through ? undefined : why, attempts };
+          state.attack.finished = { at: time, verdict, why: through ? undefined : why, attempts, control };
         }
         break;
       case 'work-item.summarised': {

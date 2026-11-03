@@ -285,6 +285,15 @@ export const PROOFS_ONLY_ROWS =
   "((CURRENT_USER = 'factory_operator'::name) AND sample)";
 
 /**
+ * The restrictive insert policy on `events` that holds a close as an attack ended (refused, not refused, unfinished)
+ * to the red-team harness's role (`0045_red-team-attacks.sql`), as the grants test reads it from the store, so no
+ * worker closes any work item as an attack's result. Martin's command line closes one so only as a sample.
+ */
+export const ATTACK_CLOSE_ROWS =
+  "(type <> 'work-item.closed') OR (COALESCE((payload ->> 'outcome'), '') <> ALL (ARRAY['refused', 'not-refused', " +
+  "'unfinished'])) OR (CURRENT_USER = 'factory_redteam'::name) OR ((CURRENT_USER = 'factory_operator'::name) AND sample)";
+
+/**
  * The restrictive insert policy on `events` that holds an attack's end to the red-team harness's role
  * (`0045_red-team-attacks.sql`), as the grants test reads it from the store: every role's insert must meet it as well
  * as its own. Martin's command line appends one only as a sample.

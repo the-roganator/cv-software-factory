@@ -85,3 +85,10 @@ create policy events_redteam_append on events for insert to factory_redteam
 create policy events_finished_by_the_harness on events as restrictive for insert
   with check (type <> 'attack.finished' or current_user = 'factory_redteam'
               or (current_user = 'factory_operator' and sample));
+
+-- And a close as an attack ends (refused, not refused, unfinished) is the harness's alone in the same way, so no
+-- worker's permissive policy lets one close its own work, or any other, as an attack's result.
+create policy events_closed_as_an_attack_by_the_harness on events as restrictive for insert
+  with check (type <> 'work-item.closed'
+              or coalesce(payload->>'outcome', '') not in ('refused', 'not-refused', 'unfinished')
+              or current_user = 'factory_redteam' or (current_user = 'factory_operator' and sample));

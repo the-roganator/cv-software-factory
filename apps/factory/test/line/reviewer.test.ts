@@ -220,6 +220,10 @@ describe('the reviewer of an improvement', () => {
       /^4\. Given a product with stock, .*\(with the flag off\) \(From the request, which says “Delivery dates on each product”\.\)$/m,
     );
     expect(prompt).toContain('2. Hold the spec to the request. An improvement does what Martin asked');
+    expect(prompt).toContain('The other way round too: something his answer asks for that no criterion carries');
+    expect(prompt).toContain(
+      '`ticket`: true only when the criterion the finding cites is one Martin did not ask for, or the one the change was meeting where it went against what his answer asks and the spec lacks; left out otherwise.',
+    );
     expect(prompt).toContain('or that no test shows on its side of the flag, is a blocking finding');
     expect(prompt).not.toMatch(/the ticket|defect/);
   });
@@ -355,6 +359,55 @@ describe('Martin’s acceptance of a held review', () => {
       ['**Suggestion**', 'Martin approved the change in the console at 2026-10-28 14:02 UTC'],
       ['**Blocking**', 'Martin accepted this in the console at 2026-10-28 14:02 UTC'],
     ]);
+  });
+});
+
+describe('the reviewer, given Martin’s answers', () => {
+  const renamed =
+    FIXTURES.reviewer['test-renamed']?.input ??
+    (() => {
+      throw new Error('The reviewer has no test-renamed fixture.');
+    })();
+  const prompt = reviewer.prompt(renamed);
+
+  it('holds the change to the spec alone, and the spec to his words', () => {
+    expect(prompt).toContain(
+      [
+        'Martin was asked, as the planner planned, and answered. His answers are part of what the ticket asks:',
+        '- Review asked for changes: The test the spec contradicts is rewritten under a new name, and asserts only that the price begins with £6, which the base gives too. He said: Leave the test’s name as it is and rewrite only what it asserts: £6.00 for 600 pence.',
+        'The change is held to the spec alone, since the coder reads the spec and never his answers: they are for holding the spec to what he asked.',
+      ].join('\n'),
+    );
+    expect(prompt).toContain(
+      '2. Hold the spec to the ticket. A fix does what the ticket, what the senses saw and Martin’s answers ask, and no more, in every autonomy mode.',
+    );
+    expect(prompt).toContain(
+      'The other way round too: something his answer asks for that no criterion carries, such as a test or a file to keep as it is, is the spec’s fault, never the change’s, however the change went against his words. It is a blocking finding with `"ticket":true` that cites the criterion the change was meeting where it went against his words, and says in its comment what his answer asks that the spec lacks. Never send the coder round for words the spec never carried.',
+    );
+    expect(prompt).toContain(
+      '`ticket`: true only when the criterion the finding cites is one the ticket does not ask for, or the one the change was meeting where it went against what Martin’s answer asks and the spec lacks; left out otherwise.',
+    );
+    // With no answer of his, nothing says what his answers are for.
+    expect(reviewer.prompt(input)).not.toContain('held to the spec alone');
+  });
+
+  it('escalates the lack as the spec’s fault, citing the criterion the change was meeting', () => {
+    const fits = (result: unknown) => reviewer.schema(renamed).safeParse(result).success;
+    const lack = {
+      path: 'test/money.test.ts',
+      line: 13,
+      blocking: true,
+      criterion: 1,
+      ticket: true as const,
+      comment:
+        'Martin asked to leave the test’s name as it is, and no criterion carries that: the change renamed it to meet criterion 1. The spec lacks his ask.',
+    };
+    expect(fits({ verdict: 'escalated', note: 'The spec lacks what Martin asked.', findings: [lack] })).toBe(true);
+    expect(fits({ verdict: 'changes-requested', note: 'The spec lacks what Martin asked.', findings: [lack] })).toBe(
+      false,
+    );
+    const { criterion: _criterion, ...uncited } = lack;
+    expect(fits({ verdict: 'escalated', note: 'The spec lacks what Martin asked.', findings: [uncited] })).toBe(false);
   });
 });
 

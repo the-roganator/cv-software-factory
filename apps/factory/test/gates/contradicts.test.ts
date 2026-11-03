@@ -91,6 +91,7 @@ describe('the section of tests the spec contradicts', () => {
       'a <!-- /factory:contradicts --> b',
       'a <!--FACTORY:CONTRADICTS--> b',
       'ends a comment -->',
+      'ends a comment too --!>',
       'tells @martin',
       'closes #12',
     ]) {
@@ -100,6 +101,13 @@ describe('the section of tests the spec contradicts', () => {
     expect(entryProblem({ file: 'test/<!--a.test.ts', test: 'x' })).toBeDefined();
     // An @ or # alone is a name like any other.
     expect(entryProblem({ file: 'test/a.test.ts', test: 'sends mail to a @ sign and # signs' })).toBeUndefined();
+  });
+
+  it('takes a marker ended as HTML may end a comment, with --!>, as any other', () => {
+    const bang = `Text\n\n<!-- factory:contradicts --!>\n- \`test/a.test.ts\`: a\n<!-- /factory:contradicts --!>\n\nMore`;
+    expect(parse(bang)).toEqual({ tests: [{ file: 'test/a.test.ts', test: 'a' }] });
+    expect(strip(bang)).toBe('Text\n\nMore');
+    expect(strip('Text <!-- factory:contradicts --!> more')).toBe('Text  more');
   });
 
   it('takes out a marker that taking out another one would make', () => {
@@ -257,7 +265,7 @@ ${body}
     ]);
   });
 
-  it('matches two tests of one name in a file in order', () => {
+  it('matches two tests of one name in a file to their own, in any order', () => {
     const two =
       "describe('a', () => { it('x', () => { expect(1).toBe(1); }); });\nit('a > x', () => { expect(2).toBe(2); });";
     const same = new Map([['test/a.test.ts', two]]);
@@ -265,6 +273,12 @@ ${body}
     const second = new Map([['test/a.test.ts', two.replace('expect(2).toBe(2)', 'expect(2).toBeDefined()')]]);
     expect(compare(same, second).problems.map((p) => p.message)).toEqual([
       '"a > x" no longer asserts expect(2).toBe(2)',
+    ]);
+    // Reordered, they assert what they did; one of them deleted, it has gone.
+    const [first, last] = two.split('\n');
+    expect(compare(same, new Map([['test/a.test.ts', `${last}\n${first}`]])).problems).toEqual([]);
+    expect(compare(same, new Map([['test/a.test.ts', first as string]])).problems.map((p) => p.message)).toEqual([
+      '"a > x" was deleted',
     ]);
   });
 
@@ -295,7 +309,6 @@ describe('the gate, reading the description', () => {
     }
     return dir;
   };
-  const event = async (payload: unknown) => join(await dirs({ 'event.json': JSON.stringify(payload) }), 'event.json');
   const SHA = 'a'.repeat(40);
   const answer = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
@@ -317,34 +330,28 @@ describe('the gate, reading the description', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it('takes the number from the pull request’s event, or from the merge queue’s branch', async () => {
-    expect(
-      await pullRequestNumber({
-        GITHUB_EVENT_NAME: 'pull_request',
-        GITHUB_EVENT_PATH: await event({ pull_request: { number: 155 } }),
-      }),
-    ).toBe(155);
-    const queued = await event({ merge_group: { head_ref: `refs/heads/gh-readonly-queue/main/pr-155-${SHA}` } });
-    expect(await pullRequestNumber({ GITHUB_EVENT_NAME: 'merge_group', GITHUB_EVENT_PATH: queued })).toBe(155);
-    for (const head_ref of ['refs/heads/main', 'gh-readonly-queue/main/pr-x-abc', undefined]) {
-      const path = await event({ merge_group: { head_ref } });
-      expect(await pullRequestNumber({ GITHUB_EVENT_NAME: 'merge_group', GITHUB_EVENT_PATH: path })).toHaveProperty(
+  it('takes the number the workflow passes, or the merge queue’s branch, and fails closed on anything else', () => {
+    const QUEUED = `refs/heads/gh-readonly-queue/main/pr-155-${SHA}`;
+    expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'pull_request', PR_NUMBER: '155' })).toBe(155);
+    expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'merge_group', MERGE_GROUP_HEAD_REF: QUEUED })).toBe(155);
+    expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'merge_group', MERGE_GROUP_HEAD_REF: QUEUED.slice(11) })).toBe(155);
+    for (const branch of ['refs/heads/main', 'gh-readonly-queue/main/pr-x-abc', `${QUEUED}\n`, '', undefined]) {
+      expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'merge_group', MERGE_GROUP_HEAD_REF: branch })).toHaveProperty(
         'error',
       );
     }
-    expect(await pullRequestNumber({ GITHUB_EVENT_NAME: 'push', GITHUB_EVENT_PATH: queued })).toHaveProperty('error');
-    expect(
-      await pullRequestNumber({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: await event(null) }),
-    ).toEqual({ error: "The run's event is not an object" });
-    expect(
-      await pullRequestNumber({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: '/nowhere' }),
-    ).toHaveProperty('error');
+    for (const number of ['', '0', '-1', '1.5', '155 ', '0155', '12345678901', undefined]) {
+      expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'pull_request', PR_NUMBER: number })).toHaveProperty('error');
+    }
+    // A merge group is judged by its branch, never by a number it does not carry.
+    expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'merge_group', PR_NUMBER: '155' })).toHaveProperty('error');
+    expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'push', PR_NUMBER: '155' })).toHaveProperty('error');
   });
 
   it('reads the description through the API with the run’s token, asking again only when GitHub errs', async () => {
     const env = {
       GITHUB_EVENT_NAME: 'merge_group',
-      GITHUB_EVENT_PATH: await event({ merge_group: { head_ref: `refs/heads/gh-readonly-queue/main/pr-155-${SHA}` } }),
+      MERGE_GROUP_HEAD_REF: `refs/heads/gh-readonly-queue/main/pr-155-${SHA}`,
       GITHUB_TOKEN: 'token',
       GITHUB_REPOSITORY: 'the-roganator/cv-worlds-worst-website',
       GITHUB_API_URL: 'https://api.example',
@@ -390,14 +397,14 @@ describe('the gate, reading the description', () => {
         "describe('files', () => { it('lets the other files be kept', () => { expect(cc('/site.css')).toMatch(/max-age/); }); });",
     });
     const events = {
-      pull_request: { pull_request: { number: 155 } },
-      merge_group: { merge_group: { head_ref: `refs/heads/gh-readonly-queue/main/pr-155-${SHA}` } },
+      pull_request: { PR_NUMBER: '155' },
+      merge_group: { MERGE_GROUP_HEAD_REF: `refs/heads/gh-readonly-queue/main/pr-155-${SHA}` },
     };
-    for (const [name, payload] of Object.entries(events)) {
+    for (const [name, passed] of Object.entries(events)) {
       const env = {
         GITHUB_ACTIONS: 'true',
         GITHUB_EVENT_NAME: name,
-        GITHUB_EVENT_PATH: await event(payload),
+        ...passed,
         GITHUB_TOKEN: 'token',
         GITHUB_REPOSITORY: 'the-roganator/cv-worlds-worst-website',
         GITHUB_STEP_SUMMARY: '',
@@ -433,7 +440,7 @@ describe('the gate, reading the description', () => {
   it('asks GitHub nothing for a change that weakens no test', async () => {
     const base = await dirs({ 'test/a.test.ts': "it('x', () => { expect(1).toBe(1); });" });
     const never = vi.fn(async () => answer(503, {}));
-    const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: '/nowhere' };
+    const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'pull_request', PR_NUMBER: '155' };
     expect((await run([base, base], env, never as typeof fetch)).code).toBe(0);
     expect(never).not.toHaveBeenCalled();
   });

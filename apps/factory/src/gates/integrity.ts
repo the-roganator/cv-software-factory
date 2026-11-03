@@ -60,6 +60,32 @@ function lost(was: TestCase, is: TestCase): string[] {
 }
 
 /**
+ * Each of a file's tests in the base with its test in the change, by name. Tests of one name in a file are paired
+ * first with one left exactly as it was, wherever it now is, then in order, so reordering them changes nothing. One
+ * with no test left to pair has gone.
+ */
+function pair(was: TestCase[], is: TestCase[]): (TestCase | undefined)[] {
+  const paired: (TestCase | undefined)[] = was.map(() => undefined);
+  const taken = new Set<TestCase>();
+  for (const [i, w] of was.entries()) {
+    const same = is.find((t) => !taken.has(t) && t.name === w.name && t.source === w.source);
+    if (same) {
+      paired[i] = same;
+      taken.add(same);
+    }
+  }
+  for (const [i, w] of was.entries()) {
+    if (paired[i]) continue;
+    const next = is.find((t) => !taken.has(t) && t.name === w.name);
+    if (next) {
+      paired[i] = next;
+      taken.add(next);
+    }
+  }
+  return paired;
+}
+
+/**
  * Compares the test files of a pull request's base with its change's, each by path, excusing only the tests the
  * change's spec contradicts.
  */
@@ -90,11 +116,10 @@ export function compare(
       });
       continue;
     }
+    const counterparts = pair(cases, now ?? []);
     for (const [index, was] of cases.entries()) {
       const excused = named(file, was.name);
-      // Two tests of one name in a file are matched in order: the second with the second.
-      const nth = cases.slice(0, index).filter((t) => t.name === was.name).length;
-      const same = now?.filter((t) => t.name === was.name)[nth];
+      const same = counterparts[index];
       const found = same ? { file, test: same } : moved.get(was.name);
       if (!found) {
         if (excused)

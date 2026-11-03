@@ -155,9 +155,12 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node
+      # Which pull request's description to read: its number, or in the merge queue the group's branch, which names it.
       - run: node factory/apps/factory/src/gates/test-integrity.ts base change
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
 
   tests-first:
     name: tests first

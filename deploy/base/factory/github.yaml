@@ -47,10 +47,16 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            # The red-team harness's attack door, on a port of its own (apps/factory/src/github/attacks.ts).
+            - name: attack
+              containerPort: 8082
           env:
             # Other pods call it, so it listens beyond loopback; the network policy says which may.
             - name: HOST
               value: 0.0.0.0
+            # Serve the red-team harness's attack door on its own port (github/attacks.ts); only the harness reaches it.
+            - name: ATTACK_PORT
+              value: "8082"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector.telemetry:4318"
             - name: OTEL_SERVICE_NAME

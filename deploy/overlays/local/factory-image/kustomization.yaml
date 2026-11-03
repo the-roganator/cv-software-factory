@@ -33,3 +33,15 @@ replacements:
       name: line
     fieldPaths:
     - spec.template.spec.containers.[name=line].env.[name=RUNNER_IMAGE].value
+# The red-team harness is pinned to the same runner image, read from its own initContainer into RUNNER_IMAGE, which
+# the egress attack's pod runs (apps/factory/src/red-team/pods.ts).
+- source:
+    kind: Deployment
+    name: red-team
+    fieldPath: spec.template.spec.initContainers.[name=runner-image].image
+  targets:
+  - select:
+      kind: Deployment
+      name: red-team
+    fieldPaths:
+    - spec.template.spec.containers.[name=red-team].env.[name=RUNNER_IMAGE].value

@@ -320,6 +320,13 @@ spec:
               app.kubernetes.io/name: line
       ports:
         - { protocol: TCP, port: 8080 }
+    # The red-team harness reaches the attack door on its own port (8082), and never the main port the line uses.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: red-team
+      ports:
+        - { protocol: TCP, port: 8082 }
   egress:
     - to:
         - ipBlock:
@@ -584,3 +591,63 @@ spec:
               app.kubernetes.io/name: opentelemetry-collector
       ports:
         - { protocol: TCP, port: 4318 }
+---
+# The red-team harness (red-team.yaml) reaches the store and the collector, the app's front door (Traefik) for attack
+# 1's report, the Kubernetes API for the egress and image attacks' pods, and the GitHub worker's attack door for
+# attacks 2 and 3, and nothing else. As for the line, the API server is reached on 6443 on a private address, which is
+# where the `kubernetes` Service sends it. It takes nothing in: nobody calls it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: red-team
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: red-team
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: telemetry
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - { protocol: TCP, port: 4318 }
+    # The app's front door, for attack 1's report: Traefik's web port, as the traffic generator reaches it.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { protocol: TCP, port: 8000 }
+    # The Kubernetes API, for the egress and image attacks' pods: 6443 on a private address, as for the line.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+      ports:
+        - { protocol: TCP, port: 6443 }
+    # The GitHub worker's attack door, on its own port, for attacks 2 and 3; never its main port (8080), which the
+    # line uses: the door admits GitHub past the guard, which the line must never be able to call.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: github
+      ports:
+        - { protocol: TCP, port: 8082 }

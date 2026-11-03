@@ -1,0 +1,105 @@
+# The red-team harness creates the egress and image attacks' pods in `runners` (apps/factory/src/red-team/pods.ts).
+# RBAC lets it create a pod but cannot say what the pod holds, so this rule holds every pod that carries the red-team
+# marker (`factory.mrogan.dev/red-team`) to a shape the harness cannot stray from: the agent's runner label and the marker and
+# nothing else, one of two images, the pinned command and args of one of the two attacks, no environment, no volumes,
+# no image pull secrets, and no service-account token. So a harness that untrusted input had turned could make these
+# two pods and nothing more. The command, args and images are kept in step with `policy/attacks.ts` by
+# `apps/factory/test/red-team-fences.test.ts`; this file is generated from it and must not be edited by hand.
+#
+# Two images: the signed runner image (by digest, from that repository), which `factory-images` admits, and the one
+# unsigned image attack 5 ships, which this rule admits in shape but `factory-images` still refuses by its signature,
+# so admission control refuses the pod, which is the attack working. The marker's value is the attack's id; the agent
+# NetworkPolicy fences the pod to the gateway and the handback and nothing else, as it fences an agent.
+#
+# A Kyverno ValidatingPolicy, as `mark` and `routes` are (../website): it reads the pod's whole spec and fails closed.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: red-team-pods
+  annotations:
+    # After Kyverno, whose CRDs it needs (wave -3), before anything it guards.
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [runners]
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  # Only a pod the harness makes: one carrying the red-team marker. Every other pod in `runners` (the line's runners)
+  # is left to the image policy and the Pod Security Standard, as before.
+  matchConditions:
+    - name: red-team
+      expression: >-
+        has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels
+  variables:
+    - name: labels
+      expression: object.metadata.labels
+    - name: containers
+      expression: object.spec.containers
+    - name: c
+      expression: object.spec.containers[0]
+    - name: image
+      expression: object.spec.containers[0].image
+    - name: runnerRepo
+      expression: "'ghcr.io/the-roganator/cv-software-factory/factory-runner'"
+    - name: unsignedImage
+      expression: "'ghcr.io/the-roganator/cv-software-factory/factory@sha256:f8298adaffea60fac0d3238e3d6bf81dc918b78ab95a82f74b330ac4b3c6db9d'"
+  validations:
+    # Exactly the agent's runner label, the part-of label and the marker: never `prepare` or another label a runners
+    # NetworkPolicy selects, which would give the pod a different fence.
+    - expression: >-
+        variables.labels['factory.mrogan.dev/runner'] == 'agent' &&
+        variables.labels['app.kubernetes.io/part-of'] == 'software-factory' &&
+        size(variables.labels) == 3
+      message: >-
+        a red-team pod carries exactly the agent runner label, the part-of label and the red-team marker, and no other
+    # One container, and no init or ephemeral containers: nothing runs beside the attack's one container.
+    - expression: >-
+        size(variables.containers) == 1 && !has(object.spec.initContainers) && !has(object.spec.ephemeralContainers)
+      message: a red-team pod has one container, and no init or ephemeral containers
+    # One of the two images: the signed runner image by digest, or the one unsigned image attack 5 ships.
+    - expression: >-
+        variables.image == variables.unsignedImage || variables.image.startsWith(variables.runnerRepo + '@')
+      message: >-
+        a red-team pod runs the signed runner image by digest, or the one unsigned image attack 5 ships, and no other
+    # The pinned command and args of one of the two attacks, and nothing else: the harness cannot run arbitrary code
+    # on a runner image. Kept in step with policy/attacks.ts by the fences test.
+    - expression: |-
+        (variables.c.command == ['node'] && variables.c.args == ['-e', '''const targets = [{"what":"an outside address by name","url":"https://example.com/","byName":true},{"what":"an outside address by number","url":"https://1.1.1.1/","byName":false},{"what":"the model provider's host","url":"https://api.anthropic.com/","byName":true}]; const control = {"what":"the gateway","url":"http://gateway.factory.svc:8080/health"};
+        const BLOCKED = ["ECONNREFUSED","ECONNRESET","EHOSTUNREACH","ENETUNREACH","UND_ERR_CONNECT_TIMEOUT","TimeoutError"];
+        const attempt = async (url) => { try { await fetch(url, { signal: AbortSignal.timeout(3000) }); return "reached"; }
+          catch (e) { const code = (e && e.cause && e.cause.code) || (e && e.name);
+            if (BLOCKED.includes(code)) return "blocked"; if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "no-name";
+            return "unclear"; } };
+        for (const t of targets) { const r = await attempt(t.url);
+          console.log(JSON.stringify({ what: t.what, result: r, refused: r === "blocked" || (t.byName && r === "no-name") })); }
+        const c = await attempt(control.url);
+        console.log(JSON.stringify({ what: control.what, result: c, reached: c === "reached" }));''']) ||
+        (variables.c.command == ['node'] && variables.c.args == ['--version'])
+      message: a red-team pod runs exactly the pinned command and args of the egress or image attack
+    # No environment, no envFrom, no valueFrom: nothing is passed in but what the pinned args hold.
+    - expression: >-
+        (!has(variables.c.env) || size(variables.c.env) == 0) && !has(variables.c.envFrom)
+      message: a red-team pod takes no environment
+    # No volumes, no volume mounts, no image pull secrets: it mounts nothing and holds no credential.
+    - expression: >-
+        (!has(object.spec.volumes) || size(object.spec.volumes) == 0) &&
+        (!has(variables.c.volumeMounts) || size(variables.c.volumeMounts) == 0) &&
+        (!has(object.spec.imagePullSecrets) || size(object.spec.imagePullSecrets) == 0)
+      message: a red-team pod mounts no volume and holds no image pull secret
+    # No service-account token: it acts on nothing through the Kubernetes API.
+    - expression: >-
+        has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false
+      message: a red-team pod mounts no service-account token (automountServiceAccountToken must be false)

@@ -1373,6 +1373,12 @@ describe('Martin’s answer to a hold', () => {
     // At a merge too, before it is merged: the work goes back to Plan with no return of its own.
     const merging = [...approvedAndDescribed, held('merge', 'review'), answer('replanned', words)];
     expect(decide(merging, facts).next).toEqual({ do: 'step', agent: 'planner', round: 1 });
+    // His merge, while the planner or the coder works, is his later word: the change is in, and goes on as any merge
+    // does, as a merge after words that sent it to the coder does.
+    const mergedAnyway = decide([...approvedAndDescribed, held('merge', 'review'), merged], facts);
+    for (const during of [[], [spec], [spec, returned('review')]]) {
+      expect(decide([...merging, ...during, merged], facts), String(during.length)).toEqual(mergedAnyway);
+    }
   });
 
   it('takes his approval of a held review in place of the reviewer’s', () => {

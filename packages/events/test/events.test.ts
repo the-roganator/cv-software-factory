@@ -1095,7 +1095,7 @@ describe('upcasting the real catalogue', () => {
     expect(hold({ ...scope, cause: 'gates', needs }).ok).toBe(false);
   });
 
-  it('reads versions 1 and 2 of hold.answered as they were, and names the hold and a report’s at 2', () => {
+  it('reads versions 1 and 2 of hold.answered as they were at 3, which names the hold and a report’s as 2 did', () => {
     const approved = { decision: 'approved', answer: 'Go on' };
     expect(upcast({ type: 'hold.answered', version: 1, payload: approved })).toMatchObject({
       event: { version: 3, payload: approved },

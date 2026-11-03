@@ -8,6 +8,9 @@
  *   and an issue or pull request the App did not open (`issues.ts`).
  * - **GitHub's** (`token-permission`): a write GitHub answered 403, which is GitHub refusing the App's token. A 401 is a
  *   bad or expired token, and a 403 that is a rate limit is GitHub asking it to wait: neither refuses anything.
+ * - **The review check's** (`review-gate`): the `review` check run the review App posted on a pull request's head,
+ *   failing it, read when the red-team harness asks for its verdict on the pull request its attack opened
+ *   (`attacks.ts`). Its words are the check's own: its title, and its summary.
  *
  * Without the signing key it still keeps and logs each refusal, and answers it unsigned, which no reader trusts.
  */
@@ -33,12 +36,27 @@ export type GitHubRefusal = {
   number: number | null;
   /** What was refused, in a few words. */
   action: string;
-  /** The refusal's own words: the guard's, or GitHub's answer. */
+  /** The refusal's own words: the guard's, GitHub's answer, or the review check's. */
   output: string;
+  /** What was refused, when the repository and number do not say it all: the commit a review check judged. */
+  subject?: { kind: string; name: string };
 } & (
   | { mechanism: 'github-guard'; cause: RefusalCause<'github-guard'> }
   | { mechanism: 'token-permission'; cause: RefusalCause<'token-permission'> }
+  | { mechanism: 'review-gate'; cause: RefusalCause<'review-gate'> }
 );
+
+/** The guardrails a refusal shows, for its mechanism and why. */
+function guardrailsOf(refusal: GitHubRefusal): number[] {
+  switch (refusal.mechanism) {
+    case 'github-guard':
+      return guardrailsFor('github-guard', refusal.cause);
+    case 'token-permission':
+      return guardrailsFor('token-permission', refusal.cause);
+    case 'review-gate':
+      return guardrailsFor('review-gate', refusal.cause);
+  }
+}
 
 export interface RefusalRecorderOptions {
   /** Where each record is kept; without it, a refusal is only logged. */
@@ -70,10 +88,8 @@ export class RefusalRecorder {
       mechanism: refusal.mechanism,
       action: cutTo(refusal.action, 200),
       output: cutTo(refusal.output, 4000),
-      guardrails:
-        refusal.mechanism === 'github-guard'
-          ? guardrailsFor('github-guard', refusal.cause)
-          : guardrailsFor('token-permission', refusal.cause),
+      guardrails: guardrailsOf(refusal),
+      ...(refusal.subject && { subject: refusal.subject }),
     });
     const facts: RefusalFacts = {
       repo: refusal.repo,

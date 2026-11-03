@@ -845,6 +845,46 @@ describe('upcasting the real catalogue', () => {
     ).toBe(false);
   });
 
+  it('takes the egress attack’s control apart from its attempts, and refused only when the control reached', () => {
+    const attempt = (what: string) => ({ what, result: 'connect ETIMEDOUT', refused: true });
+    const egress = (payload: object) => ({
+      ...opened,
+      type: 'attack.finished',
+      version: 1,
+      actor: 'red-team',
+      payload: {
+        attack: 'egress',
+        outcome: 'refused',
+        expected: ['egress-policy', 'egress-policy', 'egress-policy'],
+        refusals: [51, 52, 53],
+        attempts: [attempt('example.com by name'), attempt('93.184.215.14'), attempt('api.anthropic.com')],
+        control: { what: 'The gateway, which it may reach', result: '200 OK', reached: true },
+        ...payload,
+      },
+    });
+    expect(validate(egress({})).ok).toBe(true);
+    // A control that failed proves nothing: unfinished, never refused.
+    const failed = { what: 'The gateway, which it may reach', result: 'connect ETIMEDOUT', reached: false };
+    expect(validate(egress({ control: failed })).ok).toBe(false);
+    expect(validate(egress({ control: failed, outcome: 'unfinished' })).ok).toBe(true);
+    // Seen to its end, it records its control; one past its limit, with nothing made, need not.
+    expect(validate(egress({ control: undefined })).ok).toBe(false);
+    expect(validate(egress({ control: undefined, outcome: 'not-refused', refusals: [51] })).ok).toBe(false);
+    expect(validate(egress({ control: undefined, outcome: 'unfinished', refusals: [], attempts: [] })).ok).toBe(true);
+    // The control is no attempt: it is not counted among them, and no other attack has one.
+    expect(validate(egress({ control: { ...failed, refused: false } })).ok).toBe(false);
+    expect(
+      validate(
+        egress({
+          attack: 'image',
+          expected: ['admission-control'],
+          refusals: [54],
+          attempts: [attempt('A pod on an unsigned image')],
+        }),
+      ).ok,
+    ).toBe(false);
+  });
+
   it('reads a version 1 judgement of a flag as judging no move, and a version 1 baseline as it was', () => {
     const compared = { flag: 'gift-note', share: 50, outcome: 'passed' };
     expect(upcast({ type: 'flag.compared', version: 1, payload: compared })).toMatchObject({

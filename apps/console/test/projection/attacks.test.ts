@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { MARTINS_ROLES as STORE_MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 import { MARTINS_ROLES } from '../../web/src/projection/attacks.ts';
 import { project } from '../../web/src/projection/index.ts';
+import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { ATTACKS, ATTACKS_END, work } from './support.ts';
 
 const START = Date.parse('2026-10-03T09:00:00Z');
@@ -59,7 +60,8 @@ function finished(
       outcome,
       expected: [...ATTACK_RULES[attack].expects],
       refusals,
-      attempts: [{ what: 'An attempt', result: 'refused', refused: true }],
+      // One attempt for each refusal it expects, each refused.
+      attempts: ATTACK_RULES[attack].expects.map(() => ({ what: 'An attempt', result: 'refused', refused: true })),
       ...extra,
     }).events,
   );
@@ -196,6 +198,56 @@ describe('an attack', () => {
     // A red-team work item with no launch of Martin's on it is closed, not refused, whatever its close says.
     const notHis = [...by('factory_line', item.events.slice(0, 2)), ...closed];
     expect(card(notHis, '2018', START + 2 * MINUTE)?.outcome).toBe('closed');
+  });
+
+  it('is not confirmed when its record has fewer attempts than the refusals it expects', () => {
+    const { events } = workflow('2021');
+    const short = events.map((event) =>
+      event.type === 'attack.finished'
+        ? { ...event, payload: { ...event.payload, attempts: event.payload.attempts.slice(1) } }
+        : event,
+    ) as PublicEvent[];
+    expect(card(short, '2021')?.picture).toMatchObject({
+      verdict: 'unconfirmed',
+      why: 'it records 1 attempt, and expects 2 refusals',
+    });
+  });
+
+  it('shows only the refusals between its launch and its end', () => {
+    const { events } = workflow('2022');
+    const later = by(
+      'factory_redteam',
+      work('2022', START).add(3, 'action.refused', 'factory', refusal('github-guard', [1], SIGNED)).events,
+    );
+    const shown = card([...events, ...later], '2022', START + 5 * MINUTE)?.picture;
+    expect(shown?.type === 'refusal' && shown.refusals.map((r) => r.mechanism)).toEqual([
+      'github-guard',
+      'token-permission',
+    ]);
+  });
+
+  it('ends its sheet at its close when closed with no end before its limit', () => {
+    const { item, events } = launched('2024', 'image');
+    const closed = by(
+      'factory_redteam',
+      item.add(1, 'work-item.closed', 'factory', { outcome: 'unfinished', reason: 'Closed' }).events.slice(2),
+    );
+    const chapters = projectSheet(project([...events, ...closed], START + 5 * MINUTE, ALL), '2024')?.chapters;
+    expect(chapters?.find((c) => c.label === 'UNFINISHED')).toMatchObject({
+      at: START + MINUTE,
+      text: 'Its work item closed with nothing recorded of its end: it counts as unfinished',
+    });
+  });
+
+  it('holds every Launch while closed with no end, until its limit, as the admin service does', () => {
+    const { item, events } = launched('2023', 'image');
+    const closed = by(
+      'factory_redteam',
+      item.add(1, 'work-item.closed', 'factory', { outcome: 'unfinished', reason: 'Closed' }).events.slice(2),
+    );
+    const all = [...events, ...closed];
+    expect(project(all, START + 5 * MINUTE, ALL).guardrails.running).toMatchObject({ workItem: '2023' });
+    expect(project(all, START + 11 * MINUTE, ALL).guardrails.running).toBeUndefined();
   });
 
   it('is not confirmed by a refusal recorded after its end', () => {

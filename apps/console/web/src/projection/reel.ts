@@ -319,15 +319,19 @@ const last = <T>(list: readonly T[], test: (value: T) => boolean) => [...list].r
 
 /** An attack's picture at t: each refusal it met, and how it stands. */
 function attackPicture(item: ItemState, attack: AttackState, t: number): Picture {
-  const refusals = ofType(item, 'action.refused').map(
-    (event): Refused => ({
-      mechanism: event.payload.mechanism,
-      who: WHO[event.payload.mechanism],
-      at: Date.parse(event.ts),
-      output: event.payload.output,
-      by: event.appended_by,
-    }),
-  );
+  // Only those after its launch, and before its end once there is one: no other can be the attack's.
+  const finishedSeq = attack.finished?.seq ?? Number.POSITIVE_INFINITY;
+  const refusals = ofType(item, 'action.refused')
+    .filter((event) => event.seq > attack.launchedSeq && event.seq < finishedSeq)
+    .map(
+      (event): Refused => ({
+        mechanism: event.payload.mechanism,
+        who: WHO[event.payload.mechanism],
+        at: Date.parse(event.ts),
+        output: event.payload.output,
+        by: event.appended_by,
+      }),
+    );
   return {
     type: 'refusal',
     attack: attack.attack,

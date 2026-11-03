@@ -663,7 +663,8 @@ svg.chart {
   font: 400 3.2cqw / 1.2 var(--font-display);
   color: var(--text-2);
 }
-.refusals .cutnote {
+/* The sheet has every refusal whole, so it has nothing cut to point at. */
+.evidence-big .refusals .cutnote {
   display: none;
 }
 

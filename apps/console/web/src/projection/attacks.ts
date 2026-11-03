@@ -58,6 +58,8 @@ export interface AttackState {
   finished:
     | {
         at: number;
+        /** Its event's seq: no refusal recorded after it is the attack's. */
+        seq: number;
         /** How it ended, once checked: `refused` only if the stream bears it out. */
         verdict: Exclude<Verdict, 'running'>;
         /** Why a refused attack reads as not confirmed. */
@@ -115,6 +117,10 @@ export function unconfirmed(
   }
   if (finished.refusals.length !== expected.length) {
     return `it cites ${finished.refusals.length} of the ${expected.length} refusals it expects`;
+  }
+  // One attempt for each refusal it expects: an attempt left out of its record is one nothing shows was refused.
+  if (finished.attempts.length !== expected.length) {
+    return `it records ${finished.attempts.length} attempt${finished.attempts.length === 1 ? '' : 's'}, and expects ${expected.length} refusals`;
   }
   // The egress attack's refusals are the policy's only if its control, the gateway, answered (the schema says so too).
   if (attack === 'egress' && !finished.control?.reached) return 'its control, the gateway, was not seen to answer';

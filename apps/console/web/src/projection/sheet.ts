@@ -966,14 +966,19 @@ export function sheet(
   const merged = item.outcome === 'merged';
   const unfinished = item.attack && !item.attack.finished && verdictAt(item.attack, t) === 'unfinished';
   if (unfinished && item.attack) {
-    // Past its limit with nothing recorded: it ends there, unfinished, as the admin service and the line read it.
+    // Past its limit with nothing recorded, it ends there, unfinished, as the admin service and the line read it;
+    // closed before then with nothing recorded, it ends at its close.
     const minutes = attackLimitMs(item.attack.attack) / 60_000;
+    const closedAt = item.closedAt !== undefined && item.closedAt < limitOf(item.attack) ? item.closedAt : undefined;
     marks.push({
       event: undefined,
       label: 'UNFINISHED',
       tone: 'attn',
-      text: `Nothing recorded its end within its ${minutes} minutes: it counts as unfinished`,
-      at: limitOf(item.attack),
+      text:
+        closedAt === undefined
+          ? `Nothing recorded its end within its ${minutes} minutes: it counts as unfinished`
+          : 'Its work item closed with nothing recorded of its end: it counts as unfinished',
+      at: closedAt ?? limitOf(item.attack),
       pass,
     });
   } else if (item.closedAt === undefined && !waits && !merged) {

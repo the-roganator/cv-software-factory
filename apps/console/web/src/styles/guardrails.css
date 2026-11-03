@@ -182,7 +182,7 @@ html[data-motion="on"] .gr .chev {
   font-size: 12px;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1179.98px) {
   .gr-list {
     grid-template-columns: 1fr;
   }

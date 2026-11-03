@@ -122,7 +122,7 @@ export function guardrailsView(
   available: (attack: Attack) => boolean = attackAvailable,
 ): GuardrailsView {
   // Each attack's runs, oldest first, as their work items opened.
-  const runs = new Map<Attack, (AttackRun & { why: string | undefined; endedAt: number })[]>();
+  const runs = new Map<Attack, (AttackRun & { why: string | undefined; endedAt: number; blocks: boolean })[]>();
   for (const item of items) {
     const { attack } = item;
     if (!attack) continue;
@@ -134,13 +134,15 @@ export function guardrailsView(
       why: attack.finished?.why,
       // When it proved anything: its end, which is when its result was known.
       endedAt: attack.finished?.at ?? attack.launchedAt,
+      // Whether it holds every Launch, as the admin service does: no end recorded, and its limit not passed, even when
+      // its work item closed without one.
+      blocks: !attack.finished && t < limitOf(attack),
     };
     runs.set(attack.attack, [...(runs.get(attack.attack) ?? []), run]);
   }
   let running: GuardrailsView['running'];
   for (const [attack, list] of runs) {
-    for (const run of list)
-      if (run.verdict === 'running' && (!running || run.at > running.at)) running = { ...run, attack };
+    for (const run of list) if (run.blocks && (!running || run.at > running.at)) running = { ...run, attack };
   }
 
   const rows = GUARDRAILS.map((guardrail): GuardrailRow => {

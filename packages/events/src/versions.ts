@@ -153,8 +153,8 @@ export const REDTEAM_ONLY_TYPES: readonly EventType[] = ['attack.finished'];
  * Martin's commands: the types only his roles may append (row security on `events`, `0023_martins-commands.sql`), and
  * that the line, triage and the gateway act on only when one of his roles appended it. Signing in and out, giving his
  * passkey again or ending its five minutes early, and his passkeys are among them, so no worker can forge one
- * (`0025_admin-service.sql`, `0026_admin-stepped-up.sql`, `0049_admin-step-up-ended.sql`), and so are his controls of a release (`release.controlled`,
- * `0027_release-controls.sql`), his settings (`settings.changed`, `0028_settings.sql`), and his controls of the line
+ * (`0025_admin-service.sql`, `0026_admin-stepped-up.sql`, `0049_admin-step-up-ended.sql`), and so are his controls of
+ * a release (`release.controlled`, `0027_release-controls.sql`), his settings (`settings.changed`, `0028_settings.sql`), and his controls of the line
  * (`controls.changed`, `0030_line-controls.sql`), his switch of alerts to his phone (`alerts.switched`,
  * `0037_alerts-switched.sql`), his stages of a feature flag (`flag.staged`,
  * `0033_flag-stages.sql`), his requests for an improvement (`improvement.requested`, `0035_improvement-requests.sql`,

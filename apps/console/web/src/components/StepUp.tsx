@@ -239,9 +239,17 @@ export function StepUpPill() {
     const refusal = await end();
     setBusy(false);
     setOutcome({ for: pressed, ...(refusal !== undefined && { refusal }) });
+    // Ended, the pill and the focus on it go: focus goes to the account button beside it, as Back to admin's does.
+    if (refusal === undefined) {
+      requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
+    }
   };
+  // A passkey given again after the press starts afresh: the status says it ended only until then.
+  useEffect(() => {
+    if (until !== undefined && until !== outcome.for) setOutcome({ for: undefined });
+  }, [until, outcome.for]);
   const refusal = outcome.for === until ? outcome.refusal : undefined;
-  const ended = outcome.for !== undefined && outcome.refusal === undefined;
+  const ended = outcome.for !== undefined && until === undefined && outcome.refusal === undefined;
   const status =
     until !== undefined
       ? (refusal ?? 'Passkey given')

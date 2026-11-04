@@ -104,6 +104,8 @@ test('Martin asks for an improvement with the “+”, giving his passkey again,
   await expect(pill).toHaveAttribute('title', 'End it now: the next action that asks for your passkey will ask again');
   await pill.click();
   await expect(page.locator('.top-right .fresh')).toHaveCount(0);
+  // Its button gone, focus is on the account button beside where it was.
+  await expect(page.locator('.account-btn')).toBeFocused();
   await expect(page.getByRole('status').filter({ hasText: 'Passkey ended' })).toHaveText(
     'Passkey ended: the actions that ask for it will ask again',
   );

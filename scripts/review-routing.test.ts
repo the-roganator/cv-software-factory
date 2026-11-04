@@ -416,7 +416,7 @@ images:
   newName: ghcr.io/the-roganator/cv-software-factory/factory
 `;
   const file = (patch: string, over: Partial<FileChange> = {}): FileChange => ({
-    filename: 'deploy/overlays/local/factory-image/kustomization.yaml',
+    filename: 'deploy/overlays/local/image/kustomization.yaml',
     status: 'modified',
     patch,
     ...over,
@@ -445,8 +445,7 @@ images:
   it('is no pin when one changed line is not a digest, or a pin is added, removed or moved', () => {
     const extra = `${moved}\n+  newTag: latest`;
     expect(digestMoves(file(extra))).toEqual({
-      reason:
-        'deploy/overlays/local/factory-image/kustomization.yaml changes a line that is not a digest: +  newTag: latest',
+      reason: 'deploy/overlays/local/image/kustomization.yaml changes a line that is not a digest: +  newTag: latest',
     });
     expect(digestMoves(file(`@@ -1 +1 @@\n-  newName: a\n+  newName: b`))).toMatchObject({
       reason: expect.stringContaining('not a digest'),
@@ -481,13 +480,13 @@ images:
     expect(await exactPin([file(moved)], checks())).toEqual({
       pins: [
         {
-          file: 'deploy/overlays/local/factory-image/kustomization.yaml',
+          file: 'deploy/overlays/local/image/kustomization.yaml',
           image: 'ghcr.io/the-roganator/cv-software-factory/console',
           from: digestOf('1'),
           to: digestOf('2'),
         },
         {
-          file: 'deploy/overlays/local/factory-image/kustomization.yaml',
+          file: 'deploy/overlays/local/image/kustomization.yaml',
           image: 'ghcr.io/the-roganator/cv-software-factory/factory',
           from: digestOf('3'),
           to: digestOf('4'),

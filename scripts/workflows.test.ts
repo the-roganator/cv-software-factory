@@ -101,7 +101,7 @@ describe('codeql.yml', () => {
     expect(triggers(workflow as Workflow)).toEqual(expect.arrayContaining(['pull_request', 'push', 'workflow_call']));
     expect(triggers(workflow as Workflow)).not.toContain('merge_group');
   });
-  it("keeps one category per language, so a pull request's analysis is compared with main's", () => {
+  it("keeps one category per language, whatever started the run, so each analysis is compared with its language's", () => {
     const steps = (workflow as Workflow).jobs.analyze?.steps ?? [];
     const analyze = steps.find((step) => step.uses?.startsWith('github/codeql-action/analyze@'));
     expect(analyze?.with).toEqual({ category: `/language:${expression('matrix.language')}` });

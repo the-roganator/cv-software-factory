@@ -4,9 +4,9 @@
 # The calling job grants `contents: read` and `security-events: write`.
 #
 # The `main` ruleset's code scanning rule (scripts/github-settings.ts) holds a pull request for its own analysis's
-# alerts, compared with main's in the same language's category. It does not apply to the merge queue's groups, and the
-# queue does not wait for CodeQL, so it does not run there: a run on the queue's commit fails its upload whenever the
-# queue merges and deletes the branch first. Push to main analyses each merged commit.
+# alerts. It does not apply to the merge queue's groups, and the queue does not wait for CodeQL, so it does not run
+# there: a run on the queue's commit fails its upload whenever the queue merges and deletes the branch first. Push to
+# main analyses each merged commit. Each run keeps its language's category.
 name: codeql
 
 on:

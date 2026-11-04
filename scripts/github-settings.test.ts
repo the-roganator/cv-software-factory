@@ -11,6 +11,7 @@ import {
   environment,
   environmentProblems,
   GITHUB_ACTIONS,
+  inOrderOf,
   MERGE_QUEUE,
   matches,
   REPOSITORIES,
@@ -75,8 +76,26 @@ describe('the ruleset on main (ADR 0014)', () => {
     });
   });
 
-  it('sees the code scanning rule missing, loosened, or given another tool as drift', () => {
-    const wanted = rules(checks);
+  it('takes the rules in any order GitHub sends them, and still sees one added elsewhere', () => {
+    for (const checks of Object.values(REPOSITORIES)) {
+      const wanted = rules(checks);
+      const reversed = {
+        ...structuredClone(wanted),
+        bypass_actors: [],
+        rules: structuredClone(wanted.rules).reverse(),
+      };
+      expect(rulesetProblems(reversed, wanted)).toEqual({ problems: [], unseen: [] });
+      const added = { ...reversed, rules: [{ type: 'creation' }, ...reversed.rules] };
+      expect(rulesetProblems(added, wanted).problems).toEqual(['ruleset "main" differs from this script\'s']);
+      expect((inOrderOf(added, wanted.rules) as typeof wanted).rules.at(-1)).toEqual({ type: 'creation' });
+    }
+  });
+
+  it('sees the code scanning rule missing, loosened, or given another tool as drift, in both repositories', () => {
+    for (const checks of Object.values(REPOSITORIES)) codeScanningDrift(rules(checks));
+  });
+
+  function codeScanningDrift(wanted: ReturnType<typeof rules>) {
     const live = () => ({ ...structuredClone(wanted), bypass_actors: [] });
     expect(rulesetProblems(live(), wanted).problems).toEqual([]);
     const without = live();
@@ -97,7 +116,7 @@ describe('the ruleset on main (ADR 0014)', () => {
     const another = live();
     (parametersOf(another, 'code_scanning').code_scanning_tools as unknown[]).push({ ...CODE_SCANNING, tool: 'Other' });
     expect(rulesetProblems(another, wanted).problems).toHaveLength(1);
-  });
+  }
 
   it('lets no model decide a merge: no required check is the reviewer agent’s, or posted by the factory’s App', () => {
     expect(GITHUB_ACTIONS).toBe(15368);

@@ -1,8 +1,8 @@
 # Static analysis of the TypeScript and of the workflows themselves.
 #
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit, and it analyses the repository that calls it.
-# The calling job grants `contents: read` and `security-events: write`, and the caller's triggers start it: the app's
-# runs it on its merge queue's commits by naming `merge_group` among its own.
+# The calling job grants `contents: read` and `security-events: write`. A called workflow runs only for its caller's
+# events, so a caller names `merge_group` among its own triggers for CodeQL to analyse its merge queue's commits.
 #
 # The `main` ruleset's code scanning rule (scripts/github-settings.ts) holds a merge for CodeQL's results, so it runs on
 # the merge queue's commit too, as GitHub asks of a repository with a merge queue: with no analysis there, the queue

@@ -94,6 +94,22 @@ const expression = (inside: string) => `\${{ ${inside} }}`;
 
 const environmentOf = (job: Job) => (typeof job.environment === 'string' ? job.environment : job.environment?.name);
 
+describe('codeql.yml', () => {
+  const { file, workflow } = workflows.find((w) => w.file === 'codeql.yml') ?? {};
+  it("analyses the merge queue's commit, which the ruleset's code scanning rule holds a merge for, as it does a pull request's", () => {
+    expect(file).toBe('codeql.yml');
+    const on = (workflow as Workflow).on as Record<string, { types?: string[] } | null>;
+    expect(triggers(workflow as Workflow)).toEqual(
+      expect.arrayContaining(['pull_request', 'merge_group', 'workflow_call']),
+    );
+    expect(on.merge_group?.types).toEqual(['checks_requested']);
+    // One category per language, whatever started it, so the queue's analysis is compared with the pull request's.
+    const steps = (workflow as Workflow).jobs.analyze?.steps ?? [];
+    const analyze = steps.find((step) => step.uses?.startsWith('github/codeql-action/analyze@'));
+    expect(analyze?.with).toEqual({ category: `/language:${expression('matrix.language')}` });
+  });
+});
+
 describe('every workflow', () => {
   it('is read: each file parses, and has triggers and jobs', () => {
     expect(files.length).toBeGreaterThan(5);

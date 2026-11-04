@@ -284,13 +284,33 @@ export function rulesetProblems(live: unknown, wanted: ReturnType<typeof rules>)
   if (seesBypass && !matches((live as { bypass_actors: unknown }).bypass_actors, wanted.bypass_actors)) {
     problems.push(`ruleset "${wanted.name}" lets someone bypass it`);
   }
-  if (!matches(live, rest)) problems.push(`ruleset "${wanted.name}" differs from this script's`);
+  if (!matches(inOrderOf(live, rest.rules), rest)) problems.push(`ruleset "${wanted.name}" differs from this script's`);
   const unseen = seesBypass
     ? []
     : [
         `ruleset "${wanted.name}": this token cannot see who may bypass it, which GitHub shows only to those who may change it, so that was not compared; an admin's \`--check\` compares it, as \`make guardrails\` does`,
       ];
   return { problems, unseen };
+}
+
+/**
+ * A live ruleset with its rules in the order of these, by type, so a list GitHub sends in an order of its own is no
+ * drift; rules of a type this script does not make stay, after the rest, so one added elsewhere still is.
+ */
+export function inOrderOf(live: unknown, wanted: { type: string }[]): unknown {
+  if (!live || typeof live !== 'object' || !Array.isArray((live as { rules?: unknown }).rules)) return live;
+  const rules = (live as { rules: unknown[] }).rules;
+  const rank = (rule: unknown) => {
+    const at = wanted.findIndex((w) => w.type === (rule as { type?: unknown } | null)?.type);
+    return at === -1 ? wanted.length : at;
+  };
+  return {
+    ...live,
+    rules: rules
+      .map((rule, i) => ({ rule, i }))
+      .sort((a, b) => rank(a.rule) - rank(b.rule) || a.i - b.i)
+      .map(({ rule }) => rule),
+  };
 }
 
 /** The rule suites asked for: the last week's pushes that bypassed a ruleset, as many as one page holds. */

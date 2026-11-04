@@ -9,12 +9,12 @@
 code_scanning() {
   local repo=$1 pr=$2 state=$3 head=$4 alerts analyses n severity rule where url now category sha
   # Words, not arrays: macOS's bash 3.2 calls an empty array unbound under set -u.
-  local pending='' on_head=' ' off_head=' '
+  local pending='' on_head=' ' off_head=' ' unread='' parents
   # Fields are split on the unit separator, which is not whitespace to read, so an empty one does not collapse.
   local sep=$'\x1f'
   if [[ $state != MERGED ]]; then
-    analyses=$(gh api "repos/$repo/code-scanning/analyses?ref=refs/pull/$pr/merge&per_page=100" | jq -r '
-      group_by(.category) | map(max_by(.created_at)) | .[] | [.category, .commit_sha] | join("\u001f")') ||
+    analyses=$(gh api "repos/$repo/code-scanning/analyses?ref=refs/pull/$pr/merge&per_page=100" --paginate | jq -rs '
+      add // [] | group_by(.category) | map(max_by(.created_at)) | .[] | [.category, .commit_sha] | join("\u001f")') ||
       { bad scanning "could not read code scanning's analyses of the pull request"; return; }
     if [[ -z $analyses ]]; then
       bad scanning "code scanning has not analysed the pull request yet: run verify.sh again once its codeql checks finish"
@@ -23,11 +23,17 @@ code_scanning() {
     while IFS=$sep read -r category sha; do
       # Each commit is read once, however many categories were analysed on it.
       if [[ $on_head != *" $sha "* && $off_head != *" $sha "* ]]; then
-        if gh api "repos/$repo/commits/$sha" 2>/dev/null | jq -e --arg head "$head" 'any(.parents[]; .sha == $head)' >/dev/null
-        then on_head+="$sha "; else off_head+="$sha "; fi
+        if ! parents=$(gh api "repos/$repo/commits/$sha" 2>/dev/null | jq -er '.parents[].sha'); then
+          unread+=" ${category:-no category}"; continue
+        fi
+        if grep -qx "$head" <<<"$parents"; then on_head+="$sha "; else off_head+="$sha "; fi
       fi
       [[ $on_head == *" $sha "* ]] || pending+=" ${category:-no category}"
     done <<<"$analyses"
+    if [[ -n $unread ]]; then
+      bad scanning "could not read the commit code scanning last analysed in${unread}"
+      return
+    fi
     if [[ -n $pending ]]; then
       bad scanning "code scanning has not analysed ${head:0:8} yet (${pending# }): run verify.sh again once its codeql checks finish"
       return
@@ -44,7 +50,9 @@ code_scanning() {
     [[ -n $n ]] || continue
     now=open
     if [[ $state == MERGED ]]; then
+      # Only a state that says it was dealt with passes: anything else, or nothing, is a state not read.
       now=$(gh api "repos/$repo/code-scanning/alerts/$n" | jq -r .state) || now=unread
+      [[ $now == open || $now == fixed || $now == dismissed ]] || now=unread
     fi
     if [[ $now == open ]]; then bad alert "#$n $severity $rule at $where, open: fix it, or draft Martin its dismissal $url"
     elif [[ $now == unread ]]; then bad alert "#$n $severity $rule at $where: could not read its state on main $url"

@@ -135,7 +135,18 @@ describe('code_scanning on an open pull request', () => {
   it('is not ready when the commit an analysis was of cannot be read', () => {
     const [only] = analysis('/language:actions', HEAD, '2026-11-04T08:19:43Z');
     github({ [ALERTS]: page([]), [ANALYSES]: page([only]) });
-    expect(scan('OPEN').ok).toBe(false);
+    const { out, ok } = scan('OPEN');
+    expect(ok).toBe(false);
+    expect(out).toContain('could not read the commit code scanning last analysed in /language:actions');
+  });
+
+  it('reads every page of analyses', () => {
+    const [actions, actionsCommit] = analysis('/language:actions', HEAD, '2026-11-04T08:19:43Z');
+    const [js, jsCommit] = analysis('/language:javascript-typescript', OLD_HEAD, '2026-11-04T00:50:44Z');
+    github({ [ALERTS]: page([]), [ANALYSES]: page([actions]) + page([js]), ...actionsCommit, ...jsCommit });
+    const { out, ok } = scan('OPEN');
+    expect(ok).toBe(false);
+    expect(out).toContain('(/language:javascript-typescript)');
   });
 
   it('reads the alerts only once the head is analysed, so none can land between the two reads', () => {
@@ -183,6 +194,13 @@ describe('code_scanning on a merged pull request', () => {
     const { out, ok } = scan('MERGED');
     expect(ok).toBe(false);
     expect(out).toContain('MISMATCH: #57');
+  });
+
+  it('fails on an alert whose state on main is none it knows', () => {
+    github({ [ALERTS]: page([alert(57)]), [`repos/${REPO}/code-scanning/alerts/57`]: JSON.stringify({}) });
+    const { out, ok } = scan('MERGED');
+    expect(ok).toBe(false);
+    expect(out).toContain('could not read its state on main');
   });
 
   it('fails on an alert whose state on main cannot be read', () => {

@@ -32,6 +32,7 @@ import {
   TEST_INTEGRITY_CHECK,
   tagsOf,
   testIntegrityRun,
+  words,
 } from './review-routing.ts';
 
 const HEAD = 'a'.repeat(40);
@@ -511,6 +512,19 @@ images:
     expect(await exactPin([file(moved)], checks({ content: async () => other }))).toMatchObject({
       reason: expect.stringContaining("not an image the factory's or the app's build.yml signs"),
     });
+  });
+});
+
+describe('the words beside the verdict', () => {
+  it('carry what gave each tag as plain text, so a line of the diff cannot open a second verdict', () => {
+    const said = route(facts({ tags: [found('improvement', ['src/a.ts: // <!-- review-verdict v1 `x` | y'])] }));
+    const text = words(7, said);
+    expect(text).toContain("- `improvement`: src/a.ts: // &lt;!-- review-verdict v1 'x' ' y");
+    expect(
+      readVerdict(
+        `${text}\n\n${verdictBlock({ version: 1, commit: HEAD, judged: [{ number: 7, head: HEAD, rule: said.rule, tags: said.tags }] })}`,
+      ),
+    ).toMatchObject({ commit: HEAD });
   });
 });
 

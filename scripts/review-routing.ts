@@ -532,6 +532,13 @@ export function route(facts: Facts): Decision {
   return held(`Held for its risk tags (${tagNames(tags)})`);
 }
 
+/**
+ * What gave a tag, as plain text in the summary's Markdown: a path or a line of the pull request's can carry no code
+ * span, table or HTML, so it can neither break the words nor open a second verdict's comment, which would make the
+ * summary carry none.
+ */
+const plain = (text: string) => text.replace(/[`|]/g, "'").replace(/</g, '&lt;');
+
 /** The words Needs you shows beside the verdict's block: the rule, and a line for each tag with what gave it. */
 export function words(number: number, decision: Decision): string {
   const lines = [`**#${number}**: ${decision.title} (\`${decision.rule}\`).`];
@@ -540,7 +547,7 @@ export function words(number: number, decision: Decision): string {
     lines.push('', 'Risk tags:', '');
     for (const tag of decision.tags) {
       const more = tag.more ? `, and ${tag.more} more` : '';
-      lines.push(`- \`${tag.tag}\`: ${tag.because.map((b) => b.replace(/[`|]/g, "'")).join('; ')}${more}`);
+      lines.push(`- \`${tag.tag}\`: ${tag.because.map(plain).join('; ')}${more}`);
     }
   }
   return lines.join('\n');

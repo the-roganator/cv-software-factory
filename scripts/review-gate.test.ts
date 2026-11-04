@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { found, GIVEN_LIMIT, readVerdict } from '../policy/review-verdict.ts';
 import {
   atHead,
   MARTIN,
@@ -7,7 +8,9 @@ import {
   QUEUE_BRANCH,
   type Review,
   STACK_LIMIT,
+  SUMMARY_LIMIT,
   stackOf,
+  summaryOf,
   target as targetIn,
   together,
   verdict,
@@ -300,6 +303,29 @@ describe('a queued stack', () => {
     // One fewer is followed to main.
     const fits = tall.at(-2) as PullRequest;
     expect((await stackOf(fits, 'o/r', listing(tall).below)).prs).toHaveLength(STACK_LIMIT);
+  });
+});
+
+describe("the check's summary", () => {
+  it('fits GitHub’s limit, cutting what gave each tag but never a rule, a tag or a head', () => {
+    const long = (n: number) => Array.from({ length: GIVEN_LIMIT }, (_, i) => `src/${n}/${'x'.repeat(110)}-${i}.ts`);
+    const tags = [found('code-owned', long(1)), found('improvement', long(2)), found('security-headers', long(3))];
+    const judged = Array.from({ length: 12 }, (_, i) => ({
+      pr: { ...pr(APP), number: i + 1 },
+      said: { pass: false, title: 'Held for its risk tags', rule: 'held' as const, tags },
+    }));
+    const summary = summaryOf(HEAD, judged);
+    expect(summary.length).toBeLessThanOrEqual(SUMMARY_LIMIT);
+    const read = readVerdict(summary);
+    expect(read).toMatchObject({ commit: HEAD });
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged.map((j) => [j.number, j.rule, j.tags.map((t) => t.tag)])).toEqual(
+      judged.map(({ pr }) => [pr.number, 'held', ['code-owned', 'improvement', 'security-headers']]),
+    );
+    expect(read.judged[0]?.tags[0]?.more).toBeGreaterThan(0);
+    // A short one is not cut.
+    const one = readVerdict(summaryOf(HEAD, judged.slice(0, 1)));
+    expect('judged' in one && one.judged[0]?.tags[0]?.because).toHaveLength(GIVEN_LIMIT);
   });
 });
 

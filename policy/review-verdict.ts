@@ -87,11 +87,13 @@ export function found(tag: Tag, because: readonly string[]): Found {
 }
 
 /**
- * The block for a summary. `>` is written as its JSON escape, so nothing in a path or a test's name can end the
- * comment early.
+ * The block for a summary. `<` and `>` are written as their JSON escapes, so nothing in a path or a test's name can
+ * end the comment early or open a second block.
  */
 export function verdictBlock(verdict: Verdict): string {
-  const json = JSON.stringify({ commit: verdict.commit, judged: verdict.judged }).replace(/>/g, '\\u003e');
+  const json = JSON.stringify({ commit: verdict.commit, judged: verdict.judged })
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
   return `${OPEN}${json}${CLOSE}`;
 }
 

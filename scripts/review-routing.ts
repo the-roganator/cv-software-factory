@@ -11,8 +11,8 @@
  *   check run's annotations, which name the test and its file;
  * - `code-owned`: a path CODEOWNERS on `main` gives Martin;
  * - `release`: release-please's branch, or a change to its files alone;
- * - `improvement`: the app's typed list of flag names changed, or an added line of the app's code that names a flag
- *   or asks one, so new behaviour behind a flag already on the list is caught too.
+ * - `improvement`: the app's typed list of flag names changed, or a line of the app's code, added or removed, that
+ *   names a flag or asks one, so new behaviour behind a flag already on the list is caught too.
  *
  * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin`, `low-risk`, `lights-out`, or
  * `held` (`route`).
@@ -61,8 +61,10 @@ export interface FileChange {
   filename: string;
   status: string;
   previous_filename?: string;
-  /** The unified diff's hunks; GitHub leaves it out of a binary file or one too large. */
+  /** The unified diff's hunks; GitHub leaves it out of a binary file, one too large, or a rename with no change. */
   patch?: string | undefined;
+  /** How many lines it adds and removes: 0 for a file renamed unchanged. */
+  changes?: number;
 }
 
 export interface Verdict {
@@ -203,6 +205,7 @@ export function testIntegrityRun(
   runs: readonly CheckRun[],
   head: string,
   files: readonly FileChange[],
+  base: string,
 ): { run: CheckRun } | { reason: string } {
   const named = runs.filter((run) => run.name === TEST_INTEGRITY_CHECK && run.head_sha === head);
   const ours = named
@@ -211,6 +214,8 @@ export function testIntegrityRun(
   const workflow = files.find((f) => [f.filename, f.previous_filename].some((p) => p?.startsWith('.github/')));
   if (workflow)
     return { reason: `it changes ${workflow.filename}, so test integrity's run is not the workflow on main's` };
+  // Into another branch, its run is that branch's workflow, which a pull request below could have changed unseen here.
+  if (base !== 'main') return { reason: `it is into ${base}, so test integrity's run is not the workflow on main's` };
   const latest = ours[0];
   if (!latest)
     return {
@@ -297,22 +302,16 @@ const RELEASE_BRANCH = /^release-please--/;
 const RELEASE_FILES = new Set(['CHANGELOG.md', 'package.json', '.release-please-manifest.json']);
 
 /**
- * An added line of the app's code that names a flag or asks one: the flag context's `flag`, by any route (called,
- * destructured, passed on), or a set of flags' `.on(`. Broad on purpose: a line it catches that asks no flag holds a
- * pull request for Martin, and one it missed would pass new behaviour unattended.
+ * A line of the app's code, added or removed, that names a flag or asks one: the flag context's `flag`, by any route
+ * (called, destructured, passed on), or a set of flags' `.on(`. A removed one counts too, since taking a flag's ask
+ * away gives what it guarded to everyone. Broad on purpose: a line it catches that asks no flag holds a pull request
+ * for Martin, and one it missed would pass new behaviour unattended.
  */
 export const ASKS_A_FLAG = /\bflag\b|\.on\s*\(/;
 
 /** The app's shipped code, which is where a flag is asked: not its tests. */
 const APP_CODE = /^src\/.+\.ts$/;
 const TEST_CODE = /(^|\/)(test|tests|__tests__)\/|\.test\.ts$|\.spec\.ts$/;
-
-/** The lines a patch adds, without their `+`. */
-export const addedLines = (patch: string) =>
-  patch
-    .split('\n')
-    .filter((line) => line.startsWith('+'))
-    .map((line) => line.slice(1));
 
 const pathsOf = (file: FileChange) => [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])];
 const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
@@ -332,7 +331,10 @@ export function tagsOf({ files, complete, headRef, owners, excused }: TagFacts):
   const given = new Map<Tag, string[]>();
   const add = (tag: Tag, what: string) => given.set(tag, [...(given.get(tag) ?? []), what]);
   if (excused.length) for (const test of excused) add('test-loosening', test);
-  for (const file of files) {
+  for (const each of files) {
+    // A file renamed unchanged has no patch, and no line to read: its names are read as any file's.
+    const file =
+      each.patch === undefined && each.status === 'renamed' && each.changes === 0 ? { ...each, patch: '' } : each;
     for (const path of pathsOf(file)) {
       if (DEPENDENCY_FILES.has(baseName(path))) add('dependency-change', path);
       if (path === HEADERS_FILE) add('security-headers', path);
@@ -352,7 +354,7 @@ export function tagsOf({ files, complete, headRef, owners, excused }: TagFacts):
       if (file.patch === undefined && file.status !== 'removed') {
         add('improvement', `${file.filename}: GitHub gives no patch to read for a flag`);
       } else {
-        const line = addedLines(file.patch ?? '').find((each) => ASKS_A_FLAG.test(each));
+        const line = changedLines(file.patch ?? '').find((each) => ASKS_A_FLAG.test(each));
         if (line !== undefined) add('improvement', `${file.filename}: ${line.trim().slice(0, 120)}`);
       }
     }
@@ -440,7 +442,8 @@ export function digestMoves(file: FileChange): { from: string; to: string }[] | 
 export function imageOf(content: string, digest: string): string | undefined {
   const lines = content.split('\n');
   const at = lines.findIndex((line) => DIGEST_LINE.exec(line)?.[2] === digest);
-  if (at === -1) return undefined;
+  // A digest two entries share names no one image: the pin could be checked against the other's.
+  if (at === -1 || lines.findLastIndex((line) => DIGEST_LINE.exec(line)?.[2] === digest) !== at) return undefined;
   // The entry runs from its `- ` line to the next at that indent, or a line indented less.
   let start = at;
   while (start > 0 && !/^\s*-\s/.test(lines[start] as string)) start--;
@@ -480,8 +483,10 @@ export interface PinChecks {
 export async function exactPin(
   files: readonly FileChange[],
   checks: PinChecks,
+  complete: boolean,
 ): Promise<{ pins: Pin[] } | { reason: string }> {
   if (files.length === 0) return { reason: 'it changes no file' };
+  if (!complete) return { reason: 'GitHub lists only some of its files, and the rest are unread' };
   const pins: Pin[] = [];
   for (const file of files) {
     const moves = digestMoves(file);
@@ -494,15 +499,26 @@ export async function exactPin(
     }
   }
   for (const pin of pins) {
-    const repo = signerOf(pin.image);
-    if (!repo) return { reason: `${pin.image} is not an image the factory's or the app's build.yml signs` };
-    const to = await checks.signedAt(repo, pin.image, pin.to);
-    if (typeof to !== 'string') return { reason: `${pin.image}@${short(pin.to.slice(7))}: ${to.reason}` };
-    const from = await checks.signedAt(repo, pin.image, pin.from);
-    if (typeof from !== 'string') return { reason: `${pin.image}@${short(pin.from.slice(7))}: ${from.reason}` };
-    if (!(await checks.ahead(repo, from, to)))
-      return { reason: `${pin.image}'s ${short(to)} does not descend from ${short(from)}, the commit it replaces` };
+    if (!signerOf(pin.image))
+      return { reason: `${pin.image} is not an image the factory's or the app's build.yml signs` };
   }
+  // Each pin is checked at once, as cosign takes a while for each, and the first to fail in order says why.
+  const checked = await Promise.all(
+    pins.map(async (pin): Promise<string | undefined> => {
+      const repo = signerOf(pin.image) as string;
+      const [to, from] = await Promise.all([
+        checks.signedAt(repo, pin.image, pin.to),
+        checks.signedAt(repo, pin.image, pin.from),
+      ]);
+      if (typeof to !== 'string') return `${pin.image}@${short(pin.to.slice(7))}: ${to.reason}`;
+      if (typeof from !== 'string') return `${pin.image}@${short(pin.from.slice(7))}: ${from.reason}`;
+      if (!(await checks.ahead(repo, from, to)))
+        return `${pin.image}'s ${short(to)} does not descend from ${short(from)}, the commit it replaces`;
+      return undefined;
+    }),
+  );
+  const reason = checked.find((each) => each !== undefined);
+  if (reason) return { reason };
   return { pins };
 }
 
@@ -572,17 +588,22 @@ export function route(facts: Facts): Decision {
  * span, table or HTML, so it can neither break the words nor open a second verdict's comment, which would make the
  * summary carry none.
  */
-const plain = (text: string) => text.replace(/[`|]/g, "'").replace(/</g, '&lt;');
+const plain = (text: string) =>
+  text
+    .replace(/\s*\n\s*/g, ' ')
+    .replace(/[`|]/g, "'")
+    .replace(/</g, '&lt;');
 
 /** The words Needs you shows beside the verdict's block: the rule, and a line for each tag with what gave it. */
 export function words(number: number, decision: Decision): string {
-  const lines = [`**#${number}**: ${decision.title} (\`${decision.rule}\`).`];
+  const lines = [`**#${number}**: ${plain(decision.title)} (\`${decision.rule}\`).`];
   if (decision.tags.length === 0) lines.push('', 'No risk tags.');
   else {
     lines.push('', 'Risk tags:', '');
     for (const tag of decision.tags) {
-      const more = tag.more ? `, and ${tag.more} more` : '';
-      lines.push(`- \`${tag.tag}\`: ${tag.because.map(plain).join('; ')}${more}`);
+      const given = tag.because.map(plain).join('; ');
+      const more = tag.more ? (given ? `, and ${tag.more} more` : `${tag.more} things`) : '';
+      lines.push(`- \`${tag.tag}\`: ${given}${more}`);
     }
   }
   return lines.join('\n');

@@ -235,44 +235,59 @@ describe('test integrity’s reading', () => {
   const files: FileChange[] = [{ filename: 'src/x.ts', status: 'modified', patch: '+a' }];
 
   it('reads the completed, successful run GitHub Actions posted for the head', () => {
-    expect(testIntegrityRun([run()], HEAD, files)).toEqual({ run: run() });
+    expect(testIntegrityRun([run()], HEAD, files, 'main')).toEqual({ run: run() });
     // The latest of several, a re-run's.
     const again = run({ id: 2, started_at: '2026-11-04T11:00:00Z', conclusion: 'failure' });
-    expect(testIntegrityRun([run(), again], HEAD, files)).toMatchObject({ reason: expect.stringContaining('failure') });
+    expect(testIntegrityRun([run(), again], HEAD, files, 'main')).toMatchObject({
+      reason: expect.stringContaining('failure'),
+    });
   });
 
   it('is no reading when the run is pending, skipped, cancelled, failed, missing or foreign', () => {
-    expect(testIntegrityRun([run({ status: 'in_progress', conclusion: null })], HEAD, files)).toEqual({
+    expect(testIntegrityRun([run({ status: 'in_progress', conclusion: null })], HEAD, files, 'main')).toEqual({
       reason: 'test integrity is still running at aaaaaaa',
     });
     for (const conclusion of ['skipped', 'cancelled', 'failure', 'neutral']) {
-      expect(testIntegrityRun([run({ conclusion })], HEAD, files)).toEqual({
+      expect(testIntegrityRun([run({ conclusion })], HEAD, files, 'main')).toEqual({
         reason: `test integrity's run at aaaaaaa is ${conclusion}, not a success`,
       });
     }
-    expect(testIntegrityRun([], HEAD, files)).toEqual({ reason: 'test integrity has not run at aaaaaaa' });
+    expect(testIntegrityRun([], HEAD, files, 'main')).toEqual({ reason: 'test integrity has not run at aaaaaaa' });
     // Posted by another app, the factory's included, which can post check runs of any name.
-    expect(testIntegrityRun([run({ app: { slug: 'mrogan-software-factory' } })], HEAD, files)).toEqual({
+    expect(testIntegrityRun([run({ app: { slug: 'mrogan-software-factory' } })], HEAD, files, 'main')).toEqual({
       reason: "test integrity's run at aaaaaaa was posted by mrogan-software-factory, not GitHub Actions",
     });
     // Another check's name.
-    expect(testIntegrityRun([run({ name: 'test integrity' })], HEAD, files)).toMatchObject({
+    expect(testIntegrityRun([run({ name: 'test integrity' })], HEAD, files, 'main')).toMatchObject({
       reason: expect.any(String),
     });
   });
 
   it('never reads a run for another commit: in the merge queue, not the queue’s commit’s for the pull request’s head', () => {
-    expect(testIntegrityRun([run({ head_sha: QUEUE })], HEAD, files)).toEqual({
+    expect(testIntegrityRun([run({ head_sha: QUEUE })], HEAD, files, 'main')).toEqual({
       reason: 'test integrity has not run at aaaaaaa',
     });
-    expect(testIntegrityRun([run({ head_sha: EARLIER })], HEAD, files)).toMatchObject({ reason: expect.any(String) });
+    expect(testIntegrityRun([run({ head_sha: EARLIER })], HEAD, files, 'main')).toMatchObject({
+      reason: expect.any(String),
+    });
   });
 
   it('is no reading for a pull request that changes the workflows, whose run is its own copy’s', () => {
     expect(
-      testIntegrityRun([run()], HEAD, [...files, { filename: '.github/workflows/gates.yml', status: 'modified' }]),
+      testIntegrityRun(
+        [run()],
+        HEAD,
+        [...files, { filename: '.github/workflows/gates.yml', status: 'modified' }],
+        'main',
+      ),
     ).toEqual({
       reason: "it changes .github/workflows/gates.yml, so test integrity's run is not the workflow on main's",
+    });
+  });
+
+  it('is no reading for a pull request into another branch, whose run is that branch’s workflow', () => {
+    expect(testIntegrityRun([run()], HEAD, files, 'factory/1-fix')).toEqual({
+      reason: "it is into factory/1-fix, so test integrity's run is not the workflow on main's",
     });
   });
 
@@ -390,13 +405,23 @@ describe('risk tags from the diff', () => {
         'improvement',
       ]);
     }
-    // A removed line, a test's line, and a line that asks no flag are none.
-    expect(tags([changed('src/pages/home.ts', "-  if (request.flag('x')) {\n+  return 1;")])).toEqual([]);
+    // A removed ask counts too: taking it away gives what it guarded to everyone.
+    expect(tags([changed('src/pages/home.ts', "-  if (request.flag('x')) {\n+  return 1;")])).toEqual([
+      found('improvement', ["src/pages/home.ts: if (request.flag('x')) {"]),
+    ]);
+    // A test's line, and a line that asks no flag, are none.
     expect(tags([changed('test/home.test.ts', "+  request.flag('x');")])).toEqual([]);
     expect(tags([changed('src/pages/home.test.ts', "+  request.flag('x');")])).toEqual([]);
     expect(tags([changed('src/pages/home.ts', '+  const flagged = 1;')])).toEqual([]);
     // A file of the app's code with no patch to read is held as one.
     expect(tags([changed('src/pages/big.ts', '', { patch: undefined })]).map((t) => t.tag)).toEqual([
+      'security-headers',
+      'improvement',
+    ]);
+    // A file renamed unchanged has no patch and no line, so it carries only what its names give.
+    const renamed = { status: 'renamed', previous_filename: 'src/pages/old.ts', patch: undefined, changes: 0 };
+    expect(tags([changed('src/pages/new.ts', '', renamed)])).toEqual([]);
+    expect(tags([changed('src/pages/new.ts', '', { ...renamed, changes: 3 })]).map((t) => t.tag)).toEqual([
       'security-headers',
       'improvement',
     ]);
@@ -501,6 +526,8 @@ images:
   it('names each pin’s image from the file at the head, and the repository that signs it', () => {
     expect(imageOf(kustomization, digestOf('4'))).toBe('ghcr.io/the-roganator/cv-software-factory/factory');
     expect(imageOf(kustomization, digestOf('9'))).toBeUndefined();
+    // A digest two entries share names neither, so a pin is never checked against the other's image.
+    expect(imageOf(kustomization.replace(digestOf('2'), digestOf('4')), digestOf('4'))).toBeUndefined();
     expect(signerOf('ghcr.io/the-roganator/cv-software-factory/factory')).toBe(FACTORY_REPO);
     expect(signerOf('ghcr.io/the-roganator/cv-worlds-worst-website')).toBe(APP_REPO);
     expect(signerOf('ghcr.io/aquasecurity/trivy')).toBeUndefined();
@@ -508,7 +535,7 @@ images:
   });
 
   it('passes images build.yml signed on main, each from a commit that descends from the one it replaces', async () => {
-    expect(await exactPin([file(moved)], checks())).toEqual({
+    expect(await exactPin([file(moved)], checks(), true)).toEqual({
       pins: [
         {
           file: 'deploy/overlays/local/image/kustomization.yaml',
@@ -530,16 +557,21 @@ images:
     const unsigned = await exactPin(
       [file(moved)],
       checks({ signedAt: async () => ({ reason: 'cosign does not verify it' }) }),
+      true,
     );
     expect(unsigned).toMatchObject({ reason: expect.stringContaining('cosign does not verify it') });
-    const back = await exactPin([file(moved)], checks({ ahead: async () => false }));
+    const back = await exactPin([file(moved)], checks({ ahead: async () => false }), true);
     expect(back).toMatchObject({ reason: expect.stringContaining('does not descend from') });
-    expect(await exactPin([file(`${moved}\n+# a comment`)], checks())).toMatchObject({
+    expect(await exactPin([file(`${moved}\n+# a comment`)], checks(), true)).toMatchObject({
       reason: expect.stringContaining('not a digest'),
     });
-    expect(await exactPin([], checks())).toEqual({ reason: 'it changes no file' });
+    expect(await exactPin([], checks(), true)).toEqual({ reason: 'it changes no file' });
+    // Past what GitHub lists, the files it leaves out could be anything.
+    expect(await exactPin([file(moved)], checks(), false)).toEqual({
+      reason: 'GitHub lists only some of its files, and the rest are unread',
+    });
     const other = kustomization.replace('ghcr.io/the-roganator/cv-software-factory/factory', 'ghcr.io/someone/factory');
-    expect(await exactPin([file(moved)], checks({ content: async () => other }))).toMatchObject({
+    expect(await exactPin([file(moved)], checks({ content: async () => other }), true)).toMatchObject({
       reason: expect.stringContaining("not an image the factory's or the app's build.yml signs"),
     });
   });
@@ -550,6 +582,9 @@ describe('the words beside the verdict', () => {
     const said = route(facts({ tags: [found('improvement', ['src/a.ts: // <!-- review-verdict v1 `x` | y'])] }));
     const text = words(7, said);
     expect(text).toContain("- `improvement`: src/a.ts: // &lt;!-- review-verdict v1 'x' ' y");
+    // The title too, which can name a line of the diff.
+    const pin = words(7, { ...said, title: 'Not an exact pin: +<!-- review-verdict v1\n`x`' });
+    expect(pin).toContain("Not an exact pin: +&lt;!-- review-verdict v1 'x'");
     expect(
       readVerdict(
         `${text}\n\n${verdictBlock({ version: 1, commit: HEAD, judged: [{ number: 7, head: HEAD, rule: said.rule, tags: said.tags }] })}`,
@@ -578,8 +613,13 @@ describe("the verdict's block, which the line reads", () => {
     expect(readVerdict(summary)).toEqual(verdict);
     expect(verdictPasses(verdict)).toBe(false);
     expect(verdictPasses({ ...verdict, judged: [verdict.judged[0] as Verdict['judged'][0]] })).toBe(true);
-    // Nothing in a name can close the comment early.
+    // Nothing in a name can close the comment early, or open a second block.
     expect(verdictBlock(verdict).slice(0, -4)).not.toContain('-->');
+    const opens = {
+      ...verdict,
+      judged: [{ ...verdict.judged[0], tags: [found('code-owned', ['<!-- review-verdict v1'])] }],
+    };
+    expect(readVerdict(verdictBlock(opens as Verdict))).toEqual(opens);
   });
 
   it('is no verdict when missing, doubled, cut short or wrong in any part', () => {

@@ -16,7 +16,7 @@ Sends risky changes to a human. Part of the [GitHub plane](README.md#github-plan
 | `security-headers` | the app's header settings, `src/headers.ts`; or a line added or removed anywhere in the app's `src/` (not its tests) that names a security header in any case (`Content-Security-Policy` and its `-Report-Only`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, the three `Cross-Origin-*-Policy`) or `SECURITY_HEADERS`, so a header set outside that file is caught too; or such a file GitHub gives no patch of |
 | `code-owned` | a path CODEOWNERS on `main` gives Martin; or a diff too large for GitHub to list whole |
 | `release` | release-please's branch, or a change to a release's files alone |
-| `improvement` | the app's typed list of flag names, `src/flag-names.ts`; or an added line of the app's code (`src/`, not its tests) that names `flag` or calls `.on(`; or such a file GitHub gives no patch of |
+| `improvement` | the app's typed list of flag names, `src/flag-names.ts`; or a line of the app's code (`src/`, not its tests), added or removed, that names `flag` or calls `.on(`; or such a file GitHub gives no patch of |
 | `out-of-scope` | the planner or the reviewer, on the spec: held before the coder starts, in every mode (`ALWAYS_HELD`, `line/machine.ts`; [holds](ORCHESTRATOR.md#holds-and-martins-answers)). Not in a diff. |
 
 The rule, the first that holds:
@@ -30,7 +30,7 @@ The rule, the first that holds:
 | `lights-out` | the same with tags, while the app's `AUTONOMY` variable is `lights-out`, but never with `release`, `improvement` or `code-owned` |
 | `held` | anything else, saying why |
 
-A risk label removed by anyone but Martin holds the pull request from every rule after his. In this repository, the App's pull requests pass only as exact pins, whatever `AUTONOMY` says. A missing, pending, skipped, cancelled, failed or foreign test-integrity run holds the App's pull request; so does one of a pull request that changes `.github/`, which would be its own workflow's.
+A risk label removed by anyone but Martin holds the pull request from every rule after his. In this repository, the App's pull requests pass only as exact pins, whatever `AUTONOMY` says. A missing, pending, skipped, cancelled, failed or foreign test-integrity run holds the App's pull request; so does one of a pull request that changes `.github/`, or that is into a branch other than `main`, either of which would be a workflow other than `main`'s. An exact pin needs every file GitHub lists, and a digest only one image entry has.
 
 ## Who reads which signal
 

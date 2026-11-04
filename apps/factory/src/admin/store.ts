@@ -20,6 +20,7 @@ export type AdminEvent =
   | 'admin.signed-in'
   | 'admin.signed-out'
   | 'admin.stepped-up'
+  | 'admin.step-up-ended'
   | 'alerts.switched'
   | 'controls.changed'
   | 'flag.staged'

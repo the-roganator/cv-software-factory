@@ -1358,6 +1358,11 @@ export const PAYLOADS = {
    * table marks as needing it. Its name is Martin's alone, as above.
    */
   'admin.stepped-up': z.strictObject({ passkey: passkeyName.optional() }),
+  /**
+   * Martin ended the passkey given again before its five minutes were up, in the session that gave it: the next action
+   * that needs it asks for it again. It only tightens, so it takes no passkey of its own.
+   */
+  'admin.step-up-ended': z.strictObject({}),
   /** A passkey made with a one-time code from `factory admin enrol`. Its name is Martin's alone, as above. */
   'passkey.enrolled': z.strictObject({ passkey: passkeyName.optional() }),
   /**

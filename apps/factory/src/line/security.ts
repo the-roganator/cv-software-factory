@@ -19,6 +19,7 @@
  *   `improvement.requested`), `improvement-approved` (a `hold.answered` approving a `spec` hold, read as above, on a
  *   work item opened as an improvement, whoever opened it), and `line-started`. Giving the passkey again
  *   (`admin.stepped-up`) is not counted: each action it lets the session take is, and the audit log keeps the event;
+ *   nor is ending it early (`admin.step-up-ended`), which only tightens;
  * - `line-stopped`: every `line.stopped`, which tightens and so needs no passkey again, but which Martin is still told of;
  * - every change of the line's controls (`controls.changed`), as the access table's action it is, told from the
  *   stored change's before and after alone (`policy/line.ts`): `autonomy-loosened` and `autonomy-tightened`,

@@ -259,6 +259,20 @@ describe('the detail under a row', () => {
     expect(only([steppedUp, pause]).detail).toBe('release n4bvkfjhnd-911 · at 50%');
   });
 
+  it('says no passkey was given for an action after Martin ended it early', () => {
+    const steppedUp = event(0, 'admin.stepped-up', 'martin', {});
+    const ended = event(1, 'admin.step-up-ended', 'martin', {}, 'Martin ended his passkey’s five minutes early');
+    const promote = event(2, 'release.controlled', 'martin', {
+      action: 'promote',
+      release: 'n4bvkfjhnd-911',
+      version: 'v0.9.11',
+      weight: 25,
+      to: 50,
+    });
+    expect(only([steppedUp, promote]).detail).toMatch(/passkey given at /);
+    expect(only([steppedUp, ended, promote]).detail).toBe('release n4bvkfjhnd-911 · 25% → 50%');
+  });
+
   it('says when the passkey was given to approve a guardrail’s hold, and not another’s', () => {
     const hold = (cause: 'gates' | 'spec') =>
       event(

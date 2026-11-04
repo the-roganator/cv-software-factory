@@ -176,6 +176,8 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
     if (event.type === 'work-item.opened' && event.payload.kind === 'improvement' && event.work_item)
       improvements.add(event.work_item);
     if (event.type === 'admin.stepped-up') steppedUp = at;
+    // Ended early, it is fresh for nothing after.
+    if (event.type === 'admin.step-up-ended') steppedUp = undefined;
     if (event.type === 'signal.received' && event.payload.report && event.work_item)
       reporters.set(event.work_item, event.payload.sense === 'planner' ? PLANNER_WROTE : VISITOR_WROTE);
     const asks = askedForPasskey(event, causes, improvements, profile);

@@ -80,7 +80,7 @@ test('Martin asks for an improvement with the “+”, giving his passkey again,
   const [opened, asked] = await requested();
   expect(opened?.payload).toMatchObject({ kind: 'improvement', title: TITLE, category: 'improvement' });
   expect(asked?.payload).toEqual({ words: WORDS, steppedUp: true });
-  await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
+  await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left. End it now');
 
   // Its row arrives with its events, at Plan, behind the open tickets.
   await page.getByRole('button', { name: /^Plan:/ }).click();
@@ -90,9 +90,31 @@ test('Martin asks for an improvement with the “+”, giving his passkey again,
   );
   // The panel ends with the same "+", which opens the same form, the key gone while the passkey is fresh.
   await panel.getByRole('button', { name: 'Request an improvement' }).click();
+  const again = page.getByRole('dialog', { name: 'Request an improvement' });
+  await expect(again.getByRole('button', { name: 'Request' })).toHaveAccessibleName('Request');
+  // Closed, and Plan's panel under it too.
+  await page.keyboard.press('Escape');
+  await expect(again).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  // Pressing the pill ends the passkey's five minutes now, with no passkey: the service forgets it, the audit log says
+  // so, and the key is back on what asks for it.
+  const pill = page.getByRole('button', { name: 'Passkey given · 5min left. End it now' });
+  await expect(pill).toHaveAttribute('title', 'End it now: the next action that asks for your passkey will ask again');
+  await pill.click();
+  await expect(page.locator('.top-right .fresh')).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Passkey ended' })).toHaveText(
+    'Passkey ended: the actions that ask for it will ask again',
+  );
+  expect((await (await page.request.get('/admin/session')).json()).steppedUp).toBe(false);
+  await expect
+    .poll(async () => (await harness.database.owner`select 1 from events where type = 'admin.step-up-ended'`).length)
+    .toBe(1);
+  await page.getByRole('button', { name: 'Request an improvement' }).click();
   await expect(
-    page.getByRole('dialog', { name: 'Request an improvement' }).getByRole('button', { name: 'Request' }),
-  ).toHaveAccessibleName('Request');
+    page.getByRole('dialog', { name: 'Request an improvement' }).getByRole('button', { name: /^Request/ }),
+  ).toHaveAccessibleName('Request (asks for your passkey)');
 });
 
 test('approving an improvement’s spec carries the key, and asks for the passkey again; a request made already closes', async ({

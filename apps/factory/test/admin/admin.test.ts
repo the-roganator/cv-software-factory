@@ -671,6 +671,51 @@ describe('the passkey given again', () => {
     expect((await browser.get('/admin/session')).body.steppedUp).toBe(false);
     expect(await steppedUp()).toHaveLength(recorded);
   });
+
+  it('ends early, for this session alone, with no passkey, and the next action asks for it again', async () => {
+    const { browser, passkey } = await signedIn();
+    const phone = await signedIn();
+    const revoke = `/admin/passkeys/${phone.passkey.credentialId}/revoke`;
+    const ended = () => db.owner`select 1 from events where type = 'admin.step-up-ended'`;
+    const before = (await ended()).length;
+    expect((await stepUp(browser, passkey)).status).toBe(200);
+    expect((await stepUp(phone.browser, phone.passkey)).status).toBe(200);
+
+    // A write like any other: the console's origin, a session and its token, but not the passkey again.
+    expect(ACCESS['step-up.end']).toMatchObject({ role: 'admin', does: 'write', stepUp: false });
+    expect(await browser.post('/admin/step-up/end', {}, { origin: 'https://evil.example' })).toMatchObject({
+      status: 403,
+      body: { refused: 'origin' },
+    });
+    expect(await browser.post('/admin/step-up/end', {}, { token: tokenOf('o'.repeat(43)) })).toMatchObject({
+      status: 403,
+      body: { refused: 'token' },
+    });
+    expect((await browser.get('/admin/session')).body.steppedUp).toBe(true);
+
+    expect(await browser.post('/admin/step-up/end')).toMatchObject({ status: 200, body: { ended: true } });
+    const session = (await browser.get('/admin/session')).body;
+    expect(session).toMatchObject({ steppedUp: false, steppedUpAt: null });
+    expect(await browser.post(revoke)).toMatchObject({ status: 403, body: { refused: 'step-up' } });
+    // Recorded as Martin's, with nothing of his session in it.
+    const [record] = await lastEvents(1);
+    expect(record).toMatchObject({ type: 'admin.step-up-ended', actor: 'martin', payload: {} });
+    expect(record?.public).toMatchObject({ summary: 'Martin ended his passkey’s five minutes early', payload: {} });
+    // The phone's session keeps its own.
+    expect((await phone.browser.get('/admin/session')).body.steppedUp).toBe(true);
+
+    // Ended already, or run out: nothing to end, and nothing recorded.
+    expect(await browser.post('/admin/step-up/end')).toMatchObject({ status: 200, body: { ended: false } });
+    await db.owner`
+      update sessions set stepped_up_at = now() - make_interval(mins => ${STEP_UP.minutes + 1})
+      where id_sha256 = ${sessionOf(phone.browser)}`;
+    expect(await phone.browser.post('/admin/step-up/end')).toMatchObject({ status: 200, body: { ended: false } });
+    expect(await ended()).toHaveLength(before + 1);
+
+    // Given again, it counts again.
+    expect((await stepUp(browser, passkey)).status).toBe(200);
+    expect((await browser.get('/admin/session')).body.steppedUp).toBe(true);
+  });
 });
 
 describe('signing out', () => {

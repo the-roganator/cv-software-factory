@@ -40,6 +40,7 @@ import {
   picturesShown,
   ready,
   SCORE,
+  SESSION,
   scored,
   shown,
   THEMES,
@@ -551,6 +552,19 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await expect(page).toHaveScreenshot(`m07-account-menu-${width}.png`, {
         clip: { x: 0, y: 0, width: viewport.width, height: 600 },
       });
+    });
+
+    test('the header’s pill while the passkey is fresh, which ends it when pressed', async ({ page }) => {
+      test.skip(width === 'phone', 'on a phone the header has no room for the pill: it is a line in the account menu');
+      await adminService(page, 'martin');
+      await page.route('**/admin/session', (route) =>
+        route.fulfill({ json: { ...SESSION, steppedUp: true, steppedUpAt: new Date().toISOString() } }),
+      );
+      await page.goto(consoleUrl());
+      await ready(page);
+      const pill = page.locator('.top-right .fresh');
+      await pill.hover();
+      await expect(page.locator('header.top')).toHaveScreenshot(`m07-step-up-pill-${width}.png`);
     });
 
     test('a visitor’s report, quoted on Martin’s sheet', async ({ page }) => {

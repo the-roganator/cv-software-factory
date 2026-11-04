@@ -133,6 +133,11 @@ export const PUBLIC_VIEWS = {
   'admin.signed-in': (event) => ({ ...event, summary: 'Martin signed in with a passkey', payload: {} }),
   'admin.signed-out': redacted,
   'admin.stepped-up': (event) => ({ ...event, summary: 'Martin gave his passkey again', payload: {} }),
+  'admin.step-up-ended': (event) => ({
+    ...event,
+    summary: 'Martin ended his passkey’s five minutes early',
+    payload: {},
+  }),
   'passkey.enrolled': (event) => ({ ...event, summary: 'Martin enrolled a passkey', payload: {} }),
   'passkey.revoked': ({ payload: { passkey: _name, ...payload }, ...event }) =>
     redacted({ ...event, summary: 'Martin revoked a passkey', payload }),

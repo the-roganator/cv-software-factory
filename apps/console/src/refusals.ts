@@ -62,7 +62,10 @@ export class RefusalChecks {
     this.#key = key;
   }
 
-  /** The checks of these refusals, by seq. A store that cannot be read is logged, and asked again next time. */
+  /**
+   * The checks of these refusals, by seq. One whose record the store could not read is logged and left out, so the page
+   * asks again, and so is the store.
+   */
   async of(refusals: readonly SignedRefusal[]): Promise<Record<string, Check>> {
     const checks = await Promise.all(
       refusals.map(async ({ seq, payload }) => {
@@ -75,9 +78,9 @@ export class RefusalChecks {
             this.#made.delete(seq);
           });
         }
-        return [seq, await made.catch((): Check => 'unverified')] as const;
+        return [seq, await made.catch(() => undefined)] as const;
       }),
     );
-    return Object.fromEntries(checks);
+    return Object.fromEntries(checks.flatMap(([seq, check]) => (check ? [[seq, check] as const] : [])));
   }
 }

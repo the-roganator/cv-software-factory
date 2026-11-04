@@ -7,6 +7,36 @@
  *
  * No Node, so it is safe anywhere; the hashing and the signature are the caller's.
  */
+import type { RefusalMechanism } from './vocabulary.ts';
+
+/**
+ * The mechanisms a refusal is signed for: those with no role of their own in the store, whose refusals a worker relays
+ * from the GitHub worker's answers, and which count only with a signed record that checks out.
+ */
+export const SIGNED_MECHANISMS = [
+  'github-guard',
+  'token-permission',
+  'review-gate',
+] as const satisfies readonly RefusalMechanism[];
+
+/** How a relayed refusal's public view stands against its record (`signed-check.ts` says how each is decided). */
+export const REFUSAL_CHECKS = ['verified', 'redacted', 'unverified'] as const;
+export type RefusalCheck = (typeof REFUSAL_CHECKS)[number];
+
+/** What the check needs of a public refusal: its payload, naming its record and the signature over it. */
+export type SignedPayload = Record<string, unknown> & { record: string; signature: string };
+
+/**
+ * A public refusal's payload if it names a record, by its hash, and a signature, as a relayed one does; any other,
+ * nothing. The server checks only these, and the page asks it only about these.
+ */
+export function signedPayloadOf(event: { type: string; payload?: unknown }): SignedPayload | undefined {
+  if (event.type !== 'action.refused') return undefined;
+  const payload = event.payload as Record<string, unknown> | undefined;
+  const { record, signature } = payload ?? {};
+  if (typeof record !== 'string' || typeof signature !== 'string' || !/^[0-9a-f]{64}$/.test(record)) return undefined;
+  return { ...payload, record, signature };
+}
 
 /** What a refusal's record holds, besides its type. */
 export interface RecordFacts<P = unknown> {

@@ -23,6 +23,7 @@
  * Plain TypeScript, so Node tests it directly.
  */
 import type { PublicEvent, RefusalMechanism } from '@software-factory/events';
+import { type RefusalCheck, SIGNED_MECHANISMS, signedPayloadOf } from '@software-factory/events/signed';
 import { mayAppend, REFUSALS } from '@software-factory/policy/refusals';
 
 /** How far back a row's refusals go. */
@@ -32,10 +33,10 @@ export const REFUSAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const REFUSAL_LINES = 3;
 
 /** The mechanisms whose refusals are relayed from the GitHub worker, and so are counted only with a signed record. */
-export const RELAYED: readonly RefusalMechanism[] = ['github-guard', 'token-permission', 'review-gate'];
+const RELAYED: readonly RefusalMechanism[] = SIGNED_MECHANISMS;
 
 /** The server's word on a relayed refusal (`/api/refusals`). */
-export type Check = 'verified' | 'redacted' | 'unverified';
+export type Check = RefusalCheck;
 
 /** Each relayed refusal's check, by seq: one not in it has not been answered yet. */
 export type Checks = ReadonlyMap<number, Check>;
@@ -86,7 +87,7 @@ export function foldRefusals(seen: readonly PublicEvent[]): FoldedRefusals {
   const by = new Map<number, Refusal[]>();
   for (const event of seen) {
     if (event.type !== 'action.refused') continue;
-    const { mechanism, action, guardrails, count, record, signature } = event.payload;
+    const { mechanism, action, guardrails, count, signature } = event.payload;
     if (!mayAppend(mechanism, event.appended_by ?? '')) continue;
     const refusal: Refusal = {
       seq: event.seq,
@@ -96,7 +97,8 @@ export function foldRefusals(seen: readonly PublicEvent[]): FoldedRefusals {
       count: count ?? 1,
       workItem: event.work_item,
       signed: RELAYED.includes(mechanism) || signature !== undefined,
-      checkable: record !== undefined && signature !== undefined,
+      // Only one the server will check: a record named by its hash, and a signature. Any other is unverified here.
+      checkable: signedPayloadOf(event) !== undefined,
     };
     for (const n of new Set(guardrails ?? [])) {
       if (!SHOWS.get(mechanism)?.has(n)) continue;
@@ -150,13 +152,9 @@ export function refusalsAt(list: readonly Refusal[] | undefined, t: number, chec
   return view;
 }
 
-/** The relayed refusals the server is asked about: those that carry a record and a signature. */
+/** The relayed refusals the server is asked about: those it checks, by the same test (`signedPayloadOf`). */
 export const toCheck = (events: readonly PublicEvent[]): number[] =>
-  events.flatMap((event) =>
-    event.type === 'action.refused' && event.payload.record !== undefined && event.payload.signature !== undefined
-      ? [event.seq]
-      : [],
-  );
+  events.flatMap((event) => (signedPayloadOf(event) !== undefined ? [event.seq] : []));
 
 /** The last rollback the line recorded, and who made it: what proves guardrail 9 where nothing refuses. */
 export interface LastRollback {

@@ -8,7 +8,7 @@ import type { PayloadOf, PublicEvent } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { describe, expect, it } from 'vitest';
 import { type Check, project } from '../../web/src/projection/index.ts';
-import { REFUSAL_WINDOW_MS } from '../../web/src/projection/refusals.ts';
+import { REFUSAL_WINDOW_MS, toCheck } from '../../web/src/projection/refusals.ts';
 import { END, SAMPLES, work } from './support.ts';
 
 const START = Date.parse('2026-10-03T09:00:00Z');
@@ -124,6 +124,24 @@ describe('a guardrail’s refusals', () => {
     expect(row(events, 3).refusals.lines[0]?.standing).toBe('checking');
     const seq = events[0]?.seq ?? 0;
     expect(row(events, 3, START + 60 * MINUTE, new Map([[seq, 'verified']])).refusals.counted).toBe(1);
+  });
+
+  it('asks the server only about a record it will check, and reads any other as unverified, not as being checked', () => {
+    const events = [
+      ...refused('2040', 1, 'factory_line', { mechanism: 'github-guard', guardrails: [1], ...SIGNED }),
+      // A record not named by its hash, as the server's test (`signedPayloadOf`) would not take it.
+      ...refused('2041', 2, 'factory_line', {
+        mechanism: 'github-guard',
+        guardrails: [1],
+        ...SIGNED,
+        record: 'A'.repeat(64),
+      }),
+    ];
+    expect(toCheck(events)).toEqual([events[0]?.seq]);
+    expect(row(events, 1).refusals.lines.map((l) => [l.workItem, l.standing])).toEqual([
+      ['2041', 'unverified'],
+      ['2040', 'checking'],
+    ]);
   });
 
   it('keeps a refusal’s few words as a visitor reads them', () => {

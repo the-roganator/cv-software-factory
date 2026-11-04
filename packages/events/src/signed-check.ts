@@ -14,12 +14,9 @@
  */
 import { createHash, createPublicKey, type KeyObject, verify } from 'node:crypto';
 import { redactDeep } from './public.ts';
-import { canonical, RELAY_ADDS } from './signed.ts';
+import { canonical, RELAY_ADDS, type RefusalCheck, type SignedPayload } from './signed.ts';
 
-export type RefusalCheck = 'verified' | 'redacted' | 'unverified';
-
-/** What the check needs of a public refusal: its payload, naming its record and the signature over it. */
-export type SignedPayload = Record<string, unknown> & { record: string; signature: string };
+export { type RefusalCheck, type SignedPayload, signedPayloadOf } from './signed.ts';
 
 /** An Ed25519 public key from PEM, or none: anything else, a private key included, is no key. */
 export function publicKeyOf(pem: string | undefined): KeyObject | undefined {
@@ -64,15 +61,6 @@ export function checkRecord(
   if (shown === canonical(signed)) return 'verified';
   if (shown === canonical(redactDeep(signed))) return 'redacted';
   return 'unverified';
-}
-
-/** A public refusal's payload if it names a record and a signature, as a relayed one does; any other, nothing. */
-export function signedPayloadOf(event: { type: string; payload?: unknown }): SignedPayload | undefined {
-  if (event.type !== 'action.refused') return undefined;
-  const payload = event.payload as Record<string, unknown> | undefined;
-  const { record, signature } = payload ?? {};
-  if (typeof record !== 'string' || typeof signature !== 'string' || !/^[0-9a-f]{64}$/.test(record)) return undefined;
-  return { ...payload, record, signature };
 }
 
 /** The checks an event-log folder keeps beside its events, for a page that reads the folder with no server. */

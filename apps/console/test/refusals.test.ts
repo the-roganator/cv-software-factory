@@ -103,6 +103,21 @@ describe('a relayed refusal, checked against its record', () => {
   });
 });
 
+describe('the checks the server keeps', () => {
+  it('leaves out one whose record it could not read, and reads it again when next asked', async () => {
+    const store = storeOf();
+    const relayed = await signed(store);
+    let fail = true;
+    const flaky = {
+      open: (hash: string) => (fail ? Promise.reject(new Error('the volume is not there')) : store.open(hash)),
+    };
+    const checks = new RefusalChecks(flaky, key);
+    expect(await checks.of([{ seq: 7, payload: relayed }])).toEqual({});
+    fail = false;
+    expect(await checks.of([{ seq: 7, payload: relayed }])).toEqual({ 7: 'verified' });
+  });
+});
+
 describe('/api/refusals', () => {
   it('answers each relayed refusal’s check by seq, and nothing of its record', async () => {
     const store = storeOf();

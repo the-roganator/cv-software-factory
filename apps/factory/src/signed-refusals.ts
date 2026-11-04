@@ -15,17 +15,13 @@
  * ConfigMap `refusal-key` (`make refusal-key`).
  */
 import { createHash, createPrivateKey, createPublicKey, type KeyObject, sign, verify } from 'node:crypto';
-import type { PayloadOf, REFUSAL_MECHANISMS } from '@software-factory/events';
+import type { PayloadOf } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
-import { recordBytes as bytesOf, canonical } from '@software-factory/events/signed';
+import { canonical, recordBytes, SIGNED_MECHANISMS } from '@software-factory/events/signed';
 import { z } from 'zod';
 
-/** The mechanisms a refusal is signed for: those with no role of their own in the store, which a worker relays. */
-export const SIGNED_MECHANISMS = [
-  'github-guard',
-  'token-permission',
-  'review-gate',
-] as const satisfies (typeof REFUSAL_MECHANISMS)[number][];
+/** The record's bytes, in order, so that the same refusal is always the same bytes; and the mechanisms signed for. */
+export { canonical, recordBytes, SIGNED_MECHANISMS };
 
 /** A refusal as it is signed: the payload without what the relay adds (its record, its signature, its fold). */
 export type SignedPayload = Omit<PayloadOf<'action.refused'>, 'record' | 'signature' | 'count' | 'lastAt'>;
@@ -45,11 +41,6 @@ export interface SignedRefusal extends RefusalFacts {
   record: string;
   signature?: string;
 }
-
-/** The record's bytes: its fields, and theirs, in order, so that the same refusal is always the same bytes. */
-export const recordBytes = (facts: RefusalFacts): Uint8Array => bytesOf(facts);
-
-export { canonical };
 
 /** The record's hash, as the artifact store names it. */
 export const recordHash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');

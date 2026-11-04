@@ -2,14 +2,14 @@
  * The server's word on each relayed refusal the page holds (`GET /api/refusals`, public): whether it is what the GitHub
  * worker signed, which only the server can check (`apps/console/src/refusals.ts`). Guardrails counts one only once it
  * checks out, and reads one it has no word on yet as being checked. Asked when the page holds a relayed refusal it has
- * no word on, and again a few seconds later, for a minute, while one stays so: one the server had not read yet.
+ * no word on, and again a few seconds later, for a minute after the last new one, while one stays so: one the server
+ * had not read yet, or whose record it could not read.
  */
 import type { PublicEvent } from '@software-factory/events';
+import { REFUSAL_CHECKS } from '@software-factory/events/signed';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type Check, type Checks, toCheck } from './projection/index.ts';
 import type { Origin } from './source.ts';
-
-const CHECKS: readonly string[] = ['verified', 'redacted', 'unverified'];
 
 /** How long to wait before asking again for a refusal the server had no word on, and how many times. */
 const AGAIN_MS = 5000;
@@ -21,7 +21,8 @@ export function checksOf(body: unknown): Map<number, Check> {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return checks;
   for (const [seq, check] of Object.entries(body)) {
     const n = Number(seq);
-    if (Number.isSafeInteger(n) && typeof check === 'string' && CHECKS.includes(check)) checks.set(n, check as Check);
+    if (Number.isSafeInteger(n) && typeof check === 'string' && (REFUSAL_CHECKS as readonly string[]).includes(check))
+      checks.set(n, check as Check);
   }
   return checks;
 }
@@ -34,6 +35,12 @@ export function useRefusalChecks(events: readonly PublicEvent[], from: Origin): 
   const [checks, setChecks] = useState<Checks>(() => new Map());
   const [tries, setTries] = useState(0);
   const wanted = useMemo(() => toCheck(events), [events]);
+  // A new relayed refusal is asked about afresh, however many times the ones before it were.
+  const [askedFor, setAskedFor] = useState(wanted.length);
+  if (wanted.length !== askedFor) {
+    setAskedFor(wanted.length);
+    setTries(0);
+  }
   const missing = wanted.filter((seq) => !checks.has(seq)).length;
   // Read when the answer comes, so a new event that changes nothing asked does not ask again.
   const asked = useRef(wanted);

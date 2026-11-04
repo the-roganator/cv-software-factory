@@ -51,10 +51,12 @@ if (!sql && !EVENT_LOG) log.warn('no event store or event log configured: the co
 const artifacts = new DiskArtifacts(source.artifacts ?? mkdtempSync(join(tmpdir(), 'no-artifacts-')));
 // The cluster's key, or, serving an event-log folder, the folder's own.
 const logKey = !sql && EVENT_LOG ? join(EVENT_LOG, REFUSAL_KEY_FILE) : undefined;
+// An empty REFUSAL_PUBLIC_KEY, as an optional ConfigMap's missing key can leave it, is none.
 const keyPem =
-  process.env.REFUSAL_PUBLIC_KEY ?? (logKey && existsSync(logKey) ? readFileSync(logKey, 'utf-8') : undefined);
+  process.env.REFUSAL_PUBLIC_KEY?.trim() || (logKey && existsSync(logKey) ? readFileSync(logKey, 'utf-8') : undefined);
+// A key given but not an Ed25519 public key is logged as such (`refusalKey`); only none at all is warned of here.
 const key = refusalKey(keyPem);
-if (!key) log.warn('no REFUSAL_PUBLIC_KEY: every relayed refusal reads as unverified');
+if (!keyPem) log.warn('no REFUSAL_PUBLIC_KEY: every relayed refusal reads as unverified');
 
 const server = createServer(
   createApp({

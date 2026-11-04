@@ -131,6 +131,25 @@ test('a visitor reads each guardrail’s refusals in the week, checked by the se
   expect(scan.violations).toEqual([]);
 });
 
+test('a relayed refusal the server could not answer for is asked about again, and reads as checked once it is', async ({
+  page,
+}) => {
+  let failed = 0;
+  await page.route('**/api/refusals', async (route) => {
+    if (failed++ === 0) return route.fulfill({ status: 500, body: 'The refusals could not be checked.\n' });
+    return route.continue();
+  });
+  await guardrails(page);
+  await rowButton(page, 2).click();
+  const line = panel(page).locator('.more .reflist > li');
+  await expect(line.locator('small')).toHaveText('Checking its signature.');
+  await expect(line.locator('small')).toHaveText(
+    'Redacted in public: the line checked its signature when it was recorded.',
+    { timeout: 15_000 },
+  );
+  expect(failed).toBeGreaterThan(1);
+});
+
 for (const as of ['martin', 'visitor'] as const) {
   test(`every attack says it has not been launched yet, with Launch ${as === 'martin' ? 'for Martin' : 'as a label for a visitor'}`, async ({
     page,

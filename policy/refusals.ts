@@ -2,13 +2,15 @@
  * Who may record a refusal (`action.refused`), by its mechanism, and which of spec 6's guardrails each shows. A
  * mechanism with a role of its own in the event store appends its own refusals; one with none (the GitHub worker,
  * admission control, GitHub itself) is relayed by the worker that asked it, which holds a role. Row security holds
- * every refusal to the roles named here (`packages/store/migrations/0040_refusals-by-mechanism.sql`), and to the
- * guardrails named here (`0041_refusals-as-they-read.sql`, rewritten by `0042_refusals-before-guardrails.sql`);
+ * every refusal to the roles named here (`packages/store/migrations/0040_refusals-by-mechanism.sql`, its table
+ * rewritten by `0046_red-team-refusals.sql`), and to the guardrails named here (`0041_refusals-as-they-read.sql`,
+ * rewritten by `0042_refusals-before-guardrails.sql`);
  * `packages/store/test/grants.test.ts` fails unless the store's tables equal these, and inserts each mechanism as every
  * role.
  *
- * The red-team harness's role (`factory_redteam`, which will relay what the GitHub worker refused an attack and record
- * the egress attack's own attempts) is not here yet: the task that makes the role adds it.
+ * The red-team harness's role (`factory_redteam`) relays what the GitHub worker's guard, GitHub and the review check
+ * refused an attack, and records the egress attack's own attempts. The others an attack meets are recorded by the
+ * mechanism's own role, or the line's, and the harness waits for them.
  *
  * Human-owned: see `README.md`.
  */
@@ -33,17 +35,17 @@ export const REFUSALS = {
     for:
       "The GitHub worker's own guard, before it asks GitHub: a protected path, a branch or a deploy it does not own, an " +
       "issue or pull request it did not open. The worker's signed answer, relayed by the worker that asked.",
-    appendedBy: ['factory_line'],
+    appendedBy: ['factory_line', 'factory_redteam'],
     guardrails: { protected: [1], branch: [1], deploy: [1], issue: [10] },
   },
   'token-permission': {
     for: "GitHub refusing a write with the App's token, with status 403: the GitHub worker's signed answer, relayed.",
-    appendedBy: ['factory_line'],
+    appendedBy: ['factory_line', 'factory_redteam'],
     guardrails: { forbidden: [1] },
   },
   'review-gate': {
     for: 'The review check refusing a pull request: its run, read and signed by the GitHub worker, relayed.',
-    appendedBy: ['factory_line'],
+    appendedBy: ['factory_line', 'factory_redteam'],
     guardrails: { risk: [2], 'code-owned': [1] },
   },
   gateway: {
@@ -58,7 +60,7 @@ export const REFUSALS = {
   },
   'egress-policy': {
     for: "The runners' NetworkPolicy refusing a connection: the egress attack's own record of each attempt.",
-    appendedBy: [],
+    appendedBy: ['factory_redteam'],
     guardrails: { egress: [5] },
   },
   'admission-control': {

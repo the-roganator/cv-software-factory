@@ -26,6 +26,8 @@
  *   spec.
  * - The "+" (`improvements.ts`): `POST /admin/improvements` with Martin's words and the request's id, with the passkey
  *   again, which opens a work item of kind improvement with his request.
+ * - A red-team attack (`attacks.ts`): `POST /admin/attacks/:attack`, one at a time and with no passkey, which opens a
+ *   work item of kind red-team with his launch.
  * - `GET /admin/session`, with the token the session's writes carry and the deployment's tools Martin's menu links to,
  *   and `GET /admin/events/stream`.
  * - `GET /admin/health`.
@@ -39,6 +41,7 @@ import { type HoldAnswer, REQUEST_WORDS, type ReleaseControl, WORDED_ANSWERS } f
 import { z } from 'zod';
 import { ACCESS, ENROLMENT_CODE, PASSKEYS, routeOf, SESSION, type ServedBy } from '../../../../policy/access.ts';
 import type { Logger } from '../log.ts';
+import { LAUNCH, launchAttack } from './attacks.ts';
 import { clientAddress, LIMITS, RateLimit } from './client.ts';
 import type { AdminConfig } from './config.ts';
 import { type FlagStages, MOVE } from './flags.ts';
@@ -429,6 +432,11 @@ export function createAdminApp({
         return refused(400, 'body', `Send your words, up to ${REQUEST_WORDS} characters, and the request’s id.`);
       }
       return { status: 200, body: await requestImprovement(store, session as Session, given.data) };
+    },
+
+    'attack.launch': async ({ values, body }) => {
+      if (!LAUNCH.safeParse(body).success) return refused(400, 'body', 'Send nothing but the attack, in the path.');
+      return { status: 200, body: await launchAttack(store, values.attack ?? '', config.attackAvailable) };
     },
 
     'hold.approve': (context) => answer('approved', context),

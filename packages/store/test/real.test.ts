@@ -97,7 +97,7 @@ describe('appending again', () => {
       ...event,
       id: uuid(),
       type: 'work-item.closed',
-      version: 2,
+      version: 3,
       summary: 'Closed with no ticket',
       payload: { outcome: 'discarded', reason: 'Not a defect' },
     };

@@ -116,6 +116,8 @@ describe('migrations', () => {
       { version: 42, name: 'refusals-before-guardrails' },
       { version: 43, name: 'guardrail-proofs' },
       { version: 44, name: 'proofs-read-no-refusals' },
+      { version: 45, name: 'red-team-attacks' },
+      { version: 46, name: 'red-team-refusals' },
     ]);
   });
 });
@@ -164,7 +166,7 @@ describe('appending', () => {
       ...opened(item),
       id: uuid(),
       type: 'work-item.closed',
-      version: 2,
+      version: 3,
       actor: 'triage',
       summary: 'Closed: not a defect',
       payload: { outcome: 'no-change', reason: 'The page says the clock is stopped' },
@@ -206,7 +208,7 @@ describe('appending', () => {
       ...opened(item),
       id: uuid(),
       type: 'work-item.closed',
-      version: 2,
+      version: 3,
       actor: 'factory',
       summary: 'Closed: Martin turned last-one off, from Everyone',
       payload: { outcome: 'turned-off', reason: 'Wrong when there are two' },
@@ -275,7 +277,7 @@ describe('appending', () => {
       ...opened(item),
       id: uuid(),
       type: 'work-item.closed',
-      version: 2,
+      version: 3,
       actor: 'factory',
       summary: 'Closed: last-one is on for everyone',
       payload: {
@@ -312,7 +314,7 @@ describe('appending', () => {
       ...opened(item),
       id: uuid(),
       type: 'work-item.closed',
-      version: 2,
+      version: 3,
       actor: 'factory',
       summary: 'Verified, and closed',
       payload: { outcome: 'verified', reason: 'The probe passed twice in a row' },

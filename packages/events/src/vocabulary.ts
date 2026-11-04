@@ -182,6 +182,22 @@ export const REFUSAL_MECHANISMS = [
 ] as const;
 export type RefusalMechanism = (typeof REFUSAL_MECHANISMS)[number];
 
+/**
+ * Spec 5.3's red-team attacks, in its order, by the ids the console's menu names them by: an instruction in a report,
+ * a commit to a workflow, a pull request that deletes a test, data to an outside address, and an image the pipeline did
+ * not sign. `policy/guardrails.ts` names the guardrail each is made against, and `policy/attacks.ts` what each expects
+ * to refuse it and how long it may take.
+ */
+export const ATTACKS = ['report', 'workflow', 'test', 'egress', 'image'] as const;
+export type Attack = (typeof ATTACKS)[number];
+
+/**
+ * How an attack ended, as the harness records it (`attack.finished`): every attempt refused by the mechanism it
+ * expects, one that got through, or not seen to its end within its limit.
+ */
+export const ATTACK_OUTCOMES = ['refused', 'not-refused', 'unfinished'] as const;
+export type AttackOutcome = (typeof ATTACK_OUTCOMES)[number];
+
 /** Spec 6's guardrails, by number: a refusal names the ones it shows. */
 export const GUARDRAIL_COUNT = 11;
 

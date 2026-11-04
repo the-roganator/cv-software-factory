@@ -314,6 +314,10 @@ const CLOSED: Record<PayloadOf<'work-item.closed'>['outcome'], Outcome> = {
   quarantined: 'quarantined',
   discarded: 'no-ticket',
   'turned-off': 'turned-off',
+  // A red-team attack's work item, closed as the attack ended: closed, as one that changed nothing.
+  refused: 'closed',
+  'not-refused': 'closed',
+  unfinished: 'closed',
 };
 
 /** Folds one work item's events (all at or before t, in order) into its state. */

@@ -66,6 +66,8 @@ export const PUBLIC_VIEWS = {
   'work-item.reopened': redacted,
   'defect.injected': redacted,
   'attack.launched': redacted,
+  // An attack's own record of what it tried, and what came back, through the redactor, as a refusal's output is.
+  'attack.finished': redacted,
   'signal.received': (event) => {
     const { report, ...payload } = event.payload;
     if (!report) return redacted(event);

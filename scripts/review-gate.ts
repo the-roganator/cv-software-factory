@@ -36,7 +36,7 @@
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { type Judged, verdictBlock } from '../policy/review-verdict.ts';
+import { type Found, type Judged, verdictBlock } from '../policy/review-verdict.ts';
 import {
   type Annotation,
   appOpened,
@@ -57,6 +57,7 @@ import {
   tagsOf,
   testIntegrityRun,
   type Verdict,
+  verdict,
   words,
 } from './review-routing.ts';
 
@@ -403,7 +404,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       ),
       owners(each),
     ]);
-    const integrity = testIntegrityRun(runs, head, files);
+    const integrity = testIntegrityRun(runs, head, files, pr.base.ref);
     let testIntegrity: { read: true } | { read: false; reason: string } = { read: true };
     let excused: string[] = [];
     if ('run' in integrity) {
@@ -413,24 +414,31 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
         testIntegrity = { read: false, reason: `GitHub gave ${annotations.length} of its ${expected} annotations` };
       excused = excusedTests(annotations);
     } else testIntegrity = { read: false, reason: integrity.reason };
+    const complete = files.length >= (pr.changed_files ?? 0);
     const tags = tagsOf({
       files,
-      complete: files.length >= (pr.changed_files ?? 0),
+      complete,
       headRef: pr.head.ref,
       owners: rules,
       excused,
     });
-    const pin = appOpened(judged)
-      ? await exactPin(files, {
-          signedAt,
-          ahead: (where, from, to) => ahead(where, from, to, read),
-          content: async (path) => {
-            const text = await fileAt(repo, path, head, read);
-            if (text === undefined) throw new Error(`${path} is not at ${short(head)}`);
-            return text;
-          },
-        }).catch((error: Error) => ({ reason: `the gate could not check it: ${error.message}` }))
-      : undefined;
+    // Martin's say passes it before an exact pin is looked at, so cosign is not asked.
+    const pin =
+      appOpened(judged) && !verdict(judged, reviews).pass
+        ? await exactPin(
+            files,
+            {
+              signedAt,
+              ahead: (where, from, to) => ahead(where, from, to, read),
+              content: async (path) => {
+                const text = await fileAt(repo, path, head, read);
+                if (text === undefined) throw new Error(`${path} is not at ${short(head)}`);
+                return text;
+              },
+            },
+            complete,
+          ).catch((error: Error) => ({ reason: `the gate could not check it: ${error.message}` }))
+        : undefined;
     return route({ ...facts, tags, testIntegrity, labelsRemoved: riskLabelsRemoved(events), ...(pin ? { pin } : {}) });
   } catch (error) {
     // Martin's say needs only his reviews; anything else unread holds the pull request, saying what.
@@ -451,19 +459,38 @@ const RULE =
   "build.yml signed on main; and in the app's repository the App's with no risk tags, or at Lights-out those whose " +
   'tags it allows (spec 4.3, ADR 0014).';
 
-/** The check's summary: the rule, each pull request's words, and the verdict's block, which the line reads. */
-function summaryOf(commit: string, judged: readonly { pr: PullRequest; said: Decision }[]): string {
-  const entries: Judged[] = judged.map(({ pr, said }) => ({
-    number: pr.number,
-    head: pr.head.sha,
-    rule: said.rule,
-    tags: said.tags,
-  }));
-  return [
-    RULE,
-    ...judged.map(({ pr, said }) => words(pr.number, said)),
-    verdictBlock({ version: 1, commit, judged: entries }),
-  ].join('\n\n');
+/** The most a check run's summary may hold, GitHub's 65,535 characters, with room to spare. */
+export const SUMMARY_LIMIT = 60_000;
+
+/** A tag with no more than `keep` of what gave it, the rest counted. */
+const cut = (tag: Found, keep: number): Found => {
+  const more = (tag.more ?? 0) + Math.max(0, tag.because.length - keep);
+  return more > 0 ? { tag: tag.tag, because: tag.because.slice(0, keep), more } : tag;
+};
+
+/**
+ * The check's summary: the rule, each pull request's words, and the verdict's block, which the line reads. A queued
+ * stack with many tags could pass GitHub's limit, and a summary over it is refused, leaving no verdict at all: so what
+ * gave each tag is cut, fewer each time, until it fits. The rule, the tags and the heads are never cut.
+ */
+export function summaryOf(commit: string, judged: readonly { pr: PullRequest; said: Decision }[]): string {
+  let summary = '';
+  for (const keep of [Number.POSITIVE_INFINITY, 5, 1, 0]) {
+    const fitted = judged.map(({ pr, said }) => ({ pr, said: { ...said, tags: said.tags.map((t) => cut(t, keep)) } }));
+    const entries: Judged[] = fitted.map(({ pr, said }) => ({
+      number: pr.number,
+      head: pr.head.sha,
+      rule: said.rule,
+      tags: said.tags,
+    }));
+    summary = [
+      RULE,
+      ...fitted.map(({ pr, said }) => words(pr.number, said)),
+      verdictBlock({ version: 1, commit, judged: entries }),
+    ].join('\n\n');
+    if (summary.length <= SUMMARY_LIMIT) break;
+  }
+  return summary;
 }
 
 /** Posts the `review` check on a commit, as the review App, or says why it does not. */

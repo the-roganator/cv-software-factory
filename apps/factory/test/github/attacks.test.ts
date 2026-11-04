@@ -3,6 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
+import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Actions, LiveActions } from '../../src/github/actions.ts';
 import { createAttackServer } from '../../src/github/attacks.ts';
@@ -37,6 +38,8 @@ interface World {
   workflows: 'refused' | 'accepted';
   /** The review check on attack 3's pull request: held, passed, or never concluded. */
   review: 'held' | 'passed' | 'pending';
+  /** An error GitHub answers when the door first reads, as a client error does, detail and all. */
+  readFails?: Error;
 }
 
 function fakes(world: World) {
@@ -95,6 +98,7 @@ function fakes(world: World) {
   const reads = {
     async head(repo: string, branch: string) {
       note('head', repo, branch);
+      if (world.readFails) throw world.readFails;
       return SHA;
     },
     async checkRuns(repo: string, sha: string) {
@@ -113,11 +117,14 @@ describe('the GitHub worker’s attack door', () => {
     close = undefined;
   });
 
-  async function serve(world: World, { signed = true } = {}) {
+  async function serve(
+    world: World,
+    { signed = true, kept = true, logged }: { signed?: boolean; kept?: boolean; logged?: string[] } = {},
+  ) {
     const dir = await mkdtemp(join(tmpdir(), 'attack-door-'));
     const { calls, actions, github, reads } = fakes(world);
     const recorder = new RefusalRecorder({
-      artifacts: new DiskArtifacts(dir),
+      ...(kept && { artifacts: new DiskArtifacts(dir) }),
       key: signed ? privateKey : undefined,
       log: quiet,
       now: AT,
@@ -132,7 +139,7 @@ describe('the GitHub worker’s attack door', () => {
       appRepo: REPO,
       port: 0,
       host: '127.0.0.1',
-      log: quiet,
+      log: logged ? pino({ level: 'error' }, { write: (line: string) => void logged.push(line) }) : quiet,
       reviewWaitMs: 100,
       reviewEveryMs: 5,
     });
@@ -244,8 +251,43 @@ describe('the GitHub worker’s attack door', () => {
     const { calls, ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held' }, { signed: false });
     const { status, body } = await ask('workflow');
     expect(status).toBe(502);
-    expect(body.message).toContain('no key to sign');
+    expect(body.message).toBe(
+      'The attack door has no key to sign a refusal (REFUSAL_SIGNING_KEY), so it cannot answer one.',
+    );
     expect(calls.some((c) => c.method === 'commit')).toBe(false);
+  });
+
+  it('answers 502 in its own words when it has nowhere to keep a refusal', async () => {
+    const { ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held' }, { kept: false });
+    const { status, body } = await ask('workflow');
+    expect(status).toBe(502);
+    expect(body).toEqual({
+      error: 'door',
+      message: 'The attack door has nowhere to keep a refusal, so it cannot answer one.',
+    });
+  });
+
+  it('answers 502 with a fixed message to a failure it did not write, and keeps the error’s words for its log', async () => {
+    // A client error whose words the door did not write: here, as an API's detail might, a token-shaped string.
+    const detail = 'GET /repos/x/git/ref/heads/main answered 500: Bearer ghs_16C7e42F292c6912E7710c838347Ae178B4a';
+    const logged: string[] = [];
+    const { ask } = await serve(
+      { guard: 'refuses', workflows: 'refused', review: 'held', readFails: new GitHubError('server', detail, 500) },
+      { logged },
+    );
+    for (const attack of ['workflow', 'test']) {
+      const { status, body } = await ask(attack);
+      expect(status).toBe(502);
+      expect(body).toEqual({
+        error: 'door',
+        message: 'The attack door could not make the attack; the GitHub worker’s log says why.',
+      });
+      expect(JSON.stringify(body)).not.toContain('ghs_');
+    }
+    expect(logged).toHaveLength(2);
+    // The log has the error, by what the request answered: the answer's place for the detail is there, not the 502.
+    expect(logged.every((line) => line.includes('the attack door could not make an attack'))).toBe(true);
+    expect(logged.every((line) => line.includes('ref/heads/main answered 500'))).toBe(true);
   });
 
   it('makes only the two attacks that act in GitHub, by POST, one at a time', async () => {

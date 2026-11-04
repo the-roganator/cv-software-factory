@@ -172,9 +172,8 @@ export const rules = (requiredChecks: string[]) => ({
  * Code scanning as a gate: a pull request merges only once CodeQL has analysed it, and not while its analysis finds a
  * new security alert of medium severity or higher, or a new error. The `codeql` check alone fails only at high or
  * above, and no rule required it. The way past a false positive is to dismiss the alert in code scanning, with a
- * written reason, which Martin does. GitHub says the rule does not apply to the merge queue's groups, so it judges
- * each pull request's own analysis, not the queue's commit; CodeQL runs there too (codeql.yml), so the queue never
- * waits for an analysis that is not coming.
+ * written reason, which Martin does. The rule does not apply to the merge queue's groups: it judges each pull
+ * request's own analysis, and CodeQL does not run in the queue, which does not wait for it (codeql.yml).
  */
 export const CODE_SCANNING = {
   tool: 'CodeQL',

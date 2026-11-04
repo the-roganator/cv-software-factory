@@ -101,6 +101,26 @@ interface DoorAnswer {
   unconcluded?: { what: string };
 }
 
+/** The failures the door itself knows, in its own words: the only text from a failure it ever answers. */
+const DOOR_FAILURES = {
+  'nowhere-to-keep': 'The attack door has nowhere to keep a refusal, so it cannot answer one.',
+  'no-signing-key': 'The attack door has no key to sign a refusal (REFUSAL_SIGNING_KEY), so it cannot answer one.',
+} as const;
+type DoorFailure = keyof typeof DOOR_FAILURES;
+
+/** What the door answers to any other failure: the error's own text, from GitHub or a library, stays in its log. */
+const UNEXPECTED_FAILURE = 'The attack door could not make the attack; the GitHub worker’s log says why.';
+
+/** A failure the door itself throws, which it answers in its own words. Only this module throws one. */
+class DoorError extends Error {
+  readonly failure: DoorFailure;
+  constructor(failure: DoorFailure) {
+    super(DOOR_FAILURES[failure]);
+    this.name = 'DoorError';
+    this.failure = failure;
+  }
+}
+
 export function createAttackServer(options: AttackServerOptions): { server: Server; listening: Promise<void> } {
   const { log } = options;
   let busy = false;
@@ -130,7 +150,10 @@ export function createAttackServer(options: AttackServerOptions): { server: Serv
       send(res, 200, answer);
     } catch (error) {
       log.error({ err: error, attack }, 'the attack door could not make an attack');
-      send(res, 502, { error: 'door', message: error instanceof Error ? error.message : String(error) });
+      // Its own failures by their words, looked up by kind rather than read from the error; anything else, which may
+      // carry an API's detail, by a fixed message.
+      const message = error instanceof DoorError ? DOOR_FAILURES[error.failure] : UNEXPECTED_FAILURE;
+      send(res, 502, { error: 'door', message });
     } finally {
       busy = false;
     }
@@ -153,10 +176,8 @@ export function createAttackServer(options: AttackServerOptions): { server: Serv
  */
 async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal): Promise<SignedRefusal> {
   const signed = await recorder.record(refusal);
-  if (!signed) throw new Error('the attack door has nowhere to keep a refusal, so it cannot answer one');
-  if (signed.signature === undefined) {
-    throw new Error('the attack door has no key to sign a refusal (REFUSAL_SIGNING_KEY), so it cannot answer one');
-  }
+  if (!signed) throw new DoorError('nowhere-to-keep');
+  if (signed.signature === undefined) throw new DoorError('no-signing-key');
   return signed;
 }
 

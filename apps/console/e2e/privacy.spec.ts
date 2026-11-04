@@ -48,7 +48,7 @@ test('the footer leads to the privacy page, which says what is kept and for how 
   await expect(page.getByRole('heading', { level: 1, name: 'Privacy' })).toBeVisible();
   await expect(page.getByText('The console keeps nothing on your device: no cookies and no tracking.')).toBeVisible();
   await expect(page.locator('.privacy-page li').filter({ hasText: 'But Martin’s sign-in.' })).toContainText(
-    '__Host-session, for 30 minutes',
+    '__Host-session, for 60 minutes',
   );
   await expect(page.locator('.privacy-page li').filter({ hasText: 'A preview of the app.' })).toContainText(
     'Then it keeps preview, for 24 hours from the last time you asked',

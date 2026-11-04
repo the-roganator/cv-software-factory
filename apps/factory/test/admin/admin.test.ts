@@ -198,9 +198,9 @@ async function stepUp(browser: Browser, passkey: Authenticator) {
 
 const sessionOf = (browser: Browser) => sha256(browser.cookie ?? '');
 
-/** Ends a session's 30 minutes, as the store's clock would. */
+/** Ends a session's hour, as the store's clock would. */
 const expire = (browser: Browser) => db.owner`
-  update sessions set signed_in_at = now() - interval '31 minutes', expires_at = now() - interval '1 minute'
+  update sessions set signed_in_at = now() - interval '61 minutes', expires_at = now() - interval '1 minute'
   where id_sha256 = ${sessionOf(browser)}`;
 
 const lastEvents = (n: number) => db.owner<

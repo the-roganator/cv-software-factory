@@ -42,7 +42,7 @@ export interface Access {
 }
 
 /** A session lasts this long from sign-in, however busy. There is no idle timeout: ADR 0012 says why. */
-export const SESSION = { minutes: 30, idleTimeout: false } as const;
+export const SESSION = { minutes: 60, idleTimeout: false } as const;
 
 /** The passkey, given again, is fresh for this long. */
 export const STEP_UP = { minutes: 5 } as const;

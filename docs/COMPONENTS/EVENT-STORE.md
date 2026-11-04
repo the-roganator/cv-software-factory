@@ -67,7 +67,7 @@ The admin service's tables, which no worker, the console or Martin's command lin
 
 - **Enrolment codes,** kept as their SHA-256: the enrolment adds one and nothing more, and the store sets its ten minutes. Five tries at most, and used once.
 - **Passkeys:** each credential's id and public key, its name, and the code it was enrolled with. At most two held at once, and a revoked one stays revoked; revoking one ends every session signed in with it, whoever revokes it.
-- **Sessions,** kept as the SHA-256 of their ids: 30 minutes from signing in at most, when the passkey was last given again, and how each ended. An ended session stays ended.
+- **Sessions,** kept as the SHA-256 of their ids: an hour from signing in at most, when the passkey was last given again, and how each ended. An ended session stays ended.
 - **WebAuthn's challenges,** each used once: to enrol, with its code; to sign in; or to give the passkey again, in a session.
 
 The figures are [`policy/access.ts`](../../policy/access.ts)'s, and the grants test holds the store's to them.

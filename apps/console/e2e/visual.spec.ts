@@ -596,7 +596,7 @@ test.describe('the doors in Ink', () => {
 
   test('the sign-in door, after the session ended', async ({ page }) => {
     await adminService(page, 'visitor');
-    await door(page, '/?view=sign-in&theme=ink&ended=expired&at=2026-10-06T15%3A10%3A00Z');
+    await door(page, '/?view=sign-in&theme=ink&ended=expired&at=2026-10-06T15%3A40%3A00Z');
     await expect(page).toHaveScreenshot('m07-sign-in-ended-ink.png');
   });
 });

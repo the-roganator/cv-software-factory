@@ -667,7 +667,9 @@ table.steps { width: 100%; border-collapse: collapse; font: 12px/1.35 var(--font
 /* ---- Admin (milestone 7) --------------------------------------------------------------- */
 /* Step-up: a key after a control's label says it asks for the passkey again (unless given in the last five minutes). */
 .key { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.fresh { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font: 11px/1.4 var(--font-mono); color: var(--text-2); white-space: nowrap; }
+.fresh { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font: 11px/1.4 var(--font-mono); color: var(--text-2); white-space: nowrap; background: transparent; cursor: pointer; }
+.fresh:hover { border-color: var(--text-muted); color: var(--text); }
+.fresh .glyph.end { width: 10px; height: 10px; color: var(--text-muted); }
 /* Needs you: one card per hold, each answer a row with what it does. */
 .needs-list { display: flex; flex-direction: column; gap: 12px; }
 .need .kick { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; align-items: baseline; }
@@ -1043,7 +1045,7 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
       <span class="status" id="status"></span>
       <span id="admin-top" class="top-right">
         <button type="button" class="btn small" id="preview-btn">Preview as visitor</button>
-        <span class="fresh" id="fresh" hidden></span>
+        <button type="button" class="fresh" id="fresh" data-end-fresh hidden></button>
         <button type="button" class="btn attn" id="stop-btn"></button>
         <span class="account">
           <button type="button" class="account-btn" id="account-btn" aria-expanded="false" aria-controls="menu"><span class="me" aria-hidden="true">M</span><span class="name">Martin</span></button>
@@ -2100,8 +2102,8 @@ function renderChrome() {
   $('status').hidden = door;
   $('fresh').hidden = !S.fresh;
   const left = Math.max(1, Math.ceil((S.freshUntil - Date.now()) / 60000));
-  $('fresh').innerHTML = `${glyph('key', 'key')}<span class="long">Passkey given · </span>${left}min`;
-  $('fresh').title = 'You gave your passkey in the last five minutes: actions that ask for it act at once until then.';
+  $('fresh').innerHTML = `${glyph('key', 'key')}<span class="long">Passkey given · </span>${left}min<span class="sr"> left. End it now</span>${glyph('cross', 'glyph end')}`;
+  $('fresh').title = 'End it now: the next action that asks for your passkey will ask again';
   document.querySelectorAll('.admin-only').forEach((el) => { el.hidden = S.visitor; });
   document.querySelectorAll('.visitor-only').forEach((el) => { el.hidden = !S.visitor; });
   const status = S.stopped
@@ -3414,6 +3416,8 @@ document.addEventListener('click', (e) => {
     return;
   }
   const d = t.dataset;
+  // The pill ends the passkey's five minutes at once: it only tightens, so nothing asks first.
+  if ('endFresh' in d) { S.fresh = false; S.freshUntil = 0; renderAll(); $('account-btn').focus(); return; }
   if (t.classList.contains('stage')) return openStage(+d.i);
   if ('add' in d) { if (S.stage !== null) openStage(S.stage); return openDialog('improve'); }
   if (d.launch) return openDialog('attack', { attack: d.launch });

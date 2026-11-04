@@ -143,6 +143,12 @@ export const ACCESS = {
     server: 'admin',
     routes: ['POST /admin/step-up/options', 'POST /admin/step-up'],
   },
+  // Ending the passkey's five minutes early only tightens: the next action that needs it asks for it again.
+  'step-up.end': {
+    ...admin('End the passkey given again now, so the next action that asks for it asks again'),
+    server: 'admin',
+    routes: ['POST /admin/step-up/end'],
+  },
   'sign-out': { ...admin('Sign out on this device'), server: 'admin', routes: ['POST /admin/sign-out'] },
   'sign-out-everywhere': {
     ...admin('Sign out on every device'),

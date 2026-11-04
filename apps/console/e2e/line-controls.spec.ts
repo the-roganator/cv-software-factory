@@ -167,7 +167,7 @@ test('Martin stops the line with a reason, and starts it with his passkey', asyn
     // No second dialog asked for it.
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(status(page)).toHaveText('Line running · Guarded');
-    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
+    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left. End it now');
     const started = await stored<{ reason?: string }>('line.started');
     expect(started.map((e) => [e.actor, e.payload.reason])).toEqual([['martin', 'The deploy is fine']]);
     await expect(page.getByRole('button', { name: 'Stop the line' })).toBeVisible();

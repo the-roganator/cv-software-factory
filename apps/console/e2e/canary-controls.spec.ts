@@ -156,7 +156,7 @@ test('Martin pauses at once, aborts behind a dialog, retries with his passkey ag
       .poll(async () => (await controlled()).map((c) => c.payload.action))
       .toEqual(['pause', 'abort', 'retry']);
     // Fresh for five minutes: the pill counts it down.
-    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
+    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left. End it now');
     await expect(kicker).toHaveText('Starting again…');
     await expect(note).toContainText('You retried the release');
     await expect(controls.getByRole('button')).toHaveCount(0);

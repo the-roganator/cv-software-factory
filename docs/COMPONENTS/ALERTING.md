@@ -110,7 +110,7 @@ Martin is alerted to each of his security events, at its kind's level, counted f
 | `attack-wrong-mechanism` | `attack.finished`, as above, that says refused where the line, reading the refusals it cites again, cannot agree ([how the line judges an attack](RED-TEAM-HARNESS.md#how-the-line-judges-an-attack)) | Page |
 | `attack-unfinished` | `attack.launched` by Martin's roles with no `attack.finished` from `factory_redteam` saying how it went within the attack's limit (`policy/attacks.ts`), counted once the limit passes, by the store's clock; or one the harness says it could not see to its end | Page |
 
-Giving the passkey again (`admin.stepped-up`) alerts no one, though the audit log keeps it: every action that needs it alerts as its own kind, and the sign-in before it informs him.
+Giving the passkey again (`admin.stepped-up`), or ending it early (`admin.step-up-ended`), alerts no one, though the audit log keeps it: every action that needs it alerts as its own kind, and the sign-in before it informs him.
 
 Every change of the line's controls alerts him, each told from the stored change's before and after alone (`policy/line.ts`), as every change of the settings does, and every move of a feature flag, from its stages before and after alone (`policy/flag-moves.ts`).
 

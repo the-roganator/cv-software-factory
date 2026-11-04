@@ -111,6 +111,26 @@
   width: 13px;
   height: 13px;
 }
+/*
+ * The header's pill while the passkey is fresh: base.css's pill, and the one that is a control. Pressing it ends the
+ * passkey's five minutes now, which its cross says, its border darkening on a hover as the header's other buttons do.
+ */
+button.pill.fresh {
+  background: transparent;
+  cursor: pointer;
+}
+button.pill.fresh:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+button.pill.fresh:disabled {
+  cursor: default;
+}
+.pill.fresh .glyph.end {
+  width: 10px;
+  height: 10px;
+  color: var(--text-muted);
+}
 
 /* An action, read-only: a plain outlined label beside what it does. No lock, no greyed-out button. */
 .ro {

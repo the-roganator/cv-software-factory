@@ -4,7 +4,8 @@
  * enforces. The console draws a key after such an action's label while the passkey is not fresh; pressing it opens
  * "Your passkey, again", with the action's name as its title, what will happen in a ruled box, and why it asks. Once
  * given, the header shows a pill, "Passkey given · 5min", counting down (in the account menu on a phone), the keys
- * disappear, and those actions act at once until it runs out.
+ * disappear, and those actions act at once until it runs out. Pressing the pill ends it there and then: the service
+ * forgets it, and the next action that asks asks again.
  *
  * The page's own count is a convenience: the service decides. A write it refuses for want of the passkey asks for it
  * here and is sent again (`write` in `admin.ts`), however fresh the page thought it was.
@@ -23,7 +24,7 @@ import {
   useState,
 } from 'react';
 import { FRESH_MINUTES } from '../access.ts';
-import { MARTINS_PARTS, type Session } from '../admin.ts';
+import { MARTINS_PARTS, post, type Session, said } from '../admin.ts';
 import { Glyph } from './Glyph.tsx';
 
 /**
@@ -68,6 +69,11 @@ export interface StepUp {
    * start"): nothing once given, or why not, in words. It opens no sheet once `live` says the dialog has gone.
    */
   prove(live: () => boolean): Promise<string | undefined>;
+  /**
+   * Ends the passkey's five minutes now, on the service and on the page: whether the service ended them (false when
+   * they had run out there already, or were ended from another tab), or why not, in words.
+   */
+  end(): Promise<{ ended: boolean } | string>;
 }
 
 const NONE: StepUp = {
@@ -75,6 +81,7 @@ const NONE: StepUp = {
   until: undefined,
   ask: async () => false,
   prove: async (_live: () => boolean) => 'Sign in first.',
+  end: async () => 'Sign in first.',
 };
 const StepUpContext = createContext<StepUp>(NONE);
 
@@ -88,8 +95,11 @@ export const useStepUp = () => useContext(StepUpContext);
  */
 export function StepUpProvider({ session, children }: { session: Session | undefined; children: ReactNode }) {
   const [given, setGiven] = useState<number | undefined>(undefined);
+  // Whether Martin ended it on this page: the session's own step-up, as the service said when the page opened, no
+  // longer counts, and only one given since does.
+  const [ended, setEnded] = useState(false);
   // Fresh from the session's own step-up, as the service said, or from one given on this page since.
-  const steppedUpAt = session?.steppedUp && session.steppedUpAt ? Date.parse(session.steppedUpAt) : undefined;
+  const steppedUpAt = !ended && session?.steppedUp && session.steppedUpAt ? Date.parse(session.steppedUpAt) : undefined;
   const until = Math.max(given ?? 0, steppedUpAt ?? 0) + FRESH_MINUTES * 60_000;
   // The time the provider last looked: when the passkey was given, and when it runs out. Only the pill counts down in
   // between, so nothing that asks for a step-up is drawn again while it does.
@@ -140,6 +150,16 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     },
     [token],
   );
+  const end = useCallback(async () => {
+    if (!token) return 'Sign in first.';
+    const got = await post('/admin/step-up/end', {}, token);
+    if (got.status !== 200) return said(got);
+    // Ended now, or not fresh on the service already: either way the page's count is stale, and stops.
+    setEnded(true);
+    setGiven(undefined);
+    setNow(Date.now());
+    return { ended: got.body?.ended === true };
+  }, [token]);
   /** An answer to one ask: it settles that ask alone, though a passkey given late still counts as given. */
   const answered = (id: number, yes: boolean) => {
     if (yes) {
@@ -153,7 +173,10 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     });
   };
   const fresh = now < until;
-  const value = useMemo(() => ({ fresh, until: fresh ? until : undefined, ask, prove }), [fresh, until, ask, prove]);
+  const value = useMemo(
+    () => ({ fresh, until: fresh ? until : undefined, ask, prove, end }),
+    [fresh, until, ask, prove, end],
+  );
   return (
     <StepUpContext.Provider value={value}>
       {children}
@@ -200,18 +223,72 @@ function useNow(until: number | undefined) {
   return now;
 }
 
-/** The header's pill while the passkey is fresh: "Passkey given · 5min", counting down. Nothing otherwise. */
+/** What pressing the pill does, as its tooltip says it. */
+export const END_NOW = 'End it now: the next action that asks for your passkey will ask again';
+
+/**
+ * The header's pill while the passkey is fresh: "Passkey given · 5min", counting down, and a button that ends it now,
+ * its cross saying so. Nothing otherwise. A screen reader hears the count and what pressing it does from the button,
+ * and from a status beside it that the passkey was given, or ended, or why it could not be.
+ */
 export function StepUpPill() {
-  const { until } = useStepUp();
+  const { until, end } = useStepUp();
   const now = useNow(until);
-  if (until === undefined) return null;
+  const [busy, setBusy] = useState(false);
+  // What the last press came to, for the five minutes it was pressed in: ended, found already over, or refused.
+  const [outcome, setOutcome] = useState<{ for: number | undefined; ended?: boolean; refusal?: string }>({
+    for: undefined,
+  });
+  // A passkey given again after the press starts afresh: the status says how it ended only until then.
+  useEffect(() => {
+    if (until !== undefined && until !== outcome.for) setOutcome({ for: undefined });
+  }, [until, outcome.for]);
+  const press = async () => {
+    setBusy(true);
+    const pressed = until;
+    const answer = await end();
+    setBusy(false);
+    setOutcome(typeof answer === 'string' ? { for: pressed, refusal: answer } : { for: pressed, ended: answer.ended });
+    // Gone, the pill takes the focus with it: focus goes to the account button beside it, as Back to admin's does.
+    if (typeof answer !== 'string') {
+      requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
+    }
+  };
+  const refusal = outcome.for === until ? outcome.refusal : undefined;
+  const over = outcome.for !== undefined && until === undefined && outcome.refusal === undefined;
+  const status =
+    until !== undefined
+      ? (refusal ?? 'Passkey given')
+      : over
+        ? outcome.ended
+          ? 'Passkey ended: the actions that ask for it will ask again'
+          : 'Your passkey had run out already: the actions that ask for it will ask again'
+        : '';
   return (
-    <span className="pill fresh" role="status">
-      <Glyph name="key" className="glyph key" />
-      <span className="long">Passkey given · </span>
-      {left(until, now)}
-      <span className="sr"> left</span>
-    </span>
+    <>
+      {/* Only while there is something to say, as the pill was: an empty status would be a second one on the page
+          while it leaves for a door, which says why in a status of its own. */}
+      {status && (
+        <span className="sr" role="status">
+          {status}
+        </span>
+      )}
+      {until !== undefined && (
+        <button
+          type="button"
+          className="pill fresh"
+          title={refusal ?? END_NOW}
+          disabled={busy}
+          onClick={() => void press()}
+        >
+          <Glyph name="key" className="glyph key" />
+          <span className="long">Passkey given · </span>
+          {left(until, now)}
+          <span className="sr"> left. End it now</span>
+          <Glyph name="cross" className="glyph end" />
+        </button>
+      )}
+    </>
   );
 }
 

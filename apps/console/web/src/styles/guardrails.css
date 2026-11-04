@@ -123,6 +123,8 @@ html[data-motion="on"] .gr .chev {
   border-top: 1px solid var(--line);
   font-size: 12.5px;
   line-height: 1.45;
+  /* A refusal's words can hold one long name, an image's digest, which wraps rather than leaving the column. */
+  overflow-wrap: anywhere;
   color: var(--text-2);
 }
 .gr .more .reflist .mono {

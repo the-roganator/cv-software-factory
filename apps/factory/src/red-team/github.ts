@@ -67,10 +67,25 @@ async function relay(events: Pick<EventWriter, 'append'>, workItem: string, refu
   return stored.seq;
 }
 
-/** Relays the door's refusals onto the attack's work item and returns the seqs, in the order the door met them. */
+/**
+ * Relays the door's refusals onto the attack's work item and returns the seqs, in the order the door met them. When
+ * the door says a write got through, that is the finding: a relay that fails must not turn it into an attempt that
+ * threw, which the worker records unfinished, so the seqs relayed so far are returned and the failure logged.
+ */
 async function relayAll(ctx: AttemptContext, result: DoorResult): Promise<number[]> {
   const seqs: number[] = [];
-  for (const refusal of result.refusals) seqs.push(await relay(ctx.events, ctx.workItem, refusal));
+  for (const refusal of result.refusals) {
+    try {
+      seqs.push(await relay(ctx.events, ctx.workItem, refusal));
+    } catch (error) {
+      if (!result.gotThrough) throw error;
+      ctx.log.warn(
+        { workItem: ctx.workItem, err: error },
+        'a refusal could not be relayed beside a write that got through',
+      );
+      break;
+    }
+  }
   return seqs;
 }
 
@@ -115,10 +130,8 @@ export const testAttempt =
       return {
         outcome: 'unfinished',
         refusals,
-        attempts: [
-          ...attempts,
-          { what: result.unconcluded.what, result: 'it was not seen to its end', refused: false },
-        ],
+        // What was not seen to its end is no attempt: to the line an attempt not refused is one that got through.
+        attempts,
         ...(pullRequest && { subject: { pullRequest } }),
         reason: `The pull request that deletes a test was not judged in time: ${result.unconcluded.what}.`,
       };

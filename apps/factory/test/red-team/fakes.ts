@@ -5,8 +5,10 @@ import type { Logger } from '../../src/log.ts';
 
 /** A `sql` tagged-template fake: `answer` sees the query (its text joined by `?`) and its parameters. */
 export function fakeSql(answer: (query: string, params: unknown[]) => Record<string, unknown>[]) {
-  const sql = (strings: TemplateStringsArray, ...params: unknown[]) =>
-    Promise.resolve(answer(strings.join('?'), params));
+  // Called as a tag, it answers; called with a name (`sql('l.sample')`, as a fragment such as `byMartin` names a
+  // column), it gives the name back, so a fragment in a query reads as its text.
+  const sql = (strings: TemplateStringsArray | string, ...params: unknown[]): unknown =>
+    typeof strings === 'string' ? strings : Promise.resolve(answer(strings.join('?'), params));
   return sql as unknown as import('postgres').Sql;
 }
 

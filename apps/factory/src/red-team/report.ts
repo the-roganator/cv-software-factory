@@ -62,9 +62,8 @@ export const reportAttempt =
       return {
         outcome: 'unfinished',
         refusals: [],
-        attempts: [
-          { what: 'sent a report through the app', result: 'the report did not reach the inbox', refused: false },
-        ],
+        // No attempt: to the line an attempt not refused is one that got through, and this report reached nothing.
+        attempts: [],
         reason: 'The report never reached the inbox, so triage could not judge it: the attack was not made.',
       };
     }

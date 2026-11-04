@@ -17,10 +17,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { ATTACKS, type Attack, cutTo, type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
-import type { EventWriter } from '@software-factory/store';
+import { byMartin, type EventWriter } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { ATTACK_RULES, attackLimitMs, expectedRefusals } from '../../../../policy/attacks.ts';
-import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 import type { Logger } from '../log.ts';
 
 /** How an attack ended, as the harness saw it: what the line re-derives again from the refusals it cites. */
@@ -116,7 +115,7 @@ export class RedTeam {
       select l.seq::text as seq, l.work_item, l.payload->>'attack' as attack, l.appended_at as at
       from events l
       where l.type = 'attack.launched' and l.payload->>'attack' = any(${ATTACKS as unknown as string[]})
-        and not l.sample and l.appended_by = any(${MARTINS_ROLES as unknown as string[]})
+        and ${byMartin(this.#o.sql, 'l')}
         and not exists (select 1 from events f
                         where f.work_item = l.work_item and f.type = 'attack.finished'
                           and f.appended_by = 'factory_redteam' and f.seq > l.seq)

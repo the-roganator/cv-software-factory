@@ -143,6 +143,31 @@ describe('the red-team harness’s NetworkPolicy', () => {
   });
 });
 
+describe('the store’s NetworkPolicy', () => {
+  const postgres = one<Policy>('NetworkPolicy', 'postgres');
+  const factory = { 'kubernetes.io/metadata.name': 'factory' };
+  const runners = { 'kubernetes.io/metadata.name': 'runners' };
+  // A peer with no namespace selector picks pods in the policy's own namespace, `factory`, alone.
+  const admits = (pod: Labels, ns: Labels) =>
+    (postgres.spec.ingress ?? []).some(
+      (rule) =>
+        (rule.from ?? []).some(
+          (peer) =>
+            (peer.namespaceSelector ? selects(peer.namespaceSelector, ns) : ns === factory) &&
+            (!peer.podSelector || selects(peer.podSelector, pod)),
+        ) && (rule.ports ?? []).some((p) => p.port === 5432),
+    );
+  it('admits the harness, which its own egress lets reach the store', () => {
+    expect(admits({ 'app.kubernetes.io/name': 'red-team', 'app.kubernetes.io/component': 'red-team' }, factory)).toBe(
+      true,
+    );
+  });
+  it('admits none of the attack pods the harness makes in runners', () => {
+    expect(admits(AGENT_POD, runners)).toBe(false);
+    expect(admits({ ...AGENT_POD, 'app.kubernetes.io/name': 'red-team' }, runners)).toBe(false);
+  });
+});
+
 describe('the GitHub worker’s attack door', () => {
   const github = one<Policy>('NetworkPolicy', 'github');
   const admits = (pod: Labels, port: number) =>

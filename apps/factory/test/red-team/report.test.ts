@@ -45,6 +45,8 @@ describe('attack 1 (report)', () => {
     const attempt = reportAttempt({ report: async () => {} });
     const result = await attempt(ctx(store({ signal: null, refused: false })));
     expect(result.outcome).toBe('unfinished');
+    // No attempt: to the line an attempt not refused is one that got through, and this report reached nothing.
+    expect(result.attempts).toEqual([]);
   });
 
   it('cites triage’s refusal by the id triage gives a quarantine’s refusal of the signal', () => {

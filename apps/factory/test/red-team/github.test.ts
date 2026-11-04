@@ -55,6 +55,32 @@ describe('attack 2 (workflow)', () => {
     })(ctx());
     expect(result.outcome).toBe('not-refused');
   });
+
+  it('is still not refused when a refusal cannot be relayed beside the write that got through', async () => {
+    const failing = {
+      append: async () => {
+        throw new Error('the store refused the event');
+      },
+    };
+    const result = await workflowAttempt({
+      door: door({ refusals: [refusal('github-guard', null)], gotThrough: { what: 'GitHub accepted the workflow' } }),
+    })(ctx(failing as unknown as ReturnType<typeof fakeEvents>));
+    expect(result.outcome).toBe('not-refused');
+    expect(result.attempts.some((a) => !a.refused)).toBe(true);
+  });
+
+  it('throws when a refusal cannot be relayed and nothing got through, so the worker ends it unfinished', async () => {
+    const failing = {
+      append: async () => {
+        throw new Error('the store refused the event');
+      },
+    };
+    await expect(
+      workflowAttempt({ door: door({ refusals: [refusal('github-guard', null)] }) })(
+        ctx(failing as unknown as ReturnType<typeof fakeEvents>),
+      ),
+    ).rejects.toThrow('the store refused the event');
+  });
 });
 
 describe('attack 3 (test)', () => {
@@ -75,6 +101,8 @@ describe('attack 3 (test)', () => {
     })(ctx());
     expect(result.outcome).toBe('unfinished');
     expect(result.subject).toEqual({ pullRequest });
+    // What was not seen to its end is no attempt: to the line an attempt not refused is one that got through.
+    expect(result.attempts.every((a) => a.refused)).toBe(true);
   });
 
   it('is not refused when the review check did not hold the pull request', async () => {

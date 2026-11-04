@@ -158,7 +158,7 @@ export const egressAttempt =
       );
       const log = await runToEnd(kube, name, ctx);
       if (log === undefined) {
-        return unfinished(name, 'The egress pod did not finish its probe within the limit.');
+        return unfinished('The egress pod did not finish its probe within the limit.');
       }
       return await recordEgress(ctx, log);
     } finally {
@@ -202,25 +202,39 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
   const attempts: AttemptResult['attempts'] = [];
   const refusals: number[] = [];
   // A target is a finding only when the pod says it reached it. One it said nothing of, or could not tell (a line it
-  // called unclear), proves neither a reach nor a refusal: the attack is unfinished, not a finding and not a pass.
+  // called unclear), proves neither a reach nor a refusal: the attack is unfinished, not a finding and not a pass, and
+  // it is no attempt, since to the line an attempt not refused is one that got through. The reason says so.
   let anyReached = false;
   let anyUnclear = false;
+  const refusedTargets: { what: string; result: string }[] = [];
   for (const target of EGRESS_TARGETS) {
     const line = byWhat.get(target.what);
     const refused = line?.refused === true;
     const result = line ? line.result : 'the pod said nothing of it';
-    attempts.push({ what: target.what, result, refused });
-    if (line?.result === 'reached') anyReached = true;
-    else if (!refused) anyUnclear = true;
-    if (refused) {
+    if (line?.result === 'reached') {
+      anyReached = true;
+      attempts.push({ what: target.what, result, refused: false });
+    } else if (refused) {
+      attempts.push({ what: target.what, result, refused: true });
+      refusedTargets.push({ what: target.what, result });
+    } else anyUnclear = true;
+  }
+  // The refusals are appended once the attack's end is known. When a target was reached, that is the finding, and an
+  // append that fails must not turn it into an attempt that threw, which the worker records unfinished: the reach is
+  // recorded with the refusals that were appended, and the failure logged.
+  for (const target of refusedTargets) {
+    try {
       refusals.push(
         await refuse(ctx.events, ctx.workItem, {
           mechanism: 'egress-policy',
           action: cutTo(target.what, 200),
-          output: cutTo(`${target.what}: ${result}`, 4000),
+          output: cutTo(`${target.what}: ${target.result}`, 4000),
           guardrails: guardrailsFor('egress-policy', 'egress'),
         }),
       );
+    } catch (error) {
+      if (!anyReached) throw error;
+      ctx.log.warn({ workItem: ctx.workItem, err: error }, 'a refusal could not be appended beside a reached target');
     }
   }
   const controlLine = byWhat.get('the gateway');
@@ -294,7 +308,7 @@ export const imageAttempt =
       const imageRefused = error instanceof KubeError && DENIED.test(message) && IMAGE_WEBHOOK.test(message);
       if (!imageRefused) {
         await kube.remove(podPath(name)).catch(() => undefined);
-        return unfinished(name, `The pod could not be created to test admission: ${message}`);
+        return unfinished(`The pod could not be created to test admission: ${message}`);
       }
     }
     if (admitted) {
@@ -327,7 +341,7 @@ export const imageAttempt =
       { limitMs: ctx.limitMs, everyMs: LOOK_MS, signal: ctx.signal },
     );
     if (!found) {
-      return unfinished(name, 'Admission refused the pod, but the line did not record it within the limit.');
+      return unfinished('Admission refused the pod, but the line did not record it within the limit.');
     }
     return {
       outcome: 'refused',
@@ -340,9 +354,10 @@ export const imageAttempt =
     };
   };
 
-const unfinished = (name: string, reason: string): AttemptResult => ({
+const unfinished = (reason: string): AttemptResult => ({
   outcome: 'unfinished',
   refusals: [],
-  attempts: [{ what: `made a pod (${name})`, result: reason, refused: false }],
+  // No attempt: to the line an attempt not refused is one that got through, and a pod not made let nothing through.
+  attempts: [],
   reason,
 });

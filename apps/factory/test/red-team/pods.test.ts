@@ -86,6 +86,23 @@ describe('attack 4 (egress)', () => {
     expect(result.outcome).toBe('not-refused');
   });
 
+  it('is still not refused when an address was reached and a refusal of another could not be appended', async () => {
+    const { kube } = egressKube(log([{ refused: true }, { refused: false }, { refused: true }], { reached: true }));
+    const failing = {
+      append: async () => {
+        throw new Error('the store refused the event');
+      },
+    };
+    const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(
+      ctx(
+        fakeSql(() => []),
+        failing as unknown as ReturnType<typeof fakeEvents>,
+      ),
+    );
+    expect(result.outcome).toBe('not-refused');
+    expect(result.attempts.filter((a) => !a.refused).map((a) => a.what)).toEqual([EGRESS_TARGETS[1]?.what]);
+  });
+
   it('is unfinished, not a finding, when the pod could not tell of a target, or said nothing of it', async () => {
     const unclear = log([{ refused: true }, { refused: false }, { refused: true }], { reached: true }).replace(
       '"result":"reached"',
@@ -104,7 +121,9 @@ describe('attack 4 (egress)', () => {
       ctx(fakeSql(() => [])),
     );
     expect(second.outcome).toBe('unfinished');
-    expect(second.attempts[1]?.result).toBe('the pod said nothing of it');
+    // The target it said nothing of is no attempt: to the line an attempt not refused is one that got through.
+    expect(second.attempts.map((a) => a.what)).not.toContain(EGRESS_TARGETS[1]?.what);
+    expect(second.attempts.every((a) => a.refused)).toBe(true);
   });
 
   it('is unfinished when the gateway control was not reached', async () => {
@@ -168,7 +187,9 @@ describe('attack 5 (image)', () => {
     });
     const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned', find })(ctx(sql));
     expect(result.outcome).toBe('unfinished');
-    expect(result.attempts[0]?.result).toContain('cannot create resource "pods"');
+    // No attempt, since nothing was made; why is in the reason.
+    expect(result.attempts).toEqual([]);
+    expect(result.reason).toContain('cannot create resource "pods"');
     // It did not wait for a record the line would never make.
     expect(looked).toBe(0);
   });

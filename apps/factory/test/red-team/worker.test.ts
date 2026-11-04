@@ -10,13 +10,10 @@ const LAUNCH = { seq: '10', work_item: '1274', attack: 'report', at: new Date('2
 /** A store that offers one launch of `attack` taken at `at`, and then none (the harness finished it). */
 function storeWith(attack: string, at: Date) {
   let gave = false;
-  return fakeSql((query, params) => {
+  return fakeSql((query) => {
     if (query.includes('attack.launched') && !gave) {
       gave = true;
-      // Real launches of Martin's roles alone: a sample's is no attack to make, and row security is not the only lock.
-      expect(query).toContain('not l.sample');
-      expect(query).toContain('l.appended_by = any(');
-      expect(params.length).toBeGreaterThan(0);
+      // Which launches it takes (real, Martin's roles alone) is held against a real store, in launches.test.ts.
       return [{ seq: '10', work_item: '1274', attack, at }];
     }
     return [];

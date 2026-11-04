@@ -3,7 +3,7 @@
  * a list of events, and a line that stopped or crashed carries on from the last event it appended: nothing about a
  * work item's progress lives anywhere else.
  *
- *     ticket → [issue] → planner → spec → coder → pull request → gates → reviewer → describer → Martin's merge
+ *     ticket → [issue] → planner → spec → coder → pull request → gates → reviewer → describer → the merge
  *                                            ▲                      │          │
  *                                            └──── work returned ───┴──────────┘
  *
@@ -50,7 +50,10 @@
  * A work item that has spent as much on models as one may holds before its next step, since the gateway would refuse
  * every call that step made.
  *
- * Martin's merge answers whatever held the change before it, and the work item goes on to Release and Verify:
+ * A change that passed its gates and review merges through the merge queue: the line adds it to the queue itself when
+ * the review gate's verdict on its head, the autonomy level and auto-merge allow, and otherwise holds it for Martin's
+ * merge, saying why (`merging.ts`). The queue taking it out is recorded, and holds it too. The merge, the line's or
+ * Martin's, answers whatever held the change before it, and the work item goes on to Release and Verify:
  *
  *     merged → [waits for a deploy] → release started → promoted → verify → cleared → closed, verified
  *                       ▲                    │                       │
@@ -111,6 +114,7 @@ import {
   ALWAYS_HELD,
   ANSWERS,
   cutTo,
+  type GateRule,
   type HoldAnswer,
   type HoldCause,
   LIMITS,
@@ -125,6 +129,7 @@ import {
 } from '@software-factory/events';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { whoAborted } from '../release/watch.ts';
+import { type MergeFacts, mergeDecision } from './merging.ts';
 import { type Finding, suggestionsLeft } from './review.ts';
 
 /** The agents the line runs, each in a runner. */
@@ -156,6 +161,8 @@ type Payloads = {
     | 'hold.started'
     | 'hold.answered'
     | 'action.refused'
+    | 'pull-request.enqueued'
+    | 'pull-request.dequeued'
     | 'pull-request.merged'
     | 'release.started'
     | 'release.promoted'
@@ -268,6 +275,14 @@ export interface WorkItemState {
    */
   replan: Replan | undefined;
   merged: boolean;
+  /** The line's adding of the latest push's pull request to the merge queue, until the queue takes it out. */
+  enqueued: PayloadOf<'pull-request.enqueued'> | undefined;
+  /** The merge queue's taking it out, without merging it, since the latest push. */
+  dequeued: PayloadOf<'pull-request.dequeued'> | undefined;
+  /** The heads the review gate's refusal of the pull request is recorded for (`action.refused`, `review-gate`). */
+  refusedHeads: string[];
+  /** Whether any spec of the work item was tagged out-of-scope: never the line's to merge, whatever Martin approved. */
+  outOfScope: boolean;
   /**
    * The latest release that carried the change since its merge: how it started, its promotion once it has one, and
    * whether it rolled back, erred or was aborted.
@@ -339,6 +354,10 @@ const initial = (): WorkItemState => ({
   answers: [],
   replan: undefined,
   merged: false,
+  enqueued: undefined,
+  dequeued: undefined,
+  refusedHeads: [],
+  outOfScope: false,
   release: undefined,
   verification: undefined,
   persisted: [],
@@ -391,6 +410,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
       case 'spec.written':
         state.spec = event.payload;
         state.lastSpec = event.payload;
+        if (event.payload.risks.includes('out-of-scope')) state.outOfScope = true;
         state.replan = undefined;
         state.specApproved = false;
         // A hold on the spec before is a hold on what Martin read: his answer to it says nothing of this one, which
@@ -414,6 +434,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         state.gatesPassed = false;
         state.review = undefined;
         state.accepted = undefined;
+        state.enqueued = undefined;
+        state.dequeued = undefined;
         break;
       // A run on a newer commit of the same push (main merged into the branch, as to resolve a conflict) replaces the
       // run before once it ends: until then, gates that passed still stand, and the work item waits where it is.
@@ -580,6 +602,25 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
           state.fenced = event.payload.output;
           state.fenceRefusals += 1;
         }
+        // The review gate's refusal of a head, recorded once for it.
+        if (event.payload.mechanism === 'review-gate' && event.payload.subject?.kind === 'commit') {
+          state.refusedHeads.push(event.payload.subject.name);
+        }
+        break;
+      // The line added it to the queue: the hold for the merge is over, and the queue merges it or takes it out.
+      case 'pull-request.enqueued':
+        if (state.pullRequest?.number !== event.payload.number) break;
+        state.enqueued = event.payload;
+        state.dequeued = undefined;
+        if (state.hold?.cause === 'merge') {
+          state.hold = undefined;
+          forgetLook(state);
+        }
+        break;
+      case 'pull-request.dequeued':
+        if (state.enqueued?.number !== event.payload.number || state.enqueued.commit !== event.payload.commit) break;
+        state.enqueued = undefined;
+        state.dequeued = event.payload;
         break;
       case 'pull-request.merged':
         state.merged = true;
@@ -666,9 +707,9 @@ function endCanaryHold(state: WorkItemState): void {
  */
 function startAgain(state: WorkItemState): void {
   const { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore, closed } = state;
-  const { firstSense, seenOn, lastSpec, replan } = state;
+  const { firstSense, seenOn, lastSpec, replan, outOfScope } = state;
   Object.assign(state, initial(), { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore });
-  Object.assign(state, { closed, firstSense, seenOn, lastSpec, replan });
+  Object.assign(state, { closed, firstSense, seenOn, lastSpec, replan, outOfScope });
 }
 
 /**
@@ -760,6 +801,8 @@ const MOVES_ON = new Set<LineEvent['type']>([
   'work-item.summarised',
   'work.returned',
   'hold.started',
+  'pull-request.enqueued',
+  'pull-request.dequeued',
   'pull-request.merged',
   'release.started',
   'release.promoted',
@@ -783,6 +826,10 @@ export type Next =
   | { do: 'return'; from: Stage; to: Stage; reason: string; blocking?: number; suggestions?: number; failed?: string[] }
   /** Hold the work item for Martin. */
   | { do: 'hold'; hold: PayloadOf<'hold.started'> }
+  /** Add the pull request to the merge queue at the head the review gate judged, by its rule (`merging.ts`). */
+  | { do: 'enqueue'; number: number; head: string; rule: GateRule }
+  /** Record the review gate's refusal of the pull request's head, signed by the GitHub worker and verified. */
+  | { do: 'refused'; head: string; refusal: PayloadOf<'action.refused'> }
   /**
    * Answer the open threads of the latest review (`acceptedFindings`), and of each earlier finding one holds again,
    * saying Martin accepted it in the console, with his words if they are not his alone, and resolve them: his approval
@@ -790,10 +837,10 @@ export type Next =
    */
   | { do: 'accept'; review: number; answer: number; words?: string }
   /**
-   * Nothing to do until something outside the line happens: the gates, Martin, the release in flight, or the work in
-   * flight a spec that overlaps waits on.
+   * Nothing to do until something outside the line happens: the gates (the review gate's verdict among them), Martin,
+   * the merge queue, the release in flight, or the work in flight a spec that overlaps waits on.
    */
-  | { do: 'wait'; for: 'gates' | 'martin' | 'release' | 'overlap' }
+  | { do: 'wait'; for: 'gates' | 'martin' | 'queue' | 'release' | 'overlap' }
   /** Wait on the work in flight whose specs share files with this one's, before the coder starts. */
   | { do: 'wait-on'; on: string[]; files: string[] }
   /** Verify the promoted release that carries the change, by the sense that saw the defect. */
@@ -850,6 +897,12 @@ export interface Facts {
    * the line has just taken (`atTake`). None known, no look.
    */
   stable?: Stable;
+  /**
+   * What GitHub says of the pull request now, and the controls in force, given only at the point where a change that
+   * passed its gates and review is ready to merge (`atMerge`); null when the line could not read it, and it waits. None
+   * given, the change is held for Martin's merge, as it is with nothing read.
+   */
+  merge?: MergeFacts | null;
 }
 
 /** The release the stable Service runs, as a look again at a held or waiting work item needs it. */
@@ -879,6 +932,17 @@ export const STAGE_OF: Record<LineAgent, 'plan' | 'build' | 'review'> = {
 export function decide(events: readonly LineEvent[], facts: Facts): Decision {
   const s = fold(events);
   if (s.closed) return { stage: 'ended', next: { do: 'finish' } };
+  // A merge held for Martin is decided again on what GitHub says now: the gate may have judged its head again.
+  if (s.hold?.cause === 'merge' && facts.merge && !s.merged) {
+    const merging = mergeDecision(s, facts.merge);
+    if (merging) return merging;
+  }
+  // His approval of a merge's hold in the console waits for the merge; the line still adds it to the queue when the gate
+  // and the controls let it, as it would have without his word.
+  if (s.answer?.cause === 'merge' && s.answer.resolution === 'wait' && facts.merge && !s.merged) {
+    const merging = mergeDecision(s, facts.merge);
+    if (merging?.next.do === 'enqueue' || merging?.next.do === 'refused') return merging;
+  }
   if (s.hold) {
     if (!WORDS_LEAVE_HELD.includes(s.hold.cause)) {
       if (s.cleared && closesWhenCleared(s)) {
@@ -1018,6 +1082,9 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
         return { stage: 'build', next: { do: 'return', from: 'review', to: 'build', reason, suggestions } };
       }
       if (!s.described) return step('describer');
+      if (s.enqueued) return { stage: 'review', next: { do: 'wait', for: 'queue' } };
+      if (facts.merge === null) return { stage: 'review', next: { do: 'wait', for: 'gates' } };
+      if (facts.merge) return mergeDecision(s, facts.merge) ?? { stage: 'held', next: { do: 'wait', for: 'martin' } };
       return {
         stage: 'held',
         next: {
@@ -1034,6 +1101,20 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
       };
     }
   }
+}
+
+/**
+ * Whether a work item is where a change that passed its gates and review is ready to merge, and what GitHub says of its
+ * pull request decides what the line does next (`merging.ts`): held for the merge, or answered by Martin to wait for
+ * it, or about to be held for it with nothing read. Not once it is merged or in the merge queue.
+ */
+export function atMerge(s: WorkItemState, events: readonly LineEvent[], facts: Facts): boolean {
+  if (s.merged || s.closed || !s.pullRequest || s.enqueued) return false;
+  if (s.hold) return s.hold.cause === 'merge';
+  if (s.answer?.cause === 'merge' && s.answer.resolution === 'wait') return true;
+  const { merge: _, ...unread } = facts;
+  const { next } = decide(events, unread);
+  return next.do === 'hold' && next.hold.cause === 'merge';
 }
 
 /**

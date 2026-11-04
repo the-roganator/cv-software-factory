@@ -18,6 +18,11 @@
  *   two steps on it would each take about twice as long. A step whose agent `policy/models.ts` sends there waits
  *   while another such step runs, and the next pass tries again. Steps on Claude never wait on it.
  * - It reads its pull requests' gates and merges through the GitHub worker about once a minute (`gates.ts`).
+ * - About as often, for a change that passed its gates and review, it reads the review gate's verdict on its head and
+ *   whether it conflicts with main, and adds it to the merge queue when the verdict, Martin's autonomy level and
+ *   auto-merge allow, or holds it for his merge, saying why (`merging.ts`). A verdict that held it is recorded as the
+ *   gate's refusal, once for each head, signed by the GitHub worker and verified with its key. Once it is in the queue,
+ *   the line reads the queue as it reads the gates, and records the queue taking it out without merging it.
  * - About as often, it tells the app's deploy pull request which work items it carries: those whose fixes merged
  *   between the commit the app runs and the one the pull request runs, as a release starting records them. It says
  *   so only when the list, or the pull request, has changed since it last did. Not with `only`: a soak of one work
@@ -82,6 +87,7 @@
  *
  * It acts in GitHub only through the GitHub worker, and every agent's model through the gateway: it holds no key.
  */
+import type { KeyObject } from 'node:crypto';
 import { hostname } from 'node:os';
 import { trace } from '@opentelemetry/api';
 import type {
@@ -124,6 +130,7 @@ import { release as RELEASE } from '../../../../policy/release.ts';
 import { sendCounts } from '../counts.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { type Carry, DEPLOYS, type DeployProposal, MAX_CARRIES } from '../github/deploys.ts';
+import { outcomeOf } from '../github/reads.ts';
 import type {
   ActingFor,
   ActionArgs,
@@ -133,9 +140,10 @@ import type {
   ReadName,
   ReadResult,
 } from '../github/server.ts';
-import { issueGone } from '../github/worker-client.ts';
+import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
 import type { StepOutcome, StepRequest } from '../runners/steps.ts';
+import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
 import {
   type Bounds,
@@ -159,6 +167,7 @@ import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
 import { closeIssue } from './issues.ts';
 import {
   acceptedFindings,
+  atMerge,
   atTake,
   closesWhenCleared,
   decide,
@@ -173,6 +182,7 @@ import {
   STAGE_OF,
   type WorkItemState,
 } from './machine.ts';
+import type { MergeFacts } from './merging.ts';
 import {
   type Carrying,
   countRecorded,
@@ -291,6 +301,11 @@ export interface LineOptions {
    * default, for no limit. Those already on it go on to their end. Its default, as `only` is.
    */
   take?: number | null;
+  /**
+   * The GitHub worker's public key (the ConfigMap `refusal-key`), to verify the review gate's refusal it signs; null,
+   * as by default, records none.
+   */
+  refusalKey?: KeyObject | null;
 }
 
 type Provider = 'anthropic' | 'bedrock' | 'local';
@@ -367,6 +382,10 @@ export class Line {
   #newWork = true;
   /** The settings in force, as this pass read them; until the first pass, the options'. */
   #inForce: Awaited<ReturnType<LineSettings['now']>> | undefined;
+  /** Martin's autonomy level and auto-merge switch, as this pass read them: policy's default until the first. */
+  #merging: Pick<Controls, 'autonomy' | 'autoMerge'> = { autonomy: 'supervised', autoMerge: false };
+  /** What GitHub said of each pull request ready to merge, read at most once in `gatesEveryMs`, by work item. */
+  readonly #mergeRead = new Map<string, { at: number; number: number; facts: Promise<MergeFacts | null> }>();
 
   constructor(options: LineOptions) {
     this.#o = {
@@ -391,6 +410,7 @@ export class Line {
       settings: null,
       only: null,
       take: null,
+      refusalKey: null,
       ...options,
     };
     this.#ignored = new IgnoredCommands(this.#o.sql, this.#o.log);
@@ -488,7 +508,16 @@ export class Line {
    * Acts on Martin's controls from this pass on: what the line takes, his take or else its own default (`only`,
    * `take`), and whether agents take new work.
    */
-  #control({ take, newWork }: Pick<Controls, 'take' | 'newWork'>): void {
+  #control({
+    take,
+    newWork,
+    autonomy,
+    autoMerge,
+  }: Pick<Controls, 'take' | 'newWork' | 'autonomy' | 'autoMerge'>): void {
+    if (autonomy !== this.#merging.autonomy || autoMerge !== this.#merging.autoMerge) {
+      this.#o.log.info({ autonomy, autoMerge }, 'the line merges as Martin set its autonomy and auto-merge');
+    }
+    this.#merging = { autonomy, autoMerge };
     const takes = takesOf(take, { only: this.#o.only, take: this.#o.take });
     if (JSON.stringify(takes) !== JSON.stringify(this.#takes) || newWork !== this.#newWork) {
       this.#o.log.info({ ...takes, newWork }, 'the line acts on what Martin set it to take');
@@ -1002,6 +1031,20 @@ export class Line {
         await this.#queue.moved(workItem);
         return;
       }
+      case 'enqueue':
+        return await this.#enqueue(workItem, next);
+      case 'refused': {
+        await this.#append(workItem, [
+          {
+            type: 'action.refused',
+            actor: 'factory',
+            summary: `The review gate held PR #${state.pullRequest?.number ?? '?'} at ${next.head.slice(0, 7)}`,
+            payload: next.refusal,
+          },
+        ]);
+        this.#o.log.info({ workItem, head: next.head }, 'recorded the review gate’s refusal of a pull request’s head');
+        return;
+      }
       case 'wait-on': {
         const reason = waitReason(next.on, next.files);
         await this.#append(workItem, [
@@ -1089,6 +1132,68 @@ export class Line {
         this.#o.log.info({ workItem }, 'the work item is over');
         return;
     }
+  }
+
+  /**
+   * Adds a pull request to the merge queue at the head the review gate judged, through the GitHub worker, and records
+   * it. GitHub takes it only at that head, so a push since is refused (409): nothing is recorded, and the next read
+   * decides again. One GitHub cannot add (422, as for a conflict), or that the worker's guard or GitHub refuses (403,
+   * which the worker signs and the line relays as it relays any), holds it for Martin, saying so; the line does not try
+   * that head again.
+   */
+  async #enqueue(workItem: string, next: Extract<Next, { do: 'enqueue' }>): Promise<boolean | undefined> {
+    const { number, head, rule } = next;
+    this.#mergeRead.delete(workItem);
+    let enqueued: ActionResult<'enqueuePullRequest'>;
+    try {
+      enqueued = await this.#o.github.act(
+        'enqueuePullRequest',
+        this.#o.repo,
+        { number, expectedHead: head },
+        { workItem },
+      );
+    } catch (error) {
+      if (!(error instanceof GitHubWorkerError) || ![403, 409, 422].includes(error.status)) throw error;
+      if (error.status === 409) {
+        this.#o.log.info({ workItem, number, err: error }, 'the pull request moved before it was queued: read again');
+        return false;
+      }
+      const why = error.status === 422 ? 'GitHub could not add it' : 'it was refused';
+      const reason = cutTo(
+        `Pull request #${number} was not added to the merge queue, as ${why}: ${error.message}`,
+        300,
+      );
+      await this.#append(workItem, [
+        holdDraft('factory', {
+          stage: 'review',
+          kind: 'approval',
+          cause: 'merge',
+          reason,
+          merge: { pullRequest: number, head, why: 'refused', rule, approving: false },
+        }),
+      ]);
+      await this.#queue.moved(workItem);
+      this.#o.log.warn({ workItem, number, err: error }, 'a pull request was not added to the merge queue: it waits');
+      return;
+    }
+    const dryRun = number >= DRY_RUN_NUMBERS_FROM;
+    await this.#append(workItem, [
+      {
+        type: 'pull-request.enqueued',
+        actor: 'factory',
+        summary: `The factory added PR #${number} to the merge queue, as ${rule} passed it at ${head.slice(0, 7)}${dryRun ? ', in a dry run' : ''}`,
+        payload: {
+          number,
+          commit: head,
+          rule,
+          ...(enqueued.position ? { position: enqueued.position } : {}),
+          ...(dryRun ? { dryRun: true as const } : {}),
+        },
+      },
+    ]);
+    await this.#queue.moved(workItem);
+    this.#o.log.info({ workItem, number, head, rule }, 'added a pull request to the merge queue');
+    return;
   }
 
   /** Whether a work item at Verify may be looked at: never twice at once, and not before a look that could not tell. */
@@ -1875,11 +1980,49 @@ export class Line {
             log,
           );
         }
+        // In the merge queue, the queue's word on it: taken out without a merge is recorded, and holds it for Martin.
+        if (!drafts.length && state.enqueued && pr.state === 'open') {
+          const out = await this.#dequeued(item.workItem, state.enqueued);
+          if (out) drafts.push(out);
+        }
         if (drafts.length) await this.#append(item.workItem, drafts);
       } catch (error) {
         log.warn({ workItem: item.workItem, err: error }, 'could not read a pull request’s gates');
       }
     }
+  }
+
+  /**
+   * The merge queue's taking out of a pull request the line added to it, as an event, or undefined while it is still
+   * in the queue or merged. Only a removal since the line added it counts: GitHub's timeline names who added it each
+   * time, and the line's is its last addition, made no earlier than a minute before the line recorded it (the store's
+   * clock and GitHub's are not one).
+   */
+  async #dequeued(workItem: string, enqueued: PayloadOf<'pull-request.enqueued'>): Promise<Draft | undefined> {
+    const queue = await this.#o.github.read('mergeQueue', this.#o.repo, { number: enqueued.number });
+    if (queue.state !== 'open' || queue.queued || !queue.removed || !queue.added) return undefined;
+    if (queue.head !== enqueued.commit || queue.removed.reason?.toLowerCase() === 'merged') return undefined;
+    const [recorded] = await this.#o.sql<{ ts: Date }[]>`
+      select ts from events where work_item = ${workItem} and type = 'pull-request.enqueued' order by seq desc limit 1`;
+    if (recorded && Date.parse(queue.added.at) < new Date(recorded.ts).getTime() - 60_000) return undefined;
+    const failed = queue.checks
+      .filter((run) => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure')
+      .map((run) => cutAt(run.name, 80))
+      .slice(0, 40);
+    const reason = cutAt((queue.removed.reason ?? 'unknown').toLowerCase(), 60);
+    return {
+      type: 'pull-request.dequeued',
+      actor: 'actions',
+      summary: `The merge queue took PR #${enqueued.number} out (${reason})${failed.length ? `: ${failed[0]} failed` : ''}`,
+      payload: {
+        number: enqueued.number,
+        commit: enqueued.commit,
+        reason,
+        ...(queue.removed.by ? { by: cutAt(queue.removed.by, 39) } : {}),
+        ...(queue.removed.commit ? { queueCommit: queue.removed.commit } : {}),
+        failed,
+      },
+    };
   }
 
   /**
@@ -2046,7 +2189,89 @@ export class Line {
     const started = item.failures > 0 || item.effects !== null;
     const atCheck = !s.hold && !s.merged && s.spec && !s.waiting && !s.pullRequest && !s.rebuild && !started;
     if (atCheck && s.spec && this.#only === null) facts.overlaps = await this.#overlaps(item.workItem, s.spec.scope);
+    if (s.pullRequest && !s.merged && !s.enqueued && atMerge(s, events, facts)) {
+      facts.merge = await this.#mergeFacts(item.workItem, s.pullRequest.number);
+    }
     return facts;
+  }
+
+  /**
+   * What GitHub says now of a pull request ready to merge, with the controls in force: the review gate's verdict on its
+   * head, from the review App's check alone, and whether it conflicts with main. Read at most once in `gatesEveryMs`,
+   * as the gates are, and again after the line acts on it. The gate's refusal comes with the verdict only once it
+   * verifies with the GitHub worker's key. Null when GitHub cannot be read: the change waits, and nothing is held for
+   * want of a read.
+   */
+  #mergeFacts(workItem: string, number: number): Promise<MergeFacts | null> {
+    const now = this.#o.now().getTime();
+    const known = this.#mergeRead.get(workItem);
+    if (known && known.number === number && now - known.at < this.#o.gatesEveryMs) return known.facts;
+    const { github, repo, log } = this.#o;
+    const controls = this.#merging;
+    const facts = (async (): Promise<MergeFacts | null> => {
+      const verdict = await github.read('reviewVerdict', repo, { number });
+      const mergeable = await github.read('mergeability', repo, { number });
+      const refusal = verdict.refusal ? this.#gateRefusal(workItem, number, verdict.head, verdict.refusal) : undefined;
+      const check = verdict.check && {
+        status: verdict.check.status,
+        conclusion: verdict.check.conclusion,
+        title: verdict.check.title,
+        url: verdict.check.url,
+      };
+      return {
+        ...controls,
+        head: verdict.head,
+        check,
+        judged: verdict.judged,
+        problem: verdict.problem,
+        ...(refusal ? { refusal } : {}),
+        // What GitHub said of another head says nothing of this one.
+        conflicts: mergeable.head === verdict.head ? mergeable.conflicts : null,
+      };
+    })().catch((error: unknown) => {
+      log.warn({ workItem, err: error }, 'could not read whether a pull request may merge: it waits');
+      this.#mergeRead.delete(workItem);
+      return null;
+    });
+    this.#mergeRead.set(workItem, { at: now, number, facts });
+    return facts;
+  }
+
+  /**
+   * The review gate's refusal of a pull request's head, as the GitHub worker signed it, ready to append, if it verifies
+   * with the worker's key and is of that pull request at that head; otherwise logged, and undefined.
+   */
+  #gateRefusal(
+    workItem: string,
+    number: number,
+    head: string,
+    answer: unknown,
+  ): PayloadOf<'action.refused'> | undefined {
+    const key = this.#o.refusalKey;
+    if (!key) {
+      this.#o.log.warn(
+        { workItem, number },
+        'the review gate held a pull request, and with no key to verify it, it is not recorded',
+      );
+      return undefined;
+    }
+    const verified = verifyRefusal(key, answer);
+    const of = verified.ok
+      ? verified.refusal.payload.mechanism === 'review-gate' &&
+        verified.refusal.repo === this.#o.repo &&
+        verified.refusal.number === number &&
+        verified.refusal.payload.subject?.kind === 'commit' &&
+        verified.refusal.payload.subject.name === head
+      : false;
+    if (!verified.ok || !of) {
+      this.#o.log.warn(
+        { workItem, number, why: verified.ok ? 'it is not of this pull request at its head' : verified.why },
+        'the review gate’s refusal does not verify: not recorded',
+      );
+      return undefined;
+    }
+    const { payload, record, signature } = verified.refusal;
+    return { ...payload, record, signature };
   }
 
   /** For each work item, when it last closed, or null while it is open, or reopened since. */

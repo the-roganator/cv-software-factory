@@ -28,8 +28,10 @@ export const VERSIONS = {
   'gates.started': 1,
   'gate.finished': 2,
   'gates.finished': 1,
-  'review.submitted': 4,
+  'review.submitted': 5,
   'review.accepted': 1,
+  'pull-request.enqueued': 1,
+  'pull-request.dequeued': 1,
   'pull-request.merged': 1,
   // Release and verify
   'deploy.changed': 1,
@@ -44,7 +46,7 @@ export const VERSIONS = {
   'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,
-  'hold.started': 10,
+  'hold.started': 11,
   'hold.answered': 3,
   'action.refused': 3,
   'model.called': 2,

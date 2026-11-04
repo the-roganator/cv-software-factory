@@ -591,6 +591,27 @@ describe('merging in a dry run', () => {
     expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true });
   });
 
+  it('merges one the line queued a while after it was queued, not after it was readied', async () => {
+    const { made, reads, head, number, later } = await dryRun();
+    later(5 * MINUTE);
+    await made.enqueuePullRequest(REPO, number, head);
+    // Readied twenty minutes ago: one never queued would read as merged by now, standing in for Martin's merge.
+    later(TIMES.mergeAfterMs - 5 * MINUTE);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ state: 'open', merged: false });
+    expect(await reads.mergeQueue(REPO, number)).toMatchObject({ queued: { position: 1 } });
+    later(5 * MINUTE);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true });
+  });
+
+  it('merges one never queued a while after it was readied, and refuses to queue one merged', async () => {
+    const { made, reads, head, number, later, records } = await dryRun();
+    later(TIMES.mergeAfterMs);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true });
+    await expect(made.enqueuePullRequest(REPO, number, head)).rejects.toMatchObject({ kind: 'conflict', status: 409 });
+    expect((await records()).filter((r) => r.action === 'enqueuePullRequest')).toEqual([]);
+    expect(await reads.mergeQueue(REPO, number)).toMatchObject({ state: 'merged', added: null, removed: null });
+  });
+
   it('queues one from a branch it never moved at the head its reads give', async () => {
     const { made, reads } = await dryRun();
     const { number } = await made.openPullRequest(REPO, {

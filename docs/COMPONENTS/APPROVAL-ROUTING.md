@@ -2,7 +2,7 @@
 
 Sends risky changes to a human. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** one required check, `review`, posted by the review App from `main`'s copy of `review.yml`, works out a pull request's risk tags from its diff and passes it by one rule or holds it for Martin ([ADR 0014](../architecture/adr/0014-merge-queue-and-review-gate.md#how-the-gate-routes)); the planner's `out-of-scope` holds a spec before any code is written.
+- **v1:** the line adds its own pull request to the merge queue when the gate's rule, Martin's autonomy level and auto-merge allow, and otherwise holds it in Needs you, saying why ([the line's part](#the-lines-part)); one required check, `review`, posted by the review App from `main`'s copy of `review.yml`, works out a pull request's risk tags from its diff and passes it by one rule or holds it for Martin ([ADR 0014](../architecture/adr/0014-merge-queue-and-review-gate.md#how-the-gate-routes)); the planner's `out-of-scope` holds a spec before any code is written.
 - **Later:** a Critical vulnerability's fix passing under Guarded (Part D).
 
 ## The gate
@@ -35,6 +35,17 @@ A risk label removed by anyone but Martin holds the pull request from every rule
 ## Who reads which signal
 
 - **The gate** reads the diff, CODEOWNERS on `main`, Martin's reviews, the pull request's label events, test integrity's run, and the caller's `AUTONOMY` variable. It cannot read the factory's store, and merges nothing: a pull request merges only once someone adds it to the merge queue.
+- **The line** reads the store's autonomy level and auto-merge switch (Martin's controls), the gate's verdict from the review App's own `review` check on the pull request's current head, whether the pull request conflicts with main, and the merge queue's word on what it added. It adds its own pull request to the queue only when auto-merge is on, the gate's rule is one the level allows, and the head is the one its own gates and reviewer passed; never an improvement, a release, a red-team branch or a work item whose spec was tagged `out-of-scope`. So the stricter of the two always wins: a fault in the line cannot merge what the gate fails, and the gate alone merges nothing.
+
+## The line's part
+
+| Level | Rules the line merges by, with auto-merge on (`ENQUEUES`, `policy/line.ts`) |
+|---|---|
+| Supervised | none |
+| Guarded | `low-risk`, `exact-pin`, `martin-approved-head` |
+| Lights-out | Guarded's, and `lights-out` |
+
+Anything else is held in Needs you, as a `merge` hold naming the gate's rule, its tags with what gave each, its words, and why the line does not merge it; where Martin's approval of the head on GitHub would send it to the queue, the hold says so. Only a pull request the gate refused (`held`) is recorded as a refusal, `review-gate`, once for each head, signed by the GitHub worker. A merge held because the level or auto-merge does not allow it is his ordinary merge. The queue taking a pull request out is recorded (`pull-request.dequeued`), with the checks that failed, and holds it. [The line's merge](ORCHESTRATOR.md#the-merge) has the rest.
 
 `AUTONOMY` is a variable of the app's repository, which only Martin can set: `gh variable set AUTONOMY -R the-roganator/cv-worlds-worst-website -b lights-out`, and `gh variable delete AUTONOMY -R the-roganator/cv-worlds-worst-website` to go back. This repository's is never read.
 

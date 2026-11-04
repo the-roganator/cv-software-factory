@@ -5,9 +5,11 @@
  *
  * A pull request the dry run opened reads as open, its head the last commit it would have pushed. Each commit it
  * would have made has every check main's ruleset requires, each passing once `checksAfterMs` has passed since the
- * commit; and the pull request reads as merged, by the App, once it is ready for review and `mergeAfterMs` has
- * passed since it was readied, so the work item ends and a soak goes round. A draft is never merged: GitHub cannot
- * merge one, and Martin merges only what the describer has readied. Nothing ran: each check's title says so, and the gate's summary carries
+ * commit; and the pull request reads as merged, by the App, `mergeAfterMs` after the line added it to the merge queue,
+ * or, one it never added, `mergeAfterMs` after it was ready for review, standing in for Martin's merge, so the work item
+ * ends and a soak goes round at every autonomy level. A soak tells the two apart by the line's `pull-request.enqueued`
+ * before the merge. A draft the line never added is never merged: GitHub cannot merge one, and Martin merges only what
+ * the describer has readied. A merged one cannot be added to the queue (`DryRunActions`). Nothing ran: each check's title says so, and the gate's summary carries
  * it. A comparison of a commit the dry run made is taken against the real commit its first one went on, from the
  * files as they really are there and as the dry run left them. A step that starts from such a commit checks out that
  * real commit and makes the dry run's commits on it (`checkout`), so the reviewer, the describer and a later round of
@@ -59,6 +61,19 @@ export class DryRunReads implements Reads {
     this.#live = live;
     this.#times = times;
     this.#now = now;
+    made.judgeMerges((pull) => this.#merged(pull));
+  }
+
+  /** When a pull request the dry run opened merges: after it was queued, or else after it was readied; never, closed. */
+  #mergesAt(pull: DryRunPull): number | null {
+    if (pull.closedAt !== null) return null;
+    const from = pull.enqueuedAt ?? pull.readiedAt;
+    return from === null ? null : from.getTime() + this.#times.mergeAfterMs;
+  }
+
+  #merged(pull: DryRunPull): boolean {
+    const at = this.#mergesAt(pull);
+    return at !== null && this.#now().getTime() >= at;
   }
 
   async pullRequest(repo: string, number: number): Promise<PullRequestState> {
@@ -239,8 +254,8 @@ export class DryRunReads implements Reads {
     };
     if (!at) return { ...base, queued: null, removed: null, checks: [] };
     const commit = shaFor(`${repo}#${number} queue`);
-    // It merges as every dry run's pull request does: the queue's checks pass then, and it leaves the queue merged.
-    const mergesAt = new Date((pull.readiedAt ?? at).getTime() + this.#times.mergeAfterMs);
+    // The queue's checks pass as it merges, and it leaves the queue merged.
+    const mergesAt = new Date(at.getTime() + this.#times.mergeAfterMs);
     const checks = await this.#passing(repo, commit, at, mergesAt);
     if (state.merged) {
       const removed = { at: mergesAt.toISOString(), by: 'github-merge-queue', reason: 'merged', commit };
@@ -264,10 +279,7 @@ export class DryRunReads implements Reads {
   #state(pull: DryRunPull): PullRequestState {
     const sha = this.#made.headOf(pull);
     // A pull request the dry run closed unmerged never merges.
-    const merged =
-      pull.closedAt === null &&
-      pull.readiedAt !== null &&
-      this.#now().getTime() - pull.readiedAt.getTime() >= this.#times.mergeAfterMs;
+    const merged = this.#merged(pull);
     return {
       number: pull.number,
       state: merged || pull.closedAt !== null ? 'closed' : 'open',

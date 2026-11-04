@@ -76,7 +76,17 @@ import { TEST_FILE } from '../../gates/files.ts';
 import { testsIn } from '../../gates/tests.ts';
 import { NEVER, plainPath, protectedWords } from '../../github/paths.ts';
 import { type Answer, LIMITS, type Replan, timesOf } from '../machine.ts';
-import { askedOf, count, defineAgent, type EffectsContext, heAnswered, holdDraft, StepFailed, words } from './agent.ts';
+import {
+  askedOf,
+  count,
+  defineAgent,
+  type EffectsContext,
+  FLAG_NAMES_FILE,
+  heAnswered,
+  holdDraft,
+  StepFailed,
+  words,
+} from './agent.ts';
 import {
   type Asked,
   askedLines,
@@ -377,6 +387,9 @@ function improvementProblems(
       issue(['criteria', i, 'withFlag'], 'each criterion of an improvement says the side of its flag: on or off');
     }
   });
+  if (!inScope(FLAG_NAMES_FILE, spec.scope)) {
+    issue(['scope'], `an improvement’s scope takes in ${FLAG_NAMES_FILE}, where the coder adds its flag’s name`);
+  }
   for (const side of ['on', 'off'] as const) {
     if (!spec.criteria.some((c) => c.withFlag === side)) {
       issue(['criteria'], `an improvement’s spec has a criterion with its flag ${side}`);
@@ -716,7 +729,7 @@ const improvementTemplate = (flagsTaken: readonly string[], keeps?: string) => [
   flagRule(flagsTaken, keeps),
   '- `pages`: one to six pages of the app a visitor opens to see the change, each as the path from the root without a query, such as `/products/blue-mug` for a product’s page: Verify takes pictures of them with the flag off and on.',
   '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `withFlag`, `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. `withFlag` is the side of the flag it holds on: `on` for what the change does, `off` for what stays as it is now. Give at least one of each: one `off` criterion says that, with the flag off, the pages are exactly as they are now. Each is a test the coder can write with the repository’s own tests, with the flag as its side says: an `on` criterion fails at this commit and passes once the change is in; an `off` one passes at both. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask. `from` names what above asks for it: `the request`, or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. An `off` criterion quotes the words of the request whose change it keeps back, since Martin asked for the change and not for the flag: never these instructions. A criterion Martin did not ask for does not belong in the spec, however much better it would make the app.',
-  '- `scope`: the files the coder may change, its tests among them, and no more than the change needs: a path from the top of the repository, a folder ending in `/`, or a pattern with `*`.',
+  `- \`scope\`: the files the coder may change, its tests among them, and no more than the change needs: a path from the top of the repository, a folder ending in \`/\`, or a pattern with \`*\`. It takes in ${FLAG_NAMES_FILE}, the app’s typed list of the flags it asks about, where the coder adds the flag’s name.`,
   CONTRADICTS_RULE,
   `- \`risks\`: a list of tags, each exactly one of these words, for what the change itself does; usually it is empty. ${RISKS.map((r) => `${r}: ${IMPROVEMENT_RISK_MEANINGS[r]}`).join('; ')}.`,
   '- `rollout`: a sentence or two on what Martin should look for on the pages as he turns the flag on.',
@@ -739,7 +752,7 @@ function requestPrompt(input: PlannerInput, request: Request): string {
     'Nothing is broken: this is a change Martin wants. Find where it goes in the repository: start from the pages it shows on, and read the code that serves them and its tests. Stop as soon as you can say which code changes and what a visitor will see: that is all the plan needs, and most plans need a dozen tool calls or fewer.',
     'Do not build it or try it: start no server, send no requests, write no scripts, and run no tests. The coder builds it, test first, and your criteria say what those tests show. You plan; the coder builds. Change nothing: no change of yours leaves this checkout.',
     '',
-    "The change ships behind a feature flag of its own, off. The app asks whether a flag is on with `await request.flag('name')`, as AGENTS.md says, and a flag the flag service does not name is off: so the change reaches nobody until Martin turns its flag on, a stage at a time. With the flag off, the app does exactly what it does now.",
+    `The change ships behind a feature flag of its own, off. The app asks whether a flag is on with \`await request.flag('name')\`, as AGENTS.md says, with a name on its typed list of flag names, ${FLAG_NAMES_FILE}; and a flag the flag service does not name is off: so the change reaches nobody until Martin turns its flag on, a stage at a time. With the flag off, the app does exactly what it does now.`,
     '',
     'The change does what Martin asked, and no more. The app is full of other things that are wrong with it: anything you notice, or anything else it could do better, goes in `findings`, never in the spec. Triage judges each one as it judges a visitor’s report; it opens no ticket on your word alone. Leave `findings` empty when you noticed nothing else.',
     '',

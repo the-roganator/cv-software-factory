@@ -612,7 +612,13 @@ const DELIVERY_SPEC: PayloadOf<'spec.written'> = {
       quote: 'Delivery dates on each product',
     },
   ],
-  scope: ['src/pages/product.ts', 'src/delivery.ts', 'test/pages-product.test.ts', 'test/delivery.test.ts'],
+  scope: [
+    'src/pages/product.ts',
+    'src/delivery.ts',
+    'src/flag-names.ts',
+    'test/pages-product.test.ts',
+    'test/delivery.test.ts',
+  ],
   risks: [],
   rollout:
     'Ships off. With the flag on, a product’s page in stock shows its delivery date under its stock, and one with none in stock shows none.',

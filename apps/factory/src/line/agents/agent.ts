@@ -10,7 +10,7 @@
  * What a result does in GitHub goes through `EffectsContext.once`, so the line can try a handback's effects again,
  * after GitHub or the store failed part-way, without running the agent again and without doing a write twice.
  */
-import type { HoldCause, InboxSignal, NewEvent, PayloadOf } from '@software-factory/events';
+import type { HoldCause, InboxSignal, MergeHold, NewEvent, PayloadOf } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { ActionArgs, ActionName, ActionResult, ReadArgs, ReadName, ReadResult } from '../../github/server.ts';
@@ -301,10 +301,30 @@ const APPROVALS: Partial<Record<HoldCause, string>> = {
   verify: 'Waiting for Martin to judge whether the fix cleared it',
 };
 
+/**
+ * The app's typed list of the flags it asks about (`FLAG_NAMES`): `request.flag` takes only a name on it, so an
+ * improvement's coder adds its flag's name there, and the review gate tags any change to it as an improvement.
+ */
+export const FLAG_NAMES_FILE = 'src/flag-names.ts';
+
+/** A merge's hold, by why the line does not add it to the merge queue itself (`merging.ts`). */
+const MERGE_SUMMARIES: Record<MergeHold, string> = {
+  'no-verdict': 'Waiting for Martin to merge: the review gate gave no verdict to trust',
+  unreviewed: 'Waiting for Martin to merge: the head moved since its review',
+  held: 'Held for its risk tags: waiting for Martin',
+  never: 'Waiting for Martin to merge',
+  level: 'Waiting for Martin to merge, at this autonomy level',
+  'auto-merge': 'Waiting for Martin to merge, with auto-merge off',
+  conflict: 'Waiting for Martin: it conflicts with main',
+  queue: 'Waiting for Martin: the merge queue took it out',
+  refused: 'Waiting for Martin: adding it to the merge queue was refused',
+};
+
 /** A hold, as the event the line appends for it. */
 export function holdDraft(actor: NewEvent['actor'], hold: PayloadOf<'hold.started'>): Draft {
-  const summary =
-    hold.kind === 'approval'
+  const summary = hold.merge
+    ? MERGE_SUMMARIES[hold.merge.why]
+    : hold.kind === 'approval'
       ? (APPROVALS[hold.cause] ?? 'Waiting for Martin')
       : hold.kind === 'question'
         ? 'A question for Martin'

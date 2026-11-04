@@ -100,6 +100,8 @@ export const PUBLIC_VIEWS = {
   'gates.finished': redacted,
   'review.submitted': redacted,
   'review.accepted': redacted,
+  'pull-request.enqueued': redacted,
+  'pull-request.dequeued': redacted,
   'pull-request.merged': redacted,
   'deploy.changed': redacted,
   'release.started': redacted,

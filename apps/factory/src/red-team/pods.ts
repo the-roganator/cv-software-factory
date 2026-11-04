@@ -6,9 +6,11 @@
  * harness can make these two pods and nothing else. The agent NetworkPolicy fences the pod to the gateway and the
  * handback and nothing else, as it fences an agent.
  *
- * - **`egress`:** the pod runs a connectivity probe in place of the agent (the pinned `node -e` in policy/attacks.ts).
- *   It tries an outside address by name and by number and the model provider's host, each of which a runner's egress
- *   policy refuses, and the gateway as the control, which it may reach. The harness reads the pod's own record of each
+ * - **`egress`:** the pod runs a connectivity probe in place of the agent (the pinned `node -e` in policy/egress-probe.ts).
+ *   It first waits for its fence with the agent step's own wait, as the agent step does before it runs anything (a pod
+ *   starts a moment before its network policy reaches it), and says how the wait ended. Then it tries an outside
+ *   address by name and by number and the model provider's host, each of which a runner's egress policy refuses, and
+ *   the gateway as the control, which it may reach; any answer from outside, a redirect too, is a reach. The harness reads the pod's own record of each
  *   from its log and appends an `egress-policy` refusal for each one refused (guardrail 5), which its role alone may.
  *   A control that is not reached means the pod reached nothing for some other reason, so the attack is unfinished,
  *   not refused.
@@ -24,8 +26,6 @@ import { cutTo, type NewEvent, VERSIONS } from '@software-factory/events';
 import type { EventWriter } from '@software-factory/store';
 import { z } from 'zod';
 import {
-  EGRESS_ARGS,
-  EGRESS_COMMAND,
   EGRESS_TARGETS,
   IMAGE_ARGS,
   IMAGE_COMMAND,
@@ -33,6 +33,7 @@ import {
   RED_TEAM_HOST_ALIAS,
   redTeamPodLabels,
 } from '../../../../policy/attacks.ts';
+import { EGRESS_ARGS, EGRESS_COMMAND, EGRESS_FENCE_LINE } from '../../../../policy/egress-probe.ts';
 import { guardrailsFor } from '../../../../policy/refusals.ts';
 import { DENIED, IMAGE_WEBHOOK } from '../line/refusals.ts';
 import type { Kube } from '../runners/kube.ts';
@@ -43,7 +44,9 @@ import type { Attempt, AttemptContext, AttemptResult } from './worker.ts';
 export const RUNNERS = 'runners';
 
 /** How long a pod is given to run its probe, and how often the harness looks at it. */
-const POD_DEADLINE_SECONDS = 120;
+// The egress probe first waits for its fence (a minute at most, awaitFence), then tries four addresses of three
+// seconds each: room for those beside the image's start, and well inside the attack's limit.
+const POD_DEADLINE_SECONDS = 300;
 const LOOK_MS = 3000;
 
 const POD = z.object({
@@ -199,6 +202,13 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
       }
     });
   const byWhat = new Map(lines.map((line) => [line.what, line]));
+  // How the pod's fence wait ended, for whoever reads a finding: a reach after a fence that never came up is a policy
+  // never applied, not a hole in one. It decides nothing: each target is judged on what the pod says of it.
+  const fence = byWhat.get(EGRESS_FENCE_LINE);
+  ctx.log.info(
+    { workItem: ctx.workItem, fence: fence ? cutTo(fence.result, 300) : 'not said' },
+    "the pod's fence wait",
+  );
   const attempts: AttemptResult['attempts'] = [];
   const refusals: number[] = [];
   // A target is a finding only when the pod says it reached it. One it said nothing of, or could not tell (a line it
@@ -221,8 +231,8 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
       anyUnclear = true;
       // Kept in the log, as it is in no attempt: why the attack proves nothing.
       ctx.log.warn(
-        { workItem: ctx.workItem, target: target.what, result },
-        'the pod could not tell of an outside address',
+        { workItem: ctx.workItem, target: target.what, result: cutTo(result, 200) },
+        line ? 'the pod could not tell of an outside address' : 'the pod said nothing of an outside address',
       );
     }
   }

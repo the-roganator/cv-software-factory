@@ -1,8 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  EGRESS_ARGS,
-  EGRESS_COMMAND,
-  EGRESS_PROBE,
   IMAGE_ARGS,
   IMAGE_COMMAND,
   RED_TEAM_HOST_ALIAS,
@@ -10,6 +8,7 @@ import {
   RED_TEAM_RUNNER_REPOSITORY,
   RED_TEAM_UNSIGNED_IMAGE,
 } from '../../../policy/attacks.ts';
+import { EGRESS_ARGS, EGRESS_COMMAND, EGRESS_PROBE, RUNNER_AGENT_MODULE } from '../../../policy/egress-probe.ts';
 import { type LabelSelector, type Manifest, rendered, selects } from './deploy.ts';
 
 /**
@@ -250,5 +249,19 @@ describe('the red-team pods’ admission rule', () => {
   it('admits only the agent label (never prepare) besides the marker', () => {
     expect(selects({ matchLabels: AGENT_POD }, AGENT_POD)).toBe(true);
     expect(text()).not.toContain("'prepare'");
+  });
+});
+
+describe('the egress probe’s fence wait', () => {
+  it('imports the agent step’s own wait, from where the runner image puts the runner', async () => {
+    expect(EGRESS_PROBE).toContain(`await import(${JSON.stringify(RUNNER_AGENT_MODULE)})`);
+    // The image copies the repository's apps/runner/src under /repo (apps/runner/Dockerfile).
+    expect(RUNNER_AGENT_MODULE.startsWith('/repo/')).toBe(true);
+    const local = new URL(`../../../${RUNNER_AGENT_MODULE.slice('/repo/'.length)}`, import.meta.url);
+    const dockerfile = readFileSync(new URL('../../../apps/runner/Dockerfile', import.meta.url), 'utf8');
+    expect(dockerfile).toMatch(/^WORKDIR \/repo$/m);
+    expect(dockerfile).toMatch(/^COPY .*apps\/runner\/src apps\/runner\/src$/m);
+    const agent = (await import(local.href)) as { awaitFence?: unknown };
+    expect(typeof agent.awaitFence).toBe('function');
   });
 });

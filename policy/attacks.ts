@@ -144,7 +144,9 @@ export const RED_TEAM_RUNNER_REPOSITORY = 'ghcr.io/the-roganator/cv-software-fac
  */
 export const EGRESS_TARGETS: readonly { what: string; url: string; byName: boolean }[] = [
   { what: 'an outside address by name', url: 'https://example.com/', byName: true },
-  { what: 'an outside address by number', url: 'https://1.1.1.1/', byName: false },
+  // Not 1.1.1.1, which the fence wait below takes as its sign of the fence (awaitFence's canary): this one is tried
+  // on its own account, so a policy that blocks the canary alone is not taken for one that blocks the outside.
+  { what: 'an outside address by number', url: 'https://9.9.9.9/', byName: false },
   { what: "the model provider's host", url: 'https://api.anthropic.com/', byName: true },
 ];
 
@@ -159,37 +161,6 @@ export const EGRESS_CONTROL = { what: 'the gateway', url: 'http://gateway.factor
  */
 export const RED_TEAM_DNS = { dnsPolicy: 'None', nameservers: ['127.0.0.1'] } as const;
 export const RED_TEAM_HOST_ALIAS = new URL(EGRESS_CONTROL.url).hostname;
-
-/**
- * The egress pod's probe, run in place of the agent with `node -e`: it tries each target and the control, and prints
- * one JSON line each, so the harness reads the pod's log and records what the egress policy refused, and that the
- * control was reached, from the pod's own words and never by timing. Any answer at all is a reach, a redirect too,
- * which it does not follow: 1.1.1.1 answers with one to a name the pod cannot resolve, and following it would read a
- * reach as a refused name. It first waits for the pod's fence with the agent step's own wait, so the attack meets
- * what an agent's code meets: a pod starts before its enforcer fences it, and the agent step runs nothing until then.
- * Pinned, so the harness cannot run anything else
- * on a runner image: the admission rule holds the pod's `command`, `args` and `env` to exactly these
- * (`deploy/base/admission/factory/red-team-pods.yaml`, kept in step by `apps/factory/test/red-team-fences.test.ts`).
- */
-export const EGRESS_PROBE = [
-  // As the agent step does before it runs anything (awaitFence, apps/runner/src/agent.ts): wait for the pod's fence,
-  // then try the outside, fenced or not by the wait's end, so a pod its policy never fenced reports what it reached.
-  `try { await (await import("/repo/apps/runner/src/agent.ts")).awaitFence(${JSON.stringify(new URL(EGRESS_CONTROL.url).origin)}); } catch {}`,
-  `const targets = ${JSON.stringify(EGRESS_TARGETS)}; const control = ${JSON.stringify(EGRESS_CONTROL)};`,
-  'const BLOCKED = ["ECONNREFUSED","ECONNRESET","EHOSTUNREACH","ENETUNREACH","UND_ERR_CONNECT_TIMEOUT","TimeoutError"];',
-  'const attempt = async (url) => { try { await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(3000) }); return "reached"; }',
-  '  catch (e) { const code = (e && e.cause && e.cause.code) || (e && e.name);',
-  '    if (BLOCKED.includes(code)) return "blocked"; if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "no-name";',
-  '    return "unclear"; } };',
-  'for (const t of targets) { const r = await attempt(t.url);',
-  '  console.log(JSON.stringify({ what: t.what, result: r, refused: r === "blocked" || (t.byName && r === "no-name") })); }',
-  'const c = await attempt(control.url);',
-  'console.log(JSON.stringify({ what: control.what, result: c, reached: c === "reached" }));',
-].join('\n');
-
-/** The pinned command and args of the egress pod: `node -e <the probe>`, which the admission rule holds it to. */
-export const EGRESS_COMMAND = ['node'] as const;
-export const EGRESS_ARGS = ['-e', EGRESS_PROBE] as const;
 
 /**
  * The pinned command of the image attack's pod: it never runs, as admission control refuses its image, so it only

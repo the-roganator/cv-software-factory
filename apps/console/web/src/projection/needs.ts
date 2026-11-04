@@ -22,6 +22,7 @@ import {
   type PublicEvent,
   type Resolution,
   type Stage,
+  WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
@@ -62,8 +63,16 @@ export interface Need {
   since: number;
   title: string;
   evidence: Evidence;
-  /** A link the card offers beside its evidence: the pull request to merge, or the settings to raise a cap. */
+  /** A link the card offers beside its evidence: the settings, to raise a spend cap. */
   link: { href: string; label: string } | undefined;
+  /**
+   * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it.
+   * A sample's never existed, so it has no `href` and says `why`, as the sheet's facts link it nowhere too.
+   */
+  way:
+    | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: string }
+    | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: undefined; why: string }
+    | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
@@ -151,7 +160,7 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
     case 'review':
       return 'Held by review';
     case 'beyond-ticket':
-      return 'Beyond its ticket';
+      return 'Beyond or short of ticket';
     case 'merge':
       return 'Waiting for your merge';
     case 'deploy':
@@ -200,6 +209,10 @@ function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvem
     if (cause === 'question') return 'The line carries on with the spec as it stands.';
   }
   if (answer === 'answered' && cause === 'question') return 'The planner reads your answer, and carries on with it.';
+  // Words that would go to the coder go to the planner instead: the spec, not the change, is what is wrong.
+  if (answer === 'replanned') {
+    return 'The planner writes the spec again from your words, and the coder rebuilds the change on it.';
+  }
   switch (resolution) {
     case 'carry-on':
       return answer === 'answered'
@@ -222,12 +235,27 @@ function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvem
   }
 }
 
-const LABEL: Record<HoldAnswer, string> = { approved: 'Approve', answered: 'Answer in words', rejected: 'Reject' };
+const LABEL: Record<HoldAnswer, string> = {
+  approved: 'Approve',
+  answered: 'Answer in words',
+  replanned: 'Back to the planner',
+  rejected: 'Reject',
+};
+
+/** How Martin answered, for Answered today. */
+const HOW: Record<HoldAnswer, string> = {
+  approved: 'Approved',
+  rejected: 'Rejected',
+  answered: 'Answered in words',
+  replanned: 'Sent back to the planner',
+};
 
 /** What an answer did, in a few words, for Answered today. */
 function didOf(cause: HoldCause | undefined, decision: HoldAnswer): string | undefined {
   if (!cause) return undefined;
   if (decision === 'answered' && WORDS_LEAVE_HELD.includes(cause)) return undefined;
+  // How he answered says already where it went.
+  if (decision === 'replanned') return undefined;
   const resolution = ANSWERS[cause][decision];
   if (decision === 'approved' && (cause === 'finding' || cause === 'burst' || cause === 'environment')) {
     return 'Triage opened its tickets.';
@@ -320,18 +348,26 @@ function deployEvidence(item: ItemState): string {
   return `${at} ${deployWords(item.deploy).evidence}`;
 }
 
-/** The pull request a merge or a deploy waits for, on GitHub; the settings for a spend cap. */
-function linkOf(item: ItemState, cause: HoldCause): Need['link'] {
-  if (cause === 'merge' && item.pullRequest !== undefined) {
-    return { href: `${APP_REPO}/pull/${item.pullRequest}`, label: `Merge #${item.pullRequest} on GitHub` };
+const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it links nowhere.';
+
+/** The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed. */
+function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
+  const pull = (verb: 'Merge' | 'Deploy', pullRequest: number): Need['way'] =>
+    item.sample
+      ? { verb, pullRequest, href: undefined, why: SAMPLE_PULL }
+      : { verb, pullRequest, href: `${APP_REPO}/pull/${pullRequest}` };
+  if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
+  // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
+  // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
+  if (cause === 'deploy' && (item.deploy?.state === 'checking' || item.deploy?.state === 'passed')) {
+    return pull('Deploy', item.deploy.pullRequest);
   }
-  if (cause === 'deploy' && item.deploy) {
-    const n = item.deploy.pullRequest;
-    return { href: `${APP_REPO}/pull/${n}`, label: `Deploy #${n} on GitHub` };
-  }
-  if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings' };
   return undefined;
 }
+
+/** The settings, for a spend cap. */
+const linkOf = (cause: HoldCause): Need['link'] =>
+  cause === 'spend' ? { href: '?view=settings', label: 'Raise the cap in the settings' } : undefined;
 
 /** Whole units: "1d", "50min", the first part of a duration. */
 /** How long something has waited, to its largest unit: "1d", "50min". */
@@ -389,7 +425,8 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           since,
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
-          link: linkOf(item, hold.cause),
+          link: linkOf(hold.cause),
+          way: wayOf(item, hold.cause),
           answers: answersTo(hold.cause).map((answer) => ({
             answer,
             label: LABEL[answer],
@@ -417,12 +454,12 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       if (at < from || at > t) continue;
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
-      const how = { approved: 'Approved', rejected: 'Rejected', answered: 'Answered in words' }[decision];
+      const how = HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words: answer ?? (report && decision === 'answered' ? 'kept' : undefined),
+        words: answer ?? (report && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
         did: didOf(cause, decision),
       });
     }

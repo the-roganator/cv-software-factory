@@ -640,6 +640,9 @@ footer.foot a.foot-key:hover {
 .toolmark-sigstore {
   mask-image: url("../marks/sigstore.svg");
 }
+.toolmark-github {
+  mask-image: url("../marks/github.svg");
+}
 /* A line that begins with a tool's mark: the mark beside its first line of text, however many lines follow. */
 .tooled {
   display: flex;

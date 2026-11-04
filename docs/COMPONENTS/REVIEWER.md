@@ -2,7 +2,7 @@
 
 An agent: reviews the fix, or the improvement, once the gates pass. Part of the [factory plane](README.md#agents).
 
-- **Reads:** the ticket's public view and what the senses saw, or Martin's request, Martin's answers at Plan, the pull request's diff, the spec, and the app's `docs/REVIEWERS.md` at the base.
+- **Reads:** the ticket's public view and what the senses saw, or Martin's request, Martin's answers at Plan (for holding the spec to what he asked), the pull request's diff, the spec, and the app's `docs/REVIEWERS.md` at the base.
 - **Produces:** a comment review, a check run, and its findings.
 - **v1:** `line/agents/reviewer.ts`, in a [runner](AGENT-RUNNERS.md) at the pull request's head with its base beside it, with 30 turns and 15 minutes.
 
@@ -10,11 +10,12 @@ An agent: reviews the fix, or the improvement, once the gates pass. Part of the 
 
 - **The rules as they are at the base,** so a change cannot loosen them.
 - **The diff,** against the coder's claims.
-- **The spec, against the ticket,** with Martin's answers as part of the ticket (his own words; what the line reads into an approval is told as the line's), as well as the diff against the spec. Each criterion comes with the words the planner quoted for it, which the line found where it said; the reviewer judges whether they ask for it.
+- **The spec, against the ticket,** with Martin's answers as part of the ticket (his own words; what the line reads into an approval is told as the line's), as well as the diff against the spec. Each criterion comes with the words the planner quoted for it, which the line found where it said; the reviewer judges whether they ask for it. The diff is held to the spec alone, since the coder reads the spec and never his answers: what his answer asks for that no criterion carries (a test's name to keep, which no page shows) is the spec's fault, never the change's, however the change went against his words, and goes to him as a criterion beyond the ticket does; never a round on the coder for words the spec never carried.
+- **The tests the spec contradicts,** which the change may delete, rename or rewrite and no other, each by its file and full name, quoted as data. Each is held to the ticket as a criterion is: a test no criterion the ticket asks for needs changed is a contradiction the ticket does not ask for, blocking and citing the criterion said to contradict it and the ticket; a named test changed further than its criteria need blocks too, and goes back to the coder.
 
 | It finds | Finding | Goes to |
 |---|---|---|
-| A criterion the ticket and Martin's answers do not ask for | Blocking, citing that criterion and the ticket. The schema makes such a review an escalation, in every autonomy mode, since the coder cannot put a spec right | Martin, as `beyond-ticket` |
+| A criterion the ticket and Martin's answers do not ask for; or an ask in his answer that no criterion carries, which the change went against | Blocking, citing that criterion (for a lack, the one the change was meeting) and the ticket. The schema makes such a review an escalation, in every autonomy mode, since the coder cannot put a spec right | Martin, as `beyond-ticket` |
 | A change that goes beyond a sound spec | Blocking, citing the spec or a rule | The coder |
 
 An improvement's spec is held to Martin's request and his answers in the same way: a criterion he did not ask for blocks, cites the request (the finding's `ticket`), and goes to him. Its change is held to its flag too, and each of these blocks and goes back to the coder:

@@ -528,7 +528,8 @@ export const PAYLOADS = {
   /**
    * The planner's spec. An improvement's names its title, which replaces the one made from Martin's words, the flag its
    * change goes behind, the pages it changes, which Verify pictures with the flag off and on, and on each criterion
-   * the side of the flag it holds on. A version 3 spec named none of them.
+   * the side of the flag it holds on. A version 3 spec named none of them. `contradicts` names the existing tests the
+   * criteria contradict, which a version 4 spec never named.
    */
   'spec.written': z.strictObject({
     title: text(120).optional(),
@@ -559,6 +560,16 @@ export const PAYLOADS = {
     flag: flagName.optional(),
     /** The app's pages the change shows on, by path, as many as Verify pictures (`flag.checked` keeps six, in two schemes). */
     pages: z.array(page).min(1).max(6).optional(),
+    /**
+     * The existing tests the criteria contradict, each by its file and its full name (its `describe` names and its own
+     * joined with " > ", as test integrity names it): the only tests the change may delete, rename or rewrite. Absent
+     * when the spec contradicts none, and from every spec before spec.written version 5.
+     */
+    contradicts: z
+      .array(z.strictObject({ file: text(PATH_CHARS), test: text(300) }))
+      .min(1)
+      .max(10)
+      .optional(),
   }),
   /** A change pushed for review: a new pull request, or another attempt on one that was sent back. */
   'pull-request.pushed': z.strictObject({
@@ -659,7 +670,8 @@ export const PAYLOADS = {
    * The reviewer's review of a pull request's latest push, with each finding: the line it is anchored to, whether it
    * blocks, what it cites (a rule of the repository's `docs/REVIEWERS.md`, a criterion of the spec, the ticket, or
    * more than one) and its comment, so the console can show the thread and the rules can be counted by how often they
-   * are cited. A finding that cites the ticket says the criterion it cites goes beyond what the ticket asks.
+   * are cited. A finding that cites the ticket says the criterion it cites goes beyond what the ticket asks, or is the
+   * one the change was meeting where the spec lacks what Martin's answer asks.
    */
   'review.submitted': z.strictObject({
     pullRequest,
@@ -675,7 +687,11 @@ export const PAYLOADS = {
             blocking: z.boolean(),
             rule: z.number().int().min(1).max(50).optional(),
             criterion: z.number().int().min(1).max(12).optional(),
-            /** The criterion it cites is one the ticket does not ask for: only a criterion goes beyond the ticket. */
+            /**
+             * The criterion it cites is one the ticket does not ask for, or the one the change was meeting where it went
+             * against what Martin's answer asks and the spec lacks: only a criterion goes beyond the ticket, or short of
+             * his answer.
+             */
             ticket: z.literal(true).optional(),
             /**
              * The finding of the review before that this one holds again, in its words or new, by its place among that
@@ -1040,17 +1056,24 @@ export const PAYLOADS = {
       message: 'a canary’s hold, and only one, names the release',
       path: ['release'],
     }),
-  'hold.answered': z.strictObject({
-    decision: z.enum(V.HOLD_ANSWERS),
-    answer: text(V.MARTIN_ANSWER_CHARS).optional(),
-    /** The hold it answers: its `hold.started` event's id. An answer from before the admin service never named it. */
-    hold: z.uuid().optional(),
-    /**
-     * The hold is on a work item a visitor's report opened, so the answer's words stay Martin's: its public view leaves
-     * them out, since a paraphrase of a report would pass any redactor. An answer from before never said.
-     */
-    report: z.literal(true).optional(),
-  }),
+  'hold.answered': z
+    .strictObject({
+      decision: z.enum(V.HOLD_ANSWERS),
+      answer: text(V.MARTIN_ANSWER_CHARS).optional(),
+      /** The hold it answers: its `hold.started` event's id. An answer from before the admin service never named it. */
+      hold: z.uuid().optional(),
+      /**
+       * The hold is on a work item a visitor's report opened, so the answer's words stay Martin's: its public view
+       * leaves them out, since a paraphrase of a report would pass any redactor. An answer from before never said.
+       */
+      report: z.literal(true).optional(),
+    })
+    // Sending the work back to the planner is his reason for it, in words; the public view of one about a visitor's
+    // report leaves them out, and says so.
+    .refine((answer) => answer.decision !== 'replanned' || answer.answer !== undefined || answer.report, {
+      message: 'sending the work back to the planner takes his words',
+      path: ['answer'],
+    }),
   /**
    * A mechanism stopped an action: the platform's (a token's permissions, a ruleset, the egress policy, admission
    * control), the coder's scope fence, the GitHub worker's own guard, the review check, the gateway, or triage

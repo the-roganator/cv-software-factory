@@ -536,6 +536,7 @@ const WRITES: [string, Body][] = [
   ['/admin/holds/1/approve', { hold: crypto.randomUUID() }],
   ['/admin/holds/1/reject', { hold: crypto.randomUUID() }],
   ['/admin/holds/1/answer', { hold: crypto.randomUUID(), words: 'Go on' }],
+  ['/admin/holds/1/replan', { hold: crypto.randomUUID(), words: 'The spec is wrong' }],
   ['/admin/flags/delivery-dates/stage', { from: { stage: 'off' }, to: { stage: 'checks' } }],
 ];
 
@@ -2270,6 +2271,57 @@ describe('Needs you', () => {
         })
       ).status,
     ).toBe(400);
+  });
+
+  it('sends a work item back to the planner, with his words, only from a hold whose words go to the coder', async () => {
+    const { browser } = await signedIn();
+    const words = 'The spec contradicts files > keeps nothing of the other files in test/app.test.ts';
+    const { workItem, hold } = await held('review', { stage: 'review' });
+    // Words are his reason for it: none, or only spaces, is refused, having changed nothing.
+    for (const body of [{ hold }, { hold, words: '   ' }]) {
+      expect(await browser.post(`/admin/holds/${workItem}/replan`, body)).toMatchObject({
+        status: 400,
+        body: { refused: 'body', message: 'Send the hold, and your words.' },
+      });
+    }
+    expect(await answers(workItem)).toEqual([]);
+    const sent = await browser.post(`/admin/holds/${workItem}/replan`, { hold, words: `  ${words}  ` });
+    expect(sent, JSON.stringify(sent.body)).toMatchObject({
+      status: 200,
+      body: { workItem, hold, decision: 'replanned', report: false },
+    });
+    expect(await answers(workItem)).toEqual([
+      expect.objectContaining({ actor: 'martin', payload: { decision: 'replanned', answer: words, hold } }),
+    ]);
+    const [summary] = await db.owner<{ summary: string }[]>`
+      select summary from events where work_item = ${workItem} and type = 'hold.answered'`;
+    expect(summary?.summary).toBe(`Martin sent the hold on #${workItem} back to the planner`);
+    // The line reads it as it reads any answer that replans: no hold, and back to Plan.
+    expect(await lineHold(workItem)).toBeUndefined();
+    // Offered on the holds before a merge whose words go to the coder; refused on every other, by the stored cause.
+    for (const cause of ['gates', 'merge']) {
+      const other = await held(cause);
+      expect((await browser.post(`/admin/holds/${other.workItem}/replan`, { hold: other.hold, words })).status).toBe(
+        200,
+      );
+    }
+    for (const [cause, stage] of [
+      ['spec', 'plan'],
+      ['question', 'plan'],
+      ['scope', 'build'],
+      ['failures', 'build'],
+      ['deploy', 'release'],
+      ['spend', 'build'],
+      ['suggestion', 'triage'],
+      ['finding', 'triage'],
+    ] as const) {
+      const other = await held(cause, { stage });
+      expect(
+        await browser.post(`/admin/holds/${other.workItem}/replan`, { hold: other.hold, words }),
+        cause,
+      ).toMatchObject({ status: 422, body: { refused: 'answer' } });
+      expect(await answers(other.workItem), cause).toEqual([]);
+    }
   });
 
   it('takes no answer of a canary’s hold, and finds it ended with its release, as the line does', async () => {

@@ -1,16 +1,19 @@
 import { PATH_CHARS, type PayloadOf } from '@software-factory/events';
-import { validateSignal } from '@software-factory/events/schemas';
+import { PAYLOADS, validateSignal } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
+import * as GATE from '../../src/gates/contradicts.ts';
 import type { EffectsContext } from '../../src/line/agents/agent.ts';
 import { evidenceLines, seen, ticketLines } from '../../src/line/agents/evidence.ts';
 import {
   findingSignal,
   MAX_PLANNER_FINDINGS,
+  missingTests,
   type PlannerInput,
   planner,
   plannerResult,
   quoteProblem,
   sourcesOf,
+  tagged,
 } from '../../src/line/agents/planner.ts';
 import { FIXTURES } from '../../src/line/bench/fixtures.ts';
 import type { Handback } from '../../src/runners/steps.ts';
@@ -288,6 +291,154 @@ describe('the planner’s scope', () => {
   });
 });
 
+describe('the tests a spec contradicts', () => {
+  const named = { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' };
+  const contradicting = (contradicts: unknown, scope = SPEC.scope) =>
+    plannerResult(PROTECTED, SOURCES).safeParse({ verdict: 'spec', spec: { ...SPEC, scope, contradicts } });
+  const MONEY_TESTS = [
+    "describe('pounds', () => {",
+    "  it('drops the pence of a whole pound', () => {",
+    "    expect(pounds(600)).toBe('£6');",
+    '  });',
+    '});',
+  ].join('\n');
+
+  it('are held by the event to the gate’s own limits, which the events cannot import', () => {
+    expect(PATH_CHARS).toBe(GATE.PATH_CHARS);
+    const takes = (contradicts: unknown) => PAYLOADS['spec.written'].safeParse({ ...SPEC, contradicts }).success;
+    const entry = (file: string, test: string) => ({ file, test });
+    const at = (n: number) => `test/${'a'.repeat(n - 'test/.test.ts'.length)}.test.ts`;
+    expect(takes([entry(at(GATE.PATH_CHARS), 'x')])).toBe(true);
+    expect(takes([entry(at(GATE.PATH_CHARS + 1), 'x')])).toBe(false);
+    expect(takes([entry('test/a.test.ts', 'x'.repeat(GATE.TEST_CHARS))])).toBe(true);
+    expect(takes([entry('test/a.test.ts', 'x'.repeat(GATE.TEST_CHARS + 1))])).toBe(false);
+    const many = (n: number) => Array.from({ length: n }, (_, i) => entry('test/a.test.ts', `test ${i}`));
+    expect(takes(many(GATE.MOST_CONTRADICTED))).toBe(true);
+    expect(takes(many(GATE.MOST_CONTRADICTED + 1))).toBe(false);
+    // What the event takes, the gate reads and renders.
+    expect(GATE.entryProblem(entry(at(GATE.PATH_CHARS), 'x'.repeat(GATE.TEST_CHARS)))).toBeUndefined();
+  });
+
+  it('are asked for by file and full name, as test integrity names them, and are usually none', () => {
+    for (const prompt of [planner.prompt(INPUT), planner.prompt(REQUEST)]) {
+      expect(prompt).toContain('- `contradicts`: the existing tests a criterion contradicts');
+      expect(prompt).toContain('joined with " > "');
+      expect(prompt).toContain('usually there are none');
+      expect(prompt).toContain('"scope":[],"contradicts":[],"risks":[]');
+    }
+  });
+
+  it('name a test in a file the scope takes in, and no protected path, each once', () => {
+    expect(contradicting([named]).success).toBe(true);
+    // None is said by leaving the list out, or empty: the event keeps no empty list.
+    const none = contradicting([]);
+    expect(none.success && none.data.verdict === 'spec' && 'contradicts' in none.data.spec).toBe(false);
+    const issue = (parsed: ReturnType<typeof contradicting>) => parsed.error?.issues[0];
+    expect(issue(contradicting([{ ...named, file: 'test/cart.test.ts' }]))).toMatchObject({
+      path: ['spec', 'contradicts', 0],
+      message: 'test/cart.test.ts is not in the scope: a test it contradicts is one the change may change',
+    });
+    // A folder the scope may name can hold a file no patch may change, which no entry may name either.
+    expect(issue(contradicting([{ ...named, file: 'src/AGENTS.md' }], ['src/']))?.message).toBe(
+      'src/AGENTS.md names a path no patch may change',
+    );
+    expect(issue(contradicting([named, named]))?.message).toContain('is named twice');
+    expect(issue(contradicting([{ ...named, file: 'src/money.ts' }]))?.message).toBe(
+      'src/money.ts is not a test file: name a test in one',
+    );
+    // A helper under test/ is no file the gate compares.
+    expect(issue(contradicting([{ ...named, file: 'test/support/shop.ts' }], ['src/money.ts', 'test/']))?.message).toBe(
+      'test/support/shop.ts is not a test file: name a test in one',
+    );
+    // Written into the description from the App's account, a name may not notify anyone, link an issue or carry a
+    // marker: the gate's own rule for an entry says so.
+    for (const test of ['pounds > warns @admin', 'pounds > fixes #12', 'pounds > <!-- factory:contradicts -->']) {
+      expect(issue(contradicting([{ ...named, test }]))?.message, test).toMatch(/^the test cannot be named: /);
+    }
+    expect(contradicting(Array.from({ length: 11 }, (_, i) => ({ ...named, test: `test ${i}` }))).success).toBe(false);
+  });
+
+  it('are refused where the gate would not read them', () => {
+    for (const entry of [
+      { ...named, file: '../test/money.test.ts' },
+      { ...named, file: '/test/money.test.ts' },
+      { ...named, file: 'test/`money`.test.ts' },
+      { ...named, test: 'pounds\n> drops the pence' },
+    ]) {
+      const parsed = contradicting([entry], ['src/money.ts', 'test/']);
+      expect(parsed.success, JSON.stringify(entry)).toBe(false);
+    }
+  });
+
+  it('tag the spec test-loosening, which the line adds if the planner left it out, and takes none away', () => {
+    const spec = { ...SPEC, risks: [] as PayloadOf<'spec.written'>['risks'], contradicts: [named] };
+    expect(tagged(spec).risks).toEqual(['test-loosening']);
+    expect(tagged({ ...spec, risks: ['dependency-change', 'test-loosening'] }).risks).toEqual([
+      'dependency-change',
+      'test-loosening',
+    ]);
+    expect(tagged(SPEC as PayloadOf<'spec.written'>)).toEqual(SPEC);
+  });
+
+  it('are each a test their file has at the commit, where the line can read the file', async () => {
+    const files: Record<string, { found: false } | { found: true; text: string | null }> = {
+      'test/money.test.ts': { found: true, text: MONEY_TESTS },
+      'test/huge.test.ts': { found: true, text: null },
+    };
+    const read = async (path: string) => files[path] ?? { found: false as const };
+    expect(await missingTests([named], read)).toEqual([]);
+    expect(await missingTests([{ ...named, test: 'pounds > keeps the pence' }], read)).toEqual([
+      'test/money.test.ts has no test named “pounds > keeps the pence”',
+    ]);
+    expect(await missingTests([{ ...named, file: 'test/gone.test.ts' }], read)).toEqual([
+      'there is no file test/gone.test.ts',
+    ]);
+    // A file it cannot read as text is the gate's to judge: its summary says an entry names no test in the base.
+    expect(await missingTests([{ ...named, file: 'test/huge.test.ts' }], read)).toEqual([]);
+  });
+
+  it('refuse a spec naming a test that is not there, and write one that is, tagged', async () => {
+    const reads: unknown[] = [];
+    const context = {
+      workItem: '1301',
+      commit: 'c'.repeat(40),
+      leaveSignal: async () => {},
+      read: async (name: string, args: { path: string }) => {
+        reads.push([name, args]);
+        return args.path === named.file ? { found: true, text: MONEY_TESTS } : { found: false };
+      },
+    } as unknown as EffectsContext;
+    const spec = { ...SPEC, contradicts: [named] };
+    const drafts = await planner.apply({ verdict: 'spec', spec, findings: [] }, {} as Handback, INPUT, context);
+    expect(reads).toEqual([['file', { ref: 'c'.repeat(40), path: 'test/money.test.ts' }]]);
+    expect(drafts[0]?.payload).toEqual({ ...spec, risks: ['test-loosening'] });
+    const wrong = { ...SPEC, contradicts: [{ ...named, test: 'pounds > whole pounds' }] };
+    await expect(
+      planner.apply({ verdict: 'spec', spec: wrong, findings: [] }, {} as Handback, INPUT, context),
+    ).rejects.toThrow(
+      'The planner’s spec names tests it contradicts that are not there at ccccccc: test/money.test.ts has no test named “pounds > whole pounds”',
+    );
+  });
+});
+
+describe('the bench’s contradicted test', () => {
+  it('is a ticket whose fix contradicts a test the seed pins, and the coder’s spec for it names that test', () => {
+    const planned = FIXTURES.planner['whole-pounds'];
+    const coded = FIXTURES.coder['whole-pounds'];
+    if (!planned || !coded) throw new Error('The bench has no whole-pounds fixtures.');
+    // The seed pins the whole pound without pence in a test of its own, which a fix to two digits contradicts.
+    expect(planned.seed).toContain("+  it('drops the pence of a whole pound', () => {");
+    expect(coded.seed).toBe(planned.seed);
+    expect(coded.input.spec.contradicts).toEqual([
+      { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' },
+    ]);
+    // The coder's spec is one the line would take from the planner given the same ticket.
+    const parsed = planner.schema(planned.input).safeParse({ verdict: 'spec', spec: coded.input.spec });
+    expect(parsed.success).toBe(true);
+    expect(planner.prompt(planned.input)).toContain('- `contradicts`:');
+  });
+});
+
 describe('the planner’s prompt', () => {
   it('gives the ticket and what the senses saw by their typed fields, and no log message at all', () => {
     const prompt = planner.prompt(INPUT);
@@ -352,6 +503,19 @@ describe('the planner’s prompt', () => {
     expect(prompt).toContain('It is about the words "Open every day but Tuesday." on /about');
     expect(prompt).not.toContain('What the senses saw');
     expect(prompt).toContain('Martin was asked, and answered:\n- Is the shop open on Tuesdays? He said: Yes, all day.');
+  });
+
+  it('carries everything his answer asks for into the spec, since the coder reads the spec and never his answer', () => {
+    const answers = [{ asked: 'Is the shop open on Tuesdays?', answer: 'Yes, all day.' }];
+    const prompt = planner.prompt({ ...INPUT, answers });
+    expect(prompt).toContain(
+      'Everything his answer asks for goes into the spec, as a criterion from Martin’s answer that quotes his words: an ask about the change itself that no page shows too, such as a test or a file to keep as it is, or its name. The coder reads the spec and never his answer, and is held to nothing the spec does not say.',
+    );
+    // A criterion on the change itself is not refused by what a criterion is: the test or file it names shows it.
+    expect(prompt).toContain(
+      'it fails at this commit and passes once the fix is in. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask.',
+    );
+    expect(planner.prompt(INPUT)).not.toContain('never his answer');
   });
 
   it('tells what the coder said of the files it needs beside his answer, and takes no quote from its words', () => {
@@ -529,6 +693,12 @@ describe('the planner’s prompt for an improvement', () => {
       'the app’s flag context among them: .github/, deploy/, Dockerfile, **/AGENTS.md, docs/REVIEWERS.md, src/flags/.',
     );
     expect(prompt).toContain('Reject it when it would keep anything on a visitor’s device');
+  });
+
+  it('takes a criterion from his answer about the change itself, shown by the test or file it names', () => {
+    expect(planner.prompt(REQUEST)).toContain(
+      'an `off` one passes at both. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask.',
+    );
   });
 
   it('leaves a ticket’s prompt as it was', () => {
@@ -718,9 +888,29 @@ describe('the planner planning again', () => {
         comment: 'No signal asks for separators.',
       },
     ];
-    expect(why({ ...held, cause: 'beyond-ticket', beyond })).toContain(
+    // A lack is of his words, so it is told only where the planner can read any: here, his answer to the hold.
+    const withWords = (replan: PlannerInput['replan']) =>
+      planner.prompt({
+        ...AGAIN,
+        answers: [...AGAIN.answers, { asked: 'Held for Martin', answer: 'Keep the test’s name.' }],
+        replan,
+      });
+    expect(withWords({ ...held, cause: 'beyond-ticket', beyond })).toContain(
+      'the reviewer found the spec, or the change, goes beyond the ticket, or that the spec lacks what his answer asks, each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:\n- Criterion 2: No signal asks for separators.',
+    );
+    expect(withWords({ ...held, cause: 'beyond-ticket', beyond })).toContain(
+      'So take out what goes beyond the ticket, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.',
+    );
+    // With no words of his to read (an approval in none, or a work item a visitor's report opened, whose words stay
+    // his), nothing of a lack: it would have the planner invent a criterion from words it cannot read.
+    const none = why({ ...held, answered: false, cause: 'beyond-ticket', beyond });
+    expect(none).toContain(
       'the reviewer found the spec, or the change, goes beyond the ticket:\n- Criterion 2: No signal asks for separators.',
     );
+    expect(none).toContain(
+      'So take out what goes beyond the ticket, as his answer says, and keep the rest of the spec as it is.',
+    );
+    expect(none).not.toContain('lack');
     expect(
       why({ ...held, cause: 'nothing-to-fix', reason: 'The coder found nothing to fix: it pads already' }),
     ).toContain('the coder found nothing to fix at your spec: The coder found nothing to fix: it pads already.');
@@ -732,6 +922,53 @@ describe('the planner planning again', () => {
       'Why it came back: the work returned from verify: The probe still saw it.',
     );
     expect(why({ ...held, answered: false, cause: 'spec' })).toContain('Martin sent it back to you.');
+    // Sent back from a hold whose words would have gone to the coder: the spec is what he judges wrong.
+    const review = why({ ...held, approved: false, cause: 'review', reason: 'Test integrity failed' });
+    expect(review).toContain('the change was held for Martin at review: Test integrity failed.');
+    expect(review).toContain(
+      'Martin answered it in words: the last of his answers above. He sent it to you rather than to the coder',
+    );
+    expect(review).toContain('Where a criterion means an existing test must change, name that test in `contradicts`.');
+    expect(why({ ...held, approved: false, cause: 'gates', reason: 'Test integrity failed' })).toContain(
+      'held for Martin at the gates: Test integrity failed.',
+    );
+    expect(why({ ...held, approved: false, cause: 'merge' })).toContain('held for Martin for his merge');
+    // On a work item a visitor's report opened, his words stay his: the planner is told to change it for why it was held.
+    const kept = why({ ...held, approved: false, answered: false, cause: 'review', reason: 'Test integrity failed' });
+    expect(kept).toContain('Martin sent it back to you. He sent it to you rather than to the coder');
+    expect(kept).toContain('So change the spec for why it was held,');
+    expect(kept).not.toContain('as his answer asks');
+  });
+
+  it('says, for every cause he answered in words, that everything his answer asks for is carried into the spec', () => {
+    const carried =
+      'Everything his answer asks for is carried into the spec as criteria from Martin’s answer that quote his words, since the coder is told nothing of his answer.';
+    const why = (replan: PlannerInput['replan']) => planner.prompt({ ...AGAIN, replan });
+    const held = { approved: false, answered: true, reason: 'Held for Martin' };
+    // Sent back from a review hold in words, where they would have gone to the coder: after why he sent it here.
+    expect(why({ ...held, cause: 'review', reason: 'Review asked for changes' })).toContain(
+      `Martin answered it in words: the last of his answers above. He sent it to you rather than to the coder: the spec is what he judges must change. ${carried}`,
+    );
+    const causes = [
+      'scope',
+      'beyond-ticket',
+      'nothing-to-fix',
+      'spec',
+      'verify',
+      'gates',
+      'merge',
+      'tests-first',
+    ] as const;
+    for (const cause of causes) expect(why({ ...held, cause }), cause).toContain(carried);
+    expect(why({ ...held, cause: 'scope', approved: true })).toContain(
+      `Martin approved that, with the words last among his answers above. ${carried}`,
+    );
+    // Approved in no words, words that stay his, or no answer at all: nothing of his to carry.
+    expect(prompt).not.toContain('carried into the spec');
+    expect(why({ ...held, answered: false, cause: 'review' })).not.toContain('carried into the spec');
+    expect(why({ cause: 'returned', from: 'verify', reason: 'The probe still saw it.' })).not.toContain(
+      'carried into the spec',
+    );
   });
 
   it('tells the line’s reading of an approval as the line’s, and takes no quote from it', () => {
@@ -821,6 +1058,39 @@ describe('the bench’s replans', () => {
     );
     const last = input.lastSpec as PayloadOf<'spec.written'>;
     expect(fits(input, { ...last, scope: [...last.scope, 'src/pages/cards.ts'] }).success).toBe(true);
+  });
+
+  it('plans the whole pound again from a review hold answered in words that ask to keep the contradicted test’s name', () => {
+    const { commit, seed, input } = fixture('test-name-kept');
+    expect(seed).toBe(fixture('whole-pounds').seed);
+    expect(input.change).toMatchObject({ pullRequest: 108, commit });
+    expect(input.replan).toMatchObject({ cause: 'review', approved: false, answered: true });
+    const words = 'Leave the test’s name as it is and rewrite only what it asserts: £6.00 for 600 pence.';
+    expect(input.answers.at(-1)).toMatchObject({ answer: words });
+    const prompt = planner.prompt(input);
+    expect(prompt).toContain(`He said: ${words}`);
+    expect(prompt).toContain(
+      'He sent it to you rather than to the coder: the spec is what he judges must change. Everything his answer asks for is carried into the spec',
+    );
+    const last = input.lastSpec as PayloadOf<'spec.written'>;
+    const test = { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' };
+    expect(last.contradicts).toEqual([test]);
+    // The spec the line wants: his ask carried as a criterion that quotes him, with the test still named.
+    const kept = {
+      given: 'the test drops the pence of a whole pound in test/money.test.ts',
+      when: 'the change rewrites it to assert £6.00 for 600 pence',
+      expect: 'it keeps its name',
+      from: 'Martin’s answer',
+      quote: 'Leave the test’s name as it is',
+    };
+    const carried = { ...last, criteria: [...last.criteria, kept] };
+    expect(carried.contradicts).toEqual([test]);
+    expect(fits(input, carried).success).toBe(true);
+    // Never in words he did not write.
+    const invented = { ...last, criteria: [...last.criteria, { ...kept, quote: 'rename the test' }] };
+    expect(fits(input, invented).error?.issues[0]?.message).toBe(
+      'the quote is not in Martin’s answer: copy the words that ask for the criterion from there, word for word',
+    );
   });
 });
 

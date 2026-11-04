@@ -2,7 +2,9 @@
  * Needs you, the left of the bottom row: one card per hold, the line's and triage's, oldest first, so what has waited
  * longest is on top. Each says what the hold is, shows the one piece of evidence that explains it, and lists each
  * answer it takes beside what that answer does, from the line's own table. The buttons are all outlined: the console
- * does not suggest an answer. Under the cards, Martin's answers today.
+ * does not suggest an answer. A merge or a deploy, which Martin ends on GitHub, heads its answers with the way there,
+ * "Merge" and GitHub's mark drawn as a button and bolder, since it is the way forward and the answers are the ways
+ * back. Under the cards, Martin's answers today.
  *
  * For Martin, each answer is a write to the admin service, naming the hold the card showed, so the service answers
  * that hold or none. Approving a guardrail's hold asks for his passkey again (the key shows while it is not fresh);
@@ -19,7 +21,7 @@
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
-import { MARTIN_ANSWER_CHARS } from '@software-factory/events';
+import { type HoldAnswer, MARTIN_ANSWER_CHARS, WORDED_ANSWERS } from '@software-factory/events';
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
@@ -39,12 +41,19 @@ import {
 } from '../projection/index.ts';
 import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
+import { ToolMark } from './Logos.tsx';
 import { Shot } from './Pictures.tsx';
 import { Key, useStepUp } from './StepUp.tsx';
 import { ReasonField, Refusal } from './Words.tsx';
 import { useWrite } from './Write.tsx';
 
-const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer' } as const;
+const ROUTE = { approved: 'approve', rejected: 'reject', answered: 'answer', replanned: 'replan' } as const;
+
+/** What the field of each answer that goes with words (`WORDED_ANSWERS`) asks for, as its placeholder. */
+const ASKS: Partial<Record<HoldAnswer, string>> = {
+  answered: 'What the line should know',
+  replanned: 'What the planner should change in the spec',
+};
 
 function Evidence({ need }: { need: Need }) {
   const { evidence, link } = need;
@@ -73,6 +82,46 @@ function Evidence({ need }: { need: Need }) {
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * The way a merge or a deploy ends, first among the answers: "Merge" or "Deploy" and GitHub's mark, drawn as the
+ * buttons beside it are, in the text's weight, since it is the way forward and they are the ways back. The card names
+ * the pull request already, so the words a reader hears add it and where it goes, the mark being hidden from them. A
+ * link, as it opens a page, in a tab of its own, so words half written on the card stay. A sample's pull request never
+ * existed: the same look, not a link, with why beside it.
+ */
+function WayForward({ way }: { way: Need['way'] }) {
+  if (!way) return null;
+  // What shows is hidden from a screen reader, which hears the words in full instead, in a span of their own, so no
+  // space between the two parts is left to layout.
+  const shown = (
+    <span className="way-words" aria-hidden="true">
+      {way.verb}
+      <ToolMark name="github" />
+    </span>
+  );
+  if (way.href === undefined) {
+    return (
+      <div className="answer">
+        <span className="btn small way">
+          {shown}
+          <span className="sr">
+            {way.verb} #{way.pullRequest}
+          </span>
+        </span>
+        <p className="nowhere">{way.why}</p>
+      </div>
+    );
+  }
+  return (
+    <a className="btn small way" href={way.href} target="_blank" rel="noopener">
+      {shown}
+      <span className="sr">
+        {way.verb} #{way.pullRequest} on GitHub (opens GitHub in a new tab)
+      </span>
+    </a>
   );
 }
 
@@ -165,6 +214,7 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
+        <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -192,12 +242,15 @@ function Kick({ need }: { need: Need }) {
   );
 }
 
-/** Martin's card: his answers, the words field when he opens it, and what the service said if it refused. */
+/**
+ * Martin's card: his answers, the words field of the one he opens, and what the service said if it refused. One field
+ * is open at a time, and what he has written stays as he moves it from one answer to the other.
+ */
 function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Placed) {
   const id = useId();
   const writes = useWrite(token);
   const { busy } = writes;
-  const [writing, setWriting] = useState(false);
+  const [writing, setWriting] = useState<HoldAnswer | undefined>(undefined);
   const [words, setWords] = useState('');
   const field = useRef<HTMLTextAreaElement>(null);
   // The field takes focus as it opens, so he can write at once.
@@ -206,7 +259,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   }, [writing]);
 
   const send = async (answer: Need['answers'][number]) => {
-    const body = { hold: need.hold, ...(answer.answer === 'answered' && { words: words.trim() }) };
+    const body = { hold: need.hold, ...(WORDED_ANSWERS.includes(answer.answer) && { words: words.trim() }) };
     await writes.send(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, {
       passkey: answer.stepUp
         ? {
@@ -220,7 +273,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
         : undefined,
       // Answered: the card moves to Answered today as the event arrives, unless words left it held.
       done: () => {
-        setWriting(false);
+        setWriting(undefined);
         setWords('');
         return undefined;
       },
@@ -233,16 +286,17 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} />
       <div className="answers">
+        <WayForward way={need.way} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
-            {row.answer === 'answered' ? (
+            {WORDED_ANSWERS.includes(row.answer) ? (
               <button
                 type="button"
                 className="btn small"
-                aria-expanded={writing}
-                aria-controls={`${id}-words`}
+                aria-expanded={writing === row.answer}
+                aria-controls={`${id}-${row.answer}`}
                 aria-disabled={busy || undefined}
-                onClick={() => !busy && setWriting(!writing)}
+                onClick={() => !busy && setWriting(writing === row.answer ? undefined : row.answer)}
               >
                 {row.label}
               </button>
@@ -258,10 +312,10 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
               </button>
             )}
             <p>{row.does}</p>
-            {row.answer === 'answered' && writing && (
+            {writing === row.answer && (
               <form
                 className="words-form"
-                id={`${id}-words`}
+                id={`${id}-${row.answer}`}
                 onSubmit={(event) => {
                   event.preventDefault();
                   if (words.trim()) void send(row);
@@ -269,13 +323,17 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
               >
                 <ReasonField
                   id={`${id}-text`}
-                  label={`Your answer to #${need.workItem}`}
+                  label={
+                    row.answer === 'replanned'
+                      ? `Why #${need.workItem} goes back to the planner`
+                      : `Your answer to #${need.workItem}`
+                  }
                   labelHidden
                   limit={MARTIN_ANSWER_CHARS}
                   rows={3}
                   value={words}
                   onChange={setWords}
-                  placeholder="What the line should know"
+                  placeholder={ASKS[row.answer] ?? ''}
                   help={
                     need.aboutReport
                       ? 'Your words stay yours: a visitor’s report opened this, so no visitor and no agent reads them.'

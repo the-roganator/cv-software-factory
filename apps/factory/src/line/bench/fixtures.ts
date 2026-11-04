@@ -104,6 +104,38 @@ diff --git a/test/money.test.ts b/test/money.test.ts
      expect(pounds(pence)).toBe(expected);
 `;
 
+/**
+ * A whole pound written without its pence (£6 for £6.00), on purpose: a test pins it. A fix to two digits of pence
+ * contradicts that test, which the spec must name for the change to rewrite it.
+ */
+const WHOLE_POUNDS_SEED = `diff --git a/src/money.ts b/src/money.ts
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -1,4 +1,5 @@
+ /** Prices are whole pence in the database and pounds on the page: 1250 → "£12.50". */
+ export function pounds(pence: number): string {
++  if (pence % 100 === 0) return \`£\${pence / 100}\`;
+   return \`£\${(pence / 100).toFixed(2)}\`;
+ }
+diff --git a/test/money.test.ts b/test/money.test.ts
+--- a/test/money.test.ts
++++ b/test/money.test.ts
+@@ -5,9 +5,12 @@ describe('pounds', () => {
+   it.each([
+     [1250, '£12.50'],
+     [5, '£0.05'],
+-    [100, '£1.00'],
+     [199, '£1.99'],
+   ])('writes %i pence as %s', (pence, expected) => {
+     expect(pounds(pence)).toBe(expected);
+   });
++
++  it('drops the pence of a whole pound', () => {
++    expect(pounds(600)).toBe('£6');
++  });
+ });
+`;
+
 /** The wrong price, seeded twice: in `pounds`, and copied into the product cards, which no longer call it. */
 const CARDS_SEED = `${PRICE_SEED}diff --git a/src/pages/cards.ts b/src/pages/cards.ts
 --- a/src/pages/cards.ts
@@ -408,6 +440,45 @@ const PRICE_SPEC: PayloadOf<'spec.written'> = {
   rollout: 'Ships in the next release; product pages, cards and the API then show two digits of pence.',
 };
 
+/** What the probe saw of a whole pound's price, which shows no pence. */
+const WHOLE_POUNDS_SIGNALS: Signal[] = [
+  {
+    ...(PRICE_SIGNALS[0] as Signal),
+    evidence: [
+      {
+        kind: 'http',
+        method: 'GET',
+        url: '/products/blue-mug',
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        timings: { firstByteMs: 11, totalMs: 14 },
+        redirects: [],
+      },
+    ],
+  },
+];
+
+/** The test the whole pound's fix contradicts, as test integrity names it. */
+const WHOLE_POUND_TEST = { file: 'test/money.test.ts', test: 'pounds > drops the pence of a whole pound' };
+
+/** A spec for the whole pound, as the planner would write it: its criterion contradicts the seeded test. */
+const WHOLE_POUNDS_SPEC: PayloadOf<'spec.written'> = {
+  outcome: 'Every price shows pounds and two digits of pence, a whole pound too, so 600 pence is £6.00.',
+  criteria: [
+    {
+      given: 'a price of 600 pence',
+      when: 'pounds is called with it',
+      expect: 'it returns £6.00',
+      from: 'signal 1',
+      quote: 'a price is in pounds and two digits of pence',
+    },
+  ],
+  scope: ['src/money.ts', 'test/money.test.ts'],
+  contradicts: [WHOLE_POUND_TEST],
+  risks: ['test-loosening'],
+  rollout: 'Ships in the next release; a whole pound then shows two zeros of pence.',
+};
+
 /** The wrong price's spec, with a criterion on the product cards, whose file is outside its scope. */
 const CARDS_SPEC: PayloadOf<'spec.written'> = {
   ...PRICE_SPEC,
@@ -686,6 +757,129 @@ const CARDS_FENCE_RETURN: LineEvent[] = [
   APPROVED,
 ];
 
+/** The whole pound's pull request, which the coder built twice before Martin sent the work back to the planner. */
+const WHOLE_POUNDS_PULL_REQUEST = 108;
+const WHOLE_POUNDS_FILES = [
+  { path: 'src/money.ts', added: 0, removed: 1 },
+  { path: 'test/money.test.ts', added: 2, removed: 2 },
+];
+/** What the second round changed: the test's assertion alone, which the first review asked for and the second found the same. */
+const WHOLE_POUNDS_SECOND_ROUND = [{ path: 'test/money.test.ts', added: 1, removed: 1 }];
+
+/**
+ * Martin's words on the whole pound's review hold, sending it back to the planner: an ask about the change itself,
+ * which no page shows, and which only the spec can carry to the coder.
+ */
+const KEEP_THE_TEST_NAME = 'Leave the test’s name as it is and rewrite only what it asserts: £6.00 for 600 pence.';
+
+/** The first review of the whole pound, which asked for changes: the rewritten test shows nothing the base does not. */
+const WHOLE_POUNDS_REVIEW: PayloadOf<'review.submitted'> = {
+  pullRequest: WHOLE_POUNDS_PULL_REQUEST,
+  verdict: 'changes-requested',
+  note: 'The test the spec contradicts is rewritten under a new name, and asserts only that the price begins with £6, which the base gives too.',
+  findings: [
+    {
+      path: 'test/money.test.ts',
+      line: 14,
+      blocking: true,
+      criterion: 1,
+      comment:
+        'toContain("£6") passes on the base, where pounds(600) is £6: nothing shows criterion 1. Assert toBe("£6.00").',
+    },
+  ],
+};
+
+/** The second review, of the second round, which holds the first's finding again: the assertion is as it was. */
+const WHOLE_POUNDS_REVIEW_AGAIN: PayloadOf<'review.submitted'> = {
+  ...WHOLE_POUNDS_REVIEW,
+  findings: WHOLE_POUNDS_REVIEW.findings.map((f) => ({ ...f, holds: 1 })),
+};
+
+/**
+ * The whole pound, built and held at review: the coder rewrote the test the spec contradicts under a new name, and
+ * two reviews asked for the same change to its assertion. Martin read the diff and sent the work back to the
+ * planner, in words that ask to keep the test's name: an ask no page shows, which the planner carries into the spec
+ * as a criterion from his answer, since the coder never reads his words (#1015).
+ */
+const WHOLE_POUNDS_REVIEW_RETURN: LineEvent[] = [
+  { type: 'ticket.opened', payload: PRICE_TICKET },
+  { type: 'spec.written', payload: WHOLE_POUNDS_SPEC },
+  {
+    type: 'pull-request.pushed',
+    payload: {
+      number: WHOLE_POUNDS_PULL_REQUEST,
+      title: 'fix(money): show two zeros of pence for a whole pound',
+      branch: `factory/${FIXTURE_WORK_ITEM}-a-wrong-result-on-products-slug`,
+      attempt: 1,
+      testsFirst: true,
+      files: WHOLE_POUNDS_FILES,
+      whole: WHOLE_POUNDS_FILES,
+    },
+  },
+  { type: 'review.submitted', payload: WHOLE_POUNDS_REVIEW },
+  {
+    type: 'work.returned',
+    payload: { from: 'review', to: 'build', reason: `Review asked for changes: ${WHOLE_POUNDS_REVIEW.note}` },
+  },
+  {
+    type: 'pull-request.pushed',
+    payload: {
+      number: WHOLE_POUNDS_PULL_REQUEST,
+      title: 'fix(money): show two zeros of pence for a whole pound',
+      branch: `factory/${FIXTURE_WORK_ITEM}-a-wrong-result-on-products-slug`,
+      attempt: 2,
+      testsFirst: true,
+      files: WHOLE_POUNDS_SECOND_ROUND,
+      whole: WHOLE_POUNDS_FILES,
+    },
+  },
+  { type: 'review.submitted', payload: WHOLE_POUNDS_REVIEW_AGAIN },
+  {
+    type: 'hold.started',
+    payload: {
+      stage: 'review',
+      kind: 'held',
+      cause: 'review',
+      reason: `Review asked for changes: ${WHOLE_POUNDS_REVIEW_AGAIN.note}`,
+    },
+  },
+  { type: 'hold.answered', payload: { decision: 'replanned', answer: KEEP_THE_TEST_NAME } },
+];
+
+/**
+ * The coder's fix for the whole pound, from a spec that does not carry Martin's words: it rewrites the test the spec
+ * contradicts, as the spec allows, under a new name, which his answer asked to leave as it is.
+ */
+const WHOLE_POUNDS_RENAMED = `diff --git a/src/money.ts b/src/money.ts
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -1,5 +1,4 @@
+ /** Prices are whole pence in the database and pounds on the page: 1250 → "£12.50". */
+ export function pounds(pence: number): string {
+-  if (pence % 100 === 0) return \`£\${pence / 100}\`;
+   return \`£\${(pence / 100).toFixed(2)}\`;
+ }
+diff --git a/test/money.test.ts b/test/money.test.ts
+--- a/test/money.test.ts
++++ b/test/money.test.ts
+@@ -10,7 +10,7 @@ describe('pounds', () => {
+     expect(pounds(pence)).toBe(expected);
+   });
+ 
+-  it('drops the pence of a whole pound', () => {
+-    expect(pounds(600)).toBe('£6');
++  it('writes a whole pound with two zeros of pence', () => {
++    expect(pounds(600)).toBe('£6.00');
+   });
+ });
+`;
+
+const WHOLE_POUNDS_RENAMED_MESSAGE = [
+  'fix(money): show two zeros of pence for a whole pound',
+  '',
+  'pounds() returned a whole pound without its pence, so 600 pence showed as £6. The whole-pound case is removed, and every price goes through toFixed(2). The test the spec names as contradicted, "pounds > drops the pence of a whole pound", is rewritten to assert £6.00 and renamed to say what it now shows.',
+].join('\n');
+
 /**
  * The fix for the wrong price, as a first round that also deleted a test it had no need to touch: the test
  * integrity gate fails it.
@@ -924,6 +1118,18 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         answers: [],
       },
     },
+    'whole-pounds': {
+      about: 'a defect a test pins, seeded: a whole pound shows no pence (£6), so the fix contradicts that test',
+      commit: APP_MAIN,
+      seed: WHOLE_POUNDS_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: WHOLE_POUNDS_SIGNALS,
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+      },
+    },
     'words-not-here': {
       about: 'one it cannot make testable: a visitor reports words the app has nowhere',
       commit: APP_MAIN,
@@ -1091,6 +1297,24 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         answers: [],
       },
     },
+    'test-name-kept': {
+      about:
+        'the whole pound planned again from a review hold Martin answered in words that ask to keep the contradicted test’s name, which no page shows: the spec must carry them, since the coder never reads them',
+      commit: APP_MAIN,
+      seed: WHOLE_POUNDS_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: WHOLE_POUNDS_SIGNALS,
+        protectedPaths: APP_PROTECTED,
+        ...replanOf(WHOLE_POUNDS_REVIEW_RETURN),
+        change: {
+          pullRequest: WHOLE_POUNDS_PULL_REQUEST,
+          files: WHOLE_POUNDS_FILES.map(({ path }) => path),
+          commit: APP_MAIN,
+        },
+      },
+    },
   },
   coder: {
     'off-by-one': {
@@ -1121,6 +1345,19 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
           risks: [],
           rollout: 'Nothing calls `lastIndex` yet, so the fix ships as it is.',
         },
+      },
+    },
+    'whole-pounds': {
+      about: 'a whole pound shows no pence, seeded, with a test that pins it, from a spec that names that test',
+      commit: APP_MAIN,
+      seed: WHOLE_POUNDS_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: WHOLE_POUNDS_SIGNALS,
+        spec: WHOLE_POUNDS_SPEC,
+        round: 1,
+        protectedPaths: APP_PROTECTED,
       },
     },
     'wrong-price': {
@@ -1387,6 +1624,23 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         pullRequest: 107,
         title: 'fix(about): take the note to an automated assistant off the page',
         round: 1,
+      },
+    },
+    'test-renamed': {
+      about:
+        'the whole pound after Martin asked, in words, to keep the contradicted test’s name, with a spec that does not carry them and a change that renames it: the spec is at fault, so one to escalate, never a round on the coder',
+      commit: APP_MAIN,
+      seed: WHOLE_POUNDS_SEED,
+      change: { patch: WHOLE_POUNDS_RENAMED, message: WHOLE_POUNDS_RENAMED_MESSAGE },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: WHOLE_POUNDS_SIGNALS,
+        answers: replanOf(WHOLE_POUNDS_REVIEW_RETURN).answers,
+        spec: WHOLE_POUNDS_SPEC,
+        pullRequest: WHOLE_POUNDS_PULL_REQUEST,
+        title: 'fix(money): show two zeros of pence for a whole pound',
+        round: 3,
       },
     },
   },

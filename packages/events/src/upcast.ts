@@ -68,7 +68,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     9: (payload) => payload,
   },
   // Version 2 names the hold it answers, and says when its words stay Martin's; a version 1 answer said neither.
-  'hold.answered': { 1: (payload) => payload },
+  // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.
+  'hold.answered': { 1: (payload) => payload, 2: (payload) => payload },
   // Version 2 adds Martin's reason, and the console's start names no autonomy level; a version 1 start named one, and
   // gave no reason.
   'line.started': { 1: (payload) => payload },
@@ -181,7 +182,13 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 3 adds the words each criterion quotes from there; a version 2 spec quoted none.
   // Version 4 adds an improvement's title, pages and each criterion's side of its flag; a version 3 spec named none, and
   // its flag, if it named one, reads as it was.
-  'spec.written': { 1: (payload) => payload, 2: (payload) => payload, 3: (payload) => payload },
+  // Version 5 adds the existing tests the criteria contradict; a version 4 spec named none, so it contradicts none.
+  'spec.written': {
+    1: (payload) => payload,
+    2: (payload) => payload,
+    3: (payload) => payload,
+    4: (payload) => payload,
+  },
   // Version 2 adds the pull request's whole change. A version 1 push recorded only its own files, which are the whole
   // change for a first push, and the nearest the event has for a later one.
   // Version 3 marks a path in the whole change cut to what an event records; a version 2 push cut none.

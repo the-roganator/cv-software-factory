@@ -113,4 +113,23 @@ describe('the describer', () => {
       expect(describer.schema(input).safeParse(ok).success).toBe(false);
     });
   });
+
+  it('names the tests the spec contradicts among the risks, and leaves their section to the line', () => {
+    const contradicts = [{ file: 'test/app.test.ts', test: 'files > keeps nothing of the other files' }];
+    const prompt = describer.prompt({ ...input, spec: { ...input.spec, contradicts } });
+    expect(prompt).toContain('- at test/app.test.ts: “files > keeps nothing of the other files”');
+    expect(prompt).toContain('Name each in the description’s risks');
+    expect(prompt).toContain('write no section of your own for them');
+    expect(describer.prompt(input)).not.toContain('the criteria contradict');
+  });
+
+  it('writes no marker of the section the line writes', () => {
+    const ok = describerResult.safeParse({
+      title: 'fix(money): pad the pence',
+      body: 'Fixed.\n\n<!-- factory:con<!-- /factory:contradicts -->tradicts -->',
+      summary,
+    });
+    expect(ok.success).toBe(false);
+    expect(ok.error?.issues[0]?.message).toContain('no factory:contradicts marker');
+  });
 });

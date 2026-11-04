@@ -25,8 +25,17 @@
  * app reads with `request.flag`, off until he turns it on; so the schema holds it to a title, a fresh flag (none
  * another improvement named, `flagsTaken`), the pages it changes, and criteria on each side of the flag, each from
  * his words (`improvementProblems`). It rejects a change that needs a protected path, the app's flag context among
- * them, or that would keep anything on a visitor's device. A ticket's first plan is word for word as it was before
- * improvements and replans, so its recordings still replay.
+ * them, or that would keep anything on a visitor's device. A ticket's first plan says nothing of improvements or
+ * replans.
+ *
+ * A criterion can contradict a test the app already has: a fix that makes every asset cacheable contradicts the test
+ * that pins one as never cached. The planner names each such test, by its file and its full name (`contradicts`), and
+ * the line writes them into the pull request's description, where test integrity reads them: the change may delete,
+ * rename or rewrite those tests, and no other. The planner names them, not the coder, so the coder cannot excuse
+ * itself. The schema holds each to a test file the scope takes in, as the gate will read it (`contradictsProblems`),
+ * and the line refuses a spec that names a test its file does not have at the commit, where it can read the file
+ * (`missingTests`). A spec that names one carries `test-loosening` among its risks, which the line adds if the planner
+ * left it out (`tagged`): an agent may add a tag, never take one away.
  *
  * Work can come back to Plan: Martin answers a hold that sends it back (the coder needs files outside the scope, the
  * fence kept refusing its patch, the reviewer found the spec beyond the ticket, the coder found nothing to fix, or he
@@ -40,7 +49,13 @@
  *
  * Only Martin's own words in an answer are his. What the line reads into an answer (that an approval of a scope hold
  * lets the scope take in the files), and what an agent said that he read with it, are told beside them, and no
- * criterion may quote either (`sourcesOf`).
+ * criterion may quote either (`sourcesOf`). What his answer asks for reaches the coder through the spec alone: the
+ * coder is never told the answers at Plan, and the last hold's words, which it is told only when he sends the work
+ * back to it, are cleared when a spec is written (`MOVES_ON`), so the planner carries each ask into the spec as a
+ * criterion from his answer that quotes his words, a constraint on the change itself (a test's name to keep) as much
+ * as a behaviour a page shows. The reviewer holds the spec to his words, and the change to the spec alone: a lack it
+ * finds holds as `beyond-ticket` and comes back here with the finding, told as a lack only where his words can be
+ * read, which on a work item a visitor's report opened they cannot (they stay his).
  *
  * A finding is an extra for triage: one that does not fit (a page that is not a path, a field too long, one past the
  * most a plan leaves) is left out, logged and counted in the spec's summary, and the result stands.
@@ -53,12 +68,15 @@
  * (`coder.ts`), and the GitHub worker refuses every protected file a patch changes, as the last word.
  */
 import type { InboxSignal, PayloadOf } from '@software-factory/events';
-import { PATH_CHARS, RISKS, touches } from '@software-factory/events';
+import { inScope, PATH_CHARS, RISKS, touches } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { z } from 'zod';
+import { type Contradicted, entryProblem, MOST_CONTRADICTED } from '../../gates/contradicts.ts';
+import { TEST_FILE } from '../../gates/files.ts';
+import { testsIn } from '../../gates/tests.ts';
 import { NEVER, plainPath, protectedWords } from '../../github/paths.ts';
 import { type Answer, LIMITS, type Replan, timesOf } from '../machine.ts';
-import { askedOf, count, defineAgent, heAnswered, holdDraft, words } from './agent.ts';
+import { askedOf, count, defineAgent, type EffectsContext, heAnswered, holdDraft, StepFailed, words } from './agent.ts';
 import {
   type Asked,
   askedLines,
@@ -141,7 +159,10 @@ const answered = (a: Answer) => (a.answer ? `${a.asked} He said: ${a.answer}` : 
 /** One of Martin's answers as the prompt tells it: with what an agent said that he read with it, and the line's reading. */
 const told = (a: Answer) => [a.asked, a.said, heAnswered(a)].filter(Boolean).join(' ');
 
-/** Martin's answers as the prompt tells them, and, when any carries words not his, which of them a criterion may quote. */
+/**
+ * Martin's answers as the prompt tells them; that everything they ask for goes into the spec, since the coder reads
+ * the spec and never his answers; and, when any carries words not his, which of them a criterion may quote.
+ */
 function answerLines(answers: readonly Answer[]): string[] {
   if (!answers.length) return [];
   const notHis = answers.some((a) => a.said || a.line || !a.answer);
@@ -149,6 +170,7 @@ function answerLines(answers: readonly Answer[]): string[] {
     '',
     'Martin was asked, and answered:',
     ...answers.map((a) => `- ${told(a)}`),
+    'Everything his answer asks for goes into the spec, as a criterion from Martin’s answer that quotes his words: an ask about the change itself that no page shows too, such as a test or a file to keep as it is, or its name. The coder reads the spec and never his answer, and is held to nothing the spec does not say.',
     ...(notHis
       ? [
           'Only his own words, after “He said:”, are his answer, which a criterion from Martin’s answer may quote, with what he was asked. What the coder said, and what the line reads his answer as, are not his words: no criterion quotes them.',
@@ -226,25 +248,100 @@ export function quoteProblem(from: string, quote: string, sources: Sources): str
  * ticket's evidence it comes from, and quoting the words there that ask for it.
  */
 const specWithin = (protectedPaths: readonly string[], sources: Sources, improvement: Improvement | undefined) =>
-  PAYLOADS['spec.written'].superRefine((spec, ctx) => {
-    if (improvement) improvementProblems(spec, improvement, ctx);
-    spec.scope.forEach((entry, i) => {
-      const problem = scopeProblem(entry, protectedPaths);
-      if (problem) ctx.addIssue({ code: 'custom', path: ['scope', i], message: problem });
-    });
-    spec.criteria.forEach((criterion, i) => {
-      if (!criterion.from) {
-        const message = 'a criterion names what in the ticket or the signals asks for it';
-        ctx.addIssue({ code: 'custom', path: ['criteria', i, 'from'], message });
-      } else if (!criterion.quote) {
-        const message = 'a criterion quotes the words in what it is from that ask for it';
-        ctx.addIssue({ code: 'custom', path: ['criteria', i, 'quote'], message });
-      } else {
-        const problem = quoteProblem(criterion.from, criterion.quote, sources);
-        if (problem) ctx.addIssue({ code: 'custom', path: ['criteria', i, 'quote'], message: problem });
-      }
-    });
+  z.preprocess(
+    noneContradicted,
+    PAYLOADS['spec.written'].superRefine((spec, ctx) => {
+      if (improvement) improvementProblems(spec, improvement, ctx);
+      spec.scope.forEach((entry, i) => {
+        const problem = scopeProblem(entry, protectedPaths);
+        if (problem) ctx.addIssue({ code: 'custom', path: ['scope', i], message: problem });
+      });
+      contradictsProblems(spec, protectedPaths, ctx);
+      spec.criteria.forEach((criterion, i) => {
+        if (!criterion.from) {
+          const message = 'a criterion names what in the ticket or the signals asks for it';
+          ctx.addIssue({ code: 'custom', path: ['criteria', i, 'from'], message });
+        } else if (!criterion.quote) {
+          const message = 'a criterion quotes the words in what it is from that ask for it';
+          ctx.addIssue({ code: 'custom', path: ['criteria', i, 'quote'], message });
+        } else {
+          const problem = quoteProblem(criterion.from, criterion.quote, sources);
+          if (problem) ctx.addIssue({ code: 'custom', path: ['criteria', i, 'quote'], message: problem });
+        }
+      });
+    }),
+  );
+
+/** A spec that contradicts no test says so by leaving `contradicts` out: an empty list is read the same. */
+function noneContradicted(spec: unknown): unknown {
+  if (typeof spec !== 'object' || spec === null || !('contradicts' in spec)) return spec;
+  const { contradicts, ...rest } = spec as { contradicts: unknown };
+  return Array.isArray(contradicts) && contradicts.length === 0 ? rest : spec;
+}
+
+/**
+ * What is wrong with the tests a spec says it contradicts, if anything: each must be one the gate can read
+ * (`entryProblem`), in a test file the scope takes in and no protected path, and named once.
+ */
+function contradictsProblems(spec: PayloadOf<'spec.written'>, protectedPaths: readonly string[], ctx: z.RefinementCtx) {
+  (spec.contradicts ?? []).forEach((entry, i) => {
+    const issue = (message: string) => ctx.addIssue({ code: 'custom', path: ['contradicts', i], message });
+    const problem = entryProblem(entry);
+    if (problem) issue(`the test cannot be named: ${problem}`);
+    else if (!inScope(entry.file, spec.scope))
+      issue(`${entry.file} is not in the scope: a test it contradicts is one the change may change`);
+    else if (touches(entry.file, protectedPaths)) issue(`${entry.file} names a path no patch may change`);
+    // A file the gate compares: a helper under test/ holds no test it reads.
+    else if (!TEST_FILE.test(entry.file)) issue(`${entry.file} is not a test file: name a test in one`);
+    else if (spec.contradicts?.findIndex((e) => e.file === entry.file && e.test === entry.test) !== i) {
+      issue(`${entry.test} in ${entry.file} is named twice`);
+    }
   });
+}
+
+/**
+ * A spec with the tag that says it changes an existing test's assertions, if it names a test it contradicts and the
+ * planner did not tag it so. The line adds it: the tag follows from the list, whatever the planner wrote.
+ */
+export function tagged(spec: PayloadOf<'spec.written'>): PayloadOf<'spec.written'> {
+  if (!spec.contradicts?.length || spec.risks.includes('test-loosening')) return spec;
+  return { ...spec, risks: ['test-loosening', ...spec.risks] };
+}
+
+/**
+ * The tests a spec names that are not in their files at the commit, as test integrity will read the base: each file
+ * read through the GitHub worker. A file it cannot read as text is left to the gate, which reports an entry that
+ * names no test in the base; a file that is not there names no test at all.
+ */
+export async function missingTests(
+  contradicts: readonly Contradicted[],
+  read: (path: string) => Promise<{ found: false } | { found: true; text: string | null }>,
+): Promise<string[]> {
+  const files = [...new Set(contradicts.map((entry) => entry.file))];
+  const reads = await Promise.all(files.map(async (file) => [file, await read(file)] as const));
+  const missing: string[] = [];
+  for (const [file, at] of reads) {
+    if (at.found && at.text === null) continue;
+    const names = new Set(at.found && at.text !== null ? testsIn(at.text).map((t) => t.name) : []);
+    for (const entry of contradicts) {
+      if (entry.file !== file || names.has(entry.test)) continue;
+      missing.push(at.found ? `${file} has no test named “${entry.test}”` : `there is no file ${file}`);
+    }
+  }
+  return missing;
+}
+
+/** Refuses a spec that names a test its file does not have at the step's commit. */
+async function checkContradicted(spec: PayloadOf<'spec.written'>, context: EffectsContext): Promise<void> {
+  if (!spec.contradicts?.length) return;
+  const missing = await missingTests(spec.contradicts, (path) => context.read('file', { ref: context.commit, path }));
+  if (missing.length) {
+    const said = missing.slice(0, 3).join('; ');
+    throw new StepFailed(
+      `The planner’s spec names tests it contradicts that are not there at ${context.commit.slice(0, 7)}: ${said}. Name each by its file and its full name, as the file has it`,
+    );
+  }
+}
 
 /** What an improvement's spec is held to beyond a fix's: the flags it may not take, and the one it keeps. */
 export interface Improvement {
@@ -382,16 +479,24 @@ export type PlannerResult = z.infer<ReturnType<typeof plannerResult>>;
 
 /** What each risk tag says of a fix, so the planner tags what the fix does, not what the defect did. */
 const RISK_MEANINGS: Record<(typeof RISKS)[number], string> = {
-  'test-loosening': 'it changes or removes an assertion an existing test makes',
+  'test-loosening':
+    'it changes or removes an assertion an existing test makes, as every spec that names a test it contradicts does',
   'dependency-change': 'it adds, removes or updates a dependency',
   'security-headers': 'it changes the headers the app sends',
   'out-of-scope': 'it changes behaviour beyond what the ticket is about',
 };
 
+/**
+ * How the planner names the existing tests its criteria contradict: by file and full name, as test integrity names
+ * them, usually none. The coder may change those and no other.
+ */
+const CONTRADICTS_RULE = `- \`contradicts\`: the existing tests a criterion contradicts, which the change must delete, rename or rewrite to meet it; usually there are none, and the list is empty. A test contradicts a criterion when it asserts what the criterion says must change, so it fails once the change is in. Name each as {"file","test"}: the test file's path from the top of the repository, which the scope takes in, and the test's full name, the names of the \`describe\` blocks around it and its own, joined with " > ", such as "files > keeps nothing of the other files". At most ${MOST_CONTRADICTED}, each a test the file has at this commit, word for word. The coder may change these tests and no other: the test integrity gate fails a change to any test you do not name, and Martin is told of each you do.`;
+
 const SPEC_TEMPLATE = [
   '- `outcome`: one sentence, what is true once the fix is in.',
-  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. Each is a test the coder can write with the repository’s own tests: it fails at this commit and passes once the fix is in. `from` names what above asks for it: `the ticket`, a signal by its number (`signal 1`), or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. A criterion nothing above asks for does not belong in the spec, however wrong the code it would mend.',
+  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. Each is a test the coder can write with the repository’s own tests: it fails at this commit and passes once the fix is in. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask. `from` names what above asks for it: `the ticket`, a signal by its number (`signal 1`), or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. A criterion nothing above asks for does not belong in the spec, however wrong the code it would mend.',
   '- `scope`: the files the coder may change, its tests among them, and no more than the fix needs: a path from the top of the repository, a folder ending in `/`, or a pattern with `*`.',
+  CONTRADICTS_RULE,
   `- \`risks\`: a list of tags, each exactly one of these words, for what the fix itself does; usually it is empty. ${RISKS.map((r) => `${r}: ${RISK_MEANINGS[r]}`).join('; ')}.`,
   '- `rollout`: a sentence or two on how the fix ships and what would show it worked.',
   `Every string is a plain sentence or a path, at most ${PATH_CHARS} characters (the rollout 300).`,
@@ -417,17 +522,37 @@ export function findingSignal(
   };
 }
 
-/** What Martin did with the hold that sent the work back, as the prompt says it. */
-function heDid(replan: Extract<Replan, { approved: boolean }>): string {
-  if (replan.approved)
-    return `Martin approved that${replan.answered ? ', with the words last among his answers above' : ''}.`;
-  return replan.answered
-    ? 'Martin answered it in words: the last of his answers above.'
-    : 'Martin sent it back to you.';
+/** What his answer asks for goes into the spec, since the coder is told nothing of it: said once, by every cause he answered in words. */
+const CARRIED =
+  'Everything his answer asks for is carried into the spec as criteria from Martin’s answer that quote his words, since the coder is told nothing of his answer.';
+
+/**
+ * What Martin did with the hold that sent the work back, as the prompt says it, and what a cause adds to that (`then`);
+ * when he answered in words, that everything they ask for goes into the spec.
+ */
+function heDid(replan: Extract<Replan, { approved: boolean }>, then?: string): string {
+  const did = replan.approved
+    ? `Martin approved that${replan.answered ? ', with the words last among his answers above' : ''}.`
+    : replan.answered
+      ? 'Martin answered it in words: the last of his answers above.'
+      : 'Martin sent it back to you.';
+  return [did, then, replan.answered ? CARRIED : undefined].filter(Boolean).join(' ');
 }
 
-/** Why the work came back to Plan, in plain words, by its cause, and what to change for it. */
-function whyBack(replan: Replan, asked: Asked['kind']): string[] {
+/** Where a change was held that Martin sent back to the planner rather than the coder. */
+const HELD_AT = {
+  gates: 'at the gates',
+  review: 'at review',
+  merge: 'for his merge',
+  'tests-first': 'as its new tests pass without the fix',
+} as const;
+
+/**
+ * Why the work came back to Plan, in plain words, by its cause, and what to change for it. A lack of what his answer
+ * asks is told only where the planner can read any words of his (`hisWords`): on a work item a visitor's report
+ * opened they stay his, so none can be lacked.
+ */
+function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): string[] {
   const it = asked === 'ticket' ? 'the ticket' : 'what Martin asked';
   switch (replan.cause) {
     case 'returned':
@@ -450,13 +575,20 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
         heDid(replan),
         `So put the scope right for what the criteria need${replan.answered ? ', as his answer says' : ''}, and keep the rest of the spec as it is.`,
       ];
-    case 'beyond-ticket':
+    case 'beyond-ticket': {
+      const found = `the reviewer found the spec, or the change, goes beyond ${it}${hisWords ? ', or that the spec lacks what his answer asks' : ''}`;
+      const listed = hisWords
+        ? ', each finding saying which, and one for a lack naming the criterion the change was meeting, which stays:'
+        : ':';
       return [
-        `Why it came back: the reviewer found the spec, or the change, goes beyond ${it}${replan.beyond?.length ? ':' : `: ${replan.reason}`}`,
+        `Why it came back: ${found}${replan.beyond?.length ? listed : `: ${replan.reason}`}`,
         ...(replan.beyond ?? []).map((f) => `- Criterion ${f.criterion}: ${f.comment}`),
         heDid(replan),
-        `So take out what goes beyond ${it}, as his answer says, and keep the rest of the spec as it is.`,
+        hisWords
+          ? `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.`
+          : `So take out what goes beyond ${it}, as his answer says, and keep the rest of the spec as it is.`,
       ];
+    }
     case 'nothing-to-fix':
       return [
         `Why it came back: the coder found nothing to fix at your spec: ${replan.reason.replace(/[.\s]+$/, '')}.`,
@@ -473,6 +605,17 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
         `Why it came back: the change was merged and released, and at Verify it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`,
         heDid(replan),
       ];
+    // Held after the coder's work, where his words would have gone to the coder: he sent them to you instead, as the
+    // spec is what he judges wrong.
+    case 'gates':
+    case 'review':
+    case 'merge':
+    case 'tests-first':
+      return [
+        `Why it came back: the change was held for Martin ${HELD_AT[replan.cause]}: ${replan.reason.replace(/[.\s]+$/, '')}.`,
+        heDid(replan, 'He sent it to you rather than to the coder: the spec is what he judges must change.'),
+        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
+      ];
     default:
       return [`Why it came back: it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`, heDid(replan)];
   }
@@ -482,7 +625,7 @@ function whyBack(replan: Replan, asked: Asked['kind']): string[] {
  * What the planner is told when the work has come back to it: its last spec, as it wrote it, why the work came back,
  * the pull request that holds the work so far, and to keep what still holds. Nothing on a first plan.
  */
-function replanLines({ asked, lastSpec, replan, change }: PlannerInput): string[] {
+function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput): string[] {
   if (!lastSpec) return [];
   const kind = asked.kind === 'ticket' ? 'ticket' : 'improvement';
   return [
@@ -491,7 +634,13 @@ function replanLines({ asked, lastSpec, replan, change }: PlannerInput): string[
     '```json',
     JSON.stringify(lastSpec, null, 2),
     '```',
-    ...(replan ? whyBack(replan, asked.kind) : []),
+    ...(replan
+      ? whyBack(
+          replan,
+          asked.kind,
+          answers.some((a) => a.answer),
+        )
+      : []),
     ...(change
       ? [
           `Pull request #${change.pullRequest} holds the work so far, which is this ${kind}’s own: no other change’s. It changes ${change.files.length ? change.files.join(', ') : 'no file yet'}. Your checkout is not that work: it is ${change.commit}, where the pull request’s branch left main, which the coder’s tests are judged against, as your first plan was. Plan against this commit: what the pull request adds is not in it.`,
@@ -536,7 +685,7 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
     'A fix does what the ticket’s evidence asks, and no more. The app is full of other defects: anything else you notice that is wrong with it, or that it could do better, goes in `findings`, never in the spec. Triage judges each one as it judges a visitor’s report; it opens no ticket on your word alone. Leave `findings` empty when you noticed nothing else.',
     '',
     'Then write the result, one of three, each with its `findings`:',
-    '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote"}],"scope":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to:',
+    '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to:',
     ...SPEC_TEMPLATE.map((line) => `   ${line}`),
     `2. {"verdict":"reject","reason"} when you cannot make it testable: the cause is not in this repository, or you cannot find the defect the evidence shows, or no test could tell the fix from the defect. Reject it too when the fix needs a path no scope may name: ${protectedWords(protectedPaths).join(', ')}. The reason is one or two short sentences for Martin, at most 300 characters, naming the file or what is missing.`,
     '3. {"verdict":"question","question"} when the fix turns on what the app should do, which only Martin can say: one question he can answer in a line, at most 300 characters.',
@@ -566,8 +715,9 @@ const improvementTemplate = (flagsTaken: readonly string[], keeps?: string) => [
   '- `outcome`: one sentence, what a visitor sees once the flag is on.',
   flagRule(flagsTaken, keeps),
   '- `pages`: one to six pages of the app a visitor opens to see the change, each as the path from the root without a query, such as `/products/blue-mug` for a product’s page: Verify takes pictures of them with the flag off and on.',
-  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `withFlag`, `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. `withFlag` is the side of the flag it holds on: `on` for what the change does, `off` for what stays as it is now. Give at least one of each: one `off` criterion says that, with the flag off, the pages are exactly as they are now. Each is a test the coder can write with the repository’s own tests, with the flag as its side says: an `on` criterion fails at this commit and passes once the change is in; an `off` one passes at both. `from` names what above asks for it: `the request`, or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. An `off` criterion quotes the words of the request whose change it keeps back, since Martin asked for the change and not for the flag: never these instructions. A criterion Martin did not ask for does not belong in the spec, however much better it would make the app.',
+  '- `criteria`: one to twelve acceptance criteria, each an object of `given`, `when`, `expect` (the then), `withFlag`, `from` and `quote`, in a sentence each. A criterion says what a visitor or a caller of the code sees, not how the code changes. `withFlag` is the side of the flag it holds on: `on` for what the change does, `off` for what stays as it is now. Give at least one of each: one `off` criterion says that, with the flag off, the pages are exactly as they are now. Each is a test the coder can write with the repository’s own tests, with the flag as its side says: an `on` criterion fails at this commit and passes once the change is in; an `off` one passes at both. One from Martin’s answer about the change itself, such as a test’s name to keep, is shown instead by the test or file it names, kept or rewritten as his words ask. `from` names what above asks for it: `the request`, or `Martin’s answer`. `quote` copies, word for word, the words there that ask for it: two or more, in one unbroken stretch with nothing left out, at most 200 characters; the line refuses a spec whose quote is not in what its criterion names. An `off` criterion quotes the words of the request whose change it keeps back, since Martin asked for the change and not for the flag: never these instructions. A criterion Martin did not ask for does not belong in the spec, however much better it would make the app.',
   '- `scope`: the files the coder may change, its tests among them, and no more than the change needs: a path from the top of the repository, a folder ending in `/`, or a pattern with `*`.',
+  CONTRADICTS_RULE,
   `- \`risks\`: a list of tags, each exactly one of these words, for what the change itself does; usually it is empty. ${RISKS.map((r) => `${r}: ${IMPROVEMENT_RISK_MEANINGS[r]}`).join('; ')}.`,
   '- `rollout`: a sentence or two on what Martin should look for on the pages as he turns the flag on.',
   `Every string is a plain sentence or a path, at most ${PATH_CHARS} characters (the rollout 300).`,
@@ -594,7 +744,7 @@ function requestPrompt(input: PlannerInput, request: Request): string {
     'The change does what Martin asked, and no more. The app is full of other things that are wrong with it: anything you notice, or anything else it could do better, goes in `findings`, never in the spec. Triage judges each one as it judges a visitor’s report; it opens no ticket on your word alone. Leave `findings` empty when you noticed nothing else.',
     '',
     'Then write the result, one of three, each with its `findings`:',
-    '1. {"verdict":"spec","spec":{"title","outcome","flag","pages":[],"criteria":[{"given","when","expect","withFlag","from","quote"}],"scope":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to, which Martin approves before any code is written:',
+    '1. {"verdict":"spec","spec":{"title","outcome","flag","pages":[],"criteria":[{"given","when","expect","withFlag","from","quote"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to, which Martin approves before any code is written:',
     ...improvementTemplate(flagsTaken, lastSpec?.flag).map((line) => `   ${line}`),
     `2. {"verdict":"reject","reason"} when the line may not make the change. Reject it when it needs a path no scope may name, the app’s flag context among them: ${protectedWords(protectedPaths).join(', ')}. Reject it when it would keep anything on a visitor’s device, such as a cookie or anything in the browser’s storage: nothing goes there that a visitor did not ask for, and what may is decided outside this repository. Reject it too when no test could tell the change from the app as it is. The reason is one or two short sentences for Martin, at most 300 characters, naming the file or what is in the way.`,
     '3. {"verdict":"question","question"} when what Martin asked could mean more than one thing, and the spec turns on which: one question he can answer in a line, at most 300 characters.',
@@ -630,6 +780,8 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
   prompt: (input) =>
     input.asked.kind === 'ticket' ? ticketPrompt(input, input.asked.ticket) : requestPrompt(input, input.asked.request),
   apply: async (planned, _handback, _input, context) => {
+    // A spec that names a test its file does not have is refused before it leaves anything, as one the schema refuses.
+    if (planned.verdict === 'spec') await checkContradicted(planned.spec, context);
     // A finding is known by where it is and what it says, so the same one handed back by a later plan, after a
     // question or a replan, is not left again.
     for (const found of planned.findings) {
@@ -651,7 +803,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       .join('');
     switch (planned.verdict) {
       case 'spec': {
-        const { spec } = planned;
+        const spec = tagged(planned.spec);
         const summary = `Spec written: ${count(spec.criteria.length, 'criterion', 'criteria')}, ${count(spec.scope.length, 'path')} in scope${left}`;
         return [{ type: 'spec.written', actor: 'planner', summary, payload: spec }];
       }

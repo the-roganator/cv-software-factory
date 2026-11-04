@@ -64,10 +64,33 @@ describe('Needs you', () => {
     expect(gate?.answers.map((a) => [a.answer, a.stepUp])).toEqual([
       ['approved', true],
       ['answered', false],
+      ['replanned', false],
       ['rejected', false],
     ]);
     expect(gate?.answers[0]?.does).toBe('Sends it back to the coder for one more round, past the gates’ limit.');
     expect(gate?.answers[1]?.does).toBe('Sends it back to the coder, with your words as the reason.');
+    expect(gate?.answers[2]).toMatchObject({
+      label: 'Back to the planner',
+      does: 'The planner writes the spec again from your words, and the coder rebuilds the change on it.',
+    });
+  });
+
+  it('says a hold sent back to the planner went there, with his words, in Answered today', () => {
+    const t = Date.parse('2026-10-03T15:00:00Z');
+    const review = work('2030', Date.parse('2026-10-03T10:00:00Z'))
+      .open()
+      .add(1, 'hold.started', 'factory', hold('review', { stage: 'review' }))
+      .add(60, 'hold.answered', 'martin', { decision: 'replanned', answer: 'The spec contradicts a test' });
+    const { holds, answered } = needsView(foldItems(review.events), t);
+    expect(holds).toEqual([]);
+    expect(answered).toEqual([
+      expect.objectContaining({
+        workItem: '2030',
+        how: 'Sent back to the planner',
+        words: 'The spec contradicts a test',
+        did: undefined,
+      }),
+    ]);
   });
 
   it('offers only the answers that do something, and says what each does for every cause', () => {
@@ -290,8 +313,9 @@ describe('Needs you', () => {
   });
 
   it('says what a deploy waits for in each state, links its pull request, and says it waits for Martin once its checks pass', () => {
+    // Not a sample's: its deploy pull request is GitHub's, and the card links it.
     const merged = work('2042', START)
-      .open()
+      .add(0, 'work-item.opened', 'factory', { kind: 'defect-fix', title: 'Item 2042', sample: false })
       .add(1, 'pull-request.merged', 'martin', { number: 9, commit: 'b'.repeat(40), by: 'martin' })
       .add(1, 'hold.started', 'factory', hold('deploy', { stage: 'release', kind: 'approval' }));
     const at = (t: number) => {
@@ -340,10 +364,18 @@ describe('Needs you', () => {
       expect(
         String((need?.evidence as { text?: string } | undefined)?.text).replace(/^Merged at \d\d:\d\d\. /, ''),
       ).toBe(text);
-      expect(need?.link).toEqual({
-        href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
-        label: `Deploy #${change.pullRequest} on GitHub`,
-      });
+      // The deploy pull request is the way on only while its checks run or have passed: failed, closed or merged, a
+      // newer build or Argo CD moves the fix on, and the card offers no way there.
+      expect(need?.way).toEqual(
+        change.state === 'checking' || change.state === 'passed'
+          ? {
+              verb: 'Deploy',
+              pullRequest: change.pullRequest,
+              href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
+            }
+          : undefined,
+      );
+      expect(need?.link).toBeUndefined();
       // Only once its checks pass is it Martin's: then its card says Needs you, flashing, and Needs you counts it.
       expect(outcome).toBe(change.state === 'passed' ? 'needs-you' : 'deploying');
       expect(need?.forMartin).toBe(change.state === 'passed');
@@ -378,9 +410,27 @@ describe('Needs you', () => {
       ['1321', 'deploy'],
     ]);
     const merge = needs.holds.find((need) => need.cause === 'merge');
-    expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'rejected']);
-    expect(merge?.link?.href).toMatch(/\/pull\/\d+$/);
-    expect(needs.holds.find((need) => need.cause === 'spend')?.link?.href).toBe('?view=settings');
+    expect(merge?.answers.map((a) => a.answer)).toEqual(['answered', 'replanned', 'rejected']);
+    const review = needs.holds.find((need) => need.cause === 'review');
+    expect(review?.answers.map((a) => a.label)).toEqual([
+      'Approve',
+      'Answer in words',
+      'Back to the planner',
+      'Reject',
+    ]);
+    // A sample's pull request never existed: the card's way names it, and links nowhere, as the sheet does.
+    const nowhere = 'A sample’s pull request: it never existed, so it links nowhere.';
+    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, why: nowhere });
+    expect(needs.holds.find((need) => need.cause === 'deploy')?.way).toEqual({
+      verb: 'Deploy',
+      pullRequest: 1331,
+      href: undefined,
+      why: nowhere,
+    });
+    // A spend cap's settings are a link beside its evidence, not a way: the card's way is GitHub's only.
+    const spend = needs.holds.find((need) => need.cause === 'spend');
+    expect(spend?.link).toEqual({ href: '?view=settings', label: 'Raise the cap in the settings' });
+    expect(spend?.way).toBeUndefined();
     expect(needs.answered).toEqual([
       expect.objectContaining({ workItem: '1329', how: 'Answered in words, still held', words: 'kept' }),
     ]);

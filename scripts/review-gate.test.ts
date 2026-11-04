@@ -325,13 +325,36 @@ describe("the review gate's workflows", () => {
     expect(gate).toMatch(/- id: app\n {8}if: env\.HAS_KEY == 'true'\n/);
     expect(gate).toMatch(/^permissions: \{\}$/m);
     // Its job reads this repository, to check out the gate, and pull requests; it writes nothing with its own token.
-    expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {4}env:/m);
+    // And test integrity's check run, which low-risk needs.
+    expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {4}env:/m);
     // The one checkout is this workflow's own commit, main's, and never the pull request's.
     expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(1);
     expect(gate).toMatch(/ref: \$\{\{ job\.workflow_sha \}\}\n/);
     // Nothing the pull request's author writes reaches a step: its branch names only the concurrency group.
     const steps = gate.slice(gate.indexOf('\njobs:\n'));
     expect(steps).not.toMatch(/github\.event\.(pull_request|workflow_run)\.(head|title|body|user)|github\.head_ref/);
+  });
+
+  it('read AUTONOMY as the caller’s variable, in main’s copy, never from an input', () => {
+    // A called workflow's `vars` are its caller's; only an admin of that repository can set one.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow holds it
+    expect(gate).toContain('          AUTONOMY: ${{ vars.AUTONOMY }}\n        run: node scripts/review-gate.ts\n');
+    expect(gate).not.toMatch(/inputs/);
+    // The gate's modules, and nothing of the pull request's, from main's sparse checkout; cosign for an exact pin.
+    expect(gate).toMatch(
+      /sparse-checkout: \|\n {12}mise\.toml\n {12}mise\.lock\n {12}scripts\/review-gate\.ts\n {12}scripts\/review-routing\.ts\n {12}policy\/review-verdict\.ts\n/,
+    );
+    expect(gate).toContain('install_args: node cosign');
+  });
+
+  it('check out every module the gate imports', () => {
+    // Everything the gate's files import beyond Node is in the sparse checkout, so main's copy runs whole.
+    for (const file of ['scripts/review-gate.ts', 'scripts/review-routing.ts', 'policy/review-verdict.ts']) {
+      for (const [, path] of readFileSync(file, 'utf-8').matchAll(/^(?:import|export) [^;]*? from '(\.[^']+)';$/gms)) {
+        const resolved = new URL(path ?? '', new URL(file, 'file:///r/')).pathname.slice(3);
+        expect(gate).toContain(`            ${resolved}\n`);
+      }
+    }
   });
 
   it('take the key from a caller by name, and need it from none', () => {
@@ -361,7 +384,7 @@ describe("the review gate's workflows", () => {
     // No base filter: a stacked pull request, into the branch below it, needs the check too; `edited` covers its
     // retargeting when the one below merges.
     expect(requested).toMatch(
-      /pull_request:\n {4}types: \[opened, reopened, synchronize, ready_for_review, edited\]\n/,
+      /pull_request:\n {4}types: \[opened, reopened, synchronize, ready_for_review, edited, unlabeled\]\n/,
     );
     expect(requested).toMatch(/^permissions: \{\}$/m);
     expect(requested).not.toMatch(/uses:|secrets\./);

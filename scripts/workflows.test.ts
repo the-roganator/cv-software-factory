@@ -25,7 +25,13 @@ const WITH_A_SECRET: Record<string, string[]> = {
  */
 const CHECKED_OUT: Record<string, string[]> = {
   'drift-check.yml': ['mise.toml', 'mise.lock', 'scripts/github-settings.ts'],
-  'review.yml': ['mise.toml', 'mise.lock', 'scripts/review-gate.ts'],
+  'review.yml': [
+    'mise.toml',
+    'mise.lock',
+    'scripts/review-gate.ts',
+    'scripts/review-routing.ts',
+    'policy/review-verdict.ts',
+  ],
   'copilot-held-runs.yml': ['mise.toml', 'mise.lock', 'scripts/copilot-held-runs.ts'],
 };
 

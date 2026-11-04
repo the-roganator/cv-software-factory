@@ -33,10 +33,34 @@
  *                      posted: the App is not set up yet
  *     GITHUB_EVENT_NAME, GITHUB_EVENT_PATH, GITHUB_REPOSITORY, GITHUB_API_URL   as Actions sets them
  */
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { type Judged, verdictBlock } from '../policy/review-verdict.ts';
+import {
+  type Annotation,
+  appOpened,
+  type CheckRun,
+  codeOwners,
+  type Decision,
+  exactPin,
+  excusedTests,
+  type FileChange,
+  type IssueEvent,
+  MARTIN,
+  type OwnerRule,
+  type PullRequest,
+  type Review,
+  riskLabelsRemoved,
+  route,
+  TEST_INTEGRITY_CHECK,
+  tagsOf,
+  testIntegrityRun,
+  type Verdict,
+  words,
+} from './review-routing.ts';
 
-/** Martin's GitHub account, by its id, which never changes: a login can be renamed and taken by someone else. */
-export const MARTIN = 6206459;
+export { MARTIN, type PullRequest, type Review, type Verdict, verdict } from './review-routing.ts';
 
 /** The check the ruleset requires, from the review App's integration only. */
 export const CHECK = 'review';
@@ -48,54 +72,7 @@ export const CHECK = 'review';
  */
 export const QUEUE_BRANCH = /^(refs\/heads\/)?gh-readonly-queue\/main\/pr-([0-9]+)-[0-9a-f]{7,40}$/;
 
-export interface PullRequest {
-  number: number;
-  state: string;
-  user: { id: number } | null;
-  head: { sha: string; ref: string; repo: { full_name: string } | null };
-  base: { ref: string; repo: { full_name: string } };
-}
-
-export interface Review {
-  user: { id: number } | null;
-  state: string;
-  commit_id: string | null;
-}
-
-export interface Verdict {
-  pass: boolean;
-  /** One line, the check's title. */
-  title: string;
-}
-
 const short = (sha: string) => sha.slice(0, 7);
-
-/**
- * Whether Martin has had his say on a pull request at its head. A review that only comments says nothing; of the rest,
- * his latest counts: an approval, changes asked, or an approval dismissed. `reviews` is in the order GitHub gives them,
- * oldest first.
- */
-export function verdict(pr: PullRequest, reviews: readonly Review[]): Verdict {
-  // From a branch in this repository: one Martin opens from someone else's fork would carry their pushes.
-  if (pr.user?.id === MARTIN && pr.head.repo?.full_name === pr.base.repo.full_name) {
-    return { pass: true, title: 'Martin opened it' };
-  }
-  const latest = reviews
-    .filter((r) => r.user?.id === MARTIN && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state))
-    .at(-1);
-  const head = short(pr.head.sha);
-  if (!latest) return { pass: false, title: `Waits for Martin to approve ${head}` };
-  if (latest.state === 'CHANGES_REQUESTED') return { pass: false, title: 'Martin asked for changes' };
-  if (latest.state === 'DISMISSED')
-    return { pass: false, title: `His last review was dismissed: waits for him to approve ${head}` };
-  if (latest.commit_id !== pr.head.sha) {
-    const approved = latest.commit_id
-      ? `Martin approved ${short(latest.commit_id)}`
-      : 'Martin approved an earlier commit';
-    return { pass: false, title: `${approved}, and it has moved since: waits for him to approve ${head}` };
-  }
-  return { pass: true, title: `Martin approved ${head}` };
-}
 
 /** What a run is asked to look at: a pull request, and the commit its check goes on (its head, unless the queue's). */
 export type Target =
@@ -231,26 +208,61 @@ export function target(name: string, event: Event, repo: string): Target {
   return { kind: 'none', reason: `a review is not asked for by ${run.event}` };
 }
 
-async function api<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${process.env.GITHUB_API_URL ?? 'https://api.github.com'}${path}`, {
+/** What one run of the gate reads with, and where its verdicts go. */
+export interface Run {
+  /** The repository whose pull requests it judges, `owner/name`. */
+  repo: string;
+  /** The workflow's token, to read. */
+  read: string;
+  /** The review App's token, to post the check; empty, nothing is posted. */
+  token: string;
+  /** The caller's `AUTONOMY` variable. */
+  autonomy: string;
+  /** Print each verdict and its summary, and post nothing, whatever the token: for trying the gate by hand. */
+  print: boolean;
+}
+
+const apiUrl = () => process.env.GITHUB_API_URL ?? 'https://api.github.com';
+
+async function request(method: string, path: string, token: string, accept: string, body?: unknown) {
+  return fetch(`${apiUrl()}${path}`, {
     method,
     headers: {
-      accept: 'application/vnd.github+json',
+      accept,
       authorization: `Bearer ${token}`,
       'x-github-api-version': '2022-11-28',
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(30_000),
   });
+}
+
+async function api<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
+  const response = await request(method, path, token, 'application/vnd.github+json', body);
   if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
   return (await response.json()) as T;
 }
 
-/** Every item of a list GitHub gives a page at a time. */
-async function paged<T>(path: string, token: string): Promise<T[]> {
+/** A file's text at a commit, through the contents API, or undefined if it is not there. */
+async function fileAt(repo: string, path: string, ref: string, token: string): Promise<string | undefined> {
+  const where = `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`;
+  const response = await request('GET', where, token, 'application/vnd.github.raw+json');
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error(`GET ${where}: ${response.status} ${await response.text()}`);
+  return response.text();
+}
+
+/** Every item of a list GitHub gives a page at a time, from the answer itself or the key it is under. */
+async function paged<T>(path: string, token: string, key?: string): Promise<T[]> {
   const all: T[] = [];
   for (let page = 1; ; page++) {
-    const batch = await api<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`, token);
+    const answer = await api<unknown>(
+      'GET',
+      `${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`,
+      token,
+    );
+    const batch = (key ? (answer as Record<string, T[]>)[key] : answer) as T[];
     all.push(...batch);
     if (batch.length < 100) return all;
   }
@@ -260,17 +272,211 @@ async function paged<T>(path: string, token: string): Promise<T[]> {
 const openFrom = (repo: string, owner: string, branch: string, token: string) =>
   paged<PullRequest>(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`, token);
 
-/** Every review of a pull request, oldest first. */
-const reviewsOf = (repo: string, number: number, token: string) =>
-  paged<Review>(`/repos/${repo}/pulls/${number}/reviews`, token);
+/** CODEOWNERS as `main` has it, where GitHub looks for it, never as a pull request has it. */
+const ownersOnMain = new Map<string, Promise<OwnerRule[]>>();
+function owners(run: Run): Promise<OwnerRule[]> {
+  let read = ownersOnMain.get(run.repo);
+  if (!read) {
+    read = (async () => {
+      for (const path of ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS']) {
+        const text = await fileAt(run.repo, path, 'main', run.read);
+        if (text !== undefined) return codeOwners(text);
+      }
+      throw new Error(`${run.repo} has no CODEOWNERS on main: the gate cannot tell which paths are Martin's`);
+    })();
+    ownersOnMain.set(run.repo, read);
+  }
+  return read;
+}
 
-/** Posts the `review` check on a commit, as the review App, or says why it cannot. */
-async function post(repo: string, token: string, commit: string, pass: boolean, title: string, summary: string) {
-  if (!token) {
+// An exact pin's checks, which read GHCR anonymously, cosign and the compare API.
+
+const GHCR = 'https://ghcr.io';
+const MANIFESTS = [
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+  'application/vnd.oci.image.manifest.v1+json',
+  'application/vnd.docker.distribution.manifest.v2+json',
+].join(', ');
+
+/** The commit an image says it was built from: its one `org.opencontainers.image.revision` label, on every platform. */
+async function revisionOf(image: string, digest: string): Promise<string | { reason: string }> {
+  const name = image.replace(/^ghcr\.io\//, '');
+  const auth = await fetch(`${GHCR}/token?scope=repository:${name}:pull`, { signal: AbortSignal.timeout(15_000) });
+  if (!auth.ok) return { reason: `ghcr.io gave no token to read it: ${auth.status}` };
+  const { token } = (await auth.json()) as { token?: string };
+  const get = async <T>(path: string, accept: string): Promise<T> => {
+    const response = await fetch(`${GHCR}/v2/${name}/${path}`, {
+      headers: { accept, authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`ghcr.io answered ${response.status} for ${path}`);
+    return (await response.json()) as T;
+  };
+  type Manifest = { config?: { digest: string }; manifests?: { digest: string; platform?: { os?: string } }[] };
+  const index = await get<Manifest>(`manifests/${digest}`, MANIFESTS);
+  const configs = index.config
+    ? [index.config.digest]
+    : await Promise.all(
+        (index.manifests ?? [])
+          .filter((m) => m.platform?.os && m.platform.os !== 'unknown')
+          .map(async (m) => (await get<Manifest>(`manifests/${m.digest}`, MANIFESTS)).config?.digest ?? ''),
+      );
+  const revisions = new Set<string>();
+  for (const config of new Set(configs)) {
+    const labels = (await get<{ config?: { Labels?: Record<string, string> | null } }>(`blobs/${config}`, '*/*')).config
+      ?.Labels;
+    revisions.add(labels?.['org.opencontainers.image.revision'] ?? '');
+  }
+  const [revision, ...others] = [...revisions];
+  if (!revision || others.length || !/^[0-9a-f]{40}$/.test(revision))
+    return { reason: 'it names no one commit it was built from' };
+  return revision;
+}
+
+const run = promisify(execFile);
+
+/**
+ * The commit `build.yml` on main signed an image at, verified by cosign: keyless, the certificate Fulcio gave that
+ * workflow, on main, at the commit the image names, logged in Rekor. The commit the image names is only a claim until
+ * the certificate says the same.
+ */
+const signatures = new Map<string, Promise<string | { reason: string }>>();
+function signedAt(repo: string, image: string, digest: string): Promise<string | { reason: string }> {
+  const key = `${image}@${digest}`;
+  let checked = signatures.get(key);
+  if (!checked) {
+    checked = (async () => {
+      try {
+        const revision = await revisionOf(image, digest);
+        if (typeof revision !== 'string') return revision;
+        await run(
+          'cosign',
+          [
+            'verify',
+            '--certificate-identity',
+            `https://github.com/${repo}/.github/workflows/build.yml@refs/heads/main`,
+            '--certificate-oidc-issuer',
+            'https://token.actions.githubusercontent.com',
+            '--certificate-github-workflow-repository',
+            repo,
+            '--certificate-github-workflow-ref',
+            'refs/heads/main',
+            '--certificate-github-workflow-sha',
+            revision,
+            `${image}@${digest}`,
+          ],
+          { timeout: 120_000 },
+        );
+        return revision;
+      } catch (error) {
+        const said = error instanceof Error ? error.message.split('\n').find((l) => /error/i.test(l)) : undefined;
+        return { reason: `cosign does not verify it as signed by build.yml on main${said ? ` (${said.trim()})` : ''}` };
+      }
+    })();
+    signatures.set(key, checked);
+  }
+  return checked;
+}
+
+/** Whether `to` descends from `from`, by the compare API. */
+async function ahead(repo: string, from: string, to: string, token: string): Promise<boolean> {
+  const { status } = await api<{ status: string }>('GET', `/repos/${repo}/compare/${from}...${to}`, token);
+  return status === 'ahead';
+}
+
+/** Every fact a pull request is judged on, read through the API, and its verdict. */
+export async function judge(each: Run, pr: PullRequest, withoutMartin = false): Promise<Decision> {
+  const { repo, read } = each;
+  const head = pr.head.sha;
+  const reviews = withoutMartin ? [] : await paged<Review>(`/repos/${repo}/pulls/${pr.number}/reviews`, read);
+  const judged = withoutMartin && pr.user?.id === MARTIN ? { ...pr, user: null } : pr;
+  const facts = { repo, pr: judged, reviews, autonomy: each.autonomy };
+  try {
+    const [files, events, runs, rules] = await Promise.all([
+      paged<FileChange>(`/repos/${repo}/pulls/${pr.number}/files`, read),
+      paged<IssueEvent>(`/repos/${repo}/issues/${pr.number}/events`, read),
+      paged<CheckRun>(
+        `/repos/${repo}/commits/${head}/check-runs?filter=all&check_name=${encodeURIComponent(TEST_INTEGRITY_CHECK)}`,
+        read,
+        'check_runs',
+      ),
+      owners(each),
+    ]);
+    const integrity = testIntegrityRun(runs, head, files);
+    let testIntegrity: { read: true } | { read: false; reason: string } = { read: true };
+    let excused: string[] = [];
+    if ('run' in integrity) {
+      const annotations = await paged<Annotation>(`/repos/${repo}/check-runs/${integrity.run.id}/annotations`, read);
+      const expected = integrity.run.output?.annotations_count ?? 0;
+      if (annotations.length < expected)
+        testIntegrity = { read: false, reason: `GitHub gave ${annotations.length} of its ${expected} annotations` };
+      excused = excusedTests(annotations);
+    } else testIntegrity = { read: false, reason: integrity.reason };
+    const tags = tagsOf({
+      files,
+      complete: files.length >= (pr.changed_files ?? 0),
+      headRef: pr.head.ref,
+      owners: rules,
+      excused,
+    });
+    const pin = appOpened(judged)
+      ? await exactPin(files, {
+          signedAt,
+          ahead: (where, from, to) => ahead(where, from, to, read),
+          content: async (path) => {
+            const text = await fileAt(repo, path, head, read);
+            if (text === undefined) throw new Error(`${path} is not at ${short(head)}`);
+            return text;
+          },
+        }).catch((error: Error) => ({ reason: `the gate could not check it: ${error.message}` }))
+      : undefined;
+    return route({ ...facts, tags, testIntegrity, labelsRemoved: riskLabelsRemoved(events), ...(pin ? { pin } : {}) });
+  } catch (error) {
+    // Martin's say needs only his reviews; anything else unread holds the pull request, saying what.
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`::warning::${message}`);
+    return route({
+      ...facts,
+      tags: [],
+      testIntegrity: { read: false, reason: 'not read' },
+      labelsRemoved: [],
+      unread: message.split('\n')[0]?.slice(0, 200) ?? message,
+    });
+  }
+}
+
+const RULE =
+  "Passes a pull request Martin opened, or whose head he approved; an exact pin of the factory's App's, of images " +
+  "build.yml signed on main; and in the app's repository the App's with no risk tags, or at Lights-out those whose " +
+  'tags it allows (spec 4.3, ADR 0014).';
+
+/** The check's summary: the rule, each pull request's words, and the verdict's block, which the line reads. */
+function summaryOf(commit: string, judged: readonly { pr: PullRequest; said: Decision }[]): string {
+  const entries: Judged[] = judged.map(({ pr, said }) => ({
+    number: pr.number,
+    head: pr.head.sha,
+    rule: said.rule,
+    tags: said.tags,
+  }));
+  return [
+    RULE,
+    ...judged.map(({ pr, said }) => words(pr.number, said)),
+    verdictBlock({ version: 1, commit, judged: entries }),
+  ].join('\n\n');
+}
+
+/** Posts the `review` check on a commit, as the review App, or says why it does not. */
+async function post(each: Run, commit: string, pass: boolean, title: string, summary: string) {
+  if (each.print) {
+    console.log(`Would post ${CHECK}: ${pass ? 'success' : 'failure'} on ${commit}: ${title}\n\n${summary}\n`);
+    return;
+  }
+  if (!each.token) {
     console.log(`::notice::The review App is not set up yet (ADR 0014): the ${CHECK} check is not posted.`);
     return;
   }
-  await api('POST', `/repos/${repo}/check-runs`, token, {
+  await api('POST', `/repos/${each.repo}/check-runs`, each.token, {
     name: CHECK,
     head_sha: commit,
     status: 'completed',
@@ -280,20 +486,19 @@ async function post(repo: string, token: string, commit: string, pass: boolean, 
   console.log(`Posted ${CHECK}: ${pass ? 'success' : 'failure'} on ${commit}.`);
 }
 
-/** Each pull request judged by the rule, at its own head, each said in the run's log. */
-async function judgeEach(repo: string, read: string, prs: readonly PullRequest[]) {
+/** Each pull request judged at its own head, each said in the run's log. */
+async function judgeEach(each: Run, prs: readonly PullRequest[]) {
   const judged = [];
-  for (const each of prs) {
-    const said = verdict(each, await reviewsOf(repo, each.number, read));
+  for (const pr of prs) {
+    const said = await judge(each, pr);
+    const tags = said.tags.length ? ` [${said.tags.map((t) => t.tag).join(', ')}]` : '';
     console.log(
-      `#${each.number}, into ${each.base.ref}, at ${short(each.head.sha)}: ${said.pass ? `passes: ${said.title}` : said.title}.`,
+      `#${pr.number}, into ${pr.base.ref}, at ${short(pr.head.sha)}: ${said.rule}${tags}: ${said.pass ? `passes: ${said.title}` : said.title}.`,
     );
-    judged.push({ number: each.number, said });
+    judged.push({ pr, number: pr.number, said });
   }
   return judged;
 }
-
-const RULE = 'Passes when Martin opened the pull request, or approved its head after the last push (ADR 0014).';
 
 /** Every pull request open in `repo` that contains `commit`, merged ones too, as GitHub lists them. */
 const containing = (repo: string, commit: string, token: string) =>
@@ -303,7 +508,8 @@ const containing = (repo: string, commit: string, token: string) =>
  * Judges the head of `pr` as it is now, on every open pull request whose head it is: a check is on a commit, so each
  * of them carries it, and whichever asked, the verdict is the same.
  */
-async function judgeHead(repo: string, read: string, token: string, pr: PullRequest): Promise<void> {
+async function judgeHead(each: Run, pr: PullRequest): Promise<void> {
+  const { repo, read } = each;
   const commit = pr.head.sha;
   let listed: PullRequest[];
   try {
@@ -312,7 +518,7 @@ async function judgeHead(repo: string, read: string, token: string, pr: PullRequ
     // Without the list, a verdict could pass a commit another open pull request holds: fail it, saying why.
     console.log(`::warning::${error instanceof Error ? error.message : String(error)}`);
     const title = `The gate could not list the pull requests at ${short(commit)}: re-run it`;
-    if (pr.state === 'open') await post(repo, token, commit, false, title, `No verdict without the list. ${RULE}`);
+    if (pr.state === 'open') await post(each, commit, false, title, `No verdict without the list. ${RULE}`);
     return;
   }
   const open = atHead(listed, commit, repo, pr);
@@ -321,48 +527,85 @@ async function judgeHead(repo: string, read: string, token: string, pr: PullRequ
     console.log(`#${pr.number} is ${pr.state}, and no open pull request has ${short(commit)}: nothing to judge.`);
     return;
   }
-  const said = together(await judgeEach(repo, read, open));
-  const numbers = open.map((each) => `#${each.number}`).join(', ');
-  const line = `${short(commit)}, the head of ${numbers}: ${said.pass ? `passes: ${said.title}` : said.title}.`;
-  console.log(line);
-  await post(repo, token, commit, said.pass, said.title, `${RULE} Judged on ${numbers}, each at ${short(commit)}.`);
+  // Each read whole from GitHub: the list names a pull request as it was, and lacks how many files it changes.
+  const full = await Promise.all(
+    open.map((one) => api<PullRequest>('GET', `/repos/${repo}/pulls/${one.number}`, read)),
+  );
+  const judged = await judgeEach(
+    each,
+    full.filter((one) => one.state === 'open' && one.head.sha === commit),
+  );
+  if (judged.length === 0) {
+    console.log(`No open pull request is at ${short(commit)} now: nothing to judge.`);
+    return;
+  }
+  const said = together(judged);
+  const numbers = judged.map((one) => `#${one.number}`).join(', ');
+  console.log(`${short(commit)}, the head of ${numbers}: ${said.pass ? `passes: ${said.title}` : said.title}.`);
+  await post(each, commit, said.pass, said.title, summaryOf(commit, judged));
+}
+
+/** What a run is asked, from the environment Actions sets, or, by hand, `--print <owner/name> <number>`. */
+function asked(args: readonly string[]): { each: Run; event?: Event; name: string; number?: number } {
+  const { GH_TOKEN: read = '', CHECKS_TOKEN: token = '', AUTONOMY: autonomy = '' } = process.env;
+  if (args[0] === '--print') {
+    const [, repo = '', number = ''] = args;
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[1-9]\d*$/.test(number)) {
+      throw new Error('usage: review-gate.ts --print <owner/name> <number>');
+    }
+    return { each: { repo, read, token: '', autonomy, print: true }, name: 'print', number: Number(number) };
+  }
+  const repo = process.env.GITHUB_REPOSITORY ?? '';
+  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH ?? '', 'utf-8')) as Event;
+  return { each: { repo, read, token, autonomy, print: false }, event, name: process.env.GITHUB_EVENT_NAME ?? '' };
 }
 
 async function main(): Promise<void> {
-  const { GH_TOKEN: read = '', CHECKS_TOKEN: token = '', GITHUB_REPOSITORY: repo = '' } = process.env;
-  const name = process.env.GITHUB_EVENT_NAME ?? '';
-  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH ?? '', 'utf-8')) as Event;
-  let asked = target(name, event, repo);
-  if (asked.kind === 'find') {
+  const { each, event, name, number } = asked(process.argv.slice(2));
+  const { repo, read } = each;
+  console.log(`AUTONOMY is ${each.autonomy ? JSON.stringify(each.autonomy) : 'unset'} for ${repo}.`);
+  if (number !== undefined) {
+    // By hand, a pull request is judged alone at its head, merged or closed too, to compare with what main's gate said.
+    const pr = await api<PullRequest>('GET', `/repos/${repo}/pulls/${number}`, read);
+    const judged = await judgeEach(each, [pr]);
+    const said = together(judged);
+    await post(each, pr.head.sha, said.pass, said.title, summaryOf(pr.head.sha, judged));
+    // And what the rest of the rules say, as if Martin had had no say.
+    const rest = await judge(each, pr, true);
+    console.log(`Without Martin's say: ${rest.rule}: ${rest.title}.`);
+    return;
+  }
+  let target_ = target(name, event ?? {}, repo);
+  if (target_.kind === 'find') {
     // The open pull request from that branch, wherever its head is now: the run that asked may be for an older push,
     // and the verdict goes on the head as it is now.
-    const { owner, branch } = asked;
+    const { owner, branch } = target_;
     const found = (await openFrom(repo, owner, branch, read))[0];
-    asked = found
+    target_ = found
       ? { kind: 'pull-request', number: found.number }
       : { kind: 'none', reason: `no open pull request has ${owner}:${branch}` };
   }
-  if (asked.kind === 'none') {
-    console.log(`Nothing to judge: ${asked.reason}.`);
-    if (asked.commit) {
-      const title = asked.reason.charAt(0).toUpperCase() + asked.reason.slice(1);
-      await post(repo, token, asked.commit, false, title, `No pull request to judge. ${RULE}`);
+  if (target_.kind === 'none') {
+    console.log(`Nothing to judge: ${target_.reason}.`);
+    if (target_.commit) {
+      const title = target_.reason.charAt(0).toUpperCase() + target_.reason.slice(1);
+      await post(each, target_.commit, false, title, `No pull request to judge. ${RULE}`);
     }
     return;
   }
   let pr: PullRequest;
   try {
-    pr = await api<PullRequest>('GET', `/repos/${repo}/pulls/${asked.number}`, read);
+    pr = await api<PullRequest>('GET', `/repos/${repo}/pulls/${target_.number}`, read);
   } catch (error) {
     // The queue's commit always gets a verdict: without the pull request, it fails, saying to re-run.
-    if (asked.kind !== 'queue') throw error;
+    if (target_.kind !== 'queue') throw error;
     console.log(`::warning::${error instanceof Error ? error.message : String(error)}`);
-    const title = `The gate could not read #${asked.number}, which the merge queue's branch names: re-run it`;
-    await post(repo, token, asked.commit, false, title, `No verdict without the pull request. ${RULE}`);
+    const title = `The gate could not read #${target_.number}, which the merge queue's branch names: re-run it`;
+    await post(each, target_.commit, false, title, `No verdict without the pull request. ${RULE}`);
     return;
   }
-  if (asked.kind === 'pull-request') {
-    await judgeHead(repo, read, token, pr);
+  if (target_.kind === 'pull-request') {
+    await judgeHead(each, pr);
     return;
   }
   // A closed pull request merges nothing: the queue holds none.
@@ -370,38 +613,38 @@ async function main(): Promise<void> {
     console.log(`#${pr.number} is ${pr.state}: nothing to judge.`);
     return;
   }
-  const commit = asked.commit;
+  const commit = target_.commit;
   // The queue's commit merges into main, and carries every change below the pull request it was made for: a stacked
-  // one's approval vouches for its own change alone, so each pull request below it down to main is judged too.
+  // one's approval vouches for its own change alone, so each pull request below it down to main is judged too, each
+  // afresh at its head as it is now, never by a verdict judged for another commit.
   // A pull request it finds open always gets a verdict: if GitHub cannot be read, the check fails, saying to re-run it.
   let stack: Stack;
-  let judged: { number: number; said: Verdict }[] = [];
+  let judged: Awaited<ReturnType<typeof judgeEach>> = [];
   try {
     stack = await stackOf(pr, repo, (branch) => openFrom(repo, repo.split('/')[0] ?? '', branch, read));
-    if (stack.prs) judged = await judgeEach(repo, read, stack.prs);
+    if (stack.prs) {
+      const full = await Promise.all(
+        stack.prs.map((one) =>
+          one.number === pr.number ? pr : api<PullRequest>('GET', `/repos/${repo}/pulls/${one.number}`, read),
+        ),
+      );
+      judged = await judgeEach(each, full);
+    }
   } catch (error) {
     console.log(`::warning::${error instanceof Error ? error.message : String(error)}`);
-    stack = { reason: `the gate could not read the stack #${pr.number} heads, or its reviews: re-run it` };
+    stack = { reason: `the gate could not read the stack #${pr.number} heads, or judge it: re-run it` };
   }
   if (stack.reason !== undefined) {
     const title = stack.reason.charAt(0).toUpperCase() + stack.reason.slice(1);
     console.log(`Nothing to judge on the merge queue's ${short(commit)}: ${title}.`);
-    await post(
-      repo,
-      token,
-      commit,
-      false,
-      title,
-      `The merge queue's commit is judged on a stack down to main. ${RULE}`,
-    );
+    await post(each, commit, false, title, `The merge queue's commit is judged on a stack down to main. ${RULE}`);
     return;
   }
   const said = together(judged);
-  const heads = stack.prs.map((each) => `#${each.number} at ${short(each.head.sha)}`).join(', ');
   console.log(
     `The merge queue's ${short(commit)}, for #${pr.number}: ${said.pass ? `passes: ${said.title}` : said.title}.`,
   );
-  await post(repo, token, commit, said.pass, said.title, `${RULE} Judged on ${heads}.`);
+  await post(each, commit, said.pass, said.title, summaryOf(commit, judged));
 }
 
 if (import.meta.main) await main();

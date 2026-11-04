@@ -7,9 +7,10 @@
 #                          the reader. Once Copilot has reviewed, a comment on the pull request from us, posted after
 #                          its review and beginning "Copilot's review summary:", answers the review's summary; until
 #                          Copilot has reviewed, or the hour window.sh gives it has passed, the pull request is not
-#                          ready. Shows checks and threads. A pull request Martin has merged passes on
-#                          what is left to check (its description, checks, threads and summary): its worktree and
-#                          branch may be gone. Whether a branch is behind main is never checked: the merge queue
+#                          ready. No code-scanning alert is open on it, and code scanning has analysed its head
+#                          (scanning.sh): until it has, the pull request is not ready. Shows checks, threads and alerts.
+#                          A pull request Martin has merged passes on what is left to check (its description, checks,
+#                          threads, alerts still open on main and summary): its worktree and branch may be gone. Whether a branch is behind main is never checked: the merge queue
 #                          tests it on main as it will be.
 #   verify.sh <key>        skipped: nothing was left behind (no commit on the worktree since it was made, so one made
 #                          from a stack's branch below counts from there), no branch pushed and no pull request opened.
@@ -19,6 +20,7 @@
 # (Part of the-roganator/cv-software-factory#278). Exit 1 on any mismatch.
 set -euo pipefail
 . "$(dirname "$0")/window.sh"
+. "$(dirname "$0")/scanning.sh"
 pr=${2:-}
 . "$(dirname "$0")/repo.sh"
 for_key "${1:?usage: verify.sh <key> [pr]}"
@@ -96,6 +98,10 @@ say threads "$(gh api graphql -F owner="${repo%/*}" -F name="${repo#*/}" -F n="$
   query($owner:String!, $name:String!, $n:Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$n) {
     reviewThreads(first:100) { nodes { isResolved } } } } }' \
   -q '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length') unresolved"
+
+# An alert CodeQL found on the pull request is the worker's to fix, or to draft Martin a dismissal for: never ready while
+# one is open.
+code_scanning "$repo" "$pr" "$state" "$head"
 
 # Copilot's summary can name findings no thread carries, so the worker answers it once in a comment. Whether the
 # answer is right is the reader's to judge; that there is one, after the review, is checked here.

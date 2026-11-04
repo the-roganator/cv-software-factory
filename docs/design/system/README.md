@@ -122,7 +122,7 @@ The status says what the machine is doing; the beacon says whether a person shou
 The console's projection (`apps/console/web/src/projection/line.ts`) works out each station's status from the work items in the stage at time *t*, taking the first rule that matches:
 
 1. **failed:** an item in the stage failed (a gate run, a refusal, a rollback) and nothing has happened since: no retry, no return, no hold for a human; and nothing else in the stage is in progress.
-2. **blocked:** an item is waiting on a human (spec approval, held PR, planner question, a visitor's suggestion parked for Martin, a planner's finding parked for him at Triage, a spec that goes beyond its ticket at Review), and nothing else in the stage is in progress; or, at Triage, a spend cap holds, whatever is in progress, since nothing calls a model under a cap.
+2. **blocked:** an item is waiting on a human (spec approval, held PR, planner question, a visitor's suggestion parked for Martin, a planner's finding parked for him at Triage, a spec that goes beyond its ticket, or lacks what Martin's answer asks, at Review), and nothing else in the stage is in progress; or, at Triage, a spend cap holds, whatever is in progress, since nothing calls a model under a cap.
 3. **returning:** an item was sent upstream from this stage in the last 5 minutes.
 4. **working:** at least one item is in progress in the stage. A ticket waiting for the planner is in Plan but not in progress: nobody is at work on it.
 5. **passing:** an item left the stage for a later one, or was verified in it, in the last 15 minutes, and nothing is in progress.

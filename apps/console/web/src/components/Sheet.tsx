@@ -1063,7 +1063,10 @@ function ReviewThread({ reviews, start, open }: { reviews: ThreadReview[]; start
               {f.ticket && (
                 <div className="cites">
                   <span className="n">TICKET</span>
-                  <span>Beyond what the ticket asks: the coder cannot put a spec right, so Martin decides.</span>
+                  <span>
+                    Beyond what the ticket asks, or short of Martin’s answer: the coder cannot put a spec right, so
+                    Martin decides.
+                  </span>
                 </div>
               )}
               {f.criterion && (

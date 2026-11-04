@@ -42,7 +42,8 @@
  * spec so tagged, a rewritten one too. Approving carries on to Build; answering sends it back to the planner with what
  * he said.
  *
- * A review whose findings cite the ticket (the spec or the change goes beyond what it asks) holds as `beyond-ticket`:
+ * A review whose findings cite the ticket (the spec or the change goes beyond what it asks, or the spec lacks what
+ * Martin's answer asks) holds as `beyond-ticket`:
  * the coder cannot put a spec right, so his answer sends it back to the planner, and his approval stands in for the
  * reviewer's. A spec written again once there is a pull request sends the work back to the coder, held to the new one.
  *
@@ -538,7 +539,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
           state.answers.push({ ...askedOf(state.hold, state.fenced), ...reading });
         }
         if (resolution === 'replan') {
-          // What the reviewer found beyond the ticket, when its escalation is what he answered.
+          // The reviewer's findings that cite the ticket (beyond it, or short of Martin's answer), when its escalation
+          // is what he answered.
           const beyond = cause === 'beyond-ticket' ? state.review?.findings.filter((f) => f.ticket) : undefined;
           state.replan = {
             cause,
@@ -701,7 +703,7 @@ export type Replan =
       needs?: NonNullable<PayloadOf<'hold.started'>['needs']>;
       /** What the scope fence printed of the coder's last patch, for a `scope` hold the fence made. */
       fenced?: string;
-      /** The review's findings that cite the ticket, for a `beyond-ticket` hold. */
+      /** The review's findings that cite the ticket, beyond it or short of Martin's answer, for a `beyond-ticket` hold. */
       beyond?: PayloadOf<'review.submitted'>['findings'];
     }
   /** Returned from a stage after the merge, as when the signal persisted after the fix was released. */

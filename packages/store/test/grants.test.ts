@@ -1255,7 +1255,8 @@ describe('signing in', () => {
   });
 
   it('cuts the sessions it keeps to 30 minutes from their sign-in, ended ones too', async () => {
-    // Sessions kept under the eight hours 0023 allowed, before 0031 cut it to 30 minutes.
+    // Sessions kept under the eight hours 0023 allowed, before 0031 cut it to 30 minutes. 0031 cuts every session kept,
+    // the earlier tests' hour-long ones too, which no test after this one reads.
     const migration = readFileSync(new URL('../migrations/0031_session-30-minutes.sql', import.meta.url), 'utf-8');
     await db.owner`alter table sessions drop constraint sessions_lasts`;
     await db.owner`alter table sessions add constraint sessions_check

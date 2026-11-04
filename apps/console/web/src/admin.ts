@@ -176,7 +176,7 @@ export function leave(href: string): void {
 
 /**
  * Asks again whether the session is live, and when it has ended sends the page to the sign-in door, saying why: its
- * 30 minutes ran out, or it ended early (signed out everywhere from another device, or its passkey revoked). Resolves
+ * hour ran out, or it ended early (signed out everywhere from another device, or its passkey revoked). Resolves
  * true while it is live, or while the service cannot be asked, which leaves the page as it is.
  */
 export async function stillSignedIn(expiresAt: string): Promise<boolean> {
@@ -214,7 +214,7 @@ const martinsParts = () =>
   ]);
 
 /**
- * Whether this browser is signed in, asked as the page opens, and again when the session's 30 minutes are up or the
+ * Whether this browser is signed in, asked as the page opens, and again when the session's hour is up or the
  * page is shown again: a session that has ended sends the page to the sign-in door, saying so. Only the live console asks: a recording has no service.
  */
 export function useAdmin(live: boolean): Admin {

@@ -3244,7 +3244,7 @@ function signinPage() {
   const k = q.get('signin') || 'ready';
   const note = {
     none: `<div class="refusal">No passkey was used.<small>Either the passkey sheet was closed, or this device has no passkey for the factory. Each device is enrolled once, from the command line: <code>factory admin enrol</code> prints a one-time code for the <a href="?view=enrol">enrolment page</a>.</small></div>`,
-    expired: `<div class="done" style="border-left-color: var(--line-strong)">Your session ended at 16:10. A session lasts 30 minutes from signing in, however busy.</div>`,
+    expired: `<div class="done" style="border-left-color: var(--line-strong)">Your session ended at 16:10. A session lasts 60 minutes from signing in, however busy.</div>`,
     out: `<div class="done" style="border-left-color: var(--line-strong)">Signed out. This browser holds no session now.</div>`,
     everywhere: `<div class="done" style="border-left-color: var(--line-strong)">Signed out everywhere: every session on every device has ended, this one too.</div>`,
   }[k] ?? '';

@@ -1,6 +1,7 @@
 /**
  * The feed: every public event, in seq order, held in memory and passed to listeners as it arrives. The server
- * sends events and artifacts and nothing derived from them; the browser does the projecting.
+ * sends events and artifacts and nothing derived from them, but one thing it alone can say: whether each relayed
+ * refusal is what the GitHub worker signed (`refusals.ts`). The browser does the projecting.
  *
  * Three sources: the event store (live, through LISTEN and NOTIFY), an event-log folder (fixed, as the replay site
  * will be), or nothing at all (an empty store).
@@ -9,9 +10,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArtifactRef, RawEvent } from '@software-factory/events';
 import { EVENTS_FILE, parseLog, upcast } from '@software-factory/events';
-import { listen, readPublic, storeKind } from '@software-factory/store';
+import { isHash, listen, readPublic, storeKind } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { log } from './log.ts';
+import type { SignedRefusal } from './refusals.ts';
 
 export interface FeedEvent {
   seq: number;
@@ -52,6 +54,8 @@ export class Feed {
   readonly #listeners = new Set<Listener>();
   /** Every public artifact's recorded type, by hash. The console serves only these. */
   readonly #artifactTypes = new Map<string, string>();
+  /** Every public refusal that carries a record and a signature, in seq order: what `/api/refusals` checks. */
+  readonly #signed: SignedRefusal[] = [];
 
   get lastSeq(): number {
     return this.#events.at(-1)?.seq ?? 0;
@@ -77,6 +81,11 @@ export class Feed {
     return this.#artifactTypes.get(hash);
   }
 
+  /** Every public refusal relayed with a record and a signature, in seq order. */
+  get signedRefusals(): readonly SignedRefusal[] {
+    return this.#signed;
+  }
+
   subscribe(listener: Listener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -93,11 +102,22 @@ export class Feed {
       for (const artifact of (event as { artifacts?: ArtifactRef[] }).artifacts ?? []) {
         this.#artifactTypes.set(artifact.hash, artifact.type);
       }
+      const signed = signedRefusal(event);
+      if (signed) this.#signed.push(signed);
       const added = { seq: event.seq, json: JSON.stringify(event), appendedAt };
       this.#events.push(added);
       for (const listener of this.#listeners) listener(added);
     }
   }
+}
+
+/** A public refusal that names a record and a signature over it, as a relayed one does; any other, nothing. */
+function signedRefusal(event: RawEvent & { seq: number }): SignedRefusal | undefined {
+  if (event.type !== 'action.refused') return undefined;
+  const payload = (event as { payload?: unknown }).payload as Record<string, unknown> | undefined;
+  const { record, signature } = payload ?? {};
+  if (typeof record !== 'string' || typeof signature !== 'string' || !isHash(record)) return undefined;
+  return { seq: event.seq, payload: { ...payload, record, signature } };
 }
 
 /** A feed from the event store, kept current by LISTEN and NOTIFY. Resolves once it has read what is there. */

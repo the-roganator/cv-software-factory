@@ -13,19 +13,24 @@
  *
  * PORT sets the port (default 8080), and HOST the one address to listen on: unset, as in the cluster, it listens on every
  * address; the browser tests set 127.0.0.1, the address they ask, so they cannot reach another program on the port.
+ * REFUSAL_PUBLIC_KEY is the GitHub worker's public key (PEM), from the ConfigMap `refusal-key`, which each relayed
+ * refusal is checked with (`refusals.ts`); an event-log folder may carry its own, as `refusal-key.pem`. With neither,
+ * every relayed refusal reads as unverified.
  * GIT_COMMIT is the commit the build was made from, set by the image. FACTORY_PROFILE (default local) and ALL_LOCAL, as
  * the gateway's, are written into the page (`site.ts`).
  */
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ARTIFACTS_DIR } from '@software-factory/events';
+import { REFUSAL_KEY_FILE } from '@software-factory/events/signed';
 import { connect, DiskArtifacts } from '@software-factory/store';
 import { createApp } from './app.ts';
 import { Feed, logFeed, storeFeed } from './feed.ts';
 import { listenOn } from './listen.ts';
 import { log } from './log.ts';
+import { RefusalChecks, refusalKey } from './refusals.ts';
 import { loadSite, pageSettings } from './site.ts';
 import { sendMetrics, shutdownTelemetry } from './telemetry.ts';
 
@@ -43,12 +48,21 @@ const source = sql
     : { feed: new Feed(), artifacts: undefined };
 if (!sql && !EVENT_LOG) log.warn('no event store or event log configured: the console will show an empty store');
 
+const artifacts = new DiskArtifacts(source.artifacts ?? mkdtempSync(join(tmpdir(), 'no-artifacts-')));
+// The cluster's key, or, serving an event-log folder, the folder's own.
+const logKey = !sql && EVENT_LOG ? join(EVENT_LOG, REFUSAL_KEY_FILE) : undefined;
+const keyPem =
+  process.env.REFUSAL_PUBLIC_KEY ?? (logKey && existsSync(logKey) ? readFileSync(logKey, 'utf-8') : undefined);
+const key = refusalKey(keyPem);
+if (!key) log.warn('no REFUSAL_PUBLIC_KEY: every relayed refusal reads as unverified');
+
 const server = createServer(
   createApp({
     commit,
     site: loadSite(undefined, pageSettings(process.env)),
     feed: source.feed,
-    artifacts: new DiskArtifacts(source.artifacts ?? mkdtempSync(join(tmpdir(), 'no-artifacts-'))),
+    artifacts,
+    refusals: new RefusalChecks(artifacts, key),
   }),
 );
 // The event stream's count from 0 (stream.ts), before a browser that was waiting reconnects.

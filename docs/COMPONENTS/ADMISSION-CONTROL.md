@@ -84,7 +84,7 @@ Traefik itself refuses a reference to an object in another namespace, so a route
 
 ## `refusal-key`
 
-`refusal-key` in `factory` holds the GitHub worker's public key, with which the line checks each refusal the worker signs before it records it ([the GitHub worker's refusals](GITHUB-WORKER.md#its-refusals-signed)). A key of anyone else's choosing would let whoever holds its private half put refusals the worker never made on the record, signed and verified. So `factory-refusal-key` (`deploy/base/admission/factory/refusal-key.yaml`) holds it as `website-share-key` holds `share-key`: only `make refusal-key`'s user, `system:admin`, may make, change or delete it, and the namespace's own deletion may take it. It holds no other ConfigMap, and is in no manifest, so Argo CD never writes it. `refusal-fences.test.ts` fails if it grows.
+`refusal-key` in `factory` holds the GitHub worker's public key, with which the line checks each refusal the worker signs before it records it ([the GitHub worker's refusals](GITHUB-WORKER.md#its-refusals-signed)), and the console each it shows in Guardrails ([the console's server](CONSOLE.md#the-server)). A key of anyone else's choosing would let whoever holds its private half put refusals the worker never made on the record, signed and verified. So `factory-refusal-key` (`deploy/base/admission/factory/refusal-key.yaml`) holds it as `website-share-key` holds `share-key`: only `make refusal-key`'s user, `system:admin`, may make, change or delete it, and the namespace's own deletion may take it. It holds no other ConfigMap, and is in no manifest, so Argo CD never writes it. `refusal-fences.test.ts` fails if it grows.
 
 ## Checks
 

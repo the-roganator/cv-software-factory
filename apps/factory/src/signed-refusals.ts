@@ -17,6 +17,7 @@
 import { createHash, createPrivateKey, createPublicKey, type KeyObject, sign, verify } from 'node:crypto';
 import type { PayloadOf, REFUSAL_MECHANISMS } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
+import { recordBytes as bytesOf, canonical } from '@software-factory/events/signed';
 import { z } from 'zod';
 
 /** The mechanisms a refusal is signed for: those with no role of their own in the store, which a worker relays. */
@@ -46,9 +47,9 @@ export interface SignedRefusal extends RefusalFacts {
 }
 
 /** The record's bytes: its fields, and theirs, in order, so that the same refusal is always the same bytes. */
-export function recordBytes({ repo, number, at, payload }: RefusalFacts): Uint8Array {
-  return new TextEncoder().encode(`${canonical({ type: 'action.refused', repo, number, at, payload })}\n`);
-}
+export const recordBytes = (facts: RefusalFacts): Uint8Array => bytesOf(facts);
+
+export { canonical };
 
 /** The record's hash, as the artifact store names it. */
 export const recordHash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
@@ -130,16 +131,4 @@ export function verifyRefusal(key: KeyObject, answer: unknown): Verified {
     good = false;
   }
   return good ? { ok: true, refusal: { ...refusal, signature } } : { ok: false, why: 'its signature does not verify' };
-}
-
-/** JSON with every object's keys in order: the one way to write a value. */
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

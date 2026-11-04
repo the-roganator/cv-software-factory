@@ -82,6 +82,11 @@ export const ACCESS = {
   events: { ...read('Every public event after the one given'), server: 'console', routes: ['GET /api/events'] },
   stream: { ...read('The public events, live'), server: 'console', routes: ['GET /api/events/stream'] },
   artifacts: { ...read('An artifact a public event refers to'), server: 'console', routes: ['GET /artifacts/:hash'] },
+  refusals: {
+    ...read('Whether each relayed refusal is what the GitHub worker signed'),
+    server: 'console',
+    routes: ['GET /api/refusals'],
+  },
   health: { ...read('Whether the console is up'), server: 'console', routes: ['GET /health'] },
   version: { ...read('The commit the console was built from'), server: 'console', routes: ['GET /version'] },
 

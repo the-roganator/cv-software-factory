@@ -7,6 +7,9 @@
  * reviewer the base its change is measured from, and anchors its findings to lines the change shows. The worker
  * itself touches no store.
  *
+ * To merge, the line reads the review gate's verdict on a pull request's head, its place in the merge queue with the
+ * queue's checks, and whether it conflicts with its base (`merging.ts`).
+ *
  * After the merge, the line reads what a release is made of through the worker too, since only it reaches GitHub and
  * GHCR: the commits between two commits, and whether one is an ancestor of the other; the commit an image was built
  * from, and whether its pipeline signed it; and the open deploy pull request, as the deploy watch last saw it.
@@ -16,9 +19,23 @@
  * worker does; and a worker with no key reads the public repositories as anyone may.
  */
 import { z } from 'zod';
+import type { SignedRefusal } from '../signed-refusals.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { type DeployProposal, type DeployProposals, deployedImage } from './deploys.ts';
+import {
+  conflictsOf,
+  heldFor,
+  type ListedReview,
+  type Mergeability,
+  type MergeQueue,
+  REVIEW_CHECK,
+  type ReviewCheck,
+  type ReviewVerdict,
+  reviewCheckOf,
+  verdictOf,
+} from './merging.ts';
 import { CODEOWNERS_PATHS, protectedFrom } from './paths.ts';
+import type { RefusalRecorder } from './refusals.ts';
 import type { Registry } from './registry.ts';
 import { pipeline, type Signatures, UnsignedError } from './signatures.ts';
 
@@ -142,6 +159,12 @@ export interface Reads {
   imageSigned(repo: string, image: string, digest: string): Promise<Signed>;
   /** The open deploy pull request from a deploy branch, as the deploy watch last saw or made it; null when none. */
   deployProposal(repo: string, branch: string): Promise<DeployProposal | null>;
+  /** The review gate's verdict on a pull request's current head, from the review App's `review` check alone. */
+  reviewVerdict(repo: string, number: number): Promise<ReviewVerdict>;
+  /** A pull request's place in the merge queue, the last time it left it and why, and the queue's checks. */
+  mergeQueue(repo: string, number: number): Promise<MergeQueue>;
+  /** Whether a pull request conflicts with its base. */
+  mergeability(repo: string, number: number): Promise<Mergeability>;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -157,6 +180,9 @@ const PULL = z.object({
   base: z.object({ ref: z.string(), sha: SHA }),
   draft: z.boolean().optional(),
   node_id: z.string().min(1),
+  // Worked out by GitHub after the pull request is read: null until it has.
+  mergeable: z.boolean().nullable().optional(),
+  mergeable_state: z.string().optional(),
 });
 
 const CHECK_RUNS = z.object({
@@ -172,6 +198,78 @@ const CHECK_RUNS = z.object({
       output: z.object({ title: z.string().nullable().optional() }).optional(),
     }),
   ),
+});
+
+/** The `review` check runs on a commit, with their summaries, which carry the gate's verdict. */
+const REVIEW_RUNS = z.object({
+  check_runs: z.array(
+    z.object({
+      id: z.number().int(),
+      name: z.string(),
+      head_sha: z.string(),
+      status: z.string(),
+      conclusion: z.string().nullable(),
+      app: z.object({ id: z.number().int() }).nullable().optional(),
+      completed_at: z.string().nullable().optional(),
+      html_url: z.string().nullable().optional(),
+      output: z
+        .object({ title: z.string().nullable().optional(), summary: z.string().nullable().optional() })
+        .nullable()
+        .optional(),
+    }),
+  ),
+});
+
+/**
+ * A pull request's place in the merge queue, and the last twenty times it went in or came out, oldest first. GitHub's
+ * `beforeCommit` on a removal is the queue's commit it was tested on.
+ */
+const QUEUE = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      headRefOid
+      state
+      mergeQueueEntry { position state enqueuedAt headCommit { oid } }
+      timelineItems(last: 20, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes {
+          __typename
+          ... on AddedToMergeQueueEvent { createdAt actor { login } }
+          ... on RemovedFromMergeQueueEvent { createdAt reason actor { login } beforeCommit { oid } }
+        }
+      }
+    }
+  }
+}`;
+
+const QUEUE_ANSWER = z.object({
+  repository: z.object({
+    pullRequest: z
+      .object({
+        headRefOid: SHA,
+        state: z.enum(['OPEN', 'CLOSED', 'MERGED']),
+        mergeQueueEntry: z
+          .object({
+            position: z.number().int(),
+            state: z.string(),
+            enqueuedAt: z.string(),
+            headCommit: z.object({ oid: SHA }).nullable(),
+          })
+          .nullable(),
+        timelineItems: z.object({
+          nodes: z.array(
+            z.object({
+              __typename: z.string(),
+              createdAt: z.string().optional(),
+              reason: z.string().nullable().optional(),
+              // GitHub gives a deleted account as null.
+              actor: z.object({ login: z.string() }).nullable().optional(),
+              beforeCommit: z.object({ oid: SHA }).nullable().optional(),
+            }),
+          ),
+        }),
+      })
+      .nullable(),
+  }),
 });
 
 const ANNOTATIONS = z.array(
@@ -259,19 +357,147 @@ export interface ReleaseSources {
 
 const segments = (branch: string) => branch.split('/').map(encodeURIComponent).join('/');
 
+/** The most review-gate refusals remembered as signed, by check run: far more than are held at once. */
+const MAX_SIGNED = 1000;
+
 export class LiveReads implements Reads {
   readonly #github: GitHub;
   readonly #sources: ReleaseSources | undefined;
+  readonly #recorder: RefusalRecorder | undefined;
+  /** Each held `review` run's refusal, kept and signed once, by repository and run, however often it is read. */
+  readonly #signed = new Map<string, Promise<SignedRefusal | undefined>>();
 
-  /** Without `sources`, as in a test of the line's other reads, the release reads fail. */
-  constructor(github: GitHub, sources?: ReleaseSources) {
+  /**
+   * Without `sources`, as in a test of the line's other reads, the release reads fail. Without `recorder`, a verdict
+   * that holds a pull request is read without its refusal.
+   */
+  constructor(github: GitHub, sources?: ReleaseSources, { recorder }: { recorder?: RefusalRecorder } = {}) {
     this.#github = github;
     this.#sources = sources;
+    this.#recorder = recorder;
   }
 
   async pullRequest(repo: string, number: number): Promise<PullRequestState> {
-    const { body: pr } = await this.#github.poll(repo, `/repos/${repo}/pulls/${number}`, PULL);
-    return pullRequestState(pr);
+    return pullRequestState(await this.#pull(repo, number));
+  }
+
+  /** A pull request as GitHub has it: one conditional request, shared by every read of it. */
+  async #pull(repo: string, number: number): Promise<z.infer<typeof PULL>> {
+    const { body } = await this.#github.poll(repo, `/repos/${repo}/pulls/${number}`, PULL);
+    return body;
+  }
+
+  async reviewVerdict(repo: string, number: number): Promise<ReviewVerdict> {
+    const { head } = await this.#pull(repo, number);
+    // Every `review` run on the head, re-runs too, so the latest is known; which app posted each is read off each.
+    const path = `/repos/${repo}/commits/${head.sha}/check-runs?check_name=${REVIEW_CHECK}&filter=all&per_page=100`;
+    const { body } = await this.#github.poll(repo, path, REVIEW_RUNS);
+    const runs: ListedReview[] = body.check_runs.map((run) => ({
+      id: run.id,
+      name: run.name,
+      headSha: run.head_sha,
+      appId: run.app?.id ?? null,
+      status: run.status,
+      conclusion: run.conclusion,
+      title: run.output?.title ?? null,
+      summary: run.output?.summary ?? null,
+      completedAt: run.completed_at ?? null,
+      url: run.html_url ?? null,
+    }));
+    const check = reviewCheckOf(runs, head.sha);
+    const read = verdictOf(number, head.sha, check);
+    const refusal =
+      check && read.judged?.rule === 'held' ? await this.#held(repo, number, head.sha, check, read.judged) : undefined;
+    return { number, head: head.sha, check, ...read, ...(refusal && { refusal }) };
+  }
+
+  /**
+   * The gate's refusal of a pull request, kept and signed once for each run of the check, at the time the check
+   * concluded: the line reads the verdict on every pass, and the record is the same each time. One that cannot be
+   * kept is left out of this answer, and tried again at the next read.
+   */
+  #held(
+    repo: string,
+    number: number,
+    head: string,
+    check: ReviewCheck,
+    judged: NonNullable<ReviewVerdict['judged']>,
+  ): Promise<SignedRefusal | undefined> {
+    const recorder = this.#recorder;
+    if (!recorder) return Promise.resolve(undefined);
+    const key = `${repo} ${check.id}`;
+    const known = this.#signed.get(key);
+    if (known) return known;
+    if (this.#signed.size >= MAX_SIGNED) this.#signed.clear();
+    const output = [check.title ?? '', check.summary ?? '']
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join('\n\n');
+    const signed = recorder
+      .record(
+        {
+          repo,
+          number,
+          action: `Merge pull request #${number} at ${head.slice(0, 7)} in ${repo}`,
+          output: output || 'The review check held the pull request.',
+          subject: { kind: 'commit', name: head },
+          mechanism: 'review-gate',
+          cause: heldFor(judged),
+        },
+        check.completedAt ? new Date(check.completedAt) : undefined,
+      )
+      .catch(() => {
+        // A store that could not keep it: asked again at the next read.
+        if (this.#signed.get(key) === signed) this.#signed.delete(key);
+        return undefined;
+      });
+    this.#signed.set(key, signed);
+    return signed;
+  }
+
+  async mergeQueue(repo: string, number: number): Promise<MergeQueue> {
+    const [owner, name] = repo.split('/');
+    const answer = await this.#github.graphql(repo, QUEUE, { owner, name, number }, QUEUE_ANSWER);
+    const pull = answer.repository.pullRequest;
+    if (!pull) throw new GitHubError('not-found', `${repo} has no pull request #${number}.`, 404);
+    const events = pull.timelineItems.nodes;
+    const lastAdded = events.findLast((e) => e.__typename === 'AddedToMergeQueueEvent');
+    const lastRemoved = events.findLast((e) => e.__typename === 'RemovedFromMergeQueueEvent');
+    const entry = pull.mergeQueueEntry;
+    // Out of the queue since it last went in: the last of its events is a removal.
+    const out = !entry && lastRemoved !== undefined && events.at(-1) === lastRemoved;
+    const removed = out
+      ? {
+          at: lastRemoved.createdAt ?? '',
+          by: lastRemoved.actor?.login ?? null,
+          reason: lastRemoved.reason ?? null,
+          commit: lastRemoved.beforeCommit?.oid ?? null,
+        }
+      : null;
+    const queued = entry
+      ? {
+          position: entry.position,
+          state: entry.state,
+          enqueuedAt: entry.enqueuedAt,
+          commit: entry.headCommit?.oid ?? null,
+        }
+      : null;
+    const commit = queued?.commit ?? removed?.commit ?? null;
+    return {
+      number,
+      head: pull.headRefOid,
+      state: pull.state === 'MERGED' ? 'merged' : pull.state === 'OPEN' ? 'open' : 'closed',
+      queued,
+      added: lastAdded ? { at: lastAdded.createdAt ?? '', by: lastAdded.actor?.login ?? null } : null,
+      removed,
+      checks: commit ? await this.checkRuns(repo, commit) : [],
+    };
+  }
+
+  async mergeability(repo: string, number: number): Promise<Mergeability> {
+    const pull = await this.#pull(repo, number);
+    const state = pull.mergeable_state ?? 'unknown';
+    return { number, head: pull.head.sha, conflicts: conflictsOf(pull.mergeable ?? null, state), state };
   }
 
   async pullRequestFrom(repo: string, branch: string): Promise<PullRequestState | null> {

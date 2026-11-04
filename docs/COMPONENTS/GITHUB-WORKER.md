@@ -28,6 +28,7 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
 - closing a pull request unmerged with a comment once (`closePullRequest`), as the line does for a held or waiting work item whose defect went with another change; one already closed is left as it is, and one from a branch the factory does not own is refused;
 - comment reviews anchored to lines, and resolving their threads (`resolveThreads`): on each open thread the App began with a finding now answered (matched by path, line and words), the reply it is given, made once, then the thread resolved. The reply names the commit when a later review finds the finding put right or the suggestion taken, gives the coder's reason when it declines a suggestion, and says Martin accepted the review when he approves its hold in the console;
 - check runs;
+- adding its own pull request to the merge queue (`enqueuePullRequest`, [to merge](#to-merge)), at the head the line names;
 - issues and comments:
   - opening one;
   - only on an issue the App opened ([its issues and pull requests only](#its-issues-and-pull-requests-only));
@@ -50,7 +51,7 @@ The line names the work item an action is for in `x-factory-work-item`, and the 
 
 Guardrail 10, as built (`github/issues.ts`). The factory reads no issue as work: Martin asks the line for work with the console's "+", and no issue, or label on one, does.
 
-- **The guard.** Every action that names an issue or pull request is refused, before GitHub is asked to change anything, on one the App did not open, whoever asks: commenting, labelling, closing and reopening an issue; updating, describing, readying, putting back to draft, reviewing, resolving the threads of and closing a pull request. It reads the author by numeric id, never by login, once for each issue, since it never changes: the App's bot user (337765427) passes, and anyone else is refused. Readying and putting back to draft act on the id GitHub gives that number, whatever id they were sent. Every caller acts on the App's own: the line on the work item's issue and the pull request it opened, the deploy watch on its deploy pull request.
+- **The guard.** Every action that names an issue or pull request is refused, before GitHub is asked to change anything, on one the App did not open, whoever asks: commenting, labelling, closing and reopening an issue; updating, describing, readying, putting back to draft, reviewing, resolving the threads of, closing and adding to the merge queue a pull request. It reads the author by numeric id, never by login, once for each issue, since it never changes: the App's bot user (337765427) passes, and anyone else is refused. Readying and putting back to draft act on the id GitHub gives that number, whatever id they were sent. Every caller acts on the App's own: the line on the work item's issue and the pull request it opened, the deploy watch on its deploy pull request.
 - **A refusal** is answered 403, `issue-refused`, as GitHub answers an issue the App may not change, so the line leaves the issue and goes on. It is kept and answered signed, as `github-guard`, as each of the worker's refusals is ([its refusals](#its-refusals-signed)).
 - **A dry run** is guarded the same way: an issue or pull request numbered from a billion up is one the dry run opened, and passes; any other is asked of GitHub, and a refusal is recorded beside the dry run's actions.
 
@@ -71,13 +72,15 @@ It moves, deletes and commits to the factory's own branches only, and refuses an
 - those under `factory/`: a fix is `factory/<work item>-<a few words of its ticket's title>`;
 - the deploy branches.
 
+A red-team attack's branch (`factory/red-team-…`, [the attack door](#the-attack-door)) is the factory's to make and delete, and never one it adds to the merge queue.
+
 ## Its refusals, signed
 
 The worker touches no store, so what it refuses is recorded by the worker that asked, which holds a role there: the line, for its own requests. So that the line cannot make one up or change one, the worker signs each (`github/refusals.ts`, `signed-refusals.ts`):
 
-- **What it signs.** Its guard's refusals, as `github-guard`: a patch that changes a protected path (guardrail 1), a branch it does not own (1), a deploy pull request or image that is not one (1), an issue or pull request the App did not open (10). And GitHub's refusal of a write with status 403, as `token-permission` (1). And, when the red-team harness asks through the attack door, the `review` check's verdict on a pull request, as `review-gate` (its risk tags, 2; a code-owned path, 1). A patch it cannot read or apply is the coder's failure, and a 401, a rate limit or any other status is not GitHub refusing the token: none is a refusal. A read is never one.
+- **What it signs.** Its guard's refusals, as `github-guard`: a patch that changes a protected path (guardrail 1), a branch it does not own (1), a deploy pull request or image that is not one (1), an issue or pull request the App did not open (10). And GitHub's refusal of a write with status 403, as `token-permission` (1). And the `review` check's verdict on a pull request when it holds it, as `review-gate` (its risk tags, 2; Martin's code alone, 1): when the line reads the verdict ([to merge](#to-merge)), and when the red-team harness asks through the attack door. A patch it cannot read or apply is the coder's failure, and a 401, a rate limit or any other status is not GitHub refusing the token: none is a refusal. No other read is one.
 - **The record.** Each is kept in the artifact store as an `action.refused` record: the repository, the issue or pull request if the action named one, when, and the payload, as JSON with its keys in order. The worker logs it with the record's hash, for Loki: a relay that drops a refusal is caught there. The line folds repeats within a minute into one event, which carries the last one's record and signature and how many it stands for, so the log holds a hash for each and the store one for each fold.
-- **The answer.** Its status and kind are as they would be without it, and its body carries `refusal`: the record's fields, its hash, and an Ed25519 signature over its bytes, which covers the payload, the repository, the number, the time and the hash. The line verifies it with the public key before it records it ([the line](ORCHESTRATOR.md)).
+- **The answer.** Its status and kind are as they would be without it, and its body carries `refusal` (the verdict's read, in its result): the record's fields, its hash, and an Ed25519 signature over its bytes, which covers the payload, the repository, the number, the time and the hash. The line verifies it with the public key before it records it ([the line](ORCHESTRATOR.md)).
 - **The key.** The Secret `refusal-signing-key`, which `make refusal-key` (and so `make up`) makes once, through stdin, and which only this pod reads; its public half is the ConfigMap `refusal-key` in `factory`, written again from it each time, which admission lets only `make refusal-key`'s user write ([`refusal-key`](ADMISSION-CONTROL.md#refusal-key)). Without the key the worker keeps and logs each refusal, and answers it unsigned, which the line does not record.
 
 ## The attack door
@@ -110,6 +113,16 @@ The line reads through it too, `POST /v1/reads/<read>` (`github/reads.ts`):
   - `deployProposal`: the open deploy pull request for a deploy branch of one pin file, as the deploy watch last saw it.
 
   An image that is not one of that repository's deploys is refused.
+- **To merge** ([below](#to-merge)): `reviewVerdict`, `mergeQueue` and `mergeability`.
+
+### To merge
+
+The line merges a pull request it may merge by adding it to the merge queue, and reads what it decides by, on each pass: the factory has no webhook (`github/merging.ts`).
+
+- **`reviewVerdict`** (`{ number }`): the review gate's verdict on the pull request's current head, read only from the check run named `review` that the review App (`5470762`) posted for that head, the latest of them. A `review` run any other app posted, the factory's own App's above all, whose reviewer's check carries a model's words, or one for another commit, is never it. Its summary's block is read with the gate's own module (`policy/review-verdict.ts`), and the answer gives the check, the verdict, and the verdict's entry for this pull request at this head (`judged`), or, when there is none to trust, why (`problem`): no run yet, one still going, no block or one that does not parse, one for another commit or pull request, or a conclusion its rule does not give. When the rule is `held`, the answer carries the gate's refusal, kept and signed as `review-gate`, once for each run of the check and timed when it concluded, so reading it again on every pass keeps one record.
+- **`mergeQueue`** (`{ number }`): its entry while it is queued (its position, GitHub's state for it, when it went in, and the queue's commit), the last time it went in and by whom, the last time it came out when it has not gone back in (GitHub's reason, such as `merged` or `failed_checks`, and the queue's commit it was tested on), and the check runs on that commit, each failed one with what it said, so a failure in the queue is something the line can say. Through GraphQL, which alone has the queue, so it is not a conditional request, and a worker with no key cannot read it.
+- **`mergeability`** (`{ number }`): whether it conflicts with its base, from the pull request's own conditional request: `conflicts` is true for GitHub's `mergeable_state` of `dirty`, and null while GitHub is still working it out.
+- **`enqueuePullRequest`** (`{ number, expectedHead }`), the one write: GraphQL's `enqueuePullRequest` with `expectedHeadOid` set to the head the line names, the head the gate judged, so a push after the verdict cannot ride it. It is guarded as every action on a pull request is: the App's own ([its issues and pull requests only](#its-issues-and-pull-requests-only)), then, read from GitHub by its number, from a branch of this repository the factory owns and not a red-team attack's ([its branches only](#its-branches-only)), each refused before GitHub is asked and answered signed as `github-guard`; one closed, a draft, or at another head is a conflict (409), and the line looks again. GitHub refusing it with a 403 is `token-permission`, as for every write. It answers its place in the queue.
 
 ## Talking to GitHub
 
@@ -209,7 +222,12 @@ A dry run's reads answer for what it would have made (`github/dry-run-reads.ts`)
 - a file at one of its commits is as its commits left it;
 - a step that starts from one of its commits is told the real commit under it, and the dry run's commits as patches (`checkout`), which the runner's prepare step makes on it, so the reviewer, the describer and a later round see the change;
 - the pull request is merged, as the App, `GITHUB_DRY_RUN_MERGE_SECONDS` after it was last readied (1200), never while it is a draft, so a line in `dry-run` goes round.
-- one it closed (`closePullRequest`) is closed and unmerged, and never merges.
+- one it closed (`closePullRequest`) is closed and unmerged, and never merges;
+- the review check on its head passes when its other checks do, its verdict `exact-pin` for a deploy pull request and `low-risk` for any other, saying it judged nothing;
+- one it added to the merge queue reads as queued there, on a commit of the queue's own whose required checks pass when it merges, and then as having left the queue merged, when it merges as above;
+- none conflicts with its base.
+
+Adding to the queue is guarded as it is live, against its own pull request as it would have left it, or one GitHub has as GitHub has it.
 
 Everything else it reads from GitHub.
 

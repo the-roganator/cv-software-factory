@@ -13,13 +13,20 @@
  * real commit and makes the dry run's commits on it (`checkout`), so the reviewer, the describer and a later round of
  * the coder see the change as GitHub would have held it.
  *
+ * To merge, the gate's verdict on one of its pull requests is the review App's `review` check, passing once its checks
+ * do, with a verdict of `exact-pin` for a deploy pull request and `low-risk` for any other, and the summary saying
+ * nothing ran. One the dry run added to the merge queue reads as queued there, on a commit of the queue's own with
+ * every required check, until it merges as above, then as having left the queue merged. None conflicts with its base.
+ *
  * Its memory is the dry run's (`DryRunActions`), and lasts as long as the worker: a worker started again has
  * forgotten the pull requests it opened, and GitHub answers that it has none at those numbers.
  */
 import { createHash } from 'node:crypto';
 import { structuredPatch } from 'diff';
+import { verdictBlock } from '../../../../policy/review-verdict.ts';
 import { APP_LOGIN, type DryRunActions, type DryRunPull } from './actions.ts';
-import type { DeployProposal } from './deploys.ts';
+import { DEPLOYS, type DeployProposal } from './deploys.ts';
+import { type Mergeability, type MergeQueue, type ReviewCheck, type ReviewVerdict, verdictOf } from './merging.ts';
 import type { Checkout, CheckRun, Commits, Comparison, FileAt, PullRequestState, Reads, Signed } from './reads.ts';
 
 export interface DryRunTimes {
@@ -34,6 +41,9 @@ export const DRY_RUN_CHECK_TITLE = 'Passed in a dry run: nothing ran';
 
 /** The check a dry run reports when the base branch requires none, so the gates still finish. */
 const NO_REQUIRED = ['Dry run'];
+
+/** The summary of the dry run's `review` check, before its verdict's block. */
+export const DRY_RUN_REVIEW = 'A dry run: the review gate did not run, and judged nothing.';
 
 /** A sha for what never existed, from what it stands for: the same every time it is asked for. */
 const shaFor = (what: string) => createHash('sha1').update(`dry run: ${what}`).digest('hex');
@@ -66,10 +76,15 @@ export class DryRunReads implements Reads {
   async checkRuns(repo: string, sha: string): Promise<CheckRun[]> {
     const commit = this.#made.commitMade(sha);
     if (!commit) return this.#live.checkRuns(repo, sha);
+    return this.#passing(repo, sha, commit.at, new Date(commit.at.getTime() + this.#times.checksAfterMs));
+  }
+
+  /** Every check main's ruleset requires on a commit, from `startedAt`, each passing at `passesAt`. */
+  async #passing(repo: string, sha: string, from: Date, passesAt: Date): Promise<CheckRun[]> {
     const required = await this.#live.requiredChecks(repo, 'main');
-    const done = this.#now().getTime() - commit.at.getTime() >= this.#times.checksAfterMs;
-    const startedAt = commit.at.toISOString();
-    const completedAt = new Date(commit.at.getTime() + this.#times.checksAfterMs).toISOString();
+    const done = this.#now().getTime() >= passesAt.getTime();
+    const startedAt = from.toISOString();
+    const completedAt = passesAt.toISOString();
     return (required.length ? required : NO_REQUIRED).map((name, index) => ({
       id: Number.parseInt(sha.slice(0, 8), 16) * 100 + index + 1,
       name,
@@ -178,6 +193,72 @@ export class DryRunReads implements Reads {
       parts.push([...header, hunks(path, before ?? '', after ?? '').patch].join('\n'));
     }
     return `${parts.join('\n')}\n`;
+  }
+
+  /** A pull request the dry run opened in `repo`, or undefined for one GitHub has. */
+  #own(repo: string, number: number): DryRunPull | undefined {
+    const pull = this.#made.pullRequestMade(number);
+    return pull?.repo === repo ? pull : undefined;
+  }
+
+  async reviewVerdict(repo: string, number: number): Promise<ReviewVerdict> {
+    const pull = this.#own(repo, number);
+    if (!pull) return this.#live.reviewVerdict(repo, number);
+    const head = this.#state(pull).head.sha;
+    const commit = this.#made.commitMade(head);
+    let check: ReviewCheck | null = null;
+    if (commit) {
+      const passesAt = new Date(commit.at.getTime() + this.#times.checksAfterMs);
+      const done = this.#now().getTime() >= passesAt.getTime();
+      const rule = DEPLOYS.some((t) => t.repo === repo && t.branch === pull.head) ? 'exact-pin' : 'low-risk';
+      check = {
+        id: Number.parseInt(head.slice(0, 8), 16) * 100,
+        status: done ? 'completed' : 'in_progress',
+        conclusion: done ? 'success' : null,
+        title: DRY_RUN_CHECK_TITLE,
+        summary: done
+          ? `${DRY_RUN_REVIEW}\n\n${verdictBlock({ version: 1, commit: head, judged: [{ number, head, rule, tags: [] }] })}`
+          : null,
+        completedAt: done ? passesAt.toISOString() : null,
+        url: null,
+      };
+    }
+    return { number, head, check, ...verdictOf(number, head, check) };
+  }
+
+  async mergeQueue(repo: string, number: number): Promise<MergeQueue> {
+    const pull = this.#own(repo, number);
+    if (!pull) return this.#live.mergeQueue(repo, number);
+    const state = this.#state(pull);
+    const at = pull.enqueuedAt;
+    const base = {
+      number,
+      head: state.head.sha,
+      state: state.merged ? ('merged' as const) : state.state,
+      added: at ? { at: at.toISOString(), by: APP_LOGIN } : null,
+    };
+    if (!at) return { ...base, queued: null, removed: null, checks: [] };
+    const commit = shaFor(`${repo}#${number} queue`);
+    // It merges as every dry run's pull request does: the queue's checks pass then, and it leaves the queue merged.
+    const mergesAt = new Date((pull.readiedAt ?? at).getTime() + this.#times.mergeAfterMs);
+    const checks = await this.#passing(repo, commit, at, mergesAt);
+    if (state.merged) {
+      const removed = { at: mergesAt.toISOString(), by: 'github-merge-queue', reason: 'merged', commit };
+      return { ...base, queued: null, removed, checks };
+    }
+    if (state.state === 'closed') {
+      const closed = (pull.closedAt ?? at).toISOString();
+      return { ...base, queued: null, removed: { at: closed, by: APP_LOGIN, reason: 'dequeued', commit }, checks };
+    }
+    const queued = { position: 1, state: 'AWAITING_CHECKS', enqueuedAt: at.toISOString(), commit };
+    return { ...base, queued, removed: null, checks };
+  }
+
+  async mergeability(repo: string, number: number): Promise<Mergeability> {
+    const pull = this.#own(repo, number);
+    if (!pull) return this.#live.mergeability(repo, number);
+    // The dry run's commits go on main as it was, and nothing else moves its branches: none conflicts.
+    return { number, head: this.#state(pull).head.sha, conflicts: false, state: pull.draft ? 'draft' : 'clean' };
   }
 
   #state(pull: DryRunPull): PullRequestState {

@@ -1,6 +1,6 @@
 /**
  * Everything the factory does in GitHub, as the App: branches, signed commits, pull requests, comment reviews and
- * their threads, check runs and issues. Two implementations share the interface:
+ * their threads, check runs, issues, and adding its pull requests to the merge queue (`merging.ts`). Two implementations share the interface:
  *
  * - `LiveActions` does it, through the client.
  * - `DryRunActions` does nothing in GitHub. It writes each action it would have taken to the artifact store, as
@@ -36,6 +36,7 @@ import {
   withCarries,
 } from './deploys.ts';
 import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
+import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
 import { CODEOWNERS_PATHS, inScope, protectedFrom } from './paths.ts';
 import { RefusalRecorder } from './refusals.ts';
@@ -265,6 +266,12 @@ export interface Actions {
    * outside reply (`issues.ts`), on an issue opened by anyone but Martin or the App.
    */
   comment(repo: string, number: number, body: string): Promise<void>;
+  /**
+   * Adds a pull request the App opened to the merge queue, at `expectedHead` alone: the head the gate judged, so a
+   * push since cannot ride its verdict (`merging.ts`). Refused, before GitHub is asked, for a pull request from a
+   * fork, from a branch the factory does not own, or from a red-team attack's.
+   */
+  enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued>;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -334,6 +341,39 @@ const THREADS_ANSWER = z.object({
 const REPLY = `mutation($id: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { id } }
 }`;
+
+/** What adding a pull request to the queue reads of it first, from GitHub, whatever the caller sent. */
+const QUEUE_PULL = z.object({
+  state: z.string(),
+  draft: z.boolean().optional(),
+  node_id: z.string().min(1),
+  head: z.object({ ref: z.string(), sha: SHA, repo: z.object({ full_name: z.string() }).nullable() }),
+});
+
+/** A pull request as the queue's guard reads it, from GitHub. */
+export function queueCandidate(
+  github: GitHub,
+): (repo: string, number: number) => Promise<QueueCandidate & { nodeId: string }> {
+  return async (repo, number) => {
+    const pull = await github.read(repo, `/repos/${repo}/pulls/${number}`, QUEUE_PULL);
+    return {
+      state: pull.state,
+      draft: pull.draft ?? false,
+      nodeId: pull.node_id,
+      head: { ref: pull.head.ref, sha: pull.head.sha, repo: pull.head.repo?.full_name ?? null },
+    };
+  };
+}
+
+const ENQUEUE = `mutation($input: EnqueuePullRequestInput!) {
+  enqueuePullRequest(input: $input) { mergeQueueEntry { position state } }
+}`;
+
+const ENQUEUED = z.object({
+  enqueuePullRequest: z.object({
+    mergeQueueEntry: z.object({ position: z.number().int().nullable(), state: z.string().nullable() }).nullable(),
+  }),
+});
 
 const RESOLVE = `mutation($id: ID!) {
   resolveReviewThread(input: { threadId: $id }) { thread { isResolved } }
@@ -667,6 +707,21 @@ export class LiveActions implements Actions {
   async #post(repo: string, number: number, body: string): Promise<void> {
     await this.#github.write(repo, 'POST', `/repos/${repo}/issues/${number}/comments`, { body });
   }
+
+  async enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued> {
+    await this.#guard.check(repo, number, 'enqueuePullRequest');
+    // Read from GitHub once the guard has passed it, so the pull request queued is the one guarded, by its own id.
+    const pull = await queueCandidate(this.#github)(repo, number);
+    guardQueue(repo, number, pull, expectedHead);
+    const answer = await this.#github.graphql(
+      repo,
+      ENQUEUE,
+      { input: { pullRequestId: pull.nodeId, expectedHeadOid: expectedHead } },
+      ENQUEUED,
+    );
+    const entry = answer.enqueuePullRequest.mergeQueueEntry;
+    return { position: entry?.position ?? null, state: entry?.state ?? null };
+  }
 }
 
 /** What a dry run records for one action: enough to see exactly what would have changed. */
@@ -704,6 +759,8 @@ export interface DryRunPull {
   closedAt: Date | null;
   /** Its description, as the dry run would last have written it. */
   body: string;
+  /** When it would first have been added to the merge queue, or null while it has not. */
+  enqueuedAt: Date | null;
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -744,6 +801,8 @@ export class DryRunActions implements Actions {
   #next = DRY_RUN_NUMBERS_FROM;
   /** Holds the issue actions to the App's own issues, as the live actions' guard does, for those GitHub has. */
   readonly #guard: IssueGuard;
+  /** Reads a pull request GitHub has, as the queue's guard reads it. */
+  readonly #readPull: (repo: string, number: number) => Promise<QueueCandidate>;
 
   constructor(
     artifacts: ArtifactStore,
@@ -758,12 +817,16 @@ export class DryRunActions implements Actions {
       },
       recorder: new RefusalRecorder({ artifacts, log, now }),
     }),
+    readPull: (repo: string, number: number) => Promise<QueueCandidate> = async () => {
+      throw new Error('This dry run reads no pull requests.');
+    },
   ) {
     this.#artifacts = artifacts;
     this.#log = log;
     this.#now = now;
     this.#read = read;
     this.#guard = guard;
+    this.#readPull = readPull;
   }
 
   /**
@@ -885,6 +948,7 @@ export class DryRunActions implements Actions {
       nodeId,
       closedAt: null,
       body: draft.body,
+      enqueuedAt: null,
     });
     return { number, url: `dry-run:${repo}#${number}`, nodeId };
   }
@@ -990,6 +1054,31 @@ export class DryRunActions implements Actions {
     await this.#guarded(repo, number, 'closePullRequest');
     await this.#record('closePullRequest', repo, { number, comment });
     if (pull) pull.closedAt = this.#now();
+  }
+
+  /**
+   * Guarded as the live action is, against the pull request as this dry run would have left it, or as GitHub has it;
+   * then recorded, and its own pull request reads as queued from then on (`dry-run-reads.ts`).
+   */
+  async enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued> {
+    const made = this.#pulls.get(number);
+    const own = made?.repo === repo ? made : undefined;
+    if (own) {
+      const sha = this.#branches.get(`${repo} ${own.head}`) ?? '';
+      guardQueue(
+        repo,
+        number,
+        { state: own.closedAt ? 'closed' : 'open', draft: own.draft, head: { ref: own.head, sha, repo } },
+        expectedHead,
+      );
+    } else {
+      await this.#guarded(repo, number, 'enqueuePullRequest');
+      guardQueue(repo, number, await this.#readPull(repo, number), expectedHead);
+    }
+    await this.#record('enqueuePullRequest', repo, { number, expectedHead });
+    if (!own) return { position: null, state: null };
+    own.enqueuedAt ??= this.#now();
+    return { position: 1, state: 'QUEUED' };
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

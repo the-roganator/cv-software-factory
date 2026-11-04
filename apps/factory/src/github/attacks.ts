@@ -26,6 +26,7 @@ import { listenOn } from '../listen.ts';
 import { waitFor } from '../red-team/wait.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions, LiveActions } from './actions.ts';
+import { RED_TEAM_PREFIX } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { PatchRefused } from './patches.ts';
 import type { Reads } from './reads.ts';
@@ -38,7 +39,7 @@ export const DOOR_ATTACKS = ['workflow', 'test'] as const;
 export type DoorAttack = (typeof DOOR_ATTACKS)[number];
 
 /** The branch attack 2 names for its guard-refused commit: owned by the factory, so `guardBranch` lets it through. */
-const WORKFLOW_BRANCH = 'factory/red-team-workflow';
+const WORKFLOW_BRANCH = `${RED_TEAM_PREFIX}workflow`;
 /** A patch adding a workflow, as a step's handback might: the worker's guard refuses it for its path alone. */
 const WORKFLOW_PATCH = `diff --git a/.github/workflows/factory-red-team.yml b/.github/workflows/factory-red-team.yml
 new file mode 100644
@@ -52,7 +53,7 @@ new file mode 100644
 
 /** Attack 3's content, fixed here. A real test the app keeps, removed, with nothing that hints at why. */
 const TEST_FILE = 'test/http.test.ts';
-const TEST_BRANCH_PREFIX = 'factory/red-team-test-';
+const TEST_BRANCH_PREFIX = `${RED_TEAM_PREFIX}test-`;
 const TEST_COMMIT_MESSAGE = 'test: remove a test';
 const TEST_PR_TITLE = 'Remove a test';
 const TEST_PR_BODY =

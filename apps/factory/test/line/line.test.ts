@@ -1677,6 +1677,9 @@ describe('the line', () => {
       imageRevision: no('such image'),
       imageSigned: no('such image'),
       deployProposal: async () => null,
+      reviewVerdict: no('such pull request'),
+      mergeQueue: no('such pull request'),
+      mergeability: no('such pull request'),
     };
     const files: Record<string, string> = { 'src/search.ts': 'old\n' };
     const recorded = mkdtempSync(join(tmpdir(), 'dry-run-'));
@@ -2326,6 +2329,9 @@ describe('the line', () => {
         imageRevision: no('such image'),
         imageSigned: no('such image'),
         deployProposal: async () => null,
+        reviewVerdict: no('such pull request'),
+        mergeQueue: no('such pull request'),
+        mergeability: no('such pull request'),
       };
       const dir = mkdtempSync(join(tmpdir(), 'dry-run-'));
       // Its pull request, #12, is the App's, as the GitHub worker's guard would read it from GitHub.

@@ -41,6 +41,18 @@ export function idsFor(signalId: string): () => string {
   return () => uuidFrom(`triage:${signalId}:${n++}`);
 }
 
+/** The name of a quarantine's refusal among a signal's events. */
+const REFUSED = 'refused';
+
+/** The id of an event made from a signal and named, added after the others' ids were set (`Writer.add`). */
+export const namedId = (signalId: string, named: string): string => uuidFrom(`triage:${signalId}:${named}`);
+
+/**
+ * The id of triage's refusal of a report it quarantined (`action.refused`, `typed-judgement`), from the report's inbox
+ * id: the line tells a red-team attack's report's refusal from any other report's by it.
+ */
+export const refusalIdFor = (signalId: string): string => namedId(signalId, REFUSED);
+
 /** A sense's signal as triage records it: as the sense left it, with triage's look at what it reads, if it took one. */
 export type Seen = InboxSignal & { environment?: Environment };
 
@@ -76,7 +88,7 @@ class Writer {
     named?: string,
   ): this {
     this.events.push({
-      id: named ? uuidFrom(`triage:${this.#signalId}:${named}`) : this.#id(),
+      id: named ? namedId(this.#signalId, named) : this.#id(),
       ts: this.#ts,
       work_item: this.#item,
       type,
@@ -426,7 +438,7 @@ function refused(writer: Writer, decision: ReportDecision, action: string, summa
       guardrails: guardrailsFor('typed-judgement', 'quarantined'),
     },
     [],
-    'refused',
+    REFUSED,
   );
 }
 

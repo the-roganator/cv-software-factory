@@ -264,6 +264,33 @@ serverFiles:
             annotations:
               summary: "A guardrail did not hold"
               description: "A proof make guardrails took did not hold, so its guardrail may not be holding. make guardrails said which, and why, and the audit log records it."
+          - alert: SecurityEvent
+            expr: "max(increase(line_security_events_total{kind=\"attack-not-refused\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "page"
+              kind: "attack-not-refused"
+            annotations:
+              summary: "A red-team attack was not refused"
+              description: "An attack you launched from the console got through: an attempt it made was not refused, so its guardrail did not hold. Its card shows each attempt and what came back, and the line’s log says which."
+          - alert: SecurityEvent
+            expr: "max(increase(line_security_events_total{kind=\"attack-unfinished\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "page"
+              kind: "attack-unfinished"
+            annotations:
+              summary: "A red-team attack did not finish"
+              description: "An attack you launched from the console was not seen to its end within its limit, so it proves nothing. The red-team harness’s log says why; you can launch it again."
+          - alert: SecurityEvent
+            expr: "max(increase(line_security_events_total{kind=\"attack-wrong-mechanism\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "page"
+              kind: "attack-wrong-mechanism"
+            annotations:
+              summary: "A red-team attack was not refused as it should be"
+              description: "The harness says an attack you launched was refused, but the line, reading the refusals it cites again, cannot agree: one is missing, by another mechanism, from a role that may not record it, unverified, or about something else. The line’s log says why."
           - alert: SecurityEventsUncounted
             expr: "(count(last_over_time(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[6h])) unless count(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"})) or max(line_security_events_counting{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}) == 0"
             for: 5m

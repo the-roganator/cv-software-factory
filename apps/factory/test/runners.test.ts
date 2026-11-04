@@ -6,6 +6,7 @@ import { DiskArtifacts, issueJobToken, jobForToken } from '@software-factory/sto
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { describe, expect, it } from 'vitest';
+import { RED_TEAM_LABEL } from '../../../policy/attacks.ts';
 import { RESULT_BYTES as RUNNER_RESULT_BYTES } from '../../runner/src/step.ts';
 import { agentJob, prepareJob } from '../src/runners/jobs.ts';
 import { StepLogs } from '../src/runners/logs.ts';
@@ -224,6 +225,36 @@ describe('a step’s logs', () => {
     expect(pods).toBeGreaterThan(-1);
     expect(pods).toBeLessThan(deleted);
     expect(calls).toContain('GET /api/v1/namespaces/runners/pods/coder-1020-1-1-agent-x7k2p/log?tailLines=2000');
+  });
+
+  it('takes no red-team pod for a step’s, whatever else its labels say: neither its log nor its deadline', async () => {
+    const logs = kept();
+    const failed = '{"level":"error","msg":"the prepare step failed"}\n';
+    const { runners, pods, calls, close } = await line(() => {}, 'failed', quiet, {
+      logs,
+      podLogs: { prepare: failed },
+    });
+    // An attack's pod, made as an agent's, that names the step's job and its prepare Job, and ran out of time.
+    pods.set('attack-egress', {
+      job: 'attack',
+      labels: {
+        'factory.mrogan.dev/runner': 'prepare',
+        'factory.mrogan.dev/job': 'coder-1049-1-1',
+        'job-name': 'coder-1049-1-1-prepare',
+        [RED_TEAM_LABEL]: 'egress',
+      },
+      log: 'the attack’s own record',
+      reason: 'DeadlineExceeded',
+    });
+    const outcome = await runners.run({ ...STEP, workItem: '1049', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({ kind: 'failed', job: 'coder-1049-1-1', reason: 'The prepare pod failed.' });
+    expect(await read(logs, '1049')).toEqual([expect.objectContaining({ part: 'prepare', text: failed })]);
+    expect(calls).not.toContain('GET /api/v1/namespaces/runners/pods/attack-egress/log?tailLines=2000');
+    // And it asks the API for none, besides reading the labels it gets back.
+    const asked = calls.filter((c) => c.includes('/pods?labelSelector='));
+    expect(asked.length).toBeGreaterThan(0);
+    for (const call of asked) expect(decodeURIComponent(call)).toContain(`,!${RED_TEAM_LABEL}`);
   });
 
   it('keeps the prepare pod’s log when it fails, with the reason, and there is no agent pod to keep', async () => {

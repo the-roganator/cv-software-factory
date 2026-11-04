@@ -54,8 +54,7 @@ export function fakeKube(
       calls.push(`GET ${path}`);
       const selector = /\/pods\?labelSelector=(.+)$/.exec(path)?.[1];
       if (selector) {
-        const [key, value] = decodeURIComponent(selector).split('=');
-        const items = [...pods].filter(([, pod]) => pod.labels[key ?? ''] === value);
+        const items = [...pods].filter(([, pod]) => selects(decodeURIComponent(selector), pod.labels));
         return {
           items: items.map(([name, pod]) => ({
             metadata: { name, labels: pod.labels },
@@ -115,7 +114,16 @@ export function fakeKube(
       for (const [pod, { job }] of pods) if (job === name) pods.delete(pod);
     },
   };
-  return { kube, calls };
+  return { kube, calls, pods };
+}
+
+/** Whether a label selector of equalities and absences (`key=value,!key`), as the line writes them, selects labels. */
+export function selects(selector: string, labels: Record<string, string>): boolean {
+  return selector.split(',').every((term) => {
+    if (term.startsWith('!')) return !Object.hasOwn(labels, term.slice(1));
+    const [key = '', value] = term.split('=');
+    return labels[key] === value;
+  });
 }
 
 export let database: Database;
@@ -134,7 +142,7 @@ export async function line(
   log: Logger = quiet,
   { podLogs, logs, hang, outOfTime }: { podLogs?: PodLogs; logs?: StepLogs; hang?: boolean; outOfTime?: boolean } = {},
 ) {
-  const { kube, calls } = fakeKube(agent, prepare, podLogs, outOfTime);
+  const { kube, calls, pods } = fakeKube(agent, prepare, podLogs, outOfTime);
   // An API that never gives a pod's log.
   if (hang) kube.text = () => new Promise(() => {});
   let handbackUrl = '';
@@ -154,7 +162,13 @@ export async function line(
   });
   const server: Server = createServer(runners.handback());
   handbackUrl = `${(await listenLocal(server)).url}/v1/handback`;
-  return { runners, calls, handbackUrl, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+  return {
+    runners,
+    calls,
+    pods,
+    handbackUrl,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
 }
 
 export const handBack = (url: string, token: string, body: unknown) =>

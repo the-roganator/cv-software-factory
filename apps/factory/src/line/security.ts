@@ -3,9 +3,10 @@
  * his phone (docs/COMPONENTS/ALERTING.md). The line counts them, not the admin service, which appends most of them: a
  * compromised admin service cannot keep its own actions quiet, as it can neither reach the line nor change an event
  * once stored. Each is told from the stored event alone, never from anything the admin service says of it, and counted
- * whatever role appended it, but a guardrail's proof: row security keeps any role but Martin's from appending his
- * commands, and a refused append is no event. A proof is counted only from the proofs' role, which row security holds
- * it to as well, so a hole in that policy is not the only lock.
+ * whatever role appended it, but a guardrail's proof and an attack's end: row security keeps any role but Martin's from
+ * appending his commands, and a refused append is no event. A proof is counted only from the proofs' role, and an
+ * attack's end only from the red-team harness's, which row security holds each to as well, so a hole in that policy is
+ * not the only lock.
  *
  * The security events, each a `kind`:
  * - `sign-in`: `admin.signed-in`;
@@ -34,7 +35,12 @@
  * - every switch of alerts to the phone (`alerts.switched`), by whether they reach it now: `phone-on` and `phone-off`;
  * - `guardrail-not-held`: every guardrail's proof that did not hold (`guardrail.proved`, `held: false`) that the
  *   proofs' role appended, which alone may (`make guardrails`). One that held is not counted: a refusal or a proof
- *   holding is the guardrail working, and tells Martin nothing.
+ *   holding is the guardrail working, and tells Martin nothing;
+ * - the line's judgement of each red-team attack (`attacks.ts`): `attack-not-refused` for an `attack.finished` from
+ *   the harness's role that says an attack was not refused, or records an attempt that got through;
+ *   `attack-wrong-mechanism` for one that says refused where the line, reading the refusals it cites again, cannot
+ *   agree; and `attack-unfinished` for each launch by Martin's roles with no end within its limit, or one the harness
+ *   says it could not see to its end. An attack refused as it should be, like a refusal, is the guardrail working.
  *
  * And every hold started, by its cause, whoever started it.
  *
@@ -57,6 +63,14 @@ import type { Stage } from '../../../../policy/flags.ts';
 import { type ControlAction, type ControlChange, controlAction, controlsInForce } from '../../../../policy/line.ts';
 import type { STORE_GRANTS } from '../../../../policy/store-grants.ts';
 import type { Logger } from '../log.ts';
+import {
+  countUnfinished,
+  HARNESS_ROLE,
+  judgeStored,
+  type StoredFinished,
+  type Verdict,
+  type Verifier,
+} from './attacks.ts';
 
 const meter = metrics.getMeter('factory-line');
 
@@ -91,6 +105,9 @@ export const SECURITY_KINDS = [
   'phone-on',
   'phone-off',
   'guardrail-not-held',
+  'attack-not-refused',
+  'attack-unfinished',
+  'attack-wrong-mechanism',
 ] as const;
 export type SecurityKind = (typeof SECURITY_KINDS)[number];
 
@@ -115,6 +132,7 @@ const TYPES = [
   'improvement.requested',
   'alerts.switched',
   'guardrail.proved',
+  'attack.finished',
   'hold.started',
 ] as const;
 
@@ -141,7 +159,18 @@ export interface Stored {
   held?: unknown;
   /** The role that appended it, as the store recorded it. */
   appendedBy?: string | null;
+  /** An attack's end: the line's verdict on it (`attacks.ts`), or none when it ends no launch of Martin's. */
+  verdict?: Verdict | undefined;
 }
+
+/** The kind each of the line's verdicts on an attack's end counts as, if any: a refused attack is no security event. */
+const VERDICT_KINDS: Record<Verdict['verdict'], SecurityKind | null> = {
+  refused: null,
+  'not-refused': 'attack-not-refused',
+  'wrong-mechanism': 'attack-wrong-mechanism',
+  // Counted with the launches past their limit (`countUnfinished`), so a launch is counted unfinished once.
+  unfinished: null,
+};
 
 /** The kind each move of a flag's stage counts as, by the access table's action it is. */
 const FLAG_KINDS: Record<FlagAction, SecurityKind> = {
@@ -245,6 +274,12 @@ export function countAs(event: Stored): { kind: SecurityKind } | { hold: HoldCau
     // failure of row security would let happen, is no proof.
     case 'guardrail.proved':
       return event.held === false && event.appendedBy === PROOFS_ROLE ? { kind: 'guardrail-not-held' } : null;
+    // Only the harness's end of an attack is judged, as only it is trusted: one any other role appended is no end.
+    case 'attack.finished': {
+      if (event.appendedBy !== HARNESS_ROLE || !event.verdict) return null;
+      const kind = VERDICT_KINDS[event.verdict.verdict];
+      return kind ? { kind } : null;
+    }
     case 'hold.answered':
       if (event.decision !== 'approved') return null;
       if ((GUARDRAIL_HOLDS as readonly string[]).includes(event.cause ?? '')) return { kind: 'guardrail-approved' };
@@ -280,12 +315,24 @@ export const emptyTally = (): Tally => ({
 /**
  * The tally with every event stored after its last added, up to the last event stored now. One statement, so what it
  * counts and the last `seq` it says it read are of one snapshot; an answer's hold is read by its work item's index.
- * Read in the order stored, as auto-rollback in force is followed from one change to the next.
+ * Read in the order stored, as auto-rollback in force is followed from one change to the next. Each new end of an
+ * attack is judged against the refusals it cites, relayed ones verified with `verifier`, and the unfinished launches
+ * are counted afresh, by the store's clock. One judged not refused, or by the wrong mechanism, is logged with why.
  */
-export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
+export async function readOn(
+  sql: Sql,
+  tally: Tally,
+  verifier: Verifier = NO_VERIFIER,
+  log?: Pick<Logger, 'warn'>,
+): Promise<Tally> {
   const rows = await sql<
     {
       last: string | null;
+      seq: string | null;
+      work_item: string | null;
+      appended_at: Date | null;
+      version: number | null;
+      finished: unknown;
       type: string | null;
       action: string | null;
       decision: string | null;
@@ -302,7 +349,9 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
     }[]
   >`
     with upto as (select max(seq) as last from events)
-    select upto.last::text as last, e.type, e.payload->>'action' as action, e.payload->>'decision' as decision,
+    select upto.last::text as last, e.seq::text as seq, e.work_item, e.version, e.appended_at,
+           case when e.type = 'attack.finished' then e.payload end as finished,
+           e.type, e.payload->>'action' as action, e.payload->>'decision' as decision,
            e.payload->'change' as change, e.payload->'phone' as phone, e.payload->'autoRollback' as auto_rollback,
            e.payload->'held' as held, e.appended_by,
            e.type = 'controls.changed' and ${fromMartin(sql, 'e')} as in_force,
@@ -321,6 +370,26 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
        order by a.seq desc limit 1)
     ) h on true
     order by e.seq`;
+  // Each end of an attack the harness's role appended, judged against the refusals it cites (`attacks.ts`).
+  const ends: StoredFinished[] = rows
+    .filter((row) => row.type === 'attack.finished' && row.appended_by === HARNESS_ROLE && row.work_item && row.seq)
+    .map((row) => ({
+      seq: Number(row.seq),
+      workItem: row.work_item as string,
+      version: row.version ?? 1,
+      payload: row.finished,
+      at: row.appended_at as Date,
+    }));
+  const verdicts = ends.length ? await judgeStored(sql, ends, verifier) : new Map<number, Verdict>();
+  for (const [seq, verdict] of verdicts) {
+    if (verdict.verdict === 'not-refused' || verdict.verdict === 'wrong-mechanism') {
+      log?.warn(
+        { seq, verdict: verdict.verdict, why: verdict.why },
+        'a red-team attack was not refused as it should be',
+      );
+    }
+  }
+  const unfinished = await countUnfinished(sql);
   const next: Tally = {
     seq: rows[0]?.last ?? tally.seq,
     autoRollback: tally.autoRollback,
@@ -341,6 +410,7 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
       held: row.held,
       appendedBy: row.appended_by,
       cause: causeOf(row),
+      verdict: row.seq ? verdicts.get(Number(row.seq)) : undefined,
     };
     const counted = countAs(stored);
     if (counted && 'kind' in counted) next.kinds[counted.kind] += 1;
@@ -351,8 +421,12 @@ export async function readOn(sql: Sql, tally: Tally): Promise<Tally> {
       next.autoRollback = autoRollbackAfter(stored);
     }
   }
+  next.kinds['attack-unfinished'] = Math.max(next.kinds['attack-unfinished'], unfinished);
   return next;
 }
+
+/** No key and no artifact store: no relayed refusal verifies. */
+const NO_VERIFIER: Verifier = { key: undefined, artifacts: undefined };
 
 const securityEvents = meter.createObservableCounter('line.security_events', {
   description:
@@ -371,13 +445,15 @@ const counting = meter.createObservableGauge('line.security_events.counting', {
  * Reports the counts from the store each time the SDK collects, until the function it gives back is called. A read
  * that fails reports no new count, and says so: `line.security_events.counting` is 0, and the log says it once until a
  * read succeeds again. The SDK goes on sending the last count it had, so the gauge, not the count, says it is stale.
+ * `verifier` is the GitHub worker's public key and the artifact store its records are in: without them, an attack whose
+ * refusals were relayed is judged by the wrong mechanism, as the line cannot verify them.
  */
-export function observeSecurity(sql: Sql, log: Logger): () => void {
+export function observeSecurity(sql: Sql, log: Logger, verifier: Verifier = NO_VERIFIER): () => void {
   let tally = emptyTally();
   let failing = false;
   const callback = async (result: BatchObservableResult) => {
     try {
-      tally = await readOn(sql, tally);
+      tally = await readOn(sql, tally, verifier, log);
     } catch (error) {
       if (!failing) log.warn({ err: error }, 'could not count Martin’s security events: the count is stale');
       failing = true;

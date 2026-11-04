@@ -13,10 +13,21 @@
  * Both run the `factory-runner` image under the restricted Pod Security Standard, with no service account token and
  * a read-only root file system, and each pod has a deadline.
  */
+import { RED_TEAM_LABEL } from '../../../../policy/attacks.ts';
 import type { Step } from '../../../runner/src/step.ts';
 
 export const NAMESPACE = 'runners';
 const LABEL = 'factory.mrogan.dev';
+
+/**
+ * A label selector's term that leaves out what the red-team harness makes in `runners` (`RED_TEAM_LABEL`): the line
+ * asks only for its own runners' pods and Jobs. Beside each selector, not instead of reading the labels it gets back.
+ */
+export const NOT_RED_TEAM = `!${RED_TEAM_LABEL}`;
+
+/** Whether an object in `runners` is the red-team harness's, by its labels: the line takes none for its own. */
+export const isRedTeam = (labels: Record<string, string> | undefined): boolean =>
+  labels !== undefined && Object.hasOwn(labels, RED_TEAM_LABEL);
 
 export interface JobNames {
   /**

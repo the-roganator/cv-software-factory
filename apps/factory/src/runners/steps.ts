@@ -32,7 +32,7 @@ import type { Handback, Step } from '../../../runner/src/step.ts';
 
 export type { Handback, Step };
 
-import { agentJob, jobName, NAMESPACE, prepareJob, volume } from './jobs.ts';
+import { agentJob, isRedTeam, jobName, NAMESPACE, NOT_RED_TEAM, prepareJob, volume } from './jobs.ts';
 import type { Kube } from './kube.ts';
 import type { StepEnding, StepLogs } from './logs.ts';
 
@@ -279,12 +279,13 @@ export class Runners {
       const { kube, log } = this.#o;
       const pods = `/api/v1/namespaces/${NAMESPACE}/pods`;
       try {
-        const selector = encodeURIComponent(`factory.mrogan.dev/job=${job}`);
+        const selector = encodeURIComponent(`factory.mrogan.dev/job=${job},${NOT_RED_TEAM}`);
         const found = await kube.get(`${pods}?labelSelector=${selector}`, PODS);
         for (const pod of found?.items ?? []) {
           const { name, labels } = pod.metadata;
           const part = labels?.['factory.mrogan.dev/runner'];
-          if (part !== 'prepare' && part !== 'agent') continue;
+          // An attack's pod is the red-team harness's, whatever else its labels say: its log is no step's.
+          if ((part !== 'prepare' && part !== 'agent') || isRedTeam(labels)) continue;
           try {
             const text = await kube.text(`${pods}/${encodeURIComponent(name)}/log?tailLines=${LOG_LINES}`);
             if (text === undefined) {
@@ -371,10 +372,12 @@ export class Runners {
   /** Whether a failed Job's pod failed at its own deadline, which is how a step runs out of time. */
   async #podOutOfTime(path: string): Promise<boolean> {
     const name = path.split('/').at(-1) ?? '';
-    const selector = encodeURIComponent(`job-name=${name}`);
+    const selector = encodeURIComponent(`job-name=${name},${NOT_RED_TEAM}`);
     try {
       const pods = await this.#o.kube.get(`/api/v1/namespaces/${NAMESPACE}/pods?labelSelector=${selector}`, PODS);
-      return (pods?.items ?? []).some((pod) => pod.status?.reason === 'DeadlineExceeded');
+      return (pods?.items ?? []).some(
+        (pod) => !isRedTeam(pod.metadata.labels) && pod.status?.reason === 'DeadlineExceeded',
+      );
     } catch (error) {
       this.#o.log.warn({ job: name, err: error }, 'could not read why a job’s pod failed');
       return false;

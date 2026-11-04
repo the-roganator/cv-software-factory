@@ -358,8 +358,9 @@ export const HOLD_WORDS: Record<HoldCause, { summary: string; description: strin
     description: 'The reviewer escalated, or still asked for changes after the last review the line allows.',
   },
   'beyond-ticket': {
-    summary: 'waits for you: beyond its ticket',
-    description: 'The reviewer found the spec or the change going beyond what the ticket asks.',
+    summary: 'waits for you: beyond or short of its ticket',
+    description:
+      'The reviewer found the spec or the change going beyond what the ticket asks, or the spec short of what Martin answered.',
   },
   merge: { summary: 'waits for your merge', description: 'Its fix has passed its gates and review.' },
   deploy: {

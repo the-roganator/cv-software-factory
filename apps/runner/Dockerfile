@@ -6,7 +6,7 @@
 # It holds Node at the version the app pins, git, this repository's pnpm, and the Agent SDK. The app's own
 # dependencies are not here: the prepare pod installs them onto the job's volume, from the app's lockfile.
 
-FROM node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea AS base
+FROM node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS base
 # git, to check out the app and write the agent's patch. The Debian packages are the image's release's.
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends git ca-certificates \

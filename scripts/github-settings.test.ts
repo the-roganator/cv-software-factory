@@ -5,11 +5,13 @@ import {
   APPS,
   branchPolicies,
   bypassesUsed,
+  CODE_SCANNING,
   DRIFT_CHECK_ENVIRONMENT,
   ENVIRONMENTS,
   environment,
   environmentProblems,
   GITHUB_ACTIONS,
+  inOrderOf,
   MERGE_QUEUE,
   matches,
   REPOSITORIES,
@@ -58,6 +60,63 @@ describe('the ruleset on main (ADR 0014)', () => {
     });
     expect(RETIRED).toEqual(['main: review']);
   });
+
+  it("holds a merge in both repositories for CodeQL's analysis, and its new medium or higher security alerts or errors", () => {
+    for (const checks of Object.values(REPOSITORIES)) {
+      expect(parametersOf(rules(checks), 'code_scanning')).toEqual({
+        code_scanning_tools: [
+          { tool: 'CodeQL', security_alerts_threshold: 'medium_or_higher', alerts_threshold: 'errors' },
+        ],
+      });
+    }
+    expect(CODE_SCANNING).toEqual({
+      tool: 'CodeQL',
+      security_alerts_threshold: 'medium_or_higher',
+      alerts_threshold: 'errors',
+    });
+  });
+
+  it('takes the rules in any order GitHub sends them, and still sees one added elsewhere', () => {
+    for (const checks of Object.values(REPOSITORIES)) {
+      const wanted = rules(checks);
+      const reversed = {
+        ...structuredClone(wanted),
+        bypass_actors: [],
+        rules: structuredClone(wanted.rules).reverse(),
+      };
+      expect(rulesetProblems(reversed, wanted)).toEqual({ problems: [], unseen: [] });
+      const added = { ...reversed, rules: [{ type: 'creation' }, ...reversed.rules] };
+      expect(rulesetProblems(added, wanted).problems).toEqual(['ruleset "main" differs from this script\'s']);
+      expect((inOrderOf(added, wanted.rules) as typeof wanted).rules.at(-1)).toEqual({ type: 'creation' });
+    }
+  });
+
+  it('sees the code scanning rule missing, loosened, or given another tool as drift, in both repositories', () => {
+    for (const checks of Object.values(REPOSITORIES)) codeScanningDrift(rules(checks));
+  });
+
+  function codeScanningDrift(wanted: ReturnType<typeof rules>) {
+    const live = () => ({ ...structuredClone(wanted), bypass_actors: [] });
+    expect(rulesetProblems(live(), wanted).problems).toEqual([]);
+    const without = live();
+    without.rules = without.rules.filter((r) => r.type !== 'code_scanning');
+    expect(rulesetProblems(without, wanted).problems).toEqual(['ruleset "main" differs from this script\'s']);
+    for (const change of [
+      { security_alerts_threshold: 'high_or_higher' },
+      { alerts_threshold: 'none' },
+      { tool: 'Scorecard' },
+    ]) {
+      const loosened = live();
+      const tools = parametersOf(loosened, 'code_scanning').code_scanning_tools as Record<string, string>[];
+      Object.assign(tools[0] as Record<string, string>, change);
+      expect(rulesetProblems(loosened, wanted).problems, JSON.stringify(change)).toEqual([
+        'ruleset "main" differs from this script\'s',
+      ]);
+    }
+    const another = live();
+    (parametersOf(another, 'code_scanning').code_scanning_tools as unknown[]).push({ ...CODE_SCANNING, tool: 'Other' });
+    expect(rulesetProblems(another, wanted).problems).toHaveLength(1);
+  }
 
   it('lets no model decide a merge: no required check is the reviewer agent’s, or posted by the factory’s App', () => {
     expect(GITHUB_ACTIONS).toBe(15368);

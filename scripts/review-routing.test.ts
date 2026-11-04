@@ -325,6 +325,34 @@ describe('risk tags from the diff', () => {
     expect(tags([changed('src/headers.ts', '+x')])).toEqual([found('security-headers', ['src/headers.ts'])]);
   });
 
+  it('tags a line of the app’s code added or removed anywhere that names a security header, in any case', () => {
+    expect(
+      tags([
+        changed(
+          'src/app.ts',
+          "@@ -1 +1,2 @@\n ok\n+  res.setHeader('Content-Security-Policy', \"default-src 'self'\");",
+        ),
+      ]),
+    ).toEqual([
+      found('security-headers', ["src/app.ts: res.setHeader('Content-Security-Policy', \"default-src 'self'\");"]),
+    ]);
+    for (const line of [
+      "-  'x-frame-options': 'DENY',",
+      "+  headers['strict-transport-security'] = v;",
+      '+import { SECURITY_HEADERS } from "./x.ts";',
+      "+  'Cross-Origin-Opener-Policy': 'same-origin',",
+    ]) {
+      expect(tags([changed('src/pages/home.ts', line)]).map((t) => t.tag)).toEqual(['security-headers']);
+    }
+    // Not in the app's tests, nor a line both sides share, nor outside src/.
+    expect(tags([changed('test/app.test.ts', "+  expect(h['content-security-policy']).toBe('x');")])).toEqual([]);
+    expect(tags([changed('src/app.test.ts', "+  expect(h['Content-Security-Policy']).toBe('x');")])).toEqual([]);
+    expect(tags([changed('src/app.ts', " res.setHeader('Content-Security-Policy', v);\n+  return 1;")])).toEqual([]);
+    expect(tags([changed('docs/headers.md', '+Content-Security-Policy')])).toEqual([]);
+    // A file of the app's code GitHub gives no patch of is held as one.
+    expect(tags([changed('src/app.html', '', { patch: undefined })]).map((t) => t.tag)).toEqual(['security-headers']);
+  });
+
   it('tags the tests test integrity excused', () => {
     expect(tags([changed('test/a.test.ts')], { excused: ['test/a.test.ts: t (deleted)'] })).toEqual([
       found('test-loosening', ['test/a.test.ts: t (deleted)']),
@@ -368,7 +396,10 @@ describe('risk tags from the diff', () => {
     expect(tags([changed('src/pages/home.test.ts', "+  request.flag('x');")])).toEqual([]);
     expect(tags([changed('src/pages/home.ts', '+  const flagged = 1;')])).toEqual([]);
     // A file of the app's code with no patch to read is held as one.
-    expect(tags([changed('src/pages/big.ts', '', { patch: undefined })]).map((t) => t.tag)).toEqual(['improvement']);
+    expect(tags([changed('src/pages/big.ts', '', { patch: undefined })]).map((t) => t.tag)).toEqual([
+      'security-headers',
+      'improvement',
+    ]);
   });
 
   it('tags as code-owned a diff GitHub could not list whole', () => {

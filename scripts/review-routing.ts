@@ -5,7 +5,8 @@
  * The risk tags come from the diff alone, never from labels:
  *
  * - `dependency-change`: a lockfile or package manifest, anywhere;
- * - `security-headers`: the app's header settings, `src/headers.ts`;
+ * - `security-headers`: the app's header settings, `src/headers.ts`, or a line added or removed anywhere in the app's
+ *   code that names a security header, so a header set outside that file is caught too;
  * - `test-loosening`: each test that test integrity excused as one the pull request's spec contradicts, read from its
  *   check run's annotations, which name the test and its file;
  * - `code-owned`: a path CODEOWNERS on `main` gives Martin;
@@ -260,6 +261,32 @@ const DEPENDENCY_FILES = new Set([
 /** The app's header settings. */
 export const HEADERS_FILE = 'src/headers.ts';
 
+/**
+ * The security headers, and the app's name for its settings of them: a line of the app's code (not its tests) added or
+ * removed that names one, in any case, is a change to the security headers, wherever it is. The one list.
+ */
+export const SECURITY_HEADER_NAMES = [
+  'Content-Security-Policy',
+  'Content-Security-Policy-Report-Only',
+  'Strict-Transport-Security',
+  'X-Frame-Options',
+  'X-Content-Type-Options',
+  'Referrer-Policy',
+  'Permissions-Policy',
+  'Cross-Origin-Opener-Policy',
+  'Cross-Origin-Embedder-Policy',
+  'Cross-Origin-Resource-Policy',
+  'SECURITY_HEADERS',
+] as const;
+const NAMES_A_HEADER = new RegExp(SECURITY_HEADER_NAMES.map((n) => n.replace(/-/g, '\\-')).join('|'), 'i');
+
+/** The lines a patch adds or removes, without their sign. */
+export const changedLines = (patch: string) =>
+  patch
+    .split('\n')
+    .filter((line) => line.startsWith('+') || line.startsWith('-'))
+    .map((line) => line.slice(1));
+
 /** The app's typed list of flag names. */
 export const FLAG_NAMES_FILE = 'src/flag-names.ts';
 
@@ -312,6 +339,14 @@ export function tagsOf({ files, complete, headRef, owners, excused }: TagFacts):
       const rule = martinsRule(owners, path);
       if (rule) add('code-owned', `${path} (${rule.pattern})`);
       if (path === FLAG_NAMES_FILE) add('improvement', path);
+    }
+    if (file.filename !== HEADERS_FILE && file.filename.startsWith('src/') && !TEST_CODE.test(file.filename)) {
+      if (file.patch === undefined)
+        add('security-headers', `${file.filename}: GitHub gives no patch to read for a header`);
+      else {
+        const line = changedLines(file.patch).find((each) => NAMES_A_HEADER.test(each));
+        if (line !== undefined) add('security-headers', `${file.filename}: ${line.trim().slice(0, 120)}`);
+      }
     }
     if (file.filename !== FLAG_NAMES_FILE && APP_CODE.test(file.filename) && !TEST_CODE.test(file.filename)) {
       if (file.patch === undefined && file.status !== 'removed') {

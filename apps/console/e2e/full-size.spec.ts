@@ -137,11 +137,14 @@ test.describe('a screenshot at full size', () => {
 
   test('a flag’s pages are named by their scheme and the flag, off and on', async ({ page }) => {
     await page.goto(consoleUrl({ item: '1271', sheet: true, at: AT_CHECKS }));
-    const names = await sheetOf(page)
+    const buttons = sheetOf(page)
       .locator('.flag-pages')
-      .getByRole('button', { name: /^Open at full size: / })
-      .evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label')));
-    expect(names.length).toBeGreaterThan(1);
+      .getByRole('button', { name: /^Open at full size: / });
+    // The sheet is a chunk of its own, loaded as it opens, and `evaluateAll` reads once: wait for every page first,
+    // the home page off and on in light and dark.
+    await expect(buttons).toHaveCount(4);
+    const names = await buttons.evaluateAll((all) => all.map((button) => button.getAttribute('aria-label')));
+    expect(names).toHaveLength(4);
     expect(new Set(names).size).toBe(names.length);
     expect(names.some((name) => /, (light|dark), the flag off$/.test(name ?? ''))).toBe(true);
   });

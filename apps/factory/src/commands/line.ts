@@ -364,7 +364,7 @@ async function bench(args: string[]): Promise<number> {
   // The runner's own steps, which only the bench loads: the factory's image does not hold them.
   const { prepare, commitPatch } = await import('../../../runner/src/prepare.ts');
   const { runAgent } = await import('../../../runner/src/agent.ts');
-  const { bench: run, lastStep } = await import('../line/bench/bench.ts');
+  const { bench: run, passed } = await import('../line/bench/bench.ts');
   const { DATABASE_URL, GATEWAY_URL } = process.env;
   const sql = connect(DATABASE_URL);
   try {
@@ -378,8 +378,7 @@ async function bench(args: string[]): Promise<number> {
       log: (line) => console.error(line),
     });
     console.log(JSON.stringify(benched, null, 2));
-    const last = lastStep(benched);
-    return last.handback.ending === 'finished' && last.result.fits && last.fence?.ok !== false ? 0 : 1;
+    return passed(benched) ? 0 : 1;
   } finally {
     await sql.end();
   }

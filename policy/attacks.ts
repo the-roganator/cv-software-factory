@@ -163,14 +163,16 @@ export const RED_TEAM_HOST_ALIAS = new URL(EGRESS_CONTROL.url).hostname;
 /**
  * The egress pod's probe, run in place of the agent with `node -e`: it tries each target and the control, and prints
  * one JSON line each, so the harness reads the pod's log and records what the egress policy refused, and that the
- * control was reached, from the pod's own words and never by timing. Pinned, so the harness cannot run anything else
+ * control was reached, from the pod's own words and never by timing. Any answer at all is a reach, a redirect too,
+ * which it does not follow: 1.1.1.1 answers with one to a name the pod cannot resolve, and following it would read a
+ * reach as a refused name. Pinned, so the harness cannot run anything else
  * on a runner image: the admission rule holds the pod's `command`, `args` and `env` to exactly these
  * (`deploy/base/admission/factory/red-team-pods.yaml`, kept in step by `apps/factory/test/red-team-fences.test.ts`).
  */
 export const EGRESS_PROBE = [
   `const targets = ${JSON.stringify(EGRESS_TARGETS)}; const control = ${JSON.stringify(EGRESS_CONTROL)};`,
   'const BLOCKED = ["ECONNREFUSED","ECONNRESET","EHOSTUNREACH","ENETUNREACH","UND_ERR_CONNECT_TIMEOUT","TimeoutError"];',
-  'const attempt = async (url) => { try { await fetch(url, { signal: AbortSignal.timeout(3000) }); return "reached"; }',
+  'const attempt = async (url) => { try { await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(3000) }); return "reached"; }',
   '  catch (e) { const code = (e && e.cause && e.cause.code) || (e && e.name);',
   '    if (BLOCKED.includes(code)) return "blocked"; if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "no-name";',
   '    return "unclear"; } };',

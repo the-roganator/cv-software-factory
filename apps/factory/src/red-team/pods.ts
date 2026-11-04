@@ -217,7 +217,14 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
     } else if (refused) {
       attempts.push({ what: target.what, result, refused: true });
       refusedTargets.push({ what: target.what, result });
-    } else anyUnclear = true;
+    } else {
+      anyUnclear = true;
+      // Kept in the log, as it is in no attempt: why the attack proves nothing.
+      ctx.log.warn(
+        { workItem: ctx.workItem, target: target.what, result },
+        'the pod could not tell of an outside address',
+      );
+    }
   }
   // The refusals are appended once the attack's end is known. When a target was reached, that is the finding, and an
   // append that fails must not turn it into an attempt that threw, which the worker records unfinished: the reach is

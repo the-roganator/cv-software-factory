@@ -114,7 +114,7 @@ const at = (t: number, now: number) => (startOfDay(t) === startOfDay(now) ? cloc
 
 /** What a refusal's line says of it beside its words, by how it stands: nothing for one that counts. */
 const STANDING: Record<Exclude<Standing, 'counted'>, [words: string, tone: string]> = {
-  redacted: ['Redacted here: the line checked its signature when it was recorded.', ''],
+  redacted: ['Redacted in public: the line checked its signature when it was recorded.', ''],
   unverified: ['Unverified: its signature does not check out, so it is not counted.', 'tone-attn'],
   checking: ['Checking its signature.', ''],
 };

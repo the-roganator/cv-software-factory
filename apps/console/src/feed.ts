@@ -10,7 +10,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArtifactRef, RawEvent } from '@software-factory/events';
 import { EVENTS_FILE, parseLog, upcast } from '@software-factory/events';
-import { isHash, listen, readPublic, storeKind } from '@software-factory/store';
+import { signedPayloadOf } from '@software-factory/events/signed-check';
+import { listen, readPublic, storeKind } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { log } from './log.ts';
 import type { SignedRefusal } from './refusals.ts';
@@ -102,22 +103,13 @@ export class Feed {
       for (const artifact of (event as { artifacts?: ArtifactRef[] }).artifacts ?? []) {
         this.#artifactTypes.set(artifact.hash, artifact.type);
       }
-      const signed = signedRefusal(event);
-      if (signed) this.#signed.push(signed);
+      const signed = signedPayloadOf(event);
+      if (signed) this.#signed.push({ seq: event.seq, payload: signed });
       const added = { seq: event.seq, json: JSON.stringify(event), appendedAt };
       this.#events.push(added);
       for (const listener of this.#listeners) listener(added);
     }
   }
-}
-
-/** A public refusal that names a record and a signature over it, as a relayed one does; any other, nothing. */
-function signedRefusal(event: RawEvent & { seq: number }): SignedRefusal | undefined {
-  if (event.type !== 'action.refused') return undefined;
-  const payload = (event as { payload?: unknown }).payload as Record<string, unknown> | undefined;
-  const { record, signature } = payload ?? {};
-  if (typeof record !== 'string' || typeof signature !== 'string' || !isHash(record)) return undefined;
-  return { seq: event.seq, payload: { ...payload, record, signature } };
 }
 
 /** A feed from the event store, kept current by LISTEN and NOTIFY. Resolves once it has read what is there. */

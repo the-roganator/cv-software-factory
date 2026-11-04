@@ -17,8 +17,8 @@
  * and the sheet, its card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan,
  * for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
  * Part C's canary paused for Martin, with auto-rollback off: the Canary panel, its card in Needs you, and the switch.
- * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, the
- * attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
+ * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, task
+ * 23's refusals in a row, the attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
  * each way one stands (refused twice, a refusal cut at five lines, not refused, running), and a sheet's refusals whole.
  */
 import type { Page } from '@playwright/test';
@@ -1213,6 +1213,12 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     test('the checklist, a guardrail that did not hold opened, for a visitor', async ({ page }) => {
       const panel = await guardrailsAt(page, 'visitor', 5);
       await expect(panel).toHaveScreenshot(`m07-guardrails-visitor-${width}.png`);
+    });
+
+    test('a guardrail’s refusals in the week opened, one unverified, for a visitor', async ({ page }) => {
+      const panel = await guardrailsAt(page, 'visitor', 1);
+      await panel.locator('.reflist small').first().waitFor();
+      await expect(panel).toHaveScreenshot(`m07-guardrails-refusals-${width}.png`);
     });
 
     test('the checklist for Martin, the attack in flight in its row', async ({ page }) => {

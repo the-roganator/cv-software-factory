@@ -9,7 +9,8 @@
     "./schemas": "./src/schemas.ts",
     "./public": "./src/public.ts",
     "./log": "./src/log.ts",
-    "./signed": "./src/signed.ts"
+    "./signed": "./src/signed.ts",
+    "./signed-check": "./src/signed-check.ts"
   },
   "dependencies": {
     "zod": "^4.6.7"

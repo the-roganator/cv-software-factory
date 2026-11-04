@@ -1,6 +1,7 @@
 /**
  * Writes the samples to their event log: log/events.ndjson, beside the screenshots in log/artifacts, with each relayed
- * refusal's signed record there too, and the key they are signed with beside the events (log/refusal-key.pem).
+ * refusal's signed record there too, the key they are signed with beside the events (log/refusal-key.pem), and how each
+ * checks against it (log/refusals.json), for a page that reads the folder with no server to ask.
  *
  *     node packages/samples/src/export.ts            # write it
  *     node packages/samples/src/export.ts --check    # fail if it is out of date (make check, CI)
@@ -15,6 +16,7 @@ import { EVENTS_FILE, formatLog, writeLogEvents } from '@software-factory/events
 import { publicView } from '@software-factory/events/public';
 import { validate } from '@software-factory/events/schemas';
 import { REFUSAL_KEY_FILE } from '@software-factory/events/signed';
+import { checkRecord, publicKeyOf, REFUSAL_CHECKS_FILE, signedPayloadOf } from '@software-factory/events/signed-check';
 import { ARTIFACTS, LOG } from './captures.ts';
 import { sampleEvents } from './index.ts';
 import { RECORDS, SAMPLE_REFUSAL_KEY } from './refusals.ts';
@@ -45,9 +47,17 @@ if (import.meta.main) {
   const file = join(LOG, EVENTS_FILE);
   const name = relative(process.cwd(), file);
   // The relayed refusals' records and the key that signs them, which the console's server checks them with.
+  const key = publicKeyOf(SAMPLE_REFUSAL_KEY);
+  const checks = Object.fromEntries(
+    events.flatMap((event) => {
+      const signed = signedPayloadOf(event);
+      return signed ? [[event.seq, checkRecord(RECORDS.get(signed.record), key, signed)]] : [];
+    }),
+  );
   const written = new Map<string, Uint8Array | string>([
     ...[...RECORDS].map(([hash, bytes]): [string, Uint8Array] => [join(ARTIFACTS, hash), bytes]),
     [join(LOG, REFUSAL_KEY_FILE), SAMPLE_REFUSAL_KEY],
+    [join(LOG, REFUSAL_CHECKS_FILE), `${JSON.stringify(checks, null, 2)}\n`],
   ]);
   const same = (path: string, body: Uint8Array | string) =>
     existsSync(path) && Buffer.from(readFileSync(path)).equals(Buffer.from(body));

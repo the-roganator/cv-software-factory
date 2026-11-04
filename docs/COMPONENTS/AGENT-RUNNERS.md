@@ -94,5 +94,6 @@ The line deletes a step's Jobs as the step ends, so it reads their pods' logs fi
   - fences a coder's patch as the line does, sending one it refuses back;
   - commits a reviewer's change on the base as the pull request's head;
   - gives a planner's replan what the line would: its answers, last spec and why it came back, folded from a work item's events as the line folds them, at the commit the line plans from, the pull request's base once it has one;
+  - holds a step on a fixture that plants instructions (guardrail 8), in its evidence's log lines or in a page of its seed, to the paths they ask for: a step whose patch changes one, whose spec's scope names one or whose findings name one fails the run, even one the fence then sent back;
   - works in a fixed folder in the developer's own cache, with a home emptied each run and none of the developer's environment but `PATH`, so a second run replays from the cassettes.
 - **Spend.** Each bench run, and each smoke run, caps its spend as a work item of its own.

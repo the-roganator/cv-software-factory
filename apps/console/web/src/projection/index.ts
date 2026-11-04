@@ -4,10 +4,12 @@
  *
  * Plain TypeScript with no components in it, so Node tests it directly.
  */
-import type { PublicEvent, Stage } from '@software-factory/events';
+import type { Attack, PublicEvent, Stage } from '@software-factory/events';
 import { STAGES } from '@software-factory/events';
+import { attackAvailable } from '@software-factory/policy/attacks';
 import { type ControlsView, controlsOf } from './controls.ts';
 import { type FlagsView, type FoldedFlags, flagsView, foldFlags } from './flags.ts';
+import { type FoldedProofs, foldProofs, type GuardrailsView, guardrailsView } from './guardrails.ts';
 import { foldItems, type ItemState } from './items.ts';
 import {
   drawn,
@@ -37,6 +39,7 @@ import {
 } from './release.ts';
 import { foldSettings, type SettingsFold } from './settings.ts';
 
+export type { Verdict } from './attacks.ts';
 export type { ControlsView } from './controls.ts';
 export type { Attempt, RoundsNow, ThreadReview } from './fixing.ts';
 export { deployCaption, deployWords } from './fixing.ts';
@@ -62,6 +65,7 @@ export {
   stageAt,
   stageSays,
 } from './flags.ts';
+export type { AttackRow, AttackRun, GuardrailRow, GuardrailsView, ProofResult, ProofSource } from './guardrails.ts';
 export type { Outcome } from './items.ts';
 export type {
   CapSpell,
@@ -78,7 +82,7 @@ export type {
 } from './line.ts';
 export { whileSending } from './line.ts';
 export type { Answered, CanaryNeed, Evidence, Need, NeedsView } from './needs.ts';
-export type { Card, Picture, Source, Tag, Timeline, Versions } from './reel.ts';
+export type { Card, Picture, Refused, Source, Tag, Timeline, Versions } from './reel.ts';
 export { QUARANTINE_AT, segmentsLabel } from './reel.ts';
 export type { CanaryView, Carried, End, Measured, Release, Step } from './release.ts';
 export { SENSE } from './senses.ts';
@@ -122,6 +126,8 @@ export interface View {
   improve: ImproveView;
   /** Every release by t, oldest first, as far as each had got: what a sheet draws its own from. */
   releases: Release[];
+  /** Spec 6's guardrails, each with its last proof, and the attacks made against them. */
+  guardrails: GuardrailsView;
 }
 
 /**
@@ -142,6 +148,8 @@ export interface Fold {
   releases: FoldedReleases;
   flags: FoldedFlags;
   settings: SettingsFold;
+  /** Each guardrail's latest proof of each kind from `make guardrails`. */
+  proofs: FoldedProofs;
   /** Every return, newest first: which are in the last day is a matter of t. */
   returns: Return[];
   versions: AppVersions;
@@ -189,6 +197,7 @@ export function fold(seen: readonly PublicEvent[]): Fold {
     releases: folded,
     flags: foldFlags(seen, items),
     settings: foldSettings(seen),
+    proofs: foldProofs(seen),
     returns: everyReturn(seen),
     versions,
     closed: items.map((item) => (item.closedAt === undefined ? undefined : card(item, versions, item.closedAt))),
@@ -237,11 +246,18 @@ export const foldOf = (view: View): Fold => {
 };
 
 /** The console at t, from a fold of the events by t: what depends on the time. */
-export function viewAt(folded: Fold, t: number): View {
+/**
+ * The view at t. `available` says which attacks Martin can launch: policy's (`attackAvailable`), unless a browser test
+ * stands in for the flag (`attacks-seam.ts`).
+ */
+export function viewAt(folded: Fold, t: number, available: (attack: Attack) => boolean = attackAvailable): View {
   const { items, header: line } = folded;
   const sent = returnsWithin(folded.returns, t);
   const shipped = releasesAt(folded.releases, t);
-  const atStages = STAGES.map((stage) => ({ stage, at: station(stage, items, sent, line, t, shipped) }));
+  // A red-team attack never reaches the line: its work item meets its mechanism where it stands on the line, and is
+  // drawn on the reel and in Guardrails, never at a station.
+  const onLine = items.filter((item) => !item.attack);
+  const atStages = STAGES.map((stage) => ({ stage, at: station(stage, onLine, sent, line, t, shipped) }));
   const shown: View = {
     t,
     sample: folded.sample,
@@ -250,7 +266,7 @@ export function viewAt(folded: Fold, t: number): View {
     stations: atStages.map(({ at }) => at),
     returns: drawn(sent, items),
     panels: Object.fromEntries(
-      atStages.map(({ stage, at }) => [stage, panel(stage, items, sent, folded.seen, line, t, shipped, at)]),
+      atStages.map(({ stage, at }) => [stage, panel(stage, onLine, sent, folded.seen, line, t, shipped, at)]),
     ) as Record<Stage, StagePanel>,
     canary: canaryView(shipped),
     cards: items.map((item, i) => folded.closed[i] ?? card(item, folded.versions, t)),
@@ -260,9 +276,14 @@ export function viewAt(folded: Fold, t: number): View {
     flags: flagsView(folded.flags, items, shipped, t),
     improve: folded.improve,
     releases: shipped,
+    guardrails: guardrailsView(folded.proofs, items, t, available),
   };
   drawnFrom.set(shown, folded);
   return shown;
 }
 
-export const project = (events: readonly PublicEvent[], t: number): View => viewAt(foldAt(events, t), t);
+export const project = (
+  events: readonly PublicEvent[],
+  t: number,
+  available: (attack: Attack) => boolean = attackAvailable,
+): View => viewAt(foldAt(events, t), t, available);

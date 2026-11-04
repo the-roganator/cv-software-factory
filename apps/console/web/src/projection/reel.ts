@@ -2,23 +2,29 @@
  * The reel at time t: one card per work item, oldest first, and the timeline under them.
  */
 import type {
+  Attack,
   Category,
   Evidence,
   Kind,
   PayloadOf,
   PublicEvent,
+  RefusalMechanism,
   Screenshot,
   Sense,
   Stage,
 } from '@software-factory/events';
 import { isSense, STAGES } from '@software-factory/events';
+import { attackLimitMs } from '@software-factory/policy/attacks';
+import { guardrailAttacked } from '@software-factory/policy/guardrails';
 import { capital, startOfDay } from '../format.ts';
+import { type AttackState, attackWords, limitOf, type Verdict, verdictAt, WHO } from './attacks.ts';
 import { waitPicture } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
 import { type Capture, type ItemState, type Outcome, ofType, stopsRelease, summaryOf } from './items.ts';
 import type { Release, StoppedBy } from './release.ts';
 
-type Segment = 'passed' | 'skipped' | 'now' | 'queued' | 'stopped' | 'waiting' | 'closed' | 'none';
+/** How far a work item got at each stage. `refused`: where an attack met the mechanism that refused it, which is good. */
+type Segment = 'passed' | 'skipped' | 'now' | 'queued' | 'stopped' | 'waiting' | 'closed' | 'refused' | 'none';
 
 export type Tag = 'BEFORE' | 'BROKEN' | 'FIXED' | 'AFTER' | 'NOW' | 'SEEN';
 
@@ -69,8 +75,28 @@ export type Picture =
   | { type: 'scan'; dependency: Dependency; findings: Findings; unchanged: Screenshot[] }
   /** A canary rolled back: the series of the first measure that failed it, and how much of the traffic saw it. */
   | { type: 'rollback'; dependency: Dependency | undefined; weight: number; restored: string; series: Series }
-  /** A mechanism's refusal, in its own words; `admission` when admission control (Kyverno) refused an image. */
-  | { type: 'refusal'; mechanism: string; output: string; admission?: true }
+  /**
+   * A red-team attack: every refusal it met, in each mechanism's own words, in the order they happened, and how it
+   * stands; with what its own record says came back of each attempt, for one nothing refused. `admission` when
+   * admission control (Kyverno) refused it, whose source the sheet names.
+   */
+  | {
+      type: 'refusal';
+      attack: Attack;
+      verdict: Verdict;
+      refusals: Refused[];
+      attempts: PayloadOf<'attack.finished'>['attempts'];
+      /** The egress attack's control, the gateway its pod may reach, apart from its refusals. */
+      control: PayloadOf<'attack.finished'>['control'];
+      /** The guardrail it is made against, which reads as not held when it is not refused. */
+      guardrail: number | undefined;
+      /** Why a refused attack is not confirmed, from the check of its refusals. */
+      why: string | undefined;
+      /** How long it may take before it counts as unfinished, and when one running does. */
+      minutes: number;
+      until: number;
+      admission?: true;
+    }
   | { type: 'judgement'; page: Screenshot | undefined; judgement: Judgement }
   /** A report quarantined: the answer that decided it, against its threshold, and no page at all. */
   | { type: 'quarantine'; judgement: Judgement }
@@ -151,6 +177,16 @@ export type Picture =
   | { type: 'accessibility'; findings: Accessibility; shot: Screenshot | undefined; source: Source }
   | { type: 'none' };
 
+/** One refusal an attack met: its mechanism, who that is in words, when, its own output, and who recorded it. */
+export interface Refused {
+  mechanism: RefusalMechanism;
+  who: string;
+  at: number;
+  output: string;
+  /** The store's role that recorded it. */
+  by: string | undefined;
+}
+
 type Dependency = NonNullable<PayloadOf<'work-item.opened'>['dependency']>;
 type Findings = NonNullable<PayloadOf<'gate.finished'>['findings']>;
 type Series = NonNullable<PayloadOf<'release.rolled-back'>['failed'][number]['series']>;
@@ -224,14 +260,19 @@ export interface Timeline {
   versions: { at: number; card: number | undefined; version: string; rolledBack: boolean }[];
 }
 
-/** The segments under a card: how far the item got through the eight stages, and where it stopped. */
-export function segments(item: ItemState): Segment[] {
+/**
+ * The segments under a card: how far the item got through the eight stages, and where it stopped. An attack's stop at
+ * its mechanism by `verdict`, which its time decides while nothing has recorded its end: refused there, still running,
+ * or stopped there for anything else, which is a failure.
+ */
+export function segments(item: ItemState, verdict?: Verdict): Segment[] {
   const current = item.stage ? STAGES.indexOf(item.stage) : -1;
   const entry = item.entry ? STAGES.indexOf(item.entry) : -1;
   return STAGES.map((stage, i): Segment => {
     if (current < 0 || i < entry) return entry < 0 && current < 0 ? 'none' : 'skipped';
     if (i < current) return item.visits[stage] ? 'passed' : 'skipped';
     if (i > current) return 'none';
+    if (item.attack) return verdict === 'refused' ? 'refused' : verdict === 'running' ? 'now' : 'stopped';
     switch (item.outcome) {
       case 'verified':
         return 'passed';
@@ -259,7 +300,7 @@ export function segments(item: ItemState): Segment[] {
 /** Where the item got to, in words, for the segments' accessible name. */
 export function segmentsLabel(list: readonly Segment[]): string {
   const at = list.findIndex(
-    (s) => s === 'now' || s === 'queued' || s === 'stopped' || s === 'waiting' || s === 'closed',
+    (s) => s === 'now' || s === 'queued' || s === 'stopped' || s === 'waiting' || s === 'closed' || s === 'refused',
   );
   if (at < 0) return list.every((s) => s === 'none') ? 'Not on the line yet' : 'Every stage passed';
   const stage = STAGES[at] as Stage;
@@ -270,22 +311,41 @@ export function segmentsLabel(list: readonly Segment[]): string {
     stopped: `Stopped at ${name}`,
     waiting: `Waiting at ${name}`,
     closed: `Closed at ${name}`,
-  }[list[at] as 'now' | 'queued' | 'stopped' | 'waiting' | 'closed'];
+    refused: `Refused at ${name}`,
+  }[list[at] as 'now' | 'queued' | 'stopped' | 'waiting' | 'closed' | 'refused'];
 }
 
 const last = <T>(list: readonly T[], test: (value: T) => boolean) => [...list].reverse().find(test);
 
-const MECHANISMS: Record<PayloadOf<'action.refused'>['mechanism'], string> = {
-  'token-permission': 'Token permissions',
-  ruleset: 'The ruleset on main',
-  'egress-policy': 'The egress policy',
-  'admission-control': 'Admission control',
-  'scope-fence': 'The scope fence',
-  'github-guard': 'The GitHub worker’s guard',
-  'review-gate': 'The review gate',
-  gateway: 'The gateway',
-  'typed-judgement': 'Typed judgement',
-};
+/** An attack's picture at t: each refusal it met, and how it stands. */
+function attackPicture(item: ItemState, attack: AttackState, t: number): Picture {
+  // Only those after its launch, and before its end once there is one: no other can be the attack's.
+  const finishedSeq = attack.finished?.seq ?? Number.POSITIVE_INFINITY;
+  const refusals = ofType(item, 'action.refused')
+    .filter((event) => event.seq > attack.launchedSeq && event.seq < finishedSeq)
+    .map(
+      (event): Refused => ({
+        mechanism: event.payload.mechanism,
+        who: WHO[event.payload.mechanism],
+        at: Date.parse(event.ts),
+        output: event.payload.output,
+        by: event.appended_by,
+      }),
+    );
+  return {
+    type: 'refusal',
+    attack: attack.attack,
+    verdict: verdictAt(attack, t),
+    refusals,
+    attempts: attack.finished?.attempts ?? [],
+    control: attack.finished?.control,
+    guardrail: guardrailAttacked(attack.attack),
+    why: attack.finished?.why,
+    minutes: attackLimitMs(attack.attack) / 60_000,
+    until: limitOf(attack),
+    ...(refusals.some((r) => r.mechanism === 'admission-control') && { admission: true as const }),
+  };
+}
 
 /** The pages verification found unchanged, for the strip under a picture of something with nothing to see. */
 function unchangedPages(item: ItemState): Screenshot[] {
@@ -302,7 +362,11 @@ function unchangedPages(item: ItemState): Screenshot[] {
  * The picture for a card: the evidence that best shows what changed, or, while the work waits on Martin, the thing
  * he is asked to decide. Without `waits`, the evidence alone, which the sheet shows whatever the card shows.
  */
-export function picture(item: ItemState, { waits = true }: { waits?: boolean } = {}): Picture {
+export function picture(
+  item: ItemState,
+  { waits = true, t = item.lastAt }: { waits?: boolean; t?: number } = {},
+): Picture {
+  if (item.attack) return attackPicture(item, item.attack, t);
   // The rollback of the latest release to carry the item, if it rolled back: one before it is history.
   const latest = last(ofType(item, 'release.started'), () => true)?.payload.release;
   const rolledBack = last(ofType(item, 'release.rolled-back'), (event) => event.payload.release === latest)?.payload;
@@ -311,19 +375,6 @@ export function picture(item: ItemState, { waits = true }: { waits?: boolean } =
   if (rolledBack && series) {
     const { weight, restored } = rolledBack;
     return { type: 'rollback', dependency: item.dependency, weight, restored, series };
-  }
-
-  if (item.kind === 'red-team') {
-    const refused = last(ofType(item, 'action.refused'), () => true);
-    if (refused)
-      return {
-        type: 'refusal',
-        mechanism: MECHANISMS[refused.payload.mechanism],
-        output: refused.payload.output,
-        ...(refused.payload.mechanism === 'admission-control' && { admission: true as const }),
-      };
-    const gate = last(ofType(item, 'gate.finished'), (event) => event.payload.conclusion === 'failure');
-    if (gate?.payload.output) return { type: 'refusal', mechanism: gate.payload.check, output: gate.payload.output };
   }
 
   // A report shows what triage made of it: the request that routed it, which is its first. One that ended at triage
@@ -494,18 +545,25 @@ function isLocal(item: ItemState): boolean {
 }
 
 export function card(item: ItemState, versions: AppVersions, t: number): Card {
-  const end = item.closedAt ?? t;
+  // An attack stands as the console reads it at t: running, until its limit passes with no end recorded, and it ended
+  // where its end was recorded, or at its limit.
+  const verdict = item.attack && verdictAt(item.attack, t);
+  const attackEnd =
+    item.attack && (item.attack.finished?.at ?? (verdict === 'unfinished' ? limitOf(item.attack) : undefined));
+  const end = item.closedAt ?? attackEnd ?? t;
   const latest = last(item.events, (e) => e.type !== 'model.called');
   return {
     number: item.number,
     kind: item.kind,
     byVisitor: item.openedBy === 'visitor',
     category: item.category,
-    outcome: item.outcome,
+    outcome: verdict === undefined ? item.outcome : verdict === 'running' ? 'in-progress' : verdict,
     sample: item.sample,
     title: item.title,
-    description: item.description ?? (latest ? summaryOf(latest) : ''),
-    picture: picture(item),
+    description:
+      item.description ??
+      (item.attack && verdict ? attackWords(item.attack.attack, verdict) : latest ? summaryOf(latest) : ''),
+    picture: picture(item, { t }),
     versions: {
       from: item.versions.from,
       to: item.versions.to,
@@ -521,7 +579,7 @@ export function card(item: ItemState, versions: AppVersions, t: number): Card {
     startedAt: item.openedAt,
     durationMs: Math.max(0, end - item.openedAt),
     spend: item.spend,
-    segments: segments(item),
+    segments: segments(item, verdict),
     appVersion: appVersion(versions, end),
     reopened: item.reopened,
     flag: flagOfCard(item),

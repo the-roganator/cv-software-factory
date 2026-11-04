@@ -398,7 +398,6 @@ describe('Needs you', () => {
   it('shows the samples’ holds, the visitor’s suggestion among them, and its words answered today', () => {
     const { needs } = project(SAMPLES, END);
     expect(needs.holds.map((need) => [need.workItem, need.cause])).toEqual([
-      ['1274', 'gates'],
       ['1300', 'question'],
       ['1334', 'spec'],
       ['1311', 'merge'],

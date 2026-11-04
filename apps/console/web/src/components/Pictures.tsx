@@ -17,7 +17,20 @@ import {
 } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { useArtifactUrl } from '../artifacts.ts';
-import { AGENT_NAME, axis, capital, clock, figure, inWords, money, plural, shortVersion, times } from '../format.ts';
+import {
+  AGENT_NAME,
+  axis,
+  capital,
+  clock,
+  clockSeconds,
+  figure,
+  inWords,
+  money,
+  plural,
+  shortVersion,
+  times,
+} from '../format.ts';
+import { REFUSED_BY } from '../projection/attacks.ts';
 import type { Picture as PictureData, Source, Tag } from '../projection/index.ts';
 import { deployCaption, deployWords, QUARANTINE_AT, SENSE } from '../projection/index.ts';
 import { clamp } from './flight.ts';
@@ -712,31 +725,158 @@ export function keyed<T>(list: readonly T[], name: (value: T) => string): { valu
 /** Lines of output, each with a key of its own, even where the same text repeats. */
 const keyedLines = (output: string) => keyed(output.split('\n'), (text) => text);
 
-function RefusalPicture({ mechanism, output }: Extract<PictureData, { type: 'refusal' }>) {
+/**
+ * A red-team attack's picture: every refusal it met, stacked in the order they happened and numbered when there is more
+ * than one, each headed by who refused in words, its mechanism as recorded, and the time, and printed verbatim, the
+ * lines that say no in the alarm colour. A refusal that wraps past five lines is cut on a card, fading out, and the
+ * sheet has it whole: its type is sized by the picture's width, so a line holds the same 80 characters at every width,
+ * and the cut is worked out from the text alone. One nothing refused shows what its own record says came back of each
+ * attempt instead, and its caption and foot say so in the alarm colour.
+ */
+function RefusalPicture(picture: Extract<PictureData, { type: 'refusal' }>) {
+  const { verdict, refusals } = picture;
+  const failed = verdict !== 'refused' && verdict !== 'running';
+  const many = refusals.length > 1;
   return (
-    <div className="pad">
-      <div className="row cap">
-        <Glyph name="red-team" />
-        {mechanism}: its own output, as recorded
+    <div className="pad attack-pic">
+      <div className={`row cap${failed ? ' notheld' : ''}`}>
+        <Glyph name={failed ? 'cross' : 'red-team'} />
+        {attackCaption(picture)}
       </div>
-      <pre className="term">
-        {/* Shown verbatim; the lines that say no, in the alarm colour. */}
-        {keyedLines(output).map(({ value: text, key }) => (
-          <span
-            key={key}
-            className={/✕|denied|failed|blocked/.test(text) ? 't-bad' : text.startsWith('→') ? 't-dim' : ''}
-          >
-            {text}
-            {'\n'}
-          </span>
-        ))}
-      </pre>
-      <div className="unchanged">
-        <Glyph name="check" />
-        <span>The site never changed.</span>
+      <div className="refusals">
+        {keyed(refusals, (refusal) => `${refusal.at}-${refusal.mechanism}`).map(({ value: refusal, key }, i) => {
+          const cut = wraps(refusal.output) > CUT_AT;
+          return (
+            <div key={key}>
+              <div className="rhead">
+                {many && <span>{i + 1}</span>}
+                <b>{refusal.who}</b>
+                <span>
+                  {refusal.mechanism} · {clockSeconds(refusal.at)}
+                </span>
+              </div>
+              <pre className={cut ? 'term cut' : 'term'}>
+                <Output lines={refusal.output} bad={SAYS_NO} dim={SAYS_ASIDE} />
+              </pre>
+              {cut && <div className="cutnote">Cut here. The sheet has all of it.</div>}
+            </div>
+          );
+        })}
+        {verdict === 'running' && refusals.length === 0 && (
+          <p className="attack-waits">It should meet {REFUSED_BY[picture.attack]}.</p>
+        )}
+        {failed && picture.attempts.length > 0 && (
+          <div>
+            <div className="rhead">
+              <b>The attack’s own record of each attempt</b>
+            </div>
+            <pre className={wraps(attemptsText(picture.attempts)) > CUT_AT ? 'term cut' : 'term'}>
+              {keyed(picture.attempts, ({ what }) => what).map(({ value: { what, result, refused }, key }) => (
+                <span key={key}>
+                  {what}
+                  {'\n'}
+                  <span className="t-dim">{'  → '}</span>
+                  {/* What got through, as the attack's own record marks it, in the alarm colour. */}
+                  <span className={refused ? undefined : 't-bad'}>{result}</span>
+                  {'\n'}
+                </span>
+              ))}
+            </pre>
+          </div>
+        )}
+        {picture.control && <Control {...picture.control} />}
+      </div>
+      <div className={`unchanged${failed ? ' notheld' : ''}`}>
+        <Glyph
+          name={failed ? 'cross' : verdict === 'running' ? 'ring' : 'check'}
+          className={verdict === 'running' ? 'glyph running' : 'glyph'}
+        />
+        <span>{attackFoot(picture)}</span>
       </div>
     </div>
   );
+}
+
+/**
+ * The egress attack's control, apart from its refusals: the gateway, which an agent's pod may reach, asked as the
+ * attempts ask the outside, so its refusals are the policy's and not a pod that reaches nothing. Quiet when it answered,
+ * as the design draws it; in the alarm colour when it did not.
+ */
+function Control({ what, result, reached }: NonNullable<Extract<PictureData, { type: 'refusal' }>['control']>) {
+  return (
+    <div className="control">
+      <div className="rhead">
+        <b>The control</b>
+        <span className={reached ? undefined : 'tone-attn'}>{reached ? 'reached' : 'not reached'}</span>
+      </div>
+      <pre className="term">
+        <span className={reached ? 't-dim' : 't-bad'}>
+          {reached ? '✓' : '✕'} {what}
+          {'\n'}
+          {'  → '}
+          {result}
+        </span>
+      </pre>
+    </div>
+  );
+}
+
+/** Where a refusal on a card is cut: past five lines of 80 characters. */
+const CUT_AT = 5;
+
+/** How many lines of 80 characters a refusal takes, each of its own lines at least one. */
+export const wraps = (text: string) =>
+  text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 80)), 0);
+
+/** The lines of a refusal that say no: drawn in the alarm colour. */
+const SAYS_NO =
+  /✕|denied|refus|forbidden|\b403\b|failed|blocked|not passed|"injection"|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|timed out/i;
+/** The lines that say what follows, or what passed: drawn quieter. */
+const SAYS_ASIDE = /^\s*(→|✓)/;
+
+const attemptsText = (attempts: Extract<PictureData, { type: 'refusal' }>['attempts']) =>
+  attempts.map(({ what, result }) => `${what}\n  → ${result}`).join('\n');
+
+/** An attack picture's caption: how many refusals, in whose words, or what it is instead. */
+function attackCaption({ verdict, refusals }: Extract<PictureData, { type: 'refusal' }>): string {
+  const n = refusals.length;
+  switch (verdict) {
+    case 'refused':
+      return n === 1 ? 'Refused, in the mechanism’s own words' : `Refused ${times(n)}, each in its own words`;
+    case 'running':
+      return n === 0 ? 'Running: waiting for its refusal' : `Running: refused ${times(n)} so far`;
+    case 'not-refused':
+      return 'Not refused: what came back, as recorded';
+    case 'unconfirmed':
+      return 'Not confirmed: its refusals do not bear out its record';
+    case 'unfinished':
+      return 'Unfinished: not seen to its end';
+  }
+}
+
+/** What a refused attack left as it was, by attack. */
+const UNTOUCHED: Record<Extract<PictureData, { type: 'refusal' }>['attack'], string> = {
+  report: 'No agent read it: the report’s words went to Jev alone, as data.',
+  workflow: 'The site never changed: no commit reached the repository.',
+  test: 'The site never changed: nothing merged, and the pull request is closed.',
+  egress: 'Nothing left the cluster.',
+  image: 'Nothing ran: the pod was never made.',
+};
+
+/** An attack picture's foot: what it left as it was, or what its failure means. */
+function attackFoot({ attack, verdict, guardrail, minutes, until }: Extract<PictureData, { type: 'refusal' }>) {
+  const reads = guardrail ? `guardrail ${guardrail} reads “did not hold”` : 'its guardrail reads “did not hold”';
+  switch (verdict) {
+    case 'refused':
+      return UNTOUCHED[attack];
+    case 'running':
+      return `It counts as unfinished if nothing ends it by ${clock(until)}.`;
+    case 'not-refused':
+    case 'unconfirmed':
+      return `${verdict === 'not-refused' ? 'Not refused' : 'Not confirmed'}: the line pages Martin, and ${reads} until it is proved again.`;
+    case 'unfinished':
+      return `Unfinished after ${minutes} minutes: it proves nothing either way, and the line pages Martin.`;
+  }
 }
 
 /** Jev's questions, in a few words each: the event holds them in full. */

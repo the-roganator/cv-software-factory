@@ -2,12 +2,12 @@
  * Needs you, end to end: the bottom row's cards against the real admin service on a throwaway store holding the
  * samples, on one origin behind a proxy standing in for Traefik (`admin.ts`), with a virtual passkey. A visitor sees
  * answers the planner's question and its card moves to Answered today; answers the visitor's suggestion in words, which
- * leave it held; sends a merge's hold back to the planner with his words; and approving the gate's hold asks for his
- * passkey again first. A refusal shows on the card. Then a visitor sees the same cards, read only, as Waiting on
- * Martin, with his answers today but not his words on the visitor's suggestion. Martin answers from a work item's sheet
- * too, through the same card, the passkey asked there as here, and the card leaves both. Answered today is the viewer's
- * own day, so the answers checked are the ones made here, now. Snapshots are `visual.spec.ts`'s. Needs Postgres:
- * TEST_DATABASE_URL, or Docker.
+ * leave it held; sends a merge's hold back to the planner with his words; and approving a spend cap's hold, a
+ * guardrail's, asks for his passkey again first. A refusal shows on the card. Then a visitor sees the same cards, read
+ * only, as Waiting on Martin, with his answers today but not his words on the visitor's suggestion. Martin answers
+ * from a work item's sheet too, through the same card, the passkey asked there as here, and the card leaves both.
+ * Answered today is the viewer's own day, so the answers checked are the ones made here, now. Snapshots are
+ * `visual.spec.ts`'s. Needs Postgres: TEST_DATABASE_URL, or Docker.
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
@@ -38,16 +38,16 @@ const answers = (workItem: string) =>
   harness.database.owner<{ payload: { decision: string; answer?: string; hold?: string } }[]>`
     select payload from events where work_item = ${workItem} and type = 'hold.answered' order by seq`;
 
-test('Martin answers a card, which moves to Answered today, and gives his passkey again to approve a gate’s hold', async ({
+test('Martin answers a card, which moves to Answered today, and gives his passkey again to approve a guardrail’s hold', async ({
   page,
 }) => {
   await virtualPasskey(page);
   await enrolThroughTheDoor(page, await harness.code());
   await page.goto('/?motion=off');
   await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Needs you');
-  // Ten holds and #1294's flag, but #1321's deploy is not his yet, its checks running: its card stays, out of the
+  // Nine holds and #1294's flag, but #1321's deploy is not his yet, its checks running: its card stays, out of the
   // count.
-  await expect(panel(page).locator('.count-attn')).toHaveText('10 waiting');
+  await expect(panel(page).locator('.count-attn')).toHaveText('9 waiting');
 
   await test.step('Approving the planner’s question asks for nothing', async () => {
     const question = card(page, '1300');
@@ -80,16 +80,16 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
     await expect(suggestion).toBeVisible();
   });
 
-  await test.step('Approving the gate’s hold carries the key, and asks for the passkey again', async () => {
-    const gate = card(page, '1274');
-    const approve = gate.getByRole('button', { name: 'Approve (asks for your passkey)' });
+  await test.step('Approving a spend cap’s hold carries the key, and asks for the passkey again', async () => {
+    const capped = card(page, '1319');
+    const approve = capped.getByRole('button', { name: 'Approve (asks for your passkey)' });
     await approve.click();
-    const dialog = page.getByRole('dialog', { name: 'Approve #1274' });
-    await expect(dialog).toContainText('Sends it back to the coder for one more round, past the gates’ limit.');
+    const dialog = page.getByRole('dialog', { name: 'Approve #1319' });
+    await expect(dialog).toContainText('The line carries on, and holds again until the cap is raised.');
     await expect(dialog).toContainText('Approving overrides a guardrail, so it needs your passkey again.');
     await dialog.getByRole('button', { name: 'Use your passkey' }).click();
-    await expect.poll(async () => (await answers('1274')).map((a) => a.payload.decision)).toEqual(['approved']);
-    await expect(gate).toHaveCount(0);
+    await expect.poll(async () => (await answers('1319')).map((a) => a.payload.decision)).toEqual(['approved']);
+    await expect(capped).toHaveCount(0);
     await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
   });
 
@@ -139,8 +139,8 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
 test('a visitor sees what waits on Martin, read only, and not his words on a visitor’s report', async ({ page }) => {
   await page.goto('/?motion=off');
   await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Waiting on Martin');
-  // Three of the samples' nine holds that wait on him Martin answered above; #1294's flag waits too.
-  await expect(panel(page).locator('.count-attn')).toHaveText('7 waiting');
+  // Three of the samples' eight holds that wait on him Martin answered above; #1294's flag waits too.
+  await expect(panel(page).locator('.count-attn')).toHaveText('6 waiting');
   const review = card(page, '1323');
   await expect(review.locator('.kick b')).toHaveText('Held by review');
   await expect(review.locator('.ro')).toHaveText(['Approve', 'Answer in words', 'Back to the planner', 'Reject']);

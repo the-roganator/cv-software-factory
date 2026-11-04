@@ -207,9 +207,9 @@ test.describe('the Canary panel', () => {
     await expect(panel(page)).not.toContainText('No release in flight');
   });
 
-  // A row is one line at every laptop width, with the steps beside the measures (above 1180px) or above them; on a
+  // A row is one line at every laptop width, with the steps beside the measures (from 1180px) or above them; on a
   // tablet a caption may wrap, and the table never runs past the panel.
-  for (const width of [800, 1024, 1181, 1200, 1280, 1440]) {
+  for (const width of [800, 1024, 1179, 1180, 1200, 1280, 1440]) {
     test(`keeps the measures inside the panel, each rule's caption one line on a laptop, at ${width}px`, async ({
       page,
     }) => {

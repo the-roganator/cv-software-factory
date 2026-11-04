@@ -15,8 +15,10 @@ import type {
   SymptomClass,
 } from '@software-factory/events';
 import { clearedOnWords, knownInScope, LIMITS, SENSES } from '@software-factory/events';
+import { attackLimitMs } from '@software-factory/policy/attacks';
 import { FLAG_STEP_UP } from '../access.ts';
 import { clock, listed, plural, shortVersion } from '../format.ts';
+import { attackStory, isFinish, isLaunch, limitOf, verdictAt } from './attacks.ts';
 import {
   type Attempt,
   attempts,
@@ -248,6 +250,7 @@ export interface Sheet {
 /** Who or what noticed the work, in a few words. */
 function foundBy(item: ItemState): string {
   const signal = item.events.find((event) => event.type === 'signal.received');
+  if (item.attack) return 'Martin, from Guardrails';
   if (item.openedBy === 'martin') return 'Martin, from the console';
   if (item.openedBy === 'dependabot') return 'Dependabot';
   if (item.kind === 'red-team') return 'Red-team harness';
@@ -271,6 +274,8 @@ function closing(item: ItemState): string | undefined {
   if (close?.type !== 'work-item.closed') return undefined;
   if (item.events.findLastIndex((event) => event.type === 'work-item.summarised') > at) return undefined;
   const reason = `It closed: ${close.payload.reason.replace(/\.$/, '')}.`;
+  // An attack's close says what the harness closed of its own, after the story has said how it ended.
+  if (item.attack) return `${close.payload.reason.replace(/\.$/, '')}.`;
   if (close.payload.outcome === 'verified') {
     // Only a verification that closed it tells how: the pass's last, cleared, with no hold for Martin after it, who
     // otherwise judged it himself, and the close's reason says so.
@@ -320,8 +325,19 @@ const OPENING: Partial<Record<Kind, string>> = {
 function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' | 'tone'> | undefined {
   switch (event.type) {
     case 'work-item.opened': {
-      const label = OPENING[item.kind];
+      // An attack opens with its launch, a moment after: that is its first chapter.
+      const label = item.attack ? undefined : OPENING[item.kind];
       return label ? { label, tone: 'signal' } : undefined;
+    }
+    case 'attack.launched':
+      return isLaunch(event) ? { label: 'LAUNCHED', tone: 'signal' } : undefined;
+    // How an attack ended, when it is not as it should be: a refused attack's refusals tell it already.
+    case 'attack.finished': {
+      const verdict = isFinish(event) ? item.attack?.finished?.verdict : undefined;
+      if (verdict === 'not-refused') return { label: 'NOT REFUSED', tone: 'attn' };
+      if (verdict === 'unconfirmed') return { label: 'NOT CONFIRMED', tone: 'attn' };
+      if (verdict === 'unfinished') return { label: 'UNFINISHED', tone: 'attn' };
+      return undefined;
     }
     case 'defect.injected':
       return { label: 'ON SITE', tone: 'attn' };
@@ -379,8 +395,9 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return { label: 'PERSISTS', tone: afterVerify(item, event)?.type === 'hold.started' ? 'attn' : 'signal' };
     case 'work-item.reopened':
       return { label: 'REOPENED', tone: 'attn' };
+    // A refusal is the point of an attack, and the guardrail working: in the good tone there.
     case 'action.refused':
-      return { label: 'REFUSED', tone: 'attn' };
+      return { label: 'REFUSED', tone: item.attack ? 'ok' : 'attn' };
     // Each stage Martin set, by its name, and Verify's comparison at Share.
     case 'flag.staged':
       return {
@@ -399,6 +416,8 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       if (event.payload.outcome === 'quarantined') return { label: 'QUARANTINED', tone: 'faint' };
       // An improvement is verified by its close at Everyone, as a fix is by Verify's pass.
       if (event.payload.outcome === 'verified' && item.kind === 'improvement') return { label: 'VERIFIED', tone: 'ok' };
+      // The harness closes an attack's work item as it ends, with what it closed of its own (a pull request, say).
+      if (item.attack) return { label: 'CLOSED', tone: 'faint' };
       return event.payload.outcome === 'no-change' ||
         event.payload.outcome === 'discarded' ||
         event.payload.outcome === 'turned-off'
@@ -765,6 +784,11 @@ const CATEGORY_WORDS: Record<DefectCategory, string> = {
 /** Why no model was called, said as a sentence, for work that called none. */
 function noModel(item: ItemState): string | undefined {
   if (item.calls > 0) return undefined;
+  if (item.attack) {
+    return item.attack.attack === 'report'
+      ? 'The attack is scripted, with fixed content. The report it sent meets one model, Jev, in triage, since its typed questions are the mechanism.'
+      : 'The attack is scripted, with fixed content, against the real mechanism.';
+  }
   const fingerprint = item.ticket?.fingerprint;
   if (item.ticket && fingerprint && 'class' in fingerprint) {
     const { category, severity } = item.ticket;
@@ -942,7 +966,24 @@ export function sheet(
   // Martin ends at its wait, and a merged fix at its merge, drawn as work queued for a release.
   const waits = item.outcome === 'needs-you' || item.outcome === 'held' || item.outcome === 'deploying';
   const merged = item.outcome === 'merged';
-  if (item.closedAt === undefined && !waits && !merged) {
+  const unfinished = item.attack && !item.attack.finished && verdictAt(item.attack, t) === 'unfinished';
+  if (unfinished && item.attack) {
+    // Past its limit with nothing recorded, it ends there, unfinished, as the admin service and the line read it;
+    // closed before then with nothing recorded, it ends at its close.
+    const minutes = attackLimitMs(item.attack.attack) / 60_000;
+    const closedAt = item.closedAt !== undefined && item.closedAt < limitOf(item.attack) ? item.closedAt : undefined;
+    marks.push({
+      event: undefined,
+      label: 'UNFINISHED',
+      tone: 'attn',
+      text:
+        closedAt === undefined
+          ? `Nothing recorded its end within its ${minutes} minutes: it counts as unfinished`
+          : 'Its work item closed with nothing recorded of its end: it counts as unfinished',
+      at: closedAt ?? limitOf(item.attack),
+      pass,
+    });
+  } else if (item.closedAt === undefined && !waits && !merged) {
     marks.push(
       item.waitingOn
         ? { event: undefined, label: 'WAITING · BUILD', tone: 'faint', text: item.waitingOn.reason, pass }
@@ -1017,9 +1058,13 @@ export function sheet(
           }
         : undefined,
     request: item.request,
-    story: item.story ?? item.description ?? item.title,
+    story:
+      item.story ??
+      (item.attack
+        ? attackStory(item.attack.attack, verdictAt(item.attack, t), item.attack.finished?.why)
+        : (item.description ?? item.title)),
     storyBy: summarised?.actor === 'describer' ? 'describer' : undefined,
-    evidence: picture(item, { waits: false }),
+    evidence: picture(item, { waits: false, t }),
     chapters,
     captures: item.captures.filter(
       (c) => c.side === 'broken' || c.side === 'canary' || c.side === 'fixed' || c.side === 'after',

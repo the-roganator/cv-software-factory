@@ -12,13 +12,13 @@ const card = (number: string) => view.cards.find((c) => c.number === number);
 const WHOLE_TIMELINE = 30_000;
 
 describe('the samples, projected', () => {
-  it('show every outcome', () => {
+  it('show every outcome but closed with no change, and an attack’s (the attacks’ test data has those)', () => {
     expect(new Set(view.cards.map((c) => c.outcome))).toEqual(
       new Set([
         'verified',
         'rolled-back',
         'held',
-        'closed',
+        'quarantined',
         'no-ticket',
         'turned-off',
         'needs-you',
@@ -34,7 +34,9 @@ describe('the samples, projected', () => {
     // And none for #1308, the canary's ticket, whose rollback picture the console does not draw yet.
     expect(new Set(view.cards.map((c) => c.picture.type))).toEqual(
       new Set([
-        ...['wipe', 'metric', 'logs', 'package', 'scan', 'rollback', 'refusal', 'judgement', 'spec', 'http'],
+        // An attack's refusal picture is the attacks' test data's.
+        ...['wipe', 'metric', 'logs', 'package', 'scan', 'rollback', 'judgement', 'quarantine', 'spec'],
+        'http',
         ...['merge', 'deploy', 'scope', 'tests-pass', 'spend', 'blocking', 'suggestion', 'none'],
       ]),
     );
@@ -63,12 +65,11 @@ describe('the samples, projected', () => {
   it('keep what waits on Martin in the reel, held when a mechanism stopped it and waiting when the line asked', () => {
     expect(card('1300')?.outcome).toBe('needs-you');
     expect(card('1334')?.outcome).toBe('needs-you');
-    expect(card('1274')?.outcome).toBe('held');
     const station = (stage: string) => view.stations.find((s) => s.stage === stage);
     expect(station('plan')).toMatchObject({ status: 'blocked', figure: '2 waiting' });
     // Build works on another item beside the two it holds: at work, with its beacon lit.
     expect(station('build')).toMatchObject({ status: 'working', beacon: 'needs-you', figure: '2 held' });
-    expect(station('gates')).toMatchObject({ status: 'blocked', figure: '2 held' });
+    expect(station('gates')).toMatchObject({ status: 'blocked', figure: '1 held' });
     expect(station('review')).toMatchObject({ status: 'blocked', figure: '2 waiting' });
   });
 
@@ -84,16 +85,6 @@ describe('the samples, projected', () => {
       'stopped',
       'none',
     ]);
-    expect(card('1274')?.segments).toEqual([
-      'skipped',
-      'skipped',
-      'skipped',
-      'passed',
-      'stopped',
-      'none',
-      'none',
-      'none',
-    ]);
     expect(card('1268')?.segments).toEqual(['passed', 'closed', ...Array(6).fill('none')]);
     expect(card('1300')?.segments).toEqual(['skipped', 'skipped', 'waiting', ...Array(5).fill('none')]);
     expect(card('1302')?.segments).toEqual(Array(8).fill('passed'));
@@ -103,21 +94,14 @@ describe('the samples, projected', () => {
 
   it('strike through a version that was rolled back, on the timeline', () => {
     expect(view.timeline.versions).toContainEqual(
-      expect.objectContaining({ card: 5, version: 'v0.9.1', rolledBack: true }),
+      expect.objectContaining({ card: 4, version: 'v0.9.1', rolledBack: true }),
     );
     expect(view.timeline.days).toHaveLength(8);
   });
 
   it('say which work a visitor started, and nothing about the visitor', () => {
     const cards = project(SAMPLES, END).cards;
-    expect(cards.filter((c) => c.byVisitor).map((c) => c.number)).toEqual([
-      '1268',
-      '1274',
-      '1293',
-      '1296',
-      '1302',
-      '1329',
-    ]);
+    expect(cards.filter((c) => c.byVisitor).map((c) => c.number)).toEqual(['1268', '1291', '1296', '1302', '1329']);
     expect(SAMPLES.some((e) => e.type === 'work-item.opened' && 'visitor' in e.payload)).toBe(false);
   });
 

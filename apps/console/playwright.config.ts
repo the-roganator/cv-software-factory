@@ -1,11 +1,12 @@
 /**
  * The console's browser tests, against the production build, fed from the samples' event log with no Postgres
- * behind it, and from the milestone 4 test data by a second server (the live test and the sign-in test, which need a
+ * behind it, from the red-team attacks' test data by a third (no attack can be launched yet, so the samples hold none),
+ * and from the milestone 4 test data by a second server (the live test and the sign-in test, which need a
  * store, start their own). Snapshots are taken in the pinned Playwright
  * image, so they match from one machine to the next: `make e2e` runs them there.
  */
 import { defineConfig, devices } from '@playwright/test';
-import { END, FIXTURE_END, FIXTURE_PORT, PORT } from './e2e/support.ts';
+import { ATTACKS_END, ATTACKS_PORT, END, FIXTURE_END, FIXTURE_PORT, PORT } from './e2e/support.ts';
 
 /** Snapshots only mean something in the pinned image (`make e2e` and CI set this); elsewhere they are skipped. */
 const pinned = Boolean(process.env.SF_PINNED_BROWSER);
@@ -34,16 +35,16 @@ export default defineConfig({
       name: 'console',
       use: { ...devices['Desktop Chrome'] },
       testIgnore: pinned
-        ? /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|speed)\.spec\.ts/
-        : /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|speed|visual)\.spec\.ts/,
+        ? /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|attacks|speed)\.spec\.ts/
+        : /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|attacks|speed|visual)\.spec\.ts/,
     },
     // The tests that need a store: the console live, and signing in, Martin's view, the canary's controls and its pause for Martin, Needs you,
-    // the line's controls and the "+" against the admin service.
+    // the line's controls, the "+" and launching an attack against the admin service.
     {
       name: 'live',
       use: { ...devices['Desktop Chrome'] },
       testMatch:
-        /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements)\.spec\.ts/,
+        /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|attacks)\.spec\.ts/,
     },
     // Timed alone, so other tests' browsers don't share its CPU: after the rest, or on its own with `--no-deps` as CI
     // and `make e2e` run it.
@@ -52,6 +53,7 @@ export default defineConfig({
   webServer: [
     { port: PORT, log: '../../packages/samples/log', now: END },
     { port: FIXTURE_PORT, log: 'test/fixture/log', now: FIXTURE_END },
+    { port: ATTACKS_PORT, log: 'test/attacks/log', now: ATTACKS_END },
   ].map(({ port, log, now }) => ({
     command: 'node src/server.ts',
     // On 127.0.0.1 alone, and asked there: another program holding the port fails the run rather than answering it.

@@ -95,7 +95,34 @@ const TOOLS: Partial<Record<PictureData['type'], ToolName[]>> = {
 
 /** Admission control's refusal: Kyverno's own words, on an image Sigstore's signature did not vouch for. */
 const ADMISSION_SOURCE =
-  'Kyverno’s own refusal, stored with the event: it admits only an image whose Sigstore signature says the pipeline built it on main, or one of the few it names by digest.';
+  'Kyverno admits only an image whose Sigstore signature says the pipeline built it on main, or one of the few it names by digest.';
+
+/**
+ * Where an attack's evidence came from: each refusal the mechanism's own output, stored with its event by the role
+ * that records that mechanism, named as the store recorded it; or the attack's own record of each attempt.
+ */
+function refusalSource(evidence: Extract<PictureData, { type: 'refusal' }>): string {
+  const roles = [...new Set(evidence.refusals.map((refusal) => refusal.by ?? 'a role the record does not name'))];
+  const each = evidence.refusals.length > 1 ? 'Each refusal is' : 'The refusal is';
+  const refused = evidence.refusals.length
+    ? `${each} the mechanism’s own output, verbatim, stored with its event by the role that records it: ${listed(roles)}.`
+    : 'Nothing has refused it yet.';
+  const record =
+    evidence.verdict !== 'refused' && evidence.verdict !== 'running' && evidence.attempts.length
+      ? ' The attempts are the attack’s own record of what came back, verbatim, kept in its end by the harness.'
+      : '';
+  return `${refused}${evidence.admission ? ` ${ADMISSION_SOURCE}` : ''}${record}`;
+}
+
+/** Why the Gates card has no checks: no pull request yet, none, or, for an attack, where it met its mechanism. */
+function noGates(sheet: SheetData, ongoing: boolean): string {
+  const attack = sheet.evidence.type === 'refusal' ? sheet.evidence.attack : undefined;
+  if (attack === 'test') {
+    return 'The attack’s pull request is in the app’s repository, where its gates ran: the review gate’s check is its refusal, under Evidence.';
+  }
+  if (attack) return 'No pull request, so no gates ran: the attack met its mechanism before one could be opened.';
+  return ongoing ? 'No pull request yet, so no gates have run.' : 'No pull request, so no gates ran.';
+}
 
 /** What each sense captures, for an evidence block's caption (after the sense's name) and its source line. */
 const CAPTURED: Record<Sense, [what: string, source: string, tool?: ToolName]> = {
@@ -371,8 +398,8 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                   <div className="evidence-big">
                     <Picture picture={evidence} interactive />
                   </div>
-                  {evidence.type === 'refusal' && evidence.admission ? (
-                    <Source tools={['kyverno', 'sigstore']}>{ADMISSION_SOURCE}</Source>
+                  {evidence.type === 'refusal' ? (
+                    <Source tools={evidence.admission ? ['kyverno', 'sigstore'] : []}>{refusalSource(evidence)}</Source>
                   ) : (
                     <Source tools={TOOLS[evidence.type]}>{SOURCE[evidence.type]}</Source>
                   )}
@@ -448,7 +475,9 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                     <Fact name="Fingerprint">{sheet.facts.ticket.fingerprint}</Fact>
                   </>
                 )}
-                {!sheet.seenBy && <Fact name="Found by">{sheet.facts.foundBy}</Fact>}
+                {!sheet.seenBy && (
+                  <Fact name={card.kind === 'red-team' ? 'Launched by' : 'Found by'}>{sheet.facts.foundBy}</Fact>
+                )}
                 {sheet.facts.flag && <Fact name="Flag">{sheet.facts.flag}</Fact>}
                 {!released && card.reopened ? (
                   <Fact name="Version">back on {shortVersion(card.reopened.version)}</Fact>
@@ -606,9 +635,7 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                     )}
                   </div>
                 ) : (
-                  <p className="help">
-                    {ongoing ? 'No pull request yet, so no gates have run.' : 'No pull request, so no gates ran.'}
-                  </p>
+                  <p className="help">{noGates(sheet, ongoing)}</p>
                 )}
                 {sheet.earlier.map((line) => (
                   <p key={line} className="help gates-note">

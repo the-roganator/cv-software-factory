@@ -31,8 +31,11 @@ COPY packages/events/src packages/events/src
 # policy/line.ts), which the page shares with the line and the admin service, and the settings with the gateway;
 # whether alerts reach Martin's phone (policy/phone.ts), which it shares with the admin service; and the feature
 # flags' stages and the rules of moving one (policy/flags.ts, policy/flag-moves.ts), which the page judges each stop
-# of a flag's slider by, in the admin service's own words.
+# of a flag's slider by, in the admin service's own words; and the guardrails, the red-team attacks and who may record
+# each refusal (policy/guardrails.ts, policy/attacks.ts, policy/refusals.ts), which the Guardrails checklist and an
+# attack's card read each guardrail's proofs and attack, and check an attack's refusals, by.
 COPY policy/models.ts policy/spend.ts policy/settings.ts policy/line.ts policy/phone.ts policy/flags.ts policy/flag-moves.ts policy/
+COPY policy/guardrails.ts policy/attacks.ts policy/refusals.ts policy/
 COPY docs/design/system/properties.css docs/design/system/station.ts docs/design/system/
 COPY docs/design/system/mark/icon.svg docs/design/system/mark/
 ARG GIT_COMMIT=unknown

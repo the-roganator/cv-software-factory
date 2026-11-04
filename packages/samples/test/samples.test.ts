@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ADMIN_TYPES, AGENTS, KINDS, type PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
+import { AVAILABLE_ATTACKS } from '../../../policy/attacks.ts';
 import { mayAppend } from '../../../policy/refusals.ts';
 import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { LOG } from '../src/captures.ts';
@@ -27,14 +28,15 @@ describe('the samples', () => {
     expect(of('work-item.opened').every((event) => event.payload.sample)).toBe(true);
   });
 
-  it('cover every kind of work item but a planner’s finding', () => {
-    const kinds = KINDS.filter((kind) => kind !== 'planner-finding');
+  it('cover every kind of work item but a planner’s finding and a red-team attack', () => {
+    const kinds = KINDS.filter((kind) => kind !== 'planner-finding' && kind !== 'red-team');
     expect(new Set(of('work-item.opened').map((event) => event.payload.kind))).toEqual(new Set(kinds));
   });
 
-  it('have model calls from every agent, on Claude and on the local model, and a Jev judgement', () => {
+  it('have model calls from every agent but the red team, on Claude and on the local model, and a Jev judgement', () => {
+    // Milestone 7's attacks are scripted, with fixed content and no agent: nothing calls a model as the red team yet.
     const agents = new Set([...of('model.called').map((event) => event.payload.agent), 'triage']);
-    expect(agents).toEqual(new Set(AGENTS));
+    expect(agents).toEqual(new Set(AGENTS.filter((agent) => agent !== 'red-team')));
     expect(new Set(of('model.called').map((event) => event.payload.provider))).toEqual(new Set(['anthropic', 'local']));
     expect(of('judgement.made').length).toBeGreaterThan(0);
   });
@@ -173,12 +175,31 @@ describe('the samples', () => {
         expect(mayAppend(event.payload.mechanism, event.appended_by ?? ''), event.payload.mechanism).toBe(true);
       }
     }
-    expect(of('action.refused').map((event) => event.appended_by)).toEqual([
-      'factory_line',
-      'factory_line',
-      'factory_line',
-    ]);
+    // The coder's scope fence is the line's to record; triage records its own quarantine.
+    expect(
+      Object.fromEntries(
+        Object.entries(Object.groupBy(of('action.refused'), (event) => event.payload.mechanism)).map(
+          ([mechanism, list]) => [mechanism, [...new Set(list?.map((event) => event.appended_by))]],
+        ),
+      ),
+    ).toEqual({
+      'scope-fence': ['factory_line'],
+      'typed-judgement': ['factory_triage'],
+    });
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
+  });
+
+  it('hold no red-team attack while none can be launched, as the cluster can produce none', () => {
+    // When policy makes one available (`AVAILABLE_ATTACKS`), the samples may show it; until then the console's browser
+    // tests bring their own (apps/console/test/attacks).
+    expect(AVAILABLE_ATTACKS).toEqual([]);
+    expect(published.filter((event) => event.type.startsWith('attack.'))).toEqual([]);
+    expect(of('work-item.opened').filter((event) => event.payload.kind === 'red-team')).toEqual([]);
+  });
+
+  it('keep a guardrail that did not hold, from make guardrails’ own proof', () => {
+    const failed = of('guardrail.proved').filter((event) => !event.payload.held);
+    expect(failed.map((event) => [event.payload.proof, event.appended_by])).toEqual([['egress', 'factory_proofs']]);
   });
 
   it("give a guardrail's proof to the proofs' role, the only one that may append it", () => {

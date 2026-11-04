@@ -137,6 +137,30 @@ describe('code_scanning on an open pull request', () => {
     github({ [ALERTS]: page([]), [ANALYSES]: page([only]) });
     expect(scan('OPEN').ok).toBe(false);
   });
+
+  it('reads the alerts only once the head is analysed, so none can land between the two reads', () => {
+    // No answer for the alerts: reading them before the analysis would show as a failure to read them.
+    github(analysed(analysis('/language:actions', OLD_HEAD, '2026-11-04T00:48:59Z')));
+    const { out, ok } = scan('OPEN');
+    expect(ok).toBe(false);
+    expect(out).toContain('has not analysed');
+    expect(out).not.toContain('alert');
+  });
+
+  it('fails, saying so, when code scanning cannot be read', () => {
+    github(BOTH_ON_HEAD);
+    const { out, ok } = scan('OPEN');
+    expect(ok).toBe(false);
+    expect(out).toContain("MISMATCH: could not read code scanning's alerts on the pull request");
+  });
+
+  it('keeps an alert with no severity whole', () => {
+    const unrated = { ...alert(5), rule: { id: 'js/unrated' } };
+    github({ [ALERTS]: page([unrated]), ...BOTH_ON_HEAD });
+    const { out } = scan('OPEN');
+    expect(out).toContain('#5 unrated js/unrated at src/door.ts:110, open');
+    expect(out).toContain(`https://github.com/${REPO}/security/code-scanning/5`);
+  });
 });
 
 describe('code_scanning on a merged pull request', () => {
@@ -159,5 +183,12 @@ describe('code_scanning on a merged pull request', () => {
     const { out, ok } = scan('MERGED');
     expect(ok).toBe(false);
     expect(out).toContain('MISMATCH: #57');
+  });
+
+  it('fails on an alert whose state on main cannot be read', () => {
+    github({ [ALERTS]: page([alert(57)]) });
+    const { out, ok } = scan('MERGED');
+    expect(ok).toBe(false);
+    expect(out).toContain('could not read its state on main');
   });
 });

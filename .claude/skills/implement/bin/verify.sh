@@ -10,8 +10,9 @@
 #                          ready. No code-scanning alert is open on it, and code scanning has analysed its head
 #                          (scanning.sh): until it has, the pull request is not ready. Shows checks, threads and alerts.
 #                          A pull request Martin has merged passes on what is left to check (its description, checks,
-#                          threads, alerts still open on main and summary): its worktree and branch may be gone. Whether a branch is behind main is never checked: the merge queue
-#                          tests it on main as it will be.
+#                          threads, alerts still open on main and summary): its worktree and branch may be gone.
+#                          Whether a branch is behind main is never checked: the merge queue tests it on main as it
+#                          will be.
 #   verify.sh <key>        skipped: nothing was left behind (no commit on the worktree since it was made, so one made
 #                          from a stack's branch below counts from there), no branch pushed and no pull request opened.
 # A key of 278-2 is issue 278's second pull request. A key that begins app- is a work item in the app's repository

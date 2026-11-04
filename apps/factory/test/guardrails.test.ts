@@ -166,12 +166,12 @@ describe('the guardrail catalogue', () => {
     expect(attackLimitMs('not-an-attack')).toBe(LONGEST_ATTACK_MINUTES * 60_000);
   });
 
-  it('holds every attack back until the harness makes it, each keeping its rules and limit for then', () => {
-    expect(AVAILABLE_ATTACKS).toEqual([]);
+  it('makes every attack available now the harness makes it, each keeping its rules and limit', () => {
+    // The harness and the GitHub worker's attack door make all five (task 22); none is held back any longer.
+    expect([...AVAILABLE_ATTACKS].sort()).toEqual([...ATTACKS].sort());
     expect(ATTACKS.filter((attack) => attackAvailable(attack))).toEqual([...AVAILABLE_ATTACKS]);
-    expect(attackAvailable('workflow')).toBe(false);
+    expect(attackAvailable('workflow')).toBe(true);
     expect(attackAvailable('not-an-attack')).toBe(false);
-    // A launch recorded of one held back is waited out for its own limit, and the longest counts it.
     expect(LONGEST_ATTACK_MINUTES).toBe(ATTACK_RULES.test.minutes);
     expect(attackLimitMs('workflow')).toBe(ATTACK_RULES.workflow.minutes * 60_000);
   });

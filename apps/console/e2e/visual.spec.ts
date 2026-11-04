@@ -1272,9 +1272,9 @@ test.describe('attacks on the desktop', () => {
 test.describe('Guardrails on the desktop', () => {
   test.use({ viewport: WIDTHS.desktop });
 
-  test('an attack not available yet, in its guardrail’s row', async ({ page }) => {
+  test('an attack never launched, in its guardrail’s row, for Martin', async ({ page }) => {
     const panel = await guardrailsAt(page, 'martin', 1);
-    await expect(panel.locator('.gr:has(.more)')).toHaveScreenshot('m07-guardrail-unavailable.png');
+    await expect(panel.locator('.gr:has(.more)')).toHaveScreenshot('m07-guardrail-not-launched.png');
   });
 });
 

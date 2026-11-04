@@ -17,6 +17,8 @@
  *     GITHUB_API_URL, GHCR_URL        GitHub's API and GHCR, for a stand-in
  *     TUF_CACHE_DIR                   where Sigstore's trust root is kept, to check images' signatures (default: the
  *                                     user's cache)
+ *     ATTACK_PORT                     the red-team harness's attack door, on a port of its own (github/attacks.ts);
+ *                                     unset, it is not served
  *     PORT                            default 8080
  *     HOST                            the address to listen on (default 127.0.0.1; the cluster's Deployment says
  *                                     0.0.0.0)
@@ -44,6 +46,8 @@ export interface GitHubConfig {
   api: string;
   ghcr: string;
   tufCacheDir: string | undefined;
+  /** The attack door's port, for the red-team harness (github/attacks.ts); unset, the door is not served. */
+  attackPort: number | undefined;
   port: number;
   host: string;
 }
@@ -76,11 +80,21 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     api: env.GITHUB_API_URL || API,
     ghcr: env.GHCR_URL || GHCR,
     tufCacheDir: env.TUF_CACHE_DIR || undefined,
+    attackPort: env.ATTACK_PORT?.trim() ? Number(env.ATTACK_PORT) : undefined,
     port: Number(env.PORT ?? 8080),
     host: env.HOST || '127.0.0.1',
   };
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65_535) {
     throw new Error(`PORT is ${JSON.stringify(env.PORT)}; it must be a port number.`);
+  }
+  if (
+    config.attackPort !== undefined &&
+    (!Number.isInteger(config.attackPort) || config.attackPort < 1 || config.attackPort > 65_535)
+  ) {
+    throw new Error(`ATTACK_PORT is ${JSON.stringify(env.ATTACK_PORT)}; it must be a port number.`);
+  }
+  if (config.attackPort !== undefined && config.attackPort === config.port) {
+    throw new Error('ATTACK_PORT must differ from PORT: the attack door is on a port of its own.');
   }
   if (dryRun && !config.artifactsDir)
     throw new Error('GITHUB_DRY_RUN records to the artifact store: set ARTIFACTS_DIR.');

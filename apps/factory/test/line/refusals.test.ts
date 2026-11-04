@@ -40,13 +40,18 @@ function harness({ key = true } = {}) {
 }
 
 /** A refusal as the GitHub worker answers it, through JSON. */
-function answered({ key = privateKey, number = null as number | null, at = '2026-10-31T12:00:00.000Z' } = {}) {
+function answered({
+  key = privateKey,
+  number = null as number | null,
+  at = '2026-10-31T12:00:00.000Z',
+  mechanism = 'github-guard' as 'github-guard' | 'review-gate',
+} = {}) {
   const facts = {
     repo: REPO,
     number,
     at,
     payload: {
-      mechanism: 'github-guard' as const,
+      mechanism,
       action: `applyPatch branch factory/1400-cart in ${REPO}`,
       output: 'The patch changes .github/workflows/ci.yml, which no patch may.',
       guardrails: [1],
@@ -81,6 +86,16 @@ describe('the line’s relay of the GitHub worker’s refusals', () => {
       payload: { subject: { kind: 'issue or pull request', name: `${REPO}#12` } },
     });
     expect(validate(appended[0])).toEqual({ ok: true });
+  });
+
+  it('does not append the review check’s refusal, signed for the red-team harness and never the line’s', async () => {
+    const { appended, logged, refusals } = harness();
+    refusals.relay(answered({ number: 12, mechanism: 'review-gate' }), { workItem: '1400' });
+    await refusals.settled();
+    expect(appended).toEqual([]);
+    expect(logged.map((l) => [l.msg, l.mechanism])).toEqual([
+      ['the GitHub worker answered a refusal the line does not relay: not recorded', 'review-gate'],
+    ]);
   });
 
   it('logs, and does not append, one that does not verify, or any with no key to verify it', async () => {

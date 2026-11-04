@@ -48,7 +48,8 @@ const PATCH_BYTES = 1024 * 1024;
  */
 export async function attempt(url: string): Promise<'reached' | 'blocked' | 'unclear'> {
   try {
-    await fetch(url, { signal: AbortSignal.timeout(3000) });
+    // Any answer is a reach, a redirect too: one followed to a name the pod cannot resolve would read as unclear.
+    await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(3000) });
     return 'reached';
   } catch (error) {
     const code = ((error as Error)?.cause as { code?: string } | undefined)?.code ?? (error as Error)?.name;

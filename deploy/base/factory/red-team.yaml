@@ -1,0 +1,137 @@
+# The red-team harness (apps/factory/src/red-team, `factory red-team`): it makes each of spec 5.3's attacks Martin
+# launches from the console, against the real mechanism, and records how it ended. It connects to the store as its own
+# role, `factory_redteam`, which alone may read his launches and append an attack's end. It is no member of the
+# workers' role: its NetworkPolicy and its Role grant exactly what the attacks need and nothing else
+# (network-policies.yaml, ../runners/red-team-access.yaml).
+#
+# It creates the egress and image attacks' pods in `runners`, so it holds a service-account token; the red-team
+# admission rule (../admission/factory/red-team-pods.yaml) holds those pods to a shape it cannot stray from, since RBAC
+# cannot limit what a pod it creates holds. Attacks 2 and 3 it makes through the GitHub worker's attack door, on a port
+# of its own (GITHUB_ATTACK_URL): it holds no GitHub credential.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: red-team
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: red-team
+  labels: &labels
+    app.kubernetes.io/name: red-team
+    app.kubernetes.io/part-of: software-factory
+    # Not `worker`: the workers' NetworkPolicy would not give it the app's front door, the API server or the attack
+    # door, and it needs no more than its own policy grants. Its own component, fenced by network-policies.yaml.
+    app.kubernetes.io/component: red-team
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one at a time: an attack a launch opened is taken by one harness
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: red-team
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      serviceAccountName: red-team
+      # It creates the egress and image attacks' pods through the Kubernetes API, so it holds its account's token; the
+      # admission rule holds what it may make.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The runner image the egress attack's pod runs, pinned by the profile like the line's: this checks it is
+        # pullable before the harness starts, and the profile copies its reference into RUNNER_IMAGE
+        # (deploy/overlays/local/factory-image).
+        - name: runner-image
+          image: factory-runner
+          args: ["--version"]
+          command: [node]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: red-team
+          image: factory
+          args:
+            - --import
+            - ./src/telemetry.ts
+            - src/cli.ts
+            - red-team
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.telemetry:4318"
+            - name: OTEL_SERVICE_NAME
+              value: "red-team"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=software-factory"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
+            - name: PGHOST
+              value: postgres
+            - name: PGDATABASE
+              value: factory
+            - name: PGUSER
+              value: factory_redteam
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-redteam
+                  key: password
+            # Attack 1 sends a report through the app's front door, as a visitor does: it connects to the ingress and
+            # names the app's host, since the app's public name does not resolve in the cluster (as the traffic
+            # generator does).
+            - name: APP_URL
+              value: http://website.localhost
+            - name: INGRESS_URL
+              value: http://traefik.kube-system
+            # The signed runner image attack 4's egress pod runs; the profile pins it (factory-image).
+            - name: RUNNER_IMAGE
+              value: factory-runner
+            # The GitHub worker's attack door, on its own port, for attacks 2 and 3.
+            - name: GITHUB_ATTACK_URL
+              value: http://github:8082
+            - name: ARTIFACTS_DIR
+              value: /var/lib/factory/artifacts
+          readinessProbe:
+            exec:
+              command: [/nodejs/bin/node, -e, "process.exit(0)"]
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            # Read-only: the writer checks the artifacts an event cites, and the harness's events cite none. The store
+            # holds every worker's artifacts and the GitHub worker's signed records, which it must not be able to touch.
+            - name: artifacts
+              mountPath: /var/lib/factory/artifacts
+              readOnly: true
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: artifacts

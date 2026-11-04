@@ -8,6 +8,7 @@ namePrefix: factory-
 resources:
   - ../images
   - refusal-key.yaml
+  - red-team-pods.yaml
 patches:
   - target:
       kind: ImageValidatingPolicy

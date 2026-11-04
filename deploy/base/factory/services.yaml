@@ -27,6 +27,10 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    # The red-team harness's attack door, on its own port (apps/factory/src/github/attacks.ts).
+    - name: attack
+      port: 8082
+      targetPort: attack
 ---
 apiVersion: v1
 kind: Service

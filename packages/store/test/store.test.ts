@@ -118,6 +118,7 @@ describe('migrations', () => {
       { version: 44, name: 'proofs-read-no-refusals' },
       { version: 45, name: 'red-team-attacks' },
       { version: 46, name: 'red-team-refusals' },
+      { version: 47, name: 'red-team-report-signal' },
     ]);
   });
 });

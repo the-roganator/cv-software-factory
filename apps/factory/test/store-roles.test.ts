@@ -152,6 +152,37 @@ describe('the proofs’ role', () => {
   });
 });
 
+describe('the red-team harness’s role', () => {
+  it('runs the harness as factory_redteam, its password from a Secret `make up` makes and the migrate Job sets', async () => {
+    const makefile = await readFile(join(DEPLOY, '../Makefile'), 'utf-8');
+    expect(makefile).toMatch(/^\t@\$\(call password,factory,postgres-redteam\)/m);
+    expect((await migrateJob()).find((e) => e.name === 'REDTEAM_PASSWORD')?.valueFrom?.secretKeyRef).toEqual({
+      name: 'postgres-redteam',
+      key: 'password',
+      optional: true,
+    });
+    const deployment = (await manifests<Deployment>()).find(
+      (m) => m.manifest.kind === 'Deployment' && m.manifest.metadata?.name === 'red-team',
+    )?.manifest;
+    const env = deployment?.spec?.template?.spec.containers[0]?.env ?? [];
+    expect(env.find((e) => e.name === 'PGUSER')?.value).toBe('factory_redteam');
+    expect(env.find((e) => e.name === 'PGPASSWORD')?.valueFrom?.secretKeyRef).toEqual({
+      name: 'postgres-redteam',
+      key: 'password',
+    });
+  });
+
+  it('is the only pod that reads its Secret, besides the migrate Job that sets it', async () => {
+    for (const { manifest } of await manifests<Deployment>()) {
+      if (manifest.metadata?.name === 'red-team' || manifest.metadata?.name === 'migrate') continue;
+      const pod = manifest.spec?.template?.spec;
+      for (const e of [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])].flatMap((c) => c.env ?? [])) {
+        expect(e.valueFrom?.secretKeyRef?.name, manifest.metadata?.name).not.toBe('postgres-redteam');
+      }
+    }
+  });
+});
+
 /** No Deployment's pod reads this Secret, nor any other workload's but the one named. */
 async function expectNoPodReads(secret: string, except?: string) {
   for (const { manifest } of await manifests<Deployment>()) {

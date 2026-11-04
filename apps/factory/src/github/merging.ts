@@ -232,12 +232,25 @@ export function verdictOf(
   if (read.commit !== head) return none(`the verdict is for ${read.commit.slice(0, 7)}, not the head`);
   const judged = read.judged.find((each) => each.number === number && each.head === head);
   if (!judged) return { verdict: read, judged: null, problem: `the verdict does not judge #${number} at its head` };
+  // Only a success passes and only a failure holds: a run cancelled, timed out or gone stale is no verdict.
+  if (check.conclusion !== 'success' && check.conclusion !== 'failure') {
+    return { verdict: read, judged: null, problem: `the review check concluded ${check.conclusion}` };
+  }
   // A check that failed with a rule that passes, or passed with one that holds, says two things: neither is trusted.
-  const failed = check.conclusion !== 'success';
+  const failed = check.conclusion === 'failure';
   if (failed !== (judged.rule === 'held')) {
     return { verdict: read, judged: null, problem: `the check's conclusion, ${check.conclusion}, is not its rule's` };
   }
   return { verdict: read, judged, problem: null };
+}
+
+/** The review check's own words, as a refusal of the gate's carries them: its title, then its summary. */
+export function reviewOutput(check: Pick<ReviewCheck, 'title' | 'summary'>): string {
+  const output = [check.title ?? '', check.summary ?? '']
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  return output || 'The review check held the pull request.';
 }
 
 /** Why the gate held a pull request, as its refusal shows a guardrail: Martin's code alone, or a risk. */

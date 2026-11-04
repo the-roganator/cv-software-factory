@@ -262,7 +262,7 @@ export class DryRunReads implements Reads {
   }
 
   #state(pull: DryRunPull): PullRequestState {
-    const sha = this.#made.branchMade(pull.repo, pull.head) ?? shaFor(`${pull.repo}#${pull.number} head`);
+    const sha = this.#made.headOf(pull);
     // A pull request the dry run closed unmerged never merges.
     const merged =
       pull.closedAt === null &&

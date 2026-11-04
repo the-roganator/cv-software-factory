@@ -32,6 +32,7 @@ import {
   type ReviewCheck,
   type ReviewVerdict,
   reviewCheckOf,
+  reviewOutput,
   reviewRunsPath,
   verdictOf,
 } from './merging.ts';
@@ -397,18 +398,15 @@ export class LiveReads implements Reads {
     const key = `${repo} ${check.id}`;
     const known = this.#signed.get(key);
     if (known) return known;
-    if (this.#signed.size >= MAX_SIGNED) this.#signed.clear();
-    const output = [check.title ?? '', check.summary ?? '']
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .join('\n\n');
+    // The oldest goes first, so a run still held, read on every pass, keeps its one record.
+    if (this.#signed.size >= MAX_SIGNED) this.#signed.delete(this.#signed.keys().next().value as string);
     const signed = recorder
       .record(
         {
           repo,
           number,
           action: `Merge pull request #${number} at ${head.slice(0, 7)} in ${repo}`,
-          output: output || 'The review check held the pull request.',
+          output: reviewOutput(check),
           subject: { kind: 'commit', name: head },
           mechanism: 'review-gate',
           cause: heldFor(judged),

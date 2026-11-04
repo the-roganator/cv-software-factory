@@ -113,6 +113,9 @@ function fakes(world: World) {
       }
       throw new Error(`the fake does not read ${path}`);
     },
+    async poll(repo: string, path: string) {
+      return { changed: true, body: await this.read(repo, path) };
+    },
   };
   const reads = {
     async head(repo: string, branch: string) {

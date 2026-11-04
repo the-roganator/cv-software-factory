@@ -20,6 +20,7 @@
  * body it was given holds; a body it is given with no list keeps no section at all, so no agent's words can name a
  * test. Given a list and no body, it rewrites the section in the body the pull request has.
  */
+import { createHash } from 'node:crypto';
 import type { ArtifactStore } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { z } from 'zod';
@@ -856,6 +857,17 @@ export class DryRunActions implements Actions {
     return this.#branches.get(`${repo} ${branch}`);
   }
 
+  /**
+   * The head a pull request this dry run opened would be at: its branch as the dry run moved it, or, for a branch it
+   * never moved, a sha that stands for it, the same every time, which its reads give too (`dry-run-reads.ts`).
+   */
+  headOf(pull: DryRunPull): string {
+    return (
+      this.branchMade(pull.repo, pull.head) ??
+      createHash('sha1').update(`dry run: ${pull.repo}#${pull.number} head`).digest('hex')
+    );
+  }
+
   /** A pull request this dry run would have opened, or undefined for any other number. */
   pullRequestMade(number: number): DryRunPull | undefined {
     return this.#pulls.get(number);
@@ -1064,11 +1076,14 @@ export class DryRunActions implements Actions {
     const made = this.#pulls.get(number);
     const own = made?.repo === repo ? made : undefined;
     if (own) {
-      const sha = this.#branches.get(`${repo} ${own.head}`) ?? '';
       guardQueue(
         repo,
         number,
-        { state: own.closedAt ? 'closed' : 'open', draft: own.draft, head: { ref: own.head, sha, repo } },
+        {
+          state: own.closedAt ? 'closed' : 'open',
+          draft: own.draft,
+          head: { ref: own.head, sha: this.headOf(own), repo },
+        },
         expectedHead,
       );
     } else {

@@ -27,7 +27,7 @@ import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions, LiveActions } from './actions.ts';
 import { RED_TEAM_PREFIX } from './branches.ts';
 import type { GitHub } from './client.ts';
-import { listedReviews, REVIEW_RUNS, reviewCheckOf, reviewRunsPath } from './merging.ts';
+import { listedReviews, REVIEW_RUNS, reviewCheckOf, reviewOutput, reviewRunsPath } from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import type { Reads } from './reads.ts';
 import { outcomeOf } from './reads.ts';
@@ -62,8 +62,8 @@ const TEST_PR_BODY =
 
 export interface AttackServerOptions {
   actions: Actions;
-  /** For the workflow-refusal direct attempt, and for reading the review App's `review` runs. */
-  github: Pick<GitHub, 'read'>;
+  /** For the workflow-refusal direct attempt, and for reading the review App's `review` runs, conditionally. */
+  github: Pick<GitHub, 'read' | 'poll'>;
   liveActions: LiveActions;
   reads: Pick<Reads, 'head'>;
   recorder: RefusalRecorder;
@@ -286,7 +286,8 @@ async function waitForReview(
 ): Promise<{ held: boolean; output: string } | undefined> {
   const review = await waitFor(
     async () => {
-      const runs = listedReviews(await o.github.read(repo, reviewRunsPath(repo, sha), REVIEW_RUNS));
+      const { body } = await o.github.poll(repo, reviewRunsPath(repo, sha), REVIEW_RUNS);
+      const runs = listedReviews(body);
       const check = reviewCheckOf(runs, sha);
       return check?.status === 'completed' ? check : undefined;
     },
@@ -301,10 +302,5 @@ async function waitForReview(
   );
   if (!review) return undefined;
   const held = outcomeOf(review.conclusion) === 'failure';
-  // The check's own words: its title and its summary, as GitHub lists them.
-  const output = [review.title ?? '', review.summary ?? '']
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .join('\n\n');
-  return { held, output: output || 'the review check held the pull request' };
+  return { held, output: reviewOutput(review) };
 }

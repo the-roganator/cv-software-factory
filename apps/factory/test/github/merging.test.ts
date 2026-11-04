@@ -306,6 +306,11 @@ describe('the review gate’s verdict', () => {
       { conclusion: 'failure' },
       "the check's conclusion, failure, is not its rule's",
     ],
+    [
+      'a run cancelled with a rule that holds',
+      { conclusion: 'cancelled', judged: [{ number: 17, head: SHA, rule: 'held', tags: [] }] as Judged[] },
+      'the review check concluded cancelled',
+    ],
   ])('has no verdict to trust from %s', async (_what, options, problem) => {
     const read = await reads([reviewRun(300, options)]).reviewVerdict(REPO, 17);
     expect(read).toMatchObject({ judged: null, problem });
@@ -584,6 +589,18 @@ describe('merging in a dry run', () => {
     expect(merged).toMatchObject({ state: 'merged', queued: null, removed: { reason: 'merged' } });
     expect(merged.checks.map((c) => [c.name, c.conclusion])).toEqual([['Unit tests', 'success']]);
     expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true });
+  });
+
+  it('queues one from a branch it never moved at the head its reads give', async () => {
+    const { made, reads } = await dryRun();
+    const { number } = await made.openPullRequest(REPO, {
+      head: 'factory/12-other',
+      base: 'main',
+      title: 't',
+      body: 'b',
+    });
+    const { head } = await reads.mergeability(REPO, number);
+    expect(await made.enqueuePullRequest(REPO, number, head)).toEqual({ position: 1, state: 'QUEUED' });
   });
 
   it('never conflicts with its base', async () => {

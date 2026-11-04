@@ -80,6 +80,7 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
 
   ```sh
   kubectl proxy --port=8001 &
+  kubectl --context k3d-software-factory -n factory port-forward svc/github 8082:8082 &
   (store_role redteam && KUBE_API_URL=http://127.0.0.1:8001 ARTIFACTS_DIR=/tmp/artifacts \
     APP_URL=http://website.localhost:8080 RUNNER_IMAGE="$(kubectl --context k3d-software-factory -n factory get deploy red-team -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUNNER_IMAGE")].value}')" \
     GITHUB_ATTACK_URL=http://localhost:8082 node apps/factory/src/cli.ts red-team)

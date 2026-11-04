@@ -138,7 +138,9 @@ export function createAttackServer(options: AttackServerOptions): { server: Serv
 
   const server = createServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
-      if (!res.headersSent) send(res, 500, { error: 'internal', message: String(error) });
+      // The log has the error; the answer says only that the door failed.
+      log.error({ err: error }, 'the attack door failed to answer');
+      if (!res.headersSent) send(res, 500, { error: 'internal', message: 'The attack door failed; its log says why.' });
     });
   });
   return { server, listening: listenOn(server, options.port, options.host) };

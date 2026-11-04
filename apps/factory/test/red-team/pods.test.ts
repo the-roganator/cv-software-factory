@@ -86,6 +86,27 @@ describe('attack 4 (egress)', () => {
     expect(result.outcome).toBe('not-refused');
   });
 
+  it('is unfinished, not a finding, when the pod could not tell of a target, or said nothing of it', async () => {
+    const unclear = log([{ refused: true }, { refused: false }, { refused: true }], { reached: true }).replace(
+      '"result":"reached"',
+      '"result":"unclear"',
+    );
+    const first = await egressAttempt({ kube: egressKube(unclear).kube, runnerImage: 'runner@sha256:abc', find })(
+      ctx(fakeSql(() => [])),
+    );
+    expect(first.outcome).toBe('unfinished');
+    expect(first.refusals).toHaveLength(2);
+    const silentOfOne = log([{ refused: true }, { refused: true }, { refused: true }], { reached: true })
+      .split('\n')
+      .filter((line) => !line.includes(EGRESS_TARGETS[1]?.what ?? ''))
+      .join('\n');
+    const second = await egressAttempt({ kube: egressKube(silentOfOne).kube, runnerImage: 'runner@sha256:abc', find })(
+      ctx(fakeSql(() => [])),
+    );
+    expect(second.outcome).toBe('unfinished');
+    expect(second.attempts[1]?.result).toBe('the pod said nothing of it');
+  });
+
   it('is unfinished when the gateway control was not reached', async () => {
     const { kube } = egressKube(log([{ refused: true }, { refused: true }, { refused: true }], { reached: false }));
     const result = await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(ctx(fakeSql(() => [])));

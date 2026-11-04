@@ -87,8 +87,12 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   // real attempts in GitHub, so it is served only when the worker can write and is not in a dry run, which must touch
   // nothing in GitHub: with the door closed the harness records those two attacks unfinished. A NetworkPolicy opens
   // the port to the harness's pod alone, never the line.
+  // Its attacks act in the two public repositories, and only when the worker is configured for both: a worker aimed at
+  // a stand-in or a subset (GITHUB_REPOSITORIES) serves no door.
+  const [factoryRepo, appRepo] = REPOSITORIES;
+  const bothConfigured = config.repositories.includes(factoryRepo) && config.repositories.includes(appRepo);
   let attackDoor: ReturnType<typeof createAttackServer> | undefined;
-  if (config.attackPort !== undefined && github.writable && !config.dryRun) {
+  if (config.attackPort !== undefined && github.writable && !config.dryRun && bothConfigured) {
     const doorActions = new LiveActions(github, { guard });
     attackDoor = createAttackServer({
       actions: doorActions,
@@ -96,8 +100,8 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       github,
       reads: liveReads,
       recorder,
-      factoryRepo: REPOSITORIES[0],
-      appRepo: REPOSITORIES[1],
+      factoryRepo,
+      appRepo,
       port: config.attackPort,
       host: config.host,
       log,
@@ -105,11 +109,12 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     await attackDoor.listening;
     log.info({ port: config.attackPort }, 'red-team attack door listening');
   } else if (config.attackPort !== undefined) {
-    log.warn(
-      config.dryRun
-        ? 'ATTACK_PORT is set but the worker is in a dry run, which touches nothing in GitHub: the attack door is not served.'
-        : 'ATTACK_PORT is set but the worker cannot write: the attack door is not served.',
-    );
+    const why = config.dryRun
+      ? 'the worker is in a dry run, which touches nothing in GitHub'
+      : !github.writable
+        ? 'the worker cannot write'
+        : 'the worker is not configured for both public repositories (GITHUB_REPOSITORIES)';
+    log.warn(`ATTACK_PORT is set but ${why}: the attack door is not served.`);
   }
 
   const stop = async () => {

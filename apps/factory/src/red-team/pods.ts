@@ -201,13 +201,17 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
   const byWhat = new Map(lines.map((line) => [line.what, line]));
   const attempts: AttemptResult['attempts'] = [];
   const refusals: number[] = [];
+  // A target is a finding only when the pod says it reached it. One it said nothing of, or could not tell (a line it
+  // called unclear), proves neither a reach nor a refusal: the attack is unfinished, not a finding and not a pass.
   let anyReached = false;
+  let anyUnclear = false;
   for (const target of EGRESS_TARGETS) {
     const line = byWhat.get(target.what);
     const refused = line?.refused === true;
     const result = line ? line.result : 'the pod said nothing of it';
     attempts.push({ what: target.what, result, refused });
-    if (!refused) anyReached = true;
+    if (line?.result === 'reached') anyReached = true;
+    else if (!refused) anyUnclear = true;
     if (refused) {
       refusals.push(
         await refuse(ctx.events, ctx.workItem, {
@@ -234,13 +238,22 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
       reason: 'The control failed: the pod could not reach the gateway, so its refusals prove nothing.',
     };
   }
-  if (anyReached || attempts.length !== EGRESS_TARGETS.length || refusals.length !== EGRESS_TARGETS.length) {
+  if (anyReached) {
     return {
       outcome: 'not-refused',
       refusals,
       attempts,
       control,
       reason: 'An outside address was reached: a runner’s egress policy did not refuse it.',
+    };
+  }
+  if (anyUnclear || refusals.length !== EGRESS_TARGETS.length) {
+    return {
+      outcome: 'unfinished',
+      refusals,
+      attempts,
+      control,
+      reason: 'The pod could not say of every outside address whether it was refused, so the attack proves nothing.',
     };
   }
   return {

@@ -1,7 +1,8 @@
 /**
  * Guardrails (milestone 7, task 22): the checklist's head and rows, one row open at a time in place, a guardrail that
  * did not hold and why, and each attack in its guardrail's row. Against the samples, as the cluster is now: no attack can
- * be launched (`policy/attacks.ts`), so each attack's card says it is not available yet, with no Launch for anyone.
+ * be launched (`policy/attacks.ts`): every one is, and the samples launch none, so each card says it has not been
+ * launched yet, with Launch for Martin and a label for a visitor.
  * Against the attacks' test data, with every attack available as the flag will make them (`attacksAvailable`): its last
  * run and Launch; for a visitor Launch is a label, whose dialog says Martin launches it, with only Close; for Martin,
  * with a stand-in for the admin service, Launch waits while an attack is in flight, says the service's refusal in its
@@ -54,7 +55,7 @@ test('a visitor reads the checklist: how many hold, one row open at a time, and 
   await expect(details.locator('p.attn')).toContainText('runners → 93.184.215.14: allowed');
   await expect(details.locator('p.attn')).toContainText('It reads as not held until the same proof holds again.');
   await expect(details).toContainText('Did not hold: make guardrails');
-  await expect(details.locator('.gr-attack .last .v')).toHaveText('Not available yet');
+  await expect(details.locator('.gr-attack .last .v')).toHaveText('Not launched yet');
 
   // Opening another closes it.
   const eight = rowButton(page, 8);
@@ -62,7 +63,7 @@ test('a visitor reads the checklist: how many hold, one row open at a time, and 
   await expect(eight).toHaveAttribute('aria-expanded', 'true');
   await expect(five).toHaveAttribute('aria-expanded', 'false');
   await expect(panel(page).locator('.more')).toHaveCount(1);
-  await expect(panel(page).locator('.more')).toContainText('None yet: make guardrails proves it.');
+  await expect(panel(page).locator('.more')).toContainText('None yet: its attack, or make guardrails, proves it.');
 
   const scan = await new AxeBuilder({ page })
     .include('#guardrails')
@@ -72,7 +73,7 @@ test('a visitor reads the checklist: how many hold, one row open at a time, and 
 });
 
 for (const as of ['martin', 'visitor'] as const) {
-  test(`every attack says it is not available yet, with what it tries, and no Launch, for ${as === 'martin' ? 'Martin' : 'a visitor'}`, async ({
+  test(`every attack says it has not been launched yet, with Launch ${as === 'martin' ? 'for Martin' : 'as a label for a visitor'}`, async ({
     page,
   }) => {
     await adminService(page, as);
@@ -87,10 +88,16 @@ for (const as of ['martin', 'visitor'] as const) {
       await rowButton(page, n).click();
       const attack = panel(page).locator('.more .gr-attack');
       await expect(attack.locator('b')).toHaveText(name);
-      await expect(attack.locator('.last .v')).toHaveText('Not available yet');
-      await expect(attack.locator('.tries')).not.toBeEmpty();
-      await expect(attack.getByRole('button')).toHaveCount(0);
-      await expect(attack.locator('.ro')).toHaveCount(0);
+      // Every attack is available (policy/attacks.ts), and the samples launch none.
+      await expect(attack.locator('.last .v')).toHaveText('Not launched yet');
+      // What it tries is the dialog's to say for an available attack; the card keeps its name and its last run.
+      await expect(attack.locator('.tries')).toHaveCount(0);
+      if (as === 'martin') {
+        await expect(attack.getByRole('button', { name: 'Launch' })).toBeEnabled();
+      } else {
+        // A visitor's Launch is a label: it opens the dialog read-only, and launches nothing.
+        await expect(attack.locator('.ro')).toHaveText('Launch');
+      }
     }
     await expect(page.getByRole('dialog')).toHaveCount(0);
   });

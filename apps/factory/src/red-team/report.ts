@@ -44,6 +44,9 @@ export const reportAttempt =
     // report and no other. It is part of the report's text, which the app logs and the inbox keeps unscrubbed.
     const marker = `red-team-${randomUUID()}`;
     const text = `${RED_TEAM_REPORT_TEXT} [${marker}]`;
+    // One deadline for the whole attempt: the two waits below share what is left of the attack's limit.
+    const until = Date.now() + ctx.limitMs;
+    const left = () => Math.max(0, until - Date.now());
     await report({ page: RED_TEAM_REPORT_PAGE, text });
 
     // The inbox id of the report carrying the marker: the signal id triage keyed its events on. Undefined until the
@@ -53,7 +56,7 @@ export const reportAttempt =
         const [row] = await ctx.sql<{ id: string | null }[]>`select red_team_report_signal(${marker}) as id`;
         return row?.id ?? undefined;
       },
-      { limitMs: ctx.limitMs, everyMs: LOOK_MS, signal: ctx.signal },
+      { limitMs: left(), everyMs: LOOK_MS, signal: ctx.signal },
     );
     if (!signalId) {
       return {
@@ -77,7 +80,7 @@ export const reportAttempt =
           where id = ${refusalId} and type = 'action.refused' and payload->>'mechanism' = 'typed-judgement'`;
         return row ? Number(row.seq) : undefined;
       },
-      { limitMs: ctx.limitMs, everyMs: LOOK_MS, signal: ctx.signal },
+      { limitMs: left(), everyMs: LOOK_MS, signal: ctx.signal },
     );
     if (seq === undefined) {
       return {

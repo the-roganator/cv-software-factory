@@ -122,8 +122,9 @@ export const APPS = {
 
 /**
  * The one ruleset on main (ADR 0014), which nobody bypasses: every change is a pull request, squash-merged, signed
- * and linear, through the merge queue, once its required checks pass, `review` among them. GitHub's own review rule
- * is not here: the queue admits only a pull request that meets every rule, so review is a check it can wait for.
+ * and linear, through the merge queue, once its required checks pass, `review` among them, and CodeQL has found
+ * nothing it holds a merge for (`CODE_SCANNING`). GitHub's own review rule is not here: the queue admits only a pull
+ * request that meets every rule, so review is a check it can wait for.
  *
  * No rule that a branch be up to date with main: the queue tests each pull request on main as it will be, with the
  * pull requests ahead of it, so one behind main merges without being brought up to date first.
@@ -162,9 +163,24 @@ export const rules = (requiredChecks: string[]) => ({
         ],
       },
     },
+    { type: 'code_scanning', parameters: { code_scanning_tools: [CODE_SCANNING] } },
     { type: 'merge_queue', parameters: MERGE_QUEUE },
   ],
 });
+
+/**
+ * Code scanning as a gate: a pull request merges only once CodeQL has analysed it, and not while its analysis finds a
+ * new security alert of medium severity or higher, or a new error. The `codeql` check alone fails only at high or
+ * above, and no rule required it. The way past a false positive is to dismiss the alert in code scanning, with a
+ * written reason, which Martin does. GitHub says the rule does not apply to the merge queue's groups, so it judges
+ * each pull request's own analysis, not the queue's commit; CodeQL runs there too (codeql.yml), so the queue never
+ * waits for an analysis that is not coming.
+ */
+export const CODE_SCANNING = {
+  tool: 'CodeQL',
+  security_alerts_threshold: 'medium_or_higher',
+  alerts_threshold: 'errors',
+};
 
 /**
  * The merge queue: each pull request squashed, as the repository merges, and every one of a group must pass, so each
@@ -269,13 +285,33 @@ export function rulesetProblems(live: unknown, wanted: ReturnType<typeof rules>)
   if (seesBypass && !matches((live as { bypass_actors: unknown }).bypass_actors, wanted.bypass_actors)) {
     problems.push(`ruleset "${wanted.name}" lets someone bypass it`);
   }
-  if (!matches(live, rest)) problems.push(`ruleset "${wanted.name}" differs from this script's`);
+  if (!matches(inOrderOf(live, rest.rules), rest)) problems.push(`ruleset "${wanted.name}" differs from this script's`);
   const unseen = seesBypass
     ? []
     : [
         `ruleset "${wanted.name}": this token cannot see who may bypass it, which GitHub shows only to those who may change it, so that was not compared; an admin's \`--check\` compares it, as \`make guardrails\` does`,
       ];
   return { problems, unseen };
+}
+
+/**
+ * A live ruleset with its rules in the order of these, by type, so a list GitHub sends in an order of its own is no
+ * drift; rules of a type this script does not make stay, after the rest, so one added elsewhere still is.
+ */
+export function inOrderOf(live: unknown, wanted: { type: string }[]): unknown {
+  if (!live || typeof live !== 'object' || !Array.isArray((live as { rules?: unknown }).rules)) return live;
+  const rules = (live as { rules: unknown[] }).rules;
+  const rank = (rule: unknown) => {
+    const at = wanted.findIndex((w) => w.type === (rule as { type?: unknown } | null)?.type);
+    return at === -1 ? wanted.length : at;
+  };
+  return {
+    ...live,
+    rules: rules
+      .map((rule, i) => ({ rule, i }))
+      .sort((a, b) => rank(a.rule) - rank(b.rule) || a.i - b.i)
+      .map(({ rule }) => rule),
+  };
 }
 
 /** The rule suites asked for: the last week's pushes that bypassed a ruleset, as many as one page holds. */
@@ -523,7 +559,7 @@ function apply(name: string, requiredChecks: string[]): void {
     else gh('POST', '/rulesets', ruleset);
   };
   step(
-    `ruleset "main": pull requests only, linear and signed, through the merge queue; requires ${[...requiredChecks, REVIEW_CHECK].join('; ')}`,
+    `ruleset "main": pull requests only, linear and signed, through the merge queue, held for ${CODE_SCANNING.tool}'s alerts; requires ${[...requiredChecks, REVIEW_CHECK].join('; ')}`,
     () => apply(rules(requiredChecks)),
   );
   for (const name of RETIRED) {

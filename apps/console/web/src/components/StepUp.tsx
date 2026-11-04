@@ -266,9 +266,13 @@ export function StepUpPill() {
         : '';
   return (
     <>
-      <span className="sr" role="status">
-        {status}
-      </span>
+      {/* Only while there is something to say, as the pill was: an empty status would be a second one on the page
+          while it leaves for a door, which says why in a status of its own. */}
+      {status && (
+        <span className="sr" role="status">
+          {status}
+        </span>
+      )}
       {until !== undefined && (
         <button
           type="button"

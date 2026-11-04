@@ -16,6 +16,9 @@
  *   it: its guardrail reads by its other proofs alone. One of its launches still in flight, recorded before it was held
  *   back, still makes every Launch wait, as the admin service does.
  *
+ * Each row also says what it refused in the seven days to t (`refusals.ts`), and the row that the last rollback proves
+ * (9's) says what that rollback was, and whether auto-rollback is off.
+ *
  * Plain TypeScript, so Node tests it directly.
  */
 import type { Attack, PublicEvent } from '@software-factory/events';
@@ -23,6 +26,7 @@ import { ATTACK_RULES, attackAvailable } from '@software-factory/policy/attacks'
 import { GUARDRAILS } from '@software-factory/policy/guardrails';
 import { limitOf, type Verdict, verdictAt } from './attacks.ts';
 import type { ItemState } from './items.ts';
+import { type Checks, type FoldedRefusals, type LastRollback, type RefusalsView, refusalsAt } from './refusals.ts';
 
 /** The one role whose proofs are trusted (0043_guardrail-proofs.sql). */
 export const PROOFS_ROLE = 'factory_proofs';
@@ -67,7 +71,24 @@ export interface GuardrailRow {
   /** The proof it reads by: the failure that stands, or the newest. */
   proof: ProofResult | undefined;
   attack: AttackRow | undefined;
+  /** What it refused in the seven days to t. */
+  refusals: RefusalsView;
+  /**
+   * For a guardrail the last rollback proves, what proves it where nothing refuses: that rollback, if there was one,
+   * and whether Martin has auto-rollback off.
+   */
+  rollback: { last: LastRollback | undefined; autoRollback: boolean } | undefined;
 }
+
+/** What the rows read beside their proofs: the refusals, their checks, the last rollback and the switch. */
+export interface Beside {
+  refusals: FoldedRefusals;
+  checks: Checks;
+  rollback: LastRollback | undefined;
+  autoRollback: boolean;
+}
+
+const NOTHING_BESIDE: Beside = { refusals: new Map(), checks: new Map(), rollback: undefined, autoRollback: true };
 
 export interface GuardrailsView {
   rows: GuardrailRow[];
@@ -120,6 +141,7 @@ export function guardrailsView(
   items: readonly ItemState[],
   t: number,
   available: (attack: Attack) => boolean = attackAvailable,
+  beside: Beside = NOTHING_BESIDE,
 ): GuardrailsView {
   // Each attack's runs, oldest first, as their work items opened.
   const runs = new Map<Attack, (AttackRun & { why: string | undefined; endedAt: number; blocks: boolean })[]>();
@@ -177,6 +199,10 @@ export function guardrailsView(
         available: offered,
         last: last && { verdict: last.verdict, at: last.at, workItem: last.workItem, until: last.until },
       },
+      refusals: refusalsAt(beside.refusals.get(guardrail.n), t, beside.checks),
+      rollback: (guardrail.proofs as readonly string[]).includes('rollback')
+        ? { last: beside.rollback, autoRollback: beside.autoRollback }
+        : undefined,
     };
   });
   const count = (state: GuardrailRow['state']) => rows.filter((row) => row.state === state).length;

@@ -13,8 +13,8 @@
  *   expected at its place, appended by a role that may append that mechanism (`policy/refusals.ts`), showing the
  *   guardrail the attack is made against; for the image attack, about the pod the harness asked for; and for the egress
  *   attack, with its control, the gateway, answering. A refusal relayed from the GitHub worker carries its record and
- *   signature, which the line verifies with the worker's public key; the console has no key, so it checks only that
- *   both are there. Which report triage's quarantine was about is not in the public record either, so the console
+ *   signature, which the line verifies with the worker's public key; an attack's card checks only that both are there,
+ *   and the Guardrails row shows the server's check of each (`refusals.ts`). Which report triage's quarantine was about is not in the public record either, so the console
  *   cannot match it to the report attack's own: the line, which reads it, does. A refused attack that fails any of
  *   these checks reads as **not confirmed**: its guardrail reads as not held, as when nothing refused it, since the
  *   line pages Martin for both.

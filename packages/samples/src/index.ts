@@ -10,7 +10,10 @@
  * spec waiting for work in flight on the same page, an improvement out to everyone a stage at a time behind its flag,
  * another part way out, a third turned off at Checks and closed and a fourth whose spec waits for Martin, and a
  * visitor's suggestion Martin answered in words, which keep it held. A visitor's report that gave the factory orders is
- * quarantined by triage. No red-team attack: none can be launched yet (`policy/attacks.ts`), and the console's browser
+ * quarantined by triage. The mechanisms refuse things over the week: the gateway a work item's calls at its cap,
+ * admission control an unsigned image and a write to the app's Rollout, and the GitHub worker the line's comment on an
+ * issue it did not open, a deploy it does not own and a merge the review check held, each relayed with its signed
+ * record, one of them changed after it was signed. No red-team attack: none can be launched yet (`policy/attacks.ts`), and the console's browser
  * tests bring their own (`apps/console/test/attacks`). And a run of `make guardrails` on the last morning, whose egress
  * proof did not hold. The scoreboard counts them against an invented key. Nothing in them happened: the console labels
  * each as a sample.
@@ -47,6 +50,7 @@ import searchByColour from './items/1329-search-by-colour.ts';
 import freeDelivery from './items/1334-free-delivery.ts';
 import releases from './items/line.ts';
 import { PROOFS } from './proofs.ts';
+import lineRefusals from './refusals.ts';
 import { scoreEvents } from './score.ts';
 
 export const ITEMS = [
@@ -159,6 +163,7 @@ export function sampleEvents(): NewEvent[] {
     ...STEPPED_UP,
     ...PROOFS,
     ...releases.events,
+    ...lineRefusals.events,
     ...ITEMS.flatMap((item) => item.events),
   ]);
   return cited(inOrder([...events, ...scoreEvents(events)]));

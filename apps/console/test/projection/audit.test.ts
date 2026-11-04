@@ -113,8 +113,13 @@ describe('the rows', () => {
     );
     expect(refused.every((row) => /refused/i.test(row.what))).toBe(true);
     expect(refused.map((row) => row.item)).toEqual(expect.arrayContaining(['1315', '1291']));
-    // Admission control's refusal is Kyverno's, and only it carries Kyverno's mark: an attack's, in the attacks' data.
-    expect(all.filter((row) => row.admission)).toEqual([]);
+    // Admission control's refusal is Kyverno's, and only it carries Kyverno's mark: the samples' three, on no work item
+    // (an unsigned image twice, and a write to the app's Rollout), and an attack's, in the attacks' data.
+    expect(all.filter((row) => row.admission).map((row) => SAMPLES.find((e) => e.seq === row.seq)?.work_item)).toEqual([
+      null,
+      null,
+      null,
+    ]);
     expect(
       rows(ATTACKS, ATTACKS_END)
         .filter((row) => row.admission)

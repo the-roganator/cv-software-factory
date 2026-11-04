@@ -2,8 +2,15 @@
  * Guardrails: spec 6's eleven as a checklist, full width under the bottom row, for everyone. Its head says how many
  * hold; each row is one line and a button, Held or Did not hold, the guardrail's number and name, and how old its last
  * proof is, in two columns from 1180 up and one below. One row opens at a time, in place under it, with
- * `aria-expanded`: what holds it, its last proof, and, for the five a red-team attack proves, that attack with its
- * last run and Launch (`projection/guardrails.ts` reads each from the events).
+ * `aria-expanded`: what holds it, its last proof, what it refused in the last seven days, and, for the five a red-team
+ * attack proves, that attack with its last run and Launch (`projection/guardrails.ts` and `projection/refusals.ts` read
+ * each from the events).
+ *
+ * Its refusals are the last three, a line each: when, the mechanism in `attn` mono, what was refused in a few words,
+ * and its work item, which opens its sheet, or the audit log where it has none. Their own words are on the work item,
+ * not here. A relayed refusal whose signature does not check out says so, and is not counted; one whose public words
+ * are redacted says that the line checked it when it was recorded. Where nothing refused, the row says None; the
+ * row the last rollback proves says what that rollback was, and that auto-rollback is off while it is.
  *
  * Launch opens the attack's dialog (`AttackDialog.tsx`, which arrives when it first opens). Attacks run one at a time:
  * while one is in flight its Launch reads Running and every other is dashed and disabled, saying which is running. For
@@ -13,14 +20,17 @@
  */
 import { lazy, Suspense, useId, useState } from 'react';
 import type { Admin } from '../admin.ts';
-import { ago, clock } from '../format.ts';
-import type {
-  AttackRow,
-  GuardrailRow,
-  GuardrailsView,
-  ProofResult,
-  ProofSource,
-  Verdict,
+import { ago, clock, count, shortVersion, shortWhen, startOfDay } from '../format.ts';
+import {
+  type AttackRow,
+  type GuardrailRow,
+  type GuardrailsView,
+  MECHANISM_WORDS,
+  type ProofResult,
+  type ProofSource,
+  type RefusalLine,
+  type Standing,
+  type Verdict,
 } from '../projection/index.ts';
 import { Glyph, type GlyphName } from './Glyph.tsx';
 
@@ -96,6 +106,72 @@ function DidNotHold({ proof }: { proof: ProofResult }) {
     <p className="attn">
       {what} It reads as not held until {source.kind === 'attack' ? 'its attack' : 'the same proof'} holds again.
     </p>
+  );
+}
+
+/** A time on the page's day as its clock, and on another with its weekday: "13:30", "Fri 18:40". */
+const at = (t: number, now: number) => (startOfDay(t) === startOfDay(now) ? clock(t) : shortWhen(t));
+
+/** What a refusal's line says of it beside its words, by how it stands: nothing for one that counts. */
+const STANDING: Record<Exclude<Standing, 'counted'>, [words: string, tone: string]> = {
+  redacted: ['Redacted in public: the line checked its signature when it was recorded.', ''],
+  unverified: ['Unverified: its signature does not check out, so it is not counted.', 'tone-attn'],
+  checking: ['Checking its signature.', ''],
+};
+
+/** One refusal: when, its mechanism, what was refused, and where it is. */
+function Refusal({ line, now, onOpen }: { line: RefusalLine; now: number; onOpen: (item: string) => void }) {
+  const said = line.standing === 'counted' ? undefined : STANDING[line.standing];
+  return (
+    <li>
+      <span className="mono">{at(line.at, now)}</span>
+      <span>
+        <span className="mech">{MECHANISM_WORDS[line.mechanism]}</span>
+        {line.action}
+        {line.count > 1 && <span className="times"> · {count(line.count)} times</span>}
+        {said && <small className={said[1] || undefined}>{said[0]}</small>}
+      </span>
+      {line.workItem ? (
+        <button type="button" className="linkish go" onClick={() => onOpen(line.workItem ?? '')}>
+          #{line.workItem}
+        </button>
+      ) : (
+        <a className="go" href="?view=audit">
+          Audit log
+        </a>
+      )}
+    </li>
+  );
+}
+
+/** What proves a guardrail the last rollback proves, where nothing refuses: that rollback, and the switch. */
+function rollbackWords({ last, autoRollback }: NonNullable<GuardrailRow['rollback']>, now: number): string {
+  const was = last
+    ? `The last rollback: ${shortVersion(last.version)}, ${startOfDay(last.at) === startOfDay(now) ? 'at ' : ''}${at(last.at, now)}, ${last.by === 'martin' ? 'by Martin, aborting a canary the analysis judged bad' : 'by its analysis'}.`
+    : 'No rollback yet.';
+  return autoRollback ? was : `${was} Auto-rollback is off, by Martin: a canary judged bad waits for him.`;
+}
+
+/** A row's refusals in the last seven days, and how many count. */
+function Refusals({ row, now, onOpen }: { row: GuardrailRow; now: number; onOpen: (item: string) => void }) {
+  const { lines, counted, unverified } = row.refusals;
+  return (
+    <div>
+      <span className="label">
+        Refusals · 7 days{counted > 0 && ` · ${count(counted)}`}
+        {unverified > 0 && ` · ${count(unverified)} unverified`}
+      </span>
+      {lines.length > 0 ? (
+        <ul className="reflist">
+          {lines.map((line) => (
+            <Refusal key={line.seq} line={line} now={now} onOpen={onOpen} />
+          ))}
+        </ul>
+      ) : (
+        !row.rollback && <p>None.</p>
+      )}
+      {row.rollback && <p className="instead">{rollbackWords(row.rollback, now)}</p>}
+    </div>
   );
 }
 
@@ -230,7 +306,7 @@ function Row({
               'None yet: make guardrails proves it.'
             )}
           </p>
-          {/* The place the designs give a guardrail's refusals (milestone 7's plan, task 23, "Blocked actions"). */}
+          <Refusals row={row} now={now} onOpen={onOpen} />
           {row.attack && (
             <Attack
               row={row.attack}
@@ -289,8 +365,8 @@ export function Guardrails({
         <span className={view.notHeld ? 'label tone-attn' : 'label'}>{heldWords(view)}</span>
       </div>
       <p className="help">
-        Each is held by a mechanism, not an instruction, and proved. Open one for what holds it, its last proof and its
-        attack.
+        Each is held by a mechanism, not an instruction, and proved. Open one for what holds it, its last proof, its
+        refusals and its attack.
       </p>
       <div className="gr-list">
         <div className="gr-col">{view.rows.slice(0, 6).map(row)}</div>

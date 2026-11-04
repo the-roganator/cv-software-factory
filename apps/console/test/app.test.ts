@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS, type Access, type Name, routeOf, type ServedBy } from '../../../policy/access.ts';
 import { createApp, PERMISSIONS_POLICY, SECURITY_HEADERS } from '../src/app.ts';
 import { Feed } from '../src/feed.ts';
+import { RefusalChecks } from '../src/refusals.ts';
 import { loadSite, pageSettings } from '../src/site.ts';
 
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
@@ -61,7 +62,15 @@ beforeAll(async () => {
     } as never),
     event(3),
   ]);
-  server = createServer(createApp({ commit: COMMIT, site: loadSite(fakeBuild()), feed, artifacts }));
+  server = createServer(
+    createApp({
+      commit: COMMIT,
+      site: loadSite(fakeBuild()),
+      feed,
+      artifacts,
+      refusals: new RefusalChecks(artifacts, undefined),
+    }),
+  );
   base = (await listenLocal(server)).url;
 });
 
@@ -246,6 +255,7 @@ describe('the console server', () => {
       // A stream never ends, so it is read by the tests above.
       stream: [],
       artifacts: [`/artifacts/${screenshot}`],
+      refusals: ['/api/refusals'],
       health: ['/health'],
       version: ['/version'],
     };
@@ -290,7 +300,15 @@ describe('an artifact that goes wrong partway', () => {
       open: async () => ({ body, size: 1_000_000 }),
       ...overrides,
     };
-    const app = createServer(createApp({ commit: COMMIT, site: loadSite(fakeBuild()), feed, artifacts: store }));
+    const app = createServer(
+      createApp({
+        commit: COMMIT,
+        site: loadSite(fakeBuild()),
+        feed,
+        artifacts: store,
+        refusals: new RefusalChecks(store, undefined),
+      }),
+    );
     const { url } = await listenLocal(app);
     return {
       url,

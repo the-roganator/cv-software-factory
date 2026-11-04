@@ -19,7 +19,10 @@ const TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-/** Serves the build and the samples' event log as plain files, as GitHub Pages will: no server code at all. */
+/**
+ * Serves the build and the samples' event log as plain files, as GitHub Pages will: no server code at all. The log's
+ * relayed refusals are checked beside it (`refusals.json`), as the live server checks them.
+ */
 async function servePlainFiles(page: Page, origin: string) {
   await page.route(`${origin}/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -35,7 +38,11 @@ async function servePlainFiles(page: Page, origin: string) {
     }
     if (path.startsWith('/log/')) {
       const file = join(LOG, path.slice('/log/'.length));
-      const type = path.endsWith('.ndjson') ? 'application/x-ndjson' : 'image/png';
+      const type = path.endsWith('.ndjson')
+        ? 'application/x-ndjson'
+        : path.endsWith('.json')
+          ? 'application/json'
+          : 'image/png';
       return route.fulfill({ body: readFileSync(file), contentType: type, headers });
     }
     return route.fulfill({ body: readFileSync(join(DIST, path)), contentType: TYPES[extname(path)] ?? '', headers });

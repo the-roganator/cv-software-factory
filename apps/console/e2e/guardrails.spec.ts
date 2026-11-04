@@ -1,6 +1,6 @@
 /**
- * Guardrails (milestone 7, task 22): the checklist's head and rows, one row open at a time in place, a guardrail that
- * did not hold and why, and each attack in its guardrail's row. Against the samples, as the cluster is now: no attack can
+ * Guardrails (milestone 7, tasks 22 and 23): the checklist's head and rows, one row open at a time in place, a guardrail
+ * that did not hold and why, each guardrail's refusals in the last seven days, and each attack in its guardrail's row. Against the samples, as the cluster is now: no attack can
  * be launched (`policy/attacks.ts`): every one is, and the samples launch none, so each card says it has not been
  * launched yet, with Launch for Martin and a label for a visitor.
  * Against the attacks' test data, with every attack available as the flag will make them (`attacksAvailable`): its last
@@ -70,6 +70,84 @@ test('a visitor reads the checklist: how many hold, one row open at a time, and 
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
     .analyze();
   expect(scan.violations).toEqual([]);
+});
+
+test('a visitor reads each guardrail’s refusals in the week, checked by the server, each leading to where it is', async ({
+  page,
+}) => {
+  await guardrails(page);
+  const details = () => panel(page).locator('.more');
+  const lines = () => details().locator('.reflist > li');
+
+  // Guardrail 1: the GitHub worker's guard refusing a deploy, signed and verified, and GitHub's 403 whose payload was
+  // changed after it was signed, which is shown, unverified, and not counted. Neither has a work item.
+  await rowButton(page, 1).click();
+  await expect(details().locator('.label').filter({ hasText: 'Refusals' })).toHaveText(
+    'Refusals · 7 days · 1 · 1 unverified',
+  );
+  await expect(lines()).toHaveCount(2);
+  await expect(lines().nth(0).locator('.mech')).toHaveText('GitHub worker’s guard');
+  await expect(lines().nth(0)).toContainText('openDeploy branch');
+  await expect(lines().nth(0).locator('small')).toHaveCount(0);
+  await expect(lines().nth(1).locator('.mech')).toHaveText('token permission');
+  await expect(lines().nth(1).locator('small')).toHaveText(
+    'Unverified: its signature does not check out, so it is not counted.',
+  );
+  await expect(lines().nth(0).getByRole('link', { name: 'Audit log' })).toHaveAttribute('href', '?view=audit');
+
+  // Guardrail 2: the review check's refusal, whose words a visitor reads redacted, counted all the same.
+  await rowButton(page, 2).click();
+  await expect(lines()).toHaveCount(1);
+  await expect(lines().locator('.mech')).toHaveText('review gate');
+  await expect(lines().locator('small')).toHaveText(
+    'Redacted in public: the line checked its signature when it was recorded.',
+  );
+  await expect(details().locator('.label').filter({ hasText: 'Refusals' })).toHaveText('Refusals · 7 days · 1');
+
+  // Guardrail 7: the gateway's three refusals at a work item's cap, folded into one, whose number opens its sheet.
+  await rowButton(page, 7).click();
+  await expect(details().locator('.label').filter({ hasText: 'Refusals' })).toHaveText('Refusals · 7 days · 3');
+  await expect(lines().locator('.mech')).toHaveText('gateway');
+  await expect(lines()).toContainText('A model call by the coder agent, the work item’s cap · 3 times');
+  await lines().getByRole('button', { name: '#1319' }).click();
+  await expect(page.getByRole('dialog', { name: /The wishlist empties itself/ })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // Guardrail 6: nothing refused this week.
+  await rowButton(page, 6).click();
+  await expect(lines()).toHaveCount(0);
+  await expect(details()).toContainText('None.');
+
+  // Guardrail 9: nothing refused, and what proves it instead, the line's last rollback.
+  await rowButton(page, 9).click();
+  await expect(details().locator('p.instead')).toContainText('The last rollback: ');
+  await expect(details().locator('p.instead')).toContainText('by its analysis.');
+  await expect(details()).not.toContainText('None.');
+
+  const scan = await new AxeBuilder({ page })
+    .include('#guardrails')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  expect(scan.violations).toEqual([]);
+});
+
+test('a relayed refusal the server could not answer for is asked about again, and reads as checked once it is', async ({
+  page,
+}) => {
+  let failed = 0;
+  await page.route('**/api/refusals', async (route) => {
+    if (failed++ === 0) return route.fulfill({ status: 500, body: 'The refusals could not be checked.\n' });
+    return route.continue();
+  });
+  await guardrails(page);
+  await rowButton(page, 2).click();
+  const line = panel(page).locator('.more .reflist > li');
+  await expect(line.locator('small')).toHaveText('Checking its signature.');
+  await expect(line.locator('small')).toHaveText(
+    'Redacted in public: the line checked its signature when it was recorded.',
+    { timeout: 15_000 },
+  );
+  expect(failed).toBeGreaterThan(1);
 });
 
 for (const as of ['martin', 'visitor'] as const) {

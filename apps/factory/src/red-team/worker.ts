@@ -164,13 +164,14 @@ export class RedTeam {
         return;
       }
       // An attempt must never leave a launch without an end, or the loop would make it again (a second pull request,
-      // a second pod). What it could not finish is recorded unfinished, with why, and the line judges it.
+      // a second pod). What it could not finish is recorded unfinished, and the line pages it; why is in the log. It
+      // records no attempt: to the line an attempt not refused is one that got through, and a harness that failed to
+      // make its attack saw nothing get through.
       this.#o.log.warn({ workItem: launch.workItem, attack: launch.attack, err: error }, 'a red-team attempt failed');
-      const said = error instanceof Error ? error.message : String(error);
       result = {
         outcome: 'unfinished',
         refusals: [],
-        attempts: [{ what: 'made the attack', result: said || 'it failed without saying why', refused: false }],
+        attempts: [],
         reason: 'The attack could not be made to its end; the harness logged why.',
       };
     }

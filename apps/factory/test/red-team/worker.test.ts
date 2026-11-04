@@ -107,7 +107,10 @@ describe('the red-team worker', () => {
     });
     await harness.once(never);
     expect(events.appended.map((e) => e.type)).toEqual(['attack.finished', 'work-item.closed']);
-    expect((events.appended[0]?.payload as PayloadOf<'attack.finished'> | undefined)?.outcome).toBe('unfinished');
+    const finished = events.appended[0]?.payload as PayloadOf<'attack.finished'> | undefined;
+    expect(finished?.outcome).toBe('unfinished');
+    // No attempt: to the line an attempt not refused got through, and nothing did.
+    expect(finished?.attempts).toEqual([]);
   });
 
   it('leaves a launch as it is when stopped while the attempt waited, rather than end it unfinished', async () => {

@@ -39,9 +39,9 @@ test('shows Martin his account, whose menu closes on a click outside', async ({ 
   await account.click();
   await expect(account).toHaveAttribute('aria-expanded', 'true');
   const menu = page.locator('#account-menu');
-  // In London, where the tests' browser is: the session's 30 minutes, from 15:40.
+  // In London, where the tests' browser is: the session's hour, from 15:40.
   await expect(menu).toContainText('Signed in with a passkey at 15:40');
-  await expect(menu).toContainText('The session ends at 16:10');
+  await expect(menu).toContainText('The session ends at 16:40');
   await page.locator('section.intro h1').click();
   await expect(menu).toBeHidden();
   await expect(page.getByRole('link', { name: 'Martin’s sign-in' })).toHaveCount(0);
@@ -164,7 +164,7 @@ test('says when the session ended, and why, in the viewer’s own time', async (
   await adminService(page, 'visitor');
   await page.goto(`/?view=sign-in&ended=expired&at=${encodeURIComponent(SESSION.expiresAt)}`);
   await expect(page.getByRole('status')).toHaveText(
-    'Your session ended at 16:10. A session lasts 30 minutes from signing in, however busy.',
+    'Your session ended at 16:40. A session lasts 60 minutes from signing in, however busy.',
   );
 });
 

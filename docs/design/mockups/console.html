@@ -3231,7 +3231,7 @@ function confirmDialog() {
 function renderMenu() {
   $('account-btn').setAttribute('aria-expanded', String(S.menu));
   $('menu').hidden = !S.menu;
-  $('menu').innerHTML = `<div class="who">Martin Rogan<small>Signed in with a passkey at 15:40<br>The session ends at 16:10${S.fresh ? `<br>Passkey given again: ${Math.max(1, Math.ceil((S.freshUntil - Date.now()) / 60000))}min left` : ''}</small></div>
+  $('menu').innerHTML = `<div class="who">Martin Rogan<small>Signed in with a passkey at 15:40<br>The session ends at 16:40${S.fresh ? `<br>Passkey given again: ${Math.max(1, Math.ceil((S.freshUntil - Date.now()) / 60000))}min left` : ''}</small></div>
     <a href="?view=settings">Settings</a><a href="?view=audit">Audit log</a>
     <button type="button" data-preview>Preview as visitor</button><hr>
     <a href="?view=signin&amp;signin=out">Sign out</a>
@@ -3244,7 +3244,7 @@ function signinPage() {
   const k = q.get('signin') || 'ready';
   const note = {
     none: `<div class="refusal">No passkey was used.<small>Either the passkey sheet was closed, or this device has no passkey for the factory. Each device is enrolled once, from the command line: <code>factory admin enrol</code> prints a one-time code for the <a href="?view=enrol">enrolment page</a>.</small></div>`,
-    expired: `<div class="done" style="border-left-color: var(--line-strong)">Your session ended at 16:10. A session lasts 30 minutes from signing in, however busy.</div>`,
+    expired: `<div class="done" style="border-left-color: var(--line-strong)">Your session ended at 16:40. A session lasts 60 minutes from signing in, however busy.</div>`,
     out: `<div class="done" style="border-left-color: var(--line-strong)">Signed out. This browser holds no session now.</div>`,
     everywhere: `<div class="done" style="border-left-color: var(--line-strong)">Signed out everywhere: every session on every device has ended, this one too.</div>`,
   }[k] ?? '';
@@ -3310,7 +3310,7 @@ function settingsPage() {
         <div><span>iPhone<small>Enrolled 12 Oct · used yesterday, 21:02</small></span><button type="button" class="btn small" data-revoke="iPhone">Revoke${keyIf(!S.fresh)}</button></div></div>
         <p class="help">Two at most. Each is added with <code>factory admin enrol</code> on the command line, never from here.</p></article>
       <article class="panel" aria-labelledby="session-title"><h2 id="session-title">This session</h2>
-        <p class="help" style="font-size: 13px">Signed in at 15:40 with the MacBook Air’s passkey. It ends at 16:10: 30 minutes, however busy.</p>
+        <p class="help" style="font-size: 13px">Signed in at 15:40 with the MacBook Air’s passkey. It ends at 16:40: 60 minutes, however busy.</p>
         <div class="actions" style="margin-top: 0"><a class="btn small" href="?view=signin&amp;signin=out">Sign out</a><a class="btn small" href="?view=signin&amp;signin=everywhere">Sign out everywhere</a></div></article>`;
   const save = v ? '' : `<div class="save-bar"><p>1 change: the coder’s effort, medium → high. It raises spend, so saving asks for your passkey.</p>
       <div class="row"><button type="button" class="btn small">Discard</button><button type="button" class="btn primary small" data-save>Save${keyIf(!S.fresh)}</button></div></div>`;

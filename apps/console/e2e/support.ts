@@ -239,7 +239,7 @@ export async function picturesShown(part: Locator): Promise<void> {
 /** A session as the admin service describes it (`GET /admin/session`), for pages drawn as Martin's. */
 export const SESSION = {
   signedInAt: '2026-10-06T14:40:00Z',
-  expiresAt: '2026-10-06T15:10:00Z',
+  expiresAt: '2026-10-06T15:40:00Z',
   steppedUpAt: null,
   steppedUp: false,
   token: 'test-token',

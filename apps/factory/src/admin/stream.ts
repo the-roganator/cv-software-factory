@@ -5,7 +5,7 @@
  *
  * The session is checked again every few seconds, and the stream closes as soon as it is signed out, revoked or
  * expired: at once when this service ends it, and at the next check when `factory admin enrol --revoke-others` does,
- * or its 30 minutes run out. It says why before it closes; the browser's next try is refused, and it stays closed.
+ * or its hour runs out. It says why before it closes; the browser's next try is refused, and it stays closed.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { listen, readFull } from '@software-factory/store';

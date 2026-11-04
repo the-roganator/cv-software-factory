@@ -112,7 +112,7 @@ spec:
               value: /var/lib/factory/artifacts
           readinessProbe:
             exec:
-              command: [node, -e, "process.exit(0)"]
+              command: [/nodejs/bin/node, -e, "process.exit(0)"]
             periodSeconds: 30
           resources:
             requests:

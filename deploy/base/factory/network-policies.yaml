@@ -94,7 +94,7 @@ spec:
               app.kubernetes.io/component: worker
         - podSelector:
             matchExpressions:
-              - { key: app.kubernetes.io/name, operator: In, values: [console, admin, migrate, postgres-exporter] }
+              - { key: app.kubernetes.io/name, operator: In, values: [console, admin, migrate, postgres-exporter, red-team] }
         # The scoreboard, from its own namespace: the namespace and the label in one peer, so both must match.
         - namespaceSelector:
             matchLabels:

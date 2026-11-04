@@ -115,8 +115,8 @@ export class RedTeam {
     const [row] = await this.#o.sql<{ seq: string; work_item: string; attack: string; at: Date }[]>`
       select l.seq::text as seq, l.work_item, l.payload->>'attack' as attack, l.appended_at as at
       from events l
-      where l.type = 'attack.launched' and l.payload->>'attack' = any(${this.#o.sql(ATTACKS as unknown as string[])})
-        and not l.sample and l.appended_by = any(${this.#o.sql(MARTINS_ROLES as unknown as string[])})
+      where l.type = 'attack.launched' and l.payload->>'attack' = any(${ATTACKS as unknown as string[]})
+        and not l.sample and l.appended_by = any(${MARTINS_ROLES as unknown as string[]})
         and not exists (select 1 from events f
                         where f.work_item = l.work_item and f.type = 'attack.finished'
                           and f.appended_by = 'factory_redteam' and f.seq > l.seq)

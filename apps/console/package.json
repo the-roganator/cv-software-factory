@@ -19,7 +19,7 @@
     "@software-factory/events": "workspace:*",
     "@software-factory/store": "workspace:*",
     "pino": "^10.4.0",
-    "postgres": "^3.4.9"
+    "postgres": "^4.0.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

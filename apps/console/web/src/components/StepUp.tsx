@@ -69,8 +69,11 @@ export interface StepUp {
    * start"): nothing once given, or why not, in words. It opens no sheet once `live` says the dialog has gone.
    */
   prove(live: () => boolean): Promise<string | undefined>;
-  /** Ends the passkey's five minutes now, on the service and on the page: nothing once ended, or why not, in words. */
-  end(): Promise<string | undefined>;
+  /**
+   * Ends the passkey's five minutes now, on the service and on the page: whether the service ended them (false when
+   * they had run out there already, or were ended from another tab), or why not, in words.
+   */
+  end(): Promise<{ ended: boolean } | string>;
 }
 
 const NONE: StepUp = {
@@ -151,10 +154,11 @@ export function StepUpProvider({ session, children }: { session: Session | undef
     if (!token) return 'Sign in first.';
     const got = await post('/admin/step-up/end', {}, token);
     if (got.status !== 200) return said(got);
+    // Ended now, or not fresh on the service already: either way the page's count is stale, and stops.
     setEnded(true);
     setGiven(undefined);
     setNow(Date.now());
-    return undefined;
+    return { ended: got.body?.ended === true };
   }, [token]);
   /** An answer to one ask: it settles that ask alone, though a passkey given late still counts as given. */
   const answered = (id: number, yes: boolean) => {
@@ -231,30 +235,34 @@ export function StepUpPill() {
   const { until, end } = useStepUp();
   const now = useNow(until);
   const [busy, setBusy] = useState(false);
-  // What the last press came to, for the five minutes it was pressed in.
-  const [outcome, setOutcome] = useState<{ for: number | undefined; refusal?: string }>({ for: undefined });
-  const press = async () => {
-    setBusy(true);
-    const pressed = until;
-    const refusal = await end();
-    setBusy(false);
-    setOutcome({ for: pressed, ...(refusal !== undefined && { refusal }) });
-    // Ended, the pill and the focus on it go: focus goes to the account button beside it, as Back to admin's does.
-    if (refusal === undefined) {
-      requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
-    }
-  };
-  // A passkey given again after the press starts afresh: the status says it ended only until then.
+  // What the last press came to, for the five minutes it was pressed in: ended, found already over, or refused.
+  const [outcome, setOutcome] = useState<{ for: number | undefined; ended?: boolean; refusal?: string }>({
+    for: undefined,
+  });
+  // A passkey given again after the press starts afresh: the status says how it ended only until then.
   useEffect(() => {
     if (until !== undefined && until !== outcome.for) setOutcome({ for: undefined });
   }, [until, outcome.for]);
+  const press = async () => {
+    setBusy(true);
+    const pressed = until;
+    const answer = await end();
+    setBusy(false);
+    setOutcome(typeof answer === 'string' ? { for: pressed, refusal: answer } : { for: pressed, ended: answer.ended });
+    // Gone, the pill takes the focus with it: focus goes to the account button beside it, as Back to admin's does.
+    if (typeof answer !== 'string') {
+      requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
+    }
+  };
   const refusal = outcome.for === until ? outcome.refusal : undefined;
-  const ended = outcome.for !== undefined && until === undefined && outcome.refusal === undefined;
+  const over = outcome.for !== undefined && until === undefined && outcome.refusal === undefined;
   const status =
     until !== undefined
       ? (refusal ?? 'Passkey given')
-      : ended
-        ? 'Passkey ended: the actions that ask for it will ask again'
+      : over
+        ? outcome.ended
+          ? 'Passkey ended: the actions that ask for it will ask again'
+          : 'Your passkey had run out already: the actions that ask for it will ask again'
         : '';
   return (
     <>

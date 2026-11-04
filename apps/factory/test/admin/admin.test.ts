@@ -530,6 +530,7 @@ const WRITES: [string, Body][] = [
   ['/admin/sign-out-everywhere', {}],
   ['/admin/step-up/options', {}],
   ['/admin/step-up', {}],
+  ['/admin/step-up/end', {}],
   ['/admin/passkeys/whichever-passkey/revoke', {}],
   ['/admin/release/promote', { release: 'whichever-1' }],
   ['/admin/release/promote', { release: 'whichever-1', fully: true }],

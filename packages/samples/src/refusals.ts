@@ -9,8 +9,9 @@
  * from before the week the panel shows.
  *
  * The relayed ones are signed as the GitHub worker signs, with a key made from a name, so an export is the same every
- * time; its public half is written beside the events (`refusal-key.pem`), and each record into the artifacts, where the
- * console's server checks them. Nothing real is signed with it.
+ * time. The export checks each against its record, as the console's server would, and keeps only the verdicts beside
+ * the events (`refusals.json`): the folder is published whole, and a record holds the words before redaction. Nothing
+ * real is signed with it.
  */
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { PayloadOf } from '@software-factory/events';
@@ -26,7 +27,7 @@ const KEY = createPrivateKey({ key: Buffer.concat([SEED_PREFIX, SEED]), format: 
 /** The samples' public key, as the ConfigMap `refusal-key` holds the GitHub worker's. */
 export const SAMPLE_REFUSAL_KEY = createPublicKey(KEY).export({ type: 'spki', format: 'pem' }).toString();
 
-/** Every relayed refusal's record, by hash, to write into the artifacts. */
+/** Every relayed refusal's record, by hash, which the export checks each against and writes nowhere. */
 export const RECORDS = new Map<string, Uint8Array>();
 
 type Refused = PayloadOf<'action.refused'>;

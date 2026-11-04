@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ADMIN_TYPES, AGENTS, KINDS, type PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
 import { ARTIFACTS, LOG } from '../src/captures.ts';
 import { publicSamples } from '../src/export.ts';
 import { sampleEvents } from '../src/index.ts';
-import { SAMPLE_REFUSAL_KEY } from '../src/refusals.ts';
+import { RECORDS, SAMPLE_REFUSAL_KEY } from '../src/refusals.ts';
 import { appenderOf } from '../src/roles.ts';
 
 const events = sampleEvents();
@@ -196,13 +196,18 @@ describe('the samples', () => {
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
   });
 
-  it('sign each relayed refusal’s record with their own key, kept beside the events, but the one changed after', () => {
+  it('sign each relayed refusal’s record with their own key, but the one changed after, and publish only its check', () => {
     const key = createPublicKey(SAMPLE_REFUSAL_KEY);
-    expect(readFileSync(join(LOG, 'refusal-key.pem'), 'utf-8')).toBe(SAMPLE_REFUSAL_KEY);
     const relayed = of('action.refused').filter((event) => event.payload.record !== undefined);
+    // The folder is published whole: it holds each one's check, and never its record or the key.
+    expect(existsSync(join(LOG, 'refusal-key.pem'))).toBe(false);
+    expect(Object.keys(JSON.parse(readFileSync(join(LOG, 'refusals.json'), 'utf-8')))).toEqual(
+      relayed.map((event) => String(event.seq)),
+    );
     const checked = relayed.map((event) => {
       const { record = '', signature = '' } = event.payload;
-      const bytes = readFileSync(join(ARTIFACTS, record));
+      expect(existsSync(join(ARTIFACTS, record))).toBe(false);
+      const bytes = Buffer.from(RECORDS.get(record) ?? new Uint8Array());
       expect(createHash('sha256').update(bytes).digest('hex')).toBe(record);
       expect(verify(null, bytes, key, Buffer.from(signature, 'base64'))).toBe(true);
       // The record holds the payload as signed: one whose public words differ was redacted, or changed after.

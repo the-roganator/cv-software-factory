@@ -1,1 +1,0 @@
-{"at":"2026-10-06T08:40:00.000Z","number":null,"payload":{"action":"openDeploy branch deploy/console in the-roganator/cv-software-factory","guardrails":[1],"mechanism":"github-guard","output":"refused: branch deploy/console is not one of the factory’s deploy branches"},"repo":"the-roganator/cv-software-factory","type":"action.refused"}

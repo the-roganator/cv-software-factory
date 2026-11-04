@@ -15,7 +15,6 @@ import type { PublicEvent } from '@software-factory/events';
 import { EVENTS_FILE, formatLog, writeLogEvents } from '@software-factory/events/log';
 import { publicView } from '@software-factory/events/public';
 import { validate } from '@software-factory/events/schemas';
-import { REFUSAL_KEY_FILE } from '@software-factory/events/signed';
 import { checkRecord, publicKeyOf, REFUSAL_CHECKS_FILE, signedPayloadOf } from '@software-factory/events/signed-check';
 import { ARTIFACTS, LOG } from './captures.ts';
 import { sampleEvents } from './index.ts';
@@ -46,7 +45,9 @@ if (import.meta.main) {
   const events = publicSamples();
   const file = join(LOG, EVENTS_FILE);
   const name = relative(process.cwd(), file);
-  // The relayed refusals' records and the key that signs them, which the console's server checks them with.
+  // Each relayed refusal's check, made here from its record and the samples' key and kept beside the events: the folder
+  // is what the replay site publishes whole, so it holds the verdicts and never a record, whose words are those before
+  // redaction.
   const key = publicKeyOf(SAMPLE_REFUSAL_KEY);
   const checks = Object.fromEntries(
     events.flatMap((event) => {
@@ -55,8 +56,6 @@ if (import.meta.main) {
     }),
   );
   const written = new Map<string, Uint8Array | string>([
-    ...[...RECORDS].map(([hash, bytes]): [string, Uint8Array] => [join(ARTIFACTS, hash), bytes]),
-    [join(LOG, REFUSAL_KEY_FILE), SAMPLE_REFUSAL_KEY],
     [join(LOG, REFUSAL_CHECKS_FILE), `${JSON.stringify(checks, null, 2)}\n`],
   ]);
   const same = (path: string, body: Uint8Array | string) =>

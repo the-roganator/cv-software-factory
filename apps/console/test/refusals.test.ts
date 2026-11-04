@@ -4,7 +4,7 @@
  * answers the verdicts, and nothing of a record.
  */
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +16,7 @@ import { listenLocal } from '@software-factory/testing';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.ts';
 import { Feed } from '../src/feed.ts';
-import { checkRefusal, RefusalChecks, refusalKey, type SignedRefusal } from '../src/refusals.ts';
+import { checkRefusal, RecordedChecks, RefusalChecks, refusalKey, type SignedRefusal } from '../src/refusals.ts';
 import { loadSite } from '../src/site.ts';
 
 const worker = generateKeyPairSync('ed25519');
@@ -115,6 +115,24 @@ describe('the checks the server keeps', () => {
     expect(await checks.of([{ seq: 7, payload: relayed }])).toEqual({});
     fail = false;
     expect(await checks.of([{ seq: 7, payload: relayed }])).toEqual({ 7: 'verified' });
+  });
+});
+
+describe('the checks an event-log folder keeps', () => {
+  it('are the answer for its refusals, and any it has none for, or no check’s word, is unverified', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'log-'));
+    const file = join(folder, 'refusals.json');
+    writeFileSync(file, JSON.stringify({ 1: 'verified', 2: 'redacted', 3: 'trusted' }));
+    const payload = { record: 'a'.repeat(64), signature: 'x' };
+    const asked = [1, 2, 3, 4].map((seq) => ({ seq, payload }));
+    expect(await new RecordedChecks(file).of(asked)).toEqual({
+      1: 'verified',
+      2: 'redacted',
+      3: 'unverified',
+      4: 'unverified',
+    });
+    // A folder with no checks beside it has none to give.
+    expect(await new RecordedChecks(join(folder, 'none.json')).of(asked.slice(0, 1))).toEqual({ 1: 'unverified' });
   });
 });
 

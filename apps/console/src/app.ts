@@ -11,7 +11,7 @@ import { isHash } from '@software-factory/store';
 import { routeOf, type ServedBy } from '../../../policy/access.ts';
 import type { Feed } from './feed.ts';
 import { log } from './log.ts';
-import type { RefusalChecks } from './refusals.ts';
+import type { Checker } from './refusals.ts';
 import type { File, Site } from './site.ts';
 import { resumeFrom, stream } from './stream.ts';
 
@@ -22,7 +22,7 @@ export interface AppOptions {
   feed: Feed;
   artifacts: ArtifactStore;
   /** Whether each relayed refusal is what the GitHub worker signed. */
-  refusals: RefusalChecks;
+  refusals: Checker;
 }
 
 /**

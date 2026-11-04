@@ -70,9 +70,3 @@ export function canonical(value: unknown): string {
  * for a refusal on no work item, what was refused. Anything else beside the signed payload was not signed.
  */
 export const RELAY_ADDS: readonly string[] = ['record', 'signature', 'count', 'lastAt', 'subject'];
-
-/**
- * An event-log folder's public key for its relayed refusals, beside its events, as the cluster's ConfigMap
- * `refusal-key` holds the GitHub worker's: the console's server checks the folder's refusals with it.
- */
-export const REFUSAL_KEY_FILE = 'refusal-key.pem';

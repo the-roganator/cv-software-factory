@@ -11,7 +11,9 @@
  * it cannot change. Nothing of a record leaves the server but the verdict.
  */
 import type { KeyObject } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { buffer } from 'node:stream/consumers';
+import { REFUSAL_CHECKS } from '@software-factory/events/signed';
 import { checkRecord, publicKeyOf, type RefusalCheck, type SignedPayload } from '@software-factory/events/signed-check';
 import type { ArtifactStore } from '@software-factory/store';
 import { log } from './log.ts';
@@ -22,6 +24,11 @@ export type Check = RefusalCheck;
 export interface SignedRefusal {
   seq: number;
   payload: SignedPayload;
+}
+
+/** What `/api/refusals` answers from: each relayed refusal's check, by seq. */
+export interface Checker {
+  of(refusals: readonly SignedRefusal[]): Promise<Record<string, Check>>;
 }
 
 /** The most bytes a record may have: its payload's output is at most 4000 characters. */
@@ -52,7 +59,7 @@ export async function checkRefusal(
 }
 
 /** Every relayed refusal's check, by seq, each made once. */
-export class RefusalChecks {
+export class RefusalChecks implements Checker {
   readonly #made = new Map<number, Promise<Check>>();
   readonly #store: Pick<ArtifactStore, 'open'>;
   readonly #key: KeyObject | undefined;
@@ -82,5 +89,30 @@ export class RefusalChecks {
       }),
     );
     return Object.fromEntries(checks.flatMap(([seq, check]) => (check ? [[seq, check] as const] : [])));
+  }
+}
+
+/**
+ * The checks an event-log folder keeps beside its events (`refusals.json`), made when the folder was written, for a
+ * server serving the folder as for a page reading it with none. A folder is what the replay site publishes whole, so it
+ * holds no record, whose words are those before redaction: the verdicts are all it has. A refusal it has none for, or
+ * one not a check's word, is unverified.
+ */
+export class RecordedChecks implements Checker {
+  readonly #checks: ReadonlyMap<number, Check>;
+
+  constructor(file: string) {
+    const checks = new Map<number, Check>();
+    const body: unknown = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : {};
+    if (typeof body === 'object' && body !== null && !Array.isArray(body)) {
+      for (const [seq, check] of Object.entries(body)) {
+        if ((REFUSAL_CHECKS as readonly unknown[]).includes(check)) checks.set(Number(seq), check as Check);
+      }
+    }
+    this.#checks = checks;
+  }
+
+  async of(refusals: readonly SignedRefusal[]): Promise<Record<string, Check>> {
+    return Object.fromEntries(refusals.map(({ seq }) => [seq, this.#checks.get(seq) ?? 'unverified']));
   }
 }

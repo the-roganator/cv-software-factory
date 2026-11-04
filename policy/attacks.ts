@@ -165,11 +165,16 @@ export const RED_TEAM_HOST_ALIAS = new URL(EGRESS_CONTROL.url).hostname;
  * one JSON line each, so the harness reads the pod's log and records what the egress policy refused, and that the
  * control was reached, from the pod's own words and never by timing. Any answer at all is a reach, a redirect too,
  * which it does not follow: 1.1.1.1 answers with one to a name the pod cannot resolve, and following it would read a
- * reach as a refused name. Pinned, so the harness cannot run anything else
+ * reach as a refused name. It first waits for the pod's fence with the agent step's own wait, so the attack meets
+ * what an agent's code meets: a pod starts before its enforcer fences it, and the agent step runs nothing until then.
+ * Pinned, so the harness cannot run anything else
  * on a runner image: the admission rule holds the pod's `command`, `args` and `env` to exactly these
  * (`deploy/base/admission/factory/red-team-pods.yaml`, kept in step by `apps/factory/test/red-team-fences.test.ts`).
  */
 export const EGRESS_PROBE = [
+  // As the agent step does before it runs anything (awaitFence, apps/runner/src/agent.ts): wait for the pod's fence,
+  // then try the outside, fenced or not by the wait's end, so a pod its policy never fenced reports what it reached.
+  `try { await (await import("/repo/apps/runner/src/agent.ts")).awaitFence(${JSON.stringify(new URL(EGRESS_CONTROL.url).origin)}); } catch {}`,
   `const targets = ${JSON.stringify(EGRESS_TARGETS)}; const control = ${JSON.stringify(EGRESS_CONTROL)};`,
   'const BLOCKED = ["ECONNREFUSED","ECONNRESET","EHOSTUNREACH","ENETUNREACH","UND_ERR_CONNECT_TIMEOUT","TimeoutError"];',
   'const attempt = async (url) => { try { await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(3000) }); return "reached"; }',

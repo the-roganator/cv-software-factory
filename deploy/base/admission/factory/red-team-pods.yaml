@@ -86,7 +86,8 @@ spec:
     # The pinned command and args of one of the two attacks, and nothing else: the harness cannot run arbitrary code
     # on a runner image. Kept in step with policy/attacks.ts by the fences test.
     - expression: |-
-        (variables.c.command == ['node'] && variables.c.args == ['-e', '''const targets = [{"what":"an outside address by name","url":"https://example.com/","byName":true},{"what":"an outside address by number","url":"https://1.1.1.1/","byName":false},{"what":"the model provider's host","url":"https://api.anthropic.com/","byName":true}]; const control = {"what":"the gateway","url":"http://gateway.factory.svc:8080/health"};
+        (variables.c.command == ['node'] && variables.c.args == ['-e', '''try { await (await import("/repo/apps/runner/src/agent.ts")).awaitFence("http://gateway.factory.svc:8080"); } catch {}
+        const targets = [{"what":"an outside address by name","url":"https://example.com/","byName":true},{"what":"an outside address by number","url":"https://1.1.1.1/","byName":false},{"what":"the model provider's host","url":"https://api.anthropic.com/","byName":true}]; const control = {"what":"the gateway","url":"http://gateway.factory.svc:8080/health"};
         const BLOCKED = ["ECONNREFUSED","ECONNRESET","EHOSTUNREACH","ENETUNREACH","UND_ERR_CONNECT_TIMEOUT","TimeoutError"];
         const attempt = async (url) => { try { await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(3000) }); return "reached"; }
           catch (e) { const code = (e && e.cause && e.cause.code) || (e && e.name);

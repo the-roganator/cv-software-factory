@@ -22,6 +22,7 @@
  * costs nothing against the rate limit. The queue's GraphQL read is not conditional, so the line asks it only of a pull
  * request it has queued.
  */
+import { z } from 'zod';
 import { type Judged, readVerdict, type Verdict } from '../../../../policy/review-verdict.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import { BranchRefused, guardBranch, redTeamBranch } from './branches.ts';
@@ -165,6 +166,45 @@ export interface ListedReview {
   completedAt: string | null;
   url: string | null;
 }
+
+/** Where GitHub lists every `review` check run on a commit, re-runs too, whichever app posted each. */
+export const reviewRunsPath = (repo: string, sha: string): string =>
+  `/repos/${repo}/commits/${sha}/check-runs?check_name=${REVIEW_CHECK}&filter=all&per_page=100`;
+
+/** The `review` check runs on a commit, with their summaries, which carry the gate's verdict. */
+export const REVIEW_RUNS = z.object({
+  check_runs: z.array(
+    z.object({
+      id: z.number().int(),
+      name: z.string(),
+      head_sha: z.string(),
+      status: z.string(),
+      conclusion: z.string().nullable(),
+      app: z.object({ id: z.number().int() }).nullable().optional(),
+      completed_at: z.string().nullable().optional(),
+      html_url: z.string().nullable().optional(),
+      output: z
+        .object({ title: z.string().nullable().optional(), summary: z.string().nullable().optional() })
+        .nullable()
+        .optional(),
+    }),
+  ),
+});
+
+/** The runs GitHub listed, each with the app that posted it. */
+export const listedReviews = (body: z.infer<typeof REVIEW_RUNS>): ListedReview[] =>
+  body.check_runs.map((run) => ({
+    id: run.id,
+    name: run.name,
+    headSha: run.head_sha,
+    appId: run.app?.id ?? null,
+    status: run.status,
+    conclusion: run.conclusion,
+    title: run.output?.title ?? null,
+    summary: run.output?.summary ?? null,
+    completedAt: run.completed_at ?? null,
+    url: run.html_url ?? null,
+  }));
 
 /**
  * The review App's latest `review` run on a head, from every check run GitHub lists there: any other app's, another

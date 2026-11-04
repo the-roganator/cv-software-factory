@@ -14,20 +14,20 @@
  *   token, as the workflow-refusal proof does, and GitHub refuses the token, which has no workflows permission
  *   (`token-permission`). Both, in that order.
  * - **`test`:** it opens a real pull request in the app's repository that deletes a test, waits for the app's gates
- *   and the review check to run, and reads the review check's verdict, which holds the pull request (`review-gate`).
- *   Then it closes the pull request and deletes the branch.
+ *   and the review check to run, and reads the verdict of the review App's own `review` run, which holds the pull
+ *   request (`review-gate`). Then it closes the pull request and deletes the branch.
  */
 
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
-import { z } from 'zod';
 import { listenOn } from '../listen.ts';
 import { waitFor } from '../red-team/wait.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions, LiveActions } from './actions.ts';
 import { RED_TEAM_PREFIX } from './branches.ts';
-import { type GitHub, GitHubError } from './client.ts';
+import type { GitHub } from './client.ts';
+import { listedReviews, REVIEW_RUNS, reviewCheckOf, reviewRunsPath } from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import type { Reads } from './reads.ts';
 import { outcomeOf } from './reads.ts';
@@ -60,23 +60,12 @@ const TEST_PR_BODY =
   'A red-team attack from Martin: a pull request that removes a test, to show the review check holds it. Opened and ' +
   'closed by the factory.';
 
-/** The check the review App posts, which the ruleset requires (`scripts/review-gate.ts`, review App id 5470762). */
-const REVIEW_CHECK = 'review';
-
-/** The full output of a check run, which `reads.checkRuns` does not fetch: the review-gate refusal's own words. */
-const CHECK_OUTPUT = z.object({
-  output: z
-    .object({ title: z.string().nullable().optional(), summary: z.string().nullable().optional() })
-    .nullable()
-    .optional(),
-});
-
 export interface AttackServerOptions {
   actions: Actions;
-  /** For the workflow-refusal direct attempt and for reading a check run's full output. */
+  /** For the workflow-refusal direct attempt, and for reading the review App's `review` runs. */
   github: Pick<GitHub, 'read'>;
   liveActions: LiveActions;
-  reads: Pick<Reads, 'head' | 'checkRuns'>;
+  reads: Pick<Reads, 'head'>;
   recorder: RefusalRecorder;
   /** The factory's own repository, for attack 2, and the app's, for attack 3. */
   factoryRepo: string;
@@ -286,7 +275,10 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
   }
 }
 
-/** Waits for the review check on a commit to conclude, and reads its verdict and words, or undefined if it never does. */
+/**
+ * Waits for the review App's `review` run on a commit to conclude, and reads its verdict and words, or undefined if it
+ * never does. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too.
+ */
 async function waitForReview(
   o: AttackServerOptions,
   repo: string,
@@ -294,8 +286,9 @@ async function waitForReview(
 ): Promise<{ held: boolean; output: string } | undefined> {
   const review = await waitFor(
     async () => {
-      const runs = await o.reads.checkRuns(repo, sha);
-      return runs.find((run) => run.name === REVIEW_CHECK && run.status === 'completed');
+      const runs = listedReviews(await o.github.read(repo, reviewRunsPath(repo, sha), REVIEW_RUNS));
+      const check = reviewCheckOf(runs, sha);
+      return check?.status === 'completed' ? check : undefined;
     },
     {
       limitMs: o.reviewWaitMs ?? 35 * 60_000,
@@ -308,17 +301,10 @@ async function waitForReview(
   );
   if (!review) return undefined;
   const held = outcomeOf(review.conclusion) === 'failure';
-  return { held, output: await reviewOutput(o, repo, review.id, review.title) };
-}
-
-/** The review check's own words: its title and summary, read whole, since `checkRuns` fetches only the title. */
-async function reviewOutput(o: AttackServerOptions, repo: string, id: number, title: string | null): Promise<string> {
-  try {
-    const run = await o.github.read(repo, `/repos/${repo}/check-runs/${id}`, CHECK_OUTPUT);
-    const parts = [run.output?.title ?? title ?? '', run.output?.summary ?? ''].map((p) => p.trim()).filter(Boolean);
-    return parts.join('\n\n') || 'the review check held the pull request';
-  } catch (error) {
-    if (error instanceof GitHubError) return title ?? 'the review check held the pull request';
-    throw error;
-  }
+  // The check's own words: its title and its summary, as GitHub lists them.
+  const output = [review.title ?? '', review.summary ?? '']
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  return { held, output: output || 'the review check held the pull request' };
 }

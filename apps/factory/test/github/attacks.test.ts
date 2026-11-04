@@ -8,8 +8,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { Actions, LiveActions } from '../../src/github/actions.ts';
 import { createAttackServer } from '../../src/github/attacks.ts';
 import { type GitHub, GitHubError } from '../../src/github/client.ts';
+import { REVIEW_APP } from '../../src/github/merging.ts';
 import { PatchRefused } from '../../src/github/patches.ts';
-import type { CheckRun, Reads } from '../../src/github/reads.ts';
+import type { Reads } from '../../src/github/reads.ts';
 import { REFUSAL_BRANCH, WORKFLOW } from '../../src/github/refusal.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { type SignedRefusal, verifyRefusal } from '../../src/signed-refusals.ts';
@@ -38,8 +39,30 @@ interface World {
   workflows: 'refused' | 'accepted';
   /** The review check on attack 3's pull request: held, passed, or never concluded. */
   review: 'held' | 'passed' | 'pending';
+  /**
+   * A `review` run another app (the factory's own) posted on the commit: the only one there, or one newer than the
+   * review App's, passing.
+   */
+  foreign?: 'only' | 'newer';
   /** An error GitHub answers when the door first reads, as a client error does, detail and all. */
   readFails?: Error;
+}
+
+/** The factory's own App, which can post a check named `review` too. */
+const FACTORY_APP = 5187559;
+
+/** A `review` run as GitHub lists it on a commit, by the app that posted it. */
+function run(id: number, sha: string, app: number, review: World['review']) {
+  const done = review !== 'pending';
+  return {
+    id,
+    name: 'review',
+    head_sha: sha,
+    status: done ? 'completed' : 'in_progress',
+    conclusion: done ? (review === 'held' ? 'failure' : 'success') : null,
+    app: { id: app },
+    output: { title: 'Held: deletes a test', summary: 'test-loosening' },
+  };
 }
 
 function fakes(world: World) {
@@ -80,31 +103,22 @@ function fakes(world: World) {
     async read(repo: string, path: string) {
       note('read', repo, path);
       if (path.endsWith('/git/ref/heads/main')) return { object: { sha: SHA } };
-      if (/\/check-runs\/\d+$/.test(path))
-        return { output: { title: 'Held: deletes a test', summary: 'test-loosening' } };
+      if (path.endsWith('/check-runs?check_name=review&filter=all&per_page=100')) {
+        note('reviewRuns', repo, path);
+        const sha = path.split('/commits/')[1]?.split('/')[0] ?? '';
+        const ours = world.foreign === 'only' ? [] : [run(9, sha, REVIEW_APP, world.review)];
+        const theirs = world.foreign ? [run(10, sha, FACTORY_APP, 'passed')] : [];
+        // GitHub lists the newest first.
+        return { check_runs: [...theirs, ...ours] };
+      }
       throw new Error(`the fake does not read ${path}`);
     },
   };
-  const run = (conclusion: string | null, status: string): CheckRun => ({
-    id: 9,
-    name: 'review',
-    status,
-    conclusion,
-    app: 'review-gate',
-    startedAt: null,
-    completedAt: null,
-    title: null,
-  });
   const reads = {
     async head(repo: string, branch: string) {
       note('head', repo, branch);
       if (world.readFails) throw world.readFails;
       return SHA;
-    },
-    async checkRuns(repo: string, sha: string) {
-      note('checkRuns', repo, sha);
-      if (world.review === 'pending') return [run(null, 'in_progress')];
-      return [run(world.review === 'held' ? 'failure' : 'success', 'completed')];
     },
   };
   return { calls, actions: actions as unknown as Actions, github: github as unknown as GitHub, reads: reads as Reads };
@@ -235,6 +249,22 @@ describe('the GitHub worker’s attack door', () => {
       expect(body.refusals).toEqual([]);
       expect(body.gotThrough).toEqual({ what: 'the review check did not hold the pull request' });
       expect(body.pullRequest).toMatchObject({ number: 77 });
+      expect(calls.slice(-2).map((c) => c.method)).toEqual(['closePullRequest', 'deleteBranch']);
+    });
+
+    it('reads the review App’s run alone: a newer passing `review` run from the factory’s App does not stand in for it', async () => {
+      const { ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held', foreign: 'newer' });
+      const { body } = await ask('test');
+      expect(body.gotThrough).toBeUndefined();
+      expect(verified((body.refusals as SignedRefusal[])[0] as SignedRefusal).mechanism).toBe('review-gate');
+    });
+
+    it('waits out a `review` run from any other app as no verdict, and says it was unconcluded', async () => {
+      const { calls, ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held', foreign: 'only' });
+      const { body } = await ask('test');
+      expect(body.refusals).toEqual([]);
+      expect(body.gotThrough).toBeUndefined();
+      expect(body.unconcluded).toEqual({ what: 'the review check did not conclude within the limit' });
       expect(calls.slice(-2).map((c) => c.method)).toEqual(['closePullRequest', 'deleteBranch']);
     });
 

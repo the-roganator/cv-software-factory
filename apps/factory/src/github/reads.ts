@@ -25,13 +25,14 @@ import { type DeployProposal, type DeployProposals, deployedImage } from './depl
 import {
   conflictsOf,
   heldFor,
-  type ListedReview,
+  listedReviews,
   type Mergeability,
   type MergeQueue,
-  REVIEW_CHECK,
+  REVIEW_RUNS,
   type ReviewCheck,
   type ReviewVerdict,
   reviewCheckOf,
+  reviewRunsPath,
   verdictOf,
 } from './merging.ts';
 import { CODEOWNERS_PATHS, protectedFrom } from './paths.ts';
@@ -196,26 +197,6 @@ const CHECK_RUNS = z.object({
       started_at: z.string().nullable().optional(),
       completed_at: z.string().nullable().optional(),
       output: z.object({ title: z.string().nullable().optional() }).optional(),
-    }),
-  ),
-});
-
-/** The `review` check runs on a commit, with their summaries, which carry the gate's verdict. */
-const REVIEW_RUNS = z.object({
-  check_runs: z.array(
-    z.object({
-      id: z.number().int(),
-      name: z.string(),
-      head_sha: z.string(),
-      status: z.string(),
-      conclusion: z.string().nullable(),
-      app: z.object({ id: z.number().int() }).nullable().optional(),
-      completed_at: z.string().nullable().optional(),
-      html_url: z.string().nullable().optional(),
-      output: z
-        .object({ title: z.string().nullable().optional(), summary: z.string().nullable().optional() })
-        .nullable()
-        .optional(),
     }),
   ),
 });
@@ -390,20 +371,8 @@ export class LiveReads implements Reads {
   async reviewVerdict(repo: string, number: number): Promise<ReviewVerdict> {
     const { head } = await this.#pull(repo, number);
     // Every `review` run on the head, re-runs too, so the latest is known; which app posted each is read off each.
-    const path = `/repos/${repo}/commits/${head.sha}/check-runs?check_name=${REVIEW_CHECK}&filter=all&per_page=100`;
-    const { body } = await this.#github.poll(repo, path, REVIEW_RUNS);
-    const runs: ListedReview[] = body.check_runs.map((run) => ({
-      id: run.id,
-      name: run.name,
-      headSha: run.head_sha,
-      appId: run.app?.id ?? null,
-      status: run.status,
-      conclusion: run.conclusion,
-      title: run.output?.title ?? null,
-      summary: run.output?.summary ?? null,
-      completedAt: run.completed_at ?? null,
-      url: run.html_url ?? null,
-    }));
+    const { body } = await this.#github.poll(repo, reviewRunsPath(repo, head.sha), REVIEW_RUNS);
+    const runs = listedReviews(body);
     const check = reviewCheckOf(runs, head.sha);
     const read = verdictOf(number, head.sha, check);
     const refusal =

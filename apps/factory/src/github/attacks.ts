@@ -103,16 +103,16 @@ interface DoorAnswer {
 
 /** The failures the door itself knows, in its own words: the only text from a failure it ever answers. */
 const DOOR_FAILURES = {
-  'nowhere-to-keep': 'the attack door has nowhere to keep a refusal, so it cannot answer one',
-  'no-signing-key': 'the attack door has no key to sign a refusal (REFUSAL_SIGNING_KEY), so it cannot answer one',
+  'nowhere-to-keep': 'The attack door has nowhere to keep a refusal, so it cannot answer one.',
+  'no-signing-key': 'The attack door has no key to sign a refusal (REFUSAL_SIGNING_KEY), so it cannot answer one.',
 } as const;
 type DoorFailure = keyof typeof DOOR_FAILURES;
 
 /** What the door answers to any other failure: the error's own text, from GitHub or a library, stays in its log. */
-const UNEXPECTED_FAILURE = 'The attack door could not make the attack; its log says why.';
+const UNEXPECTED_FAILURE = 'The attack door could not make the attack; the GitHub worker’s log says why.';
 
-/** A failure the door itself throws, which it answers in its own words. */
-export class DoorError extends Error {
+/** A failure the door itself throws, which it answers in its own words. Only this module throws one. */
+class DoorError extends Error {
   readonly failure: DoorFailure;
   constructor(failure: DoorFailure) {
     super(DOOR_FAILURES[failure]);

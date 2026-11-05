@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -71,5 +71,55 @@ describe('own_commits', () => {
     git(checkout, 'branch', '-q', '-D', 'below');
     git(checkout, 'fetch', '-q', '--prune', 'origin');
     expect(ownCommits(above)).toBe(0);
+  });
+});
+
+describe('pr_files', () => {
+  /**
+   * The files pull request 7 changes, as pr_files lists them, from a gh on PATH that answers the files API with these
+   * pages as `gh api --paginate` does, running the -q filter on each page alone, and fails on anything else: so on
+   * `gh pr diff`, as GitHub does past 300 files.
+   */
+  function prFiles(pages: (string | { filename: string; previous_filename: string })[][]): string[] {
+    writeFileSync(
+      join(dir, 'pages.json'),
+      JSON.stringify(pages.map((page) => page.map((file) => (typeof file === 'string' ? { filename: file } : file)))),
+    );
+    const gh = join(dir, 'gh');
+    writeFileSync(
+      gh,
+      `#!/usr/bin/env bash
+[[ "$*" == "api repos/owner/name/pulls/7/files?per_page=100 --paginate -q "* ]] || { echo "gh: refused: $*" >&2; exit 1; }
+jq -c '.[]' "${join(dir, 'pages.json')}" | while IFS= read -r page; do jq -r "$5" <<<"$page"; done
+`,
+    );
+    chmodSync(gh, 0o755);
+    const out = execFileSync('bash', ['-c', `. "${REPO_SH}" && pr_files owner/name 7`], {
+      env: { ...ENV, PATH: `${dir}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    return out.split('\n').filter(Boolean);
+  }
+
+  it('lists every file across pages, more than 300 of them', () => {
+    const files = Array.from({ length: 423 }, (_, i) => `tests/snapshots/${i}.png`);
+    const pages = [
+      files.slice(0, 100),
+      files.slice(100, 200),
+      files.slice(200, 300),
+      files.slice(300, 400),
+      files.slice(400),
+    ];
+    expect(prFiles(pages)).toEqual(files);
+  });
+
+  it('gives a renamed file the path it had too', () => {
+    expect(
+      prFiles([[{ filename: 'lib/grants.ts', previous_filename: 'policy/store-grants.ts' }, 'README.md']]),
+    ).toEqual(['lib/grants.ts\tpolicy/store-grants.ts', 'README.md']);
+  });
+
+  it('keeps a path with spaces whole', () => {
+    expect(prFiles([['docs/a file.md', '.github/CODEOWNERS']])).toEqual(['docs/a file.md', '.github/CODEOWNERS']);
   });
 });

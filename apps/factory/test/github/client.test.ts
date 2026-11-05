@@ -120,7 +120,7 @@ describe('the client', () => {
     expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, '"v1"', '"v1"', '"v1"']);
   });
 
-  it('keeps no answer its caller could not read, and calls one that is not JSON malformed', async () => {
+  it('keeps no answer its caller could not read, and calls a body that is not JSON malformed', async () => {
     let answer: Record<string, unknown> = { ok: 'yes' };
     const { github, sent } = client([
       {
@@ -140,10 +140,22 @@ describe('the client', () => {
 
     const empty = client([
       { method: 'GET', path: `/repos/${REPO}/thing`, answer: () => ({ headers: { etag: '"e"' } }) },
+      { method: 'POST', path: `/repos/${REPO}/thing`, answer: () => ({}) },
+      { method: 'POST', path: '/graphql', answer: () => ({}) },
     ]);
     await expect(empty.github.poll(REPO, `/repos/${REPO}/thing`, OK)).rejects.toMatchObject({
       kind: 'malformed',
       message: `GET /repos/${REPO}/thing answered with something other than JSON`,
+    });
+    // So is every other read of a body.
+    await expect(empty.github.read(REPO, `/repos/${REPO}/thing`, OK)).rejects.toMatchObject({ kind: 'malformed' });
+    await expect(empty.github.write(REPO, 'POST', `/repos/${REPO}/thing`, {}, OK)).rejects.toMatchObject({
+      kind: 'malformed',
+      message: `POST /repos/${REPO}/thing answered with something other than JSON`,
+    });
+    await expect(empty.github.graphql(REPO, 'query { viewer { login } }', {}, OK)).rejects.toMatchObject({
+      kind: 'malformed',
+      message: 'GraphQL answered with something other than JSON',
     });
   });
 

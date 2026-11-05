@@ -138,7 +138,8 @@ export class GitHub {
 
   /** A GET about one repository (`owner/name`), its body read through `schema`. The path is from the API's root. */
   async read<T>(repo: string, path: string, schema: z.ZodType<T>): Promise<T> {
-    return parse(schema, await (await this.#authorised(repo, 'GET', path)).json(), `GET ${path}`);
+    const response = await this.#authorised(repo, 'GET', path);
+    return parse(schema, json(await response.text(), `GET ${path}`), `GET ${path}`);
   }
 
   /** A write about one repository. Its answer is read through `schema` when one is given, and ignored when not. */
@@ -155,7 +156,7 @@ export class GitHub {
       await response.body?.cancel();
       return undefined as T;
     }
-    return parse(schema, await response.json(), `${method} ${path}`);
+    return parse(schema, json(await response.text(), `${method} ${path}`), `${method} ${path}`);
   }
 
   /** A conditional GET: unchanged answers come from the client's cache and cost nothing against the rate limit. */
@@ -164,11 +165,11 @@ export class GitHub {
     const cached = this.#etags.get(key);
     const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
     if (response.status === 304 && cached) {
-      return { changed: false, body: parse(schema, json(cached.text, path), `GET ${path}`) };
+      return { changed: false, body: parse(schema, json(cached.text, `GET ${path}`), `GET ${path}`) };
     }
     const text = await response.text();
     // Read through the caller's schema before it is kept, so an answer no caller has read is asked for again.
-    const body = parse(schema, json(text, path), `GET ${path}`);
+    const body = parse(schema, json(text, `GET ${path}`), `GET ${path}`);
     const etag = response.headers.get('etag');
     this.#forget(key);
     if (etag && text.length <= MAX_CACHED_LENGTH) {
@@ -193,7 +194,10 @@ export class GitHub {
   async graphql<T>(repo: string, query: string, variables: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
     if (!this.#tokens) throw new GitHubError('read-only', 'The worker has no App key, so it cannot use GraphQL.');
     const response = await this.#authorised(repo, 'POST', '/graphql', { query, variables });
-    const answer = (await response.json()) as { data?: unknown; errors?: { type?: string; message?: string }[] };
+    const answer = json(await response.text(), 'GraphQL') as {
+      data?: unknown;
+      errors?: { type?: string; message?: string }[];
+    };
     const [first] = Array.isArray(answer?.errors) ? answer.errors : [];
     if (first) {
       const kind: GitHubErrorKind =
@@ -312,11 +316,11 @@ async function errorOf(method: string, path: string, response: Response, now: nu
 }
 
 /** A body as JSON, or a `GitHubError` of kind `malformed`: an empty or cut-off answer is one GitHub did not mean. */
-function json(text: string, path: string): unknown {
+function json(text: string, where: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
-    throw new GitHubError('malformed', `GET ${path} answered with something other than JSON`);
+    throw new GitHubError('malformed', `${where} answered with something other than JSON`);
   }
 }
 

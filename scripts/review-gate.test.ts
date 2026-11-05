@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { found, GIVEN_LIMIT, readVerdict } from '../policy/review-verdict.ts';
 import {
   atHead,
+  judge,
   MARTIN,
   type PullRequest,
   QUEUE_BRANCH,
@@ -15,6 +16,7 @@ import {
   together,
   verdict,
 } from './review-gate.ts';
+import { APP_REPO, FACTORY_APP } from './review-routing.ts';
 
 const HEAD = 'a'.repeat(40);
 const EARLIER = 'b'.repeat(40);
@@ -414,5 +416,91 @@ describe("the review gate's workflows", () => {
     );
     expect(requested).toMatch(/^permissions: \{\}$/m);
     expect(requested).not.toMatch(/uses:|secrets\./);
+  });
+});
+
+describe('judging a pull request through the API', () => {
+  const run = { repo: APP_REPO, read: 't', token: '', autonomy: '', print: true };
+  const theirs: PullRequest = {
+    number: 9,
+    state: 'open',
+    user: { id: FACTORY_APP },
+    head: { sha: HEAD, ref: 'factory/9-fix', repo: { full_name: APP_REPO } },
+    base: { ref: 'main', repo: { full_name: APP_REPO } },
+    changed_files: 1,
+  };
+  /** GitHub, as the gate reads it: each path's answer, or a status it fails with. */
+  const github = (over: Record<string, unknown> = {}) => {
+    const answers: Record<string, unknown> = {
+      '/pulls/9/reviews': [],
+      '/pulls/9/files': [{ filename: 'src/a.ts', status: 'modified', patch: '+const a = 1;' }],
+      '/issues/9/events': [],
+      '/check-runs?': {
+        check_runs: [
+          {
+            id: 5,
+            name: 'gates / test integrity',
+            head_sha: HEAD,
+            status: 'completed',
+            conclusion: 'success',
+            app: { slug: 'github-actions' },
+            output: { annotations_count: 0 },
+          },
+        ],
+      },
+      '/check-runs/5/annotations': [],
+      '/contents/.github/CODEOWNERS': '/deploy/ @mrogan\n',
+      ...over,
+    };
+    vi.stubGlobal('fetch', async (url: string) => {
+      const path = new URL(url).pathname + new URL(url).search;
+      const key = Object.keys(answers)
+        .filter((k) => path.includes(k))
+        .sort((a, b) => b.length - a.length)[0];
+      const answer = key === undefined ? 404 : answers[key];
+      if (typeof answer === 'number') return new Response('no', { status: answer });
+      return typeof answer === 'string' ? new Response(answer) : Response.json(answer);
+    });
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("passes the App's untagged pull request with test integrity read", async () => {
+    github();
+    expect(await judge(run, theirs)).toMatchObject({ pass: true, rule: 'low-risk' });
+  });
+
+  it('holds it, posting a verdict, when GitHub fails to give its reviews', async () => {
+    github({ '/pulls/9/reviews': 502 });
+    const said = await judge(run, theirs);
+    expect(said).toMatchObject({ pass: false, rule: 'held' });
+    expect(said.title).toContain('could not read');
+    // Martin's own still passes: his say needs no review.
+    const his = { ...theirs, user: { id: MARTIN } };
+    expect(await judge(run, his)).toMatchObject({ pass: true, rule: 'martin-opened' });
+  });
+
+  it('holds it when the annotations GitHub gives are not as many as the run says, more or fewer', async () => {
+    const warning = { path: 'test/a.test.ts', annotation_level: 'warning', message: 'x' };
+    for (const given of [[], [warning, warning]]) {
+      github({
+        '/check-runs?': {
+          check_runs: [
+            {
+              id: 5,
+              name: 'gates / test integrity',
+              head_sha: HEAD,
+              status: 'completed',
+              conclusion: 'success',
+              app: { slug: 'github-actions' },
+              output: { annotations_count: 1 },
+            },
+          ],
+        },
+        '/check-runs/5/annotations': given,
+      });
+      const said = await judge(run, theirs);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.title).toContain(`GitHub gave ${given.length} of its 1 annotations`);
+    }
   });
 });

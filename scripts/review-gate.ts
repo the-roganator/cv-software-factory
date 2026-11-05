@@ -390,10 +390,13 @@ async function ahead(repo: string, from: string, to: string, token: string): Pro
 export async function judge(each: Run, pr: PullRequest, withoutMartin = false): Promise<Decision> {
   const { repo, read } = each;
   const head = pr.head.sha;
-  const reviews = withoutMartin ? [] : await paged<Review>(`/repos/${repo}/pulls/${pr.number}/reviews`, read);
   const judged = withoutMartin && pr.user?.id === MARTIN ? { ...pr, user: null } : pr;
-  const facts = { repo, pr: judged, reviews, autonomy: each.autonomy };
+  // His reviews are read inside the guard too: unread, they count as no say, and the pull request is held saying why,
+  // rather than the run failing and leaving no verdict at all.
+  let reviews: Review[] = [];
+  const facts = () => ({ repo, pr: judged, reviews, autonomy: each.autonomy });
   try {
+    if (!withoutMartin) reviews = await paged<Review>(`/repos/${repo}/pulls/${pr.number}/reviews`, read);
     const [files, events, runs, rules] = await Promise.all([
       paged<FileChange>(`/repos/${repo}/pulls/${pr.number}/files`, read),
       paged<IssueEvent>(`/repos/${repo}/issues/${pr.number}/events`, read),
@@ -410,7 +413,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     if ('run' in integrity) {
       const annotations = await paged<Annotation>(`/repos/${repo}/check-runs/${integrity.run.id}/annotations`, read);
       const expected = integrity.run.output?.annotations_count ?? 0;
-      if (annotations.length < expected)
+      // Fewer is a page lost, more a set that is not the run's: either way, the excused tests are not known.
+      if (annotations.length !== expected)
         testIntegrity = { read: false, reason: `GitHub gave ${annotations.length} of its ${expected} annotations` };
       excused = excusedTests(annotations);
     } else testIntegrity = { read: false, reason: integrity.reason };
@@ -439,13 +443,19 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
             complete,
           ).catch((error: Error) => ({ reason: `the gate could not check it: ${error.message}` }))
         : undefined;
-    return route({ ...facts, tags, testIntegrity, labelsRemoved: riskLabelsRemoved(events), ...(pin ? { pin } : {}) });
+    return route({
+      ...facts(),
+      tags,
+      testIntegrity,
+      labelsRemoved: riskLabelsRemoved(events),
+      ...(pin ? { pin } : {}),
+    });
   } catch (error) {
-    // Martin's say needs only his reviews; anything else unread holds the pull request, saying what.
+    // Martin's say needs only his reviews, if they were read; anything else unread holds the pull request, saying what.
     const message = error instanceof Error ? error.message : String(error);
     console.log(`::warning::${message}`);
     return route({
-      ...facts,
+      ...facts(),
       tags: [],
       testIntegrity: { read: false, reason: 'not read' },
       labelsRemoved: [],

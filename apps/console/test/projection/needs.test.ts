@@ -388,6 +388,12 @@ describe('Needs you', () => {
       /^Merged at \d\d:\d\d\. The App opens the deploy pull request that carries it once its image is built and signed; merging that will be yours, on GitHub\.$/,
     );
     expect(at(2).outcome).toBe('deploying');
+    const THERE: Record<string, string | undefined> = {
+      checking: 'checks',
+      passed: 'deploy',
+      queued: 'deploy-queued',
+      dequeued: 'deploy-dequeued',
+    };
     steps.forEach(([change, kicker, text], i) => {
       merged.add(10 + i, 'deploy.changed', 'factory', change);
       const { need, outcome } = at(10 + i);
@@ -398,11 +404,14 @@ describe('Needs you', () => {
       // The deploy pull request is the way on only while it is open and its checks have not failed: failed, closed or
       // merged, a newer build or Argo CD moves the fix on, and the card offers no way there.
       expect(need?.way).toEqual(
-        ['checking', 'passed', 'queued', 'dequeued'].includes(change.state)
+        THERE[change.state]
           ? {
               verb: 'Deploy',
               pullRequest: change.pullRequest,
               href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
+              // What Martin does there, which the card says beside it: merge it once its checks pass, now, or once he
+              // has seen why the queue took it out; or nothing, while the queue merges it.
+              there: THERE[change.state],
             }
           : undefined,
       );
@@ -453,7 +462,7 @@ describe('Needs you', () => {
       return needsView(foldItems(item.events), START + 60 * 60_000).holds[0];
     };
 
-    it('draws the review gate’s hold for its risk tags: its words, a cross for each tag, and Review on GitHub', () => {
+    it('draws the review gate’s hold for its risk tags: its words, a cross for each tag, and its way, Review', () => {
       const need = needOf(
         merge('held', {
           rule: 'held',
@@ -480,8 +489,7 @@ describe('Needs you', () => {
           approving: true,
         },
         // Martin approves it on GitHub: no Merge, no Approve, and words go to the coder.
-        way: undefined,
-        review: { pullRequest: 1327, href: undefined, approving: true },
+        way: { verb: 'Review', pullRequest: 1327, href: undefined, there: 'approve' },
         note: undefined,
       });
       expect(need?.answers.map((a) => [a.label, a.does])).toEqual([
@@ -496,10 +504,11 @@ describe('Needs you', () => {
         sample: false,
       });
       const realNeed = needOf(merge('held', { approving: false }), real);
-      expect(realNeed?.review).toEqual({
+      expect(realNeed?.way).toEqual({
+        verb: 'Review',
         pullRequest: 1327,
         href: 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1327',
-        approving: false,
+        there: 'approve-merge',
       });
       // The line closes the work item and its issue, and leaves the pull request open.
       expect(realNeed?.answers.find((a) => a.answer === 'rejected')?.does).toBe(
@@ -528,8 +537,7 @@ describe('Needs you', () => {
         kicker: 'Waiting for your merge',
         evidence: { kind: 'words', text: 'Held: level' },
         note: 'At Guarded or Lights-out, with auto-merge on, the line would add it to the merge queue itself.',
-        way: { verb: 'Merge', pullRequest: 1327 },
-        review: undefined,
+        way: { verb: 'Merge', pullRequest: 1327, there: 'merge' },
       });
       expect(needOf(merge('level', { rule: 'lights-out' }))?.note).toBe(
         'At Lights-out, with auto-merge on, the line would add it to the merge queue itself.',
@@ -543,7 +551,13 @@ describe('Needs you', () => {
     });
 
     it('says why a conflict, or the merge queue, holds it, with the checks that failed on the queue’s commit', () => {
-      expect(needOf(merge('conflict'))).toMatchObject({ kicker: 'Conflicts with main', way: { verb: 'Merge' } });
+      // Its way says what stands before the merge: the conflict put right, or why the queue took it out or refused it.
+      expect(needOf(merge('conflict'))).toMatchObject({
+        kicker: 'Conflicts with main',
+        way: { verb: 'Merge', there: 'conflict' },
+      });
+      expect(needOf(merge('queue', { queue: { reason: 'dequeued', failed: [] } }))?.way?.there).toBe('queue');
+      expect(needOf(merge('refused'))?.way?.there).toBe('queue');
       expect(
         needOf(merge('queue', { queue: { reason: 'failed_checks', failed: ['e2e', 'CodeQL'] } }))?.evidence,
       ).toEqual({ kind: 'output', heading: 'merge queue · failed_checks · PR #1327', text: '✕ e2e\n✕ CodeQL' });
@@ -660,13 +674,12 @@ describe('Needs you', () => {
       'Reject',
     ]);
     // A sample's pull request never existed: the card's way names it, and links nowhere, as the sheet does.
-    const nowhere = 'A sample’s pull request: it never existed, so it links nowhere.';
-    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, why: nowhere });
+    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, there: 'merge' });
     expect(needs.holds.find((need) => need.cause === 'deploy')?.way).toEqual({
       verb: 'Deploy',
       pullRequest: 1331,
       href: undefined,
-      why: nowhere,
+      there: 'checks',
     });
     // A spend cap's settings are a link beside its evidence, not a way: the card's way is GitHub's only.
     const spend = needs.holds.find((need) => need.cause === 'spend');

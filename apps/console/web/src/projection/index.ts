@@ -82,7 +82,7 @@ export type {
   Status,
 } from './line.ts';
 export { whileSending } from './line.ts';
-export type { Answered, CanaryNeed, Evidence, Need, NeedsView } from './needs.ts';
+export type { Answered, CanaryNeed, Evidence, Need, NeedsView, WayThere } from './needs.ts';
 export { SAMPLE_PULL } from './needs.ts';
 export type { Card, Picture, Refused, Source, Tag, Timeline, Versions } from './reel.ts';
 export { QUARANTINE_AT, segmentsLabel } from './reel.ts';

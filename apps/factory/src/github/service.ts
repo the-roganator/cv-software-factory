@@ -5,7 +5,7 @@
 import { DiskArtifacts } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { listenOn } from '../listen.ts';
-import { type Actions, contentsReader, DryRunActions, LiveActions } from './actions.ts';
+import { type Actions, contentsReader, DryRunActions, LiveActions, queueCandidate } from './actions.ts';
 import { createAttackServer } from './attacks.ts';
 import { GitHub } from './client.ts';
 import { type GitHubConfig, REPOSITORIES } from './config.ts';
@@ -38,11 +38,13 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   // One guard for both: an issue the App did not open is refused, live or in a dry run, and each refusal is kept.
   const guard = new IssueGuard({ openedBy: openedBy(github), recorder });
   // One dry run, remembered for as long as the worker runs, for a worker in dry-run mode and for any request that asks.
-  const dryRun = artifacts ? new DryRunActions(artifacts, log, undefined, contentsReader(github), guard) : undefined;
+  const dryRun = artifacts
+    ? new DryRunActions(artifacts, log, undefined, contentsReader(github), guard, queueCandidate(github))
+    : undefined;
   const actions: Actions = config.dryRun && dryRun ? dryRun : new LiveActions(github, { guard });
   // What each deploy watch proposes, which the line reads to say what a deploy carries.
   const proposals = new DeployProposals();
-  const liveReads = new LiveReads(github, { registry, signatures, proposals });
+  const liveReads = new LiveReads(github, { registry, signatures, proposals }, { recorder });
   const dryRunReads = dryRun ? new DryRunReads(dryRun, liveReads, config.dryRunTimes) : undefined;
   const poller = new Poller({ intervalMs: config.pollMs, log });
 

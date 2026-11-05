@@ -18,9 +18,10 @@
  * open is 403 (`issue-refused`), as GitHub answers one the App may not change.
  *
  * An action refused by the worker's guard (a patch to a protected path, a branch, a deploy, an issue or pull request
- * not the App's) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
+ * not the App's, a pull request for the merge queue from a fork or a red-team branch) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
  * `refusal`, for the worker that asked to record as `action.refused` (`../signed-refusals.ts`). Its status is as it
- * would be without it.
+ * would be without it. A read refuses nothing, but the gate's verdict that holds a pull request (`reviewVerdict`)
+ * carries the gate's refusal the same way, in its result.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
@@ -169,6 +170,7 @@ const ARGS = {
   reopenIssue: z.strictObject({ number, comment: text(65_535).min(1) }),
   closePullRequest: z.strictObject({ number, comment: text(65_535).min(1) }),
   comment: z.strictObject({ number, body: text(65_535).min(1) }),
+  enqueuePullRequest: z.strictObject({ number, expectedHead: sha }),
 } satisfies Record<keyof Omit<Actions, 'dryRun'>, z.ZodType>;
 
 type Name = keyof typeof ARGS;
@@ -234,6 +236,7 @@ const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(type
   reopenIssue: (x, repo, { number, comment }) => x.reopenIssue(repo, number, comment),
   closePullRequest: (x, repo, { number, comment }) => x.closePullRequest(repo, number, comment),
   comment: (x, repo, { number, body }) => x.comment(repo, number, body),
+  enqueuePullRequest: (x, repo, { number, expectedHead }) => x.enqueuePullRequest(repo, number, expectedHead),
 };
 
 /** Each read's arguments after the repository. */
@@ -251,6 +254,9 @@ const READS = {
   imageRevision: z.strictObject({ image, digest }),
   imageSigned: z.strictObject({ image, digest }),
   deployProposal: z.strictObject({ branch }),
+  reviewVerdict: z.strictObject({ number }),
+  mergeQueue: z.strictObject({ number }),
+  mergeability: z.strictObject({ number }),
 } satisfies Record<keyof Reads, z.ZodType>;
 
 type ReadName = keyof typeof READS;
@@ -276,6 +282,9 @@ const READ_CALLS: {
   imageRevision: (r, repo, { image, digest }) => r.imageRevision(repo, image, digest),
   imageSigned: (r, repo, { image, digest }) => r.imageSigned(repo, image, digest),
   deployProposal: (r, repo, { branch }) => r.deployProposal(repo, branch),
+  reviewVerdict: (r, repo, { number }) => r.reviewVerdict(repo, number),
+  mergeQueue: (r, repo, { number }) => r.mergeQueue(repo, number),
+  mergeability: (r, repo, { number }) => r.mergeability(repo, number),
 };
 
 /** An object without its undefined fields, as the actions' optional fields expect: absent, never undefined. */

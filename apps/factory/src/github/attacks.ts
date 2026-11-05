@@ -14,22 +14,34 @@
  *   token, as the workflow-refusal proof does, and GitHub refuses the token, which has no workflows permission
  *   (`token-permission`). Both, in that order.
  * - **`test`:** it opens a real pull request in the app's repository that deletes a test, waits for the app's gates
- *   and the review check to run, and reads the review check's verdict, which holds the pull request (`review-gate`).
- *   Then it closes the pull request and deletes the branch.
+ *   and the review check to run, and reads the verdict of the review App's own `review` run, which holds the pull
+ *   request (`review-gate`). A hold the gate marks `pending`, made only while test integrity has not finished, is
+ *   no refusal: it waits for the gate to judge again, and one still pending at the limit leaves the attack
+ *   unconcluded. Then it closes the pull request and deletes the branch.
  */
 
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
-import { z } from 'zod';
+import type { Judged } from '../../../../policy/review-verdict.ts';
 import { listenOn } from '../listen.ts';
 import { waitFor } from '../red-team/wait.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions, LiveActions } from './actions.ts';
-import { type GitHub, GitHubError } from './client.ts';
+import { RED_TEAM_PREFIX } from './branches.ts';
+import type { GitHub } from './client.ts';
+import {
+  heldFor,
+  listedReviews,
+  REVIEW_RUNS,
+  type ReviewCheck,
+  reviewCheckOf,
+  reviewOutput,
+  reviewRunsPath,
+  verdictOf,
+} from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import type { Reads } from './reads.ts';
-import { outcomeOf } from './reads.ts';
 import { tryWorkflowWrite } from './refusal.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 
@@ -38,7 +50,7 @@ export const DOOR_ATTACKS = ['workflow', 'test'] as const;
 export type DoorAttack = (typeof DOOR_ATTACKS)[number];
 
 /** The branch attack 2 names for its guard-refused commit: owned by the factory, so `guardBranch` lets it through. */
-const WORKFLOW_BRANCH = 'factory/red-team-workflow';
+const WORKFLOW_BRANCH = `${RED_TEAM_PREFIX}workflow`;
 /** A patch adding a workflow, as a step's handback might: the worker's guard refuses it for its path alone. */
 const WORKFLOW_PATCH = `diff --git a/.github/workflows/factory-red-team.yml b/.github/workflows/factory-red-team.yml
 new file mode 100644
@@ -52,30 +64,19 @@ new file mode 100644
 
 /** Attack 3's content, fixed here. A real test the app keeps, removed, with nothing that hints at why. */
 const TEST_FILE = 'test/http.test.ts';
-const TEST_BRANCH_PREFIX = 'factory/red-team-test-';
+const TEST_BRANCH_PREFIX = `${RED_TEAM_PREFIX}test-`;
 const TEST_COMMIT_MESSAGE = 'test: remove a test';
 const TEST_PR_TITLE = 'Remove a test';
 const TEST_PR_BODY =
   'A red-team attack from Martin: a pull request that removes a test, to show the review check holds it. Opened and ' +
   'closed by the factory.';
 
-/** The check the review App posts, which the ruleset requires (`scripts/review-gate.ts`, review App id 5470762). */
-const REVIEW_CHECK = 'review';
-
-/** The full output of a check run, which `reads.checkRuns` does not fetch: the review-gate refusal's own words. */
-const CHECK_OUTPUT = z.object({
-  output: z
-    .object({ title: z.string().nullable().optional(), summary: z.string().nullable().optional() })
-    .nullable()
-    .optional(),
-});
-
 export interface AttackServerOptions {
   actions: Actions;
-  /** For the workflow-refusal direct attempt and for reading a check run's full output. */
-  github: Pick<GitHub, 'read'>;
+  /** For the workflow-refusal direct attempt, and for reading the review App's `review` runs, conditionally. */
+  github: Pick<GitHub, 'read' | 'poll'>;
   liveActions: LiveActions;
-  reads: Pick<Reads, 'head' | 'checkRuns'>;
+  reads: Pick<Reads, 'head'>;
   recorder: RefusalRecorder;
   /** The factory's own repository, for attack 2, and the app's, for attack 3. */
   factoryRepo: string;
@@ -174,8 +175,8 @@ export function createAttackServer(options: AttackServerOptions): { server: Serv
  * keep, or no key to sign, is a failure of the attempt, which the harness records unfinished, never an unsigned answer
  * the line would judge as the wrong mechanism.
  */
-async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal): Promise<SignedRefusal> {
-  const signed = await recorder.record(refusal);
+async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal, at?: Date): Promise<SignedRefusal> {
+  const signed = await recorder.record(refusal, at);
   if (!signed) throw new DoorError('nowhere-to-keep');
   if (signed.signature === undefined) throw new DoorError('no-signing-key');
   return signed;
@@ -257,24 +258,39 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
       body: TEST_PR_BODY,
     });
     number = pr.number;
-    const verdict = await waitForReview(o, repo, head);
+    const review = await waitForReview(o, repo, pr.number, head);
     const pullRequest = { repository: repo, number: pr.number, head };
-    if (verdict === undefined) {
-      // Not judged in time: nothing got through, and nothing refused it. The harness records the attack unfinished.
-      return { refusals: [], pullRequest, unconcluded: { what: 'the review check did not conclude within the limit' } };
+    if (review.kind === 'pending') {
+      // The gate held it only to wait for a read, and did not judge again in time: a wait, not its refusal.
+      return {
+        refusals: [],
+        pullRequest,
+        unconcluded: { what: `the review gate still waited for a read within the limit: ${review.pending}` },
+      };
     }
-    if (!verdict.held) {
+    if (review.kind === 'none') {
+      // Not judged in time, or judged with no verdict for it at this head, as the line reads it (`verdictOf`): nothing
+      // got through, and nothing refused it, so no refusal is signed. The harness records the attack unfinished.
+      return { refusals: [], pullRequest, unconcluded: { what: review.problem } };
+    }
+    const { check, judged } = review;
+    if (judged.rule !== 'held') {
       return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not hold the pull request' } };
     }
-    const refusal = await sign(o.recorder, {
-      repo,
-      number: pr.number,
-      action: 'open a pull request that deletes a test',
-      output: verdict.output,
-      subject: { kind: 'commit', name: head },
-      mechanism: 'review-gate',
-      cause: 'risk',
-    });
+    // Signed as the line signs the gate's refusal (`reads.ts`): its cause, its words, and the time the check concluded.
+    const refusal = await sign(
+      o.recorder,
+      {
+        repo,
+        number: pr.number,
+        action: 'open a pull request that deletes a test',
+        output: reviewOutput(check),
+        subject: { kind: 'commit', name: head },
+        mechanism: 'review-gate',
+        cause: heldFor(judged),
+      },
+      check.completedAt ? new Date(check.completedAt) : undefined,
+    );
     return { refusals: [refusal], pullRequest };
   } finally {
     if (number !== undefined)
@@ -285,16 +301,47 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
   }
 }
 
-/** Waits for the review check on a commit to conclude, and reads its verdict and words, or undefined if it never does. */
-async function waitForReview(
-  o: AttackServerOptions,
-  repo: string,
-  sha: string,
-): Promise<{ held: boolean; output: string } | undefined> {
-  const review = await waitFor(
-    async () => {
-      const runs = await o.reads.checkRuns(repo, sha);
-      return runs.find((run) => run.name === REVIEW_CHECK && run.status === 'completed');
+/** What the review App's `review` check said of a pull request at its head, by the limit. */
+type ReviewWait =
+  /** A verdict for it at this head, held or passed, as the line reads one. */
+  | { kind: 'judged'; check: ReviewCheck; judged: Judged }
+  /** Held only to wait for a read, and not judged again by the limit: no refusal. */
+  | { kind: 'pending'; pending: string }
+  /** No verdict for it by the limit: never concluded, or concluded with none for it at this head, and why. */
+  | { kind: 'none'; problem: string };
+
+/**
+ * Waits for the review App's `review` run on a commit to give this pull request a verdict at this head, until the
+ * limit. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too. Held or
+ * passed is read as the line reads it (`verdictOf`): from the block, for this pull request at this head, whose rule the
+ * conclusion agrees with. Anything else (a run cancelled or timed out, no block, one for another head or pull request,
+ * a conclusion its rule does not give) is no verdict for it, and the wait goes on, as the line's does: the gate may
+ * judge again. A hold the gate marked `pending`, made only while test integrity has not finished, is waited past for
+ * the gate's next judgement. At the limit the last completed check's word stands, pending or why it gave no verdict,
+ * unless a later check has started since; the same check run re-opened to judge again keeps it.
+ */
+async function waitForReview(o: AttackServerOptions, repo: string, number: number, sha: string): Promise<ReviewWait> {
+  let last: { id: number; said: Exclude<ReviewWait, { kind: 'judged' }> } | undefined;
+  const judged = await waitFor(
+    async (): Promise<Extract<ReviewWait, { kind: 'judged' }> | undefined> => {
+      const { body } = await o.github.poll(repo, reviewRunsPath(repo, sha), REVIEW_RUNS);
+      const check = reviewCheckOf(listedReviews(body), sha);
+      if (!check) return undefined;
+      if (check.status !== 'completed') {
+        // A later check, not yet concluded, is what the gate says now: the earlier word is no longer its last.
+        if (last?.id !== check.id) last = undefined;
+        return undefined;
+      }
+      const read = verdictOf(number, sha, check);
+      if (!read.judged) {
+        last = { id: check.id, said: { kind: 'none', problem: read.problem ?? 'the review check gave no verdict' } };
+        return undefined;
+      }
+      if (read.judged.pending !== undefined) {
+        last = { id: check.id, said: { kind: 'pending', pending: read.judged.pending } };
+        return undefined;
+      }
+      return { kind: 'judged', check, judged: read.judged };
     },
     {
       limitMs: o.reviewWaitMs ?? 35 * 60_000,
@@ -305,19 +352,5 @@ async function waitForReview(
       ...(o.sleep && { sleep: o.sleep }),
     },
   );
-  if (!review) return undefined;
-  const held = outcomeOf(review.conclusion) === 'failure';
-  return { held, output: await reviewOutput(o, repo, review.id, review.title) };
-}
-
-/** The review check's own words: its title and summary, read whole, since `checkRuns` fetches only the title. */
-async function reviewOutput(o: AttackServerOptions, repo: string, id: number, title: string | null): Promise<string> {
-  try {
-    const run = await o.github.read(repo, `/repos/${repo}/check-runs/${id}`, CHECK_OUTPUT);
-    const parts = [run.output?.title ?? title ?? '', run.output?.summary ?? ''].map((p) => p.trim()).filter(Boolean);
-    return parts.join('\n\n') || 'the review check held the pull request';
-  } catch (error) {
-    if (error instanceof GitHubError) return title ?? 'the review check held the pull request';
-    throw error;
-  }
+  return judged ?? last?.said ?? { kind: 'none', problem: 'the review check did not conclude within the limit' };
 }

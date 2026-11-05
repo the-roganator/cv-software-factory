@@ -35,7 +35,7 @@ A risk label removed by anyone but Martin holds the pull request from every rule
 ## Who reads which signal
 
 - **The gate** reads the diff, CODEOWNERS on `main`, Martin's reviews, the pull request's label events, test integrity's run, and the caller's `AUTONOMY` variable. It cannot read the factory's store, and merges nothing: a pull request merges only once someone adds it to the merge queue.
-- **The line** reads the store's autonomy level and auto-merge switch (Martin's controls), the gate's verdict from the review App's own `review` check on the pull request's current head, whether the pull request conflicts with main, and the merge queue's word on what it added. It adds its own pull request to the queue only when auto-merge is on, the gate's rule is one the level allows, and the head is the one its own gates and reviewer passed; never an improvement, a release, a red-team branch or a work item whose spec was tagged `out-of-scope`. So the stricter of the two always wins: a fault in the line cannot merge what the gate fails, and the gate alone merges nothing.
+- **The line** reads the store's autonomy level and auto-merge switch (Martin's controls), the gate's verdict from the review App's own `review` check on the pull request's current head, whether the pull request conflicts with main, and the merge queue's word on what it added. It adds the app's deploy pull request to the queue only as an exact pin, and its own pull request only when auto-merge is on, the gate's rule is one the level allows, and the head is the one its own gates and reviewer passed; never an improvement, a release, a red-team branch or a work item whose spec was tagged `out-of-scope`. So the stricter of the two always wins: a fault in the line cannot merge what the gate fails, and the gate alone merges nothing.
 
 ## The line's part
 
@@ -44,6 +44,8 @@ A risk label removed by anyone but Martin holds the pull request from every rule
 | Supervised | none |
 | Guarded | `low-risk`, `exact-pin`, `martin-approved-head` |
 | Lights-out | Guarded's, and `lights-out` |
+
+The line adds the app's deploy pull request, which the App opens and every fix waits for at Release, to the queue the same way, once its checks have passed: only when the gate passed its head as `exact-pin`, at Guarded or Lights-out with auto-merge on, once for each head. Otherwise it waits for Martin, and the line records why ([the line adds it to the queue](RELEASE-AND-VERIFY.md#the-line-adds-it-to-the-queue)). The factory's own deploy pull requests stay his.
 
 Anything else is held in Needs you, as a `merge` hold naming the gate's rule, its tags with what gave each, its words, and why the line does not merge it; where Martin's approval of the head on GitHub would send it to the queue, the hold says so. Only a pull request the gate refused (`held`) is recorded as a refusal, `review-gate`, once for each head, signed by the GitHub worker. A merge held because the level or auto-merge does not allow it is his ordinary merge.
 

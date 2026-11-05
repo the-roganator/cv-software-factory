@@ -6,13 +6,13 @@
  * Each names its work item, its cause and, where Martin answers it on GitHub, the pull request: a merge hold's latest
  * pushed pull request, a deploy hold's deploy pull request. A merge held again as the review gate's word on it changes
  * has waited since the first of those holds (`mergeHeldSince`). A deploy hold waits for Martin only once that pull
- * request's checks have passed (`deploy.ts`), and from then; until then it waits for the build, the checks or Argo CD,
- * and is not his yet. One whose release was aborted or erred waits for his retry, from the hold's start.
+ * request's checks have passed and the line has not added it to the merge queue, or the queue took it out
+ * (`deploy.ts`), and from then; until then it waits for the build, the checks, the queue or Argo CD, and is not his yet. One whose release was aborted or erred waits for his retry, from the hold's start.
  */
 import { type HoldCause, type RawEvent, upcast } from '@software-factory/events';
 import { fromMartin, lastEnd } from '@software-factory/store';
 import type { Sql } from 'postgres';
-import { latestDeploy } from './deploy.ts';
+import { type DeployChange, waitsForMartin as deployWaitsForMartin, latestDeploy } from './deploy.ts';
 import { fold, type LineEvent } from './machine.ts';
 
 /** A hold that waits for Martin. */
@@ -49,11 +49,29 @@ export function waitingHold(workItem: string, events: readonly Dated[]): OpenHol
       return { workItem, cause: hold.cause, pullRequest: undefined, since: started.ts };
     }
     const deploy = latestDeploy(events, hold);
-    if (deploy?.state !== 'passed') return undefined;
-    const passed = events.findLast((event) => event.type === 'deploy.changed');
-    return { workItem, cause: hold.cause, pullRequest: deploy.pullRequest, since: passed?.ts ?? started.ts };
+    if (!deploy || !deployWaitsForMartin(deploy)) return undefined;
+    return { workItem, cause: hold.cause, pullRequest: deploy.pullRequest, since: deployWaitSince(events, started) };
   }
   return { workItem, cause: hold.cause, pullRequest: undefined, since: started.ts };
+}
+
+/**
+ * Since when a work item's deploy pull request has waited for Martin under the hold that started at `started`: the
+ * first of the records in a row, since then, of that pull request at that head that wait for him. Why it waits may
+ * change meanwhile (the gate judging again, auto-merge switched), and it has waited for him all along.
+ */
+function deployWaitSince(events: readonly Dated[], started: Dated): Date {
+  let since: Date | undefined;
+  let at: string | undefined;
+  for (const event of events.slice(events.indexOf(started) + 1)) {
+    if (event.type !== 'deploy.changed') continue;
+    const change = event.payload as DeployChange;
+    const head = `${change.pullRequest} ${change.commit}`;
+    if (!deployWaitsForMartin(change)) since = undefined;
+    else if (since === undefined || head !== at) since = event.ts;
+    at = head;
+  }
+  return since ?? started.ts;
 }
 
 /**

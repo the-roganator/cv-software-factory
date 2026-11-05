@@ -859,22 +859,65 @@ export const PAYLOADS = {
 
   /**
    * The app's deploy pull request that carries a merged work item held for a deploy changed for it: it opened or
-   * moved to a new head, and its required checks run there; they all passed, or some failed; it merged; or it was
-   * closed unmerged. The line reads it from GitHub and records each change on every held work item it carries, so the
-   * console can link it and say whether it waits for Martin yet. A dry run's deploy pull request is never recorded.
+   * moved to a new head, and its required checks run there; they all passed, or some failed; the line added it to the
+   * merge queue, or the queue took it out; it merged; or it was closed unmerged. The line reads it from GitHub and
+   * records each change on every held work item it carries, so the console can link it and say whether it waits for
+   * Martin yet, and why. A dry run's deploy pull request is never recorded.
    */
   'deploy.changed': z
     .strictObject({
       pullRequest,
-      /** The pull request's head: the commit its checks run on. */
+      /** The pull request's head: the commit its checks run on, and the one the line added to the queue. */
       commit,
       state: z.enum(V.DEPLOY_STATES),
-      /** The required checks that failed there, on `failed` only. */
+      /**
+       * The required checks that failed: on its head, on `failed`, which always names one; on the queue's commit, on
+       * `dequeued`, when any did.
+       */
       failed: z.array(text(80)).min(1).max(40).optional(),
+      /** On `passed`, why the line has not added it to the queue, so it waits for Martin. A version 1 record never said. */
+      waits: z.enum(V.DEPLOY_WAITS).optional(),
+      /**
+       * The review gate's rule for its head: on `queued`, the one the line added it by; on `passed` waiting for the
+       * verdict, the one the gate gave instead of an exact pin, when it gave one.
+       */
+      rule: z.enum(V.GATE_RULES).optional(),
+      /** On `queued`, its place in the queue, as GitHub gave it, when it gave one. */
+      position: z.number().int().positive().optional(),
+      /** On `dequeued`, GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `dequeued`, … */
+      reason: text(60).optional(),
+      /** On `passed` and refused, what the GitHub worker said. */
+      said: text(300).optional(),
     })
-    .refine((d) => (d.state === 'failed') === (d.failed !== undefined), {
-      message: 'a deploy whose checks failed names them, and no other does',
+    .refine((d) => (d.state === 'failed' ? d.failed !== undefined : d.state === 'dequeued' || !d.failed), {
+      message: 'a deploy whose checks failed names them, and only one taken out of the queue may too',
       path: ['failed'],
+    })
+    .refine((d) => d.state === 'passed' || d.waits === undefined, {
+      message: 'only a deploy whose checks passed waits for a reason',
+      path: ['waits'],
+    })
+    .refine(
+      (d) =>
+        d.state === 'queued'
+          ? d.rule !== undefined
+          : d.rule === undefined || (d.waits === 'verdict' && d.rule !== 'exact-pin'),
+      {
+        message: 'a queued deploy names the rule it was added by, and only one that waits for a verdict names another',
+        path: ['rule'],
+      },
+    )
+    .refine((d) => d.state === 'queued' || d.position === undefined, {
+      message: 'only a queued deploy has a place in the queue',
+      path: ['position'],
+    })
+    .refine((d) => (d.state === 'dequeued') === (d.reason !== undefined), {
+      message: 'a deploy taken out of the queue says why, and no other does',
+      path: ['reason'],
+    })
+    .refine((d) => d.waits === 'refused' || d.said === undefined, {
+      message: 'only a deploy the queue would not take says what was said',
+      path: ['said'],
     }),
 
   /**

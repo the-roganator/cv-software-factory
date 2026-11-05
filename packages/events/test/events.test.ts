@@ -539,7 +539,7 @@ describe('validation', () => {
   });
 
   it('takes a deploy pull request’s change on a work item, naming the failed checks on a failure only', () => {
-    const changed = { ...opened, type: 'deploy.changed', version: 1, actor: 'factory' };
+    const changed = { ...opened, type: 'deploy.changed', version: 2, actor: 'factory' };
     const payload = { pullRequest: 412, commit: 'b'.repeat(40), state: 'checking' };
     expect(validate({ ...changed, payload })).toEqual({ ok: true });
     for (const state of ['passed', 'merged', 'closed']) {
@@ -553,6 +553,34 @@ describe('validation', () => {
     expect(validate({ ...changed, payload: { ...payload, state: 'ready' } }).ok).toBe(false);
     expect(validate({ ...changed, payload: { ...payload, commit: 'b0b' } }).ok).toBe(false);
     expect(validate({ ...changed, work_item: null, payload }).ok).toBe(false);
+  });
+
+  it('takes a deploy pull request the line queued, the queue took out, or that waits for Martin, saying why', () => {
+    const changed = { ...opened, type: 'deploy.changed', version: 2, actor: 'factory' };
+    const at = { pullRequest: 412, commit: 'b'.repeat(40) };
+    const ok = (payload: object) => validate({ ...changed, payload }).ok;
+    expect(ok({ ...at, state: 'queued', rule: 'exact-pin', position: 2 })).toBe(true);
+    expect(ok({ ...at, state: 'queued', rule: 'exact-pin' })).toBe(true);
+    expect(ok({ ...at, state: 'queued' })).toBe(false);
+    expect(ok({ ...at, state: 'passed', position: 2 })).toBe(false);
+    expect(ok({ ...at, state: 'dequeued', reason: 'failed_checks', failed: ['e2e'] })).toBe(true);
+    expect(ok({ ...at, state: 'dequeued', reason: 'dequeued' })).toBe(true);
+    expect(ok({ ...at, state: 'dequeued' })).toBe(false);
+    expect(ok({ ...at, state: 'passed', reason: 'failed_checks' })).toBe(false);
+    for (const waits of ['level', 'auto-merge', 'conflict', 'verdict'])
+      expect(ok({ ...at, state: 'passed', waits })).toBe(true);
+    expect(ok({ ...at, state: 'passed', waits: 'verdict', rule: 'held' })).toBe(true);
+    expect(ok({ ...at, state: 'passed', waits: 'verdict', rule: 'exact-pin' })).toBe(false);
+    expect(ok({ ...at, state: 'passed', waits: 'level', rule: 'exact-pin' })).toBe(false);
+    expect(ok({ ...at, state: 'passed', waits: 'refused', said: 'Resource not accessible' })).toBe(true);
+    expect(ok({ ...at, state: 'passed', waits: 'level', said: 'Resource not accessible' })).toBe(false);
+    expect(ok({ ...at, state: 'checking', waits: 'level' })).toBe(false);
+    expect(ok({ ...at, state: 'passed', waits: 'later' })).toBe(false);
+    // A version 1 record reads as it was: one whose checks passed, with no word of why it waits.
+    expect(upcast({ type: 'deploy.changed', version: 1, payload: { ...at, state: 'passed' } })).toMatchObject({
+      ok: true,
+      event: { version: 2, payload: { ...at, state: 'passed' } },
+    });
   });
 
   it('takes a look again that says why only when it could not tell, and names the version when it could', () => {

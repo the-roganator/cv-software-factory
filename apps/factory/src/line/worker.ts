@@ -28,7 +28,9 @@
  *   so only when the list, or the pull request, has changed since it last did. Not with `only`: a soak of one work
  *   item says nothing of the others. And it records, on each work item held for a deploy that the pull request
  *   carries, where that pull request stands: its checks running, passed or failed, merged, or closed (`deploy.ts`),
- *   with `only` too, for that work item.
+ *   with `only` too, for that work item. Once its checks have passed, it adds that pull request to the merge queue
+ *   itself, once for each head, when the review gate passed the head as an exact pin and Martin's autonomy level and
+ *   auto-merge allow it, and records the queue taking it out; otherwise it waits for Martin, saying why.
  * - An improvement, once a release that carries it is promoted, is handed over: one comment on its issue says it is in
  *   the app behind its flag, off, and that Martin widens it from the console, and its row on the line ends. No sense
  *   looks at it: it has no signal. The work item stays open, for the flag pass below.
@@ -2050,8 +2052,9 @@ export class Line {
 
   /**
    * The app's deploy pull request, once a minute: tells it what it carries, unless the line acts on one work item only,
-   * and records where it stands for each held work item it carries (`deploy.ts`), that one's included. What it carries
-   * is read once for both; a failure of one leaves the other to go on.
+   * and records where it stands for each held work item it carries (`deploy.ts`), that one's included, adding it to the
+   * merge queue once its checks have passed when the gate passed it as an exact pin and Martin's controls allow. What it
+   * carries is read once for both; a failure of one leaves the other to go on.
    */
   async #deploy(): Promise<void> {
     const { github, repo, log } = this.#o;
@@ -2080,7 +2083,14 @@ export class Line {
     }
     if (!held.length) return;
     await recordDeploys(
-      { github, repo, log, append: (workItem, drafts) => this.#append(workItem, drafts) },
+      {
+        github,
+        repo,
+        log,
+        append: (workItem, drafts) => this.#append(workItem, drafts),
+        // The app's deploy pull request alone may go to the merge queue by the line: the factory's are Martin's.
+        ...(repo === APP_REPOSITORY ? { merging: this.#merging } : {}),
+      },
       proposal,
       new Set((carries ?? []).map((c) => c.workItem)),
       held,

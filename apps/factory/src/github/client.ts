@@ -73,8 +73,13 @@ export interface GitHubOptions {
 /** The longest the client waits for a rate limit to lift before it gives up and lets the caller try later. */
 const MAX_WAIT_MS = 60_000;
 const BACKOFF_MS = 1_000;
-/** Conditional answers kept; the polled set is small, so this is a guard against a leak and not a working limit. */
+/**
+ * Conditional answers kept, and their text in all, in UTF-16 code units: the polled set is small, so these are guards
+ * against a leak and not working limits. Paths that name a commit (its commits, a pinned file at it) are new with each
+ * head, so the oldest answers go first.
+ */
 const MAX_CACHED = 500;
+const MAX_CACHED_LENGTH = 32 * 1024 * 1024;
 
 export type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
@@ -96,8 +101,9 @@ export class GitHub {
   readonly #now: () => number;
   readonly #timeoutMs: number;
   readonly #maxRetries: number;
-  /** Each polled path's last answer: its ETag, and its body as GitHub sent it, read through no schema yet. */
+  /** Each polled path's last answer a caller could read: its ETag, and its body as GitHub sent it. */
   readonly #etags = new Map<string, { etag: string; text: string }>();
+  #cachedLength = 0;
 
   constructor(options: GitHubOptions) {
     this.api = options.api ?? API;
@@ -158,17 +164,29 @@ export class GitHub {
     const cached = this.#etags.get(key);
     const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
     if (response.status === 304 && cached) {
-      return { changed: false, body: parse(schema, JSON.parse(cached.text), `GET ${path}`) };
+      return { changed: false, body: parse(schema, json(cached.text, path), `GET ${path}`) };
     }
     const text = await response.text();
-    const json: unknown = JSON.parse(text);
+    // Read through the caller's schema before it is kept, so an answer no caller has read is asked for again.
+    const body = parse(schema, json(text, path), `GET ${path}`);
     const etag = response.headers.get('etag');
-    if (etag) {
-      this.#etags.delete(key);
+    this.#forget(key);
+    if (etag && text.length <= MAX_CACHED_LENGTH) {
       this.#etags.set(key, { etag, text });
-      if (this.#etags.size > MAX_CACHED) this.#etags.delete(this.#etags.keys().next().value as string);
+      this.#cachedLength += text.length;
+      for (const [oldest] of this.#etags) {
+        if (this.#etags.size <= MAX_CACHED && this.#cachedLength <= MAX_CACHED_LENGTH) break;
+        this.#forget(oldest);
+      }
     }
-    return { changed: true, body: parse(schema, json, `GET ${path}`) };
+    return { changed: true, body };
+  }
+
+  #forget(key: string) {
+    const cached = this.#etags.get(key);
+    if (!cached) return;
+    this.#etags.delete(key);
+    this.#cachedLength -= cached.text.length;
   }
 
   /** A GraphQL call. GitHub answers errors with a 200 and an `errors` list; those are thrown as `GitHubError`s. */
@@ -291,6 +309,15 @@ async function errorOf(method: string, path: string, response: Response, now: nu
             ? 'conflict'
             : 'refused';
   return Object.assign(new GitHubError(kind, text, status), { waitMs: 0 });
+}
+
+/** A body as JSON, or a `GitHubError` of kind `malformed`: an empty or cut-off answer is one GitHub did not mean. */
+function json(text: string, path: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new GitHubError('malformed', `GET ${path} answered with something other than JSON`);
+  }
 }
 
 /** A body as the schema reads it, or a `malformed` error naming where, never what: a body can hold a person's words. */

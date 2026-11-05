@@ -120,6 +120,33 @@ describe('the client', () => {
     expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, '"v1"', '"v1"', '"v1"']);
   });
 
+  it('keeps no answer its caller could not read, and calls one that is not JSON malformed', async () => {
+    let answer: Record<string, unknown> = { ok: 'yes' };
+    const { github, sent } = client([
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/thing`,
+        answer: ({ headers }) =>
+          headers['if-none-match'] === '"v1"'
+            ? { status: 304, headers: { etag: '"v1"' } }
+            : { body: answer, headers: { etag: '"v1"' } },
+      },
+    ]);
+    await expect(github.poll(REPO, `/repos/${REPO}/thing`, OK)).rejects.toMatchObject({ kind: 'malformed' });
+    // Asked again in full, so a watch that failed on it sees it as a change when it does read.
+    answer = { ok: true };
+    expect(await github.poll(REPO, `/repos/${REPO}/thing`, OK)).toEqual({ changed: true, body: { ok: true } });
+    expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, undefined]);
+
+    const empty = client([
+      { method: 'GET', path: `/repos/${REPO}/thing`, answer: () => ({ headers: { etag: '"e"' } }) },
+    ]);
+    await expect(empty.github.poll(REPO, `/repos/${REPO}/thing`, OK)).rejects.toMatchObject({
+      kind: 'malformed',
+      message: `GET /repos/${REPO}/thing answered with something other than JSON`,
+    });
+  });
+
   it('waits out a rate limit GitHub names, then tries again', async () => {
     const waits: number[] = [];
     const { github } = client(

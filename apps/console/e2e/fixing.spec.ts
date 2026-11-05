@@ -307,7 +307,20 @@ test.describe('tool marks', () => {
       .filter({ has: page.getByText('#1311 ·', { exact: false }) })
       .locator('.answers');
     const way = answers.getByRole('link', { name: 'Merge #1312 on GitHub (opens GitHub in a new tab)' });
-    await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
+    // First among the answers, in a row of its own like theirs, with what it does beside it, in a visitor's words.
+    const first = answers.locator('.answer').first();
+    await expect(first.locator('.way')).toHaveCount(1);
+    await expect(first.locator('a.way')).toHaveAccessibleName('Merge #1312 on GitHub (opens GitHub in a new tab)');
+    await expect(first.locator('p')).toHaveText(
+      'Martin merges #1312 there. The line goes on by itself once it merges.',
+    );
+    // As wide as the answers under it, in the column they share.
+    const [wayBox, answerBox] = await Promise.all([
+      way.boundingBox(),
+      answers.locator('.ro', { hasText: 'Answer in words' }).boundingBox(),
+    ]);
+    if (!wayBox || !answerBox) throw new Error('the way or the answer under it is not drawn');
+    expect(wayBox.x).toBe(answerBox.x);
     await expect(way).toHaveAttribute('href', 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1312');
     await expect(way).toHaveAttribute('target', '_blank');
     await expect(way).toHaveAttribute('rel', 'noopener');

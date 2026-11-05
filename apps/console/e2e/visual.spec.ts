@@ -775,7 +775,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
 
 /**
  * Approval routing (Part C): #1311's merge, which the samples hold for Martin's merge, held again by the review gate
- * for its risk tags, with the gate's words and a cross for each tag, Review on GitHub and no Approve; and Lights-out's
+ * for its risk tags, with the gate's words and a cross for each tag, Review and GitHub's mark and no Approve; and Lights-out's
  * whole note in the passkey's dialog that chooses it.
  */
 const HELD = {
@@ -810,7 +810,7 @@ const HELD = {
 };
 const RISK_TAGGED = [HELD];
 
-/** The same hold on a work item of the factory's own, not a sample's: its Review on GitHub is a link. */
+/** The same hold on a work item of the factory's own, not a sample's: its Review is a link to GitHub. */
 const REAL_HELD = [
   {
     ...HELD,
@@ -837,14 +837,19 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       const card = page.locator('article.needs .need').filter({ hasText: '#1311 ·' });
       await card.getByRole('button', { name: 'Answer in words' }).waitFor();
       // Martin approves it on GitHub, with his own review: the console offers no Approve, and no Merge.
-      await expect(card).toContainText('Review #1312 on GitHub');
+      // A sample's pull request never existed, so its Review links nowhere, and says why beside it.
+      await expect(card.locator('.way .way-words')).toHaveText('Review');
+      await expect(card.locator('.way .sr')).toHaveText('Review #1312');
+      await expect(card.locator('p.nowhere')).toHaveText(
+        'A sample’s pull request: it never existed, so it links nowhere.',
+      );
       await expect(card.getByRole('button', { name: /^Approve/ })).toHaveCount(0);
       await expect(card.getByRole('button', { name: 'Back to the planner' })).toHaveCount(0);
       await page.evaluate(() => document.fonts.ready);
       await expect(card).toHaveScreenshot(`m07-needs-risk-tags-${width}.png`);
     });
 
-    test('a real merge held for its risk tags: Review on GitHub with what approving does beside it', async ({
+    test('a real merge held for its risk tags: Review and GitHub’s mark, with what approving does beside it', async ({
       page,
     }) => {
       await adminService(page, 'martin', REAL_HELD);
@@ -858,7 +863,11 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       const words = card.getByText('Approve its head commit there: the review check then passes it');
       const a = await link.boundingBox();
       const w = await words.boundingBox();
-      if (!a || !w) throw new Error('the link or its words are not drawn');
+      const b = await card.getByRole('button', { name: 'Answer in words' }).boundingBox();
+      if (!a || !w || !b) throw new Error('the link, its words or the answer under it are not drawn');
+      // As wide as the answers under it, in the column they share.
+      expect(a.x).toBe(b.x);
+      expect(a.width).toBe(b.width);
       if (width === 'phone') {
         expect(w.y).toBeGreaterThanOrEqual(a.y + a.height);
       } else {

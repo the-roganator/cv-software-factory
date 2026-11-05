@@ -12,7 +12,7 @@ Sends risky changes to a human. Part of the [GitHub plane](README.md#github-plan
 | Tag | Given by |
 |---|---|
 | `test-loosening` | each test that test integrity excused as one the spec contradicts, from the warning it annotates each with on its `gates / test integrity` run |
-| `dependency-change` | a lockfile or package manifest (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and the like), anywhere |
+| `dependency-change` | a lockfile or package manifest (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and the like), or `.npmrc` or `.pnpmfile.cjs`, which say where packages come from and what runs as they install, anywhere |
 | `security-headers` | the app's header settings, `src/headers.ts`; or a line added or removed anywhere in the app's `src/` (not its tests) that names a security header in any case (`Content-Security-Policy` and its `-Report-Only`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, the three `Cross-Origin-*-Policy`) or `SECURITY_HEADERS`, so a header set outside that file is caught too; or such a file GitHub gives no patch of |
 | `code-owned` | a path CODEOWNERS on `main` gives Martin; or a diff too large for GitHub to list whole |
 | `release` | release-please's branch, or a change to a release's files alone |

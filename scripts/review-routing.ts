@@ -252,7 +252,10 @@ export function excusedTests(annotations: readonly Annotation[]): string[] {
 
 // Risk tags
 
-/** The files that are a lockfile or a package manifest, by name, anywhere. */
+/**
+ * The files that are a lockfile or a package manifest, by name, anywhere, and those that say where packages come from
+ * and what runs as they install: `.npmrc` (the registry, scripts allowed) and `.pnpmfile.cjs` (install hooks).
+ */
 const DEPENDENCY_FILES = new Set([
   'package.json',
   'pnpm-lock.yaml',
@@ -260,6 +263,7 @@ const DEPENDENCY_FILES = new Set([
   'package-lock.json',
   'npm-shrinkwrap.json',
   'yarn.lock',
+  '.npmrc',
   '.pnpmfile.cjs',
 ]);
 
@@ -283,7 +287,9 @@ export const SECURITY_HEADER_NAMES = [
   'Cross-Origin-Resource-Policy',
   'SECURITY_HEADERS',
 ] as const;
-const NAMES_A_HEADER = new RegExp(SECURITY_HEADER_NAMES.map((n) => n.replace(/-/g, '\\-')).join('|'), 'i');
+/** Text as a regular expression that matches it literally: every character a pattern gives a meaning escaped. */
+export const literally = (text: string) => text.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&');
+const NAMES_A_HEADER = new RegExp(SECURITY_HEADER_NAMES.map(literally).join('|'), 'i');
 
 /** The lines a patch adds or removes, without their sign. */
 export const changedLines = (patch: string) =>
@@ -342,7 +348,9 @@ export function tagsOf({ files, complete, headRef, owners, excused }: TagFacts):
       if (rule) add('code-owned', `${path} (${rule.pattern})`);
       if (path === FLAG_NAMES_FILE) add('improvement', path);
     }
-    if (file.filename !== HEADERS_FILE && file.filename.startsWith('src/') && !TEST_CODE.test(file.filename)) {
+    // Either name: a rename out of the app's code carries the lines it removed there.
+    const paths = pathsOf(file);
+    if (!paths.includes(HEADERS_FILE) && paths.some((p) => p.startsWith('src/') && !TEST_CODE.test(p))) {
       if (file.patch === undefined)
         add('security-headers', `${file.filename}: GitHub gives no patch to read for a header`);
       else {
@@ -350,11 +358,12 @@ export function tagsOf({ files, complete, headRef, owners, excused }: TagFacts):
         if (line !== undefined) add('security-headers', `${file.filename}: ${line.trim().slice(0, 120)}`);
       }
     }
-    if (file.filename !== FLAG_NAMES_FILE && APP_CODE.test(file.filename) && !TEST_CODE.test(file.filename)) {
-      if (file.patch === undefined && file.status !== 'removed') {
+    if (!paths.includes(FLAG_NAMES_FILE) && paths.some((p) => APP_CODE.test(p) && !TEST_CODE.test(p))) {
+      // Removed too: a file too large for a patch could take a flag's ask away unread.
+      if (file.patch === undefined) {
         add('improvement', `${file.filename}: GitHub gives no patch to read for a flag`);
       } else {
-        const line = changedLines(file.patch ?? '').find((each) => ASKS_A_FLAG.test(each));
+        const line = changedLines(file.patch).find((each) => ASKS_A_FLAG.test(each));
         if (line !== undefined) add('improvement', `${file.filename}: ${line.trim().slice(0, 120)}`);
       }
     }

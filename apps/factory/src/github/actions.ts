@@ -760,8 +760,9 @@ export interface DryRunPull {
   closedAt: Date | null;
   /** Its description, as the dry run would last have written it. */
   body: string;
-  /** When it would first have been added to the merge queue, or null while it has not. */
+  /** When it would last have been added to the merge queue, and at which head, or null while it has not. */
   enqueuedAt: Date | null;
+  enqueuedHead: string | null;
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -802,6 +803,8 @@ export class DryRunActions implements Actions {
   #next = DRY_RUN_NUMBERS_FROM;
   /** Holds the issue actions to the App's own issues, as the live actions' guard does, for those GitHub has. */
   readonly #guard: IssueGuard;
+  /** Whether a pull request this dry run opened reads as merged now, as its reads judge it (`dry-run-reads.ts`). */
+  #mergedNow: (pull: DryRunPull) => boolean = () => false;
   /** Reads a pull request GitHub has, as the queue's guard reads it. */
   readonly #readPull: (repo: string, number: number) => Promise<QueueCandidate>;
 
@@ -866,6 +869,14 @@ export class DryRunActions implements Actions {
       this.branchMade(pull.repo, pull.head) ??
       createHash('sha1').update(`dry run: ${pull.repo}#${pull.number} head`).digest('hex')
     );
+  }
+
+  /**
+   * When a pull request this dry run opened went into the merge queue, while it is still there: GitHub takes a pull
+   * request out of the queue when its head moves or it goes back to draft, so a push or a draft since leaves it out.
+   */
+  queuedAt(pull: DryRunPull): Date | null {
+    return !pull.draft && pull.enqueuedHead === this.headOf(pull) ? pull.enqueuedAt : null;
   }
 
   /** A pull request this dry run would have opened, or undefined for any other number. */
@@ -961,6 +972,7 @@ export class DryRunActions implements Actions {
       closedAt: null,
       body: draft.body,
       enqueuedAt: null,
+      enqueuedHead: null,
     });
     return { number, url: `dry-run:${repo}#${number}`, nodeId };
   }
@@ -1068,9 +1080,15 @@ export class DryRunActions implements Actions {
     if (pull) pull.closedAt = this.#now();
   }
 
+  /** Told how its reads judge a pull request it opened merged, so one merged is not added to the merge queue. */
+  judgeMerges(merged: (pull: DryRunPull) => boolean): void {
+    this.#mergedNow = merged;
+  }
+
   /**
    * Guarded as the live action is, against the pull request as this dry run would have left it, or as GitHub has it;
-   * then recorded, and its own pull request reads as queued from then on (`dry-run-reads.ts`).
+   * then recorded, and its own pull request reads as queued from then on, and merges after the dry run's while
+   * (`dry-run-reads.ts`). One that reads as merged is not open, and is refused (409).
    */
   async enqueuePullRequest(repo: string, number: number, expectedHead: string): Promise<Enqueued> {
     const made = this.#pulls.get(number);
@@ -1080,7 +1098,7 @@ export class DryRunActions implements Actions {
         repo,
         number,
         {
-          state: own.closedAt ? 'closed' : 'open',
+          state: own.closedAt || this.#mergedNow(own) ? 'closed' : 'open',
           draft: own.draft,
           head: { ref: own.head, sha: this.headOf(own), repo },
         },
@@ -1092,7 +1110,7 @@ export class DryRunActions implements Actions {
     }
     await this.#record('enqueuePullRequest', repo, { number, expectedHead });
     if (!own) return { position: null, state: null };
-    own.enqueuedAt ??= this.#now();
+    if (!this.queuedAt(own)) Object.assign(own, { enqueuedAt: this.#now(), enqueuedHead: expectedHead });
     return { position: 1, state: 'QUEUED' };
   }
 

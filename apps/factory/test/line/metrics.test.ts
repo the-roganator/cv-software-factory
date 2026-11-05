@@ -639,6 +639,8 @@ describe('the line’s metrics', () => {
     }
     at(hour);
     await events.append([
+      // Held again for its merge, as the review gate's word on it changed: the wait is one, from the first.
+      event(merge, 'hold.started', hold('merge', 'review')),
       event(ready, 'deploy.changed', deploy('passed')),
       event(closed, 'work-item.closed', { outcome: 'no-change', reason: 'Closed' }, 'martin'),
     ]);

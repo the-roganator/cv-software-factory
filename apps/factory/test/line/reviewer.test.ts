@@ -230,7 +230,7 @@ describe('the reviewer of an improvement', () => {
 
   it('blocks on behaviour the flag does not hide, the flag read another way, and anything kept on a device', () => {
     expect(prompt).toContain(
-      "3. Hold the change to its flag, `delivery-dates`. Each of these is a blocking finding: anything a visitor or a caller could see change with the flag off, since the change ships off; the flag read any way but `await request.flag('delivery-dates')`, or another flag read; anything kept on a visitor’s device, such as a cookie or anything in the browser’s storage; and a change to the flag context, src/flags/.",
+      "3. Hold the change to its flag, `delivery-dates`. Each of these is a blocking finding: anything a visitor or a caller could see change with the flag off, since the change ships off; the flag read any way but `await request.flag('delivery-dates')`, or another flag read; any name but `delivery-dates` added to or taken from the app’s list of flag names, src/flag-names.ts, and `delivery-dates` missing from it; anything kept on a visitor’s device, such as a cookie or anything in the browser’s storage; and a change to the flag context, src/flags/.",
     );
   });
 });

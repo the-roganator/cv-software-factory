@@ -79,6 +79,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     8: (payload) => payload,
     // Version 10 adds a canary paused for Martin, with auto-rollback off; a version 9 hold reads as it was.
     9: (payload) => payload,
+    // Version 11 names a merge hold's pull request as the review gate judged it; a version 10 merge hold named none.
+    10: (payload) => payload,
   },
   // Version 2 names the hold it answers, and says when its words stay Martin's; a version 1 answer said neither.
   // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.
@@ -231,6 +233,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     1: ({ comments: _, ...payload }) => ({ ...payload, findings: [] }),
     2: (payload) => payload,
     3: (payload) => payload,
+    // Version 5 names the head the reviewer was given; a version 4 review did not say.
+    4: (payload) => payload,
   },
   // Version 2 of Verify's judgements of a flag names the move each judged (`moveRevision`). A version 1 comparison, or
   // check at Checks or Preview, never said, so it reads as judging no move (`none`, no write's revision), and counts

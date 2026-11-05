@@ -264,7 +264,10 @@ export const HOLD_CAUSES = [
    * answer asks: the coder cannot put a spec right, so Martin's answer sends it back to the planner.
    */
   'beyond-ticket',
-  /** The change passed its gates and review, and waits for Martin to merge it. */
+  /**
+   * The change passed its gates and review, and waits for Martin to merge it: the line adds it to the merge queue
+   * itself only when the autonomy level, auto-merge and the review gate's verdict all allow (`MERGE_HOLDS` says why not).
+   */
   'merge',
   /**
    * The change is merged and waits at Release for a deploy pull request to carry it, which Martin merges. A release
@@ -308,6 +311,59 @@ export const WORDED_ANSWERS: readonly HoldAnswer[] = ['answered', 'replanned'];
 
 export const AUTONOMY = ['supervised', 'guarded', 'lights-out'] as const;
 export type Autonomy = (typeof AUTONOMY)[number];
+
+/**
+ * The review gate's rules, the first that holds, and `held` when none does; and the risk tags it works out from a diff.
+ * The gate writes its verdict with `policy/review-verdict.ts`, and a merge hold names them from there for the console:
+ * the same lists, which a test holds equal.
+ */
+export const GATE_RULES = [
+  'martin-opened',
+  'martin-approved-head',
+  'exact-pin',
+  'low-risk',
+  'lights-out',
+  'held',
+] as const;
+export type GateRule = (typeof GATE_RULES)[number];
+export const GATE_TAGS = [
+  'test-loosening',
+  'dependency-change',
+  'security-headers',
+  'code-owned',
+  'release',
+  'improvement',
+] as const;
+export type GateTag = (typeof GATE_TAGS)[number];
+
+/**
+ * Why the line holds a change that passed its gates and review for Martin's merge, rather than add it to the merge
+ * queue itself (`apps/factory/src/line/merging.ts`):
+ */
+export const MERGE_HOLDS = [
+  /** The review gate has given no verdict on the pull request's head that the line can trust. */
+  'no-verdict',
+  /** The head is not the one the line's gates and reviewer passed: someone pushed, or main was merged in, since. */
+  'unreviewed',
+  /**
+   * The review gate held it (rule `held`): for its risk tags or a path that is Martin's, or for what it could not read
+   * or trust, such as test integrity's run or a risk label someone else removed, with no tags.
+   */
+  'held',
+  /** Never the line's to add to the queue, whatever the gate said: a release, an improvement, a red-team branch, or out of scope. */
+  'never',
+  /** The gate passed it, by a rule the autonomy level does not let the line add it to the queue by. */
+  'level',
+  /** The gate passed it, by a rule the level allows, but auto-merge is off. */
+  'auto-merge',
+  /** It conflicts with main. */
+  'conflict',
+  /** The merge queue took it out without merging it. */
+  'queue',
+  /** The GitHub worker or GitHub refused to add it to the queue. */
+  'refused',
+] as const;
+export type MergeHold = (typeof MERGE_HOLDS)[number];
 
 /**
  * Martin's controls of the line, from the console's Controls (the admin service): the autonomy level, whether agents

@@ -495,7 +495,9 @@ describe('the coder', () => {
       );
       expect(prompt).toContain('Never change the flag context, src/flags/');
       expect(prompt).toContain('Keep nothing on a visitor’s device');
-      expect(prompt).toContain('Do not define the flag anywhere');
+      // Its name goes on the app's typed list of flag names, and nowhere else.
+      expect(prompt).toContain('Add its name, `delivery-dates`, to `FLAG_NAMES` in src/flag-names.ts');
+      expect(prompt).toContain('Add no other name there, and take none away. Define the flag nowhere else');
     });
 
     it('names the files outside its scope it needs, as a fix does', () => {

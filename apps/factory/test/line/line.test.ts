@@ -108,6 +108,7 @@ describe('the line', () => {
       ],
       flag: 'delivery-dates',
       pages: ['/products/blue-mug'],
+      scope: [...SPEC.scope, 'src/flag-names.ts'],
     };
     const title = 'feat(products): show each product’s delivery date';
     const agents = {
@@ -491,7 +492,11 @@ describe('the line', () => {
     const before = await types(workItem);
     const reads = vi.spyOn(github, 'read');
     await pass();
-    expect(await types(workItem)).toEqual(before);
+    // The head the gate judges now is not the one its reviewer passed: the hold says so, and nothing else is recorded.
+    expect((await types(workItem)).slice(before.length)).toEqual(['hold.started']);
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
+      merge: { why: 'unreviewed', head: updated },
+    });
     expect(reads.mock.calls.map(([read]) => read)).not.toContain('checkRuns');
     reads.mockRestore();
     github.merge();
@@ -857,6 +862,7 @@ describe('the line', () => {
     expect(check?.args).toMatchObject({ conclusion: 'failure', title: 'Changes requested: 1 blocking finding' });
     expect((await payloads(workItem, 'review.submitted'))[0]).toEqual({
       pullRequest: 12,
+      commit: github.pulls.get(12)?.head.sha,
       verdict: 'changes-requested',
       note: 'The quote is still not escaped.',
       findings: [blocking, elsewhere],

@@ -2,7 +2,7 @@
 
 Sends risky changes to a human. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** one required check, `review`, posted by the review App from `main`'s copy of `review.yml`, works out a pull request's risk tags from its diff and passes it by one rule or holds it for Martin ([ADR 0014](../architecture/adr/0014-merge-queue-and-review-gate.md#how-the-gate-routes)); the planner's `out-of-scope` holds a spec before any code is written.
+- **v1:** the line adds its own pull request to the merge queue when the gate's rule, Martin's autonomy level and auto-merge allow, and otherwise holds it in Needs you, saying why ([the line's part](#the-lines-part)); one required check, `review`, posted by the review App from `main`'s copy of `review.yml`, works out a pull request's risk tags from its diff and passes it by one rule or holds it for Martin ([ADR 0014](../architecture/adr/0014-merge-queue-and-review-gate.md#how-the-gate-routes)); the planner's `out-of-scope` holds a spec before any code is written.
 - **Later:** a Critical vulnerability's fix passing under Guarded (Part D).
 
 ## The gate
@@ -35,6 +35,19 @@ A risk label removed by anyone but Martin holds the pull request from every rule
 ## Who reads which signal
 
 - **The gate** reads the diff, CODEOWNERS on `main`, Martin's reviews, the pull request's label events, test integrity's run, and the caller's `AUTONOMY` variable. It cannot read the factory's store, and merges nothing: a pull request merges only once someone adds it to the merge queue.
+- **The line** reads the store's autonomy level and auto-merge switch (Martin's controls), the gate's verdict from the review App's own `review` check on the pull request's current head, whether the pull request conflicts with main, and the merge queue's word on what it added. It adds its own pull request to the queue only when auto-merge is on, the gate's rule is one the level allows, and the head is the one its own gates and reviewer passed; never an improvement, a release, a red-team branch or a work item whose spec was tagged `out-of-scope`. So the stricter of the two always wins: a fault in the line cannot merge what the gate fails, and the gate alone merges nothing.
+
+## The line's part
+
+| Level | Rules the line merges by, with auto-merge on (`ENQUEUES`, `policy/line.ts`) |
+|---|---|
+| Supervised | none |
+| Guarded | `low-risk`, `exact-pin`, `martin-approved-head` |
+| Lights-out | Guarded's, and `lights-out` |
+
+Anything else is held in Needs you, as a `merge` hold naming the gate's rule, its tags with what gave each, its words, and why the line does not merge it; where Martin's approval of the head on GitHub would send it to the queue, the hold says so. Only a pull request the gate refused (`held`) is recorded as a refusal, `review-gate`, once for each head, signed by the GitHub worker. A merge held because the level or auto-merge does not allow it is his ordinary merge.
+
+A hold the gate marks `pending` ([the verdict](#the-verdict)) is a wait, not a refusal: the line records nothing and holds nothing, and the change waits at Review for the gate to judge again (a hold already in force stands). The gate marks a hold pending conservatively, and the line, which has a clock, bounds the wait. Should the gate's latest verdict on the head still be pending fifteen minutes after the later of the line's own gates passing at that head and the pending check concluding (`PENDING_LIMIT_MS`; the gates' time is the store's for the line's `gates.finished`, so a restart neither starts it again nor ends it, and a re-run of test integrity, which has the gate judge again, starts it again), the merge is held for Martin as having no verdict (`no-verdict`), saying what the gate waits for, with nothing refused. The line reads the verdict before its gates pass at the head only with a hold in force, as after Martin's push; then the wait is timed from the check alone. A change whose gates never finish, as when test integrity never starts, stands at Gates, and the line's stuck alert pages for it. No hold made while the verdict is pending, a conflict or the queue's among them, carries its words, rule, tags or check, and the verdict resolving does not make a conflict's or the queue's hold again. A passing verdict is never stale: `low-risk` already needs a completed, successful test-integrity run, and Martin's approval and an exact pin do not depend on one. A pass given before test integrity is run again at the same head is still enqueued; `gates / test integrity` is among the app's required checks (`scripts/github-settings.ts`), which the merge queue requires of its own commit, so a re-run that fails there stops the merge, and the queue taking it out holds it as below. The queue taking a pull request out is recorded (`pull-request.dequeued`), with the checks that failed, and holds it. [The line's merge](ORCHESTRATOR.md#the-merge) has the rest.
 
 `AUTONOMY` is a variable of the app's repository, which only Martin can set: `gh variable set AUTONOMY -R the-roganator/cv-worlds-worst-website -b lights-out`, and `gh variable delete AUTONOMY -R the-roganator/cv-worlds-worst-website` to go back. This repository's is never read.
 

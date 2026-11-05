@@ -770,6 +770,11 @@ export const PAYLOADS = {
    */
   'review.submitted': z.strictObject({
     pullRequest,
+    /**
+     * The pull request's head the reviewer was given: the line adds a pull request to the merge queue only at the head
+     * its reviewer passed. Absent from a review before review.submitted version 5.
+     */
+    commit: commit.optional(),
     verdict: z.enum(['approved', 'changes-requested', 'escalated']),
     note: text(300),
     findings: z
@@ -818,6 +823,38 @@ export const PAYLOADS = {
       refused: z.literal(true).optional(),
     })
     .refine((a) => a.findings + a.suggestions > 0, 'an acceptance answers at least one thread'),
+  /**
+   * The line added its pull request to the merge queue, at the head the review gate judged (`expectedHeadOid`), by the
+   * gate's rule that the autonomy level allows with auto-merge on. The queue merges it once every required check
+   * passes on its commit; GitHub then names the factory as the merger. A dry run's is recorded by the GitHub worker,
+   * and marked.
+   */
+  'pull-request.enqueued': z.strictObject({
+    number: pullRequest,
+    commit,
+    rule: z.enum(V.GATE_RULES),
+    /** Its place in the queue, as GitHub gave it, when it gave one. */
+    position: z.number().int().positive().optional(),
+    dryRun: z.literal(true).optional(),
+  }),
+  /**
+   * The merge queue took a pull request the line had added out, without merging it: its checks failed on the queue's
+   * commit, it conflicted, or someone took it out. GitHub's reason, and the required checks that failed there, so the
+   * wait that follows is explained. The work item holds for Martin.
+   */
+  'pull-request.dequeued': z.strictObject({
+    number: pullRequest,
+    /** The head that was queued. */
+    commit,
+    /** GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `dequeued`, … */
+    reason: text(60),
+    /** Who took it out, as GitHub names them: `github-merge-queue` when the queue did. */
+    by: text(39).optional(),
+    /** The queue's commit it was tested on. */
+    queueCommit: commit.optional(),
+    /** The checks that failed on that commit. */
+    failed: z.array(text(80)).max(40),
+  }),
   'pull-request.merged': z.strictObject({ number: pullRequest, commit, by: z.enum(['martin', 'factory']) }),
 
   /**
@@ -1138,6 +1175,43 @@ export const PAYLOADS = {
        * or Error ends the hold.
        */
       release: releaseId.optional(),
+      /**
+       * A `merge` hold's pull request as the review gate judged it, and why the line does not add it to the merge
+       * queue itself. Absent from a merge hold before hold.started version 11, and from one made with nothing read.
+       */
+      merge: z
+        .strictObject({
+          pullRequest,
+          /** The head it was held at. */
+          head: commit,
+          why: z.enum(V.MERGE_HOLDS),
+          /** The gate's rule, when it judged that head. */
+          rule: z.enum(V.GATE_RULES).optional(),
+          /** The risk tags the gate found in the diff, each with what gave it, as its verdict names them. */
+          tags: z
+            .array(
+              z.strictObject({
+                tag: z.enum(V.GATE_TAGS),
+                because: z.array(text(PATH_CHARS)).max(20),
+                more: z.number().int().positive().optional(),
+              }),
+            )
+            .max(V.GATE_TAGS.length)
+            .optional(),
+          /** The gate's own words: its check's title, verbatim. */
+          said: text(300).optional(),
+          /** The gate's check run, to read it on GitHub. */
+          check: z.url().max(300).optional(),
+          /** Whether Martin's approval of the head on GitHub sends it to the merge queue: the line then adds it. */
+          approving: z.boolean(),
+          /** A queue's hold: GitHub's reason, and the checks that failed on the queue's commit. */
+          queue: z.strictObject({ reason: text(60), failed: z.array(text(80)).max(40) }).optional(),
+        })
+        .optional(),
+    })
+    .refine((hold) => hold.merge === undefined || hold.cause === 'merge', {
+      message: 'only a merge hold names the pull request as the gate judged it',
+      path: ['merge'],
     })
     .refine((hold) => (hold.cause === 'finding') === (hold.defect !== undefined), {
       message: 'a finding’s hold, and only one, names the defect',
@@ -1450,8 +1524,8 @@ export const PAYLOADS = {
    * Martin changed one of the line's controls in the console (`policy/line.ts`): every control as it now stands, and
    * the one he changed, with its value before and after. The line and the admin service read the latest one his roles
    * appended, and check it against policy as they read it: anything outside it is not in force, and policy's default
-   * is. Nothing routes by the autonomy level or auto-merge until approval routing comes (Part C); the line acts on
-   * the switch for new work and on what it takes from its next pass. Auto-rollback reaches the canary's analysis as
+   * is. The line acts on the switch for new work and on what it takes from its next pass, and adds its pull request to
+   * the merge queue only by a review gate rule the autonomy level allows, with auto-merge on (`ENQUEUES`). Auto-rollback reaches the canary's analysis as
    * two series, the admin service's read of it and the line's (`release/analysis.ts`).
    */
   'controls.changed': z.strictObject({

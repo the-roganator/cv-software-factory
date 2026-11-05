@@ -387,6 +387,21 @@ describe('the review gate’s verdict', () => {
     expect(read.refusal?.payload).toMatchObject({ mechanism: 'review-gate', guardrails: [1] });
   });
 
+  it('signs no refusal for a hold the gate marked pending, which only waits for it to judge again', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'merging-'));
+    const recorder = new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT });
+    const pending = 'test integrity is still running at aaaaaaa';
+    const waits = reviewRun(300, {
+      conclusion: 'failure',
+      judged: [{ number: 17, head: SHA, rule: 'held', tags: [], pending }],
+    });
+    const read = await reads([waits], { recorder }).reviewVerdict(REPO, 17);
+    // The verdict is read whole, pending and all, for the line to wait on.
+    expect(read).toMatchObject({ judged: { rule: 'held', pending }, problem: null });
+    expect(read.refusal).toBeUndefined();
+    expect(await readdir(dir)).toEqual([]);
+  });
+
   it('signs nothing for a failed run whose verdict cannot be trusted', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'merging-'));
     const recorder = new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT });

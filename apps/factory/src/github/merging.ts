@@ -67,7 +67,10 @@ export interface ReviewVerdict {
   judged: Judged | null;
   /** Why there is no `judged`, in a few words; null when there is. */
   problem: string | null;
-  /** The gate's refusal, kept and signed, when it held the pull request (`judged.rule` is `held`). */
+  /**
+   * The gate's refusal, kept and signed, when it held the pull request (`judged.rule` is `held`), and never for a hold
+   * marked `pending`, which only waits for the gate to judge again.
+   */
   refusal?: SignedRefusal;
 }
 

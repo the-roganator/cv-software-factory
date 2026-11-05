@@ -4,7 +4,8 @@
  * control that opened them, with the sheet still open behind; every mark is drawn, the ones a frame leaves out too;
  * a tall page scrolls inside the view, under its title and Close; a flag's pages are told apart by name; on a phone
  * the view is the screen's width and a wipe's sides are one above the other; on a card, which opens its sheet, a
- * screenshot opens nothing of its own; and WCAG 2.2 AA in both themes.
+ * screenshot opens nothing of its own; a label is set unhinted, as a desktop browser sets it; and WCAG 2.2 AA in both
+ * themes.
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
@@ -39,6 +40,24 @@ test.describe('a screenshot at full size', () => {
     await expect(view).toBeHidden();
     await expect(open).toBeFocused();
     await expect(page.getByRole('dialog', { name: 'Prices go negative' })).toBeVisible();
+  });
+
+  // A label's text is set at the widths a desktop browser sets it. Hinted, as headless Chromium on Linux sets text
+  // unless told not to (playwright.config.ts), each glyph's advance snaps to a whole pixel: this line is 86px, its
+  // spaces 2px, and a snapshot records "Pricesbelow zero".
+  test('a label’s text is set unhinted, at a fraction of a pixel', async ({ page }) => {
+    await page.goto(consoleUrl({ item: '1296', sheet: true }));
+    const width = await page.evaluate(async () => {
+      await document.fonts.load('500 10px Geist');
+      const span = document.createElement('span');
+      span.textContent = 'Prices below zero';
+      span.style.cssText = 'position: absolute; font: 500 10px Geist; letter-spacing: 0; white-space: nowrap';
+      document.body.append(span);
+      const { width } = span.getBoundingClientRect();
+      span.remove();
+      return width;
+    });
+    expect(width).toBeCloseTo(82.67, 0);
   });
 
   test('a press on a wipe’s tag opens it too, and on its handle does not', async ({ page }) => {

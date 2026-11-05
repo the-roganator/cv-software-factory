@@ -5,6 +5,8 @@ import {
   type Found,
   found,
   GIVEN_LIMIT,
+  NEVER_LIGHTS_OUT,
+  PENDING_LIMIT,
   readVerdict,
   type Verdict,
   verdictBlock,
@@ -22,6 +24,7 @@ import {
   type Facts,
   type FileChange,
   imageOf,
+  levelPasses,
   literally,
   MARTIN,
   martinsRule,
@@ -121,24 +124,30 @@ describe('approval routing: the rule, the first that holds', () => {
     expect(
       route(facts({ autonomy: 'lights-out', tags: [tag('dependency-change')], testIntegrity: waiting })),
     ).toMatchObject({ rule: 'held', pending: waiting.reason });
-    // Tags the level does not pass hold it whatever test integrity says: no wait.
-    for (const [autonomy, tags] of [
-      ['', [tag('dependency-change')]],
-      ['guarded', [tag('test-loosening')]],
-      ['lights-out', [tag('dependency-change'), tag('release')]],
-      ['lights-out', [tag('code-owned')]],
+    // Tags the level does not pass hold it whatever test integrity says: they decide first, it is no wait, and its
+    // words name them.
+    for (const [autonomy, tags, names] of [
+      ['', [tag('dependency-change')], 'dependency-change'],
+      ['guarded', [tag('test-loosening')], 'test-loosening'],
+      ['lights-out', [tag('dependency-change'), tag('release')], 'dependency-change, release'],
+      ['lights-out', [tag('improvement')], 'improvement'],
+      ['lights-out', [tag('code-owned')], 'code-owned'],
     ] as const) {
-      const tagged = route(facts({ autonomy, tags: [...tags], testIntegrity: waiting }));
-      expect(tagged.rule).toBe('held');
-      expect(tagged.pending).toBeUndefined();
+      for (const testIntegrity of [waiting, { read: false, reason: 'failed' } as const]) {
+        const tagged = route(facts({ autonomy, tags: [...tags], testIntegrity }));
+        expect(tagged.rule).toBe('held');
+        expect(tagged.pending).toBeUndefined();
+        expect(tagged.title).toMatch(new RegExp(`^Held for its risk tags \\(${names}\\)`));
+      }
     }
     // A removed risk label, or anything in this repository but a pin, decides before test integrity is looked at.
     expect(route(facts({ labelsRemoved: ['out-of-scope'], testIntegrity: waiting })).pending).toBeUndefined();
     const here = facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), testIntegrity: waiting });
     expect(route(here).pending).toBeUndefined();
-    // A reading that will not come (a foreign, failed or cancelled run, a stacked base) is no wait.
+    // A reading that will not come (a failed or cancelled run, a stacked base) is no wait.
     for (const reason of [
       "test integrity's run at aaaaaaa is failure, not a success",
+      'GitHub gave 0 of its 1 annotations',
       "it is into factory/1-fix, so test integrity's run is not the workflow on main's",
     ]) {
       const held = route(facts({ testIntegrity: { read: false, reason } }));
@@ -151,6 +160,18 @@ describe('approval routing: the rule, the first that holds', () => {
       rule: 'martin-approved-head',
     });
     expect(route(facts({ reviews: [approved()], testIntegrity: waiting })).pending).toBeUndefined();
+    // Cut to what the block allows.
+    const long = route(facts({ testIntegrity: { ...waiting, reason: 'x'.repeat(PENDING_LIMIT + 50) } }));
+    expect(long.pending).toHaveLength(PENDING_LIMIT);
+  });
+
+  it('passes the tags a level allows by one test, for the lights-out rule and the wait alike', () => {
+    for (const autonomy of ['', 'guarded', 'lights-out']) expect(levelPasses([], autonomy)).toBe(true);
+    for (const autonomy of ['', 'guarded', 'Lights-out'])
+      expect(levelPasses([tag('dependency-change')], autonomy)).toBe(false);
+    expect(levelPasses([tag('dependency-change'), tag('security-headers')], 'lights-out')).toBe(true);
+    for (const never of NEVER_LIGHTS_OUT)
+      expect(levelPasses([tag('test-loosening'), tag(never)], 'lights-out')).toBe(false);
   });
 
   it('holds a tagged pull request of the App’s while AUTONOMY is unset, or anything but lights-out', () => {
@@ -242,15 +263,15 @@ describe('approval routing: the rule, the first that holds', () => {
     expect(route(facts({ unread: 'GET /files: 502', pr: pr(MARTIN) })).rule).toBe('martin-opened');
   });
 
-  it("waits to read again what it could not read of the App's pull request, and never anyone else's", () => {
-    const said = route(facts({ unread: 'GET /files: 502' }));
-    expect(said).toMatchObject({ rule: 'held', pending: 'a read of GitHub that failed: GET /files: 502' });
-    expect(said.title).toContain('and waits to read it before it judges');
-    // Someone else's is held whatever the gate reads: no wait.
-    const theirs = route(facts({ unread: 'GET /files: 502', pr: pr(42) }));
-    expect(theirs).toMatchObject({ pass: false, rule: 'held' });
-    expect(theirs.pending).toBeUndefined();
-    expect(theirs.title).toContain('The gate could not read the pull request whole (GET /files: 502)');
+  it('never takes a read that failed for a wait: nothing runs the gate again for it, and it may never succeed', () => {
+    for (const author of [FACTORY_APP, 42]) {
+      const said = route(
+        facts({ unread: 'GET /files: 404', pr: pr(author), testIntegrity: { read: false, reason: 'not read' } }),
+      );
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toContain('The gate could not read the pull request whole (GET /files: 404)');
+    }
   });
 });
 
@@ -297,6 +318,24 @@ describe('test integrity’s reading', () => {
     });
   });
 
+  it('waits while any run of GitHub Actions for the head is unfinished, a queued re-run with no start included', () => {
+    const rerun = run({ id: 2, status: 'queued', conclusion: null, started_at: null });
+    for (const done of [run(), run({ conclusion: 'failure' })])
+      expect(testIntegrityRun([done, rerun], HEAD, files, 'main')).toEqual({
+        reason: 'test integrity is still running at aaaaaaa',
+        pending: true,
+      });
+    // Once every run has completed, the latest by its start, then its id, is the reading.
+    const later = run({ id: 3, started_at: '2026-11-04T12:00:00Z', conclusion: 'failure' });
+    expect(testIntegrityRun([later, run()], HEAD, files, 'main')).toMatchObject({
+      reason: expect.stringContaining('failure'),
+    });
+    const sameStart = run({ id: 4, conclusion: 'cancelled' });
+    expect(testIntegrityRun([run(), sameStart], HEAD, files, 'main')).toMatchObject({
+      reason: expect.stringContaining('cancelled'),
+    });
+  });
+
   it('is no reading when the run is pending, skipped, cancelled, failed, missing or foreign', () => {
     // Queued, in progress or not yet run, it may yet be read: a wait.
     for (const status of ['queued', 'in_progress']) {
@@ -314,10 +353,26 @@ describe('test integrity’s reading', () => {
       reason: 'test integrity has not run at aaaaaaa',
       pending: true,
     });
-    // Posted by another app, the factory's included, which can post check runs of any name.
-    expect(testIntegrityRun([run({ app: { slug: 'mrogan-software-factory' } })], HEAD, files, 'main')).toEqual({
-      reason: "test integrity's run at aaaaaaa was posted by mrogan-software-factory, not GitHub Actions",
+    // Posted by another app, the factory's included, which can post check runs of any name: never read, and no reason
+    // to stop waiting for GitHub Actions' own.
+    const foreign = run({ app: { slug: 'mrogan-software-factory' } });
+    expect(testIntegrityRun([foreign], HEAD, files, 'main')).toEqual({
+      reason:
+        'test integrity has not run at aaaaaaa: only mrogan-software-factory posted a run of that name, not GitHub Actions',
+      pending: true,
     });
+    expect(testIntegrityRun([{ ...foreign, conclusion: 'failure' }], HEAD, files, 'main')).toMatchObject({
+      pending: true,
+    });
+    // Nor does one still running hold up GitHub Actions' completed run.
+    const unfinished = {
+      ...foreign,
+      id: 9,
+      status: 'in_progress',
+      conclusion: null,
+      started_at: '2026-11-04T12:00:00Z',
+    };
+    expect(testIntegrityRun([run(), unfinished], HEAD, files, 'main')).toEqual({ run: run() });
     // Another check's name.
     expect(testIntegrityRun([run({ name: 'test integrity' })], HEAD, files, 'main')).toMatchObject({
       reason: expect.any(String),
@@ -740,6 +795,18 @@ describe("the verdict's block, which the line reads", () => {
     });
     expect(wrong('')).toMatchObject({ error: expect.stringContaining('is not words') });
     expect(wrong(true)).toMatchObject({ error: expect.stringContaining('is not words') });
+    // Bounded: a reason, not a log.
+    expect(
+      readVerdict(
+        verdictBlock({
+          ...waits,
+          judged: [{ ...waits.judged[0], pending: 'x'.repeat(PENDING_LIMIT) } as Verdict['judged'][0]],
+        }),
+      ),
+    ).not.toHaveProperty('error');
+    expect(wrong('x'.repeat(PENDING_LIMIT + 1))).toMatchObject({
+      error: expect.stringContaining('over 300 characters'),
+    });
   });
 
   it('is no verdict when missing, doubled, cut short or wrong in any part', () => {

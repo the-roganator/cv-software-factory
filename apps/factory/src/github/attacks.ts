@@ -271,8 +271,9 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
       };
     }
     if (verdict.held === null) {
-      // Cancelled, timed out, gone stale: no verdict, as the line reads it (`verdictOf`), so no refusal is signed.
-      return { refusals: [], pullRequest, unconcluded: { what: `the review check concluded ${verdict.conclusion}` } };
+      // Cancelled, timed out, gone stale, or a block that does not judge it at its head: no verdict, as the line reads
+      // it (`verdictOf`), so no refusal is signed.
+      return { refusals: [], pullRequest, unconcluded: { what: verdict.problem } };
     }
     if (!verdict.held) {
       return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not hold the pull request' } };
@@ -299,25 +300,35 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
 /**
  * Waits for the review App's `review` run on a commit to conclude, and reads its verdict and words, or undefined if it
  * never does. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too.
- * Only a success passes and only a failure holds, as for the line: any other conclusion is no verdict (`held` null).
- * A hold the gate marked `pending`, made only to wait for a read such as test integrity's run, is waited past for the
- * gate's next judgement; still the latest at the limit, it is given back as `pending`, which is no refusal.
+ * Held or passed is read as the line reads it (`verdictOf`): from the block, for this pull request at this head, whose
+ * rule the conclusion agrees with. Anything else (a run cancelled or timed out, no block, one for another head or pull
+ * request, a conclusion its rule does not give) is no verdict (`held` null), with why. A hold the gate marked
+ * `pending`, made only while test integrity has not finished, is waited past for the gate's next judgement; still the
+ * latest check at the limit, it is given back as `pending`, which is no refusal.
  */
 async function waitForReview(
   o: AttackServerOptions,
   repo: string,
   number: number,
   sha: string,
-): Promise<{ held: boolean | null; conclusion: string | null; output: string; pending?: string } | undefined> {
+): Promise<{ held: boolean | null; problem: string; output: string; pending?: string } | undefined> {
   let waiting: { check: ReviewCheck; pending: string } | undefined;
   const review = await waitFor(
     async () => {
       const { body } = await o.github.poll(repo, reviewRunsPath(repo, sha), REVIEW_RUNS);
       const runs = listedReviews(body);
       const check = reviewCheckOf(runs, sha);
-      if (check?.status !== 'completed') return undefined;
-      const pending = verdictOf(number, sha, check).judged?.pending;
-      if (pending === undefined) return check;
+      if (check?.status !== 'completed') {
+        // A later check, not yet concluded, is what the gate says now: the earlier wait is no longer its last word.
+        if (check) waiting = undefined;
+        return undefined;
+      }
+      const read = verdictOf(number, sha, check);
+      const pending = read.judged?.pending;
+      if (pending === undefined) {
+        waiting = undefined;
+        return { check, read };
+      }
       waiting = { check, pending };
       return undefined;
     },
@@ -333,9 +344,10 @@ async function waitForReview(
   if (!review) {
     if (!waiting) return undefined;
     const { check, pending } = waiting;
-    return { held: null, conclusion: check.conclusion, output: reviewOutput(check), pending };
+    return { held: null, problem: 'the review gate still waited', output: reviewOutput(check), pending };
   }
-  const { conclusion } = review;
-  const held = conclusion === 'failure' ? true : conclusion === 'success' ? false : null;
-  return { held, conclusion, output: reviewOutput(review) };
+  const { check, read } = review;
+  if (!read.judged)
+    return { held: null, problem: read.problem ?? 'the review check gave no verdict', output: reviewOutput(check) };
+  return { held: read.judged.rule === 'held', problem: '', output: reviewOutput(check) };
 }

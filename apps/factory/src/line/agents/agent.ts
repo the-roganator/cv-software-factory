@@ -303,15 +303,16 @@ const APPROVALS: Partial<Record<HoldCause, string>> = {
 
 /**
  * The app's typed list of the flags it asks about (`FLAG_NAMES`): `request.flag` takes only a name on it, so an
- * improvement's coder adds its flag's name there, and the review gate tags any change to it as an improvement.
+ * improvement's coder adds its flag's name there, and the review gate tags any change to it as an improvement. The
+ * gate's own constant, so the two name one path.
  */
-export const FLAG_NAMES_FILE = 'src/flag-names.ts';
+export { FLAG_NAMES_FILE } from '../../../../../policy/review-verdict.ts';
 
 /** A merge's hold, by why the line does not add it to the merge queue itself (`merging.ts`). */
 const MERGE_SUMMARIES: Record<MergeHold, string> = {
   'no-verdict': 'Waiting for Martin to merge: the review gate gave no verdict to trust',
   unreviewed: 'Waiting for Martin to merge: the head moved since its review',
-  held: 'Held for its risk tags: waiting for Martin',
+  held: 'Held by the review gate: waiting for Martin',
   never: 'Waiting for Martin to merge',
   level: 'Waiting for Martin to merge, at this autonomy level',
   'auto-merge': 'Waiting for Martin to merge, with auto-merge off',
@@ -323,7 +324,9 @@ const MERGE_SUMMARIES: Record<MergeHold, string> = {
 /** A hold, as the event the line appends for it. */
 export function holdDraft(actor: NewEvent['actor'], hold: PayloadOf<'hold.started'>): Draft {
   const summary = hold.merge
-    ? MERGE_SUMMARIES[hold.merge.why]
+    ? hold.merge.why === 'held' && hold.merge.tags?.length
+      ? 'Held for its risk tags: waiting for Martin'
+      : MERGE_SUMMARIES[hold.merge.why]
     : hold.kind === 'approval'
       ? (APPROVALS[hold.cause] ?? 'Waiting for Martin')
       : hold.kind === 'question'

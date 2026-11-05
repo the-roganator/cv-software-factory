@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BROWSER_LAUNCH, type Check, capture, pixelDifference } from '@software-factory/factory/capture';
 import { DiskArtifacts } from '@software-factory/store';
-import { type Browser, chromium, type Page } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import { ARTIFACTS, CAPTURES, type Captures } from './captures.ts';
 
 /** The app as it was published, which every sample's change is made to. */
@@ -24,6 +24,8 @@ const APP = {
   commit: '7d3353a10f3847284a24ab09cc5db9781f338ecc',
 };
 
+/** The first variant's port. Each variant's copy has a port of its own, so no connection the browser kept open to
+ * one copy can carry the next variant's requests to it: the app closes gracefully, finishing what those ask. */
 const PORT = 18_190;
 const VIEWPORT = { width: 1280, height: 800 };
 
@@ -159,23 +161,25 @@ run('node', ['scripts/seed.ts']);
 
 const store = new DiskArtifacts(ARTIFACTS);
 const browser = await chromium.launch(BROWSER_LAUNCH);
+// At 1x: sharp enough for a card on a dense screen, a quarter of the bytes for a phone, and a quarter of the memory
+// for a strip of thumbnails, which at 2x left the renderer out of room to draw them all.
+const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
 const captures: Captures = { app: APP.commit, shots: {}, changed: {} };
 
 try {
-  for (const variant of VARIANTS) {
+  for (const [index, variant] of VARIANTS.entries()) {
     const originals = variant.edits.map(([file]) => [file, readFileSync(join(work, file), 'utf-8')] as const);
     for (const [file, find, replace] of variant.edits) {
       const text = readFileSync(join(work, file), 'utf-8');
       if (!text.includes(find)) throw new Error(`${variant.name}: ${file} no longer contains ${find}`);
       writeFileSync(join(work, file), text.replaceAll(find, replace));
     }
-    // A page of its own for each variant: the app closes gracefully, finishing what its open connections ask, so a
-    // connection the browser kept open to one variant's copy would carry the next variant's requests to it.
-    const page = await newPage(browser);
-    const server = await start();
+    const port = PORT + index;
+    let server: ChildProcess | undefined;
     try {
+      server = await start(port);
       for (const shot of variant.shots) {
-        await page.goto(`http://localhost:${PORT}${shot.path}`, { waitUntil: 'networkidle' });
+        await page.goto(`http://localhost:${port}${shot.path}`, { waitUntil: 'networkidle' });
         if (shot.scroll) await page.locator(shot.scroll).evaluate((element) => element.scrollIntoView());
         const { hash, size, width, height, boxes } = await capture(page, store, {
           route: shot.route,
@@ -186,12 +190,11 @@ try {
         console.log(`${variant.name}/${shot.name}`.padEnd(28), hash.slice(0, 12), `${Math.round(size / 1024)} KB`);
       }
     } finally {
-      await page.close();
-      await stop(server);
       for (const [file, text] of originals) writeFileSync(join(work, file), text);
+      if (server) await stop(server);
     }
   }
-  const page = await newPage(browser);
+  await page.goto('about:blank');
   for (const variant of VARIANTS) {
     for (const name of COMPARE) {
       const shot = captures.shots[`${variant.name}/${name}`];
@@ -207,43 +210,52 @@ try {
 writeFileSync(CAPTURES, `${JSON.stringify(captures, null, 2)}\n`);
 console.log(`Wrote ${Object.keys(captures.shots).length} screenshots and ${CAPTURES}.`);
 
-/** At 1x: sharp enough for a card on a dense screen, a quarter of the bytes for a phone, and a quarter of the memory
- * for a strip of thumbnails, which at 2x left the renderer out of room to draw them all. */
-function newPage(browser: Browser): Promise<Page> {
-  return browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
-}
-
 async function difference(page: Page, a: string, b: string): Promise<number> {
   if (a === b) return 0;
   const read = (hash: string) => readFileSync(join(ARTIFACTS, hash));
   return Math.round((await pixelDifference(page, read(a), read(b))) * 10_000) / 10_000;
 }
 
-/** Starts the scratch copy and waits until it answers: it alone, as the one before has exited and freed the port. */
-async function start(): Promise<ChildProcess> {
+/** Starts a scratch copy on its port and waits until it answers there. */
+async function start(port: number): Promise<ChildProcess> {
+  const health = `http://localhost:${port}/health`;
+  const answers = () =>
+    fetch(health).then(
+      async (response) => {
+        await response.body?.cancel();
+        return response.ok;
+      },
+      () => false,
+    );
+  // Something left on the port, by an earlier run cut short, would answer for this copy.
+  if (await answers()) throw new Error(`Something already answers on :${port}: stop it and run the capture again`);
   const server = spawn(process.execPath, ['src/server.ts'], {
     cwd: work,
-    env: { ...process.env, PORT: String(PORT), LOG_LEVEL: 'silent', OTEL_SDK_DISABLED: 'true' },
+    env: { ...process.env, PORT: String(port), LOG_LEVEL: 'silent', OTEL_SDK_DISABLED: 'true' },
     stdio: 'ignore',
   });
-  for (let tries = 0; tries < 100 && server.exitCode === null; tries++) {
-    if (
-      await fetch(`http://localhost:${PORT}/health`).then(
-        (r) => r.ok,
-        () => false,
-      )
-    )
-      return server;
+  let failed = false;
+  server.once('error', () => {
+    failed = true;
+  });
+  for (let tries = 0; tries < 100 && !failed && !exited(server); tries++) {
+    if (await answers()) return server;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await stop(server);
   throw new Error('The scratch copy of the app did not start');
 }
 
-/** Stops a scratch copy and waits until it has exited, so that nothing it held answers for the next. */
+/** Stops a scratch copy and waits until it has gone, killing it outright if it has not closed within five seconds. */
 async function stop(server: ChildProcess): Promise<void> {
-  if (server.exitCode !== null || server.signalCode !== null) return;
-  const exited = new Promise((resolve) => server.once('exit', resolve));
+  if (exited(server) || server.pid === undefined) return;
+  const gone = new Promise((resolve) => server.once('exit', resolve));
   server.kill();
-  await exited;
+  const timer = setTimeout(() => server.kill('SIGKILL'), 5_000);
+  await gone;
+  clearTimeout(timer);
+}
+
+function exited(server: ChildProcess): boolean {
+  return server.exitCode !== null || server.signalCode !== null;
 }

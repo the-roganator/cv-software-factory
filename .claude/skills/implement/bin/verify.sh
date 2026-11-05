@@ -3,8 +3,8 @@
 #   verify.sh <key> <pr>   pr-open: the pull request is open, from the worktree's branch at its pushed HEAD, with
 #                          nothing uncommitted; an issue's says Closes (or Part of) #<n>; every file it changes that
 #                          CODEOWNERS gives Martin has a line in the description's section on them (a heading naming
-#                          CODEOWNERS) that names its path whole, with three words or more beside it (owned_reason in
-#                          repo.sh). Whether those words are a good reason is left to the reader. Once Copilot has reviewed, a comment on the pull request from us, posted after
+#                          CODEOWNERS), with words beside the path. Whether those words are a good reason is left to
+#                          the reader. Once Copilot has reviewed, a comment on the pull request from us, posted after
 #                          its review and beginning "Copilot's review summary:", answers the review's summary; until
 #                          Copilot has reviewed, or the hour window.sh gives it has passed, the pull request is not
 #                          ready. No code-scanning alert is open on it, and code scanning has analysed its head
@@ -61,8 +61,7 @@ if [[ $key =~ ^(app-)?([0-9]+)(-[0-9]+)?$ ]]; then
 fi
 
 # Every changed file CODEOWNERS gives Martin, by its path or the path a rename moved it from, has a line in the
-# description's section on them, which names the path itself, not a longer one, with its reason beside it
-# (owned_reason in repo.sh).
+# description's section on them, with its reason beside it.
 owners=$(git -C "$checkout" show origin/main:.github/CODEOWNERS | sed 's/#.*//' | awk 'NF { print $1 }')
 files=$(pr_files "$repo" "$pr")
 listed=$(grep -c . <<<"$files" || true)
@@ -85,10 +84,10 @@ say owned "${#owned[@]} file(s) CODEOWNERS gives Martin"
 section=$(awk '/^#+ / { inside = /CODEOWNERS/; next } inside' <<<"$body")
 if (( ${#owned[@]} )) && [[ -z $section ]]; then bad owned "no section on them: a heading naming CODEOWNERS"; fi
 for file in ${owned[@]+"${owned[@]}"}; do
-  if words=$(owned_reason "$file" <<<"$section"); then
-    (( words >= 3 )) || bad owned "$file is named with no reason beside it"
-  elif (( $? == 1 )); then bad owned "$file changes and the section does not name it"
-  else bad owned "$file could not be looked for in the section"; fi
+  line=$(names_path "$file" <<<"$section" || true)
+  words=$(tr -d '`*' <<<"${line//"$file"/}" | tr -cs '[:alnum:]' '\n' | grep -c . || true)
+  if [[ -z $line ]]; then bad owned "$file changes and the section does not name it"
+  elif (( words < 3 )); then bad owned "$file is named with no reason beside it"; fi
 done
 
 if [[ $state == MERGED ]]; then

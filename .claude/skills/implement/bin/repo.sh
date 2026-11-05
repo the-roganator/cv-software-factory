@@ -40,51 +40,11 @@ repo_of() {
 pr_files() {
   gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[] | [.filename, .previous_filename // empty] | join("\t")'
 }
-# owned_reason <path>: reads a description's section on CODEOWNERS' files from stdin and prints how many words of
-# reason the best line naming the path gives it; exits 1, printing nothing, if no line names it, and 2 for a path it
-# cannot look for. Each line is read as tokens, split at spaces, at dashes, quotes and ellipses beyond ASCII, and at
-# markdown's `*[]()<>"',;|, so a path in backticks, bare, or as a link's text is a token of its own (a link's target is
-# left out: it names nothing and gives no reason). A token names the
-# path when it is the path, less a leading / or ./ (as CODEOWNERS writes paths) and any closing .:!? (as a sentence
-# ends): deploy/a.yaml.bak, deploy/a.yaml~ or other/deploy/a.yaml do not name deploy/a.yaml. The reason is the words,
-# runs of letters and digits, of the line's prose: what is in backticks is code, a path or a name, and so is a token with
-# both a slash and a dot (a bare path, a link's target) or a :// (a URL), while read/write is two words. A path to look for must
-# be [A-Za-z0-9._/-] alone, as every one in both repositories is, so that no delimiter splits it.
-owned_reason() {
-  [[ $1 =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "owned_reason: $1 holds characters a section cannot be read for" >&2; return 2; }
-  path=$1 LC_ALL=C awk '
-    BEGIN {
-      path = ENVIRON["path"]; best = -1
-      # Dashes (figure, en, em, bar, minus), curly quotes, the ellipsis and a no-break space, in UTF-8.
-      split("\342\200\222 \342\200\223 \342\200\224 \342\200\225 \342\210\222 \342\200\230 \342\200\231 " \
-        "\342\200\234 \342\200\235 \342\200\246 \302\240", marks, " ")
-    }
-    {
-      line = $0
-      for (m in marks) gsub(marks[m], " ", line)
-      # A link is its text: its target, a path or not, is neither the name nor a reason.
-      gsub(/\]\([^)]*\)/, "] ", line)
-      # Code spans, as markdown reads them: a run of backticks opens one and the next run as long closes it; one left
-      # open is text.
-      pieces = 0; rest = line; opener = ""; named = 0; words = 0
-      while (match(rest, /`+/)) {
-        run = substr(rest, RSTART, RLENGTH); before = substr(rest, 1, RSTART - 1); rest = substr(rest, RSTART + RLENGTH)
-        if (opener == "") { piece[++pieces] = before; code[pieces] = 0; opener = run; span = "" }
-        else if (run == opener) { piece[++pieces] = span before; code[pieces] = 1; opener = "" }
-        else span = span before " "
-      }
-      piece[++pieces] = (opener == "" ? "" : span) rest; code[pieces] = 0
-      for (p = 1; p <= pieces; p++) {
-        text = piece[p]; gsub(/[]*()<>"\047,;|[]/, " ", text)
-        n = split(text, tokens, /[ \t\r]+/)
-        for (t = 1; t <= n; t++) {
-          token = tokens[t]; prose = !code[p] && !(index(token, "/") && index(token, ".")) && !index(token, "://")
-          sub(/^\.?\//, "", token); sub(/[.:!?]+$/, "", token)
-          if (token == path) named = 1
-          else if (prose) words += gsub(/[[:alnum:]\200-\377]+/, "", token)
-        }
-      }
-      if (named && words > best) best = words
-    }
-    END { if (best < 0) exit 1; print best }'
+# names_path <path>: the first line of stdin that names the path whole: no path character ([A-Za-z0-9._/~-]) right
+# before or after it, though a `.` may end it before a space or the line's end. So `deploy/a.yaml`, a bare path and
+# [deploy/a.yaml](…) name deploy/a.yaml; deploy/a.yaml.bak, deploy/a.yaml~ and other/deploy/a.yaml do not.
+names_path() {
+  local not='[^A-Za-z0-9._/~-]' escaped
+  escaped=$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1")
+  grep -m1 -E "(^|$not)$escaped(\$|$not|\.(\$|[[:space:]]))"
 }

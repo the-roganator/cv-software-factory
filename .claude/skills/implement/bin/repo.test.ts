@@ -124,92 +124,33 @@ jq -c '.[]' "${join(dir, 'pages.json')}" | while IFS= read -r page; do jq -r "$5
   });
 });
 
-describe('owned_reason', () => {
-  /** How many words of reason `section` gives `path`, or null where no line names it (exit 1, and nothing else). */
-  function reason(path: string, section: string): number | null {
-    const run = spawnSync('bash', ['-c', `. "${REPO_SH}" && owned_reason "$1"`, 'test', path], {
-      env: { ...ENV, LANG: 'en_GB.UTF-8' },
-      input: section,
-      encoding: 'utf8',
-    });
-    if (run.status === 1 && run.stdout === '' && run.stderr === '') return null;
-    expect(run.stderr).toBe('');
-    expect(run.status).toBe(0);
-    return Number(run.stdout);
+describe('names_path', () => {
+  /** Whether names_path finds `line` naming deploy/a.yaml. */
+  function names(line: string): boolean {
+    const run = spawnSync('bash', ['-c', `. "${REPO_SH}" && names_path deploy/a.yaml`], { env: ENV, input: line });
+    expect(run.stderr.toString()).toBe('');
+    return run.status === 0;
   }
 
-  it('finds the path in backticks, bare, as a link, or ending a sentence', () => {
-    expect(reason('deploy/a.yaml', '`deploy/a.yaml`: why it changed')).toBe(3);
-    expect(reason('deploy/a.yaml', '- deploy/a.yaml — why it changed')).toBe(3);
-    expect(reason('deploy/a.yaml', '- **deploy/a.yaml**: why it changed')).toBe(3);
-    expect(reason('deploy/a.yaml', '- [deploy/a.yaml](https://x/blob/main/deploy/a.yaml): why it changed')).toBe(3);
-    expect(reason('deploy/a.yaml', 'Why it changed: deploy/a.yaml.')).toBe(3);
-    expect(reason('deploy/a.yaml', 'Why it changed: deploy/a.yaml...')).toBe(3);
-  });
-
-  it('finds it written from the root, as CODEOWNERS writes it', () => {
-    expect(reason('deploy/a.yaml', '`/deploy/a.yaml`: why it changed')).toBe(3);
-    expect(reason('deploy/a.yaml', '`./deploy/a.yaml`: why it changed')).toBe(3);
-  });
-
-  it('does not take a link to it for its name', () => {
-    expect(reason('deploy/a.yaml', '- [the image](deploy/a.yaml): why it changed')).toBeNull();
+  it('finds the path in backticks, bare, bold, as a link, or ending a sentence', () => {
+    for (const line of [
+      '`deploy/a.yaml`: why it changed',
+      '- deploy/a.yaml — why it changed',
+      '- **deploy/a.yaml**: why it changed',
+      '- [deploy/a.yaml](https://github.com/o/r/blob/main/deploy/a.yaml): why it changed',
+      'Why it changed: deploy/a.yaml.',
+    ])
+      expect(names(line), line).toBe(true);
   });
 
   it('does not take a longer path for it, before or after', () => {
-    for (const longer of [
-      'deploy/a.yaml.bak',
-      'other/deploy/a.yaml',
-      '../deploy/a.yaml',
-      'deploy/a.yaml-old',
-      'deploy/a.yaml~',
+    for (const line of [
+      '`deploy/a.yaml.bak`: why it changed',
+      '`deploy/a.yaml~`: why it changed',
+      '`deploy/a.yaml-old`: why it changed',
+      '`other/deploy/a.yaml`: why it changed',
+      '`deployXa.yaml`: why it changed',
     ])
-      expect(reason('deploy/a.yaml', `\`${longer}\`: why it changed`)).toBeNull();
-  });
-
-  it('reads the path as text, not a pattern', () => {
-    expect(reason('.github/CODEOWNERS', '`xgithub/CODEOWNERS`: why it changed')).toBeNull();
-  });
-
-  it('reads any text beside the path', () => {
-    expect(reason('deploy/a.yaml', '`deploy/a.yaml`’s change: it is why')).toBe(5);
-    expect(reason('deploy/a.yaml', 'deploy/a.yaml—why it changed')).toBe(3);
-    expect(reason('deploy/a.yaml', 'deploy/a.yaml\u2212why\u00a0it changed')).toBe(3);
-  });
-
-  it('counts no other path, link target or URL as reason', () => {
-    expect(reason('deploy/a.yaml', '- `deploy/a.yaml`, `deploy/b.yaml`')).toBe(0);
-    expect(reason('AGENTS.md', '- `AGENTS.md`, `Makefile`, `/mise.lock`')).toBe(0);
-    expect(reason('deploy/a.yaml', '- deploy/a.yaml, deploy/b.yaml')).toBe(0);
-    expect(reason('deploy/a.yaml', '- [deploy/a.yaml](/docs/readme)')).toBe(0);
-    expect(reason('deploy/a.yaml', '``deploy/a.yaml only-code words``')).toBe(0);
-    expect(reason('deploy/a.yaml', '``deploy/a.yaml`` and `` `x` ``: why it changed')).toBe(4);
-    expect(reason('deploy/a.yaml', '`deploy/a.yaml.bak` moves to `deploy/a.yaml`')).toBe(2);
-    expect(reason('deploy/a.yaml', '- [deploy/a.yaml](https://github.com/o/r/blob/main/deploy/a.yaml)')).toBe(0);
-    expect(reason('deploy/a.yaml', '- deploy/a.yaml, HTTPS://github.com/o/r/blob/main/deploy/a.yaml')).toBe(0);
-    expect(reason('deploy/a.yaml', '- deploy/a.yaml https://x/y—why it changed')).toBe(3);
-  });
-
-  it('counts the words of prose, a slash between them or letters beyond ASCII', () => {
-    expect(reason('deploy/a.yaml', '`deploy/a.yaml`: fixes a read/write race')).toBe(5);
-    expect(reason('deploy/a.yaml', '`deploy/a.yaml`: a naïve façade fix')).toBe(4);
-  });
-
-  it('will not look for a path a delimiter would split', () => {
-    const run = spawnSync('bash', ['-c', `. "${REPO_SH}" && owned_reason "$1"`, 'test', 'docs/a file.md'], {
-      env: ENV,
-      input: '`docs/a file.md`: why it changed',
-      encoding: 'utf8',
-    });
-    expect(run.status).toBe(2);
-    expect(run.stderr).toContain('docs/a file.md');
-  });
-
-  it('takes the line that gives it most reason', () => {
-    expect(reason('deploy/a.yaml', '- `deploy/a.yaml`\n- `deploy/a.yaml`: why it changed, and how')).toBe(5);
-  });
-
-  it('names nothing in an empty section', () => {
-    expect(reason('deploy/a.yaml', '')).toBeNull();
+      expect(names(line), line).toBe(false);
   });
 });

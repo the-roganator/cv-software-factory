@@ -78,7 +78,11 @@
 .answers .answer {
   display: contents;
 }
-.answers .btn {
+/* Every answer takes the column's width, Martin's buttons (a disabled one too) and a visitor's labels alike, so each
+   card's answers are one column of equal width, the way forward among them. */
+.answers .btn,
+.answers .ro {
+  justify-self: stretch;
   justify-content: flex-start;
 }
 /* The way a merge or a deploy ends, on GitHub: "Merge", "Deploy" or "Review" and GitHub's mark, in the column of
@@ -126,9 +130,6 @@
   font-size: 12.5px;
   line-height: 1.4;
   color: var(--text-2);
-}
-.answers .ro {
-  justify-self: start;
 }
 .words-form {
   grid-column: 1 / -1;

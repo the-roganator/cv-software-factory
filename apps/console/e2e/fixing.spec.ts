@@ -284,6 +284,21 @@ test.describe('tool marks', () => {
     );
   });
 
+  test('every answer on a visitor’s card takes the answers column’s width, a flag’s and the way forward’s too', async ({
+    page,
+  }) => {
+    await page.goto(consoleUrl({}));
+    await ready(page);
+    const cards = page.locator('article.needs .need');
+    await expect(cards.first()).toBeVisible();
+    for (const card of await cards.all()) {
+      const widths = await card
+        .locator('.answers > .answer > .ro, .answers > .answer > .way, .answers > .answer > .btn')
+        .evaluateAll((controls) => controls.map((control) => Math.round(control.getBoundingClientRect().width)));
+      expect(new Set(widths).size).toBeLessThanOrEqual(1);
+    }
+  });
+
   test('a real pull request’s way is GitHub’s: “Merge” and its mark, in a new tab, said to a screen reader', async ({
     page,
   }) => {
@@ -314,13 +329,14 @@ test.describe('tool marks', () => {
     await expect(first.locator('p')).toHaveText(
       'Martin merges #1312 there. The line goes on by itself once it merges.',
     );
-    // In the column the answers under it share, where each starts: a visitor's labels keep their own width.
+    // As wide as the answers under it, in the column they share: a visitor's labels take its width too.
     const [wayBox, answerBox] = await Promise.all([
       way.boundingBox(),
       answers.locator('.ro', { hasText: 'Answer in words' }).boundingBox(),
     ]);
     if (!wayBox || !answerBox) throw new Error('the way or the answer under it is not drawn');
     expect(wayBox.x).toBeCloseTo(answerBox.x, 0);
+    expect(wayBox.width).toBeCloseTo(answerBox.width, 0);
     await expect(way).toHaveAttribute('href', 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1312');
     await expect(way).toHaveAttribute('target', '_blank');
     await expect(way).toHaveAttribute('rel', 'noopener');

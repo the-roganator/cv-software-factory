@@ -3,6 +3,8 @@ import { PAYLOADS } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
 import { ENQUEUES } from '../../../../policy/line.ts';
 import { RULES, type Rule } from '../../../../policy/review-verdict.ts';
+import { TEST_INTEGRITY_CHECK } from '../../../../scripts/review-routing.ts';
+import { TEST_INTEGRITY } from '../../src/line/gates.ts';
 import { atMerge, decide, type Facts, fold, type LineEvent } from '../../src/line/machine.ts';
 import type { MergeFacts } from '../../src/line/merging.ts';
 
@@ -65,6 +67,10 @@ const REFUSAL: PayloadOf<'action.refused'> = {
   signature: `${'A'.repeat(86)}==`,
 };
 
+/** Test integrity finishing on the head, and the gate judging it after, as it does once the gates finish. */
+const INTEGRITY_AT = '2026-11-05T10:00:00Z';
+const JUDGED_AT = '2026-11-05T10:02:00Z';
+
 const merge = (over: Partial<MergeFacts> & { rule?: Rule; tags?: string[] } = {}): MergeFacts => {
   const { rule = 'low-risk', tags = [], ...rest } = over;
   const head = rest.head ?? HEAD;
@@ -72,10 +78,18 @@ const merge = (over: Partial<MergeFacts> & { rule?: Rule; tags?: string[] } = {}
     autonomy: 'guarded',
     autoMerge: true,
     head,
-    check: { status: 'completed', conclusion: rule === 'held' ? 'failure' : 'success', title: 'The gate', url: null },
+    check: {
+      status: 'completed',
+      conclusion: rule === 'held' ? 'failure' : 'success',
+      title: 'The gate',
+      url: null,
+      completedAt: JUDGED_AT,
+    },
     judged: { number: 12, head, rule, tags: tags.map((tag) => ({ tag, because: ['pnpm-lock.yaml'] })) },
     problem: null,
     conflicts: false,
+    integrityAt: INTEGRITY_AT,
+    rejudgeDue: true,
     ...(rule === 'held' ? { refusal: REFUSAL } : {}),
     ...rest,
   } as MergeFacts;
@@ -233,12 +247,64 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     expect(holdOf([...never.improvement, refused], held).merge).toMatchObject({ why: 'held', approving: false });
   });
 
+  it('times the gate’s verdict against the check the gate reads', () => {
+    expect(TEST_INTEGRITY).toBe(TEST_INTEGRITY_CHECK);
+  });
+
+  it('waits for the gate to judge again when its verdict came before test integrity finished, refusing nothing', () => {
+    // The gate judged the head as the pull request opened, before test integrity had run, and held it for want of it.
+    const early = {
+      completedAt: '2026-11-05T09:55:00Z',
+      status: 'completed',
+      conclusion: 'failure',
+      title: 'Held',
+      url: null,
+    };
+    const stale = merge({ rule: 'held', tags: ['dependency-change'], check: early });
+    expect(decide(ready, facts(stale))).toEqual({ stage: 'review', next: { do: 'wait', for: 'gates' } });
+    // A passing verdict from then counts nothing test integrity found either: nothing is queued on it.
+    const passing = merge({ check: { ...early, conclusion: 'success' } });
+    expect(decide(ready, facts(passing)).next).toEqual({ do: 'wait', for: 'gates' });
+    // A check that does not say when it concluded cannot be told to be after it.
+    expect(decide(ready, facts(merge({ check: { ...early, completedAt: null } }))).next).toEqual({
+      do: 'wait',
+      for: 'gates',
+    });
+    // The gate judges again once the gates finish: a pass is queued on, and a hold refused once, then held.
+    expect(decide(ready, facts(merge())).next).toEqual({ do: 'enqueue', number: 12, head: HEAD, rule: 'low-risk' });
+    const judged = merge({ rule: 'held', tags: ['dependency-change'] });
+    expect(decide(ready, facts(judged)).next).toEqual({ do: 'refused', head: HEAD, refusal: REFUSAL });
+    expect(holdOf([...ready, refused], judged).merge).toMatchObject({ why: 'held', rule: 'held' });
+    // Judged at the very moment test integrity finished, it counts it.
+    expect(
+      decide(ready, facts(merge({ check: { ...early, completedAt: INTEGRITY_AT, conclusion: 'success' } }))).next,
+    ).toMatchObject({ do: 'enqueue' });
+    // With no run of test integrity on the head, the verdict is the gate's word on it, held or passing.
+    expect(decide(ready, facts(merge({ ...stale, integrityAt: null }))).next).toMatchObject({ do: 'refused' });
+    // The gate not judging again in time: held for Martin as no verdict to trust, with none of the early one's rule,
+    // and still no refusal.
+    const overdue = holdOf(ready, merge({ ...stale, rejudgeDue: false }));
+    expect(overdue).toMatchObject({
+      cause: 'merge',
+      reason: expect.stringContaining('has not judged #12 at aaaaaaa since test integrity finished there'),
+      merge: { why: 'no-verdict', approving: false },
+    });
+    expect(overdue.merge).not.toHaveProperty('rule');
+    expect(overdue.merge).not.toHaveProperty('tags');
+    // A hold in force stands while the gate judges again.
+    const holding = [...ready, { type: 'hold.started', payload: overdue } as LineEvent];
+    expect(decide(holding, facts(merge({ ...stale, rejudgeDue: false }))).next).toEqual({ do: 'wait', for: 'martin' });
+  });
+
   it('waits while the gate has not judged the head, and holds when it gave no verdict to trust', () => {
     expect(decide(ready, facts(merge({ check: null, judged: null, problem: 'none' })))).toEqual({
       stage: 'review',
       next: { do: 'wait', for: 'gates' },
     });
-    const running = merge({ check: { status: 'in_progress', conclusion: null, title: null, url: null }, judged: null });
+    const running = merge({
+      check: { status: 'in_progress', conclusion: null, title: null, url: null, completedAt: null },
+      judged: null,
+    });
     expect(decide(ready, facts(running)).next).toEqual({ do: 'wait', for: 'gates' });
     const none = merge({ judged: null, problem: 'the summary carries no verdict' });
     expect(holdOf(ready, none)).toMatchObject({

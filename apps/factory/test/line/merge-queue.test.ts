@@ -51,13 +51,17 @@ function refusalOf(head: string, key = privateKey): SignedRefusal {
   return JSON.parse(JSON.stringify({ ...facts, record: recordHash(bytes), signature: signRecord(key, bytes) }));
 }
 
-/** A ticket carried through plan, build, the gates, review and its description, to its merge. */
-async function readyToMerge(options: Parameters<typeof line>[2] = {}) {
+/**
+ * A ticket carried through plan, build, the gates, review and its description, to its merge; with `integrityAt`, test
+ * integrity's run among its gates, finishing then.
+ */
+async function readyToMerge(options: Parameters<typeof line>[2] = {}, integrityAt?: string) {
   const workItem = await ticket();
   const it = line(undefined, undefined, { refusalKey: publicKey, ...options });
   await it.pass(); // the issue, and the planner
   await it.pass(); // the coder
   it.github.pass();
+  if (integrityAt) it.github.integrity(integrityAt);
   await it.pass(); // the gates pass, and the reviewer
   await it.pass(); // the describer
   return { workItem, ...it };
@@ -179,6 +183,66 @@ describe('the line, merging through the queue', () => {
       { number: 12, commit: head, rule: 'martin-approved-head', position: 1 },
     ]);
     expect(await payloads(workItem, 'action.refused')).toHaveLength(1);
+  });
+
+  it.each(['low-risk', 'held'] as const)(
+    'waits on a verdict the gate gave before test integrity finished, refusing nothing, until it judges again (%s)',
+    async (rejudged) => {
+      await controls({});
+      // Test integrity finishes a minute ago; the gate held the head as the pull request opened, before it had run.
+      const integrityAt = new Date(clock.now - 60_000).toISOString();
+      const early = new Date(clock.now - 10 * 60_000).toISOString();
+      const after = new Date(clock.now - 30_000).toISOString();
+      const { workItem, pass, github } = await readyToMerge({}, integrityAt);
+      const head = String(github.pulls.get(12)?.head.sha);
+      const tags = [{ tag: 'dependency-change' as const, because: ['pnpm-lock.yaml'] }];
+      github.gate = { rule: 'held', tags, refusal: refusalOf(head), at: early };
+      await pass();
+      await pass();
+      expect(await types(workItem)).not.toContain('action.refused');
+      expect(await types(workItem)).not.toContain('hold.started');
+      expect(enqueues(github.acts)).toEqual([]);
+      expect(await stage(workItem)).toBe('review');
+      // The gate judges again once the gates finish: a pass is queued on; a hold is refused once, and held.
+      github.gate =
+        rejudged === 'held'
+          ? { rule: 'held', tags, refusal: refusalOf(head), at: after }
+          : { rule: 'low-risk', at: after };
+      await pass();
+      await pass();
+      if (rejudged === 'low-risk') {
+        expect(await payloads(workItem, 'pull-request.enqueued')).toEqual([
+          { number: 12, commit: head, rule: 'low-risk', position: 1 },
+        ]);
+        expect(await types(workItem)).not.toContain('action.refused');
+        expect(await types(workItem)).not.toContain('hold.started');
+      } else {
+        expect(await payloads(workItem, 'action.refused')).toHaveLength(1);
+        expect(await payloads(workItem, 'hold.started')).toMatchObject([{ cause: 'merge', merge: { why: 'held' } }]);
+        expect(enqueues(github.acts)).toEqual([]);
+      }
+    },
+  );
+
+  it('holds for Martin, refusing nothing, when the gate does not judge again after test integrity', async () => {
+    await controls({});
+    let at = clock.now;
+    const integrityAt = new Date(at - 60_000).toISOString();
+    const { workItem, pass, github } = await readyToMerge({ now: () => new Date(at) }, integrityAt);
+    const head = String(github.pulls.get(12)?.head.sha);
+    github.gate = { rule: 'held', refusal: refusalOf(head), at: new Date(at - 10 * 60_000).toISOString() };
+    await pass();
+    expect(await types(workItem)).not.toContain('hold.started');
+    at += 15 * 60_000;
+    await pass();
+    expect(await types(workItem)).not.toContain('action.refused');
+    expect(await payloads(workItem, 'hold.started')).toMatchObject([
+      {
+        cause: 'merge',
+        reason: expect.stringContaining('has not judged #12'),
+        merge: { why: 'no-verdict', approving: false },
+      },
+    ]);
   });
 
   it('records no refusal it cannot verify, and holds the merge all the same', async () => {

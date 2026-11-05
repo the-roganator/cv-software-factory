@@ -29,6 +29,14 @@
  *
  * While the review App's check on the head has not concluded, or there is none yet, the change waits at Review for the
  * gate, as for any gate: nothing is held for a verdict about to come.
+ *
+ * Nor is anything held, or refused, on a verdict the gate gave before test integrity's run on the head finished
+ * (`judgedEarly`): the gate judges a pull request as it opens, before its gates have run, and holds it then for want of
+ * test integrity's reading, and judges it again once the gates finish. Such a verdict, held or passing, counts nothing
+ * test integrity found, so the change waits for the gate to judge again, and only that verdict is refused, held or
+ * queued on. Test integrity's run is the one check the gate reads; the gate judges again when the workflow it is in
+ * finishes, which may be before the head's other checks. Should the gate not judge again within `REJUDGE_MS` of the
+ * head's last check finishing, the change is held for Martin as having no verdict to trust, and nothing is refused.
  */
 import type { Autonomy, GateRule, PayloadOf } from '@software-factory/events';
 import { cutTo, PATH_CHARS } from '@software-factory/events';
@@ -46,7 +54,13 @@ export interface MergeFacts {
   /** The pull request's head now. */
   head: string;
   /** The review App's latest `review` check on that head, or null while there is none. */
-  check: { status: string; conclusion: string | null; title: string | null; url: string | null } | null;
+  check: {
+    status: string;
+    conclusion: string | null;
+    title: string | null;
+    url: string | null;
+    completedAt: string | null;
+  } | null;
   /** The gate's verdict on this pull request at that head, or null with why there is none (`problem`). */
   judged: Judged | null;
   problem: string | null;
@@ -57,6 +71,32 @@ export interface MergeFacts {
   refusal?: PayloadOf<'action.refused'>;
   /** Whether it conflicts with its base; null while GitHub has not worked it out. */
   conflicts: boolean | null;
+  /**
+   * When GitHub Actions' latest run of test integrity on that head completed: the one check the gate reads. Null while
+   * it has none that has, when a verdict cannot be older than its reading.
+   */
+  integrityAt: string | null;
+  /**
+   * Whether the gate may still judge the head again: no more than `REJUDGE_MS` since the latest of the head's checks
+   * finished. Read only of a verdict given before test integrity finished.
+   */
+  rejudgeDue: boolean;
+}
+
+/**
+ * How long after a head's last check finished the line waits for the gate to judge it again, when its verdict came
+ * before test integrity's run there finished. The gate judges again a minute or two after the gates' workflow ends.
+ */
+export const REJUDGE_MS = 15 * 60_000;
+
+/**
+ * Whether the gate's verdict on the head came before test integrity's run there finished, so it counts nothing that
+ * run found: the check that carries it completed before the run did, or does not say when it completed.
+ */
+export function judgedEarly(m: Pick<MergeFacts, 'check' | 'integrityAt'>): boolean {
+  if (m.check?.status !== 'completed' || m.integrityAt === null) return false;
+  const judgedAt = m.check.completedAt === null ? Number.NaN : Date.parse(m.check.completedAt);
+  return !(judgedAt >= Date.parse(m.integrityAt));
 }
 
 type Hold = PayloadOf<'hold.started'>;
@@ -101,8 +141,9 @@ export function mergeDecision(s: WorkItemState, m: MergeFacts): Decision | undef
   if (!pr) return undefined;
   // In the queue at this head: the queue merges it, or takes it out, which the line reads as the gates are read.
   if (s.enqueued?.commit === m.head) return { stage: 'review', next: { do: 'wait', for: 'queue' } };
-  // The gate's refusal of this head, once, before anything else is said of it.
-  if (m.judged?.rule === 'held' && m.refusal && !s.refusedHeads.includes(m.head)) {
+  // The gate's refusal of this head, once, before anything else is said of it: never of a verdict the gate gave before
+  // test integrity finished, which it judges again.
+  if (m.judged?.rule === 'held' && m.refusal && !judgedEarly(m) && !s.refusedHeads.includes(m.head)) {
     return { stage: 'review', next: { do: 'refused', head: m.head, refusal: m.refusal } };
   }
   const hold = mergeHold(s, m);
@@ -128,8 +169,10 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
   const number = pr.number;
   const { judged } = m;
   const never = neverTheLines(s, judged);
+  // A verdict from before test integrity finished is not the gate's word on the head: a hold says none of it.
+  const early = judgedEarly(m);
   const verdict: Pick<Merge, 'rule' | 'tags' | 'said' | 'check'> = {
-    ...(judged ? { rule: judged.rule, tags: heldTags(judged.tags) } : {}),
+    ...(judged && !early ? { rule: judged.rule, tags: heldTags(judged.tags) } : {}),
     ...(m.check?.title?.trim() ? { said: cutTo(m.check.title.trim(), 300) } : {}),
     ...(m.check?.url ? { check: m.check.url } : {}),
   };
@@ -157,6 +200,13 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
     );
   }
   if (m.check?.status !== 'completed') return 'pending';
+  if (early) {
+    if (m.rejudgeDue) return 'pending';
+    return held(
+      'no-verdict',
+      `The review gate has not judged #${number} at ${short(m.head)} since test integrity finished there, and its verdict from before counts nothing test integrity found. It waits for Martin`,
+    );
+  }
   if (!judged) {
     const why = m.problem ?? 'it carries none';
     return held(

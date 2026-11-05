@@ -311,7 +311,7 @@ export interface LineOptions {
 type Provider = 'anthropic' | 'bedrock' | 'local';
 
 /** What GitHub says of a pull request ready to merge: `MergeFacts` without Martin's controls, which are read each pass. */
-type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge' | 'now' | 'gatesPassedAt'>;
+type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge' | 'now'>;
 
 /** Martin's settings, as the line reads them (`../settings.ts`): checked against policy, as the gateway checks them. */
 export interface LineSettings {
@@ -2226,14 +2226,14 @@ export class Line {
    * want of a read.
    */
   async #mergeFacts(workItem: string, number: number): Promise<MergeFacts | null> {
-    const read = await this.#mergeReadOf(workItem, number);
-    if (!read) return null;
-    // A pending verdict's wait is timed from the store's own time for the line's gates passing at this head.
+    const known = await this.#mergeReadOf(workItem, number);
+    if (!known) return null;
+    const { at, read } = known;
     const now = this.#o.now();
-    const ago = read.judged?.pending === undefined ? null : await this.#gatesPassedAgo(workItem, read.head);
-    const gatesPassedAt = ago === null ? null : new Date(now.getTime() - ago).toISOString();
+    // How long ago the gates passed, as the store said when it was read, and the time since by the line's own clock.
+    const gatesPassedMsAgo = read.gatesPassedMsAgo === null ? null : read.gatesPassedMsAgo + (now.getTime() - at);
     // The controls as they are this pass, never as they were when GitHub was read: Martin's change applies at once.
-    return { ...read, ...this.#merging, gatesPassedAt, now };
+    return { ...read, ...this.#merging, gatesPassedMsAgo, now };
   }
 
   /**
@@ -2249,23 +2249,35 @@ export class Line {
     return row ? Number(row.ago) : null;
   }
 
-  /** What GitHub says, cached for `gatesEveryMs`: the part of `MergeFacts` that is not Martin's controls. */
-  #mergeReadOf(workItem: string, number: number): Promise<MergeRead | null> {
+  /**
+   * What GitHub says, and for a pending verdict how long ago the store recorded the line's gates passing at its head,
+   * cached for `gatesEveryMs` with when it was read: the part of `MergeFacts` that is not Martin's controls or the time.
+   */
+  async #mergeReadOf(workItem: string, number: number): Promise<{ at: number; read: MergeRead } | null> {
     const now = this.#o.now().getTime();
     const known = this.#mergeRead.get(workItem);
-    if (known && known.number === number && now - known.at < this.#o.gatesEveryMs) return known.facts;
+    if (known && known.number === number && now - known.at < this.#o.gatesEveryMs) {
+      const read = await known.facts;
+      return read && { at: known.at, read };
+    }
     const { github, repo, log } = this.#o;
     const facts = (async (): Promise<MergeRead | null> => {
       const [verdict, mergeable] = await Promise.all([
         github.read('reviewVerdict', repo, { number }),
         github.read('mergeability', repo, { number }),
       ]);
-      const refusal = verdict.refusal ? this.#gateRefusal(workItem, number, verdict.head, verdict.refusal) : undefined;
+      const pending = verdict.judged?.pending !== undefined;
+      // A hold that only waits is no refusal: none is verified or recorded for it, whatever the worker sent.
+      const refusal =
+        verdict.refusal && !pending ? this.#gateRefusal(workItem, number, verdict.head, verdict.refusal) : undefined;
+      // A pending verdict's wait is timed from the store's own time for the line's gates passing at this head.
+      const gatesPassedMsAgo = pending ? await this.#gatesPassedAgo(workItem, verdict.head) : null;
       const check = verdict.check && {
         status: verdict.check.status,
         conclusion: verdict.check.conclusion,
         title: verdict.check.title,
         url: verdict.check.url,
+        completedAt: verdict.check.completedAt,
       };
       return {
         head: verdict.head,
@@ -2273,6 +2285,7 @@ export class Line {
         judged: verdict.judged,
         problem: verdict.problem,
         ...(refusal ? { refusal } : {}),
+        gatesPassedMsAgo,
         // What GitHub said of another head says nothing of this one.
         conflicts: mergeable.head === verdict.head ? mergeable.conflicts : null,
       };
@@ -2282,7 +2295,8 @@ export class Line {
       return null;
     });
     this.#mergeRead.set(workItem, { at: now, number, facts });
-    return facts;
+    const read = await facts;
+    return read && { at: now, read };
   }
 
   /**

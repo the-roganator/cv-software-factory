@@ -4,6 +4,7 @@
  */
 import { generateKeyPairSync } from 'node:crypto';
 import type { PayloadOf } from '@software-factory/events';
+import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { recordBytes, recordHash, type SignedRefusal, signRecord } from '../../src/signed-refusals.ts';
@@ -245,7 +246,8 @@ describe('the line, merging through the queue', () => {
       await controls({});
       const { workItem, pass, github } = await readyToMerge();
       const head = String(github.pulls.get(12)?.head.sha);
-      github.gate = waiting(head);
+      // Judged as it opened, before its gates passed: the wait is timed from its gates passing.
+      github.gate = waiting(head, 30 * 60_000);
       await gatesPassedAgo(workItem, 14);
       await pass();
       expect(await types(workItem)).not.toContain('hold.started');
@@ -281,6 +283,64 @@ describe('the line, merging through the queue', () => {
       }
       expect(await types(workItem)).not.toContain('hold.started');
       expect(await stage(workItem)).toBe('review');
+    });
+
+    it('starts the wait again when the gate judges again after its gates passed, as a re-run of test integrity has it', async () => {
+      await controls({});
+      const { workItem, pass, github } = await readyToMerge();
+      const head = String(github.pulls.get(12)?.head.sha);
+      await gatesPassedAgo(workItem, 20);
+      // Judged again, still pending, five minutes ago: ten more minutes to wait.
+      github.gate = waiting(head, 5 * 60_000);
+      await pass();
+      await pass();
+      expect(await types(workItem)).not.toContain('hold.started');
+      github.gate = waiting(head, 15 * 60_000);
+      await pass();
+      expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'no-verdict' } });
+    });
+
+    it('reads its gates’ time with the verdict, once in `gatesEveryMs`, and counts the time since by its own clock', async () => {
+      await controls({});
+      let at = clock.now;
+      const workItem = await ticket();
+      const { pass, github } = line(undefined, undefined, {
+        refusalKey: publicKey,
+        gatesEveryMs: 60_000,
+        now: () => new Date(at),
+      });
+      for (const _ of [1, 2, 3, 4]) {
+        at += 61_000;
+        if (github.pulls.has(12)) github.pass();
+        await pass();
+      }
+      const head = String(github.pulls.get(12)?.head.sha);
+      github.gate = { ...waiting(head), completedAt: new Date(at - 60 * 60_000).toISOString() };
+      at += 61_000;
+      await gatesPassedAgo(workItem, 14);
+      await pass();
+      expect(await types(workItem)).not.toContain('hold.started');
+      // Within the minute the store is not asked again: its gates moved back further are not seen yet...
+      await gatesPassedAgo(workItem, 30);
+      at += 1_000;
+      await pass();
+      expect(await types(workItem)).not.toContain('hold.started');
+      // ...but the time since it was read is counted: 14 minutes and more than one since makes 15.
+      at += 59_000;
+      await pass();
+      expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'no-verdict' } });
+    });
+
+    it('verifies no refusal sent with it, and warns of none', async () => {
+      await controls({});
+      const logged: string[] = [];
+      const log = pino({ level: 'warn' }, { write: (line: string) => void logged.push(line) });
+      const { workItem, pass, github } = await readyToMerge({ log });
+      const head = String(github.pulls.get(12)?.head.sha);
+      github.gate = { ...waiting(head), refusal: refusalOf(head, generateKeyPairSync('ed25519').privateKey) };
+      await pass();
+      expect(await types(workItem)).not.toContain('action.refused');
+      expect(logged.filter((l) => l.includes('refusal'))).toEqual([]);
     });
   });
 

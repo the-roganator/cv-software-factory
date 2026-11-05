@@ -33,11 +33,16 @@
  * Nor while the gate's verdict on the head is a hold it marked `pending` (`policy/review-verdict.ts`): one it made only
  * because test integrity's run had not finished at the head (as when a pull request opens), with no tag the level
  * would not pass. That is a wait, not a refusal: nothing is refused or held, and the change waits at Review for the
- * gate to judge again. Should the verdict still be pending `PENDING_LIMIT_MS` after the line's own gates passed at the
- * head (by the store's time for that event; until they have, it waits), the change is held for Martin as having no
- * verdict (`no-verdict`), saying what the gate waits for, with nothing refused. No hold made while the verdict is
- * pending, a conflict or the queue's among them, carries its words, rule, tags or check. A passing verdict is never stale: `low-risk` already needs test
- * integrity's completed, successful run, and Martin's approval and an exact pin do not depend on it.
+ * gate to judge again. The gate marks a hold pending conservatively, and the line, which has a clock, bounds the wait:
+ * should the verdict still be pending `PENDING_LIMIT_MS` after the later of the line's own gates passing at the head
+ * (by the store's time for that event) and the pending check's conclusion (so a re-run of test integrity, which has the
+ * gate judge again, starts it again), the change is held for Martin as having no verdict (`no-verdict`), saying what
+ * the gate waits for, with nothing refused. With no record of the gates passing at the head (read only with a hold in
+ * force, as after Martin's push), it is timed from the check alone. Before its gates pass, a change is not at the
+ * merge, and one whose gates never finish is the stuck alert's (`policy/stuck.ts`, Gates). No hold made while the
+ * verdict is pending, a conflict or the queue's among them, carries its words, rule, tags or check, and a conflict's
+ * or the queue's hold is not made again when the verdict resolves. A passing verdict is never stale: `low-risk`
+ * already needs test integrity's completed, successful run, and Martin's approval and an exact pin do not depend on it.
  */
 import type { Autonomy, GateRule, PayloadOf } from '@software-factory/events';
 import { cutTo, PATH_CHARS } from '@software-factory/events';
@@ -60,6 +65,8 @@ export interface MergeFacts {
     conclusion: string | null;
     title: string | null;
     url: string | null;
+    /** When it concluded, by GitHub's clock; null while it has not. */
+    completedAt: string | null;
   } | null;
   /** The gate's verdict on this pull request at that head, or null with why there is none (`problem`). */
   judged: Judged | null;
@@ -70,10 +77,10 @@ export interface MergeFacts {
    */
   refusal?: PayloadOf<'action.refused'>;
   /**
-   * When the line recorded its own gates passing at this head, as the store timed that event (its `appended_at`), or
-   * null while it has not: a pending verdict's wait is timed from it, so a restart neither starts it again nor ends it.
+   * How long ago, in milliseconds by the store's clock, the line recorded its own gates passing at this head, or null
+   * while it has not: a pending verdict's wait is timed from it, so a restart neither starts it again nor ends it.
    */
-  gatesPassedAt: string | null;
+  gatesPassedMsAgo: number | null;
   /** Whether it conflicts with its base; null while GitHub has not worked it out. */
   conflicts: boolean | null;
   /** The time the line decides at. */
@@ -81,10 +88,10 @@ export interface MergeFacts {
 }
 
 /**
- * How long the line waits, from when it recorded its own gates passing at the head, for the gate to judge again a head
- * it held only to wait for test integrity (`pending`). Test integrity runs among those gates, and the gate judges again
- * a minute or two after their workflow ends, so a pull request opened long before its gates finished still has the
- * whole wait.
+ * How long the line waits, from the later of its own gates passing at the head and the gate's pending check
+ * concluding, for the gate to judge again a head it held only to wait for test integrity (`pending`). Test integrity
+ * runs among those gates, and the gate judges again a minute or two after their workflow ends, so a pull request
+ * opened long before its gates finished still has the whole wait.
  */
 export const PENDING_LIMIT_MS = 15 * 60_000;
 
@@ -147,8 +154,19 @@ export function mergeDecision(s: WorkItemState, m: MergeFacts): Decision | undef
   return { stage: 'held', next: { do: 'hold', hold } };
 }
 
-/** Whether two holds say the same, as the store keeps them: its JSON keeps no order of keys. */
-const sameHold = (a: Hold, b: Hold) => a.reason === b.reason && canonical(a.merge) === canonical(b.merge);
+/**
+ * Whether two holds say the same, as the store keeps them: its JSON keeps no order of keys. A conflict's or the queue's
+ * hold is the same whatever the gate's verdict says, as one made while it was pending carries none of it: a verdict
+ * resolving does not make it again.
+ */
+export function sameHold(a: Hold, b: Hold): boolean {
+  const said = (merge: Hold['merge']) => {
+    if (merge?.why !== 'conflict' && merge?.why !== 'queue') return merge;
+    const { rule: _, tags: __, said: ___, check: ____, ...rest } = merge;
+    return rest;
+  };
+  return a.reason === b.reason && canonical(said(a.merge)) === canonical(said(b.merge));
+}
 
 /** The hold for a change ready to merge, `pending` while the gate has not judged its head, or undefined to queue it. */
 export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | undefined {
@@ -191,9 +209,11 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
   }
   if (m.check?.status !== 'completed') return 'pending';
   if (judged?.pending !== undefined) {
-    // Timed from the line's own gates passing at this head: until they have, test integrity may still be running.
-    if (m.gatesPassedAt === null) return 'pending';
-    if (m.now.getTime() - Date.parse(m.gatesPassedAt) < PENDING_LIMIT_MS) return 'pending';
+    // From the later of the line's own gates passing at this head and the gate's pending check concluding: the shorter
+    // time since. With neither known, the check has not concluded as GitHub tells it, and it waits for it.
+    const concluded = m.check.completedAt === null ? Number.NaN : m.now.getTime() - Date.parse(m.check.completedAt);
+    const since = [m.gatesPassedMsAgo ?? Number.NaN, concluded].filter((ms) => !Number.isNaN(ms));
+    if (since.length === 0 || Math.min(...since) < PENDING_LIMIT_MS) return 'pending';
     return held(
       'no-verdict',
       `The review gate has not judged #${number} at ${short(m.head)} since it held it only to wait (${judged.pending}). It waits for Martin`,

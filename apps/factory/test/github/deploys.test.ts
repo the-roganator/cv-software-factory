@@ -18,6 +18,7 @@ import {
   DeployRefused,
   type DeployTarget,
   deployBody,
+  deployCommit,
   deployedImage,
   deployWatch,
   MAX_BROUGHT,
@@ -824,7 +825,7 @@ describe('the pull requests a deploy brings', () => {
     expect(read.commits[0]?.reaches).toEqual([APP_PIN]);
   });
 
-  it('counts a range too long to read whole as at least its length', async () => {
+  it('counts a range too long to read whole as at least the commits read', async () => {
     const total = (MAX_RANGE_PAGES + 5) * 100;
     const sent: Sent[] = [];
     const { github: client_ } = client(
@@ -847,10 +848,12 @@ describe('the pull requests a deploy brings', () => {
     const move = { pin: APP_PIN, proposal: { commit: commit('b'), pinned: commit('a'), digests: [] } };
     const read = await brings(client_, APP.repo, APP, [move], []);
     expect(calls(sent)).toHaveLength(MAX_RANGE_PAGES);
-    expect(read).toMatchObject({ count: total, whole: false });
+    // The commits not read may be deploy pull requests, so they are not counted.
+    const listed = MAX_RANGE_PAGES * 100;
+    expect(read).toMatchObject({ count: listed, whole: false });
     expect(read.commits[0]?.sha).toBe((total - 1).toString(16).padStart(40, '0'));
-    expect(bringsSection(APP, read)).toContain(`It brings at least ${total} pull requests`);
-    expect(bringsSection(APP, read)).toContain(`| | | | and at least ${total - MAX_BROUGHT} more |`);
+    expect(bringsSection(APP, read)).toContain(`It brings at least ${listed} pull requests`);
+    expect(bringsSection(APP, read)).toContain(`| | | | and at least ${listed - MAX_BROUGHT} more |`);
   });
 
   it('orders commits from several ranges by their place on main, then by when they were committed', async () => {
@@ -886,6 +889,33 @@ describe('the pull requests a deploy brings', () => {
     expect(read.commits.map((c) => c.sha[0])).toEqual(['5', '3', '4', '2', '1']);
     expect(read.commits[0]?.reaches).toEqual([CONSOLE_PIN, FACTORY_PINS]);
     expect(read).toMatchObject({ count: 5, whole: true });
+  });
+
+  it('leaves out the deploy pull requests in its ranges, and counts them apart', async () => {
+    const at = (c: string, message: string) => ({ sha: commit(c), commit: { message } });
+    const { github: client_ } = client([
+      {
+        method: 'GET',
+        path: /\/compare\//,
+        answer: () => {
+          const commits = [
+            at('1', 'fix(github): read a polled answer through each schema (#886)'),
+            at('2', 'chore(deploy): run console 1f14f44 and the factory 9e0b2d1 on the local cluster (#883)'),
+            at('3', 'chore(deploy): pin flagd by digest (#887)'),
+            at('4', 'chore(deploy): run the factory 2d87504 on the local cluster (#888)'),
+          ];
+          return { body: { total_commits: commits.length, commits } };
+        },
+      },
+    ]);
+    const moves = [{ pin: CONSOLE_PIN, proposal: { commit: commit('5'), pinned: commit('a'), digests: [] } }];
+    const read = await brings(client_, FACTORY.repo, FACTORY, moves, []);
+    // A person's chore(deploy) change is listed: it may change more than a pin.
+    expect(read.commits.map((c) => c.sha[0])).toEqual(['3', '1']);
+    expect(read).toMatchObject({ count: 2, deploys: 2, whole: true });
+    const section = bringsSection(FACTORY, read);
+    expect(section).toContain('It brings 2 pull requests merged since the pinned commit, newest first:');
+    expect(section).not.toMatch(/#88[34]/);
   });
 
   it('reads a range once for the pins moved from the same commit to the same commit', async () => {
@@ -966,7 +996,14 @@ describe('the pull requests a deploy brings', () => {
   });
 
   it('says what the others bring by name when a pin has no range, and nothing for the deploy as a whole', () => {
-    const read: Brings = { pins: [CONSOLE_PIN], unranged: [FACTORY_PINS], commits: [], count: 0, whole: true };
+    const read: Brings = {
+      pins: [CONSOLE_PIN],
+      unranged: [FACTORY_PINS],
+      commits: [],
+      count: 0,
+      deploys: 0,
+      whole: true,
+    };
     expect(bringsSection(FACTORY, read)).toContain(
       'Console brings no pull request: nothing merged since the commit pinned for console.\n\nWhat the factory brings is not listed',
     );
@@ -1249,6 +1286,7 @@ describe('the list of pull requests', () => {
     unranged: [],
     commits,
     count: commits.length,
+    deploys: 0,
     whole: true,
     ...extra,
   });
@@ -1304,6 +1342,36 @@ describe('the list of pull requests', () => {
 
   it('says when a deploy brings none', () => {
     expect(bringsSection(APP, one([]))).toContain('It brings no pull request: nothing merged since the pinned commit.');
+  });
+
+  it('says when a deploy brings only deploy pull requests', () => {
+    expect(bringsSection(APP, one([], { deploys: 2 }))).toContain(
+      'It brings no pull request: only deploy pull requests merged since the pinned commit.',
+    );
+    // The commits not read may hold others, so it says only what was read.
+    expect(bringsSection(APP, one([], { deploys: 1000, whole: false }))).toContain(
+      'It brings no pull request among the commits read since the pinned commit, which were only deploy pull requests; the rest were not read.',
+    );
+  });
+
+  it("knows the worker's own deploy pull requests by their title, to any profile, in either repository", () => {
+    for (const message of [
+      'chore(deploy): run the factory 2d87504 on the local cluster (#888)',
+      'chore(deploy): run console 1f14f44 and the factory 9e0b2d1 on the local cluster (#883)',
+      'chore(deploy): run 1f14f44 on the local cluster (#40)\n\nMore.',
+      'chore(deploy): run 1f14f44 on the cloud cluster',
+    ]) {
+      expect(deployCommit(message), message).toBe(true);
+    }
+    for (const message of [
+      'chore(deploy): pin flagd by digest (#887)',
+      'chore(deploy): run the scoreboard migrations on the local cluster (#900)',
+      'chore(deploy)!: run the factory 2d87504 on the local cluster (#888)',
+      'fix(deploy): run the factory 2d87504 on the local cluster (#888)',
+      'Revert "chore(deploy): run the factory 2d87504 on the local cluster (#888)" (#889)',
+    ]) {
+      expect(deployCommit(message), message).toBe(false);
+    }
   });
 });
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import { verdictBlock } from '../../../../policy/review-verdict.ts';
+import { found, verdictBlock } from '../../../../policy/review-verdict.ts';
 import type { Actions, LiveActions } from '../../src/github/actions.ts';
 import { createAttackServer } from '../../src/github/attacks.ts';
 import { type GitHub, GitHubError } from '../../src/github/client.ts';
@@ -51,7 +51,9 @@ interface World {
    * A gate that first holds the pull request only to wait for test integrity (`pending`), then, when `rejudged`, judges
    * it again after that many reads of its runs.
    */
-  waits?: { rejudged?: number };
+  waits?: { rejudged?: number; next?: 'running' };
+  /** A concluded review check whose block does not judge the pull request at its head, or whose rule its conclusion contradicts. */
+  block?: 'other-head' | 'other-rule';
 }
 
 const PENDING = 'test integrity is still running at bbbbbbb';
@@ -59,9 +61,16 @@ const PENDING = 'test integrity is still running at bbbbbbb';
 /** The factory's own App, which can post a check named `review` too. */
 const FACTORY_APP = 5187559;
 
-/** A `review` run as GitHub lists it on a commit, by the app that posted it. */
-function run(id: number, sha: string, app: number, review: World['review']) {
+/** A `review` run as GitHub lists it on a commit, by the app that posted it, with the gate's block for #77 at `sha`. */
+function run(id: number, sha: string, app: number, review: World['review'], block?: World['block']) {
   const done = review !== 'pending';
+  const holds = review === 'held' ? block !== 'other-rule' : block === 'other-rule';
+  const judged = {
+    number: 77,
+    head: block === 'other-head' ? 'c'.repeat(40) : sha,
+    rule: holds ? ('held' as const) : ('low-risk' as const),
+    tags: holds ? [found('test-loosening', ['test/http.test.ts'])] : [],
+  };
   return {
     id,
     name: 'review',
@@ -69,7 +78,10 @@ function run(id: number, sha: string, app: number, review: World['review']) {
     status: done ? 'completed' : 'in_progress',
     conclusion: done ? (review === 'held' ? 'failure' : review === 'passed' ? 'success' : review) : null,
     app: { id: app },
-    output: { title: 'Held: deletes a test', summary: 'test-loosening' },
+    output: {
+      title: 'Held: deletes a test',
+      summary: `test-loosening\n\n${verdictBlock({ version: 1, commit: sha, judged: [judged] })}`,
+    },
   };
 }
 
@@ -129,9 +141,10 @@ function fakes(world: World) {
               }),
             },
           };
-          return { check_runs: again ? [run(11, sha, REVIEW_APP, world.review), waiting] : [waiting] };
+          const later = run(11, sha, REVIEW_APP, world.waits.next === 'running' ? 'pending' : world.review);
+          return { check_runs: again ? [later, waiting] : [waiting] };
         }
-        const ours = world.foreign === 'only' ? [] : [run(9, sha, REVIEW_APP, world.review)];
+        const ours = world.foreign === 'only' ? [] : [run(9, sha, REVIEW_APP, world.review, world.block)];
         const theirs = world.foreign ? [run(10, sha, FACTORY_APP, 'passed')] : [];
         // GitHub lists the newest first.
         return { check_runs: [...theirs, ...ours] };
@@ -260,7 +273,7 @@ describe('the GitHub worker’s attack door', () => {
       expect(refusals).toHaveLength(1);
       const payload = verified(refusals[0] as SignedRefusal);
       expect(payload.mechanism).toBe('review-gate');
-      expect(payload.output).toBe('Held: deletes a test\n\ntest-loosening');
+      expect(payload.output).toMatch(/^Held: deletes a test\n\ntest-loosening\n\n<!-- review-verdict v1\n/);
       expect(payload.subject).toEqual({ kind: 'commit', name: OTHER_SHA });
       expect(refusals[0]).toMatchObject({ repo: REPO, number: 77 });
       expect(body.pullRequest).toEqual({ repository: REPO, number: 77, head: OTHER_SHA });
@@ -329,6 +342,34 @@ describe('the GitHub worker’s attack door', () => {
       expect((await passed.ask('test')).body.gotThrough).toEqual({
         what: 'the review check did not hold the pull request',
       });
+    });
+
+    it.each([
+      ['held', 'other-head', 'the verdict does not judge #77 at its head'],
+      ['held', 'other-rule', "the check's conclusion, failure, is not its rule's"],
+      ['passed', 'other-head', 'the verdict does not judge #77 at its head'],
+      ['passed', 'other-rule', "the check's conclusion, success, is not its rule's"],
+    ] as const)(
+      'reads a %s check whose block is %s as the line does: no verdict, unconcluded',
+      async (review, block, why) => {
+        const { ask } = await serve({ guard: 'refuses', workflows: 'refused', review, block });
+        const { body } = await ask('test');
+        expect(body.refusals).toEqual([]);
+        expect(body.gotThrough).toBeUndefined();
+        expect(body.unconcluded).toEqual({ what: why });
+      },
+    );
+
+    it('answers what the last check said at the limit: a later check still running ends the wait it replaced', async () => {
+      const { ask } = await serve({
+        guard: 'refuses',
+        workflows: 'refused',
+        review: 'held',
+        waits: { rejudged: 1, next: 'running' },
+      });
+      const { body } = await ask('test');
+      expect(body.refusals).toEqual([]);
+      expect(body.unconcluded).toEqual({ what: 'the review check did not conclude within the limit' });
     });
 
     it('says a review check that never concluded was unconcluded, not got through, and still closes the pull request', async () => {

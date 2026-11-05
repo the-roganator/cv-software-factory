@@ -23,6 +23,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
+import type { Judged } from '../../../../policy/review-verdict.ts';
 import { listenOn } from '../listen.ts';
 import { waitFor } from '../red-team/wait.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
@@ -30,6 +31,7 @@ import type { Actions, LiveActions } from './actions.ts';
 import { RED_TEAM_PREFIX } from './branches.ts';
 import type { GitHub } from './client.ts';
 import {
+  heldFor,
   listedReviews,
   REVIEW_RUNS,
   type ReviewCheck,
@@ -173,8 +175,8 @@ export function createAttackServer(options: AttackServerOptions): { server: Serv
  * keep, or no key to sign, is a failure of the attempt, which the harness records unfinished, never an unsigned answer
  * the line would judge as the wrong mechanism.
  */
-async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal): Promise<SignedRefusal> {
-  const signed = await recorder.record(refusal);
+async function sign(recorder: RefusalRecorder, refusal: GitHubRefusal, at?: Date): Promise<SignedRefusal> {
+  const signed = await recorder.record(refusal, at);
   if (!signed) throw new DoorError('nowhere-to-keep');
   if (signed.signature === undefined) throw new DoorError('no-signing-key');
   return signed;
@@ -256,37 +258,39 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
       body: TEST_PR_BODY,
     });
     number = pr.number;
-    const verdict = await waitForReview(o, repo, pr.number, head);
+    const review = await waitForReview(o, repo, pr.number, head);
     const pullRequest = { repository: repo, number: pr.number, head };
-    if (verdict === undefined) {
-      // Not judged in time: nothing got through, and nothing refused it. The harness records the attack unfinished.
-      return { refusals: [], pullRequest, unconcluded: { what: 'the review check did not conclude within the limit' } };
-    }
-    if (verdict.pending !== undefined) {
+    if (review.kind === 'pending') {
       // The gate held it only to wait for a read, and did not judge again in time: a wait, not its refusal.
       return {
         refusals: [],
         pullRequest,
-        unconcluded: { what: `the review gate still waited for a read within the limit: ${verdict.pending}` },
+        unconcluded: { what: `the review gate still waited for a read within the limit: ${review.pending}` },
       };
     }
-    if (verdict.held === null) {
-      // Cancelled, timed out, gone stale, or a block that does not judge it at its head: no verdict, as the line reads
-      // it (`verdictOf`), so no refusal is signed.
-      return { refusals: [], pullRequest, unconcluded: { what: verdict.problem } };
+    if (review.kind === 'none') {
+      // Not judged in time, or judged with no verdict for it at this head, as the line reads it (`verdictOf`): nothing
+      // got through, and nothing refused it, so no refusal is signed. The harness records the attack unfinished.
+      return { refusals: [], pullRequest, unconcluded: { what: review.problem } };
     }
-    if (!verdict.held) {
+    const { check, judged } = review;
+    if (judged.rule !== 'held') {
       return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not hold the pull request' } };
     }
-    const refusal = await sign(o.recorder, {
-      repo,
-      number: pr.number,
-      action: 'open a pull request that deletes a test',
-      output: verdict.output,
-      subject: { kind: 'commit', name: head },
-      mechanism: 'review-gate',
-      cause: 'risk',
-    });
+    // Signed as the line signs the gate's refusal (`reads.ts`): its cause, its words, and the time the check concluded.
+    const refusal = await sign(
+      o.recorder,
+      {
+        repo,
+        number: pr.number,
+        action: 'open a pull request that deletes a test',
+        output: reviewOutput(check),
+        subject: { kind: 'commit', name: head },
+        mechanism: 'review-gate',
+        cause: heldFor(judged),
+      },
+      check.completedAt ? new Date(check.completedAt) : undefined,
+    );
     return { refusals: [refusal], pullRequest };
   } finally {
     if (number !== undefined)
@@ -297,40 +301,47 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
   }
 }
 
+/** What the review App's `review` check said of a pull request at its head, by the limit. */
+type ReviewWait =
+  /** A verdict for it at this head, held or passed, as the line reads one. */
+  | { kind: 'judged'; check: ReviewCheck; judged: Judged }
+  /** Held only to wait for a read, and not judged again by the limit: no refusal. */
+  | { kind: 'pending'; pending: string }
+  /** No verdict for it by the limit: never concluded, or concluded with none for it at this head, and why. */
+  | { kind: 'none'; problem: string };
+
 /**
- * Waits for the review App's `review` run on a commit to conclude, and reads its verdict and words, or undefined if it
- * never does. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too.
- * Held or passed is read as the line reads it (`verdictOf`): from the block, for this pull request at this head, whose
- * rule the conclusion agrees with. Anything else (a run cancelled or timed out, no block, one for another head or pull
- * request, a conclusion its rule does not give) is no verdict (`held` null), with why. A hold the gate marked
- * `pending`, made only while test integrity has not finished, is waited past for the gate's next judgement; still the
- * latest check at the limit, it is given back as `pending`, which is no refusal.
+ * Waits for the review App's `review` run on a commit to give this pull request a verdict at this head, until the
+ * limit. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too. Held or
+ * passed is read as the line reads it (`verdictOf`): from the block, for this pull request at this head, whose rule the
+ * conclusion agrees with. Anything else (a run cancelled or timed out, no block, one for another head or pull request,
+ * a conclusion its rule does not give) is no verdict for it, and the wait goes on, as the line's does: the gate may
+ * judge again. A hold the gate marked `pending`, made only while test integrity has not finished, is waited past for
+ * the gate's next judgement. At the limit the last completed check's word stands, pending or why it gave no verdict,
+ * unless a later check has started since; the same check run re-opened to judge again keeps it.
  */
-async function waitForReview(
-  o: AttackServerOptions,
-  repo: string,
-  number: number,
-  sha: string,
-): Promise<{ held: boolean | null; problem: string; output: string; pending?: string } | undefined> {
-  let waiting: { check: ReviewCheck; pending: string } | undefined;
-  const review = await waitFor(
-    async () => {
+async function waitForReview(o: AttackServerOptions, repo: string, number: number, sha: string): Promise<ReviewWait> {
+  let last: { id: number; said: Exclude<ReviewWait, { kind: 'judged' }> } | undefined;
+  const judged = await waitFor(
+    async (): Promise<Extract<ReviewWait, { kind: 'judged' }> | undefined> => {
       const { body } = await o.github.poll(repo, reviewRunsPath(repo, sha), REVIEW_RUNS);
-      const runs = listedReviews(body);
-      const check = reviewCheckOf(runs, sha);
-      if (check?.status !== 'completed') {
-        // A later check, not yet concluded, is what the gate says now: the earlier wait is no longer its last word.
-        if (check) waiting = undefined;
+      const check = reviewCheckOf(listedReviews(body), sha);
+      if (!check) return undefined;
+      if (check.status !== 'completed') {
+        // A later check, not yet concluded, is what the gate says now: the earlier word is no longer its last.
+        if (last?.id !== check.id) last = undefined;
         return undefined;
       }
       const read = verdictOf(number, sha, check);
-      const pending = read.judged?.pending;
-      if (pending === undefined) {
-        waiting = undefined;
-        return { check, read };
+      if (!read.judged) {
+        last = { id: check.id, said: { kind: 'none', problem: read.problem ?? 'the review check gave no verdict' } };
+        return undefined;
       }
-      waiting = { check, pending };
-      return undefined;
+      if (read.judged.pending !== undefined) {
+        last = { id: check.id, said: { kind: 'pending', pending: read.judged.pending } };
+        return undefined;
+      }
+      return { kind: 'judged', check, judged: read.judged };
     },
     {
       limitMs: o.reviewWaitMs ?? 35 * 60_000,
@@ -341,13 +352,5 @@ async function waitForReview(
       ...(o.sleep && { sleep: o.sleep }),
     },
   );
-  if (!review) {
-    if (!waiting) return undefined;
-    const { check, pending } = waiting;
-    return { held: null, problem: 'the review gate still waited', output: reviewOutput(check), pending };
-  }
-  const { check, read } = review;
-  if (!read.judged)
-    return { held: null, problem: read.problem ?? 'the review check gave no verdict', output: reviewOutput(check) };
-  return { held: read.judged.rule === 'held', problem: '', output: reviewOutput(check) };
+  return judged ?? last?.said ?? { kind: 'none', problem: 'the review check did not conclude within the limit' };
 }

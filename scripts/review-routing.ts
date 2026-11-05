@@ -79,6 +79,11 @@ export interface Verdict {
 export interface Decision extends Verdict {
   rule: Rule;
   tags: Found[];
+  /**
+   * Set only on a hold that waits for a read: what the gate could not read yet, with nothing it did read holding the
+   * pull request. Judged again once it can be read, the verdict may differ.
+   */
+  pending?: string;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -202,13 +207,15 @@ export interface Annotation {
  * factory's App can post check runs too. It fails closed: a missing, pending, skipped, cancelled or failed run, or one
  * only another app posted, is no reading. GitHub Actions runs it from the workflow on the pull request's own branch, so
  * a pull request that changes anything under `.github/` is not read from it (and is code-owned, and held, anyway).
+ * `pending` marks a run that is missing, queued or in progress for the head: one the gate waits for, as it may yet be
+ * read. Every other reason is a reading that will not come.
  */
 export function testIntegrityRun(
   runs: readonly CheckRun[],
   head: string,
   files: readonly FileChange[],
   base: string,
-): { run: CheckRun } | { reason: string } {
+): { run: CheckRun } | { reason: string; pending?: true } {
   const named = runs.filter((run) => run.name === TEST_INTEGRITY_CHECK && run.head_sha === head);
   const ours = named
     .filter((run) => run.app?.slug === ACTIONS_SLUG)
@@ -224,8 +231,11 @@ export function testIntegrityRun(
       reason: named.length
         ? `test integrity's run at ${short(head)} was posted by ${named[0]?.app?.slug ?? 'an unknown app'}, not GitHub Actions`
         : `test integrity has not run at ${short(head)}`,
+      // Not yet run is a wait; a run only another app posted is no reading however long the gate waits.
+      ...(named.length ? {} : { pending: true as const }),
     };
-  if (latest.status !== 'completed') return { reason: `test integrity is still running at ${short(head)}` };
+  if (latest.status !== 'completed')
+    return { reason: `test integrity is still running at ${short(head)}`, pending: true };
   if (latest.conclusion !== 'success')
     return { reason: `test integrity's run at ${short(head)} is ${latest.conclusion ?? 'unfinished'}, not a success` };
   return { run: latest };
@@ -537,8 +547,8 @@ export interface Facts {
   /** The caller's `AUTONOMY` variable, as the workflow read it. */
   autonomy: string;
   tags: Found[];
-  /** Test integrity's reading of the head, or why there is none. */
-  testIntegrity: { read: true } | { read: false; reason: string };
+  /** Test integrity's reading of the head, or why there is none; `pending` when it may yet be read. */
+  testIntegrity: { read: true } | { read: false; reason: string; pending?: true };
   /** The risk labels someone other than Martin removed. */
   labelsRemoved: readonly string[];
   /** What the gate could not read from GitHub, which holds the pull request unless Martin has had his say. */
@@ -562,8 +572,18 @@ export function route(facts: Facts): Decision {
     rule: 'held',
     tags,
   });
-  if (facts.unread) return held(`The gate could not read the pull request whole (${facts.unread})`);
-  if (!appOpened(pr)) return { pass: false, title: martin.title, rule: 'held', tags };
+  if (!appOpened(pr)) {
+    if (facts.unread) return held(`The gate could not read the pull request whole (${facts.unread})`);
+    return { pass: false, title: martin.title, rule: 'held', tags };
+  }
+  // Nothing else was read, so nothing else holds it: the gate waits to read it again.
+  if (facts.unread)
+    return {
+      ...held(
+        `The gate could not read the pull request whole (${facts.unread}), and waits to read it before it judges`,
+      ),
+      pending: `a read of GitHub that failed: ${facts.unread}`,
+    };
   if (facts.labelsRemoved.length)
     return held(`Someone other than Martin removed its ${facts.labelsRemoved.join(', ')} label`);
   if (facts.pin && 'pins' in facts.pin) {
@@ -574,7 +594,15 @@ export function route(facts: Facts): Decision {
     const why = facts.pin && 'reason' in facts.pin ? `: ${facts.pin.reason}` : '';
     return held(`Not an exact pin${why}, and here only a pin passes without Martin`);
   }
-  if (!facts.testIntegrity.read) return held(`No reading of test integrity: ${facts.testIntegrity.reason}`);
+  const never = tags.filter((t) => NEVER_LIGHTS_OUT.includes(t.tag));
+  if (!facts.testIntegrity.read) {
+    const { reason, pending } = facts.testIntegrity;
+    // A wait only when the reading alone decides: tags the level does not pass hold it whatever test integrity says.
+    const tagsHold = tags.length > 0 && !(facts.autonomy === 'lights-out' && never.length === 0);
+    if (pending && !tagsHold)
+      return { ...held(`Waits for test integrity before it judges: ${reason}`), pending: reason };
+    return held(`No reading of test integrity: ${reason}`);
+  }
   if (tags.length === 0)
     return {
       pass: true,
@@ -582,7 +610,6 @@ export function route(facts: Facts): Decision {
       rule: 'low-risk',
       tags,
     };
-  const never = tags.filter((t) => NEVER_LIGHTS_OUT.includes(t.tag));
   if (facts.autonomy === 'lights-out' && never.length === 0)
     return { pass: true, title: `Lights-out passes its risk tags: ${tagNames(tags)}`, rule: 'lights-out', tags };
   return held(`Held for its risk tags (${tagNames(tags)})`);

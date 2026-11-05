@@ -112,6 +112,47 @@ describe('approval routing: the rule, the first that holds', () => {
     }
   });
 
+  it('says a hold only waits when test integrity may yet be read and nothing it read holds the pull request', () => {
+    const waiting = { read: false, reason: 'test integrity is still running at aaaaaaa', pending: true } as const;
+    const said = route(facts({ testIntegrity: waiting }));
+    expect(said).toMatchObject({ pass: false, rule: 'held', pending: 'test integrity is still running at aaaaaaa' });
+    expect(said.title).toContain('Waits for test integrity before it judges: test integrity is still running');
+    // At Lights-out, tags it would pass wait for the reading too: it could add a loosened test's.
+    expect(
+      route(facts({ autonomy: 'lights-out', tags: [tag('dependency-change')], testIntegrity: waiting })),
+    ).toMatchObject({ rule: 'held', pending: waiting.reason });
+    // Tags the level does not pass hold it whatever test integrity says: no wait.
+    for (const [autonomy, tags] of [
+      ['', [tag('dependency-change')]],
+      ['guarded', [tag('test-loosening')]],
+      ['lights-out', [tag('dependency-change'), tag('release')]],
+      ['lights-out', [tag('code-owned')]],
+    ] as const) {
+      const tagged = route(facts({ autonomy, tags: [...tags], testIntegrity: waiting }));
+      expect(tagged.rule).toBe('held');
+      expect(tagged.pending).toBeUndefined();
+    }
+    // A removed risk label, or anything in this repository but a pin, decides before test integrity is looked at.
+    expect(route(facts({ labelsRemoved: ['out-of-scope'], testIntegrity: waiting })).pending).toBeUndefined();
+    const here = facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), testIntegrity: waiting });
+    expect(route(here).pending).toBeUndefined();
+    // A reading that will not come (a foreign, failed or cancelled run, a stacked base) is no wait.
+    for (const reason of [
+      "test integrity's run at aaaaaaa is failure, not a success",
+      "it is into factory/1-fix, so test integrity's run is not the workflow on main's",
+    ]) {
+      const held = route(facts({ testIntegrity: { read: false, reason } }));
+      expect(held.title).toContain(`No reading of test integrity: ${reason}`);
+      expect(held.pending).toBeUndefined();
+    }
+    // Martin's say passes it, wait or not.
+    expect(route(facts({ reviews: [approved()], testIntegrity: waiting }))).toMatchObject({
+      pass: true,
+      rule: 'martin-approved-head',
+    });
+    expect(route(facts({ reviews: [approved()], testIntegrity: waiting })).pending).toBeUndefined();
+  });
+
   it('holds a tagged pull request of the App’s while AUTONOMY is unset, or anything but lights-out', () => {
     for (const autonomy of ['', 'guarded', 'Lights-out', 'lights-out ']) {
       for (const tags of [[tag('test-loosening')], [tag('dependency-change')], [tag('security-headers')]]) {
@@ -200,6 +241,17 @@ describe('approval routing: the rule, the first that holds', () => {
     expect(route(facts({ unread: 'GET /files: 502' }))).toMatchObject({ pass: false, rule: 'held' });
     expect(route(facts({ unread: 'GET /files: 502', pr: pr(MARTIN) })).rule).toBe('martin-opened');
   });
+
+  it("waits to read again what it could not read of the App's pull request, and never anyone else's", () => {
+    const said = route(facts({ unread: 'GET /files: 502' }));
+    expect(said).toMatchObject({ rule: 'held', pending: 'a read of GitHub that failed: GET /files: 502' });
+    expect(said.title).toContain('and waits to read it before it judges');
+    // Someone else's is held whatever the gate reads: no wait.
+    const theirs = route(facts({ unread: 'GET /files: 502', pr: pr(42) }));
+    expect(theirs).toMatchObject({ pass: false, rule: 'held' });
+    expect(theirs.pending).toBeUndefined();
+    expect(theirs.title).toContain('The gate could not read the pull request whole (GET /files: 502)');
+  });
 });
 
 describe('risk labels removed', () => {
@@ -246,15 +298,22 @@ describe('test integrity’s reading', () => {
   });
 
   it('is no reading when the run is pending, skipped, cancelled, failed, missing or foreign', () => {
-    expect(testIntegrityRun([run({ status: 'in_progress', conclusion: null })], HEAD, files, 'main')).toEqual({
-      reason: 'test integrity is still running at aaaaaaa',
-    });
+    // Queued, in progress or not yet run, it may yet be read: a wait.
+    for (const status of ['queued', 'in_progress']) {
+      expect(testIntegrityRun([run({ status, conclusion: null })], HEAD, files, 'main')).toEqual({
+        reason: 'test integrity is still running at aaaaaaa',
+        pending: true,
+      });
+    }
     for (const conclusion of ['skipped', 'cancelled', 'failure', 'neutral']) {
       expect(testIntegrityRun([run({ conclusion })], HEAD, files, 'main')).toEqual({
         reason: `test integrity's run at aaaaaaa is ${conclusion}, not a success`,
       });
     }
-    expect(testIntegrityRun([], HEAD, files, 'main')).toEqual({ reason: 'test integrity has not run at aaaaaaa' });
+    expect(testIntegrityRun([], HEAD, files, 'main')).toEqual({
+      reason: 'test integrity has not run at aaaaaaa',
+      pending: true,
+    });
     // Posted by another app, the factory's included, which can post check runs of any name.
     expect(testIntegrityRun([run({ app: { slug: 'mrogan-software-factory' } })], HEAD, files, 'main')).toEqual({
       reason: "test integrity's run at aaaaaaa was posted by mrogan-software-factory, not GitHub Actions",
@@ -268,6 +327,7 @@ describe('test integrity’s reading', () => {
   it('never reads a run for another commit: in the merge queue, not the queue’s commit’s for the pull request’s head', () => {
     expect(testIntegrityRun([run({ head_sha: QUEUE })], HEAD, files, 'main')).toEqual({
       reason: 'test integrity has not run at aaaaaaa',
+      pending: true,
     });
     expect(testIntegrityRun([run({ head_sha: EARLIER })], HEAD, files, 'main')).toMatchObject({
       reason: expect.any(String),
@@ -658,6 +718,28 @@ describe("the verdict's block, which the line reads", () => {
       judged: [{ ...verdict.judged[0], tags: [found('code-owned', ['<!-- review-verdict v1'])] }],
     };
     expect(readVerdict(verdictBlock(opens as Verdict))).toEqual(opens);
+  });
+
+  it('carries a pending hold, and reads a block from before it had one', () => {
+    const waits: Verdict = {
+      ...verdict,
+      judged: [{ number: 7, head: HEAD, rule: 'held', tags: [], pending: 'test integrity has not run at aaaaaaa' }],
+    };
+    expect(readVerdict(verdictBlock(waits))).toEqual(waits);
+    expect(verdictPasses(waits)).toBe(false);
+    // As a gate without the field wrote it: still version 1, with no pending.
+    const old = `<!-- review-verdict v1\n{"commit":"${QUEUE}","judged":[{"number":7,"head":"${HEAD}","rule":"held","tags":[]}]}\n-->`;
+    const read = readVerdict(old);
+    expect(read).toEqual({ version: 1, commit: QUEUE, judged: [{ number: 7, head: HEAD, rule: 'held', tags: [] }] });
+    expect('error' in read || read.judged[0]?.pending).toBeFalsy();
+    // Pending only beside held, and only as words.
+    const wrong = (pending: unknown, rule = 'held') =>
+      readVerdict(verdictBlock({ ...waits, judged: [{ ...waits.judged[0], rule, pending } as Verdict['judged'][0]] }));
+    expect(wrong('test integrity has not run', 'low-risk')).toMatchObject({
+      error: expect.stringContaining('not held'),
+    });
+    expect(wrong('')).toMatchObject({ error: expect.stringContaining('is not words') });
+    expect(wrong(true)).toMatchObject({ error: expect.stringContaining('is not words') });
   });
 
   it('is no verdict when missing, doubled, cut short or wrong in any part', () => {

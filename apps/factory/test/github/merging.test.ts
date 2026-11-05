@@ -237,10 +237,13 @@ function reviewRun(
   };
 }
 
-function reads(runs: unknown[], { recorder, sent = [] }: { recorder?: RefusalRecorder; sent?: Sent[] } = {}) {
+function reads(
+  runs: unknown[],
+  { recorder, sent = [], pulls = [17] }: { recorder?: RefusalRecorder; sent?: Sent[]; pulls?: number[] } = {},
+) {
   const { github } = client(
     [
-      pullRoute(17),
+      ...pulls.map((number) => pullRoute(number)),
       {
         method: 'GET',
         path: `/repos/${REPO}/commits/${SHA}/check-runs?check_name=review&filter=all&per_page=100`,
@@ -349,6 +352,28 @@ describe('the review gate’s verdict', () => {
     });
     expect(await readdir(dir)).toHaveLength(1);
     expect(logged.filter((l) => l.mechanism === 'review-gate')).toHaveLength(1);
+  });
+
+  it('signs each held pull request a run judges its own refusal, as one run judges every pull request of a stack', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'merging-'));
+    const recorder = new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT });
+    const tags = [{ tag: 'test-loosening' as const, because: ['test/cart.test.ts'] }];
+    const held = reviewRun(300, {
+      conclusion: 'failure',
+      judged: [
+        { number: 17, head: SHA, rule: 'held', tags },
+        { number: 18, head: SHA, rule: 'held', tags },
+      ],
+    });
+    const live = reads([held], { recorder, pulls: [17, 18] });
+    const first = await live.reviewVerdict(REPO, 17);
+    const second = await live.reviewVerdict(REPO, 18);
+    expect(verifyRefusal(publicKey, first.refusal)).toMatchObject({ ok: true, refusal: { number: 17 } });
+    expect(verifyRefusal(publicKey, second.refusal)).toMatchObject({
+      ok: true,
+      refusal: { number: 18, payload: { action: `Merge pull request #18 at aaaaaaa in ${REPO}` } },
+    });
+    expect(await readdir(dir)).toHaveLength(2);
   });
 
   it('shows a pull request held for Martin’s code alone under guardrail 1', async () => {

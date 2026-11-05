@@ -37,8 +37,8 @@ interface World {
   guard: 'refuses' | 'lets through';
   /** What GitHub does with a commit that adds a workflow (attack 2's second attempt). */
   workflows: 'refused' | 'accepted';
-  /** The review check on attack 3's pull request: held, passed, or never concluded. */
-  review: 'held' | 'passed' | 'pending';
+  /** The review check on attack 3's pull request: held, passed, never concluded, or concluded with no verdict. */
+  review: 'held' | 'passed' | 'pending' | 'cancelled' | 'timed_out';
   /**
    * A `review` run another app (the factory's own) posted on the commit: the only one there, or one newer than the
    * review App's, passing.
@@ -59,7 +59,7 @@ function run(id: number, sha: string, app: number, review: World['review']) {
     name: 'review',
     head_sha: sha,
     status: done ? 'completed' : 'in_progress',
-    conclusion: done ? (review === 'held' ? 'failure' : 'success') : null,
+    conclusion: done ? (review === 'held' ? 'failure' : review === 'passed' ? 'success' : review) : null,
     app: { id: app },
     output: { title: 'Held: deletes a test', summary: 'test-loosening' },
   };
@@ -270,6 +270,18 @@ describe('the GitHub worker’s attack door', () => {
       expect(body.unconcluded).toEqual({ what: 'the review check did not conclude within the limit' });
       expect(calls.slice(-2).map((c) => c.method)).toEqual(['closePullRequest', 'deleteBranch']);
     });
+
+    it.each(['cancelled', 'timed_out'] as const)(
+      'signs no refusal for a review check that concluded %s, and says it was unconcluded',
+      async (review) => {
+        const { calls, ask } = await serve({ guard: 'refuses', workflows: 'refused', review });
+        const { body } = await ask('test');
+        expect(body.refusals).toEqual([]);
+        expect(body.gotThrough).toBeUndefined();
+        expect(body.unconcluded).toEqual({ what: `the review check concluded ${review}` });
+        expect(calls.slice(-2).map((c) => c.method)).toEqual(['closePullRequest', 'deleteBranch']);
+      },
+    );
 
     it('says a review check that never concluded was unconcluded, not got through, and still closes the pull request', async () => {
       const { calls, ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'pending' });

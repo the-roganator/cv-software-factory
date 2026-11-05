@@ -22,12 +22,14 @@ import {
   type Facts,
   type FileChange,
   imageOf,
+  literally,
   MARTIN,
   martinsRule,
   type PinChecks,
   type PullRequest,
   riskLabelsRemoved,
   route,
+  SECURITY_HEADER_NAMES,
   signerOf,
   TEST_INTEGRITY_CHECK,
   tagsOf,
@@ -336,6 +338,16 @@ describe('risk tags from the diff', () => {
     );
   });
 
+  it('tags a change to where packages come from or what runs as they install: .npmrc and .pnpmfile.cjs, anywhere', () => {
+    expect(tags([changed('.npmrc', '+registry=https://example.test/'), changed('apps/x/.pnpmfile.cjs')])).toEqual([
+      found('dependency-change', ['.npmrc', 'apps/x/.pnpmfile.cjs']),
+    ]);
+    // Removed, or with no patch to read, it is tagged by its name all the same.
+    expect(tags([changed('.npmrc', '', { status: 'removed', patch: undefined })]).map((t) => t.tag)).toEqual([
+      'dependency-change',
+    ]);
+  });
+
   it('tags the header settings', () => {
     expect(tags([changed('src/headers.ts', '+x')])).toEqual([found('security-headers', ['src/headers.ts'])]);
   });
@@ -366,6 +378,21 @@ describe('risk tags from the diff', () => {
     expect(tags([changed('docs/headers.md', '+Content-Security-Policy')])).toEqual([]);
     // A file of the app's code GitHub gives no patch of is held as one.
     expect(tags([changed('src/app.html', '', { patch: undefined })]).map((t) => t.tag)).toEqual(['security-headers']);
+    // A rename out of the app's code carries the lines it removed there.
+    const out = { status: 'renamed', previous_filename: 'src/app.ts' };
+    expect(tags([changed('lib/app.ts', "-  res.setHeader('X-Frame-Options', 'DENY');", out)])).toEqual([
+      found('security-headers', ["lib/app.ts: res.setHeader('X-Frame-Options', 'DENY');"]),
+    ]);
+  });
+
+  it('matches each security header by its name, literally', () => {
+    for (const name of SECURITY_HEADER_NAMES) {
+      expect(tags([changed('src/a.ts', `+  h['${name}'] = v;`)]).map((t) => t.tag)).toEqual(['security-headers']);
+    }
+    // A name's characters mean nothing to the pattern: a dot is a dot, not any character.
+    expect(new RegExp(literally('a.b\\c-d[e]')).test('a.b\\c-d[e]')).toBe(true);
+    expect(new RegExp(literally('a.b')).test('axb')).toBe(false);
+    expect(new RegExp(literally('a\\d')).test('a1')).toBe(false);
   });
 
   it('tags the tests test integrity excused', () => {
@@ -418,6 +445,17 @@ describe('risk tags from the diff', () => {
       'security-headers',
       'improvement',
     ]);
+    // Removed too: a file too large for a patch could take a flag's ask away unread.
+    expect(tags([changed('src/pages/big.ts', '', { status: 'removed', patch: undefined })]).map((t) => t.tag)).toEqual([
+      'security-headers',
+      'improvement',
+    ]);
+    // A rename out of the app's code carries the asks it removed there.
+    expect(
+      tags([
+        changed('lib/home.ts', "-  if (request.flag('x')) {", { status: 'renamed', previous_filename: 'src/home.ts' }),
+      ]),
+    ).toEqual([found('improvement', ["lib/home.ts: if (request.flag('x')) {"])]);
     // A file renamed unchanged has no patch and no line, so it carries only what its names give.
     const renamed = { status: 'renamed', previous_filename: 'src/pages/old.ts', patch: undefined, changes: 0 };
     expect(tags([changed('src/pages/new.ts', '', renamed)])).toEqual([]);

@@ -36,7 +36,7 @@
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { type Found, type Judged, PENDING_LIMIT, verdictBlock } from '../policy/review-verdict.ts';
+import { cutPending, type Found, type Judged, verdictBlock } from '../policy/review-verdict.ts';
 import {
   type Annotation,
   appOpened,
@@ -494,7 +494,7 @@ export function summaryOf(commit: string, judged: readonly { pr: PullRequest; sa
       head: pr.head.sha,
       rule: said.rule,
       tags: said.tags,
-      ...(said.pending ? { pending: said.pending.slice(0, PENDING_LIMIT) } : {}),
+      ...(said.pending ? { pending: cutPending(said.pending) } : {}),
     }));
     summary = [
       RULE,

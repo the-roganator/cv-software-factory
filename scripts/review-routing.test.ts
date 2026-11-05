@@ -133,11 +133,16 @@ describe('approval routing: the rule, the first that holds', () => {
       ['lights-out', [tag('improvement')], 'improvement'],
       ['lights-out', [tag('code-owned')], 'code-owned'],
     ] as const) {
-      for (const testIntegrity of [waiting, { read: false, reason: 'failed' } as const]) {
+      for (const [testIntegrity, more] of [
+        [waiting, `; test integrity has not read it yet (${waiting.reason})`],
+        [{ read: false, reason: 'failed' } as const, '; no reading of test integrity (failed)'],
+        [{ read: true } as const, ''],
+      ] as const) {
         const tagged = route(facts({ autonomy, tags: [...tags], testIntegrity }));
         expect(tagged.rule).toBe('held');
         expect(tagged.pending).toBeUndefined();
-        expect(tagged.title).toMatch(new RegExp(`^Held for its risk tags \\(${names}\\)`));
+        // Test integrity's reading is named when there is none, so Martin does not approve on the tags alone.
+        expect(tagged.title.startsWith(`Held for its risk tags (${names})${more}: `)).toBe(true);
       }
     }
     // A removed risk label, or anything in this repository but a pin, decides before test integrity is looked at.
@@ -160,9 +165,9 @@ describe('approval routing: the rule, the first that holds', () => {
       rule: 'martin-approved-head',
     });
     expect(route(facts({ reviews: [approved()], testIntegrity: waiting })).pending).toBeUndefined();
-    // Cut to what the block allows.
+    // Whole: the summary's block cuts it, in one place.
     const long = route(facts({ testIntegrity: { ...waiting, reason: 'x'.repeat(PENDING_LIMIT + 50) } }));
-    expect(long.pending).toHaveLength(PENDING_LIMIT);
+    expect(long.pending).toHaveLength(PENDING_LIMIT + 50);
   });
 
   it('passes the tags a level allows by one test, for the lights-out rule and the wait alike', () => {
@@ -318,14 +323,22 @@ describe('test integrity’s reading', () => {
     });
   });
 
-  it('waits while any run of GitHub Actions for the head is unfinished, a queued re-run with no start included', () => {
+  it('waits while the latest run of GitHub Actions for the head is unfinished, a queued re-run with no start included', () => {
     const rerun = run({ id: 2, status: 'queued', conclusion: null, started_at: null });
     for (const done of [run(), run({ conclusion: 'failure' })])
       expect(testIntegrityRun([done, rerun], HEAD, files, 'main')).toEqual({
         reason: 'test integrity is still running at aaaaaaa',
         pending: true,
       });
-    // Once every run has completed, the latest by its start, then its id, is the reading.
+    // Only the latest attempt counts: an older one left queued or unclosed is no wait once a newer one has completed.
+    for (const status of ['queued', 'in_progress']) {
+      const stale = run({ status, conclusion: null, started_at: '2026-11-04T12:00:00Z' });
+      expect(testIntegrityRun([stale, run({ id: 2 })], HEAD, files, 'main')).toEqual({ run: run({ id: 2 }) });
+      expect(testIntegrityRun([run({ id: 2, conclusion: 'failure' }), stale], HEAD, files, 'main')).toEqual({
+        reason: "test integrity's run at aaaaaaa is failure, not a success",
+      });
+    }
+    // Once the latest has completed, it is the reading, by its id whatever the starts say.
     const later = run({ id: 3, started_at: '2026-11-04T12:00:00Z', conclusion: 'failure' });
     expect(testIntegrityRun([later, run()], HEAD, files, 'main')).toMatchObject({
       reason: expect.stringContaining('failure'),
@@ -807,6 +820,9 @@ describe("the verdict's block, which the line reads", () => {
     expect(wrong('x'.repeat(PENDING_LIMIT + 1))).toMatchObject({
       error: expect.stringContaining('over 300 characters'),
     });
+    // Counted in code points, as the gate cuts it: a character outside the BMP is one, not two UTF-16 units.
+    expect(wrong('🛑'.repeat(PENDING_LIMIT))).not.toHaveProperty('error');
+    expect(wrong('🛑'.repeat(PENDING_LIMIT + 1))).toMatchObject({ error: expect.stringContaining('over 300') });
   });
 
   it('is no verdict when missing, doubled, cut short or wrong in any part', () => {

@@ -1524,8 +1524,8 @@ export const PAYLOADS = {
    * Martin changed one of the line's controls in the console (`policy/line.ts`): every control as it now stands, and
    * the one he changed, with its value before and after. The line and the admin service read the latest one his roles
    * appended, and check it against policy as they read it: anything outside it is not in force, and policy's default
-   * is. Nothing routes by the autonomy level or auto-merge until approval routing comes (Part C); the line acts on
-   * the switch for new work and on what it takes from its next pass. Auto-rollback reaches the canary's analysis as
+   * is. The line acts on the switch for new work and on what it takes from its next pass, and adds its pull request to
+   * the merge queue only by a review gate rule the autonomy level allows, with auto-merge on (`ENQUEUES`). Auto-rollback reaches the canary's analysis as
    * two series, the admin service's read of it and the line's (`release/analysis.ts`).
    */
   'controls.changed': z.strictObject({

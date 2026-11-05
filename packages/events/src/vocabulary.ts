@@ -345,7 +345,10 @@ export const MERGE_HOLDS = [
   'no-verdict',
   /** The head is not the one the line's gates and reviewer passed: someone pushed, or main was merged in, since. */
   'unreviewed',
-  /** The review gate held it, for its risk tags or for a path that is Martin's. */
+  /**
+   * The review gate held it (rule `held`): for its risk tags or a path that is Martin's, or for what it could not read
+   * or trust, such as test integrity's run or a risk label someone else removed, with no tags.
+   */
   'held',
   /** Never the line's to add to the queue, whatever the gate said: a release, an improvement, a red-team branch, or out of scope. */
   'never',

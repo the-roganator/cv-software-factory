@@ -37,6 +37,23 @@ describe('a hold’s summary', () => {
     );
   });
 
+  it('says a merge the review gate held is held for its risk tags only when the gate named some', () => {
+    const held = (tags: { tag: 'dependency-change'; because: string[] }[] | undefined) =>
+      holdDraft('factory', {
+        stage: 'review',
+        kind: 'approval',
+        cause: 'merge',
+        reason: 'Why',
+        merge: { pullRequest: 7, head: 'a'.repeat(40), why: 'held', rule: 'held', approving: false, tags },
+      }).summary;
+    expect(held([{ tag: 'dependency-change', because: ['pnpm-lock.yaml'] }])).toBe(
+      'Held for its risk tags: waiting for Martin',
+    );
+    // Held for what the gate could not read or trust, such as test integrity's run: no tags to name.
+    expect(held([])).toBe('Held by the review gate: waiting for Martin');
+    expect(held(undefined)).toBe('Held by the review gate: waiting for Martin');
+  });
+
   it('says where any other hold is held, and a question is a question', () => {
     expect(summary({ stage: 'verify', kind: 'held', cause: 'verify' })).toBe('Held for Martin at verify');
     expect(summary({ stage: 'plan', kind: 'question', cause: 'question' })).toBe('A question for Martin');

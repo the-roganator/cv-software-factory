@@ -18,8 +18,10 @@
  * `held` (`route`).
  */
 import {
+  FLAG_NAMES_FILE,
   type Found,
   found,
+  HEADERS_FILE,
   NEVER_LIGHTS_OUT,
   RISK_LABELS,
   type Rule,
@@ -267,9 +269,6 @@ const DEPENDENCY_FILES = new Set([
   '.pnpmfile.cjs',
 ]);
 
-/** The app's header settings. */
-export const HEADERS_FILE = 'src/headers.ts';
-
 /**
  * The security headers, and the app's name for its settings of them: a line of the app's code (not its tests) added or
  * removed that names one, in any case, is a change to the security headers, wherever it is. The one list.
@@ -297,9 +296,6 @@ export const changedLines = (patch: string) =>
     .split('\n')
     .filter((line) => line.startsWith('+') || line.startsWith('-'))
     .map((line) => line.slice(1));
-
-/** The app's typed list of flag names. */
-export const FLAG_NAMES_FILE = 'src/flag-names.ts';
 
 /** The branches release-please opens its pull requests from. */
 const RELEASE_BRANCH = /^release-please--/;

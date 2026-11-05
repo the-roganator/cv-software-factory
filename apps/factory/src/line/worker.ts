@@ -1,6 +1,6 @@
 /**
  * The line after triage: takes tickets, and the improvements Martin asks for, into Plan and carries each work item
- * through its agents' steps, the gates and review, to Martin's merge, and on to Release and Verify. What to do next is
+ * through its agents' steps, the gates and review, to the merge queue or Martin's merge, and on to Release and Verify. What to do next is
  * decided from the work item's events (`machine.ts`); this module does it, and appends what happened. A merged work
  * item is held at Release until a release carries it, and waits there while the release runs; a promoted one waits at
  * Verify.

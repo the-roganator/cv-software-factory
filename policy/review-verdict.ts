@@ -37,6 +37,14 @@ export const TAGS = [
 ] as const;
 export type Tag = (typeof TAGS)[number];
 
+/**
+ * The app's two files a tag is given by, at the paths its repository fixes for them: its header settings
+ * (`security-headers`), and its typed list of the flags it asks about (`improvement`), to which an improvement's coder
+ * adds its flag's name. The gate tags them, and the line's agents name the list, from here.
+ */
+export const HEADERS_FILE = 'src/headers.ts';
+export const FLAG_NAMES_FILE = 'src/flag-names.ts';
+
 /** The tags Lights-out never passes: a release and an improvement are Martin's in every mode, and so is his code. */
 export const NEVER_LIGHTS_OUT: readonly Tag[] = ['release', 'improvement', 'code-owned'];
 

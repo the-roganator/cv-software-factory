@@ -43,4 +43,4 @@ An improvement's description says what Martin asked for, what the change adds be
 1. It sets the pull request's title and description, with the line that refers to the ticket's issue and, after the describer's words, the section that names the tests the spec contradicts, which the GitHub worker writes ([descriptions](GITHUB-WORKER.md#descriptions)), then takes it out of draft, each once for a handback. The merge queue's run of test integrity reads the section there.
 2. It appends the summary.
 
-Then the work item waits for Martin's merge. If the work goes back to Build while it waits, the line puts the pull request back to draft, and the describer writes up the next round before Martin is asked again.
+Then the line adds the pull request to the merge queue, where Martin's settings and the review gate allow, or holds it for Martin's merge ([the merge](ORCHESTRATOR.md#the-merge)). If the work goes back to Build while it waits, the line puts the pull request back to draft, and the describer writes up the next round before it is merged.

@@ -51,25 +51,39 @@ interface World {
    * A gate that first holds the pull request only to wait for test integrity (`pending`), then, when `rejudged`, judges
    * it again after that many reads of its runs.
    */
-  waits?: { rejudged?: number; next?: 'running' };
+  waits?: { rejudged?: number; next?: 'running' | 'reopened' };
   /** A concluded review check whose block does not judge the pull request at its head, or whose rule its conclusion contradicts. */
   block?: 'other-head' | 'other-rule';
+  /** With `block`, the gate judges it properly from this read on, as a later run for its own pull request would. */
+  blockUntil?: number;
+  /** Tags the held verdict carries, test-loosening by default. */
+  tags?: Parameters<typeof found>[0][];
 }
 
 const PENDING = 'test integrity is still running at bbbbbbb';
+
+/** When the review App's check concluded, which a refusal it gives is timed at. */
+const COMPLETED_AT = '2026-11-03T11:45:00Z';
 
 /** The factory's own App, which can post a check named `review` too. */
 const FACTORY_APP = 5187559;
 
 /** A `review` run as GitHub lists it on a commit, by the app that posted it, with the gate's block for #77 at `sha`. */
-function run(id: number, sha: string, app: number, review: World['review'], block?: World['block']) {
+function run(
+  id: number,
+  sha: string,
+  app: number,
+  review: World['review'],
+  block?: World['block'],
+  tags: World['tags'] = ['test-loosening'],
+) {
   const done = review !== 'pending';
   const holds = review === 'held' ? block !== 'other-rule' : block === 'other-rule';
   const judged = {
     number: 77,
     head: block === 'other-head' ? 'c'.repeat(40) : sha,
     rule: holds ? ('held' as const) : ('low-risk' as const),
-    tags: holds ? [found('test-loosening', ['test/http.test.ts'])] : [],
+    tags: holds ? tags.map((tag) => found(tag, ['test/http.test.ts'])) : [],
   };
   return {
     id,
@@ -78,6 +92,7 @@ function run(id: number, sha: string, app: number, review: World['review'], bloc
     status: done ? 'completed' : 'in_progress',
     conclusion: done ? (review === 'held' ? 'failure' : review === 'passed' ? 'success' : review) : null,
     app: { id: app },
+    completed_at: done ? COMPLETED_AT : null,
     output: {
       title: 'Held: deletes a test',
       summary: `test-loosening\n\n${verdictBlock({ version: 1, commit: sha, judged: [judged] })}`,
@@ -141,10 +156,13 @@ function fakes(world: World) {
               }),
             },
           };
+          if (again && world.waits.next === 'reopened')
+            return { check_runs: [{ ...waiting, status: 'in_progress', conclusion: null, completed_at: null }] };
           const later = run(11, sha, REVIEW_APP, world.waits.next === 'running' ? 'pending' : world.review);
           return { check_runs: again ? [later, waiting] : [waiting] };
         }
-        const ours = world.foreign === 'only' ? [] : [run(9, sha, REVIEW_APP, world.review, world.block)];
+        const block = world.blockUntil !== undefined && reviewReads >= world.blockUntil ? undefined : world.block;
+        const ours = world.foreign === 'only' ? [] : [run(9, sha, REVIEW_APP, world.review, block, world.tags)];
         const theirs = world.foreign ? [run(10, sha, FACTORY_APP, 'passed')] : [];
         // GitHub lists the newest first.
         return { check_runs: [...theirs, ...ours] };
@@ -273,7 +291,11 @@ describe('the GitHub worker’s attack door', () => {
       expect(refusals).toHaveLength(1);
       const payload = verified(refusals[0] as SignedRefusal);
       expect(payload.mechanism).toBe('review-gate');
-      expect(payload.output).toMatch(/^Held: deletes a test\n\ntest-loosening\n\n<!-- review-verdict v1\n/);
+      // The gate's words, as the console shows them, without the verdict's block, which is for the line.
+      expect(payload.output).toBe('Held: deletes a test\n\ntest-loosening');
+      // Timed when the check concluded, and shown under the guardrail the line would show it under.
+      expect(refusals[0]?.at).toBe('2026-11-03T11:45:00.000Z');
+      expect(payload.guardrails).toEqual([2]);
       expect(payload.subject).toEqual({ kind: 'commit', name: OTHER_SHA });
       expect(refusals[0]).toMatchObject({ repo: REPO, number: 77 });
       expect(body.pullRequest).toEqual({ repository: REPO, number: 77, head: OTHER_SHA });
@@ -359,6 +381,39 @@ describe('the GitHub worker’s attack door', () => {
         expect(body.unconcluded).toEqual({ what: why });
       },
     );
+
+    it('signs a hold for Martin’s code alone as the line does: under guardrail 1', async () => {
+      const { ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held', tags: ['code-owned'] });
+      const { body } = await ask('test');
+      expect(verified((body.refusals as SignedRefusal[])[0] as SignedRefusal)).toMatchObject({
+        mechanism: 'review-gate',
+        guardrails: [1],
+      });
+    });
+
+    it.each(['other-head', 'other-rule'] as const)(
+      'does not stop at a completed check whose block is %s: it waits for a verdict for this pull request at this head',
+      async (block) => {
+        const { ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held', block, blockUntil: 3 });
+        const { body } = await ask('test');
+        expect(body.unconcluded).toBeUndefined();
+        expect(verified((body.refusals as SignedRefusal[])[0] as SignedRefusal).mechanism).toBe('review-gate');
+      },
+    );
+
+    it('keeps the pending reason at the limit when the gate re-opens the same check run to judge again', async () => {
+      const { ask } = await serve({
+        guard: 'refuses',
+        workflows: 'refused',
+        review: 'held',
+        waits: { rejudged: 1, next: 'reopened' },
+      });
+      const { body } = await ask('test');
+      expect(body.refusals).toEqual([]);
+      expect(body.unconcluded).toEqual({
+        what: `the review gate still waited for a read within the limit: ${PENDING}`,
+      });
+    });
 
     it('answers what the last check said at the limit: a later check still running ends the wait it replaced', async () => {
       const { ask } = await serve({

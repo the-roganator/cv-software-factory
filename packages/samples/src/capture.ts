@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BROWSER_LAUNCH, type Check, capture, pixelDifference } from '@software-factory/factory/capture';
 import { DiskArtifacts } from '@software-factory/store';
-import { chromium, type Page } from 'playwright';
+import { type Browser, chromium, type Page } from 'playwright';
 import { ARTIFACTS, CAPTURES, type Captures } from './captures.ts';
 
 /** The app as it was published, which every sample's change is made to. */
@@ -159,9 +159,6 @@ run('node', ['scripts/seed.ts']);
 
 const store = new DiskArtifacts(ARTIFACTS);
 const browser = await chromium.launch(BROWSER_LAUNCH);
-// At 1x: sharp enough for a card on a dense screen, a quarter of the bytes for a phone, and a quarter of the memory
-// for a strip of thumbnails, which at 2x left the renderer out of room to draw them all.
-const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
 const captures: Captures = { app: APP.commit, shots: {}, changed: {} };
 
 try {
@@ -172,6 +169,9 @@ try {
       if (!text.includes(find)) throw new Error(`${variant.name}: ${file} no longer contains ${find}`);
       writeFileSync(join(work, file), text.replaceAll(find, replace));
     }
+    // A page of its own for each variant: the app closes gracefully, finishing what its open connections ask, so a
+    // connection the browser kept open to one variant's copy would carry the next variant's requests to it.
+    const page = await newPage(browser);
     const server = await start();
     try {
       for (const shot of variant.shots) {
@@ -186,11 +186,12 @@ try {
         console.log(`${variant.name}/${shot.name}`.padEnd(28), hash.slice(0, 12), `${Math.round(size / 1024)} KB`);
       }
     } finally {
-      server.kill();
+      await page.close();
+      await stop(server);
       for (const [file, text] of originals) writeFileSync(join(work, file), text);
     }
   }
-  await page.goto('about:blank');
+  const page = await newPage(browser);
   for (const variant of VARIANTS) {
     for (const name of COMPARE) {
       const shot = captures.shots[`${variant.name}/${name}`];
@@ -206,20 +207,26 @@ try {
 writeFileSync(CAPTURES, `${JSON.stringify(captures, null, 2)}\n`);
 console.log(`Wrote ${Object.keys(captures.shots).length} screenshots and ${CAPTURES}.`);
 
+/** At 1x: sharp enough for a card on a dense screen, a quarter of the bytes for a phone, and a quarter of the memory
+ * for a strip of thumbnails, which at 2x left the renderer out of room to draw them all. */
+function newPage(browser: Browser): Promise<Page> {
+  return browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+}
+
 async function difference(page: Page, a: string, b: string): Promise<number> {
   if (a === b) return 0;
   const read = (hash: string) => readFileSync(join(ARTIFACTS, hash));
   return Math.round((await pixelDifference(page, read(a), read(b))) * 10_000) / 10_000;
 }
 
-/** Starts the scratch copy and waits until it answers. */
+/** Starts the scratch copy and waits until it answers: it alone, as the one before has exited and freed the port. */
 async function start(): Promise<ChildProcess> {
   const server = spawn(process.execPath, ['src/server.ts'], {
     cwd: work,
     env: { ...process.env, PORT: String(PORT), LOG_LEVEL: 'silent', OTEL_SDK_DISABLED: 'true' },
     stdio: 'ignore',
   });
-  for (let tries = 0; tries < 100; tries++) {
+  for (let tries = 0; tries < 100 && server.exitCode === null; tries++) {
     if (
       await fetch(`http://localhost:${PORT}/health`).then(
         (r) => r.ok,
@@ -229,6 +236,14 @@ async function start(): Promise<ChildProcess> {
       return server;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  server.kill();
+  await stop(server);
   throw new Error('The scratch copy of the app did not start');
+}
+
+/** Stops a scratch copy and waits until it has exited, so that nothing it held answers for the next. */
+async function stop(server: ChildProcess): Promise<void> {
+  if (server.exitCode !== null || server.signalCode !== null) return;
+  const exited = new Promise((resolve) => server.once('exit', resolve));
+  server.kill();
+  await exited;
 }

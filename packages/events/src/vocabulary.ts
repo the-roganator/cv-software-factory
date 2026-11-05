@@ -293,11 +293,20 @@ export type HoldCause = (typeof HOLD_CAUSES)[number];
 
 /**
  * Where the deploy pull request that carries a work item held for a deploy stands, as the line reads it from GitHub:
- * open with the required checks on its head running, all passed, or one failed; merged; or closed unmerged. Only once
- * its checks have passed does it wait for Martin.
+ * open with the required checks on its head running, all passed, or one failed; added to the merge queue by the line,
+ * or taken out of it by the queue; merged; or closed unmerged. Once its checks have passed and the line has not added
+ * it to the queue (`DEPLOY_WAITS` says why), or once the queue has taken it out, it waits for Martin.
  */
-export const DEPLOY_STATES = ['checking', 'passed', 'failed', 'merged', 'closed'] as const;
+export const DEPLOY_STATES = ['checking', 'passed', 'failed', 'queued', 'dequeued', 'merged', 'closed'] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
+
+/**
+ * Why the line has not added a deploy pull request whose checks passed to the merge queue, so that it waits for Martin:
+ * the review gate did not pass its head as an exact pin; the autonomy level adds nothing to the queue by that rule
+ * (Supervised); auto-merge is off; it conflicts with main; or the GitHub worker or GitHub refused to add it.
+ */
+export const DEPLOY_WAITS = ['verdict', 'level', 'auto-merge', 'conflict', 'refused'] as const;
+export type DeployWait = (typeof DEPLOY_WAITS)[number];
 
 /**
  * Martin's answers to a hold: approve it, reject it, answer it in words, or send it back to the planner with his words,

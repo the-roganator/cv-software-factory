@@ -116,7 +116,9 @@ export type Picture =
       /** The release that carried the merge, if it ended without shipping. */
       ended: Ended | undefined;
       /** The deploy pull request that carries it, once the App has opened one. */
-      deploy: Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed'> | undefined;
+      deploy:
+        | Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason' | 'said'>
+        | undefined;
       /** Whether it waits for Martin: his deploy to merge, its checks passed, or his retry. */
       waitsForMartin: boolean;
     }

@@ -2,9 +2,9 @@
  * Needs you, the left of the bottom row: one card per hold, the line's and triage's, oldest first, so what has waited
  * longest is on top. Each says what the hold is, shows the one piece of evidence that explains it, and lists each
  * answer it takes beside what that answer does, from the line's own table. The buttons are all outlined: the console
- * does not suggest an answer. A merge or a deploy, which Martin ends on GitHub, heads its answers with the way there,
- * "Merge" and GitHub's mark drawn as a button and bolder, since it is the way forward and the answers are the ways
- * back. Under the cards, Martin's answers today.
+ * does not suggest an answer. A merge or a deploy, which Martin ends on GitHub, heads its answers with the way there:
+ * "Merge", "Deploy" or "Review" and GitHub's mark, a button as wide as the others and bolder, since it is the way
+ * forward and the answers are the ways back, with what it does beside it. Under the cards, Martin's answers today.
  *
  * For Martin, each answer is a write to the admin service, naming the hold the card showed, so the service answers
  * that hold or none. Approving a guardrail's hold asks for his passkey again (the key shows while it is not fresh);
@@ -154,72 +154,75 @@ function GateEvidence({
 }
 
 /**
- * A merge the review gate held for its risk tags: its pull request on GitHub, where Martin approves its head with his
- * own review, first among the answers, beside what that does. A link, in a tab of its own, as the way forward is; a
- * sample's never existed, so it is not a link, and says why.
+ * What the way forward does, beside it, in Martin's voice when he is signed in and a visitor's otherwise: where it
+ * opens, and what moves the work item on once he has done his part there. A sample's pull request never existed, so its
+ * way says that instead.
  */
-function ReviewOnGitHub({ review, martin }: { review: NonNullable<Need['review']>; martin: boolean }) {
-  const label = `Review #${review.pullRequest} on GitHub`;
-  const does = !martin
-    ? review.approving
-      ? 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.'
-      : 'Martin approves its head commit there, with his own review, and merges it there.'
-    : review.approving
+function wayDoes(need: Need, martin: boolean): string | undefined {
+  const { way, review } = need;
+  if (review) {
+    if (!martin) {
+      return review.approving
+        ? 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.'
+        : 'Martin approves its head commit there, with his own review, and merges it there.';
+    }
+    return review.approving
       ? 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.'
       : 'Approve its head commit there, then merge it there: the line does not add this one to the merge queue.';
-  return (
-    <div className="answer">
-      {review.href ? (
-        <a className="btn small way beside" href={review.href} target="_blank" rel="noopener">
-          {label}
-          <span aria-hidden="true"> ↗</span>
-          <span className="sr"> (opens GitHub in a new tab)</span>
-        </a>
-      ) : (
-        <span className="btn small way">{label}</span>
-      )}
-      <p className={review.href ? undefined : 'nowhere'}>{review.href ? does : SAMPLE_PULL}</p>
-    </div>
-  );
+  }
+  if (!way) return undefined;
+  const where = martin
+    ? `Opens #${way.pullRequest} on GitHub to merge it.`
+    : `Martin merges #${way.pullRequest} there.`;
+  return way.verb === 'Merge'
+    ? `${where} The line goes on by itself once it merges.`
+    : `${where} Argo CD then starts its release, which ends this wait by itself.`;
 }
 
 /**
- * The way a merge or a deploy ends, first among the answers: "Merge" or "Deploy" and GitHub's mark, drawn as the
- * buttons beside it are, in the text's weight, since it is the way forward and they are the ways back. The card names
- * the pull request already, so the words a reader hears add it and where it goes, the mark being hidden from them. A
- * link, as it opens a page, in a tab of its own, so words half written on the card stay. A sample's pull request never
- * existed: the same look, not a link, with why beside it.
+ * The way a merge or a deploy ends, on GitHub, first among the answers: "Merge" or "Deploy", or "Review" for a merge
+ * the review gate held for its risk tags, which Martin approves there with his own review of its head, as the console
+ * can't. The verb and GitHub's mark, in the column of buttons and as wide as they are, bordered and weighted in the
+ * text's colour, since it is the way forward and they are the ways back, with what it does beside it. The card names
+ * the pull request already, so the words a reader hears add it and where it goes, the shown part being hidden from
+ * them. A link, as it opens a page, in a tab of its own, so words half written on the card stay. A sample's pull
+ * request never existed: the same look, not a link, with why beside it, muted.
  */
-function WayForward({ way }: { way: Need['way'] }) {
-  if (!way) return null;
+function WayForward({ need, martin }: { need: Need; martin: boolean }) {
+  const pull = need.review ?? need.way;
+  if (!pull) return null;
+  const verb = need.review ? 'Review' : need.way?.verb;
   // What shows is hidden from a screen reader, which hears the words in full instead, in a span of their own, so no
   // space between the two parts is left to layout.
   const shown = (
     <span className="way-words" aria-hidden="true">
-      {way.verb}
+      {verb}
       <ToolMark name="github" />
     </span>
   );
-  if (way.href === undefined) {
+  if (pull.href === undefined) {
     return (
       <div className="answer">
         <span className="btn small way">
           {shown}
           <span className="sr">
-            {way.verb} #{way.pullRequest}
+            {verb} #{pull.pullRequest}
           </span>
         </span>
-        <p className="nowhere">{way.why}</p>
+        <p className="nowhere">{SAMPLE_PULL}</p>
       </div>
     );
   }
   return (
-    <a className="btn small way" href={way.href} target="_blank" rel="noopener">
-      {shown}
-      <span className="sr">
-        {way.verb} #{way.pullRequest} on GitHub (opens GitHub in a new tab)
-      </span>
-    </a>
+    <div className="answer">
+      <a className="btn small way" href={pull.href} target="_blank" rel="noopener">
+        {shown}
+        <span className="sr">
+          {verb} #{pull.pullRequest} on GitHub (opens GitHub in a new tab)
+        </span>
+      </a>
+      <p>{wayDoes(need, martin)}</p>
+    </div>
   );
 }
 
@@ -312,8 +315,7 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} martin={false} />
       <div className="answers">
-        <WayForward way={need.way} />
-        {need.review && <ReviewOnGitHub review={need.review} martin={false} />}
+        <WayForward need={need} martin={false} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -385,8 +387,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} martin />
       <div className="answers">
-        <WayForward way={need.way} />
-        {need.review && <ReviewOnGitHub review={need.review} martin />}
+        <WayForward need={need} martin />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {WORDED_ANSWERS.includes(row.answer) ? (

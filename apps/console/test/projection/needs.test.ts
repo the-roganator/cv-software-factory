@@ -628,13 +628,11 @@ describe('Needs you', () => {
       'Reject',
     ]);
     // A sample's pull request never existed: the card's way names it, and links nowhere, as the sheet does.
-    const nowhere = 'A sample’s pull request: it never existed, so it links nowhere.';
-    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, why: nowhere });
+    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined });
     expect(needs.holds.find((need) => need.cause === 'deploy')?.way).toEqual({
       verb: 'Deploy',
       pullRequest: 1331,
       href: undefined,
-      why: nowhere,
     });
     // A spend cap's settings are a link beside its evidence, not a way: the card's way is GitHub's only.
     const spend = needs.holds.find((need) => need.cause === 'spend');

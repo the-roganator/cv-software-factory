@@ -85,12 +85,9 @@ export interface Need {
   note: string | undefined;
   /**
    * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it.
-   * A sample's never existed, so it has no `href` and says `why`, as the sheet's facts link it nowhere too.
+   * A sample's never existed, so it has no `href`, as the sheet's facts link it nowhere too (`SAMPLE_PULL` says why).
    */
-  way:
-    | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: string }
-    | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: undefined; why: string }
-    | undefined;
+  way: { verb: 'Merge' | 'Deploy'; pullRequest: number; href: string | undefined } | undefined;
   /**
    * A merge the review gate held for its risk tags is approved on GitHub, with Martin's own review of its head, which
    * the console can't give: its pull request there, first among the answers, as "Review #n on GitHub".
@@ -438,14 +435,16 @@ function deployEvidence(item: ItemState): string {
   return `${at} ${deployWords(item.deploy).evidence}`;
 }
 
+/** Why a sample's way forward links nowhere, said beside it. */
 export const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it links nowhere.';
 
 /** The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed. */
 function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
-  const pull = (verb: 'Merge' | 'Deploy', pullRequest: number): Need['way'] =>
-    item.sample
-      ? { verb, pullRequest, href: undefined, why: SAMPLE_PULL }
-      : { verb, pullRequest, href: `${APP_REPO}/pull/${pullRequest}` };
+  const pull = (verb: 'Merge' | 'Deploy', pullRequest: number): Need['way'] => ({
+    verb,
+    pullRequest,
+    href: item.sample ? undefined : `${APP_REPO}/pull/${pullRequest}`,
+  });
   // A merge the gate held is approved first, on GitHub (`reviewOf`).
   if (cause === 'merge' && item.hold?.merge?.why === 'held') return undefined;
   if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);

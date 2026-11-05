@@ -351,7 +351,14 @@ describe('each worker', () => {
     await db.as.probes`
       insert into flag_pictures (flag, stage, revision, version, path, hinting, route, shot)
       values ('gift-note', 'off', 'r1', ${'a'.repeat(40)}, '/', 'none', '/', ${db.as.probes.json(shot)})`;
-    expect(await db.as.line`select flag, stage from flag_pictures`).toEqual([{ flag: 'gift-note', stage: 'off' }]);
+    // As the probes of an image before 0050 insert one, naming no hinting: it reads as hinted, and is kept.
+    await db.as.probes`
+      insert into flag_pictures (flag, stage, revision, version, path, route, shot)
+      values ('gift-note', 'off', 'r1', ${'a'.repeat(40)}, '/', '/', ${db.as.probes.json(shot)})`;
+    expect(await db.as.line`select flag, stage, hinting from flag_pictures order by hinting`).toEqual([
+      { flag: 'gift-note', stage: 'off', hinting: 'full' },
+      { flag: 'gift-note', stage: 'off', hinting: 'none' },
+    ]);
     for (const worker of WORKERS.filter((w) => w !== 'probes')) {
       await expect(
         db.as[worker]`insert into flag_pictures (flag, stage, revision, version, path, route, shot)
@@ -360,7 +367,7 @@ describe('each worker', () => {
       await expect(db.as[worker]`delete from flag_pictures`).rejects.toThrow('permission denied');
     }
     await expect(db.as.probes`update flag_pictures set route = '/x'`).rejects.toThrow('permission denied');
-    expect((await db.as.probes`delete from flag_pictures`).count).toBe(1);
+    expect((await db.as.probes`delete from flag_pictures`).count).toBe(2);
   });
 });
 

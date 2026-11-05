@@ -61,8 +61,10 @@
   padding: 8px 10px;
   white-space: pre-wrap;
 }
-/* A file no scope may name, among those a coder needs outside its scope: the face's own warm colour. */
-.need .barred {
+/* A file no scope may name, among those a coder needs outside its scope, and what the review gate held a merge for,
+   its check and each risk tag: the face's own warm colour. */
+.need .barred,
+.need .words .x {
   color: var(--station-led-attn);
 }
 .answers {

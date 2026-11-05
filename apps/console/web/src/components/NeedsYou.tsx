@@ -37,6 +37,7 @@ import {
   type Move,
   type Need,
   type NeedsView,
+  SAMPLE_PULL,
   STAGE_NAME,
 } from '../projection/index.ts';
 import { CanaryAnswers } from './Canary.tsx';
@@ -55,11 +56,13 @@ const ASKS: Partial<Record<HoldAnswer, string>> = {
   replanned: 'What the planner should change in the spec',
 };
 
-function Evidence({ need }: { need: Need }) {
-  const { evidence, link } = need;
+function Evidence({ need, martin }: { need: Need; martin: boolean }) {
+  const { evidence, link, note } = need;
   return (
     <>
-      {evidence.kind === 'output' ? (
+      {evidence.kind === 'gate' ? (
+        <GateEvidence evidence={evidence} martin={martin} />
+      ) : evidence.kind === 'output' ? (
         <p className="words">
           {evidence.heading}
           {'\n'}
@@ -76,12 +79,105 @@ function Evidence({ need }: { need: Need }) {
       ) : (
         <p className="ev">{evidence.text}</p>
       )}
+      {note && <p className="ev">{note}</p>}
       {link && (
         <p className="ev">
           <a href={link.href}>{link.label}</a>
         </p>
       )}
     </>
+  );
+}
+
+/** A mark on the station face: drawn, and said to a screen reader in words. */
+const Mark = ({ glyph, said }: { glyph: string; said: string }) => (
+  <>
+    <span aria-hidden="true">{glyph}</span>
+    <span className="sr">{said}</span>
+  </>
+);
+
+/**
+ * The review gate's hold of a merge for its risk tags, on the station face, as its summary says it: a cross on the
+ * check and on each tag, with what in the diff gave it, the tags names lined up; a tick on what it found clear; and
+ * what it waits for. Then that approving is Martin's own review of that head, on GitHub, which a push undoes.
+ */
+function GateEvidence({
+  evidence,
+  martin,
+}: {
+  evidence: Extract<Need['evidence'], { kind: 'gate' }>;
+  martin: boolean;
+}) {
+  const { said, tags, clear, head, approving } = evidence;
+  const width = Math.max(0, ...tags.map(({ tag }) => tag.length));
+  const at = head.slice(0, 7);
+  return (
+    <>
+      <p className="words">
+        <span className="x">
+          <Mark glyph="✕ " said="Held: " />
+          review
+        </span>
+        {said && ` · ${said}`}
+        {tags.map(({ tag, because }) => (
+          <Fragment key={tag}>
+            {'\n'}
+            <span className="x">
+              <Mark glyph="✕ " said="Risk tag: " />
+              {tag}
+            </span>
+            {' '.repeat(width - tag.length + 2)}
+            {because}
+          </Fragment>
+        ))}
+        {clear.map((line) => (
+          <Fragment key={line}>
+            {'\n'}
+            <Mark glyph="✓ " said="Clear: " />
+            {line}
+          </Fragment>
+        ))}
+        {'\n'}
+        <span aria-hidden="true">→ </span>
+        {approving
+          ? `waits for Martin’s approval of its head commit, ${at}`
+          : `waits for Martin to approve its head commit, ${at}, and merge it`}
+      </p>
+      <p className="ev">
+        Every required check passed and the reviewer approved. Approving is {martin ? 'your' : 'Martin’s'} own review of
+        its head commit, on GitHub: the console can’t give it. A push after{' '}
+        {martin ? 'you approve needs you' : 'he approves needs him'} again.
+      </p>
+    </>
+  );
+}
+
+/**
+ * A merge the review gate held for its risk tags: its pull request on GitHub, where Martin approves its head with his
+ * own review, first among the answers, beside what that does. A link, in a tab of its own, as the way forward is; a
+ * sample's never existed, so it is not a link, and says why.
+ */
+function ReviewOnGitHub({ review, martin }: { review: NonNullable<Need['review']>; martin: boolean }) {
+  const label = `Review #${review.pullRequest} on GitHub`;
+  const does = !martin
+    ? 'Martin approves its head commit there, with his own review.'
+    : review.approving
+      ? 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.'
+      : 'Approve its head commit there, then merge it there: the line does not add this one to the merge queue.';
+  return (
+    <div className="answer">
+      {review.href ? (
+        <a className="btn small" href={review.href} target="_blank" rel="noopener">
+          {label}
+          <span aria-hidden="true"> ↗</span>
+          <span className="sr"> (opens GitHub in a new tab)</span>
+        </a>
+      ) : (
+        <span className="btn small way">{label}</span>
+      )}
+      <p className={review.href ? undefined : 'nowhere'}>{review.href ? does : SAMPLE_PULL}</p>
+    </div>
   );
 }
 
@@ -212,9 +308,10 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
     <article className="need raised ruled" {...named(id, need.kicker, onOpen)}>
       <Kick need={need} />
       {onOpen && <h3 id={id}>{need.title}</h3>}
-      <Evidence need={need} />
+      <Evidence need={need} martin={false} />
       <div className="answers">
         <WayForward way={need.way} />
+        {need.review && <ReviewOnGitHub review={need.review} martin={false} />}
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -284,9 +381,10 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
     <article className="need raised ruled" {...named(id, need.kicker, onOpen)} aria-busy={busy || undefined}>
       <Kick need={need} />
       {onOpen && <h3 id={id}>{need.title}</h3>}
-      <Evidence need={need} />
+      <Evidence need={need} martin />
       <div className="answers">
         <WayForward way={need.way} />
+        {need.review && <ReviewOnGitHub review={need.review} martin />}
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {WORDED_ANSWERS.includes(row.answer) ? (

@@ -773,6 +773,83 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
   });
 }
 
+/**
+ * Approval routing (Part C): #1311's merge, which the samples hold for Martin's merge, held again by the review gate
+ * for its risk tags, with the gate's words and a cross for each tag, Review on GitHub and no Approve; and Lights-out's
+ * whole note in the passkey's dialog that chooses it.
+ */
+const RISK_TAGGED = [
+  {
+    id: '00000000-0000-4000-8000-000000000921',
+    seq: 921,
+    ts: new Date(END - 60_000).toISOString(),
+    work_item: '1311',
+    type: 'hold.started',
+    version: 11,
+    actor: 'factory',
+    summary: 'Held for its risk tags: waiting for Martin',
+    payload: {
+      stage: 'review',
+      kind: 'approval',
+      cause: 'merge',
+      reason:
+        'The review gate held #1312 for dependency-change, test-loosening: Martin’s approval of its head on GitHub sends it to the merge queue',
+      merge: {
+        pullRequest: 1312,
+        head: '4e1c2a9d0b7f3e5a6c8d9e0f1a2b3c4d5e6f7a8b',
+        why: 'held',
+        rule: 'held',
+        tags: [
+          { tag: 'dependency-change', because: ['pnpm-lock.yaml', 'pnpm-workspace.yaml'] },
+          { tag: 'test-loosening', because: ['test/basket.test.ts'] },
+        ],
+        said: 'Guarded: the factory’s App opened #1312, so it passes only if low-risk',
+        approving: true,
+      },
+    },
+    artifacts: [],
+  },
+];
+
+for (const [width, viewport] of Object.entries(WIDTHS)) {
+  test.describe(`${width}, approval routing`, () => {
+    test.use({ viewport });
+
+    test('a merge held for its risk tags, in Needs you', async ({ page }) => {
+      await adminService(page, 'martin', RISK_TAGGED);
+      await page.goto(consoleUrl());
+      await ready(page);
+      const card = page.locator('article.needs .need').filter({ hasText: '#1311 ·' });
+      await card.getByRole('button', { name: 'Answer in words' }).waitFor();
+      // Martin approves it on GitHub, with his own review: the console offers no Approve, and no Merge.
+      await expect(card).toContainText('Review #1312 on GitHub');
+      await expect(card.getByRole('button', { name: /^Approve/ })).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Back to the planner' })).toHaveCount(0);
+      await page.evaluate(() => document.fonts.ready);
+      await expect(card).toHaveScreenshot(`m07-needs-risk-tags-${width}.png`);
+    });
+
+    test('choosing Lights-out, asking for the passkey again', async ({ page }) => {
+      await adminService(page, 'martin');
+      await page.route('**/admin/line/controls', (route) =>
+        route.fulfill({ status: 403, json: { refused: 'step-up', message: 'This needs your passkey again.' } }),
+      );
+      await page.goto(consoleUrl());
+      await ready(page);
+      await page
+        .locator('article.controls')
+        .getByRole('group', { name: 'Autonomy' })
+        .getByRole('button', { name: /^Lights-out/ })
+        .click();
+      const dialog = page.getByRole('dialog', { name: 'Loosen autonomy' });
+      await dialog.waitFor();
+      await expect(dialog).toContainText('Lights-out takes two settings.');
+      await page.evaluate(() => document.fonts.ready);
+      await expect(dialog).toHaveScreenshot(`m07-lights-out-step-up-${width}.png`);
+    });
+  });
+}
+
 test.describe('the settings in Ink', () => {
   test.use({ viewport: WIDTHS.desktop });
 

@@ -364,7 +364,9 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return event.payload.for === 'wait' || event.payload.for === 'take'
         ? { label: 'UNSURE', tone: 'faint' }
         : undefined;
+    // The review gate's hold of a merge for its risk tags is a hold, as the gates' are, not a wait for Martin's merge.
     case 'hold.started':
+      if (event.payload.merge?.why === 'held') return { label: 'HELD', tone: 'attn' };
       return { label: { approval: 'WAITING', question: 'QUESTION', held: 'HELD' }[event.payload.kind], tone: 'attn' };
     case 'hold.answered':
       return {
@@ -384,6 +386,11 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
     case 'work-item.summarised':
       // Triage writes the first summary; the describer's is a step of Review.
       return event.actor === 'describer' ? { label: 'DESCRIBED', tone: 'signal' } : undefined;
+    // The line added its pull request to the merge queue, and the queue took it out unmerged, which holds it for Martin.
+    case 'pull-request.enqueued':
+      return { label: 'QUEUED', tone: event.payload.dryRun ? 'faint' : 'signal' };
+    case 'pull-request.dequeued':
+      return { label: 'OUT OF QUEUE', tone: 'attn' };
     case 'pull-request.merged':
       return { label: 'MERGED', tone: 'signal' };
     // A persisting signal sends the work round again by itself, so it is not warm the first time; nothing reopens.
@@ -644,8 +651,18 @@ function scopeOf(item: ItemState, spec: PayloadOf<'spec.written'>): Sheet['scope
   return { of, rows: [...rows, ...outside] };
 }
 
-/** What the work item waits for once its rounds are done: Martin's merge, Martin's decision, or a release. */
+/**
+ * What the work item waits for once its rounds are done: the merge queue, Martin's merge, Martin's decision, or a
+ * release.
+ */
 function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean): After | undefined {
+  if (item.inQueue && item.outcome === 'in-progress') {
+    const { number, rule, at } = item.inQueue;
+    return {
+      outcome: 'in-progress',
+      text: `In the merge queue since ${clock(at)}: the line added PR #${number}, as the review gate passed it by ${rule}`,
+    };
+  }
   if (item.outcome === 'merged') {
     const merged = [...item.events].reverse().find((event) => event.type === 'pull-request.merged');
     const by = merged?.type === 'pull-request.merged' && merged.payload.by === 'martin' ? 'Martin' : 'the factory';
@@ -658,6 +675,9 @@ function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean
     return undefined;
   const cleared = clearanceWords(item);
   const and = (text: string) => (cleared ? `${text.replace(/\.$/, '')}. ${cleared}` : text);
+  if (hold.cause === 'merge' && hold.merge?.why === 'held') {
+    return { outcome: item.outcome, text: and(`Held for its risk tags since ${clock(hold.since)}: ${hold.reason}`) };
+  }
   if (hold.cause === 'merge') {
     const since = clock(hold.since);
     return {

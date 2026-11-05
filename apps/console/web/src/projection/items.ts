@@ -60,6 +60,11 @@ export interface Hold {
   question: string | undefined;
   /** A scope hold the coder asked for: each file outside the spec's scope it needs, and why. */
   needs: { path: string; reason: string; barred?: true | undefined }[] | undefined;
+  /**
+   * A merge's hold: the pull request as the review gate judged it, and why the line does not add it to the merge queue
+   * itself. None on a merge hold the line made before it said.
+   */
+  merge: PayloadOf<'hold.started'>['merge'];
   since: number;
 }
 
@@ -164,6 +169,11 @@ export interface ItemState {
    * started since: Martin may retry it.
    */
   releaseStopped: boolean;
+  /**
+   * The line's adding of its pull request to the merge queue, and when, until the queue merges it or takes it out, or
+   * the branch moves: the queue merges it once its checks pass on the queue's commit.
+   */
+  inQueue: (PayloadOf<'pull-request.enqueued'> & { at: number }) | undefined;
   /** A red-team attack Martin launched: which, when, and how it ended, checked. */
   attack: AttackState | undefined;
 }
@@ -312,6 +322,8 @@ const ENDS_A_WAIT = new Set<PublicEvent['type']>([
   'work-item.summarised',
   'work.returned',
   'hold.started',
+  'pull-request.enqueued',
+  'pull-request.dequeued',
   'pull-request.merged',
   'release.started',
   ...ENDS,
@@ -378,6 +390,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     cleared: undefined,
     deploy: undefined,
     releaseStopped: false,
+    inQueue: undefined,
     attack: undefined,
   };
   /** Moves the item into a stage: leaving the one it was in, if this is further along the line. */
@@ -547,6 +560,17 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         break;
       case 'pull-request.pushed':
         state.pullRequest = event.payload.number;
+        state.inQueue = undefined;
+        break;
+      // The line added its pull request to the merge queue: that ends its hold for the merge, as the line reads it.
+      case 'pull-request.enqueued':
+        if (event.payload.number !== state.pullRequest) break;
+        state.inQueue = { ...event.payload, at: time };
+        if (state.hold?.cause === 'merge') state.hold = undefined;
+        break;
+      // The queue took it out unmerged: the line holds it for Martin again, saying why.
+      case 'pull-request.dequeued':
+        if (event.payload.number === state.inQueue?.number) state.inQueue = undefined;
         break;
       case 'work.returned':
         state.sentBack = time;
@@ -564,6 +588,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.releaseStopped = false;
         // The merge is Martin's answer to a wait for it: the line writes no other.
         state.hold = undefined;
+        state.inQueue = undefined;
         // And it leaves Review, even when a round recorded with it, which failed after the gates had passed, took the
         // work item back to Gates first.
         if (state.visits.review && state.visits.review.leftAt === undefined) {
@@ -614,6 +639,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
           spentUsd: event.payload.spentUsd,
           question: event.payload.question,
           needs: event.payload.needs,
+          merge: event.payload.merge,
           since: time,
         };
         break;

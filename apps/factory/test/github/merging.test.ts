@@ -627,6 +627,26 @@ describe('merging in a dry run', () => {
     expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true, head: { sha: moved } });
   });
 
+  it('never merges one queued, then moved while ready, until it is queued again at its new head', async () => {
+    const { made, reads, head, number, later } = await dryRun();
+    await made.enqueuePullRequest(REPO, number, head);
+    const moved = await made.commit(REPO, {
+      branch: BRANCH,
+      expectedHead: head,
+      message: 'fix(cart): count c',
+      changes: { additions: [{ path: 'src/cart.ts', contents: new TextEncoder().encode('c\n') }], deletions: [] },
+    });
+    // Ready all along, and readied long ago: out of the queue, it is not Martin's merge it stands for, and waits.
+    later(TIMES.mergeAfterMs * 3);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ state: 'open', merged: false, draft: false });
+    expect(await reads.mergeQueue(REPO, number)).toMatchObject({ queued: null, added: null });
+    await made.enqueuePullRequest(REPO, number, moved);
+    later(TIMES.mergeAfterMs - MINUTE);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: false });
+    later(MINUTE);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true, head: { sha: moved } });
+  });
+
   it('merges one never queued a while after it was readied, and refuses to queue one merged', async () => {
     const { made, reads, head, number, later, records } = await dryRun();
     later(TIMES.mergeAfterMs);

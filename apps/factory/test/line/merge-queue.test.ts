@@ -219,6 +219,29 @@ describe('the line, merging through the queue', () => {
     expect(enqueues(github.acts)).toHaveLength(1);
   });
 
+  it('records the queue taking it out for a push, by the head it queued, and waits on no queue entry after', async () => {
+    await controls({});
+    const { workItem, pass, github } = await readyToMerge();
+    await pass();
+    const queued = github.pulls.get(12)?.head.sha;
+    expect(await payloads(workItem, 'pull-request.enqueued')).toMatchObject([{ commit: queued }]);
+    // Someone pushes to the branch: GitHub takes it out of the queue, and its read names the new head.
+    const pr = github.pulls.get(12);
+    if (!pr) throw new Error('No pull request #12');
+    pr.head.sha = 'e'.repeat(40);
+    github.dequeue(12, 'HEAD_CHANGED');
+    github.pass();
+    await pass();
+    await pass();
+    await pass();
+    expect(await payloads(workItem, 'pull-request.dequeued')).toMatchObject([
+      { number: 12, commit: queued, reason: 'head_changed' },
+    ]);
+    // Not the head its reviewer passed: held for Martin, not left waiting on the queue.
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'unreviewed' } });
+    expect(enqueues(github.acts)).toHaveLength(1);
+  });
+
   it('holds a pull request that conflicts with main, saying so, and adds it once it does not', async () => {
     await controls({});
     const { workItem, pass, github } = await readyToMerge();
@@ -283,6 +306,19 @@ describe('the line, merging through the queue', () => {
     expect(await payloads(workItem, 'pull-request.enqueued')).toEqual([
       { number: 12, commit: github.pulls.get(12)?.head.sha, rule: 'low-risk', position: 1 },
     ]);
+    expect(await types(workItem)).not.toContain('hold.started');
+  });
+
+  it('asks again next pass when it cannot read whether GitHub already queued it, and holds nothing', async () => {
+    await controls({});
+    const { workItem, pass, github } = await readyToMerge();
+    github.refusing.set('enqueuePullRequest', new GitHubWorkerError(422, 'unprocessable', 'Already queued'));
+    github.failingReads.set('mergeQueue', 1);
+    await pass();
+    expect(await types(workItem)).not.toContain('hold.started');
+    expect(await types(workItem)).not.toContain('pull-request.enqueued');
+    await pass();
+    expect(await payloads(workItem, 'pull-request.enqueued')).toHaveLength(1);
     expect(await types(workItem)).not.toContain('hold.started');
   });
 });

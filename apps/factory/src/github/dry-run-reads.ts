@@ -8,7 +8,8 @@
  * commit; and the pull request reads as merged, by the App, `mergeAfterMs` after the line added it to the merge queue,
  * or, one it never added, `mergeAfterMs` after it was ready for review, standing in for Martin's merge, so the work item
  * ends and a soak goes round at every autonomy level. A soak tells the two apart by the line's `pull-request.enqueued`
- * before the merge. A draft the line never added is never merged: GitHub cannot merge one, and Martin merges only what
+ * before the merge. One it added that has since moved to another head is out of the queue, and merges only once added
+ * again. A draft the line never added is never merged: GitHub cannot merge one, and Martin merges only what
  * the describer has readied. A merged one cannot be added to the queue (`DryRunActions`). Nothing ran: each check's title says so, and the gate's summary carries
  * it. A comparison of a commit the dry run made is taken against the real commit its first one went on, from the
  * files as they really are there and as the dry run left them. A step that starts from such a commit checks out that
@@ -67,7 +68,8 @@ export class DryRunReads implements Reads {
   /** When a pull request the dry run opened merges: after it was queued, or else after it was readied; never, closed. */
   #mergesAt(pull: DryRunPull): number | null {
     if (pull.closedAt !== null) return null;
-    const from = this.#made.queuedAt(pull) ?? pull.readiedAt;
+    // Queued once at a head it has since moved from: taken out of the queue, it merges only when queued again.
+    const from = pull.enqueuedAt === null ? pull.readiedAt : this.#made.queuedAt(pull);
     return from === null ? null : from.getTime() + this.#times.mergeAfterMs;
   }
 

@@ -179,7 +179,7 @@ Once the describer has written a change up, the line reads, about once a minute 
 - **In the queue**, the line reads the queue's own word on the pull request as it reads the gates. The queue taking it out without merging it is recorded as `pull-request.dequeued`, with GitHub's reason and the required checks that failed on the queue's commit, and holds it for Martin (`queue`); the line does not add that head again. GitHub refusing to add it (403, signed and relayed as `token-permission`, or 422) holds it the same way (`refused`). Martin's answer in words sends the work back to the coder, as for any merge hold, and his merge on GitHub carries it on.
 - **The merge** is read as ever: through the queue, GitHub names whoever added the pull request as the merger, so the line's records `by: 'factory'`.
 
-In a dry run the GitHub worker records what it would add, and a pull request the line added merges a while after it was added; one it never added merges a while after it was readied, standing in for Martin's merge, so a dry run goes round at every level. A soak tells them apart by `pull-request.enqueued` before the merge.
+In a dry run the GitHub worker records what it would add, and a pull request the line added merges a while after it was added; one it never added merges a while after it was readied, standing in for Martin's merge, so a dry run goes round at every level; one it added that has since moved to another head merges only once added again. A soak tells them apart by `pull-request.enqueued` before the merge.
 
 ## Refusals it records for others
 

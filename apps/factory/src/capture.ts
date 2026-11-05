@@ -8,19 +8,13 @@ import type { ArtifactStore } from '@software-factory/store';
 import type { LaunchOptions, Page, PageScreenshotOptions } from 'playwright';
 
 /**
- * How the browser sets text: unhinted, as Chrome on a desktop does. Headless Chromium on Linux hints fonts fully by
- * default, which snaps each glyph's advance to a whole pixel, so small text comes out squeezed or stretched ("Prices
- * below zero" set as "Pricesbelow zero"), the way no visitor's browser sets it. A picture set one way differs from one
- * set the other along every line of text, so a picture that is compared with one taken earlier names it
- * (`flag_pictures.hinting`).
+ * How every browser the factory launches is started: the probes', the crawler's, the canary's journeys', and the
+ * captures of the samples and the console's test data; the console's own browser tests too. Text is set unhinted, as
+ * Chrome on a desktop does: headless Chromium on Linux hints a web font fully by default, which snaps each glyph's
+ * advance to a whole pixel, so small text comes out squeezed or stretched ("Pricesbelow zero"). System fonts are set
+ * the same either way.
  */
-export const TEXT_HINTING: Hinting = 'none';
-
-/** How a picture's text was set: hinted fully, as headless Chromium on Linux does by default, or not at all. */
-export type Hinting = 'full' | 'none';
-
-/** How every browser the factory launches is started: the probes', the crawler's, and the samples' captures. */
-export const BROWSER_LAUNCH: LaunchOptions = { args: [`--font-render-hinting=${TEXT_HINTING}`] };
+export const BROWSER_LAUNCH: LaunchOptions = { args: ['--font-render-hinting=none'] };
 
 /**
  * What Chromium says when it could not produce a frame for a screenshot, in its own words, which Playwright passes on

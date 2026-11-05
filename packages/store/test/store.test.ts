@@ -121,7 +121,6 @@ describe('migrations', () => {
       { version: 47, name: 'red-team-report-signal' },
       { version: 48, name: 'session-one-hour' },
       { version: 49, name: 'admin-step-up-ended' },
-      { version: 50, name: 'flag-picture-hinting' },
     ]);
   });
 });

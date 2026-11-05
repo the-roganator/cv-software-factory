@@ -1247,7 +1247,6 @@ describe('the flag pass, against the store', () => {
               version: app.version,
               path: '/',
               scheme,
-              hinting: 'none',
               route: '/',
               shot: picture,
               changed: null,

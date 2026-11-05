@@ -104,27 +104,12 @@ function app(runs: Run[] = [], { revisions = ['r7'], version = V1 } = {}) {
             p.revision === key.revision &&
             p.version === key.version &&
             p.path === key.path &&
-            p.scheme === key.scheme &&
-            p.hinting === key.hinting,
+            p.scheme === key.scheme,
         ),
-      flagOff: async (flag, hash, scheme, hinting) =>
-        pictures.find(
-          (p) =>
-            p.flag === flag &&
-            p.stage === 'off' &&
-            p.shot.hash === hash &&
-            p.scheme === scheme &&
-            p.hinting === hinting,
-        ),
-      flagOffSetOtherwise: async ({ flag, version, revision, hinting }) => {
-        const of = pictures.filter(
-          (p) => p.flag === flag && p.stage === 'off' && p.version === version && p.revision === revision,
-        );
-        return of.some((p) => p.hinting !== hinting) && !of.some((p) => p.hinting === hinting);
-      },
+      flagOff: async (flag, hash, scheme) =>
+        pictures.find((p) => p.flag === flag && p.stage === 'off' && p.shot.hash === hash && p.scheme === scheme),
       recordFlagPicture: async (picture) => void pictures.push(picture),
     },
-    retaken: new Set(),
     store,
     log,
   };
@@ -201,36 +186,6 @@ describe('a flag’s baseline, at Off', () => {
     // The same version under another flag set is not the baseline taken.
     const stale = app([], { revisions: ['r6'] });
     expect(await flagCheck(stale.deps, off({ have: V1 }))).toMatchObject({ kind: 'not-held' });
-  });
-
-  it('takes a baseline again, once, whose pictures’ text was set otherwise than the probes set it now', async () => {
-    const { deps, pictures, shots } = app();
-    checked(await flagCheck(deps, off()));
-    expect(pictures.map((p) => p.hinting)).toEqual(['none', 'none']);
-    // As one taken before the probes set text unhinted reads.
-    for (const p of pictures) p.hinting = 'full';
-    shots.length = 0;
-    const again = checked(await flagCheck(deps, off({ have: V1 })));
-    expect(shots).toEqual(['/', '/']);
-    expect(pictures.filter((p) => p.hinting === 'none')).toHaveLength(2);
-    expect(again.pages.map((p) => p.off?.hash)).toEqual(
-      pictures.filter((p) => p.hinting === 'none').map((p) => p.shot.hash),
-    );
-    expect(await flagCheck(deps, off({ have: V1 }))).toEqual({ kind: 'have', version: V1 });
-    // Once: a page that cannot be pictured now leaves it set otherwise, and it is not taken again on every pass.
-    const failing = app();
-    checked(await flagCheck(failing.deps, off()));
-    for (const p of failing.pictures) p.hinting = 'full';
-    failing.deps.shoot = async () => {
-      throw new Error('could not picture it');
-    };
-    checked(await flagCheck(failing.deps, off({ have: V1 })));
-    expect(await flagCheck(failing.deps, off({ have: V1 }))).toEqual({ kind: 'have', version: V1 });
-    // A run that judged nothing has not taken it again.
-    const moving = app([{ version: V2 }]);
-    moving.pictures.push(...pictures.filter((p) => p.hinting === 'full'));
-    expect(await flagCheck(moving.deps, off({ have: V1 }))).toMatchObject({ kind: 'not-held' });
-    expect(moving.deps.retaken.size).toBe(0);
   });
 
   it('judges nothing when the app holds another flag set, before the run or after, or moved meanwhile', async () => {
@@ -326,21 +281,6 @@ describe('a flag at Checks and Preview', () => {
     expect(answer.pages.map((p) => [p.scheme, p.off !== undefined])).toEqual([
       ['light', false],
       ['dark', false],
-    ]);
-  });
-
-  it('never compares a page with the baseline’s picture of it whose text was set otherwise', async () => {
-    const { deps, request, pictures } = await baselined([{}]);
-    // A baseline taken before the probes set text unhinted: every line of text would differ, which is no change.
-    for (const p of pictures) p.hinting = 'full';
-    const answer = checked(await flagCheck(deps, request('checks')));
-    expect(answer.pages.map((p) => [p.scheme, p.off, p.changed, p.diff])).toEqual([
-      ['light', undefined, undefined, undefined],
-      ['dark', undefined, undefined, undefined],
-    ]);
-    expect(pictures.filter((p) => p.stage === 'checks')).toMatchObject([
-      { scheme: 'light', hinting: 'none', changed: null, diff: null },
-      { scheme: 'dark', hinting: 'none', changed: null, diff: null },
     ]);
   });
 

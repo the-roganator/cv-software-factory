@@ -118,7 +118,7 @@ export const STORE_GRANTS = {
       ],
       flag_pictures: [
         'select',
-        'insert (flag, stage, revision, version, path, scheme, hinting, route, shot, changed, diff)',
+        'insert (flag, stage, revision, version, path, scheme, route, shot, changed, diff)',
         'delete',
       ],
       looks: ['select', 'insert', 'update (path, elements, seen_at)'],

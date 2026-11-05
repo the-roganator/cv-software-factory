@@ -1,8 +1,8 @@
 /**
  * The browser the senses launch sets text unhinted, in a real browser: a line of a web font at a small size is the
  * width Chrome on a desktop sets it. Hinted, as headless Chromium on Linux sets text unless told not to, each glyph's
- * advance snaps to a whole pixel, and this line of Geist at 10px is 86px, not 82.67px. So the probes' pictures of the
- * app are set as a visitor's browser sets them, in the pinned image as on the Mac.
+ * advance snaps to a whole pixel, and this line of Geist at 10px is 86px, not 82.67px. So a web font in the probes'
+ * pictures is set as a visitor's browser sets it, in the pinned image as on the Mac.
  */
 import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';

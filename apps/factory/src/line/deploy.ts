@@ -17,7 +17,10 @@
  *
  * - the review gate's verdict on that head, read through the GitHub worker from the review App's own `review` check
  *   alone, as for a fix (`merging.ts`), passed it as an exact pin (`exact-pin`): every changed line a digest of an
- *   image `build.yml` signed on main. No other rule, and never a hold, a pending verdict or one for another head;
+ *   image `build.yml` signed on main. No other rule, and never a hold or one for another head. While the gate's check
+ *   on the head runs, or concluded with a hold marked `pending` less than `PENDING_LIMIT_MS` ago, it is still being
+ *   judged, and the record says its checks are running (`gateJudging`): the gate is not among the checks `judge` waits
+ *   for;
  * - the autonomy level adds to the queue by that rule, with auto-merge on (`ENQUEUES`, `policy/line.ts`): at Guarded
  *   and Lights-out, never at Supervised;
  * - it does not conflict with main, and the GitHub worker and GitHub add it.
@@ -29,7 +32,8 @@
  * carries, as the action is for that one. A newer build's head is judged afresh. A refusal for a head that moved since
  * (409) is no refusal: nothing is recorded, and the next pass reads the new head.
  *
- * Only the app's deploy pull requests: the factory's own deploys are Martin's, and the line does not watch them. A
+ * Only the app's deploy pull requests: the factory's own deploys are Martin's, and the line does not watch them. Acting
+ * on one work item (`only`), the line adds one only when it carries no other (`worker.ts`). A
  * pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
  * GitHub worker that restarted) is read by its number, and only what GitHub says of it is recorded: an empty proposal
  * is never taken for a merge or a close. A dry run's deploy pull request, which GitHub never had, is never recorded.
@@ -44,6 +48,7 @@ import type { ReviewVerdict } from '../github/merging.ts';
 import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { GitHubWorkerError } from '../github/worker-client.ts';
 import { type Draft, judge, latestRuns } from './gates.ts';
+import { PENDING_LIMIT_MS } from './merging.ts';
 import type { GitHubPort } from './worker.ts';
 
 export type DeployChange = PayloadOf<'deploy.changed'>;
@@ -81,6 +86,24 @@ export function deployWait(
   if (!enqueues({ autonomy: merging.autonomy, autoMerge: true }, 'exact-pin')) return { waits: 'level' };
   if (!merging.autoMerge) return { waits: 'auto-merge' };
   return undefined;
+}
+
+/**
+ * Whether the review gate has yet to judge a deploy pull request's head, so the line waits for it rather than hand the
+ * pull request to Martin: its `review` check on the head is running, or concluded with a hold it marked `pending`, less
+ * than `PENDING_LIMIT_MS` ago, as for a fix (`merging.ts`). The gate's checks are not among those `judge` waits for, so
+ * the others can pass before it posts. With no check at all on the head, there is nothing to wait for: it is Martin's.
+ */
+export function gateJudging(
+  verdict: Pick<ReviewVerdict, 'head' | 'check' | 'judged'>,
+  head: string,
+  now: Date,
+): boolean {
+  const { check, judged } = verdict;
+  if (verdict.head !== head || !check) return false;
+  if (check.status !== 'completed') return true;
+  if (judged?.pending === undefined || check.completedAt === null) return false;
+  return now.getTime() - Date.parse(check.completedAt) < PENDING_LIMIT_MS;
 }
 
 /**
@@ -183,6 +206,7 @@ export interface DeployContext {
    * request to the merge queue: the app's alone. Without them it adds nothing, and records none of why.
    */
   merging?: Pick<Controls, 'autonomy' | 'autoMerge'>;
+  now?: () => Date;
 }
 
 /**
@@ -215,12 +239,18 @@ async function queueDeploy(
   const { pullRequest: number, commit: head } = base;
   const done = doneAt(records, base);
   if (done?.state === 'queued') {
-    const queue = await github.read('mergeQueue', repo, { number });
-    // Merged, the read of the pull request says so; still queued, or moved on, there is nothing new.
-    if (queue.head !== head || queue.state !== 'open' || queue.queued || !queue.removed || !queue.added) return done;
+    const queue = await github.read('mergeQueue', repo, { number }).catch((error: unknown) => {
+      // Unread, it stands as recorded, and what GitHub says of the pull request itself is still recorded below.
+      log.warn({ number, err: error }, 'could not read the merge queue for the deploy pull request: asks again');
+      return null;
+    });
+    // Merged, the read of the pull request says so; still queued, or moved on, there is nothing new. GitHub names a
+    // removal only when it has not gone back in since, so one at this head is of the line's addition, or later.
+    if (!queue || queue.head !== head || queue.state !== 'open' || queue.queued || !queue.removed) return done;
     const reason = cutAt((queue.removed.reason ?? 'unknown').toLowerCase(), 60);
     if (reason === 'merged') return done;
-    const failed = queue.checks
+    // Each check's latest run on the queue's commit, as the gates read them: a re-run is not counted twice.
+    const failed = [...latestRuns(queue.checks).values()]
       .filter((run) => run.status === 'completed' && outcomeOf(run.conclusion) === 'failure')
       .map((run) => cutAt(run.name, 80))
       .slice(0, 40);
@@ -228,6 +258,8 @@ async function queueDeploy(
   }
   if (done) return done;
   const verdict = await github.read('reviewVerdict', repo, { number });
+  // While the gate is still judging the head, nothing is the line's or Martin's yet: one of its checks still runs.
+  if (gateJudging(verdict, head, (o.now ?? (() => new Date()))())) return { ...base, state: 'checking' };
   const wait = deployWait(verdict, head, o.merging);
   if (wait) return { ...base, ...wait };
   const mergeable = await github.read('mergeability', repo, { number });
@@ -251,7 +283,13 @@ async function queueDeploy(
     }
     if (error.status === 422) {
       // Already in the queue at that head: the line added it and stopped before recording it.
-      const queue = await github.read('mergeQueue', repo, { number }).catch(() => null);
+      const queue = await github.read('mergeQueue', repo, { number }).catch((read: unknown) => {
+        log.warn(
+          { number, err: read },
+          'could not read whether GitHub already queued the deploy pull request: asks again',
+        );
+        return null;
+      });
       if (!queue) return null;
       if (queue.queued && queue.head === head) return queued(queue.queued.position);
     }

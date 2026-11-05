@@ -7,7 +7,8 @@
  * pushed pull request, a deploy hold's deploy pull request. A merge held again as the review gate's word on it changes
  * has waited since the first of those holds (`mergeHeldSince`). A deploy hold waits for Martin only once that pull
  * request's checks have passed and the line has not added it to the merge queue, or the queue took it out
- * (`deploy.ts`), and from then; until then it waits for the build, the checks, the queue or Argo CD, and is not his yet. One whose release was aborted or erred waits for his retry, from the hold's start.
+ * (`deploy.ts`), and from then; until then it waits for the build, the checks, the review gate, the queue or Argo CD,
+ * and is not his yet. One whose release was aborted or erred waits for his retry, from the hold's start.
  */
 import { type HoldCause, type RawEvent, upcast } from '@software-factory/events';
 import { fromMartin, lastEnd } from '@software-factory/store';

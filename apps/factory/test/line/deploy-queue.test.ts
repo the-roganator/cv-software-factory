@@ -79,8 +79,8 @@ function propose(github: FakeGitHub, head: string, number = DEPLOY) {
 }
 
 /** The line with the app's deploy pull request open on `d`, its checks passed, and the gate's rule for its head. */
-function lineWith(rule: PayloadOf<'pull-request.enqueued'>['rule'] = 'exact-pin', repo?: string) {
-  const it = line(undefined, undefined, { deployEveryMs: 0, ...(repo ? { repo } : {}) });
+function lineWith(rule: PayloadOf<'pull-request.enqueued'>['rule'] = 'exact-pin', repo?: string, only?: string) {
+  const it = line(undefined, undefined, { deployEveryMs: 0, ...(repo ? { repo } : {}), ...(only ? { only } : {}) });
   it.github.gate = { rule };
   propose(it.github, sha('d'));
   // Every time the line asks, refused or not.
@@ -185,7 +185,7 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     await pass();
     github.gate = { rule: 'lights-out' };
     await pass();
-    github.gate = 'pending';
+    github.gate = 'none';
     await pass();
     expect(enqueues()).toEqual([]);
     expect((await changes(workItem)).map(({ waits, rule }) => ({ waits, rule }))).toEqual([
@@ -195,6 +195,41 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     ]);
     // The gate's hold of a deploy pull request is no refusal the line records: it records the gate's refusal of a fix.
     expect(await payloads(workItem, 'action.refused')).toEqual([]);
+  });
+
+  it('says its checks are running while the gate still judges its head, and is not Martin’s until it has', async () => {
+    await controls({});
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github, enqueues } = lineWith('exact-pin');
+    github.gate = 'pending';
+    await pass();
+    // Concluded with a hold only to wait for test integrity, a minute ago: still being judged.
+    github.gate = { rule: 'held', pending: 'test integrity has not finished', completedAt: '2026-10-06T08:59:00Z' };
+    await pass();
+    expect(await changes(workItem)).toEqual([{ head: 'd', pullRequest: DEPLOY, state: 'checking' }]);
+    expect(await waits(workItem)).toBeUndefined();
+    // Past the wait a fix is given, it is Martin's, saying the gate gave no exact pin.
+    github.gate = { rule: 'held', pending: 'test integrity has not finished', completedAt: '2026-10-06T08:40:00Z' };
+    await pass();
+    expect((await changes(workItem)).at(-1)).toEqual({
+      head: 'd',
+      pullRequest: DEPLOY,
+      state: 'passed',
+      waits: 'verdict',
+    });
+    github.gate = { rule: 'exact-pin' };
+    await pass();
+    expect(enqueues()).toHaveLength(1);
+  });
+
+  it('acting on one work item, adds none that carries another', async () => {
+    await controls({});
+    const one = await heldForDeploy(sha('2'));
+    await heldForDeploy(sha('3'), '/cart');
+    const { pass, enqueues } = lineWith('exact-pin', undefined, one);
+    await pass();
+    expect(enqueues()).toEqual([]);
+    expect(await changes(one)).toEqual([{ head: 'd', pullRequest: DEPLOY, state: 'passed' }]);
   });
 
   it('never adds one on a verdict for an older head', async () => {
@@ -228,7 +263,8 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     const workItem = await heldForDeploy(sha('2'));
     const { pass, github, enqueues } = lineWith('exact-pin');
     await pass();
-    github.dequeue(DEPLOY, 'failed_checks', ['e2e']);
+    // The queue's checks, each named once however often it ran.
+    github.dequeue(DEPLOY, 'failed_checks', ['e2e', 'e2e']);
     await pass();
     await pass();
     expect(enqueues()).toHaveLength(1);

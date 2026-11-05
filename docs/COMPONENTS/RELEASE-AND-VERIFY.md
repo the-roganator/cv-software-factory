@@ -80,15 +80,16 @@ Once the app's deploy pull request's checks have passed, the line adds it to the
 
 | `waits` | The line does not add it because |
 | --- | --- |
-| `verdict` | the review gate's verdict on that head, read from the review App's own `review` check alone ([approval routing](APPROVAL-ROUTING.md#the-lines-part)), is not an exact pin: a hold, another rule (in `rule`), a pending verdict, none, or one for another head |
+| `verdict` | the review gate's verdict on that head, read from the review App's own `review` check alone ([approval routing](APPROVAL-ROUTING.md#the-lines-part)), is not an exact pin: a hold, another rule (in `rule`), none, or one for another head |
 | `level` | the autonomy level adds nothing to the queue by `exact-pin`: Supervised (`ENQUEUES`, `policy/line.ts`) |
 | `auto-merge` | auto-merge is off |
 | `conflict` | it conflicts with main |
 | `refused` | the GitHub worker's guard or GitHub refused to add it (in `said`) |
 
+- While the gate's check on the head runs, or concluded with a hold marked `pending` less than fifteen minutes ago (`PENDING_LIMIT_MS`, as for a fix), the gate is still judging it: the record stays `checking`, since the gate is not among the checks the line judges, and the pull request is nobody's yet.
 - It adds a head once. Added, the queue merges it, which the read of the pull request records as `merged`, or takes it out, recorded as `dequeued`; a head refused is not asked again. A newer build's head is judged afresh. A refusal for a head that moved since (409) records nothing, and the next pass reads the new head.
 - The action is for the first held work item the pull request carries, so a refusal the worker signs is relayed once, on that one ([refusals](ORCHESTRATOR.md#refusals-it-records-for-others)); every carried work item records where the pull request stands.
-- Only the app's deploy pull requests. The factory's own deploy pull requests are Martin's to merge, and the line does not watch them.
+- Only the app's deploy pull requests. The factory's own deploy pull requests are Martin's to merge, and the line does not watch them. Acting on one work item (Just one, `LINE_ONLY`), the line adds one only when it carries no other, as the release watch leaves a release that carries another to the whole line.
 
 ## The release watch
 

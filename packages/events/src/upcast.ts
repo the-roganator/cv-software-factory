@@ -225,6 +225,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     1: (payload) => payload,
     2: (payload) => ({ ...payload, guardrails: guardrailsOf(payload) }),
   },
+  // Version 2 adds the line adding a deploy pull request to the merge queue, the queue taking it out, and why one
+  // whose checks passed waits for Martin; a version 1 record reads as it was.
+  'deploy.changed': { 1: (payload) => payload },
   // Version 1 counted a review's comments; version 2 carries each finding. What a version 1 comment said was never
   // recorded, so a version 1 review reads as one with no findings.
   // Version 3 lets a finding cite the ticket; a version 2 review cited none.

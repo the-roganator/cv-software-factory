@@ -449,9 +449,11 @@ function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
   // A merge the gate held is approved first, on GitHub (`reviewOf`).
   if (cause === 'merge' && item.hold?.merge?.why === 'held') return undefined;
   if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
-  // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
-  // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
-  if (cause === 'deploy' && (item.deploy?.state === 'checking' || item.deploy?.state === 'passed')) {
+  // Only while it is open and its checks have not failed (running, passed, in the merge queue or taken out of it) is
+  // the deploy pull request the way on: once they failed, it closed or it merged, what moves the fix on is a newer build
+  // or Argo CD, and the evidence says which.
+  const open: readonly (string | undefined)[] = ['checking', 'passed', 'queued', 'dequeued'];
+  if (cause === 'deploy' && item.deploy && open.includes(item.deploy.state)) {
     return pull('Deploy', item.deploy.pullRequest);
   }
   return undefined;
@@ -516,8 +518,10 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       const improvement = item.kind === 'improvement';
       const keyed =
         guardrail || (hold.cause === 'spec' && improvement && IMPROVEMENT_STEP_UP['hold.approve-improvement-spec']);
-      // A deploy waits for Martin from when its pull request's checks passed, as the line's gauge counts it.
-      const since = hold.cause === 'deploy' && item.deploy?.state === 'passed' ? item.deploy.at : hold.since;
+      // A deploy waits for Martin from when it became his at its head (its checks passed and the line did not queue it,
+      // or the queue took it out), as the line's gauge counts it.
+      const since =
+        hold.cause === 'deploy' && item.deploy?.waitsSince !== undefined ? item.deploy.waitsSince : hold.since;
       return [
         {
           workItem: item.number,

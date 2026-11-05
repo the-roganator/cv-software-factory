@@ -23,6 +23,7 @@ import {
   found,
   HEADERS_FILE,
   NEVER_LIGHTS_OUT,
+  PENDING_LIMIT,
   RISK_LABELS,
   type Rule,
   TAGS,
@@ -207,8 +208,10 @@ export interface Annotation {
  * factory's App can post check runs too. It fails closed: a missing, pending, skipped, cancelled or failed run, or one
  * only another app posted, is no reading. GitHub Actions runs it from the workflow on the pull request's own branch, so
  * a pull request that changes anything under `.github/` is not read from it (and is code-owned, and held, anyway).
- * `pending` marks a run that is missing, queued or in progress for the head: one the gate waits for, as it may yet be
- * read. Every other reason is a reading that will not come.
+ * `pending` marks a reading that may yet come: no run of GitHub Actions' for the head, or one of them not yet completed
+ * (a re-run queued has no `started_at`, so it is looked for among them all, not only the latest). Runs another app
+ * posted are ignored for that, and never read: one of that name posted by the factory's App cannot turn a wait for
+ * the real run into a hold. Every other reason is a reading that will not come.
  */
 export function testIntegrityRun(
   runs: readonly CheckRun[],
@@ -225,17 +228,18 @@ export function testIntegrityRun(
     return { reason: `it changes ${workflow.filename}, so test integrity's run is not the workflow on main's` };
   // Into another branch, its run is that branch's workflow, which a pull request below could have changed unseen here.
   if (base !== 'main') return { reason: `it is into ${base}, so test integrity's run is not the workflow on main's` };
-  const latest = ours[0];
-  if (!latest)
+  const latest = ours.find((run) => run.status === 'completed');
+  if (ours.some((run) => run.status !== 'completed'))
+    return { reason: `test integrity is still running at ${short(head)}`, pending: true };
+  if (!latest) {
+    const foreign = named[0]?.app?.slug ?? 'an unknown app';
     return {
       reason: named.length
-        ? `test integrity's run at ${short(head)} was posted by ${named[0]?.app?.slug ?? 'an unknown app'}, not GitHub Actions`
+        ? `test integrity has not run at ${short(head)}: only ${foreign} posted a run of that name, not GitHub Actions`
         : `test integrity has not run at ${short(head)}`,
-      // Not yet run is a wait; a run only another app posted is no reading however long the gate waits.
-      ...(named.length ? {} : { pending: true as const }),
+      pending: true,
     };
-  if (latest.status !== 'completed')
-    return { reason: `test integrity is still running at ${short(head)}`, pending: true };
+  }
   if (latest.conclusion !== 'success')
     return { reason: `test integrity's run at ${short(head)} is ${latest.conclusion ?? 'unfinished'}, not a success` };
   return { run: latest };
@@ -558,6 +562,14 @@ export interface Facts {
 }
 
 const tagNames = (tags: readonly Found[]) => tags.map((t) => t.tag).join(', ');
+
+/**
+ * Whether the level passes these tags of an App's pull request in the app's repository: none at all at any level, and
+ * at Lights-out any but those it never passes. The one test, for the lights-out rule and for whether a hold for want
+ * of test integrity's reading is only a wait.
+ */
+export const levelPasses = (tags: readonly Found[], autonomy: string): boolean =>
+  tags.length === 0 || (autonomy === 'lights-out' && !tags.some((t) => NEVER_LIGHTS_OUT.includes(t.tag)));
 /** Martin's verdict after another clause: a name keeps its capital. */
 const lower = (text: string) => text.replace(/^Waits/, 'waits');
 
@@ -572,18 +584,9 @@ export function route(facts: Facts): Decision {
     rule: 'held',
     tags,
   });
-  if (!appOpened(pr)) {
-    if (facts.unread) return held(`The gate could not read the pull request whole (${facts.unread})`);
-    return { pass: false, title: martin.title, rule: 'held', tags };
-  }
-  // Nothing else was read, so nothing else holds it: the gate waits to read it again.
-  if (facts.unread)
-    return {
-      ...held(
-        `The gate could not read the pull request whole (${facts.unread}), and waits to read it before it judges`,
-      ),
-      pending: `a read of GitHub that failed: ${facts.unread}`,
-    };
+  // A read that failed is a hold, never a wait: nothing runs the gate again for it, and it may never succeed.
+  if (facts.unread) return held(`The gate could not read the pull request whole (${facts.unread})`);
+  if (!appOpened(pr)) return { pass: false, title: martin.title, rule: 'held', tags };
   if (facts.labelsRemoved.length)
     return held(`Someone other than Martin removed its ${facts.labelsRemoved.join(', ')} label`);
   if (facts.pin && 'pins' in facts.pin) {
@@ -594,13 +597,16 @@ export function route(facts: Facts): Decision {
     const why = facts.pin && 'reason' in facts.pin ? `: ${facts.pin.reason}` : '';
     return held(`Not an exact pin${why}, and here only a pin passes without Martin`);
   }
-  const never = tags.filter((t) => NEVER_LIGHTS_OUT.includes(t.tag));
+  const passed = levelPasses(tags, facts.autonomy);
+  // Tags the level does not pass hold it whatever test integrity says, so they decide first, and it is no wait.
+  if (!passed) return held(`Held for its risk tags (${tagNames(tags)})`);
   if (!facts.testIntegrity.read) {
     const { reason, pending } = facts.testIntegrity;
-    // A wait only when the reading alone decides: tags the level does not pass hold it whatever test integrity says.
-    const tagsHold = tags.length > 0 && !(facts.autonomy === 'lights-out' && never.length === 0);
-    if (pending && !tagsHold)
-      return { ...held(`Waits for test integrity before it judges: ${reason}`), pending: reason };
+    if (pending)
+      return {
+        ...held(`Waits for test integrity before it judges: ${reason}`),
+        pending: reason.slice(0, PENDING_LIMIT),
+      };
     return held(`No reading of test integrity: ${reason}`);
   }
   if (tags.length === 0)
@@ -610,9 +616,7 @@ export function route(facts: Facts): Decision {
       rule: 'low-risk',
       tags,
     };
-  if (facts.autonomy === 'lights-out' && never.length === 0)
-    return { pass: true, title: `Lights-out passes its risk tags: ${tagNames(tags)}`, rule: 'lights-out', tags };
-  return held(`Held for its risk tags (${tagNames(tags)})`);
+  return { pass: true, title: `Lights-out passes its risk tags: ${tagNames(tags)}`, rule: 'lights-out', tags };
 }
 
 /**

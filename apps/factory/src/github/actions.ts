@@ -760,8 +760,9 @@ export interface DryRunPull {
   closedAt: Date | null;
   /** Its description, as the dry run would last have written it. */
   body: string;
-  /** When it would first have been added to the merge queue, or null while it has not. */
+  /** When it would last have been added to the merge queue, and at which head, or null while it has not. */
   enqueuedAt: Date | null;
+  enqueuedHead: string | null;
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -870,6 +871,14 @@ export class DryRunActions implements Actions {
     );
   }
 
+  /**
+   * When a pull request this dry run opened went into the merge queue, while it is still there: GitHub takes a pull
+   * request out of the queue when its head moves or it goes back to draft, so a push or a draft since leaves it out.
+   */
+  queuedAt(pull: DryRunPull): Date | null {
+    return !pull.draft && pull.enqueuedHead === this.headOf(pull) ? pull.enqueuedAt : null;
+  }
+
   /** A pull request this dry run would have opened, or undefined for any other number. */
   pullRequestMade(number: number): DryRunPull | undefined {
     return this.#pulls.get(number);
@@ -963,6 +972,7 @@ export class DryRunActions implements Actions {
       closedAt: null,
       body: draft.body,
       enqueuedAt: null,
+      enqueuedHead: null,
     });
     return { number, url: `dry-run:${repo}#${number}`, nodeId };
   }
@@ -1100,7 +1110,7 @@ export class DryRunActions implements Actions {
     }
     await this.#record('enqueuePullRequest', repo, { number, expectedHead });
     if (!own) return { position: null, state: null };
-    own.enqueuedAt ??= this.#now();
+    if (!this.queuedAt(own)) Object.assign(own, { enqueuedAt: this.#now(), enqueuedHead: expectedHead });
     return { position: 1, state: 'QUEUED' };
   }
 

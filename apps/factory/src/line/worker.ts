@@ -310,6 +310,9 @@ export interface LineOptions {
 
 type Provider = 'anthropic' | 'bedrock' | 'local';
 
+/** What GitHub says of a pull request ready to merge: `MergeFacts` without Martin's controls, which are read each pass. */
+type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge'>;
+
 /** Martin's settings, as the line reads them (`../settings.ts`): checked against policy, as the gateway checks them. */
 export interface LineSettings {
   /** Where each agent's calls go now, and a work item's cap now. */
@@ -385,7 +388,7 @@ export class Line {
   /** Martin's autonomy level and auto-merge switch, as this pass read them: policy's default until the first. */
   #merging: Pick<Controls, 'autonomy' | 'autoMerge'> = { autonomy: 'supervised', autoMerge: false };
   /** What GitHub said of each pull request ready to merge, read at most once in `gatesEveryMs`, by work item. */
-  readonly #mergeRead = new Map<string, { at: number; number: number; facts: Promise<MergeFacts | null> }>();
+  readonly #mergeRead = new Map<string, { at: number; number: number; facts: Promise<MergeRead | null> }>();
 
   constructor(options: LineOptions) {
     this.#o = {
@@ -1144,7 +1147,7 @@ export class Line {
   async #enqueue(workItem: string, next: Extract<Next, { do: 'enqueue' }>): Promise<boolean | undefined> {
     const { number, head, rule } = next;
     this.#mergeRead.delete(workItem);
-    let enqueued: ActionResult<'enqueuePullRequest'>;
+    let enqueued: Pick<ActionResult<'enqueuePullRequest'>, 'position'>;
     try {
       enqueued = await this.#o.github.act(
         'enqueuePullRequest',
@@ -1158,23 +1161,29 @@ export class Line {
         this.#o.log.info({ workItem, number, err: error }, 'the pull request moved before it was queued: read again');
         return false;
       }
-      const why = error.status === 422 ? 'GitHub could not add it' : 'it was refused';
-      const reason = cutTo(
-        `Pull request #${number} was not added to the merge queue, as ${why}: ${error.message}`,
-        300,
-      );
-      await this.#append(workItem, [
-        holdDraft('factory', {
-          stage: 'review',
-          kind: 'approval',
-          cause: 'merge',
-          reason,
-          merge: { pullRequest: number, head, why: 'refused', rule, approving: false },
-        }),
-      ]);
-      await this.#queue.moved(workItem);
-      this.#o.log.warn({ workItem, number, err: error }, 'a pull request was not added to the merge queue: it waits');
-      return;
+      // Already in the queue at that head: the line added it and stopped before recording it. Record it now.
+      const already = error.status === 422 ? await this.#queuedAt(number, head) : null;
+      if (already) {
+        enqueued = already;
+      } else {
+        const why = error.status === 422 ? 'GitHub could not add it' : 'it was refused';
+        const reason = cutTo(
+          `Pull request #${number} was not added to the merge queue, as ${why}: ${error.message}`,
+          300,
+        );
+        await this.#append(workItem, [
+          holdDraft('factory', {
+            stage: 'review',
+            kind: 'approval',
+            cause: 'merge',
+            reason,
+            merge: { pullRequest: number, head, why: 'refused', rule, approving: false },
+          }),
+        ]);
+        await this.#queue.moved(workItem);
+        this.#o.log.warn({ workItem, number, err: error }, 'a pull request was not added to the merge queue: it waits');
+        return;
+      }
     }
     const dryRun = number >= DRY_RUN_NUMBERS_FROM;
     await this.#append(workItem, [
@@ -1194,6 +1203,17 @@ export class Line {
     await this.#queue.moved(workItem);
     this.#o.log.info({ workItem, number, head, rule }, 'added a pull request to the merge queue');
     return;
+  }
+
+  /** A pull request's place in the merge queue, while it is there at that head, or null; null too when unread. */
+  async #queuedAt(number: number, head: string): Promise<{ position: number | null } | null> {
+    try {
+      const queue = await this.#o.github.read('mergeQueue', this.#o.repo, { number });
+      return queue.queued && queue.head === head ? { position: queue.queued.position } : null;
+    } catch (error) {
+      this.#o.log.warn({ number, err: error }, 'could not read the merge queue');
+      return null;
+    }
   }
 
   /** Whether a work item at Verify may be looked at: never twice at once, and not before a look that could not tell. */
@@ -2202,15 +2222,23 @@ export class Line {
    * verifies with the GitHub worker's key. Null when GitHub cannot be read: the change waits, and nothing is held for
    * want of a read.
    */
-  #mergeFacts(workItem: string, number: number): Promise<MergeFacts | null> {
+  async #mergeFacts(workItem: string, number: number): Promise<MergeFacts | null> {
+    const read = await this.#mergeReadOf(workItem, number);
+    // The controls as they are this pass, never as they were when GitHub was read: Martin's change applies at once.
+    return read && { ...read, ...this.#merging };
+  }
+
+  /** What GitHub says, cached for `gatesEveryMs`: the part of `MergeFacts` that is not Martin's controls. */
+  #mergeReadOf(workItem: string, number: number): Promise<MergeRead | null> {
     const now = this.#o.now().getTime();
     const known = this.#mergeRead.get(workItem);
     if (known && known.number === number && now - known.at < this.#o.gatesEveryMs) return known.facts;
     const { github, repo, log } = this.#o;
-    const controls = this.#merging;
-    const facts = (async (): Promise<MergeFacts | null> => {
-      const verdict = await github.read('reviewVerdict', repo, { number });
-      const mergeable = await github.read('mergeability', repo, { number });
+    const facts = (async (): Promise<MergeRead | null> => {
+      const [verdict, mergeable] = await Promise.all([
+        github.read('reviewVerdict', repo, { number }),
+        github.read('mergeability', repo, { number }),
+      ]);
       const refusal = verdict.refusal ? this.#gateRefusal(workItem, number, verdict.head, verdict.refusal) : undefined;
       const check = verdict.check && {
         status: verdict.check.status,
@@ -2219,7 +2247,6 @@ export class Line {
         url: verdict.check.url,
       };
       return {
-        ...controls,
         head: verdict.head,
         check,
         judged: verdict.judged,

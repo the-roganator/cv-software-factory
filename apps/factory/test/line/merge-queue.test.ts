@@ -7,7 +7,7 @@ import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { recordBytes, recordHash, type SignedRefusal, signRecord } from '../../src/signed-refusals.ts';
-import { event, line, martin, payloads, stage, ticket, types, withLineStore } from './harness.ts';
+import { clock, event, line, martin, payloads, stage, ticket, types, withLineStore } from './harness.ts';
 
 withLineStore();
 
@@ -110,6 +110,30 @@ describe('the line, merging through the queue', () => {
     expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'auto-merge' } });
     expect(await types(workItem)).not.toContain('action.refused');
     // Turned on, the next read adds it.
+    await controls({});
+    await pass();
+    expect(await payloads(workItem, 'pull-request.enqueued')).toHaveLength(1);
+  });
+
+  it('decides on Martin’s controls as they are this pass, even while what GitHub said is still fresh', async () => {
+    await controls({ autoMerge: false });
+    // GitHub read at most once a minute, with a minute between the passes that carry it to its merge.
+    let at = clock.now;
+    const workItem = await ticket();
+    const { pass, github } = line(undefined, undefined, {
+      refusalKey: publicKey,
+      gatesEveryMs: 60_000,
+      now: () => new Date(at),
+    });
+    for (const _ of [1, 2, 3, 4, 5]) {
+      at += 61_000;
+      if (github.pulls.has(12)) github.pass();
+      await pass();
+    }
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({ merge: { why: 'auto-merge' } });
+    // Within the minute GitHub is not asked again, so a check run started since is not seen yet; but the switch he
+    // turned on applies at once.
+    github.gate = 'pending';
     await controls({});
     await pass();
     expect(await payloads(workItem, 'pull-request.enqueued')).toHaveLength(1);
@@ -247,5 +271,18 @@ describe('the line, merging through the queue', () => {
     });
     expect(await types(workItem)).not.toContain('pull-request.enqueued');
     expect(github.acts.filter((a) => a.action === 'enqueuePullRequest')).toEqual([]);
+  });
+
+  it('records one already in the queue at that head, which the line added and did not record, and holds nothing', async () => {
+    await controls({});
+    const { workItem, pass, github } = await readyToMerge();
+    // GitHub took it before the line stopped: asked again, it answers that it cannot add it.
+    github.queued.add(12);
+    github.refusing.set('enqueuePullRequest', new GitHubWorkerError(422, 'unprocessable', 'Already queued'));
+    await pass();
+    expect(await payloads(workItem, 'pull-request.enqueued')).toEqual([
+      { number: 12, commit: github.pulls.get(12)?.head.sha, rule: 'low-risk', position: 1 },
+    ]);
+    expect(await types(workItem)).not.toContain('hold.started');
   });
 });

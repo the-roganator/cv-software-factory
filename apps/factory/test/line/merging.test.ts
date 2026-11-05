@@ -1,4 +1,5 @@
 import { AUTONOMY, type Autonomy, type PayloadOf } from '@software-factory/events';
+import { PAYLOADS } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
 import { ENQUEUES } from '../../../../policy/line.ts';
 import { RULES, type Rule } from '../../../../policy/review-verdict.ts';
@@ -177,10 +178,27 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     expect(holdOf(unreviewed, merge()).merge?.why).toBe('unreviewed');
     // A review recorded before reviews named their head.
     const unnamed = [ticket, spec(), pushed(), ...gates(), reviewed(null), summarised];
-    expect(holdOf(unnamed, merge()).merge?.why).toBe('unreviewed');
+    expect(holdOf(unnamed, merge())).toMatchObject({
+      reason: expect.stringContaining('reviewed before the line recorded which head'),
+      merge: { why: 'unreviewed' },
+    });
     // Gates that passed on another head.
     const elsewhere = [ticket, spec(), pushed(), ...gates(PUSHED), reviewed(), summarised];
     expect(holdOf(elsewhere, merge()).merge?.why).toBe('unreviewed');
+  });
+
+  it('keeps the gate’s tags as the hold’s schema takes them, however long the lines it quotes', () => {
+    const long = `src/${'deeply/nested/'.repeat(8)}headers.ts: res.setHeader('Content-Security-Policy', "${'x'.repeat(120)}")`;
+    const because = [long, '  ', ...Array.from({ length: 22 }, (_, i) => `src/f${i}.ts`)];
+    const m = merge({ rule: 'held' });
+    const judged = { ...m.judged, tags: [{ tag: 'security-headers', because, more: 3 }] } as MergeFacts['judged'];
+    const hold = holdOf([...ready, refused], { ...m, judged, check: { ...m.check, title: '  ' } } as MergeFacts);
+    const [tag] = hold.merge?.tags ?? [];
+    expect(tag?.because).toHaveLength(20);
+    expect(tag?.because[0]?.length).toBeLessThanOrEqual(200);
+    expect(tag?.more).toBe(3 + 1 + 3);
+    expect(hold.merge?.said).toBeUndefined();
+    expect(PAYLOADS['hold.started'].safeParse(hold).success).toBe(true);
   });
 
   it('never queues an improvement, a release, a red-team branch or work whose spec was out of scope', () => {

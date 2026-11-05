@@ -67,7 +67,7 @@ export class DryRunReads implements Reads {
   /** When a pull request the dry run opened merges: after it was queued, or else after it was readied; never, closed. */
   #mergesAt(pull: DryRunPull): number | null {
     if (pull.closedAt !== null) return null;
-    const from = pull.enqueuedAt ?? pull.readiedAt;
+    const from = this.#made.queuedAt(pull) ?? pull.readiedAt;
     return from === null ? null : from.getTime() + this.#times.mergeAfterMs;
   }
 
@@ -245,7 +245,7 @@ export class DryRunReads implements Reads {
     const pull = this.#own(repo, number);
     if (!pull) return this.#live.mergeQueue(repo, number);
     const state = this.#state(pull);
-    const at = pull.enqueuedAt;
+    const at = this.#made.queuedAt(pull);
     const base = {
       number,
       head: state.head.sha,

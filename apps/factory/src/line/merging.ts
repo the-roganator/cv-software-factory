@@ -31,10 +31,10 @@
  * gate, as for any gate: nothing is held for a verdict about to come.
  */
 import type { Autonomy, GateRule, PayloadOf } from '@software-factory/events';
-import { cutTo } from '@software-factory/events';
+import { cutTo, PATH_CHARS } from '@software-factory/events';
 import { canonical } from '@software-factory/events/signed';
 import { enqueues } from '../../../../policy/line.ts';
-import type { Judged } from '../../../../policy/review-verdict.ts';
+import { GIVEN_LIMIT, type Judged } from '../../../../policy/review-verdict.ts';
 import { redTeamBranch } from '../github/branches.ts';
 import type { Decision, WorkItemState } from './machine.ts';
 
@@ -77,6 +77,18 @@ export function neverTheLines(s: WorkItemState, judged: Judged | null): string |
   return undefined;
 }
 
+/**
+ * The gate's tags as a hold keeps them: each reason trimmed and cut to a path's length, none empty, at most the gate's
+ * own number of them, the rest counted. The gate writes a file's path and a line of it, which may be longer.
+ */
+export function heldTags(tags: Judged['tags']): Merge['tags'] {
+  return tags.map(({ tag, because, more }) => {
+    const kept = [...new Set(because.map((b) => cutTo(b.trim(), PATH_CHARS)).filter((b) => b.length > 0))];
+    const over = (more ?? 0) + (because.length - kept.length) + Math.max(0, kept.length - GIVEN_LIMIT);
+    return { tag, because: kept.slice(0, GIVEN_LIMIT), ...(over > 0 ? { more: over } : {}) };
+  });
+}
+
 /** The tags the gate found, in words. */
 const tagWords = (judged: Judged) => judged.tags.map((t) => t.tag).join(', ');
 
@@ -117,8 +129,8 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
   const { judged } = m;
   const never = neverTheLines(s, judged);
   const verdict: Pick<Merge, 'rule' | 'tags' | 'said' | 'check'> = {
-    ...(judged ? { rule: judged.rule, tags: judged.tags } : {}),
-    ...(m.check?.title ? { said: cutTo(m.check.title, 300) } : {}),
+    ...(judged ? { rule: judged.rule, tags: heldTags(judged.tags) } : {}),
+    ...(m.check?.title?.trim() ? { said: cutTo(m.check.title.trim(), 300) } : {}),
     ...(m.check?.url ? { check: m.check.url } : {}),
   };
   const held = (why: Merge['why'], reason: string, extra: Partial<Merge> = {}): Hold => ({
@@ -150,6 +162,13 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
     return held(
       'no-verdict',
       `The review gate gave no verdict the line can trust on #${number} at ${short(m.head)}: ${why}. It waits for Martin`,
+    );
+  }
+  if (s.review && s.review.commit === undefined) {
+    // Reviewed before reviews named the head they were given: the line cannot tell that it was this one.
+    return held(
+      'unreviewed',
+      `Pull request #${number} was reviewed before the line recorded which head its reviewer passed: it waits for Martin to merge it`,
     );
   }
   if (s.review?.commit !== m.head || s.gates?.commit !== m.head || !s.gatesPassed) {

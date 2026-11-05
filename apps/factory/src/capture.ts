@@ -8,11 +8,11 @@ import type { ArtifactStore } from '@software-factory/store';
 import type { LaunchOptions, Page, PageScreenshotOptions } from 'playwright';
 
 /**
- * How every browser the factory launches is started: the probes', the crawler's, the canary's journeys', and the
- * captures of the samples and the console's test data; the console's own browser tests too. Text is set unhinted, as
+ * How every browser the factory launches is started: the probes', the crawler's, the canary's journeys', the captures
+ * of the samples and the console's test data, and the console's own browser tests and ZAP scan. Text is set unhinted, as
  * Chrome on a desktop does: headless Chromium on Linux hints a web font fully by default, which snaps each glyph's
  * advance to a whole pixel, so small text comes out squeezed or stretched ("Pricesbelow zero"). System fonts are set
- * the same either way.
+ * the same either way, and so is everything on the Mac, whose Chromium ignores the flag.
  */
 export const BROWSER_LAUNCH: LaunchOptions = { args: ['--font-render-hinting=none'] };
 

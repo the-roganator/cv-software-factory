@@ -16,12 +16,9 @@ vi.mock('playwright', async (original) => ({
 }));
 
 describe('the browser the factory launches', () => {
-  it('sets text unhinted', () => {
-    expect(BROWSER_LAUNCH.args).toContain('--font-render-hinting=none');
-  });
-
-  it('is launched so by the senses, unless they are given a launch of their own', async () => {
+  it('is launched by the senses setting text unhinted, unless they are given a launch of their own', async () => {
     await new SharedBrowser(undefined).ready();
     expect(launch).toHaveBeenCalledExactlyOnceWith(BROWSER_LAUNCH);
+    expect(BROWSER_LAUNCH.args).toContain('--font-render-hinting=none');
   });
 });

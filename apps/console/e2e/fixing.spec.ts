@@ -284,7 +284,7 @@ test.describe('tool marks', () => {
     );
   });
 
-  test('every answer on a visitor’s card takes the answers column’s width, a flag’s and the way forward’s too', async ({
+  test('every answer on a visitor’s card is the answers column’s width and a button’s height, a flag’s and the way forward’s too', async ({
     page,
   }) => {
     await page.goto(consoleUrl({}));
@@ -292,10 +292,17 @@ test.describe('tool marks', () => {
     const cards = page.locator('article.needs .need');
     await expect(cards.first()).toBeVisible();
     for (const card of await cards.all()) {
-      const widths = await card
+      // One width and one height: a visitor's labels are drawn at a small button's size, as the way forward and Martin's answers are.
+      const sizes = await card
         .locator('.answers > .answer > .ro, .answers > .answer > .way, .answers > .answer > .btn')
-        .evaluateAll((controls) => controls.map((control) => Math.round(control.getBoundingClientRect().width)));
-      expect(new Set(widths).size).toBeLessThanOrEqual(1);
+        .evaluateAll((controls) =>
+          controls.map((control) => {
+            const { width, height } = control.getBoundingClientRect();
+            return { width: Math.round(width), height: Math.round(height) };
+          }),
+        );
+      expect(new Set(sizes.map((size) => size.width)).size).toBeLessThanOrEqual(1);
+      expect(new Set(sizes.map((size) => size.height)).size).toBeLessThanOrEqual(1);
     }
   });
 

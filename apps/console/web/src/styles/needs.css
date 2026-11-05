@@ -79,11 +79,18 @@
   display: contents;
 }
 /* Every answer takes the column's width, Martin's buttons (a disabled one too) and a visitor's labels alike, so each
-   card's answers are one column of equal width, the way forward among them. */
+   card's answers are one column of equal width, the way forward among them. A visitor's labels take a small button's
+   size and shape too, so the card is drawn as Martin's is, keeping only their read-only colours. */
 .answers .btn,
 .answers .ro {
   justify-self: stretch;
   justify-content: flex-start;
+}
+.answers .ro {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-radius: var(--radius-card);
 }
 /* The way a merge or a deploy ends, on GitHub: "Merge", "Deploy" or "Review" and GitHub's mark, in the column of
    buttons and as wide as they are, with what it does beside it, bordered and weighted in the text's colour, as it is

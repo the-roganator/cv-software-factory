@@ -487,8 +487,7 @@ describe('the line', () => {
     const updated = 'd'.repeat(40);
     pr.head.sha = updated;
     github.pass();
-    // GitHub says it merged before it names the merge commit: the line waits for the next read, reading no checks for
-    // its gates. Only the merge's read asks for them, with the gate's verdict, for when test integrity finished.
+    // GitHub says it merged before it names the merge commit: the line waits for the next read, reading no checks.
     Object.assign(pr, { state: 'closed', merged: true, mergedBy: 'mrogan' });
     const before = await types(workItem);
     const reads = vi.spyOn(github, 'read');
@@ -498,10 +497,7 @@ describe('the line', () => {
     expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
       merge: { why: 'unreviewed', head: updated },
     });
-    const asked = reads.mock.calls.map(([read]) => read);
-    expect(asked.filter((read) => read === 'checkRuns')).toHaveLength(
-      asked.filter((r) => r === 'reviewVerdict').length,
-    );
+    expect(reads.mock.calls.map(([read]) => read)).not.toContain('checkRuns');
     reads.mockRestore();
     github.merge();
     await pass();

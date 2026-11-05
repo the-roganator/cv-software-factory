@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
+import { cutPending, found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
 import {
   atHead,
   judge,
@@ -363,6 +363,15 @@ describe("the check's summary", () => {
     const read = readVerdict(summary);
     if ('error' in read) throw new Error(read.error);
     expect(read.judged.every((j) => j.pending === 'w'.repeat(PENDING_LIMIT))).toBe(true);
+  });
+
+  it('cuts a pending hold once, by code points, so a character is never split and the line reads it', () => {
+    const reason = `${'x'.repeat(PENDING_LIMIT - 1)}🛑🛑`;
+    const waits = { pass: false, title: 'Waits', rule: 'held' as const, tags: [], pending: reason };
+    const read = readVerdict(summaryOf(HEAD, [{ pr: pr(APP), said: waits }]));
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged[0]?.pending).toBe(`${'x'.repeat(PENDING_LIMIT - 1)}🛑`);
+    expect(cutPending(reason)).toBe(read.judged[0]?.pending);
   });
 });
 

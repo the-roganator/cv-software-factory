@@ -14,13 +14,14 @@
  * is, and the queue's commit for a stacked pull request carries those below it: each with the head it was judged at.
  * The check passes only when every entry's rule passes.
  *
- * An entry held only to wait for test integrity carries `pending`, at most `PENDING_LIMIT` characters saying what it
- * waits for: GitHub Actions' run of `gates / test integrity` missing for the head, or one of them not yet completed,
- * with no tag found that the level would not pass. Test integrity's workflow runs on every push and its completion
- * runs the gate again, so the reading it waits for comes. It is never set beside a passing rule, nor on any other
- * hold: a tag the level does not pass, a removed risk label, a stacked base, a run that failed or was cancelled, a read
- * of GitHub that failed. The field is optional, so a block without it, or a reader that knows nothing of it, is still
- * version 1.
+ * An entry held only to wait for test integrity carries `pending`, at most `PENDING_LIMIT` code points saying what it
+ * waits for: GitHub Actions' run of `gates / test integrity` missing for the head (a run only another app posted counts
+ * as none), or its latest not yet completed, with no tag found that the level would not pass. Test integrity's
+ * workflow runs on every push and its completion runs the gate again, so the reading it waits for comes. It is never
+ * set beside a passing rule, nor on any other hold: a tag the level does not pass, a removed risk label, a change under
+ * `.github/`, a stacked base, a run that failed or was cancelled, a read of GitHub that failed. The gate marks it
+ * conservatively; the line, which has a clock, bounds the wait. The field is optional, so a block without it, or a
+ * reader that knows nothing of it, is still version 1.
  *
  * Read it only from the check run named `review` that the review App (5470762) posted, for the pull request's current
  * head: the factory's App can post check runs too, and its text could say anything.
@@ -90,8 +91,14 @@ export interface Verdict {
 /** The most things named as giving one tag: a summary has room for 65,535 characters. */
 export const GIVEN_LIMIT = 20;
 
-/** The most a `pending` may say: a reason, not a log. */
+/** The most a `pending` may say, in code points: a reason, not a log. */
 export const PENDING_LIMIT = 300;
+
+/**
+ * A `pending` cut to `PENDING_LIMIT` code points, the one cut the gate makes and the bound the line reads by: a cut by
+ * UTF-16 units could split a character in two and leave words no JSON reader keeps whole.
+ */
+export const cutPending = (reason: string): string => [...reason].slice(0, PENDING_LIMIT).join('');
 
 /** Whether a rule passes the pull request: every rule but `held`, pending or not. */
 export const passes = (rule: Rule): boolean => rule !== 'held';
@@ -147,7 +154,7 @@ function readJudged(value: unknown): Judged | string {
   }
   if (pending !== undefined) {
     if (typeof pending !== 'string' || pending === '') return `#${number}'s pending read is not words`;
-    if (pending.length > PENDING_LIMIT) return `#${number}'s pending read is over ${PENDING_LIMIT} characters`;
+    if ([...pending].length > PENDING_LIMIT) return `#${number}'s pending read is over ${PENDING_LIMIT} characters`;
     if (rule !== 'held') return `#${number} waits for a read, but its rule, ${String(rule)}, is not held`;
   }
   return {

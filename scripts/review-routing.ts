@@ -23,7 +23,6 @@ import {
   found,
   HEADERS_FILE,
   NEVER_LIGHTS_OUT,
-  PENDING_LIMIT,
   RISK_LABELS,
   type Rule,
   TAGS,
@@ -82,7 +81,8 @@ export interface Decision extends Verdict {
   tags: Found[];
   /**
    * Set only on a hold that waits for a read: what the gate could not read yet, with nothing it did read holding the
-   * pull request. Judged again once it can be read, the verdict may differ.
+   * pull request. Judged again once it can be read, the verdict may differ. Whole here: the summary's block cuts it
+   * (`cutPending`).
    */
   pending?: string;
 }
@@ -208,10 +208,12 @@ export interface Annotation {
  * factory's App can post check runs too. It fails closed: a missing, pending, skipped, cancelled or failed run, or one
  * only another app posted, is no reading. GitHub Actions runs it from the workflow on the pull request's own branch, so
  * a pull request that changes anything under `.github/` is not read from it (and is code-owned, and held, anyway).
- * `pending` marks a reading that may yet come: no run of GitHub Actions' for the head, or one of them not yet completed
- * (a re-run queued has no `started_at`, so it is looked for among them all, not only the latest). Runs another app
- * posted are ignored for that, and never read: one of that name posted by the factory's App cannot turn a wait for
- * the real run into a hold. Every other reason is a reading that will not come.
+ * Only GitHub Actions' latest attempt for the head counts, the one with the highest id (a re-run queued has no
+ * `started_at` yet, but its id is the newest): an older attempt left queued or unclosed neither keeps it waiting nor
+ * gives the reading once a newer one has completed. `pending` marks a reading that may yet come: no run of GitHub
+ * Actions' for the head, or its latest not yet completed. Runs another app posted are ignored for that, and never
+ * read: one of that name posted by the factory's App cannot turn a wait for the real run into a hold. Every other
+ * reason is a reading that will not come.
  */
 export function testIntegrityRun(
   runs: readonly CheckRun[],
@@ -220,16 +222,14 @@ export function testIntegrityRun(
   base: string,
 ): { run: CheckRun } | { reason: string; pending?: true } {
   const named = runs.filter((run) => run.name === TEST_INTEGRITY_CHECK && run.head_sha === head);
-  const ours = named
-    .filter((run) => run.app?.slug === ACTIONS_SLUG)
-    .sort((a, b) => (b.started_at ?? '').localeCompare(a.started_at ?? '') || b.id - a.id);
+  const ours = named.filter((run) => run.app?.slug === ACTIONS_SLUG).sort((a, b) => b.id - a.id);
   const workflow = files.find((f) => [f.filename, f.previous_filename].some((p) => p?.startsWith('.github/')));
   if (workflow)
     return { reason: `it changes ${workflow.filename}, so test integrity's run is not the workflow on main's` };
   // Into another branch, its run is that branch's workflow, which a pull request below could have changed unseen here.
   if (base !== 'main') return { reason: `it is into ${base}, so test integrity's run is not the workflow on main's` };
-  const latest = ours.find((run) => run.status === 'completed');
-  if (ours.some((run) => run.status !== 'completed'))
+  const latest = ours[0];
+  if (latest && latest.status !== 'completed')
     return { reason: `test integrity is still running at ${short(head)}`, pending: true };
   if (!latest) {
     const foreign = named[0]?.app?.slug ?? 'an unknown app';
@@ -599,14 +599,18 @@ export function route(facts: Facts): Decision {
   }
   const passed = levelPasses(tags, facts.autonomy);
   // Tags the level does not pass hold it whatever test integrity says, so they decide first, and it is no wait.
-  if (!passed) return held(`Held for its risk tags (${tagNames(tags)})`);
+  // Its title names test integrity's reading too when there is none, so Martin does not approve on the tags alone.
+  if (!passed) {
+    const integrity = facts.testIntegrity.read
+      ? ''
+      : facts.testIntegrity.pending
+        ? `; test integrity has not read it yet (${facts.testIntegrity.reason})`
+        : `; no reading of test integrity (${facts.testIntegrity.reason})`;
+    return held(`Held for its risk tags (${tagNames(tags)})${integrity}`);
+  }
   if (!facts.testIntegrity.read) {
     const { reason, pending } = facts.testIntegrity;
-    if (pending)
-      return {
-        ...held(`Waits for test integrity before it judges: ${reason}`),
-        pending: reason.slice(0, PENDING_LIMIT),
-      };
+    if (pending) return { ...held(`Waits for test integrity before it judges: ${reason}`), pending: reason };
     return held(`No reading of test integrity: ${reason}`);
   }
   if (tags.length === 0)

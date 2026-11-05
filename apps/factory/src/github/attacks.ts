@@ -30,7 +30,6 @@ import type { GitHub } from './client.ts';
 import { listedReviews, REVIEW_RUNS, reviewCheckOf, reviewOutput, reviewRunsPath } from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import type { Reads } from './reads.ts';
-import { outcomeOf } from './reads.ts';
 import { tryWorkflowWrite } from './refusal.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 
@@ -253,6 +252,10 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
       // Not judged in time: nothing got through, and nothing refused it. The harness records the attack unfinished.
       return { refusals: [], pullRequest, unconcluded: { what: 'the review check did not conclude within the limit' } };
     }
+    if (verdict.held === null) {
+      // Cancelled, timed out, gone stale: no verdict, as the line reads it (`verdictOf`), so no refusal is signed.
+      return { refusals: [], pullRequest, unconcluded: { what: `the review check concluded ${verdict.conclusion}` } };
+    }
     if (!verdict.held) {
       return { refusals: [], pullRequest, gotThrough: { what: 'the review check did not hold the pull request' } };
     }
@@ -278,12 +281,13 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
 /**
  * Waits for the review App's `review` run on a commit to conclude, and reads its verdict and words, or undefined if it
  * never does. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too.
+ * Only a success passes and only a failure holds, as for the line: any other conclusion is no verdict (`held` null).
  */
 async function waitForReview(
   o: AttackServerOptions,
   repo: string,
   sha: string,
-): Promise<{ held: boolean; output: string } | undefined> {
+): Promise<{ held: boolean | null; conclusion: string | null; output: string } | undefined> {
   const review = await waitFor(
     async () => {
       const { body } = await o.github.poll(repo, reviewRunsPath(repo, sha), REVIEW_RUNS);
@@ -301,6 +305,7 @@ async function waitForReview(
     },
   );
   if (!review) return undefined;
-  const held = outcomeOf(review.conclusion) === 'failure';
-  return { held, output: reviewOutput(review) };
+  const { conclusion } = review;
+  const held = conclusion === 'failure' ? true : conclusion === 'success' ? false : null;
+  return { held, conclusion, output: reviewOutput(review) };
 }

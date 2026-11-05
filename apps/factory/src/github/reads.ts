@@ -339,14 +339,17 @@ export interface ReleaseSources {
 
 const segments = (branch: string) => branch.split('/').map(encodeURIComponent).join('/');
 
-/** The most review-gate refusals remembered as signed, by check run: far more than are held at once. */
+/** The most review-gate refusals remembered as signed, by check run and pull request: far more than are held at once. */
 const MAX_SIGNED = 1000;
 
 export class LiveReads implements Reads {
   readonly #github: GitHub;
   readonly #sources: ReleaseSources | undefined;
   readonly #recorder: RefusalRecorder | undefined;
-  /** Each held `review` run's refusal, kept and signed once, by repository and run, however often it is read. */
+  /**
+   * Each held pull request's refusal, kept and signed once, by repository, run, pull request and head, however often
+   * it is read: one run's verdict can judge every pull request of a stack, and each held one has a refusal of its own.
+   */
   readonly #signed = new Map<string, Promise<SignedRefusal | undefined>>();
 
   /**
@@ -382,9 +385,9 @@ export class LiveReads implements Reads {
   }
 
   /**
-   * The gate's refusal of a pull request, kept and signed once for each run of the check, at the time the check
-   * concluded: the line reads the verdict on every pass, and the record is the same each time. One that cannot be
-   * kept is left out of this answer, and tried again at the next read.
+   * The gate's refusal of a pull request, kept and signed once for each run of the check that holds it, at the time
+   * the check concluded: the line reads the verdict on every pass, and the record is the same each time. One that
+   * cannot be kept is left out of this answer, and tried again at the next read.
    */
   #held(
     repo: string,
@@ -395,7 +398,7 @@ export class LiveReads implements Reads {
   ): Promise<SignedRefusal | undefined> {
     const recorder = this.#recorder;
     if (!recorder) return Promise.resolve(undefined);
-    const key = `${repo} ${check.id}`;
+    const key = `${repo} ${check.id} ${number} ${head}`;
     const known = this.#signed.get(key);
     if (known) return known;
     // The oldest goes first, so a run still held, read on every pass, keeps its one record.

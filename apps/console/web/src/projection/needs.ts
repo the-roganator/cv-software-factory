@@ -84,21 +84,29 @@ export interface Need {
   /** A sentence after the evidence: what would let the line merge a change it holds for Martin's merge itself. */
   note: string | undefined;
   /**
-   * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it.
-   * A sample's never existed, so it has no `href`, as the sheet's facts link it nowhere too (`SAMPLE_PULL` says why).
+   * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it,
+   * or, for a merge the review gate held for its risk tags, reviews it, as the console can't give his own review of
+   * its head. A sample's never existed, so it has no `href`, as the sheet's facts link it nowhere too (`SAMPLE_PULL`
+   * says why). `there` is what he does there and what follows, which the card says beside it in his words or a
+   * visitor's.
    */
-  way: { verb: 'Merge' | 'Deploy'; pullRequest: number; href: string | undefined } | undefined;
-  /**
-   * A merge the review gate held for its risk tags is approved on GitHub, with Martin's own review of its head, which
-   * the console can't give: its pull request there, first among the answers, as "Review #n on GitHub".
-   */
-  review: { pullRequest: number; href: string | undefined; approving: boolean } | undefined;
+  way:
+    | { verb: 'Merge' | 'Deploy' | 'Review'; pullRequest: number; href: string | undefined; there: WayThere }
+    | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
   /** Whether it waits for Martin now: every hold but a deploy that is not his to merge yet, which the count leaves out. */
   forMartin: boolean;
 }
+
+/**
+ * What Martin does on GitHub, by the way forward, and what follows: merge it (`merge`), once its conflict with main is
+ * put right (`conflict`), once he has seen why the queue took it out or refused it (`queue`); merge a deploy pull
+ * request once its checks pass (`checks`) or now (`deploy`); or approve a held merge's head, after which the line adds
+ * it to the merge queue (`approve`) or he merges it there too (`approve-merge`).
+ */
+export type WayThere = 'merge' | 'conflict' | 'queue' | 'checks' | 'deploy' | 'approve' | 'approve-merge';
 
 export interface Answered {
   at: number;
@@ -440,28 +448,28 @@ export const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it l
 
 /** The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed. */
 function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
-  const pull = (verb: 'Merge' | 'Deploy', pullRequest: number): Need['way'] => ({
+  const pull = (verb: 'Merge' | 'Deploy' | 'Review', pullRequest: number, there: WayThere): Need['way'] => ({
     verb,
     pullRequest,
     href: item.sample ? undefined : `${APP_REPO}/pull/${pullRequest}`,
+    there,
   });
-  // A merge the gate held is approved first, on GitHub (`reviewOf`).
-  if (cause === 'merge' && item.hold?.merge?.why === 'held') return undefined;
-  if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
+  const merge = item.hold?.merge;
+  // A merge the gate held is approved first, with Martin's own review of its head.
+  if (cause === 'merge' && merge?.why === 'held') {
+    return pull('Review', merge.pullRequest, merge.approving ? 'approve' : 'approve-merge');
+  }
+  if (cause === 'merge' && item.pullRequest !== undefined) {
+    const why = merge?.why;
+    const there = why === 'conflict' ? 'conflict' : why === 'queue' || why === 'refused' ? 'queue' : 'merge';
+    return pull('Merge', item.pullRequest, there);
+  }
   // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
   // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
   if (cause === 'deploy' && (item.deploy?.state === 'checking' || item.deploy?.state === 'passed')) {
-    return pull('Deploy', item.deploy.pullRequest);
+    return pull('Deploy', item.deploy.pullRequest, item.deploy.state === 'checking' ? 'checks' : 'deploy');
   }
   return undefined;
-}
-
-/** The pull request a merge the review gate held for its risk tags waits for Martin to review, on GitHub. */
-function reviewOf(item: ItemState): Need['review'] {
-  const merge = item.hold?.merge;
-  if (item.hold?.cause !== 'merge' || merge?.why !== 'held') return undefined;
-  const { pullRequest, approving } = merge;
-  return { pullRequest, href: item.sample ? undefined : `${APP_REPO}/pull/${pullRequest}`, approving };
 }
 
 /**
@@ -534,7 +542,6 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           link: linkOf(hold.cause),
           note: hold.cause === 'merge' ? mergeNote(hold.merge) : undefined,
           way: wayOf(item, hold.cause),
-          review: reviewOf(item),
           answers: answersOf(hold).map((answer) => ({
             answer,
             label: LABEL[answer],

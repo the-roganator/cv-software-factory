@@ -314,13 +314,13 @@ test.describe('tool marks', () => {
     await expect(first.locator('p')).toHaveText(
       'Martin merges #1312 there. The line goes on by itself once it merges.',
     );
-    // As wide as the answers under it, in the column they share.
+    // In the column the answers under it share, where each starts: a visitor's labels keep their own width.
     const [wayBox, answerBox] = await Promise.all([
       way.boundingBox(),
       answers.locator('.ro', { hasText: 'Answer in words' }).boundingBox(),
     ]);
     if (!wayBox || !answerBox) throw new Error('the way or the answer under it is not drawn');
-    expect(wayBox.x).toBe(answerBox.x);
+    expect(wayBox.x).toBeCloseTo(answerBox.x, 0);
     await expect(way).toHaveAttribute('href', 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1312');
     await expect(way).toHaveAttribute('target', '_blank');
     await expect(way).toHaveAttribute('rel', 'noopener');

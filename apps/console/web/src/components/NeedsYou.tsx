@@ -39,6 +39,7 @@ import {
   type NeedsView,
   SAMPLE_PULL,
   STAGE_NAME,
+  type WayThere,
 } from '../projection/index.ts';
 import { CanaryAnswers } from './Canary.tsx';
 import { FlagDialog, stageWords } from './Flags.tsx';
@@ -153,31 +154,43 @@ function GateEvidence({
   );
 }
 
+const MERGED = 'The line goes on by itself once it merges.';
+const RELEASED = 'Argo CD then starts its release, which ends this wait by itself.';
+
 /**
- * What the way forward does, beside it, in Martin's voice when he is signed in and a visitor's otherwise: where it
- * opens, and what moves the work item on once he has done his part there. A sample's pull request never existed, so its
- * way says that instead.
+ * What the way forward does, beside it: what Martin does on GitHub and what follows, in his voice when he is signed in
+ * and a visitor's otherwise.
  */
-function wayDoes(need: Need, martin: boolean): string | undefined {
-  const { way, review } = need;
-  if (review) {
-    if (!martin) {
-      return review.approving
-        ? 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.'
-        : 'Martin approves its head commit there, with his own review, and merges it there.';
-    }
-    return review.approving
-      ? 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.'
-      : 'Approve its head commit there, then merge it there: the line does not add this one to the merge queue.';
-  }
-  if (!way) return undefined;
-  const where = martin
-    ? `Opens #${way.pullRequest} on GitHub to merge it.`
-    : `Martin merges #${way.pullRequest} there.`;
-  return way.verb === 'Merge'
-    ? `${where} The line goes on by itself once it merges.`
-    : `${where} Argo CD then starts its release, which ends this wait by itself.`;
-}
+const WAY_DOES: Record<WayThere, (n: number) => { martin: string; visitor: string }> = {
+  merge: (n) => ({
+    martin: `Opens #${n} on GitHub to merge it. ${MERGED}`,
+    visitor: `Martin merges #${n} there. ${MERGED}`,
+  }),
+  conflict: (n) => ({
+    martin: `Opens #${n} on GitHub, to put its conflict with main right and merge it. ${MERGED}`,
+    visitor: `Martin puts #${n}’s conflict with main right there, and merges it. ${MERGED}`,
+  }),
+  queue: (n) => ({
+    martin: `Opens #${n} on GitHub, to see why and merge it once it can. ${MERGED}`,
+    visitor: `Martin sees why there, and merges #${n} once it can. ${MERGED}`,
+  }),
+  checks: (n) => ({
+    martin: `Opens #${n} on GitHub, to merge it once its checks pass. ${RELEASED}`,
+    visitor: `Martin merges #${n} there once its checks pass. ${RELEASED}`,
+  }),
+  deploy: (n) => ({
+    martin: `Opens #${n} on GitHub to merge it. ${RELEASED}`,
+    visitor: `Martin merges #${n} there. ${RELEASED}`,
+  }),
+  approve: () => ({
+    martin: 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.',
+    visitor: 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.',
+  }),
+  'approve-merge': () => ({
+    martin: 'Approve its head commit there, then merge it there: the line does not add this one to the merge queue.',
+    visitor: 'Martin approves its head commit there, with his own review, and merges it there.',
+  }),
+};
 
 /**
  * The way a merge or a deploy ends, on GitHub, first among the answers: "Merge" or "Deploy", or "Review" for a merge
@@ -188,10 +201,9 @@ function wayDoes(need: Need, martin: boolean): string | undefined {
  * them. A link, as it opens a page, in a tab of its own, so words half written on the card stay. A sample's pull
  * request never existed: the same look, not a link, with why beside it, muted.
  */
-function WayForward({ need, martin }: { need: Need; martin: boolean }) {
-  const pull = need.review ?? need.way;
-  if (!pull) return null;
-  const verb = need.review ? 'Review' : need.way?.verb;
+function WayForward({ way, martin }: { way: Need['way']; martin: boolean }) {
+  if (!way) return null;
+  const { verb, pullRequest, href } = way;
   // What shows is hidden from a screen reader, which hears the words in full instead, in a span of their own, so no
   // space between the two parts is left to layout.
   const shown = (
@@ -200,28 +212,29 @@ function WayForward({ need, martin }: { need: Need; martin: boolean }) {
       <ToolMark name="github" />
     </span>
   );
-  if (pull.href === undefined) {
+  if (href === undefined) {
     return (
       <div className="answer">
         <span className="btn small way">
           {shown}
           <span className="sr">
-            {verb} #{pull.pullRequest}
+            {verb} #{pullRequest}
           </span>
         </span>
         <p className="nowhere">{SAMPLE_PULL}</p>
       </div>
     );
   }
+  const does = WAY_DOES[way.there](pullRequest);
   return (
     <div className="answer">
-      <a className="btn small way" href={pull.href} target="_blank" rel="noopener">
+      <a className="btn small way" href={href} target="_blank" rel="noopener">
         {shown}
         <span className="sr">
-          {verb} #{pull.pullRequest} on GitHub (opens GitHub in a new tab)
+          {verb} #{pullRequest} on GitHub (opens GitHub in a new tab)
         </span>
       </a>
-      <p>{wayDoes(need, martin)}</p>
+      <p>{martin ? does.martin : does.visitor}</p>
     </div>
   );
 }
@@ -315,7 +328,7 @@ function ReadOnlyCard({ need, onOpen }: { need: Need } & Placed) {
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} martin={false} />
       <div className="answers">
-        <WayForward need={need} martin={false} />
+        <WayForward way={need.way} martin={false} />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             <span className="ro">{row.label}</span>
@@ -387,7 +400,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       {onOpen && <h3 id={id}>{need.title}</h3>}
       <Evidence need={need} martin />
       <div className="answers">
-        <WayForward need={need} martin />
+        <WayForward way={need.way} martin />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {WORDED_ANSWERS.includes(row.answer) ? (

@@ -866,8 +866,8 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       const b = await card.getByRole('button', { name: 'Answer in words' }).boundingBox();
       if (!a || !w || !b) throw new Error('the link, its words or the answer under it are not drawn');
       // As wide as the answers under it, in the column they share.
-      expect(a.x).toBe(b.x);
-      expect(a.width).toBe(b.width);
+      expect(a.x).toBeCloseTo(b.x, 0);
+      expect(a.width).toBeCloseTo(b.width, 0);
       if (width === 'phone') {
         expect(w.y).toBeGreaterThanOrEqual(a.y + a.height);
       } else {

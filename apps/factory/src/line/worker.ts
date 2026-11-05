@@ -1163,6 +1163,8 @@ export class Line {
       }
       // Already in the queue at that head: the line added it and stopped before recording it. Record it now.
       const already = error.status === 422 ? await this.#queuedAt(number, head) : null;
+      // The queue could not be read: whether it is there is not known, so nothing is recorded and the next pass asks again.
+      if (already === 'unread') return false;
       if (already) {
         enqueued = already;
       } else {
@@ -1205,14 +1207,14 @@ export class Line {
     return;
   }
 
-  /** A pull request's place in the merge queue, while it is there at that head, or null; null too when unread. */
-  async #queuedAt(number: number, head: string): Promise<{ position: number | null } | null> {
+  /** A pull request's place in the merge queue, while it is there at that head; null when not; `unread` when unknown. */
+  async #queuedAt(number: number, head: string): Promise<{ position: number | null } | 'unread' | null> {
     try {
       const queue = await this.#o.github.read('mergeQueue', this.#o.repo, { number });
       return queue.queued && queue.head === head ? { position: queue.queued.position } : null;
     } catch (error) {
-      this.#o.log.warn({ number, err: error }, 'could not read the merge queue');
-      return null;
+      this.#o.log.warn({ number, err: error }, 'could not read the merge queue: asks again next pass');
+      return 'unread';
     }
   }
 
@@ -2021,7 +2023,8 @@ export class Line {
   async #dequeued(workItem: string, enqueued: PayloadOf<'pull-request.enqueued'>): Promise<Draft | undefined> {
     const queue = await this.#o.github.read('mergeQueue', this.#o.repo, { number: enqueued.number });
     if (queue.state !== 'open' || queue.queued || !queue.removed || !queue.added) return undefined;
-    if (queue.head !== enqueued.commit || queue.removed.reason?.toLowerCase() === 'merged') return undefined;
+    // A removal for a push names the new head, not the one queued: the line's addition below ties it to this enqueue.
+    if (queue.removed.reason?.toLowerCase() === 'merged') return undefined;
     const [recorded] = await this.#o.sql<{ ts: Date }[]>`
       select ts from events where work_item = ${workItem} and type = 'pull-request.enqueued' order by seq desc limit 1`;
     if (recorded && Date.parse(queue.added.at) < new Date(recorded.ts).getTime() - 60_000) return undefined;

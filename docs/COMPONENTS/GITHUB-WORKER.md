@@ -221,7 +221,7 @@ A dry run's reads answer for what it would have made (`github/dry-run-reads.ts`)
 - a comparison is taken from the real commit its first commit went on;
 - a file at one of its commits is as its commits left it;
 - a step that starts from one of its commits is told the real commit under it, and the dry run's commits as patches (`checkout`), which the runner's prepare step makes on it, so the reviewer, the describer and a later round see the change;
-- the pull request is merged, as the App, `GITHUB_DRY_RUN_MERGE_SECONDS` after it was last readied (1200), never while it is a draft, so a line in `dry-run` goes round.
+- the pull request is merged, as the App, `GITHUB_DRY_RUN_MERGE_SECONDS` (1200) after the line added it to the merge queue, or, one it never added, after it was last readied, never while it is a draft, so a line in `dry-run` goes round at every level; one added and then moved to another head is out of the queue, and merges only once added again;
 - one it closed (`closePullRequest`) is closed and unmerged, and never merges;
 - the review check on its head passes when its other checks do, its verdict `exact-pin` for a deploy pull request and `low-risk` for any other, saying it judged nothing;
 - one it added to the merge queue reads as queued there, on a commit of the queue's own whose required checks pass when it merges, and then as having left the queue merged, when it merges as above;

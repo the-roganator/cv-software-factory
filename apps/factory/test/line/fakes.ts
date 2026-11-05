@@ -111,6 +111,8 @@ export class FakeGitHub implements GitHubPort {
   readonly failing = new Map<ActionName, number>();
   /** Actions GitHub refuses once, with the GitHub worker's own error. */
   readonly refusing = new Map<ActionName, Error>();
+  /** Reads that fail, as GitHub failing does, and how many times each will. */
+  readonly failingReads = new Map<ReadName, number>();
   /** An action that is done, and then fails as though the line crashed before it heard back: once. */
   crashAfter: ActionName | undefined;
   /** A read that waits until the test lets it go. */
@@ -271,6 +273,11 @@ export class FakeGitHub implements GitHubPort {
 
   async read<K extends ReadName>(read: K, _repo: string, given: ReadArgs[K]): Promise<ReadResult<K>> {
     await this.holdReads;
+    const failures = this.failingReads.get(read) ?? 0;
+    if (failures > 0) {
+      this.failingReads.set(read, failures - 1);
+      throw new Error(`GitHub failed: ${read} (502)`);
+    }
     const args = given as Record<string, unknown>;
     const answer = (value: unknown) => value as ReadResult<K>;
     switch (read) {

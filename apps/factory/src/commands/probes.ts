@@ -140,6 +140,8 @@ async function loop(sense: ReturnType<typeof probes>, app: string, store: DiskAr
   );
   const stable = app.replace(/\/$/, '');
   const allProbes = PROBES.map((p) => ({ sense: 'probe', check: p.id }));
+  // The baselines taken again for text set otherwise (`flag-check.ts`), each once while this process runs.
+  const retaken = new Set<string>();
   const flagChecks = new Jobs(
     (request: Parameters<typeof flagCheck>[1]) =>
       turn(() =>
@@ -161,6 +163,7 @@ async function loop(sense: ReturnType<typeof probes>, app: string, store: DiskAr
                 return capturePage(page, store, { route, version, maxHeight: PICTURE_HEIGHT });
               }, UNMEASURED),
             index,
+            retaken,
             store,
             log,
           },

@@ -25,7 +25,7 @@ Three images, built by `build.yml`, signed there by digest with cosign's keyless
 | `factory-browser` | From the pinned Playwright image, running as an unprivileged user | The probes, the crawler and the canary's journeys |
 | `factory-runner` | Node, git, this repository's pnpm (from `mise.lock`), the Agent SDK | The [runners'](AGENT-RUNNERS.md) Jobs; the line is given its pinned reference as `RUNNER_IMAGE` |
 
-Chromium runs without its own sandbox, which the restricted Pod Security Standard refuses it, so the pod's other fences carry that.
+Chromium runs without its own sandbox, which the restricted Pod Security Standard refuses it, so the pod's other fences carry that. It sets text unhinted (`--font-render-hinting=none`, `BROWSER_LAUNCH` in `apps/factory/src/capture.ts`, which every browser the factory launches is started with), as Chrome on a desktop does: on Linux it would otherwise hint fonts fully, snapping each glyph's advance to a whole pixel, and its pictures of the app would show small text squeezed or stretched, as no visitor's browser sets it.
 
 ## Secrets
 

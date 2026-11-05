@@ -12,10 +12,12 @@
  * with the same request joins the run.
  *
  * - **At Off**, the baseline: the journeys, and each page with the flag off. Given the version a baseline was last taken
- *   of (`have`), and the app still on it, nothing is run.
+ *   of (`have`), and the app still on it, nothing is run, unless its pictures were all taken with their text set
+ *   otherwise than the probes set it now (`TEXT_HINTING`): then it is taken again, once while the probes run.
  * - **At Checks**: the journeys compared with the baseline's by the journeys gate's rule (`gates/journeys.ts`), the
  *   `/device` check among them, so a check that passed cleanly with the flag off and fails twice with it on regressed;
- *   and each page with the flag on, against the baseline's picture of it in the same colour scheme.
+ *   and each page with the flag on, against the baseline's picture of it in the same colour scheme, with its text set
+ *   the same way: one set otherwise would differ along every line of text, so a page has none to compare with then.
  *
  * Each page is pictured twice, with the browser saying it prefers a light colour scheme and then a dark one
  * (`prefers-color-scheme`), so a change that answers to either shows in its pictures. The pictures are evidence for
@@ -31,6 +33,7 @@
 import { COLOR_SCHEMES, type ColorScheme, cutAt, cutTo, type Screenshot } from '@software-factory/events';
 import type { ArtifactStore } from '@software-factory/store';
 import { z } from 'zod';
+import { TEXT_HINTING } from '../capture.ts';
 import { type Count, compareJourneys, keyOf, type Seen } from '../gates/journeys.ts';
 import { compare } from '../pictures/compare.ts';
 import type { PictureIndex } from '../pictures/index.ts';
@@ -150,7 +153,12 @@ export interface FlagCheckDeps {
     path: string,
     shot: { route: string; version: string; scheme: ColorScheme },
   ): Promise<{ png: Uint8Array; screenshot: Screenshot }>;
-  index: Pick<PictureIndex, 'flagPicture' | 'flagOff' | 'recordFlagPicture'>;
+  index: Pick<PictureIndex, 'flagPicture' | 'flagOff' | 'flagOffSetOtherwise' | 'recordFlagPicture'>;
+  /**
+   * The baselines taken again while the probes run because their text was set otherwise, by flag, version and flag
+   * set: each once, so a page that cannot be pictured any more does not have it taken again on every pass.
+   */
+  retaken: Set<string>;
   log: { warn(fields: object, message: string): void };
   /** Where the screenshots are, and the diffs go. */
   store: ArtifactStore;
@@ -180,7 +188,10 @@ export async function flagCheck(deps: FlagCheckDeps, request: FlagCheckRequest):
   // The flag set first: a baseline of this version is one of the flag set it saw, which the app must hold still.
   const held = await heldOrWhy(deps, request.revision);
   if (held) return { kind: 'not-held', version, message: held };
-  if (request.stage === 'off' && request.have === version) return { kind: 'have', version };
+  // A baseline of this version whose text was set otherwise is taken again, once while the probes run.
+  const retake =
+    request.stage === 'off' && request.have === version ? await setOtherwise(deps, request, version) : null;
+  if (retake === false) return { kind: 'have', version };
   const preview = request.stage === 'preview' ? request.flag : undefined;
   const moved: string[] = [];
   // The whole run, each check as last seen: one that failed and passed when run again passed, as the gate counts it.
@@ -232,6 +243,8 @@ export async function flagCheck(deps: FlagCheckDeps, request: FlagCheckRequest):
   if (why) return { kind: 'not-held', version, message: why };
   const still = await heldOrWhy(deps, request.revision);
   if (still) return { kind: 'not-held', version, message: `After the run: ${still}` };
+  // Taken again once only, whatever it pictured: one that could picture no page is not taken again on every pass.
+  if (retake) deps.retaken.add(retake);
   const run = [...seen.values()];
   const devices = run.filter((s) => s.check.endsWith('/device'));
   return {
@@ -249,6 +262,17 @@ export async function flagCheck(deps: FlagCheckDeps, request: FlagCheckRequest):
   };
 }
 
+/**
+ * The baseline of this version and flag set to take again, by its key in `retaken`, when its pictures' text was all
+ * set otherwise than the probes set it now and it has not been taken again while they run; or false.
+ */
+async function setOtherwise(deps: FlagCheckDeps, request: FlagCheckRequest, version: string): Promise<string | false> {
+  const { flag, revision } = request;
+  const key = JSON.stringify([flag, version, revision]);
+  if (deps.retaken.has(key)) return false;
+  return (await deps.index.flagOffSetOtherwise({ flag, version, revision, hinting: TEXT_HINTING })) && key;
+}
+
 /** Why the app is not seen holding the revision asked for, or nothing when it is. */
 async function heldOrWhy(deps: FlagCheckDeps, revision: string): Promise<string | undefined> {
   const held = await deps.revision().catch(() => undefined);
@@ -260,8 +284,9 @@ async function heldOrWhy(deps: FlagCheckDeps, revision: string): Promise<string 
 
 /**
  * Each page in each colour scheme, pictured with the mark: at Off, the flag off; at Checks, on, and compared with the
- * baseline's picture of it in the same scheme, which the index vouches is one of the baseline's. A page pictured
- * already for the same stage, flag set, version and scheme is that picture again. A page that cannot be pictured in a
+ * baseline's picture of it in the same scheme, which the index vouches is one of the baseline's, with its text set as
+ * the probes set it now. A page pictured already for the same stage, flag set, version and scheme, its text set the
+ * same way, is that picture again. A page that cannot be pictured in a
  * scheme is left out of it, and the run goes on.
  */
 async function picture(deps: FlagCheckDeps, request: FlagCheckRequest, version: string): Promise<CheckedPage[]> {
@@ -289,12 +314,15 @@ async function pictureOne(
     route,
   }: { stage: 'off' | 'checks'; version: string; path: string; scheme: ColorScheme; route: string },
 ): Promise<CheckedPage | undefined> {
-  const key = { flag: request.flag, stage, revision: request.revision, version, path, scheme } as const;
+  const hinting = TEXT_HINTING;
+  const key = { flag: request.flag, stage, revision: request.revision, version, path, scheme, hinting } as const;
   const offHash = request.base?.pictures.find((p) => p.path === path && p.scheme === scheme)?.hash;
   // The baseline's picture of the page in this scheme, which the index vouches for: never a file the request merely
-  // names.
+  // names. One whose text was set otherwise is none to compare with.
   const off =
-    stage === 'checks' && offHash ? (await deps.index.flagOff(request.flag, offHash, scheme))?.shot : undefined;
+    stage === 'checks' && offHash
+      ? (await deps.index.flagOff(request.flag, offHash, scheme, hinting))?.shot
+      : undefined;
   let taken = await deps.index.flagPicture(key);
   if (!taken) {
     let shot: Awaited<ReturnType<FlagCheckDeps['shoot']>>;

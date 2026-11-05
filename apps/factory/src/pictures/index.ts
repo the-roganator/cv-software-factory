@@ -9,7 +9,7 @@
 import type { ColorScheme, Screenshot } from '@software-factory/events';
 import type { ArtifactStore, OpenedArtifact } from '@software-factory/store';
 import type { Sql } from 'postgres';
-import type { Check } from '../capture.ts';
+import type { Check, Hinting } from '../capture.ts';
 
 /**
  * A screenshot as the index keeps it: the reference an event carries, with the selector of the element each of its
@@ -58,6 +58,8 @@ export interface FlagPicture {
   path: string;
   /** The colour scheme the browser said it preferred. */
   scheme: ColorScheme;
+  /** How its text was set (`TEXT_HINTING`): a page is compared only with one set the same way. */
+  hinting: Hinting;
   route: string;
   shot: Screenshot;
   /** At checks, the share of pixels that differ from the page with the flag off: none without one. */
@@ -193,37 +195,50 @@ export class PictureIndex {
   }
 
   /**
-   * A flag's page as Verify pictured it already, for the same stage, flag set, version and colour scheme: the same
-   * picture.
+   * A flag's page as Verify pictured it already, for the same stage, flag set, version and colour scheme, with its text
+   * set the same way: the same picture.
    */
   async flagPicture(
-    key: Pick<FlagPicture, 'flag' | 'stage' | 'revision' | 'version' | 'path' | 'scheme'>,
+    key: Pick<FlagPicture, 'flag' | 'stage' | 'revision' | 'version' | 'path' | 'scheme' | 'hinting'>,
   ): Promise<FlagPicture | undefined> {
     const [row] = await this.#sql<FlagPicture[]>`
-      select flag, stage, revision, version, path, scheme, route, shot, changed, diff from flag_pictures
+      select flag, stage, revision, version, path, scheme, hinting, route, shot, changed, diff from flag_pictures
       where flag = ${key.flag} and stage = ${key.stage} and revision = ${key.revision} and version = ${key.version}
-        and path = ${key.path} and scheme = ${key.scheme}`;
+        and path = ${key.path} and scheme = ${key.scheme} and hinting = ${key.hinting}`;
     return row;
   }
 
   /**
-   * The baseline's picture of a flag's page in a colour scheme, by its screenshot's hash: the page with the flag off.
-   * A picture of the page in the other scheme is none of its.
+   * The baseline's picture of a flag's page in a colour scheme, with its text set as `hinting` says, by its
+   * screenshot's hash: the page with the flag off. A picture of the page in the other scheme is none of its, nor one
+   * whose text was set otherwise, which differs along every line of text.
    */
-  async flagOff(flag: string, hash: string, scheme: ColorScheme): Promise<FlagPicture | undefined> {
+  async flagOff(flag: string, hash: string, scheme: ColorScheme, hinting: Hinting): Promise<FlagPicture | undefined> {
     const [row] = await this.#sql<FlagPicture[]>`
-      select flag, stage, revision, version, path, scheme, route, shot, changed, diff from flag_pictures
-      where flag = ${flag} and stage = 'off' and shot->>'hash' = ${hash} and scheme = ${scheme}
+      select flag, stage, revision, version, path, scheme, hinting, route, shot, changed, diff from flag_pictures
+      where flag = ${flag} and stage = 'off' and shot->>'hash' = ${hash} and scheme = ${scheme} and hinting = ${hinting}
       order by taken_at desc limit 1`;
     return row;
+  }
+
+  /**
+   * Whether a flag's baseline of a version and flag set has pictures only with their text set otherwise than `hinting`
+   * says: taken before the probes set text as they do now, so no page with the flag on can be compared with it.
+   */
+  async flagOffSetOtherwise(key: Pick<FlagPicture, 'flag' | 'version' | 'revision' | 'hinting'>): Promise<boolean> {
+    const [row] = await this.#sql<{ otherwise: boolean }[]>`
+      select bool_or(hinting <> ${key.hinting}) and not bool_or(hinting = ${key.hinting}) as otherwise
+      from flag_pictures
+      where flag = ${key.flag} and stage = 'off' and version = ${key.version} and revision = ${key.revision}`;
+    return row?.otherwise === true;
   }
 
   /** Records a flag's page as Verify pictured it. One recorded already keeps what it has. */
   async recordFlagPicture(p: FlagPicture): Promise<void> {
     const sql = this.#sql;
     await sql`
-      insert into flag_pictures (flag, stage, revision, version, path, scheme, route, shot, changed, diff)
-      values (${p.flag}, ${p.stage}, ${p.revision}, ${p.version}, ${p.path}, ${p.scheme}, ${p.route},
+      insert into flag_pictures (flag, stage, revision, version, path, scheme, hinting, route, shot, changed, diff)
+      values (${p.flag}, ${p.stage}, ${p.revision}, ${p.version}, ${p.path}, ${p.scheme}, ${p.hinting}, ${p.route},
               ${sql.json(p.shot as never)}, ${p.changed}, ${p.diff ? sql.json(p.diff as never) : null})
       on conflict do nothing`;
   }

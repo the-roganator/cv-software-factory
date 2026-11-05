@@ -349,8 +349,8 @@ describe('each worker', () => {
   it('keeps a flag’s pictures as the probes alone write them, and the line reads them', async () => {
     const shot = { kind: 'screenshot', hash: 'f'.repeat(64), size: 1 };
     await db.as.probes`
-      insert into flag_pictures (flag, stage, revision, version, path, route, shot)
-      values ('gift-note', 'off', 'r1', ${'a'.repeat(40)}, '/', '/', ${db.as.probes.json(shot)})`;
+      insert into flag_pictures (flag, stage, revision, version, path, hinting, route, shot)
+      values ('gift-note', 'off', 'r1', ${'a'.repeat(40)}, '/', 'none', '/', ${db.as.probes.json(shot)})`;
     expect(await db.as.line`select flag, stage from flag_pictures`).toEqual([{ flag: 'gift-note', stage: 'off' }]);
     for (const worker of WORKERS.filter((w) => w !== 'probes')) {
       await expect(

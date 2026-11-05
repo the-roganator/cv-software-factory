@@ -60,7 +60,7 @@ The queue cannot sit beside GitHub's review rule here. A pull request enters the
 ## Consequences
 
 - OpenSSF Scorecard's Branch-Protection check reads GitHub's review settings, not a check, so its score falls from 8 to about 3 to 5: it wants an approval rule on the branch. Code-Review is 0 already, since nobody else reviews. Martin will not keep a rule only he can bypass to keep a score.
-- GitHub no longer holds code owners' review: Martin is the only code owner, and the gate holds every pull request he did not open for his approval, but the factory's App's exact pins and, in the app's repository, its untagged ones (and at Lights-out its tagged ones), none of which may touch a path CODEOWNERS names but a pin's.
+- GitHub no longer holds code owners' review: Martin is the only code owner, and the gate holds every pull request he did not open for his approval, but the factory's App's exact pins and, in the app's repository, its untagged ones (and at Lights-out its tagged ones that are neither a release nor an improvement), none of which may touch a path CODEOWNERS names but a pin's.
 - A pull request Martin opened passes whoever pushes to it after him, as the bypass did. Only Martin, Dependabot and the factory's App push branches here, and the other two only to branches they opened.
 - Until the App is set up, the gate says its verdict in its run and posts nothing. Until the settings change, it is required by nothing.
 - The line does not read `review` as one of a pull request's gates. The gate alone merges nothing: a pull request merges only once Martin or the line adds it to the queue ([approval routing](../../COMPONENTS/APPROVAL-ROUTING.md)), and a fault in the line cannot merge a change the gate holds.

@@ -357,6 +357,11 @@ describe('Needs you', () => {
         'Deploy #41 carries it, and its checks passed; with auto-merge off, merging it is yours, on GitHub; switched on, the line adds it to the merge queue. A release that carries it ends this wait by itself.',
       ],
       [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'refused', said: 'Resource not accessible' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; the line was refused when it added it to the merge queue (Resource not accessible): merging it is yours, on GitHub. A release that carries it ends this wait by itself.',
+      ],
+      [
         { pullRequest: 41, commit: head(2), state: 'queued', rule: 'exact-pin', position: 1 },
         'Its deploy is in the merge queue',
         'Deploy #41 carries it, and the review gate passed it as an exact pin: the line added it to the merge queue, which merges it once its checks pass there.',

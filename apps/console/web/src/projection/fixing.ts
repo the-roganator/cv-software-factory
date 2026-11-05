@@ -367,13 +367,17 @@ export function deployPicture(item: ItemState): Extract<Picture, { type: 'deploy
       ...(deploy.waits && { waits: deploy.waits }),
       ...(deploy.rule && { rule: deploy.rule }),
       ...(deploy.reason && { reason: deploy.reason }),
+      ...(deploy.said && { said: deploy.said }),
     },
     waitsForMartin: deployWaitsForMartin(item),
   };
 }
 
 /** A deploy pull request that carries a held fix, as the line recorded it: what the console says of it. */
-type DeployRecord = Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason'>;
+type DeployRecord = Pick<
+  PayloadOf<'deploy.changed'>,
+  'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason' | 'said'
+>;
 
 /** The checks that failed, in a few words: "e2e", "e2e and lint", "e2e, lint and 2 more". */
 function failedWords(failed: readonly string[] | undefined): string {
@@ -402,7 +406,7 @@ interface DeployWording {
  * Why a deploy pull request whose checks passed is Martin's to merge, as its card's evidence goes on: what would let the
  * line add it to the merge queue itself, by why the line did not (`waits`).
  */
-function passedWhy({ waits, rule }: Pick<DeployRecord, 'waits' | 'rule'>): string {
+function passedWhy({ waits, rule, said }: Pick<DeployRecord, 'waits' | 'rule' | 'said'>): string {
   switch (waits) {
     case undefined:
       return 'merging it is yours, on GitHub';
@@ -415,7 +419,7 @@ function passedWhy({ waits, rule }: Pick<DeployRecord, 'waits' | 'rule'>): strin
     case 'conflict':
       return 'it conflicts with main, so the line cannot add it to the merge queue: putting that right or merging it is yours, on GitHub';
     case 'refused':
-      return 'the line was refused when it added it to the merge queue: merging it is yours, on GitHub';
+      return `the line was refused when it added it to the merge queue${said ? ` (${said})` : ''}: merging it is yours, on GitHub`;
   }
 }
 

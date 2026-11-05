@@ -117,7 +117,7 @@ export type Picture =
       ended: Ended | undefined;
       /** The deploy pull request that carries it, once the App has opened one. */
       deploy:
-        | Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason'>
+        | Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason' | 'said'>
         | undefined;
       /** Whether it waits for Martin: his deploy to merge, its checks passed, or his retry. */
       waitsForMartin: boolean;

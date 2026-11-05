@@ -2092,9 +2092,8 @@ export class Line {
         // The app's deploy pull request alone may go to the merge queue by the line: the factory's are Martin's. Acting
         // on one work item, the line adds it only when it carries no other, as the release watch leaves a release that
         // carries another to the whole line.
-        ...(repo === APP_REPOSITORY && (this.#only === null || (carries ?? []).every((c) => c.workItem === this.#only))
-          ? { merging: this.#merging }
-          : {}),
+        ...(repo === APP_REPOSITORY ? { merging: this.#merging } : {}),
+        mayEnqueue: this.#only === null || (carries ?? []).every((c) => c.workItem === this.#only),
       },
       proposal,
       new Set((carries ?? []).map((c) => c.workItem)),

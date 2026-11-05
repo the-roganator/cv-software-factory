@@ -878,7 +878,7 @@ export const PAYLOADS = {
       /** On `passed`, why the line has not added it to the queue, so it waits for Martin. A version 1 record never said. */
       waits: z.enum(V.DEPLOY_WAITS).optional(),
       /**
-       * The review gate's rule for its head: on `queued`, the one the line added it by; on `passed` waiting for the
+       * The review gate's rule for its head: on `queued`, the one the line added it by, `exact-pin`; on `passed` waiting for the
        * verdict, the one the gate gave instead of an exact pin, when it gave one.
        */
       rule: z.enum(V.GATE_RULES).optional(),
@@ -900,10 +900,10 @@ export const PAYLOADS = {
     .refine(
       (d) =>
         d.state === 'queued'
-          ? d.rule !== undefined
+          ? d.rule === 'exact-pin'
           : d.rule === undefined || (d.waits === 'verdict' && d.rule !== 'exact-pin'),
       {
-        message: 'a queued deploy names the rule it was added by, and only one that waits for a verdict names another',
+        message: 'a queued deploy was added as an exact pin, and only one that waits for a verdict names another rule',
         path: ['rule'],
       },
     )

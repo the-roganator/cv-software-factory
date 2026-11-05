@@ -206,6 +206,11 @@ export interface DeployContext {
    * request to the merge queue: the app's alone. Without them it adds nothing, and records none of why.
    */
   merging?: Pick<Controls, 'autonomy' | 'autoMerge'>;
+  /**
+   * Whether the line may add it this pass: not when it acts on one work item and the pull request carries another. What
+   * it did at the head already is still followed, so the queue's word is recorded and a head is never added twice.
+   */
+  mayEnqueue?: boolean;
   now?: () => Date;
 }
 
@@ -346,7 +351,8 @@ export async function recordDeploys(
       const { merging } = o;
       const records = held.map((h) => h.recorded);
       if (!merging || by === undefined || settled(base)) return base;
-      if (base.state !== 'passed' && !doneAt(records, base)) return base;
+      const done = doneAt(records, base);
+      if (!done && (base.state !== 'passed' || o.mayEnqueue === false)) return base;
       return queueDeploy({ ...o, merging }, base, records, by);
     })();
     standing.catch(() => {

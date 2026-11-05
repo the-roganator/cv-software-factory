@@ -232,6 +232,24 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     expect(await changes(one)).toEqual([{ head: 'd', pullRequest: DEPLOY, state: 'passed' }]);
   });
 
+  it('acting on one work item, still follows a head the whole line added, and never adds it again', async () => {
+    await controls({});
+    const one = await heldForDeploy(sha('2'));
+    await heldForDeploy(sha('3'), '/cart');
+    const whole = lineWith('exact-pin');
+    await whole.pass();
+    expect(whole.enqueues()).toHaveLength(1);
+    const soak = lineWith('exact-pin', undefined, one);
+    soak.github.queued.add(DEPLOY);
+    await soak.pass();
+    soak.github.dequeue(DEPLOY, 'failed_checks', ['e2e']);
+    await soak.pass();
+    const again = lineWith('exact-pin');
+    await again.pass();
+    expect([...soak.enqueues(), ...again.enqueues()]).toEqual([]);
+    expect((await changes(one)).map((c) => c.state)).toEqual(['queued', 'dequeued']);
+  });
+
   it('never adds one on a verdict for an older head', async () => {
     await controls({});
     const workItem = await heldForDeploy(sha('2'));

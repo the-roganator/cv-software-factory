@@ -562,6 +562,8 @@ describe('validation', () => {
     expect(ok({ ...at, state: 'queued', rule: 'exact-pin', position: 2 })).toBe(true);
     expect(ok({ ...at, state: 'queued', rule: 'exact-pin' })).toBe(true);
     expect(ok({ ...at, state: 'queued' })).toBe(false);
+    expect(ok({ ...at, state: 'queued', rule: 'held' })).toBe(false);
+    expect(ok({ ...at, state: 'queued', rule: 'low-risk' })).toBe(false);
     expect(ok({ ...at, state: 'passed', position: 2 })).toBe(false);
     expect(ok({ ...at, state: 'dequeued', reason: 'failed_checks', failed: ['e2e'] })).toBe(true);
     expect(ok({ ...at, state: 'dequeued', reason: 'dequeued' })).toBe(true);

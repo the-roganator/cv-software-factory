@@ -1,17 +1,22 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cutPending, found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
 import {
   atHead,
+  judge,
   MARTIN,
   type PullRequest,
   QUEUE_BRANCH,
   type Review,
   STACK_LIMIT,
+  SUMMARY_LIMIT,
   stackOf,
+  summaryOf,
   target as targetIn,
   together,
   verdict,
 } from './review-gate.ts';
+import { APP_REPO, FACTORY_APP } from './review-routing.ts';
 
 const HEAD = 'a'.repeat(40);
 const EARLIER = 'b'.repeat(40);
@@ -303,6 +308,73 @@ describe('a queued stack', () => {
   });
 });
 
+describe("the check's summary", () => {
+  it('fits GitHub’s limit, cutting what gave each tag but never a rule, a tag or a head', () => {
+    const long = (n: number) => Array.from({ length: GIVEN_LIMIT }, (_, i) => `src/${n}/${'x'.repeat(110)}-${i}.ts`);
+    const tags = [found('code-owned', long(1)), found('improvement', long(2)), found('security-headers', long(3))];
+    const judged = Array.from({ length: 12 }, (_, i) => ({
+      pr: { ...pr(APP), number: i + 1 },
+      said: { pass: false, title: 'Held for its risk tags', rule: 'held' as const, tags },
+    }));
+    const summary = summaryOf(HEAD, judged);
+    expect(summary.length).toBeLessThanOrEqual(SUMMARY_LIMIT);
+    const read = readVerdict(summary);
+    expect(read).toMatchObject({ commit: HEAD });
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged.map((j) => [j.number, j.rule, j.tags.map((t) => t.tag)])).toEqual(
+      judged.map(({ pr }) => [pr.number, 'held', ['code-owned', 'improvement', 'security-headers']]),
+    );
+    expect(read.judged[0]?.tags[0]?.more).toBeGreaterThan(0);
+    // A short one is not cut.
+    const one = readVerdict(summaryOf(HEAD, judged.slice(0, 1)));
+    expect('judged' in one && one.judged[0]?.tags[0]?.because).toHaveLength(GIVEN_LIMIT);
+  });
+
+  it('carries a hold that waits for a read as pending, and no other', () => {
+    const waits = { pass: false, title: 'Waits for test integrity', rule: 'held' as const, tags: [], pending: 'x' };
+    const held = {
+      pass: false,
+      title: 'Held for its risk tags',
+      rule: 'held' as const,
+      tags: [found('release', ['y'])],
+    };
+    const read = readVerdict(
+      summaryOf(HEAD, [
+        { pr: { ...pr(APP), number: 1 }, said: waits },
+        { pr: { ...pr(APP), number: 2 }, said: held },
+      ]),
+    );
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged.map((j) => j.pending)).toEqual(['x', undefined]);
+    expect('pending' in (read.judged[1] ?? {})).toBe(false);
+  });
+
+  it('keeps a pending hold within its bound, and the summary within its limit with it', () => {
+    const tags = TAGS.map((t) =>
+      found(
+        t,
+        Array.from({ length: 40 }, (_, i) => `${'p'.repeat(200)}/${i}`),
+      ),
+    );
+    const waits = { pass: false, title: 'Waits', rule: 'held' as const, tags, pending: 'w'.repeat(PENDING_LIMIT * 2) };
+    const judged = Array.from({ length: 12 }, (_, i) => ({ pr: { ...pr(APP), number: i + 1 }, said: waits }));
+    const summary = summaryOf(HEAD, judged);
+    expect(summary.length).toBeLessThanOrEqual(SUMMARY_LIMIT);
+    const read = readVerdict(summary);
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged.every((j) => j.pending === 'w'.repeat(PENDING_LIMIT))).toBe(true);
+  });
+
+  it('cuts a pending hold once, by code points, so a character is never split and the line reads it', () => {
+    const reason = `${'x'.repeat(PENDING_LIMIT - 1)}🛑🛑`;
+    const waits = { pass: false, title: 'Waits', rule: 'held' as const, tags: [], pending: reason };
+    const read = readVerdict(summaryOf(HEAD, [{ pr: pr(APP), said: waits }]));
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged[0]?.pending).toBe(`${'x'.repeat(PENDING_LIMIT - 1)}🛑`);
+    expect(cutPending(reason)).toBe(read.judged[0]?.pending);
+  });
+});
+
 describe("the review gate's workflows", () => {
   const gate = readFileSync('.github/workflows/review.yml', 'utf-8');
   const requested = readFileSync('.github/workflows/review-requested.yml', 'utf-8');
@@ -325,13 +397,36 @@ describe("the review gate's workflows", () => {
     expect(gate).toMatch(/- id: app\n {8}if: env\.HAS_KEY == 'true'\n/);
     expect(gate).toMatch(/^permissions: \{\}$/m);
     // Its job reads this repository, to check out the gate, and pull requests; it writes nothing with its own token.
-    expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {4}env:/m);
+    // And test integrity's check run, which low-risk needs.
+    expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {4}env:/m);
     // The one checkout is this workflow's own commit, main's, and never the pull request's.
     expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(1);
     expect(gate).toMatch(/ref: \$\{\{ job\.workflow_sha \}\}\n/);
     // Nothing the pull request's author writes reaches a step: its branch names only the concurrency group.
     const steps = gate.slice(gate.indexOf('\njobs:\n'));
     expect(steps).not.toMatch(/github\.event\.(pull_request|workflow_run)\.(head|title|body|user)|github\.head_ref/);
+  });
+
+  it('read AUTONOMY as the caller’s variable, in main’s copy, never from an input', () => {
+    // A called workflow's `vars` are its caller's; only an admin of that repository can set one.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow holds it
+    expect(gate).toContain('          AUTONOMY: ${{ vars.AUTONOMY }}\n        run: node scripts/review-gate.ts\n');
+    expect(gate).not.toMatch(/inputs/);
+    // The gate's modules, and nothing of the pull request's, from main's sparse checkout; cosign for an exact pin.
+    expect(gate).toMatch(
+      /sparse-checkout: \|\n {12}mise\.toml\n {12}mise\.lock\n {12}scripts\/review-gate\.ts\n {12}scripts\/review-routing\.ts\n {12}policy\/review-verdict\.ts\n/,
+    );
+    expect(gate).toContain('install_args: node cosign');
+  });
+
+  it('check out every module the gate imports', () => {
+    // Everything the gate's files import beyond Node is in the sparse checkout, so main's copy runs whole.
+    for (const file of ['scripts/review-gate.ts', 'scripts/review-routing.ts', 'policy/review-verdict.ts']) {
+      for (const [, path] of readFileSync(file, 'utf-8').matchAll(/^(?:import|export) [^;]*? from '(\.[^']+)';$/gms)) {
+        const resolved = new URL(path ?? '', new URL(file, 'file:///r/')).pathname.slice(3);
+        expect(gate).toContain(`            ${resolved}\n`);
+      }
+    }
   });
 
   it('take the key from a caller by name, and need it from none', () => {
@@ -361,9 +456,129 @@ describe("the review gate's workflows", () => {
     // No base filter: a stacked pull request, into the branch below it, needs the check too; `edited` covers its
     // retargeting when the one below merges.
     expect(requested).toMatch(
-      /pull_request:\n {4}types: \[opened, reopened, synchronize, ready_for_review, edited\]\n/,
+      /pull_request:\n {4}types: \[opened, reopened, synchronize, ready_for_review, edited, unlabeled\]\n/,
     );
     expect(requested).toMatch(/^permissions: \{\}$/m);
     expect(requested).not.toMatch(/uses:|secrets\./);
+  });
+});
+
+describe('judging a pull request through the API', () => {
+  const run = { repo: APP_REPO, read: 't', token: '', autonomy: '', print: true };
+  const theirs: PullRequest = {
+    number: 9,
+    state: 'open',
+    user: { id: FACTORY_APP },
+    head: { sha: HEAD, ref: 'factory/9-fix', repo: { full_name: APP_REPO } },
+    base: { ref: 'main', repo: { full_name: APP_REPO } },
+    changed_files: 1,
+  };
+  /** GitHub, as the gate reads it: each path's answer, or a status it fails with. */
+  const github = (over: Record<string, unknown> = {}) => {
+    const answers: Record<string, unknown> = {
+      '/pulls/9/reviews': [],
+      '/pulls/9/files': [{ filename: 'src/a.ts', status: 'modified', patch: '+const a = 1;' }],
+      '/issues/9/events': [],
+      '/check-runs?': {
+        check_runs: [
+          {
+            id: 5,
+            name: 'gates / test integrity',
+            head_sha: HEAD,
+            status: 'completed',
+            conclusion: 'success',
+            app: { slug: 'github-actions' },
+            output: { annotations_count: 0 },
+          },
+        ],
+      },
+      '/check-runs/5/annotations': [],
+      '/contents/.github/CODEOWNERS': '/deploy/ @mrogan\n',
+      ...over,
+    };
+    vi.stubGlobal('fetch', async (url: string) => {
+      const path = new URL(url).pathname + new URL(url).search;
+      const key = Object.keys(answers)
+        .filter((k) => path.includes(k))
+        .sort((a, b) => b.length - a.length)[0];
+      const answer = key === undefined ? 404 : answers[key];
+      if (typeof answer === 'number') return new Response('no', { status: answer });
+      return typeof answer === 'string' ? new Response(answer) : Response.json(answer);
+    });
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("passes the App's untagged pull request with test integrity read", async () => {
+    github();
+    expect(await judge(run, theirs)).toMatchObject({ pass: true, rule: 'low-risk' });
+  });
+
+  it('holds it, posting a verdict, when GitHub fails to give its reviews', async () => {
+    github({ '/pulls/9/reviews': 502 });
+    const said = await judge(run, theirs);
+    expect(said).toMatchObject({ pass: false, rule: 'held' });
+    expect(said.title).toContain('could not read');
+    // A read that failed is a hold, not a wait: it may fail for ever, and nothing runs the gate again for it.
+    expect(said.pending).toBeUndefined();
+    // Martin's own still passes: his say needs no review.
+    const his = { ...theirs, user: { id: MARTIN } };
+    expect(await judge(run, his)).toMatchObject({ pass: true, rule: 'martin-opened' });
+  });
+
+  it('holds it when the annotations GitHub gives are not as many as the run says, more or fewer', async () => {
+    const warning = { path: 'test/a.test.ts', annotation_level: 'warning', message: 'x' };
+    for (const given of [[], [warning, warning]]) {
+      github({
+        '/check-runs?': {
+          check_runs: [
+            {
+              id: 5,
+              name: 'gates / test integrity',
+              head_sha: HEAD,
+              status: 'completed',
+              conclusion: 'success',
+              app: { slug: 'github-actions' },
+              output: { annotations_count: 1 },
+            },
+          ],
+        },
+        '/check-runs/5/annotations': given,
+      });
+      const said = await judge(run, theirs);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      // The warnings it did give are a tag, which the level does not pass, so the tag is what it is held for.
+      expect(said.title).toContain(
+        given.length ? 'Held for its risk tags (test-loosening)' : 'GitHub gave 0 of its 1 annotations',
+      );
+      // The run has completed, so no new reading is coming: a hold, not a wait.
+      expect(said.pending).toBeUndefined();
+    }
+  });
+
+  it('waits for test integrity while its run is queued or in progress at the head', async () => {
+    for (const status of ['queued', 'in_progress']) {
+      github({
+        '/check-runs?': {
+          check_runs: [
+            {
+              id: 5,
+              name: 'gates / test integrity',
+              head_sha: HEAD,
+              status,
+              conclusion: null,
+              app: { slug: 'github-actions' },
+            },
+          ],
+        },
+      });
+      expect(await judge(run, theirs)).toMatchObject({
+        pass: false,
+        rule: 'held',
+        pending: 'test integrity is still running at aaaaaaa',
+      });
+    }
+    // Not run at all yet, the same.
+    github({ '/check-runs?': { check_runs: [] } });
+    expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' });
   });
 });

@@ -32,6 +32,13 @@ type Env = Record<string, string | undefined>;
 export const CONTRADICTS_DOC =
   'https://github.com/the-roganator/cv-software-factory/blob/main/docs/COMPONENTS/TEST-INTEGRITY.md#tests-the-spec-contradicts';
 
+/**
+ * The warning on each test excused as one the spec contradicts. The review gate reads these from the run's annotations
+ * as the pull request's `test-loosening` (`scripts/review-routing.ts`, `EXCUSED`, which a test holds to this).
+ */
+export const excusedNote = (c: { test: string; change: string }) =>
+  `"${c.test}" was ${c.change}, as the spec it was changed for contradicts it`;
+
 /** The queue's branch for a pull request: `gh-readonly-queue/<base>/pr-<number>-<head sha>`. */
 const QUEUE_BRANCH = /^(?:refs\/heads\/)?gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]{40}$/;
 
@@ -146,7 +153,7 @@ export async function main(
   if (unread) annotate('error', unread);
   for (const p of problems) annotate('error', p.message, p.file);
   for (const c of contradicted) {
-    annotate('warning', `"${c.test}" was ${c.change}, as the spec it was changed for contradicts it`, c.file);
+    annotate('warning', excusedNote(c), c.file);
   }
 
   const table = (head: string, cells: [string, string][]) =>

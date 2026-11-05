@@ -1,22 +1,35 @@
-# The review gate (ADR 0014): posts the `review` check, as the review App, on a pull request's head and on the merge
-# queue's commit for it. It passes when Martin opened the pull request, or approved its head after the last push
-# (scripts/review-gate.ts), whatever the pull request's base: a stacked one, into the branch below it, is held to main's
-# required checks. A check on a commit is every open pull request's whose head it is, so the head is judged on all of
-# them, and passes only when each does, whichever pull request asked. A pull request it finds open always gets
-# a verdict. The queue's commit is judged on the pull request its branch names, down to main: a queued stack has an
-# entry for each pull request, with a branch of the ordinary name, built on the entry below it, so the commit for one
-# into another branch carries the changes below it, and is judged on it and every pull request below it, passing only
-# when each does. A merge queue branch it cannot read, or a stack it cannot follow down to main, fails the queue's
-# commit, saying why. The ruleset requires the check from the review App alone, so no workflow, this one's own job
-# included, can stand in for it.
+# The review gate (ADR 0014), which is the approval-routing check (spec 4.3): posts the `review` check, as the review
+# App, on a pull request's head and on the merge queue's commit for it (scripts/review-gate.ts). It passes, by the
+# first rule that holds (scripts/review-routing.ts): when Martin opened the pull request, or approved its head after the
+# last push; an exact pin of the factory's App's, every changed line a digest of an image build.yml signed on main,
+# from a commit that descends from the one it replaces; and, in the app's repository alone, the App's pull request with
+# no risk tags, which the gate works out from the diff and test integrity's run, or, while the caller's AUTONOMY
+# variable is `lights-out`, one whose tags are not a release, an improvement or a path CODEOWNERS on main gives Martin.
+# Anything else is held for Martin. Its summary names the rule and the tags in a block the line reads
+# (policy/review-verdict.ts). This applies whatever the pull request's base: a stacked one, into the branch below it, is
+# held to main's required checks. A check on a commit is every open pull request's whose head it is, so the head is
+# judged on all of them, and passes only when each does, whichever pull request asked. A pull request it finds open
+# always gets a verdict. The queue's commit is judged on the pull request its branch names, down to main: a queued
+# stack has an entry for each pull request, with a branch of the ordinary name, built on the entry below it, so the
+# commit for one into another branch carries the changes below it, and is judged on it and every pull request below
+# it, each afresh at its own head, passing only when each does. A merge queue branch it cannot read, or a stack it
+# cannot follow down to main, fails the queue's commit, saying why. The ruleset requires the check from the review App
+# alone, so no workflow, this one's own job included, can stand in for it.
+#
+# AUTONOMY is the caller's repository variable, `vars.AUTONOMY`: GitHub gives a called workflow its caller's variables,
+# and only an admin of that repository (Martin) can set one; neither the factory's App nor any worker's credential may
+# write variables. It is read here, in main's copy, never from an input, so neither a pull request nor the caller's
+# own file can say Lights-out. The gate heeds it in the app's repository alone: in this one, the App's pull requests
+# pass only as exact pins.
 #
 # Only main's copy runs with the App's key. `workflow_run` runs the workflow as main has it, with GITHUB_REF main, and
 # the key is in the `review` environment, which only main may use: a run on any other ref, a pull request's merge ref
 # included, is refused it. It reads the pull request's metadata through the API and never checks out, builds or runs
-# its code. A pull request opened, pushed to or edited, a review, and the merge queue each run review-requested.yml,
-# which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and holds nothing; its run
-# starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's default event policy
-# blocks in public repositories.
+# its code: the diff, the files an exact pin changes and CODEOWNERS come through the API, the images' signatures from
+# GHCR through cosign. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
+# review-requested.yml, which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and
+# holds nothing; its run starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's
+# default event policy blocks in public repositories.
 #
 # The review App is the-roganator's, App ID 5470762, installed on every repository there. Until its key is in the
 # `review` environment, as the secret REVIEW_APP_PRIVATE_KEY, the gate says its verdict and posts nothing.
@@ -31,7 +44,9 @@
 # stacks are judged as this repository's are. A caller passes REVIEW_APP_PRIVATE_KEY by name, or with
 # `secrets: inherit`: GitHub's docs say a called job with `environment:` uses the caller's environment of that name, but
 # resolves a secret to empty unless the caller passes it, and a secret held only in the environment may be passed by
-# name. Unpassed, the gate says its verdict and posts nothing, as before the key exists.
+# name. Unpassed, the gate says its verdict and posts nothing, as before the key exists. A caller grants the job
+# `checks: read` too, for test integrity's run, and lists its gates' workflow beside review requested in its
+# `workflow_run`, so the gate judges again when they finish: low-risk waits for test integrity's run at the head.
 #
 # When the check is missing, the pull request waits, as it does for a failing one: the queue takes it only once every
 # required check has passed. That is how each of these ends:
@@ -83,6 +98,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     env:
       # Whether the App's key is here, from the environment or a caller: a step's condition cannot read a secret, only
       # this.
@@ -97,13 +113,16 @@ jobs:
             mise.toml
             mise.lock
             scripts/review-gate.ts
+            scripts/review-routing.ts
+            policy/review-verdict.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
-          install_args: node
+          # cosign checks an exact pin's signatures, as scripts/admission-ready.sh does.
+          install_args: node cosign
       # A token for checks alone: with it, the gate can post a check run and do nothing else.
       - id: app
         if: env.HAS_KEY == 'true'
@@ -117,4 +136,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHECKS_TOKEN: ${{ steps.app.outputs.token }}
+          AUTONOMY: ${{ vars.AUTONOMY }}
         run: node scripts/review-gate.ts

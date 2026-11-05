@@ -163,7 +163,7 @@ import { AGENTS, type Agents } from './agents/index.ts';
 import { capOn, capsInForce, lastSeq } from './caps.ts';
 import { type HeldForDeploy, latestDeploy, recordDeploys } from './deploy.ts';
 import { FlagPass } from './flags.ts';
-import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
+import { asEvent, type Draft, gateEvents, gateRecord, readingTimes } from './gates.ts';
 import { closeIssue } from './issues.ts';
 import {
   acceptedFindings,
@@ -182,7 +182,7 @@ import {
   STAGE_OF,
   type WorkItemState,
 } from './machine.ts';
-import type { MergeFacts } from './merging.ts';
+import { type MergeFacts, REJUDGE_MS } from './merging.ts';
 import {
   type Carrying,
   countRecorded,
@@ -310,8 +310,11 @@ export interface LineOptions {
 
 type Provider = 'anthropic' | 'bedrock' | 'local';
 
-/** What GitHub says of a pull request ready to merge: `MergeFacts` without Martin's controls, which are read each pass. */
-type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge'>;
+/**
+ * What GitHub says of a pull request ready to merge: `MergeFacts` without Martin's controls, which are read each pass,
+ * and with when its head's last check finished, from which whether the gate may still judge it again is told each pass.
+ */
+type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge' | 'rejudgeDue'> & { lastCheckAt: string | null };
 
 /** Martin's settings, as the line reads them (`../settings.ts`): checked against policy, as the gateway checks them. */
 export interface LineSettings {
@@ -2227,8 +2230,12 @@ export class Line {
    */
   async #mergeFacts(workItem: string, number: number): Promise<MergeFacts | null> {
     const read = await this.#mergeReadOf(workItem, number);
+    if (!read) return null;
     // The controls as they are this pass, never as they were when GitHub was read: Martin's change applies at once.
-    return read && { ...read, ...this.#merging };
+    const { lastCheckAt, ...facts } = read;
+    const since = lastCheckAt ?? facts.integrityAt;
+    const rejudgeDue = since === null || this.#o.now().getTime() - Date.parse(since) < REJUDGE_MS;
+    return { ...facts, rejudgeDue, ...this.#merging };
   }
 
   /** What GitHub says, cached for `gatesEveryMs`: the part of `MergeFacts` that is not Martin's controls. */
@@ -2242,12 +2249,16 @@ export class Line {
         github.read('reviewVerdict', repo, { number }),
         github.read('mergeability', repo, { number }),
       ]);
+      // The head's checks, for when test integrity finished there: a verdict from before it counts nothing it found.
+      const runs = verdict.check ? await github.read('checkRuns', repo, { sha: verdict.head }) : [];
+      const { integrityAt, lastAt } = readingTimes(runs);
       const refusal = verdict.refusal ? this.#gateRefusal(workItem, number, verdict.head, verdict.refusal) : undefined;
       const check = verdict.check && {
         status: verdict.check.status,
         conclusion: verdict.check.conclusion,
         title: verdict.check.title,
         url: verdict.check.url,
+        completedAt: verdict.check.completedAt,
       };
       return {
         head: verdict.head,
@@ -2257,6 +2268,8 @@ export class Line {
         ...(refusal ? { refusal } : {}),
         // What GitHub said of another head says nothing of this one.
         conflicts: mergeable.head === verdict.head ? mergeable.conflicts : null,
+        integrityAt,
+        lastCheckAt: lastAt,
       };
     })().catch((error: unknown) => {
       log.warn({ workItem, err: error }, 'could not read whether a pull request may merge: it waits');

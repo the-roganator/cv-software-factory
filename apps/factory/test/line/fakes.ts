@@ -148,9 +148,9 @@ export class FakeGitHub implements GitHubPort {
   /**
    * The review gate's verdict on each pull request's head, as the review App's check posts it: by default `low-risk`,
    * concluded; `pending` while it runs, and `none` for no check at all. A held one carries `refusal`, as the GitHub
-   * worker signs it.
+   * worker signs it. `at` is when the check concluded.
    */
-  gate: { rule: Rule; tags?: Found[]; refusal?: unknown } | 'pending' | 'none' = { rule: 'low-risk' };
+  gate: { rule: Rule; tags?: Found[]; refusal?: unknown; at?: string } | 'pending' | 'none' = { rule: 'low-risk' };
   /** Whether each pull request conflicts with main, as GitHub says. */
   conflicts: boolean | null = false;
   /** The pull requests in the merge queue, and the last taken out of it, with why. */
@@ -339,7 +339,7 @@ export class FakeGitHub implements GitHubPort {
           conclusion: done ? (held ? 'failure' : 'success') : null,
           title: done ? (held ? `#${pr.number}: held for its risk tags` : 'Low-risk') : null,
           summary: null,
-          completedAt: done ? '2026-10-05T10:02:00Z' : null,
+          completedAt: done ? (gate.at ?? '2026-10-05T10:02:00Z') : null,
           url: 'https://github.test/runs/900',
         };
         if (!done) return answer({ number: pr.number, head, check, verdict: null, judged: null, problem: 'running' });
@@ -406,6 +406,28 @@ export class FakeGitHub implements GitHubPort {
         completedAt: '2026-10-05T10:01:00Z',
         title: null,
         ...(annotations ? { annotations } : {}),
+      },
+    ]);
+  }
+
+  /** Test integrity's run, GitHub Actions', finishing on the pull request's head at `at`, beside its other checks. */
+  integrity(at: string, number = 12): void {
+    // `TEST_INTEGRITY` in `gates.ts`, which this file does not load: metrics.test.ts sets its meters before the line's.
+    const TEST_INTEGRITY = 'gates / test integrity';
+    const pr = this.pulls.get(number);
+    if (!pr) throw new Error(`No pull request #${number}`);
+    const runs = this.checks.get(pr.head.sha) ?? [];
+    this.checks.set(pr.head.sha, [
+      ...runs.filter((run) => run.name !== TEST_INTEGRITY),
+      {
+        id: 700,
+        name: TEST_INTEGRITY,
+        status: 'completed',
+        conclusion: 'success',
+        app: 'github-actions',
+        startedAt: '2026-10-05T10:00:00Z',
+        completedAt: at,
+        title: null,
       },
     ]);
   }

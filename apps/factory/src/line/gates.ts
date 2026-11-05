@@ -41,6 +41,12 @@ export const APP_SLUG = 'mrogan-software-factory';
  */
 export const REVIEW_GATE_CHECK = 'review';
 
+/**
+ * Test integrity's check, as GitHub Actions names its run: the one check the review gate reads (`TEST_INTEGRITY_CHECK`
+ * in `scripts/review-routing.ts`, which the image does not hold).
+ */
+export const TEST_INTEGRITY = 'gates / test integrity';
+
 /** The checks the rulesets require that are gates: all but the review gate's. */
 const gatesIn = (required: readonly string[]) => required.filter((name) => name !== REVIEW_GATE_CHECK);
 
@@ -233,6 +239,26 @@ function gateRun(
     });
   }
   return drafts;
+}
+
+/**
+ * When the review gate's reading of a commit's checks could last change, as the line judges whether its verdict counts
+ * them (`merging.ts`): `integrityAt`, when GitHub Actions' latest run of test integrity there completed, the one check
+ * the gate reads, chosen as the gate chooses it; `lastAt`, when the latest of the commit's gates completed. Each is null
+ * while there is none.
+ */
+export function readingTimes(runs: readonly CheckRun[]): { integrityAt: string | null; lastAt: string | null } {
+  const [integrity] = runs
+    .filter((run) => run.name === TEST_INTEGRITY && run.app === 'github-actions')
+    .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? '') || b.id - a.id);
+  const done = [...latestRuns(runs).values()].flatMap((run) =>
+    run.status === 'completed' && run.completedAt ? [run.completedAt] : [],
+  );
+  const last = done.reduce<string | null>((at, each) => (at && Date.parse(at) >= Date.parse(each) ? at : each), null);
+  return {
+    integrityAt: integrity?.status === 'completed' ? integrity.completedAt : null,
+    lastAt: last,
+  };
 }
 
 /**

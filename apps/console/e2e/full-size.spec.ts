@@ -57,7 +57,7 @@ test.describe('a screenshot at full size', () => {
       span.remove();
       return width;
     });
-    expect(width).toBeCloseTo(82.67, 0);
+    expect(width).toBeCloseTo(82.67, 1);
   });
 
   test('a press on a wipe’s tag opens it too, and on its handle does not', async ({ page }) => {

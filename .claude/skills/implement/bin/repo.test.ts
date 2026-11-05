@@ -139,6 +139,9 @@ describe('names_path', () => {
       '- **deploy/a.yaml**: why it changed',
       '- [deploy/a.yaml](https://github.com/o/r/blob/main/deploy/a.yaml): why it changed',
       'Why it changed: deploy/a.yaml.',
+      '(It changed: see deploy/a.yaml.) Why',
+      '`/deploy/a.yaml`: why it changed',
+      '`./deploy/a.yaml`: why it changed',
     ])
       expect(names(line), line).toBe(true);
   });
@@ -148,7 +151,9 @@ describe('names_path', () => {
       '`deploy/a.yaml.bak`: why it changed',
       '`deploy/a.yaml~`: why it changed',
       '`deploy/a.yaml-old`: why it changed',
+      '`deploy/a.yaml+old`: why it changed',
       '`other/deploy/a.yaml`: why it changed',
+      '`../deploy/a.yaml`: why it changed',
       '`deployXa.yaml`: why it changed',
     ])
       expect(names(line), line).toBe(false);

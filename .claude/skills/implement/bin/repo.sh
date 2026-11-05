@@ -40,11 +40,12 @@ repo_of() {
 pr_files() {
   gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[] | [.filename, .previous_filename // empty] | join("\t")'
 }
-# names_path <path>: the first line of stdin that names the path whole: no path character ([A-Za-z0-9._/~-]) right
-# before or after it, though a `.` may end it before a space or the line's end. So `deploy/a.yaml`, a bare path and
-# [deploy/a.yaml](…) name deploy/a.yaml; deploy/a.yaml.bak, deploy/a.yaml~ and other/deploy/a.yaml do not.
+# names_path <path>: the first line of stdin that names the path whole: no path character ([A-Za-z0-9._/~+@=-])
+# right before or after it, though it may start with / or ./ (as CODEOWNERS writes paths) and end with a `.` that no
+# path character follows (a sentence's). So `deploy/a.yaml`, a bare path and [deploy/a.yaml](…) name deploy/a.yaml;
+# deploy/a.yaml.bak, deploy/a.yaml~ and other/deploy/a.yaml do not.
 names_path() {
-  local not='[^A-Za-z0-9._/~-]' escaped
+  local not='[^A-Za-z0-9._/~+@=-]' escaped
   escaped=$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1")
-  grep -m1 -E "(^|$not)$escaped(\$|$not|\.(\$|[[:space:]]))"
+  grep -m1 -E "(^|$not)(\.?/)?$escaped\.?(\$|$not)"
 }

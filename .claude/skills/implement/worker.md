@@ -32,7 +32,7 @@ Your job is to finish this item, not to find more work. Never open an issue.
 
 ## Files CODEOWNERS gives Martin
 
-These are the rules of the line, and a change to one merges only with his approval: a reason to make the change well, not to avoid it. When the work needs one changed, change it here (never leave one stale, or put off to an issue a change that belongs here), keep to what the work needs, and give each file a line in a section of the description of its own, under a heading that names CODEOWNERS: what changed and why. Say plainly if a change loosens a rule. `verify.sh` fails a pull request unless each such file has a line there, with words beside the path.
+These are the rules of the line, and a change to one merges only with his approval: a reason to make the change well, not to avoid it. When the work needs one changed, change it here (never leave one stale, or put off to an issue a change that belongs here), keep to what the work needs, and give each file a line in a section of the description of its own, under a heading that names CODEOWNERS: what changed and why. Say plainly if a change loosens a rule. `verify.sh` fails a pull request unless each such file has a line there that names its path whole (in backticks, bare or as a link's text, not as part of a longer path), with at least three words beside it.
 
 ## Steps
 

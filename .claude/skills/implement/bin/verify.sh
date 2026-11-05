@@ -61,7 +61,8 @@ if [[ $key =~ ^(app-)?([0-9]+)(-[0-9]+)?$ ]]; then
 fi
 
 # Every changed file CODEOWNERS gives Martin, by its path or the path a rename moved it from, has a line in the
-# description's section on them, with its reason beside it.
+# description's section on them, which names the path itself, not a longer one, with its reason beside it
+# (owned_reason in repo.sh).
 owners=$(git -C "$checkout" show origin/main:.github/CODEOWNERS | sed 's/#.*//' | awk 'NF { print $1 }')
 files=$(pr_files "$repo" "$pr")
 listed=$(grep -c . <<<"$files" || true)
@@ -84,8 +85,10 @@ say owned "${#owned[@]} file(s) CODEOWNERS gives Martin"
 section=$(awk '/^#+ / { inside = /CODEOWNERS/; next } inside' <<<"$body")
 if (( ${#owned[@]} )) && [[ -z $section ]]; then bad owned "no section on them: a heading naming CODEOWNERS"; fi
 for file in ${owned[@]+"${owned[@]}"}; do
-  if ! words=$(owned_reason "$file" <<<"$section"); then bad owned "$file changes and the section does not name it"
-  elif (( words < 3 )); then bad owned "$file is named with no reason beside it"; fi
+  if words=$(owned_reason "$file" <<<"$section"); then
+    (( words >= 3 )) || bad owned "$file is named with no reason beside it"
+  elif (( $? == 1 )); then bad owned "$file changes and the section does not name it"
+  else bad owned "$file could not be looked for in the section"; fi
 done
 
 if [[ $state == MERGED ]]; then

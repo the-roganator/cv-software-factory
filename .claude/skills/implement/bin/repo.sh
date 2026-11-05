@@ -34,9 +34,9 @@ own_commits() {
 repo_of() {
   git -C "$1" remote get-url origin | sed -E 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##; s#\.git$##'
 }
-# pr_files <repo> <pr>: the path of each file the pull request changes, a line each. From the files API, a page at a
-# time: gh pr diff --name-only fails on a pull request of more than 300 files. The API lists at most 3000, so a caller
-# that must see them all compares the count with the pull request's changedFiles.
+# pr_files <repo> <pr>: each file the pull request changes, a line each: its path, and for a file renamed or moved, a
+# tab and the path it had. From the files API, a page at a time, which lists any number of files up to its 3000, so a
+# caller that must see them all compares the count of lines with the pull request's changedFiles.
 pr_files() {
-  gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[].filename'
+  gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[] | [.filename, .previous_filename // empty] | join("\t")'
 }

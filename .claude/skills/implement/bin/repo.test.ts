@@ -80,8 +80,11 @@ describe('pr_files', () => {
    * pages as `gh api --paginate` does, running the -q filter on each page alone, and fails on anything else: so on
    * `gh pr diff`, as GitHub does past 300 files.
    */
-  function prFiles(pages: string[][]): string[] {
-    writeFileSync(join(dir, 'pages.json'), JSON.stringify(pages.map((page) => page.map((filename) => ({ filename })))));
+  function prFiles(pages: (string | { filename: string; previous_filename: string })[][]): string[] {
+    writeFileSync(
+      join(dir, 'pages.json'),
+      JSON.stringify(pages.map((page) => page.map((file) => (typeof file === 'string' ? { filename: file } : file)))),
+    );
     const gh = join(dir, 'gh');
     writeFileSync(
       gh,
@@ -98,7 +101,7 @@ jq -c '.[]' "${join(dir, 'pages.json')}" | while IFS= read -r page; do jq -r "$5
     return out.split('\n').filter(Boolean);
   }
 
-  it('lists every file across pages, past the 300 gh pr diff gives up at', () => {
+  it('lists every file across pages, more than 300 of them', () => {
     const files = Array.from({ length: 423 }, (_, i) => `tests/snapshots/${i}.png`);
     const pages = [
       files.slice(0, 100),
@@ -108,6 +111,12 @@ jq -c '.[]' "${join(dir, 'pages.json')}" | while IFS= read -r page; do jq -r "$5
       files.slice(400),
     ];
     expect(prFiles(pages)).toEqual(files);
+  });
+
+  it('gives a renamed file the path it had too', () => {
+    expect(
+      prFiles([[{ filename: 'lib/grants.ts', previous_filename: 'policy/store-grants.ts' }, 'README.md']]),
+    ).toEqual(['lib/grants.ts\tpolicy/store-grants.ts', 'README.md']);
   });
 
   it('keeps a path with spaces whole', () => {

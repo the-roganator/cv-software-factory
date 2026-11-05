@@ -13,8 +13,8 @@
 #                          threads, alerts still open on main and summary): its worktree and branch may be gone.
 #                          Whether a branch is behind main is never checked: the merge queue tests it on main as it
 #                          will be.
-#                          Every file is listed, past the 300 gh pr diff gives up at; that GitHub listed them all is
-#                          checked against the count it gives.
+#                          A file renamed or moved is checked under both its paths. Every file is listed, up to the
+#                          files API's 3000; past that the pull request fails, as some of its files go unchecked.
 #   verify.sh <key>        skipped: nothing was left behind (no commit on the worktree since it was made, so one made
 #                          from a stack's branch below counts from there), no branch pushed and no pull request opened.
 # A key of 278-2 is issue 278's second pull request. A key that begins app- is a work item in the app's repository
@@ -60,22 +60,25 @@ if [[ $key =~ ^(app-)?([0-9]+)(-[0-9]+)?$ ]]; then
   grep -qiE "(closes|part of) $ref#$issue\b" <<<"$body" || bad body "no 'Closes $ref#$issue' or 'Part of $ref#$issue'"
 fi
 
-# Every changed file CODEOWNERS gives Martin has a line in the description's section on them, with its reason beside it.
+# Every changed file CODEOWNERS gives Martin, by its path or the path a rename moved it from, has a line in the
+# description's section on them, with its reason beside it.
 owners=$(git -C "$checkout" show origin/main:.github/CODEOWNERS | sed 's/#.*//' | awk 'NF { print $1 }')
 files=$(pr_files "$repo" "$pr")
 listed=$(grep -c . <<<"$files" || true)
 (( listed == changed )) || bad files "GitHub lists $listed of the $changed files it changes: the rest go unchecked"
 owned=()
-while IFS= read -r file; do
-  while IFS= read -r pattern; do
-    # As GitHub reads them: globs, a folder owns what is in it, and a pattern with no slash but a trailing one is
-    # unanchored, matching at any depth. Unquoted on purpose: the patterns are globs.
-    p=${pattern#/} p=${p//\*\*/*} p=${p%/}
-    at=''
-    [[ $pattern == /* || $p == */* ]] || at='*/'
-    # shellcheck disable=SC2053
-    if [[ $file == $p || $file == $p/* || $file == $at$p || $file == $at$p/* ]]; then owned+=("$file"); break; fi
-  done <<<"$owners"
+while IFS=$'\t' read -r path previous; do
+  for file in "$path" ${previous:+"$previous"}; do
+    while IFS= read -r pattern; do
+      # As GitHub reads them: globs, a folder owns what is in it, and a pattern with no slash but a trailing one is
+      # unanchored, matching at any depth. Unquoted on purpose: the patterns are globs.
+      p=${pattern#/} p=${p//\*\*/*} p=${p%/}
+      at=''
+      [[ $pattern == /* || $p == */* ]] || at='*/'
+      # shellcheck disable=SC2053
+      if [[ $file == $p || $file == $p/* || $file == $at$p || $file == $at$p/* ]]; then owned+=("$file"); break; fi
+    done <<<"$owners"
+  done
 done <<<"$files"
 say owned "${#owned[@]} file(s) CODEOWNERS gives Martin"
 section=$(awk '/^#+ / { inside = /CODEOWNERS/; next } inside' <<<"$body")

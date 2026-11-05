@@ -152,6 +152,10 @@ describe('owned_reason', () => {
     expect(reason('deploy/a.yaml', '`./deploy/a.yaml`: why it changed')).toBe(3);
   });
 
+  it('does not take a link to it for its name', () => {
+    expect(reason('deploy/a.yaml', '- [the image](deploy/a.yaml): why it changed')).toBeNull();
+  });
+
   it('does not take a longer path for it, before or after', () => {
     for (const longer of [
       'deploy/a.yaml.bak',
@@ -170,12 +174,16 @@ describe('owned_reason', () => {
   it('reads any text beside the path', () => {
     expect(reason('deploy/a.yaml', '`deploy/a.yaml`’s change: it is why')).toBe(5);
     expect(reason('deploy/a.yaml', 'deploy/a.yaml—why it changed')).toBe(3);
+    expect(reason('deploy/a.yaml', 'deploy/a.yaml\u2212why\u00a0it changed')).toBe(3);
   });
 
   it('counts no other path, link target or URL as reason', () => {
     expect(reason('deploy/a.yaml', '- `deploy/a.yaml`, `deploy/b.yaml`')).toBe(0);
     expect(reason('AGENTS.md', '- `AGENTS.md`, `Makefile`, `/mise.lock`')).toBe(0);
     expect(reason('deploy/a.yaml', '- deploy/a.yaml, deploy/b.yaml')).toBe(0);
+    expect(reason('deploy/a.yaml', '- [deploy/a.yaml](/docs/readme)')).toBe(0);
+    expect(reason('deploy/a.yaml', '``deploy/a.yaml only-code words``')).toBe(0);
+    expect(reason('deploy/a.yaml', '``deploy/a.yaml`` and `` `x` ``: why it changed')).toBe(4);
     expect(reason('deploy/a.yaml', '`deploy/a.yaml.bak` moves to `deploy/a.yaml`')).toBe(2);
     expect(reason('deploy/a.yaml', '- [deploy/a.yaml](https://github.com/o/r/blob/main/deploy/a.yaml)')).toBe(0);
     expect(reason('deploy/a.yaml', '- deploy/a.yaml, HTTPS://github.com/o/r/blob/main/deploy/a.yaml')).toBe(0);

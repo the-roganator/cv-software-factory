@@ -9,7 +9,10 @@
  * where it enters, and an answer that is not what the factory expects is a `GitHubError` of kind `malformed`.
  *
  * `poll` is a conditional GET: the client keeps each answer's ETag and asks again with `If-None-Match`, so an
- * answer that has not changed costs a 304 and nothing against the rate limit.
+ * answer that has not changed costs a 304 and nothing against the rate limit. It keeps the answer as GitHub sent it,
+ * and reads it through the caller's schema each time, 304 or not: two callers may poll one path with different
+ * schemas, and a schema drops the fields it does not name, so a body kept after one had read it would lack the
+ * other's.
  *
  * A request is tried again after a rate limit, which GitHub answers before doing anything. After a timeout or a
  * server error it is tried again only if doing it twice is harmless: a GET, PATCH, PUT or DELETE. A POST that timed
@@ -76,7 +79,10 @@ const MAX_CACHED = 500;
 export type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
 export interface Polled<T> {
-  /** False when GitHub answered 304: the body is the one it gave last time. */
+  /**
+   * False when GitHub answered 304: the body is the one it gave last time this client asked for the path, whoever
+   * asked, so a caller that acts only on a change must be the path's only poller.
+   */
   changed: boolean;
   body: T;
 }
@@ -90,7 +96,8 @@ export class GitHub {
   readonly #now: () => number;
   readonly #timeoutMs: number;
   readonly #maxRetries: number;
-  readonly #etags = new Map<string, { etag: string; body: unknown }>();
+  /** Each polled path's last answer: its ETag, and its body as GitHub sent it, read through no schema yet. */
+  readonly #etags = new Map<string, { etag: string; text: string }>();
 
   constructor(options: GitHubOptions) {
     this.api = options.api ?? API;
@@ -150,15 +157,18 @@ export class GitHub {
     const key = `${repo} ${path}`;
     const cached = this.#etags.get(key);
     const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
-    if (response.status === 304 && cached) return { changed: false, body: cached.body as T };
-    const body = parse(schema, await response.json(), `GET ${path}`);
+    if (response.status === 304 && cached) {
+      return { changed: false, body: parse(schema, JSON.parse(cached.text), `GET ${path}`) };
+    }
+    const text = await response.text();
+    const json: unknown = JSON.parse(text);
     const etag = response.headers.get('etag');
     if (etag) {
       this.#etags.delete(key);
-      this.#etags.set(key, { etag, body });
+      this.#etags.set(key, { etag, text });
       if (this.#etags.size > MAX_CACHED) this.#etags.delete(this.#etags.keys().next().value as string);
     }
-    return { changed: true, body };
+    return { changed: true, body: parse(schema, json, `GET ${path}`) };
   }
 
   /** A GraphQL call. GitHub answers errors with a 200 and an `errors` list; those are thrown as `GitHubError`s. */

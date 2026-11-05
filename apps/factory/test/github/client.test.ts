@@ -89,6 +89,37 @@ describe('the client', () => {
     expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, '"v1"', '"v1"']);
   });
 
+  it('reads an unchanged answer through each caller’s own schema, so one that names fewer fields spoils no other', async () => {
+    const PULL = `/repos/${REPO}/pulls/7`;
+    const answer = { number: 7, mergeable: true, head: { sha: 'abc', ref: 'fix' }, base: { ref: 'main' } };
+    const { github, sent } = client([
+      {
+        method: 'GET',
+        path: PULL,
+        answer: ({ headers }) =>
+          headers['if-none-match'] === '"v1"'
+            ? { status: 304, headers: { etag: '"v1"' } }
+            : { body: answer, headers: { etag: '"v1"' } },
+      },
+    ]);
+    const MERGEABLE = z.object({ mergeable: z.boolean().nullable() });
+    const WHOLE = z.object({
+      number: z.number(),
+      head: z.object({ sha: z.string(), ref: z.string() }),
+      base: z.object({ ref: z.string() }),
+    });
+    expect(await github.poll(REPO, PULL, MERGEABLE)).toEqual({ changed: true, body: { mergeable: true } });
+    expect(await github.poll(REPO, PULL, WHOLE)).toEqual({
+      changed: false,
+      body: { number: 7, head: { sha: 'abc', ref: 'fix' }, base: { ref: 'main' } },
+    });
+    // A schema that does not fit is malformed, and leaves the kept answer for the others.
+    await expect(github.poll(REPO, PULL, OK)).rejects.toMatchObject({ kind: 'malformed' });
+    expect(await github.poll(REPO, PULL, MERGEABLE)).toEqual({ changed: false, body: { mergeable: true } });
+    // One request each, all but the first answered 304: the schemas share the path's ETag.
+    expect(calls(sent).map((s) => s.headers['if-none-match'])).toEqual([undefined, '"v1"', '"v1"', '"v1"']);
+  });
+
   it('waits out a rate limit GitHub names, then tries again', async () => {
     const waits: number[] = [];
     const { github } = client(

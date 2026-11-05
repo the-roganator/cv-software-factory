@@ -161,14 +161,16 @@ function GateEvidence({
 function ReviewOnGitHub({ review, martin }: { review: NonNullable<Need['review']>; martin: boolean }) {
   const label = `Review #${review.pullRequest} on GitHub`;
   const does = !martin
-    ? 'Martin approves its head commit there, with his own review.'
+    ? review.approving
+      ? 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.'
+      : 'Martin approves its head commit there, with his own review, and merges it there.'
     : review.approving
       ? 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.'
       : 'Approve its head commit there, then merge it there: the line does not add this one to the merge queue.';
   return (
     <div className="answer">
       {review.href ? (
-        <a className="btn small" href={review.href} target="_blank" rel="noopener">
+        <a className="btn small way" href={review.href} target="_blank" rel="noopener">
           {label}
           <span aria-hidden="true"> ↗</span>
           <span className="sr"> (opens GitHub in a new tab)</span>

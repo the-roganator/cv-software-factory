@@ -454,8 +454,8 @@ describe('Needs you', () => {
       });
       expect(need?.answers.map((a) => [a.label, a.does])).toEqual([
         ['Answer in words', 'Sends it back to the coder, with your words as the reason.'],
-        // The line closes the work item and its issue, and leaves the pull request open.
-        ['Reject', 'Closes #2070, unmerged. Its pull request #1327 stays open on GitHub until you close it.'],
+        // A sample's pull request never existed, so nothing is left open.
+        ['Reject', 'Closes #2070, unmerged.'],
       ]);
       // Its pull request on GitHub, for one that is not a sample's.
       const real = work('2070', START).add(0, 'work-item.opened', 'factory', {
@@ -463,11 +463,18 @@ describe('Needs you', () => {
         title: 'Real',
         sample: false,
       });
-      expect(needOf(merge('held', { approving: false }), real)?.review).toEqual({
+      const realNeed = needOf(merge('held', { approving: false }), real);
+      expect(realNeed?.review).toEqual({
         pullRequest: 1327,
         href: 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1327',
         approving: false,
       });
+      // The line closes the work item and its issue, and leaves the pull request open.
+      expect(realNeed?.answers.find((a) => a.answer === 'rejected')?.does).toBe(
+        'Closes #2070, unmerged. Its pull request #1327 stays open on GitHub until you close it.',
+      );
+      // With no tags read, the gate said nothing clear either.
+      expect(needOf(merge('held', { tags: undefined }))?.evidence).toMatchObject({ kind: 'gate', tags: [], clear: [] });
       // Its chapter is a hold, as a gate's is.
       const held = work('2072', START).open().add(1, 'pull-request.pushed', 'coder', pushed);
       held.add(30, 'hold.started', 'factory', merge('held', { rule: 'held' }));
@@ -526,7 +533,7 @@ describe('Needs you', () => {
       expect(sheet?.chapters.map((c) => c.label)).toContain('QUEUED');
       expect(sheet?.after).toEqual({
         outcome: 'in-progress',
-        text: `In the merge queue since ${clock(START + 40 * 60_000)}: the line added PR #1327, as the review gate passed it by low-risk`,
+        text: `In the merge queue since ${clock(START + 40 * 60_000)}: the line added PR #1327, which the review gate passed as low-risk`,
       });
       // Taken out unmerged, it is out of the queue, and the line holds it again.
       const out = item
@@ -546,6 +553,21 @@ describe('Needs you', () => {
         ).holds[0]?.kicker,
       ).toBe('Out of the merge queue');
       expect(projectSheet(project(out.events, t), '2071')?.chapters.map((c) => c.label)).toContain('OUT OF QUEUE');
+    });
+
+    it('keeps a pull request in the queue when the queue takes out an older commit of it, as the line does', () => {
+      const NEWER = 'b'.repeat(40);
+      const item = work('2073', START)
+        .open()
+        .add(1, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2073' })
+        .add(40, 'pull-request.enqueued', 'factory', { number: 1327, commit: NEWER, rule: 'low-risk' })
+        .add(45, 'pull-request.dequeued', 'factory', {
+          number: 1327,
+          commit: HEAD,
+          reason: 'failed_checks',
+          failed: [],
+        });
+      expect(foldItems(item.events)[0]?.inQueue).toMatchObject({ number: 1327, commit: NEWER });
     });
   });
 

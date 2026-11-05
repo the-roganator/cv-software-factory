@@ -395,10 +395,13 @@ function gateEvidence(merge: Merge): Evidence {
     because: `${because.join(', ')}${more ? `, and ${more} more` : ''}`,
   }));
   const found = new Set(tags.map(({ tag }) => tag));
-  const clear = [
-    ...(found.has('code-owned') ? [] : ['no path CODEOWNERS gives Martin']),
-    ...(found.has('release') || found.has('improvement') ? [] : ['not a release, not an improvement']),
-  ];
+  // What it found clear only where the verdict named its tags: with none read, the gate said neither.
+  const clear = merge.tags
+    ? [
+        ...(found.has('code-owned') ? [] : ['no path CODEOWNERS gives Martin']),
+        ...(found.has('release') || found.has('improvement') ? [] : ['not a release, not an improvement']),
+      ]
+    : [];
   return { kind: 'gate', said: merge.said, tags, clear, head: merge.head, approving: merge.approving };
 }
 
@@ -532,7 +535,14 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
             does:
               answer === 'approved' && hold.needs?.some((n) => n.barred)
                 ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
-                : doesOf(hold.cause, answer, item.number, improvement, hold.merge?.pullRequest ?? item.pullRequest),
+                : doesOf(
+                    hold.cause,
+                    answer,
+                    item.number,
+                    improvement,
+                    // A sample's pull request never existed, so nothing stays open.
+                    item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                  ),
             stepUp: answer === 'approved' && keyed,
           })),
           aboutReport: opener?.sense === 'report',

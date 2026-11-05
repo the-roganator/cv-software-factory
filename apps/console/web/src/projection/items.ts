@@ -568,9 +568,12 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.inQueue = { ...event.payload, at: time };
         if (state.hold?.cause === 'merge') state.hold = undefined;
         break;
-      // The queue took it out unmerged: the line holds it for Martin again, saying why.
+      // The queue took it out unmerged: the line holds it for Martin again, saying why. Only the commit it was added at
+      // counts, as the line reads it: a late word on an older commit leaves the newer one in the queue.
       case 'pull-request.dequeued':
-        if (event.payload.number === state.inQueue?.number) state.inQueue = undefined;
+        if (event.payload.number === state.inQueue?.number && event.payload.commit === state.inQueue.commit) {
+          state.inQueue = undefined;
+        }
         break;
       case 'work.returned':
         state.sentBack = time;

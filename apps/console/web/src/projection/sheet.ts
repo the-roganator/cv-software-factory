@@ -7,6 +7,7 @@
  */
 import type {
   DefectCategory,
+  GateRule,
   Kind,
   PayloadOf,
   PublicEvent,
@@ -652,6 +653,18 @@ function scopeOf(item: ItemState, spec: PayloadOf<'spec.written'>): Sheet['scope
 }
 
 /**
+ * How the review gate passed a pull request the line added to the merge queue, by its rule, in words. The line never
+ * adds one the gate held, which is named by its rule should a record ever say so.
+ */
+const RULE_WORDS: Record<Exclude<GateRule, 'held'>, string> = {
+  'martin-opened': 'as Martin opened it',
+  'martin-approved-head': 'on Martin’s approval of its head commit',
+  'exact-pin': 'as an exact pin',
+  'low-risk': 'as low-risk',
+  'lights-out': 'at Lights-out',
+};
+
+/**
  * What the work item waits for once its rounds are done: the merge queue, Martin's merge, Martin's decision, or a
  * release.
  */
@@ -660,7 +673,7 @@ function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean
     const { number, rule, at } = item.inQueue;
     return {
       outcome: 'in-progress',
-      text: `In the merge queue since ${clock(at)}: the line added PR #${number}, as the review gate passed it by ${rule}`,
+      text: `In the merge queue since ${clock(at)}: the line added PR #${number}, which the review gate passed ${rule === 'held' ? 'by its rule held' : RULE_WORDS[rule]}`,
     };
   }
   if (item.outcome === 'merged') {

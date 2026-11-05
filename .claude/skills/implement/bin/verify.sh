@@ -84,7 +84,7 @@ say owned "${#owned[@]} file(s) CODEOWNERS gives Martin"
 section=$(awk '/^#+ / { inside = /CODEOWNERS/; next } inside' <<<"$body")
 if (( ${#owned[@]} )) && [[ -z $section ]]; then bad owned "no section on them: a heading naming CODEOWNERS"; fi
 for file in ${owned[@]+"${owned[@]}"}; do
-  line=$(grep -F "$file" <<<"$section" | head -1 || true)
+  line=$(names_path "$file" <<<"$section")
   words=$(tr -d '`*' <<<"${line//"$file"/}" | tr -cs '[:alnum:]' '\n' | grep -c . || true)
   if [[ -z $line ]]; then bad owned "$file changes and the section does not name it"
   elif (( words < 3 )); then bad owned "$file is named with no reason beside it"; fi

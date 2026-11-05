@@ -123,3 +123,40 @@ jq -c '.[]' "${join(dir, 'pages.json')}" | while IFS= read -r page; do jq -r "$5
     expect(prFiles([['docs/a file.md', '.github/CODEOWNERS']])).toEqual(['docs/a file.md', '.github/CODEOWNERS']);
   });
 });
+
+describe('names_path', () => {
+  /** The line of `section` names_path finds naming `path`, or '' for none. */
+  function namesPath(path: string, section: string): string {
+    return execFileSync('bash', ['-c', `. "${REPO_SH}" && names_path "$1"`, 'test', path], {
+      env: ENV,
+      input: section,
+      encoding: 'utf8',
+    }).trim();
+  }
+
+  it('finds the path in backticks, bare, or as a link', () => {
+    expect(namesPath('deploy/a.yaml', '`deploy/a.yaml`: why it changed')).toBe('`deploy/a.yaml`: why it changed');
+    expect(namesPath('deploy/a.yaml', '- deploy/a.yaml — why it changed')).toBe('- deploy/a.yaml — why it changed');
+    expect(namesPath('deploy/a.yaml', '- [deploy/a.yaml](https://x/blob/main/deploy/a.yaml): why')).toBe(
+      '- [deploy/a.yaml](https://x/blob/main/deploy/a.yaml): why',
+    );
+    expect(namesPath('deploy/a.yaml', 'Why it changed: deploy/a.yaml.')).toBe('Why it changed: deploy/a.yaml.');
+  });
+
+  it('does not take a longer path for it, before or after', () => {
+    expect(namesPath('deploy/a.yaml', '`deploy/a.yaml.bak`: why it changed')).toBe('');
+    expect(namesPath('deploy/a.yaml', '`other/deploy/a.yaml`: why it changed')).toBe('');
+    expect(namesPath('deploy/a.yaml', '`deploy/a.yaml-old`: why it changed')).toBe('');
+  });
+
+  it('finds the line that names it whole after a line or a place that names a longer one', () => {
+    expect(
+      namesPath('deploy/a.yaml', '`deploy/a.yaml.bak`: why\n`deploy/a.yaml.bak` moves to `deploy/a.yaml`: and why'),
+    ).toBe('`deploy/a.yaml.bak` moves to `deploy/a.yaml`: and why');
+  });
+
+  it('reads the path as text, not a pattern', () => {
+    expect(namesPath('.github/CODEOWNERS', '`xgithub/CODEOWNERS`: why it changed')).toBe('');
+    expect(namesPath('deploy/[a].yaml', '`deploy/[a].yaml`: why it changed')).toBe('`deploy/[a].yaml`: why it changed');
+  });
+});

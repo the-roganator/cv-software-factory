@@ -40,3 +40,23 @@ repo_of() {
 pr_files() {
   gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[] | [.filename, .previous_filename // empty] | join("\t")'
 }
+# names_path <path>: the first line of stdin that names the path whole, or nothing. A path is whole where the character
+# before it and the one after it cannot be part of a path (a letter, a digit, `.`, `_`, `-` or `/`), so backticks,
+# a bare path and a markdown link's text all count, and deploy/a.yaml.bak or other/deploy/a.yaml do not name
+# deploy/a.yaml. A `.` after it still ends it when nothing of a path follows, as at the end of a sentence.
+names_path() {
+  path=$1 awk '
+    function pathchar(c) { return c != "" && c ~ /[[:alnum:]._\/-]/ }
+    {
+      path = ENVIRON["path"]; from = 1
+      while ((i = index(substr($0, from), path)) > 0) {
+        at = from + i - 1; end = at + length(path)
+        before = at > 1 ? substr($0, at - 1, 1) : ""
+        after = substr($0, end, 1)
+        if (!pathchar(before) && (!pathchar(after) || (after == "." && !pathchar(substr($0, end + 1, 1))))) {
+          print; exit
+        }
+        from = at + 1
+      }
+    }'
+}

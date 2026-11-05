@@ -169,14 +169,14 @@ const captures: Captures = { app: APP.commit, shots: {}, changed: {} };
 try {
   for (const [index, variant] of VARIANTS.entries()) {
     const originals = variant.edits.map(([file]) => [file, readFileSync(join(work, file), 'utf-8')] as const);
-    for (const [file, find, replace] of variant.edits) {
-      const text = readFileSync(join(work, file), 'utf-8');
-      if (!text.includes(find)) throw new Error(`${variant.name}: ${file} no longer contains ${find}`);
-      writeFileSync(join(work, file), text.replaceAll(find, replace));
-    }
     const port = PORT + index;
     let server: ChildProcess | undefined;
     try {
+      for (const [file, find, replace] of variant.edits) {
+        const text = readFileSync(join(work, file), 'utf-8');
+        if (!text.includes(find)) throw new Error(`${variant.name}: ${file} no longer contains ${find}`);
+        writeFileSync(join(work, file), text.replaceAll(find, replace));
+      }
       server = await start(port);
       for (const shot of variant.shots) {
         await page.goto(`http://localhost:${port}${shot.path}`, { waitUntil: 'networkidle' });
@@ -220,7 +220,7 @@ async function difference(page: Page, a: string, b: string): Promise<number> {
 async function start(port: number): Promise<ChildProcess> {
   const health = `http://localhost:${port}/health`;
   const answers = () =>
-    fetch(health).then(
+    fetch(health, { signal: AbortSignal.timeout(1_000) }).then(
       async (response) => {
         await response.body?.cancel();
         return response.ok;
@@ -234,26 +234,26 @@ async function start(port: number): Promise<ChildProcess> {
     env: { ...process.env, PORT: String(port), LOG_LEVEL: 'silent', OTEL_SDK_DISABLED: 'true' },
     stdio: 'ignore',
   });
-  let failed = false;
-  server.once('error', () => {
-    failed = true;
+  let failure: Error | undefined;
+  server.on('error', (error) => {
+    failure = error;
   });
-  for (let tries = 0; tries < 100 && !failed && !exited(server); tries++) {
+  for (let tries = 0; tries < 100 && !failure && !exited(server); tries++) {
     if (await answers()) return server;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  const why =
+    failure?.message ?? (exited(server) ? `it exited (${server.exitCode ?? server.signalCode})` : 'timed out');
   await stop(server);
-  throw new Error('The scratch copy of the app did not start');
+  throw new Error(`The scratch copy of the app did not start on :${port}: ${why}`);
 }
 
-/** Stops a scratch copy and waits until it has gone, killing it outright if it has not closed within five seconds. */
+/** Kills a scratch copy outright, as it is thrown away, and waits until it has gone. */
 async function stop(server: ChildProcess): Promise<void> {
   if (exited(server) || server.pid === undefined) return;
   const gone = new Promise((resolve) => server.once('exit', resolve));
-  server.kill();
-  const timer = setTimeout(() => server.kill('SIGKILL'), 5_000);
+  server.kill('SIGKILL');
   await gone;
-  clearTimeout(timer);
 }
 
 function exited(server: ChildProcess): boolean {

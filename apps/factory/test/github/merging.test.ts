@@ -603,6 +603,30 @@ describe('merging in a dry run', () => {
     expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true });
   });
 
+  it('takes one out of the queue when its head moves or it goes back to draft, as GitHub does', async () => {
+    const { made, reads, head, number, later } = await dryRun();
+    const ref = { number, url: '', nodeId: '' };
+    await made.enqueuePullRequest(REPO, number, head);
+    await made.convertToDraft(REPO, ref);
+    const moved = await made.commit(REPO, {
+      branch: BRANCH,
+      expectedHead: head,
+      message: 'fix(cart): count c',
+      changes: { additions: [{ path: 'src/cart.ts', contents: new TextEncoder().encode('c\n') }], deletions: [] },
+    });
+    later(TIMES.mergeAfterMs);
+    // A draft, out of the queue: it never merges at a head nobody queued.
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ state: 'open', merged: false });
+    expect(await reads.mergeQueue(REPO, number)).toMatchObject({ queued: null, added: null });
+    await made.readyForReview(REPO, ref);
+    await made.enqueuePullRequest(REPO, number, moved);
+    later(TIMES.mergeAfterMs - MINUTE);
+    // Queued again at the new head, it merges a while after that, not after the first.
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: false });
+    later(MINUTE);
+    expect(await reads.pullRequest(REPO, number)).toMatchObject({ merged: true, head: { sha: moved } });
+  });
+
   it('merges one never queued a while after it was readied, and refuses to queue one merged', async () => {
     const { made, reads, head, number, later, records } = await dryRun();
     later(TIMES.mergeAfterMs);

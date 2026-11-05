@@ -14,6 +14,13 @@
  * is, and the queue's commit for a stacked pull request carries those below it: each with the head it was judged at.
  * The check passes only when every entry's rule passes.
  *
+ * An entry held only to wait carries `pending`, what the gate could not read yet: test integrity's run missing, queued
+ * or in progress for the head, or a read of GitHub that failed. It is never set beside a passing rule, nor when
+ * anything the gate did read holds the pull request (a tag, a removed risk label, a stacked base, a test-integrity run
+ * another app posted, or one that failed or was cancelled): judged again once it can read it, the gate may pass the
+ * pull request, so a pending hold is a wait and not a refusal. The field is optional, so a block without it, or a
+ * reader that knows nothing of it, is still version 1.
+ *
  * Read it only from the check run named `review` that the review App (5470762) posted, for the pull request's current
  * head: the factory's App can post check runs too, and its text could say anything.
  *
@@ -68,6 +75,8 @@ export interface Judged {
   head: string;
   rule: Rule;
   tags: Found[];
+  /** With rule `held` only: what the gate waits to read before it judges again. */
+  pending?: string;
 }
 
 export interface Verdict {
@@ -80,7 +89,7 @@ export interface Verdict {
 /** The most things named as giving one tag: a summary has room for 65,535 characters. */
 export const GIVEN_LIMIT = 20;
 
-/** Whether a rule passes the pull request: every rule but `held`. */
+/** Whether a rule passes the pull request: every rule but `held`, pending or not. */
 export const passes = (rule: Rule): boolean => rule !== 'held';
 
 const OPEN = '<!-- review-verdict v1\n';
@@ -121,7 +130,7 @@ function readFound(value: unknown): Found | string {
 
 function readJudged(value: unknown): Judged | string {
   if (!isObject(value)) return 'a verdict is not an object';
-  const { number, head, rule, tags } = value;
+  const { number, head, rule, tags, pending } = value;
   if (!(Number.isInteger(number) && (number as number) > 0)) return 'a verdict names no pull request';
   if (typeof head !== 'string' || !SHA.test(head)) return `#${number}'s head is not a commit`;
   if (!RULES.includes(rule as Rule)) return `#${number}'s rule, ${JSON.stringify(rule)}, is not a rule`;
@@ -131,6 +140,11 @@ function readJudged(value: unknown): Judged | string {
     const each = readFound(tag);
     if (typeof each === 'string') return `#${number}: ${each}`;
     read.push(each);
+  }
+  if (pending !== undefined) {
+    if (typeof pending !== 'string' || pending === '') return `#${number}'s pending read is not words`;
+    if (rule !== 'held') return `#${number} waits for a read, but its rule, ${String(rule)}, is not held`;
+    return { number: number as number, head, rule, tags: read, pending };
   }
   return { number: number as number, head, rule: rule as Rule, tags: read };
 }

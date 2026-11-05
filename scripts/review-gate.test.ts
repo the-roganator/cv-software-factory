@@ -329,6 +329,25 @@ describe("the check's summary", () => {
     const one = readVerdict(summaryOf(HEAD, judged.slice(0, 1)));
     expect('judged' in one && one.judged[0]?.tags[0]?.because).toHaveLength(GIVEN_LIMIT);
   });
+
+  it('carries a hold that waits for a read as pending, and no other', () => {
+    const waits = { pass: false, title: 'Waits for test integrity', rule: 'held' as const, tags: [], pending: 'x' };
+    const held = {
+      pass: false,
+      title: 'Held for its risk tags',
+      rule: 'held' as const,
+      tags: [found('release', ['y'])],
+    };
+    const read = readVerdict(
+      summaryOf(HEAD, [
+        { pr: { ...pr(APP), number: 1 }, said: waits },
+        { pr: { ...pr(APP), number: 2 }, said: held },
+      ]),
+    );
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged.map((j) => j.pending)).toEqual(['x', undefined]);
+    expect('pending' in (read.judged[1] ?? {})).toBe(false);
+  });
 });
 
 describe("the review gate's workflows", () => {
@@ -474,6 +493,8 @@ describe('judging a pull request through the API', () => {
     const said = await judge(run, theirs);
     expect(said).toMatchObject({ pass: false, rule: 'held' });
     expect(said.title).toContain('could not read');
+    // A read that failed is one the gate waits to make again.
+    expect(said.pending).toContain('a read of GitHub that failed: GET /repos/');
     // Martin's own still passes: his say needs no review.
     const his = { ...theirs, user: { id: MARTIN } };
     expect(await judge(run, his)).toMatchObject({ pass: true, rule: 'martin-opened' });
@@ -501,6 +522,35 @@ describe('judging a pull request through the API', () => {
       const said = await judge(run, theirs);
       expect(said).toMatchObject({ pass: false, rule: 'held' });
       expect(said.title).toContain(`GitHub gave ${given.length} of its 1 annotations`);
+      // A page lost is a read to make again; the warnings it did give are a tag, which holds it anyway.
+      expect(said.pending).toBe(given.length === 0 ? 'GitHub gave 0 of its 1 annotations' : undefined);
     }
+  });
+
+  it('waits for test integrity while its run is queued or in progress at the head', async () => {
+    for (const status of ['queued', 'in_progress']) {
+      github({
+        '/check-runs?': {
+          check_runs: [
+            {
+              id: 5,
+              name: 'gates / test integrity',
+              head_sha: HEAD,
+              status,
+              conclusion: null,
+              app: { slug: 'github-actions' },
+            },
+          ],
+        },
+      });
+      expect(await judge(run, theirs)).toMatchObject({
+        pass: false,
+        rule: 'held',
+        pending: 'test integrity is still running at aaaaaaa',
+      });
+    }
+    // Not run at all yet, the same.
+    github({ '/check-runs?': { check_runs: [] } });
+    expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' });
   });
 });

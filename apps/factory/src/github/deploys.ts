@@ -164,8 +164,12 @@ const named = ({ pin, commit }: Runs) => `${pin.what ? `${pin.what} ` : ''}${com
 export const deployTitle = (target: DeployTarget, runs: readonly Runs[]) =>
   `chore(deploy): run ${runs.map(named).join(' and ')} on the ${target.profile} cluster`;
 
-/** A deploy pull request's title as `deployTitle` writes it, to any profile: what it runs, and where. */
-const DEPLOY_TITLE = /^chore\(deploy\): run (.+) on the (\S+) cluster$/;
+/**
+ * A deploy pull request's title as `deployTitle` writes it, to any profile: what it runs, each pin at its commit as
+ * `named` writes it, and where.
+ */
+const NAMED = '(?:[a-z][a-z ]* )?[0-9a-f]{7}';
+const DEPLOY_TITLE = new RegExp(`^chore\\(deploy\\): run (${NAMED}(?: and ${NAMED})*) on the (\\S+) cluster$`);
 
 /** What a deploy pull request's title says it runs, each pin at its commit as `named` writes it. */
 const said = (target: DeployTarget, title: string): string[] => {
@@ -427,7 +431,9 @@ export function bringsSection(target: DeployTarget, brings: Brings): string {
     said.push(
       brings.count
         ? `${who} ${bring} ${all} merged since ${since}, newest first:\n\n| ${head.join(' | ')} |\n|${head.map(() => '---').join('|')}|\n${rows.join('\n')}`
-        : `${who} ${bring} no pull request: ${brings.deploys ? 'only deploy pull requests' : 'nothing'} merged since ${since}.`,
+        : brings.whole
+          ? `${who} ${bring} no pull request: ${brings.deploys ? 'only deploy pull requests' : 'nothing'} merged since ${since}.`
+          : `${who} ${bring} no pull request among the commits read since ${since}, which were only deploy pull requests; the rest were not read.`,
     );
   }
   if (unranged.length) {
@@ -667,11 +673,13 @@ export async function brings(
   const each = [...ranges.values()];
   const read = await Promise.all(each.map((r) => range(github, repo, r.pinned, r.commit)));
   const found = new Map<string, { sha: string; message: string; date: string; at: number; reaches: Set<Pin> }>();
+  const deploys = new Set<string>();
   read.forEach(({ commits }, i) => {
     const pins = each[i]?.pins ?? [];
     commits.forEach((c, at) => {
       const seen = found.get(c.sha);
-      if (seen) for (const pin of pins) seen.reaches.add(pin);
+      if (deployCommit(c.commit.message)) deploys.add(c.sha);
+      else if (seen) for (const pin of pins) seen.reaches.add(pin);
       else
         found.set(c.sha, {
           sha: c.sha,
@@ -682,8 +690,6 @@ export async function brings(
         });
     });
   });
-  const deploys = [...found.values()].filter((c) => deployCommit(c.message));
-  for (const { sha } of deploys) found.delete(sha);
   const place = new Map(order.map((c, i) => [c.sha, i]));
   const newest = [...found.values()].sort((a, b) => {
     const [pa, pb] = [place.get(a.sha), place.get(b.sha)];
@@ -702,7 +708,7 @@ export async function brings(
     })),
     // Every one read. A range not read whole may hold more, deploys or not, so its count is the least it can be.
     count: found.size,
-    deploys: deploys.length,
+    deploys: deploys.size,
     whole: read.every((r) => r.commits.length >= r.total),
   };
 }

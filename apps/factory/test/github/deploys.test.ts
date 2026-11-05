@@ -1348,6 +1348,10 @@ describe('the list of pull requests', () => {
     expect(bringsSection(APP, one([], { deploys: 2 }))).toContain(
       'It brings no pull request: only deploy pull requests merged since the pinned commit.',
     );
+    // The commits not read may hold others, so it says only what was read.
+    expect(bringsSection(APP, one([], { deploys: 1000, whole: false }))).toContain(
+      'It brings no pull request among the commits read since the pinned commit, which were only deploy pull requests; the rest were not read.',
+    );
   });
 
   it("knows the worker's own deploy pull requests by their title, to any profile, in either repository", () => {
@@ -1361,6 +1365,7 @@ describe('the list of pull requests', () => {
     }
     for (const message of [
       'chore(deploy): pin flagd by digest (#887)',
+      'chore(deploy): run the scoreboard migrations on the local cluster (#900)',
       'chore(deploy)!: run the factory 2d87504 on the local cluster (#888)',
       'fix(deploy): run the factory 2d87504 on the local cluster (#888)',
       'Revert "chore(deploy): run the factory 2d87504 on the local cluster (#888)" (#889)',

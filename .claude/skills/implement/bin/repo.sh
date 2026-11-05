@@ -1,4 +1,5 @@
-# Sourced by worktree.sh, copilot.sh and verify.sh: the repository a work item's key names, and where it is checked out.
+# Sourced by worktree.sh, copilot.sh and verify.sh: the repository a work item's key names, where it is checked out, and
+# the files a pull request in it changes.
 # A key that begins app- (app-flag-context) is a work item in the app's repository, checked out at APP_DIR, by default
 # beside this one; any other key is this repository's. Every worktree lives under this checkout's
 # scratch/worktrees/<key>, whichever repository it belongs to. `root` is this checkout, found from where the scripts
@@ -32,4 +33,10 @@ own_commits() {
 # repo_of <checkout>: owner/name of its origin on GitHub, read from git rather than asked of GitHub.
 repo_of() {
   git -C "$1" remote get-url origin | sed -E 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##; s#\.git$##'
+}
+# pr_files <repo> <pr>: the path of each file the pull request changes, a line each. From the files API, a page at a
+# time: gh pr diff --name-only fails on a pull request of more than 300 files. The API lists at most 3000, so a caller
+# that must see them all compares the count with the pull request's changedFiles.
+pr_files() {
+  gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[].filename'
 }

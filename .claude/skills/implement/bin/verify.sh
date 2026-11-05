@@ -13,6 +13,8 @@
 #                          threads, alerts still open on main and summary): its worktree and branch may be gone.
 #                          Whether a branch is behind main is never checked: the merge queue tests it on main as it
 #                          will be.
+#                          Every file is listed, past the 300 gh pr diff gives up at; that GitHub listed them all is
+#                          checked against the count it gives.
 #   verify.sh <key>        skipped: nothing was left behind (no commit on the worktree since it was made, so one made
 #                          from a stack's branch below counts from there), no branch pushed and no pull request opened.
 # A key of 278-2 is issue 278's second pull request. A key that begins app- is a work item in the app's repository
@@ -45,8 +47,9 @@ if [[ -z $pr ]]; then
   exit $fail
 fi
 
-IFS=$'\t' read -r state branch head opened < <(gh pr view "$pr" -R "$repo" --json state,headRefName,headRefOid,createdAt \
-  -q '[.state, .headRefName, .headRefOid, (.createdAt | fromdateiso8601)] | @tsv')
+IFS=$'\t' read -r state branch head opened changed < <(gh pr view "$pr" -R "$repo" \
+  --json state,headRefName,headRefOid,createdAt,changedFiles \
+  -q '[.state, .headRefName, .headRefOid, (.createdAt | fromdateiso8601), .changedFiles] | @tsv')
 body=$(gh pr view "$pr" -R "$repo" --json body -q .body)
 say pr "#$pr $state $branch ${head:0:8}"
 [[ $state == OPEN || $state == MERGED ]] || bad state "pull request is $state"
@@ -59,7 +62,9 @@ fi
 
 # Every changed file CODEOWNERS gives Martin has a line in the description's section on them, with its reason beside it.
 owners=$(git -C "$checkout" show origin/main:.github/CODEOWNERS | sed 's/#.*//' | awk 'NF { print $1 }')
-files=$(gh pr diff "$pr" -R "$repo" --name-only)
+files=$(pr_files "$repo" "$pr")
+listed=$(grep -c . <<<"$files" || true)
+(( listed == changed )) || bad files "GitHub lists $listed of the $changed files it changes: the rest go unchecked"
 owned=()
 while IFS= read -r file; do
   while IFS= read -r pattern; do

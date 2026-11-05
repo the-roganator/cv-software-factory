@@ -61,8 +61,10 @@
   padding: 8px 10px;
   white-space: pre-wrap;
 }
-/* A file no scope may name, among those a coder needs outside its scope: the face's own warm colour. */
-.need .barred {
+/* A file no scope may name, among those a coder needs outside its scope, and what the review gate held a merge for,
+   its check and each risk tag: the face's own warm colour. */
+.need .barred,
+.need .words .x {
   color: var(--station-led-attn);
 }
 .answers {
@@ -81,7 +83,8 @@
 }
 /* The way a merge or a deploy ends, on GitHub: "Merge" and GitHub's mark, drawn as the buttons are, on a row of its
    own above them, bordered and weighted in the text's colour, as it is the way forward and they are the ways back. A
-   sample's, which links nowhere, looks the same in its own cell, its reason beside it, muted. */
+   sample's, which links nowhere, looks the same in its own cell, its reason beside it, muted. Review on GitHub, for a
+   merge the review gate held, is a link with what approving there does beside it, in its own cell too. */
 .answers .way {
   grid-column: 1 / -1;
   justify-self: start;
@@ -99,7 +102,8 @@
   align-items: center;
   gap: 8px;
 }
-.answers span.way {
+.answers span.way,
+.answers .way.beside {
   grid-column: auto;
   cursor: default;
 }

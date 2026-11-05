@@ -291,8 +291,17 @@ button.pill.fresh:disabled {
   background: var(--line-strong);
   color: var(--text);
 }
-.recorded {
+/* Lights-out's note: under its words while it is chosen, and in the passkey's dialog that chooses it. */
+.ctl-note {
   display: block;
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.ctl-note code {
+  font: 11.5px var(--font-mono);
+  color: var(--text);
 }
 /*
  * What the autonomy level means: every level's words in the same grid cell, the chosen one shown and the others kept

@@ -16,8 +16,10 @@
 import {
   ANSWERS,
   answersTo,
+  type GateTag,
   type HoldAnswer,
   type HoldCause,
+  AUTONOMY as LEVELS,
   type PayloadOf,
   type PublicEvent,
   type Resolution,
@@ -25,8 +27,9 @@ import {
   WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
+import { ENQUEUES } from '@software-factory/policy/line';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
-import { APP_REPO, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
+import { APP_REPO, AUTONOMY, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
@@ -39,7 +42,20 @@ export type Evidence =
   | { kind: 'question'; before: string; question: string }
   | { kind: 'words'; text: string }
   /** An improvement's spec: the flag it names, the pages it changes, and how many acceptance criteria it has. */
-  | { kind: 'spec'; flag: string | undefined; pages: string[]; criteria: number };
+  | { kind: 'spec'; flag: string | undefined; pages: string[]; criteria: number }
+  /**
+   * The review gate's hold of a merge for its risk tags: its own words, each tag with what in the diff gave it, what it
+   * found clear, and the head it judged, which Martin's approval on GitHub is of.
+   */
+  | {
+      kind: 'gate';
+      said: string | undefined;
+      tags: { tag: GateTag; because: string }[];
+      clear: string[];
+      head: string;
+      /** Whether his approval of that head sends it to the merge queue: the line then adds it. */
+      approving: boolean;
+    };
 
 interface AnswerRow {
   answer: HoldAnswer;
@@ -65,6 +81,8 @@ export interface Need {
   evidence: Evidence;
   /** A link the card offers beside its evidence: the settings, to raise a spend cap. */
   link: { href: string; label: string } | undefined;
+  /** A sentence after the evidence: what would let the line merge a change it holds for Martin's merge itself. */
+  note: string | undefined;
   /**
    * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it.
    * A sample's never existed, so it has no `href` and says `why`, as the sheet's facts link it nowhere too.
@@ -73,6 +91,11 @@ export interface Need {
     | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: string }
     | { verb: 'Merge' | 'Deploy'; pullRequest: number; href: undefined; why: string }
     | undefined;
+  /**
+   * A merge the review gate held for its risk tags is approved on GitHub, with Martin's own review of its head, which
+   * the console can't give: its pull request there, first among the answers, as "Review #n on GitHub".
+   */
+  review: { pullRequest: number; href: string | undefined; approving: boolean } | undefined;
   answers: AnswerRow[];
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
@@ -131,7 +154,26 @@ const openerOf = (item: ItemState) =>
  * say the same thing. Closed over every cause, so a new one does not type-check until it has its words.
  */
 export const holdKicker = (item: ItemState, hold: Hold) =>
+  (hold.merge && mergeKicker(hold.merge)) ??
   kickerOf(hold.cause, hold.stage, openerOf(item)?.sense, item.kind === 'improvement');
+
+/**
+ * A merge's kicker. The gate also holds, with no tags, for what it could not read or trust (test integrity's run, a
+ * risk label someone else removed): that hold is the gate's, not its tags'.
+ */
+const mergeKicker = (merge: Merge) =>
+  merge.why === 'held' && !merge.tags?.length ? 'Held by the review gate' : MERGE_KICKER[merge.why];
+
+/** A merge's hold, by why the line does not add it to the merge queue itself, where it is more than a wait for him. */
+const MERGE_KICKER: Partial<Record<MergeWhy, string>> = {
+  held: 'Held for its risk tags',
+  conflict: 'Conflicts with main',
+  queue: 'Out of the merge queue',
+  refused: 'The merge queue refused it',
+};
+
+type Merge = NonNullable<Hold['merge']>;
+type MergeWhy = Merge['why'];
 
 function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, improvement: boolean): string {
   switch (cause) {
@@ -178,8 +220,17 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
   }
 }
 
-/** What an answer does, by what the line does with it, for the hold's cause. */
-function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvement: boolean): string {
+/**
+ * What an answer does, by what the line does with it, for the hold's cause. Rejecting closes the work item and its
+ * issue only: a merge's pull request stays open on GitHub, which the card says, so Martin knows to close it there.
+ */
+function doesOf(
+  cause: HoldCause,
+  answer: HoldAnswer,
+  workItem: string,
+  improvement: boolean,
+  pullRequest: number | undefined,
+): string {
   const resolution: Resolution = ANSWERS[cause][answer];
   if (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)) {
     return cause === 'suggestion'
@@ -193,6 +244,9 @@ function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvem
     if (cause === 'suggestion') return `Closes #${workItem}. Nothing is built.`;
     if (cause === 'burst' || cause === 'environment') {
       return 'Closes it with no tickets. A problem still there is found again.';
+    }
+    if (cause === 'merge' && pullRequest !== undefined) {
+      return `Closes #${workItem}, unmerged. Its pull request #${pullRequest} stays open on GitHub until you close it.`;
     }
     return `Closes #${workItem}${cause === 'question' || cause === 'spec' ? '. Nothing is built.' : ', unmerged.'}`;
   }
@@ -321,6 +375,12 @@ function evidenceOf(item: ItemState, cause: HoldCause): Evidence {
     };
   }
   if (cause === 'deploy') return { kind: 'words', text: deployEvidence(item) };
+  if (cause === 'merge' && hold?.merge?.why === 'held') return gateEvidence(hold.merge);
+  if (cause === 'merge' && hold?.merge?.queue) {
+    const { reason, failed } = hold.merge.queue;
+    const text = failed.length ? failed.map((check) => `✕ ${check}`).join('\n') : 'No check failed on its commit.';
+    return { kind: 'output', heading: `merge queue · ${reason} · PR #${hold.merge.pullRequest}`, text };
+  }
   // The planner's latest spec, which the line holds: no other's counts.
   const spec =
     item.kind === 'improvement' && cause === 'spec'
@@ -333,6 +393,36 @@ function evidenceOf(item: ItemState, cause: HoldCause): Evidence {
     return { kind: 'spec', flag, pages, criteria: criteria.length };
   }
   return { kind: 'words', text: reason };
+}
+
+/** Each risk tag the review gate found, with what in the diff gave it, as its verdict names them. */
+function gateEvidence(merge: Merge): Evidence {
+  const tags = (merge.tags ?? []).map(({ tag, because, more }) => ({
+    tag,
+    because: `${because.join(', ')}${more ? `, and ${more} more` : ''}`,
+  }));
+  const found = new Set(tags.map(({ tag }) => tag));
+  // What it found clear only where the verdict named its tags: with none read, the gate said neither.
+  const clear = merge.tags
+    ? [
+        ...(found.has('code-owned') ? [] : ['no path CODEOWNERS gives Martin']),
+        ...(found.has('release') || found.has('improvement') ? [] : ['not a release, not an improvement']),
+      ]
+    : [];
+  return { kind: 'gate', said: merge.said, tags, clear, head: merge.head, approving: merge.approving };
+}
+
+/**
+ * What would let the line add a change it holds for Martin's merge to the merge queue itself: the levels whose rules
+ * take the gate's, with auto-merge on, or auto-merge alone. Nothing where no setting of his would.
+ */
+function mergeNote(merge: Merge | undefined): string | undefined {
+  if (merge?.why === 'auto-merge') return 'With auto-merge on, the line would add it to the merge queue itself.';
+  if (merge?.why !== 'level' || !merge.rule) return undefined;
+  const rule = merge.rule;
+  const levels = LEVELS.filter((level) => ENQUEUES[level].includes(rule)).map((level) => AUTONOMY[level]);
+  if (!levels.length) return undefined;
+  return `At ${levels.join(' or ')}, with auto-merge on, the line would add it to the merge queue itself.`;
 }
 
 /**
@@ -348,7 +438,7 @@ function deployEvidence(item: ItemState): string {
   return `${at} ${deployWords(item.deploy).evidence}`;
 }
 
-const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it links nowhere.';
+export const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it links nowhere.';
 
 /** The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed. */
 function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
@@ -356,6 +446,8 @@ function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
     item.sample
       ? { verb, pullRequest, href: undefined, why: SAMPLE_PULL }
       : { verb, pullRequest, href: `${APP_REPO}/pull/${pullRequest}` };
+  // A merge the gate held is approved first, on GitHub (`reviewOf`).
+  if (cause === 'merge' && item.hold?.merge?.why === 'held') return undefined;
   if (cause === 'merge' && item.pullRequest !== undefined) return pull('Merge', item.pullRequest);
   // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
   // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
@@ -364,6 +456,21 @@ function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
   }
   return undefined;
 }
+
+/** The pull request a merge the review gate held for its risk tags waits for Martin to review, on GitHub. */
+function reviewOf(item: ItemState): Need['review'] {
+  const merge = item.hold?.merge;
+  if (item.hold?.cause !== 'merge' || merge?.why !== 'held') return undefined;
+  const { pullRequest, approving } = merge;
+  return { pullRequest, href: item.sample ? undefined : `${APP_REPO}/pull/${pullRequest}`, approving };
+}
+
+/**
+ * The answers a hold takes: a merge the gate held for its risk tags is approved on GitHub, so it takes words, which
+ * send it back to the coder, and Reject.
+ */
+const answersOf = (hold: Hold): HoldAnswer[] =>
+  hold.merge?.why === 'held' ? answersTo(hold.cause).filter((answer) => answer !== 'replanned') : answersTo(hold.cause);
 
 /** The settings, for a spend cap. */
 const linkOf = (cause: HoldCause): Need['link'] =>
@@ -426,14 +533,23 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
           link: linkOf(hold.cause),
+          note: hold.cause === 'merge' ? mergeNote(hold.merge) : undefined,
           way: wayOf(item, hold.cause),
-          answers: answersTo(hold.cause).map((answer) => ({
+          review: reviewOf(item),
+          answers: answersOf(hold).map((answer) => ({
             answer,
             label: LABEL[answer],
             does:
               answer === 'approved' && hold.needs?.some((n) => n.barred)
                 ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
-                : doesOf(hold.cause, answer, item.number, improvement),
+                : doesOf(
+                    hold.cause,
+                    answer,
+                    item.number,
+                    improvement,
+                    // A sample's pull request never existed, so nothing stays open.
+                    item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                  ),
             stepUp: answer === 'approved' && keyed,
           })),
           aboutReport: opener?.sense === 'report',

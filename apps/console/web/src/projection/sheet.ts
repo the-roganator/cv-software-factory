@@ -7,6 +7,7 @@
  */
 import type {
   DefectCategory,
+  GateRule,
   Kind,
   PayloadOf,
   PublicEvent,
@@ -364,7 +365,9 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return event.payload.for === 'wait' || event.payload.for === 'take'
         ? { label: 'UNSURE', tone: 'faint' }
         : undefined;
+    // The review gate's hold of a merge for its risk tags is a hold, as the gates' are, not a wait for Martin's merge.
     case 'hold.started':
+      if (event.payload.merge?.why === 'held') return { label: 'HELD', tone: 'attn' };
       return { label: { approval: 'WAITING', question: 'QUESTION', held: 'HELD' }[event.payload.kind], tone: 'attn' };
     case 'hold.answered':
       return {
@@ -384,6 +387,12 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
     case 'work-item.summarised':
       // Triage writes the first summary; the describer's is a step of Review.
       return event.actor === 'describer' ? { label: 'DESCRIBED', tone: 'signal' } : undefined;
+    // The line added its pull request to the merge queue, and the queue took it out unmerged, which holds it for Martin.
+    case 'pull-request.enqueued':
+      return { label: 'QUEUED', tone: event.payload.dryRun ? 'faint' : 'signal' };
+    // A late word on a commit no longer in the queue takes nothing out of it, as the item's fold reads it.
+    case 'pull-request.dequeued':
+      return dequeues(item, event) ? { label: 'OUT OF QUEUE', tone: 'attn' } : undefined;
     case 'pull-request.merged':
       return { label: 'MERGED', tone: 'signal' };
     // A persisting signal sends the work round again by itself, so it is not warm the first time; nothing reopens.
@@ -427,6 +436,29 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return undefined;
   }
 }
+
+/**
+ * Whether a dequeue took the work item's pull request out of the merge queue: whether it names the commit the line
+ * added, still there when it came, as `foldItem` follows the queue (a push or a merge since leaves nothing to take out).
+ */
+const dequeues = (item: ItemState, event: Extract<PublicEvent, { type: 'pull-request.dequeued' }>) => {
+  let pullRequest: number | undefined;
+  let queued: { number: number; commit: string } | undefined;
+  for (const e of item.events.slice(0, item.events.indexOf(event))) {
+    if (e.type === 'pull-request.pushed') {
+      pullRequest = e.payload.number;
+      queued = undefined;
+    } else if (e.type === 'pull-request.enqueued' && e.payload.number === pullRequest) queued = e.payload;
+    else if (e.type === 'pull-request.merged') queued = undefined;
+    else if (
+      e.type === 'pull-request.dequeued' &&
+      e.payload.number === queued?.number &&
+      e.payload.commit === queued.commit
+    )
+      queued = undefined;
+  }
+  return event.payload.number === queued?.number && event.payload.commit === queued.commit;
+};
 
 /** Whether the item's ticket had opened before an event. */
 const ticketedBefore = (item: ItemState, event: PublicEvent) => {
@@ -644,8 +676,30 @@ function scopeOf(item: ItemState, spec: PayloadOf<'spec.written'>): Sheet['scope
   return { of, rows: [...rows, ...outside] };
 }
 
-/** What the work item waits for once its rounds are done: Martin's merge, Martin's decision, or a release. */
+/**
+ * How the review gate passed a pull request the line added to the merge queue, by its rule, in words. The line never
+ * adds one the gate held, which is named by its rule should a record ever say so.
+ */
+const RULE_WORDS: Record<Exclude<GateRule, 'held'>, string> = {
+  'martin-opened': 'as Martin opened it',
+  'martin-approved-head': 'on Martin’s approval of its head commit',
+  'exact-pin': 'as an exact pin',
+  'low-risk': 'as low-risk',
+  'lights-out': 'at Lights-out',
+};
+
+/**
+ * What the work item waits for once its rounds are done: the merge queue, Martin's merge, Martin's decision, or a
+ * release.
+ */
 function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean): After | undefined {
+  if (item.inQueue && item.outcome === 'in-progress') {
+    const { number, rule, at } = item.inQueue;
+    return {
+      outcome: 'in-progress',
+      text: `In the merge queue since ${clock(at)}: the line added PR #${number}, which the review gate passed ${rule === 'held' ? 'by its rule held' : RULE_WORDS[rule]}`,
+    };
+  }
   if (item.outcome === 'merged') {
     const merged = [...item.events].reverse().find((event) => event.type === 'pull-request.merged');
     const by = merged?.type === 'pull-request.merged' && merged.payload.by === 'martin' ? 'Martin' : 'the factory';
@@ -658,6 +712,10 @@ function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean
     return undefined;
   const cleared = clearanceWords(item);
   const and = (text: string) => (cleared ? `${text.replace(/\.$/, '')}. ${cleared}` : text);
+  if (hold.cause === 'merge' && hold.merge?.why === 'held') {
+    const by = hold.merge.tags?.length ? 'Held for its risk tags' : 'Held by the review gate';
+    return { outcome: item.outcome, text: and(`${by} since ${clock(hold.since)}: ${hold.reason}`) };
+  }
   if (hold.cause === 'merge') {
     const since = clock(hold.since);
     return {

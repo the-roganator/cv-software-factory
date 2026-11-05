@@ -311,7 +311,7 @@ export interface LineOptions {
 type Provider = 'anthropic' | 'bedrock' | 'local';
 
 /** What GitHub says of a pull request ready to merge: `MergeFacts` without Martin's controls, which are read each pass. */
-type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge' | 'now'>;
+type MergeRead = Omit<MergeFacts, 'autonomy' | 'autoMerge' | 'now' | 'gatesPassedAt'>;
 
 /** Martin's settings, as the line reads them (`../settings.ts`): checked against policy, as the gateway checks them. */
 export interface LineSettings {
@@ -2227,8 +2227,26 @@ export class Line {
    */
   async #mergeFacts(workItem: string, number: number): Promise<MergeFacts | null> {
     const read = await this.#mergeReadOf(workItem, number);
+    if (!read) return null;
+    // A pending verdict's wait is timed from the store's own time for the line's gates passing at this head.
+    const now = this.#o.now();
+    const ago = read.judged?.pending === undefined ? null : await this.#gatesPassedAgo(workItem, read.head);
+    const gatesPassedAt = ago === null ? null : new Date(now.getTime() - ago).toISOString();
     // The controls as they are this pass, never as they were when GitHub was read: Martin's change applies at once.
-    return read && { ...read, ...this.#merging, now: this.#o.now() };
+    return { ...read, ...this.#merging, gatesPassedAt, now };
+  }
+
+  /**
+   * How long ago, in milliseconds by the store's own clock, the store appended the line's latest record of its gates
+   * passing on a commit of a work item, or null if it has none: neither the line's clock nor its memory times it.
+   */
+  async #gatesPassedAgo(workItem: string, commit: string): Promise<number | null> {
+    const [row] = await this.#o.sql<{ ago: string }[]>`
+      select (extract(epoch from clock_timestamp() - appended_at) * 1000)::bigint as ago from events
+      where work_item = ${workItem} and type = 'gates.finished' and appended_by = ${LINE_ROLE}
+        and payload->>'commit' = ${commit} and payload->>'conclusion' = 'passed'
+      order by seq desc limit 1`;
+    return row ? Number(row.ago) : null;
   }
 
   /** What GitHub says, cached for `gatesEveryMs`: the part of `MergeFacts` that is not Martin's controls. */
@@ -2242,15 +2260,12 @@ export class Line {
         github.read('reviewVerdict', repo, { number }),
         github.read('mergeability', repo, { number }),
       ]);
-      // A hold the gate marked pending only waits for it to judge again: no refusal of it is taken, signed or not.
-      const refused = verdict.refusal && verdict.judged?.pending === undefined ? verdict.refusal : undefined;
-      const refusal = refused ? this.#gateRefusal(workItem, number, verdict.head, refused) : undefined;
+      const refusal = verdict.refusal ? this.#gateRefusal(workItem, number, verdict.head, verdict.refusal) : undefined;
       const check = verdict.check && {
         status: verdict.check.status,
         conclusion: verdict.check.conclusion,
         title: verdict.check.title,
         url: verdict.check.url,
-        completedAt: verdict.check.completedAt,
       };
       return {
         head: verdict.head,

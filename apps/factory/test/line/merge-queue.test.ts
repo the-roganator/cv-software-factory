@@ -7,7 +7,7 @@ import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { recordBytes, recordHash, type SignedRefusal, signRecord } from '../../src/signed-refusals.ts';
-import { clock, event, line, martin, payloads, stage, ticket, types, withLineStore } from './harness.ts';
+import { clock, database, event, line, martin, payloads, stage, ticket, types, withLineStore } from './harness.ts';
 
 withLineStore();
 
@@ -183,13 +183,24 @@ describe('the line, merging through the queue', () => {
 
   describe('a hold the gate marked pending, as it holds a pull request just opened while test integrity runs', () => {
     const PENDING = 'test integrity is still running at aaaaaaa';
-    /** The gate's hold that only waits, its check completed just now; signed as a worker from before pending would. */
+    /** The gate's hold that only waits, its check completed `ago` before; signed as a worker from before pending would. */
     const waiting = (head: string, ago = 0) => ({
       rule: 'held' as const,
       pending: PENDING,
       refusal: refusalOf(head),
       completedAt: new Date(clock.now - ago).toISOString(),
     });
+    /** Moves the store's own time of the line's record of the gates passing back by `minutes`, as time passing would. */
+    const gatesPassedAgo = async (workItem: string, minutes: number) => {
+      // The store refuses an update to an event; the test steps past that to move its time.
+      await database.owner`alter table events disable trigger user`;
+      try {
+        await database.owner`update events set appended_at = appended_at - make_interval(mins => ${minutes})
+          where work_item = ${workItem} and type = 'gates.finished'`;
+      } finally {
+        await database.owner`alter table events enable trigger user`;
+      }
+    };
 
     it('waits at Review for the gate to judge again, recording nothing, then adds it once it passes', async () => {
       await controls({});
@@ -234,18 +245,13 @@ describe('the line, merging through the queue', () => {
       await controls({});
       const { workItem, pass, github } = await readyToMerge();
       const head = String(github.pulls.get(12)?.head.sha);
-      github.gate = waiting(head, 14 * 60_000);
+      github.gate = waiting(head);
+      await gatesPassedAgo(workItem, 14);
       await pass();
       expect(await types(workItem)).not.toContain('hold.started');
-      const start = clock.now;
-      try {
-        clock.now += 60_000;
-        await pass();
-        clock.now += 60_000;
-        await pass();
-      } finally {
-        clock.now = start;
-      }
+      await gatesPassedAgo(workItem, 1);
+      await pass();
+      await pass();
       expect(await types(workItem)).not.toContain('action.refused');
       const holds = await payloads(workItem, 'hold.started');
       expect(holds).toHaveLength(1);
@@ -257,6 +263,24 @@ describe('the line, merging through the queue', () => {
         merge: { pullRequest: 12, head, why: 'no-verdict', approving: false },
       });
       expect(await stage(workItem)).toBe('held');
+    });
+
+    it('times the wait from its gates passing, as the store timed them, not from the check: judged an hour before', async () => {
+      await controls({});
+      const { workItem, pass, github } = await readyToMerge();
+      const head = String(github.pulls.get(12)?.head.sha);
+      // The gate held it as it opened, an hour ago; the line's gates passed only just now.
+      github.gate = waiting(head, 60 * 60_000);
+      await pass();
+      // The line's own clock moving says nothing of it: the store's time of the gates passing is what counts.
+      clock.now += 60 * 60_000;
+      try {
+        await pass();
+      } finally {
+        clock.now -= 60 * 60_000;
+      }
+      expect(await types(workItem)).not.toContain('hold.started');
+      expect(await stage(workItem)).toBe('review');
     });
   });
 

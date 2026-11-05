@@ -31,12 +31,12 @@
  * gate, as for any gate: nothing is held for a verdict about to come.
  *
  * Nor while the gate's verdict on the head is a hold it marked `pending` (`policy/review-verdict.ts`): one it made only
- * because something it must read was not readable yet, test integrity's run not finished at the head (as when a pull
- * request opens) or a read of GitHub that failed, with nothing it did read holding the pull request. That is a wait,
- * not a refusal: nothing is refused or held, and the change waits at Review for the gate to judge again. Should the
- * verdict still be pending `PENDING_LIMIT_MS` after its check completed (or with no time it completed), the change is
- * held for Martin as having no verdict (`no-verdict`), saying what the gate waits for, with nothing refused and none of
- * the pending verdict's words, rule or tags. A passing verdict is never stale: `low-risk` already needs test
+ * because test integrity's run had not finished at the head (as when a pull request opens), with no tag the level
+ * would not pass. That is a wait, not a refusal: nothing is refused or held, and the change waits at Review for the
+ * gate to judge again. Should the verdict still be pending `PENDING_LIMIT_MS` after the line's own gates passed at the
+ * head (by the store's time for that event; until they have, it waits), the change is held for Martin as having no
+ * verdict (`no-verdict`), saying what the gate waits for, with nothing refused. No hold made while the verdict is
+ * pending, a conflict or the queue's among them, carries its words, rule, tags or check. A passing verdict is never stale: `low-risk` already needs test
  * integrity's completed, successful run, and Martin's approval and an exact pin do not depend on it.
  */
 import type { Autonomy, GateRule, PayloadOf } from '@software-factory/events';
@@ -60,8 +60,6 @@ export interface MergeFacts {
     conclusion: string | null;
     title: string | null;
     url: string | null;
-    /** When it completed, as GitHub says: a pending verdict's wait is timed from it. */
-    completedAt: string | null;
   } | null;
   /** The gate's verdict on this pull request at that head, or null with why there is none (`problem`). */
   judged: Judged | null;
@@ -71,6 +69,11 @@ export interface MergeFacts {
    * line, ready to append. None when it was not signed, or does not verify.
    */
   refusal?: PayloadOf<'action.refused'>;
+  /**
+   * When the line recorded its own gates passing at this head, as the store timed that event (its `appended_at`), or
+   * null while it has not: a pending verdict's wait is timed from it, so a restart neither starts it again nor ends it.
+   */
+  gatesPassedAt: string | null;
   /** Whether it conflicts with its base; null while GitHub has not worked it out. */
   conflicts: boolean | null;
   /** The time the line decides at. */
@@ -78,8 +81,10 @@ export interface MergeFacts {
 }
 
 /**
- * How long the line waits, from when its check completed, for the gate to judge again a head it held only to wait for a
- * read (`pending`). The gate judges again a minute or two after test integrity's workflow ends.
+ * How long the line waits, from when it recorded its own gates passing at the head, for the gate to judge again a head
+ * it held only to wait for test integrity (`pending`). Test integrity runs among those gates, and the gate judges again
+ * a minute or two after their workflow ends, so a pull request opened long before its gates finished still has the
+ * whole wait.
  */
 export const PENDING_LIMIT_MS = 15 * 60_000;
 
@@ -152,11 +157,15 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
   const number = pr.number;
   const { judged } = m;
   const never = neverTheLines(s, judged);
-  const verdict: Pick<Merge, 'rule' | 'tags' | 'said' | 'check'> = {
-    ...(judged ? { rule: judged.rule, tags: heldTags(judged.tags) } : {}),
-    ...(m.check?.title?.trim() ? { said: cutTo(m.check.title.trim(), 300) } : {}),
-    ...(m.check?.url ? { check: m.check.url } : {}),
-  };
+  // A pending verdict's rule, tags, words and check say only that the gate could not judge yet: no hold carries them.
+  const verdict: Pick<Merge, 'rule' | 'tags' | 'said' | 'check'> =
+    judged?.pending !== undefined
+      ? {}
+      : {
+          ...(judged ? { rule: judged.rule, tags: heldTags(judged.tags) } : {}),
+          ...(m.check?.title?.trim() ? { said: cutTo(m.check.title.trim(), 300) } : {}),
+          ...(m.check?.url ? { check: m.check.url } : {}),
+        };
   const held = (why: Merge['why'], reason: string, extra: Partial<Merge> = {}): Hold => ({
     stage: 'review',
     kind: 'approval',
@@ -182,20 +191,13 @@ export function mergeHold(s: WorkItemState, m: MergeFacts): Hold | 'pending' | u
   }
   if (m.check?.status !== 'completed') return 'pending';
   if (judged?.pending !== undefined) {
-    const completed = m.check.completedAt === null ? Number.NaN : Date.parse(m.check.completedAt);
-    // Timed from when the check completed, which GitHub always gives: with no such time, it is not waited for.
-    if (m.now.getTime() - completed < PENDING_LIMIT_MS) return 'pending';
-    // The pending verdict's words, rule and tags say only why the gate could not judge: the hold carries none of them.
-    return {
-      stage: 'review',
-      kind: 'approval',
-      cause: 'merge',
-      reason: cutTo(
-        `The review gate has not judged #${number} at ${short(m.head)} since it held it only to wait (${judged.pending}). It waits for Martin`,
-        300,
-      ),
-      merge: { pullRequest: number, head: m.head, why: 'no-verdict', approving: false },
-    };
+    // Timed from the line's own gates passing at this head: until they have, test integrity may still be running.
+    if (m.gatesPassedAt === null) return 'pending';
+    if (m.now.getTime() - Date.parse(m.gatesPassedAt) < PENDING_LIMIT_MS) return 'pending';
+    return held(
+      'no-verdict',
+      `The review gate has not judged #${number} at ${short(m.head)} since it held it only to wait (${judged.pending}). It waits for Martin`,
+    );
   }
   if (!judged) {
     const why = m.problem ?? 'it carries none';

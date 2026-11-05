@@ -65,7 +65,7 @@ const REFUSAL: PayloadOf<'action.refused'> = {
   signature: `${'A'.repeat(86)}==`,
 };
 
-/** When the gate's check on the head completed. */
+/** When the line recorded its own gates passing at the head. */
 const JUDGED_AT = '2026-11-05T01:00:00Z';
 const PENDING = 'test integrity is still running at aaaaaaa';
 
@@ -81,10 +81,10 @@ const merge = (over: Partial<MergeFacts> & { rule?: Rule; tags?: string[] } = {}
       conclusion: rule === 'held' ? 'failure' : 'success',
       title: 'The gate',
       url: null,
-      completedAt: JUDGED_AT,
     },
     judged: { number: 12, head, rule, tags: tags.map((tag) => ({ tag, because: ['pnpm-lock.yaml'] })) },
     problem: null,
+    gatesPassedAt: JUDGED_AT,
     conflicts: false,
     now: new Date(Date.parse(JUDGED_AT) + 60_000),
     ...(rule === 'held' ? { refusal: REFUSAL } : {}),
@@ -250,7 +250,7 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
       next: { do: 'wait', for: 'gates' },
     });
     const running = merge({
-      check: { status: 'in_progress', conclusion: null, title: null, url: null, completedAt: null },
+      check: { status: 'in_progress', conclusion: null, title: null, url: null },
       judged: null,
     });
     expect(decide(ready, facts(running)).next).toEqual({ do: 'wait', for: 'gates' });
@@ -266,7 +266,7 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
     expect(decide(ready, facts()).next).not.toHaveProperty('hold.merge');
   });
 
-  describe('a hold the gate marked pending, made only to wait for a read', () => {
+  describe('a hold the gate marked pending, made only to wait for test integrity', () => {
     /** The gate's first verdict on a pull request just opened: held, as test integrity is still running. */
     const waits = (over: Partial<MergeFacts> = {}) => {
       const m = merge({ rule: 'held', ...over });
@@ -302,7 +302,7 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
       expect(decide(holding, facts(held)).next).toEqual({ do: 'wait', for: 'martin' });
     });
 
-    it('is held once as no verdict, with nothing refused and none of its words, 15 minutes after its check completed', () => {
+    it('is held once as no verdict, with nothing refused and none of its words, 15 minutes after its gates passed', () => {
       const late = waits({ now: at(15), check: { ...checked, conclusion: 'failure', url: 'https://x/1' } });
       const { next } = decide(ready, facts(late));
       expect(next).toMatchObject({ do: 'hold' });
@@ -318,13 +318,45 @@ describe('the line’s merge, by the review gate’s verdict, the autonomy level
       // Held, it is not held again, and nothing is refused, on the next read.
       const holding = [...ready, { type: 'hold.started', payload: hold } as LineEvent];
       expect(decide(holding, facts(waits({ now: at(20) }))).next).toEqual({ do: 'wait', for: 'martin' });
-      // With no time its check completed, it is not waited for.
-      const untimed = waits({ check: { ...checked, conclusion: 'failure', completedAt: null } });
-      expect(holdOf(ready, untimed).merge).toEqual({
+    });
+
+    it('times the wait from the line’s own gates passing at the head, not from when the gate judged', () => {
+      // Opened long ago, judged long ago, its gates only now passed: the whole wait is still to come.
+      const opened = waits({ now: at(60 * 24), gatesPassedAt: at(60 * 24 - 1).toISOString() });
+      expect(decide(ready, facts(opened)).next).toEqual({ do: 'wait', for: 'gates' });
+      expect(decide(ready, facts({ ...opened, now: at(60 * 24 + 13.9) })).next).toEqual({ do: 'wait', for: 'gates' });
+      expect(decide(ready, facts({ ...opened, now: at(60 * 24 + 14) })).next).toMatchObject({ do: 'hold' });
+      // Before its gates have passed at this head, test integrity may still be running: it waits, however late.
+      expect(decide(ready, facts(waits({ now: at(600), gatesPassedAt: null }))).next).toEqual({
+        do: 'wait',
+        for: 'gates',
+      });
+    });
+
+    it('leaks none of its rule, tags, words or check into a hold made while it is pending', () => {
+      const pending = waits({ conflicts: true, check: { ...checked, conclusion: 'failure', url: 'https://x/1' } });
+      const tagged = { ...pending, judged: { ...pending.judged, tags: [{ tag: 'release' as const, because: ['x'] }] } };
+      const conflict = holdOf(ready, tagged);
+      expect(conflict.merge).toEqual({ pullRequest: 12, head: HEAD, why: 'conflict', approving: false });
+      const out: LineEvent = {
+        type: 'pull-request.dequeued',
+        payload: { number: 12, commit: HEAD, reason: 'failed_checks', by: 'github-merge-queue', failed: ['test'] },
+      };
+      const dequeued = [...ready, enqueued(), out];
+      expect(holdOf(dequeued, { ...tagged, conflicts: false }).merge).toEqual({
         pullRequest: 12,
         head: HEAD,
-        why: 'no-verdict',
+        why: 'queue',
         approving: false,
+        queue: { reason: 'failed_checks', failed: ['test'] },
+      });
+      // Not pending, the same holds carry what the gate said.
+      expect(
+        holdOf(ready, (({ refusal: _, ...m }) => m)(merge({ conflicts: true, rule: 'held', tags: ['release'] }))).merge,
+      ).toMatchObject({
+        rule: 'held',
+        tags: [{ tag: 'release' }],
+        said: 'The gate',
       });
     });
 

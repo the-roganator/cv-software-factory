@@ -148,7 +148,7 @@ export class FakeGitHub implements GitHubPort {
   /**
    * The review gate's verdict on each pull request's head, as the review App's check posts it: by default `low-risk`,
    * concluded; `pending` while it runs, and `none` for no check at all. A held one carries `refusal`, as the GitHub
-   * worker signs it, and `pending` when the gate held it only to wait for a read; `completedAt` is when its check
+   * worker signs it, and `pending` when the gate held it only to wait for test integrity; `completedAt` is when its check
    * concluded.
    */
   gate: { rule: Rule; tags?: Found[]; refusal?: unknown; pending?: string; completedAt?: string } | 'pending' | 'none' =

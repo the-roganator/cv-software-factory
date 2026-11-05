@@ -3,8 +3,8 @@
 #   verify.sh <key> <pr>   pr-open: the pull request is open, from the worktree's branch at its pushed HEAD, with
 #                          nothing uncommitted; an issue's says Closes (or Part of) #<n>; every file it changes that
 #                          CODEOWNERS gives Martin has a line in the description's section on them (a heading naming
-#                          CODEOWNERS), with words beside the path. Whether those words are a good reason is left to
-#                          the reader. Once Copilot has reviewed, a comment on the pull request from us, posted after
+#                          CODEOWNERS) that names its path whole, with three words or more beside it (owned_reason in
+#                          repo.sh). Whether those words are a good reason is left to the reader. Once Copilot has reviewed, a comment on the pull request from us, posted after
 #                          its review and beginning "Copilot's review summary:", answers the review's summary; until
 #                          Copilot has reviewed, or the hour window.sh gives it has passed, the pull request is not
 #                          ready. No code-scanning alert is open on it, and code scanning has analysed its head

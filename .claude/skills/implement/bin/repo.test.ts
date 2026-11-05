@@ -174,10 +174,27 @@ describe('owned_reason', () => {
 
   it('counts no other path, link target or URL as reason', () => {
     expect(reason('deploy/a.yaml', '- `deploy/a.yaml`, `deploy/b.yaml`')).toBe(0);
+    expect(reason('AGENTS.md', '- `AGENTS.md`, `Makefile`, `/mise.lock`')).toBe(0);
+    expect(reason('deploy/a.yaml', '- deploy/a.yaml, deploy/b.yaml')).toBe(0);
     expect(reason('deploy/a.yaml', '`deploy/a.yaml.bak` moves to `deploy/a.yaml`')).toBe(2);
     expect(reason('deploy/a.yaml', '- [deploy/a.yaml](https://github.com/o/r/blob/main/deploy/a.yaml)')).toBe(0);
     expect(reason('deploy/a.yaml', '- deploy/a.yaml, HTTPS://github.com/o/r/blob/main/deploy/a.yaml')).toBe(0);
     expect(reason('deploy/a.yaml', '- deploy/a.yaml https://x/y—why it changed')).toBe(3);
+  });
+
+  it('counts the words of prose, a slash between them or letters beyond ASCII', () => {
+    expect(reason('deploy/a.yaml', '`deploy/a.yaml`: fixes a read/write race')).toBe(5);
+    expect(reason('deploy/a.yaml', '`deploy/a.yaml`: a naïve façade fix')).toBe(4);
+  });
+
+  it('will not look for a path a delimiter would split', () => {
+    const run = spawnSync('bash', ['-c', `. "${REPO_SH}" && owned_reason "$1"`, 'test', 'docs/a file.md'], {
+      env: ENV,
+      input: '`docs/a file.md`: why it changed',
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('docs/a file.md');
   });
 
   it('takes the line that gives it most reason', () => {

@@ -41,25 +41,36 @@ pr_files() {
   gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[] | [.filename, .previous_filename // empty] | join("\t")'
 }
 # owned_reason <path>: reads a description's section on CODEOWNERS' files from stdin and prints how many words of
-# reason the best line naming the path gives it; exits 1, printing nothing, if no line names it. Each line is read as
-# tokens, split at spaces, at any byte beyond ASCII (an em dash, a curly quote) and at markdown's `*[]()<>"',;|, so a
-# path in backticks, bare, or as a link's text is a token of its own. A token names the path when it is the path, less
-# a leading / or ./ (as CODEOWNERS writes paths) and any closing .:!? (as a sentence ends): deploy/a.yaml.bak,
-# deploy/a.yaml~ or other/deploy/a.yaml do not name deploy/a.yaml. The reason is what the rest of the line says: each
-# run of letters and digits in a token with no slash, so no other path, link target or URL counts towards it. Paths here
-# are [A-Za-z0-9._/-] alone, and none holds a delimiter.
+# reason the best line naming the path gives it; exits 1, printing nothing, if no line names it, and 2 for a path it
+# cannot look for. Each line is read as tokens, split at spaces, at dashes, quotes and ellipses beyond ASCII, and at
+# markdown's `*[]()<>"',;|, so a path in backticks, bare, or as a link's text is a token of its own. A token names the
+# path when it is the path, less a leading / or ./ (as CODEOWNERS writes paths) and any closing .:!? (as a sentence
+# ends): deploy/a.yaml.bak, deploy/a.yaml~ or other/deploy/a.yaml do not name deploy/a.yaml. The reason is the words,
+# runs of letters and digits, of the line's prose: what is in backticks is code, a path or a name, and so is a token with
+# both a slash and a dot (a bare path, a link's target) or a :// (a URL), while read/write is two words. A path to look for must
+# be [A-Za-z0-9._/-] alone, as every one in both repositories is, so that no delimiter splits it.
 owned_reason() {
+  [[ $1 =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "owned_reason: $1 holds characters a section cannot be read for" >&2; return 2; }
   path=$1 LC_ALL=C awk '
-    BEGIN { path = ENVIRON["path"]; best = -1 }
+    BEGIN {
+      path = ENVIRON["path"]; best = -1
+      # Em and en dashes, curly quotes and the ellipsis, in UTF-8.
+      split("\342\200\224 \342\200\223 \342\200\230 \342\200\231 \342\200\234 \342\200\235 \342\200\246", marks, " ")
+    }
     {
       line = $0
-      gsub(/[\200-\377]+/, " ", line); gsub(/[`*()<>"\047,;|[]/, " ", line); gsub(/]/, " ", line)
-      n = split(line, tokens, /[ \t\r]+/); named = 0; words = 0
-      for (t = 1; t <= n; t++) {
-        token = tokens[t]
-        sub(/^\.?\//, "", token); sub(/[.:!?]+$/, "", token)
-        if (token == path) named = 1
-        else if (index(token, "/") == 0) words += gsub(/[[:alnum:]]+/, "", token)
+      for (m in marks) gsub(marks[m], " ", line)
+      # Split at backticks: the even pieces are inside a code span.
+      pieces = split(line, piece, "`"); named = 0; words = 0
+      for (p = 1; p <= pieces; p++) {
+        text = piece[p]; gsub(/[]*()<>"\047,;|[]/, " ", text)
+        n = split(text, tokens, /[ \t\r]+/)
+        for (t = 1; t <= n; t++) {
+          token = tokens[t]; prose = p % 2 && !(index(token, "/") && index(token, ".")) && !index(token, "://")
+          sub(/^\.?\//, "", token); sub(/[.:!?]+$/, "", token)
+          if (token == path) named = 1
+          else if (prose) words += gsub(/[[:alnum:]\200-\377]+/, "", token)
+        }
       }
       if (named && words > best) best = words
     }

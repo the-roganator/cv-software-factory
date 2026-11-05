@@ -83,7 +83,8 @@
 }
 /* The way a merge or a deploy ends, on GitHub: "Merge" and GitHub's mark, drawn as the buttons are, on a row of its
    own above them, bordered and weighted in the text's colour, as it is the way forward and they are the ways back. A
-   sample's, which links nowhere, looks the same in its own cell, its reason beside it, muted. */
+   sample's, which links nowhere, looks the same in its own cell, its reason beside it, muted. Review on GitHub, for a
+   merge the review gate held, is a link with what approving there does beside it, in its own cell too. */
 .answers .way {
   grid-column: 1 / -1;
   justify-self: start;
@@ -101,7 +102,8 @@
   align-items: center;
   gap: 8px;
 }
-.answers span.way {
+.answers span.way,
+.answers .way.beside {
   grid-column: auto;
   cursor: default;
 }

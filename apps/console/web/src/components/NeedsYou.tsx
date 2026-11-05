@@ -145,8 +145,8 @@ function GateEvidence({
           : `waits for Martin to approve its head commit, ${at}, and merge it`}
       </p>
       <p className="ev">
-        Every required check passed and the reviewer approved. Approving is {martin ? 'your' : 'Martin’s'} own review of
-        its head commit, on GitHub: the console can’t give it. A push after{' '}
+        Every other required check passed and the reviewer approved. Approving is {martin ? 'your' : 'Martin’s'} own
+        review of its head commit, on GitHub: the console can’t give it. A push after{' '}
         {martin ? 'you approve needs you' : 'he approves needs him'} again.
       </p>
     </>
@@ -170,7 +170,7 @@ function ReviewOnGitHub({ review, martin }: { review: NonNullable<Need['review']
   return (
     <div className="answer">
       {review.href ? (
-        <a className="btn small way" href={review.href} target="_blank" rel="noopener">
+        <a className="btn small way beside" href={review.href} target="_blank" rel="noopener">
           {label}
           <span aria-hidden="true"> ↗</span>
           <span className="sr"> (opens GitHub in a new tab)</span>

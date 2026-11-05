@@ -568,6 +568,36 @@ describe('Needs you', () => {
           failed: [],
         });
       expect(foldItems(item.events)[0]?.inQueue).toMatchObject({ number: 1327, commit: NEWER });
+      // Nor does the sheet say it went out of the queue: it is there still.
+      const t = START + 50 * 60_000;
+      expect(projectSheet(project(item.events, t), '2073')?.chapters.map((c) => c.label)).not.toContain('OUT OF QUEUE');
+      // Once the commit it was added at comes out, it is out.
+      const out = item.add(48, 'pull-request.dequeued', 'factory', {
+        number: 1327,
+        commit: NEWER,
+        reason: 'failed_checks',
+        failed: [],
+      });
+      expect(foldItems(out.events)[0]?.inQueue).toBeUndefined();
+      expect(
+        projectSheet(project(out.events, t), '2073')?.chapters.filter((c) => c.label === 'OUT OF QUEUE'),
+      ).toHaveLength(1);
+    });
+
+    it('says nothing went out of the queue when a push had already taken it out', () => {
+      const item = work('2074', START)
+        .open()
+        .add(1, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2074' })
+        .add(40, 'pull-request.enqueued', 'factory', { number: 1327, commit: HEAD, rule: 'low-risk' })
+        .add(42, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2074', attempt: 2 })
+        .add(45, 'pull-request.dequeued', 'factory', {
+          number: 1327,
+          commit: HEAD,
+          reason: 'failed_checks',
+          failed: [],
+        });
+      const t = START + 50 * 60_000;
+      expect(projectSheet(project(item.events, t), '2074')?.chapters.map((c) => c.label)).not.toContain('OUT OF QUEUE');
     });
   });
 

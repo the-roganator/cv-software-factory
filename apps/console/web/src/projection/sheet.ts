@@ -390,8 +390,9 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
     // The line added its pull request to the merge queue, and the queue took it out unmerged, which holds it for Martin.
     case 'pull-request.enqueued':
       return { label: 'QUEUED', tone: event.payload.dryRun ? 'faint' : 'signal' };
+    // A late word on a commit no longer in the queue takes nothing out of it, as the item's fold reads it.
     case 'pull-request.dequeued':
-      return { label: 'OUT OF QUEUE', tone: 'attn' };
+      return dequeues(item, event) ? { label: 'OUT OF QUEUE', tone: 'attn' } : undefined;
     case 'pull-request.merged':
       return { label: 'MERGED', tone: 'signal' };
     // A persisting signal sends the work round again by itself, so it is not warm the first time; nothing reopens.
@@ -435,6 +436,29 @@ function chapterOf(event: PublicEvent, item: ItemState): Pick<Chapter, 'label' |
       return undefined;
   }
 }
+
+/**
+ * Whether a dequeue took the work item's pull request out of the merge queue: whether it names the commit the line
+ * added, still there when it came, as `foldItem` follows the queue (a push or a merge since leaves nothing to take out).
+ */
+const dequeues = (item: ItemState, event: Extract<PublicEvent, { type: 'pull-request.dequeued' }>) => {
+  let pullRequest: number | undefined;
+  let queued: { number: number; commit: string } | undefined;
+  for (const e of item.events.slice(0, item.events.indexOf(event))) {
+    if (e.type === 'pull-request.pushed') {
+      pullRequest = e.payload.number;
+      queued = undefined;
+    } else if (e.type === 'pull-request.enqueued' && e.payload.number === pullRequest) queued = e.payload;
+    else if (e.type === 'pull-request.merged') queued = undefined;
+    else if (
+      e.type === 'pull-request.dequeued' &&
+      e.payload.number === queued?.number &&
+      e.payload.commit === queued.commit
+    )
+      queued = undefined;
+  }
+  return event.payload.number === queued?.number && event.payload.commit === queued.commit;
+};
 
 /** Whether the item's ticket had opened before an event. */
 const ticketedBefore = (item: ItemState, event: PublicEvent) => {

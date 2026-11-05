@@ -344,7 +344,8 @@ describe('the review gate’s verdict', () => {
         payload: {
           mechanism: 'review-gate',
           action: `Merge pull request #17 at aaaaaaa in ${REPO}`,
-          output: expect.stringMatching(/^Held for Martin: it removes a test\n\nThe rule\./),
+          // The gate's words alone: the verdict's block is for the line, not for the console to show.
+          output: 'Held for Martin: it removes a test\n\nThe rule.',
           guardrails: [2],
           subject: { kind: 'commit', name: SHA },
         },

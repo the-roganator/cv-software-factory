@@ -247,9 +247,18 @@ export function verdictOf(
   return { verdict: read, judged, problem: null };
 }
 
-/** The review check's own words, as a refusal of the gate's carries them: its title, then its summary. */
+/**
+ * The verdict's block in a summary (`policy/review-verdict.ts`): its JSON writes `<` and `>` as escapes, so the first
+ * `-->` after it opens is its end.
+ */
+const VERDICT_BLOCK = /<!-- review-verdict v\d+\n[\s\S]*?\n-->/g;
+
+/**
+ * The review check's own words, as a refusal of the gate's carries them and the console shows them: its title, then its
+ * summary, without the verdict's block, which is for the line to read, not for anyone to see.
+ */
 export function reviewOutput(check: Pick<ReviewCheck, 'title' | 'summary'>): string {
-  const output = [check.title ?? '', check.summary ?? '']
+  const output = [check.title ?? '', (check.summary ?? '').replace(VERDICT_BLOCK, '')]
     .map((part) => part.trim())
     .filter(Boolean)
     .join('\n\n');

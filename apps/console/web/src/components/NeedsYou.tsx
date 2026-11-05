@@ -182,6 +182,14 @@ const WAY_DOES: Record<WayThere, (n: number) => { martin: string; visitor: strin
     martin: `Opens #${n} on GitHub to merge it. ${RELEASED}`,
     visitor: `Martin merges #${n} there. ${RELEASED}`,
   }),
+  'deploy-queued': (n) => ({
+    martin: `Opens #${n} on GitHub, in the merge queue, which merges it once its checks pass there. ${RELEASED}`,
+    visitor: `The line added #${n} to the merge queue there, which merges it once its checks pass. ${RELEASED}`,
+  }),
+  'deploy-dequeued': (n) => ({
+    martin: `Opens #${n} on GitHub, to see why the merge queue took it out and merge it once it can. ${RELEASED}`,
+    visitor: `Martin sees why the merge queue took #${n} out there, and merges it once it can. ${RELEASED}`,
+  }),
   approve: () => ({
     martin: 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.',
     visitor: 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.',

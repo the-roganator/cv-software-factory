@@ -510,13 +510,14 @@ export class Item {
   /**
    * Where the app's deploy pull request that carries this held fix stands, as the line records it once a minute: on
    * its `build`th head (a newer build moves the same pull request to a new one), its checks running, passed, or
-   * failed (naming which), merged, or closed unmerged. The summary is the line's own.
+   * failed (naming which), merged, or closed unmerged, at Supervised, where the line adds none to the merge queue.
+   * The summary is the line's own.
    */
   deploy(
     offset: string,
     pullRequest: number,
     build: number,
-    state: PayloadOf<'deploy.changed'>['state'],
+    state: Exclude<PayloadOf<'deploy.changed'>['state'], 'queued' | 'dequeued'>,
     failed?: string[],
   ): this {
     const pr = `Deploy pull request #${pullRequest}`;

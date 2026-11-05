@@ -34,7 +34,7 @@ export const VERSIONS = {
   'pull-request.dequeued': 1,
   'pull-request.merged': 1,
   // Release and verify
-  'deploy.changed': 1,
+  'deploy.changed': 2,
   'release.started': 3,
   'canary.stepped': 2,
   'canary.measuring': 1,

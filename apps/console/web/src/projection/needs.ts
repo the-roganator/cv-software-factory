@@ -103,10 +103,20 @@ export interface Need {
 /**
  * What Martin does on GitHub, by the way forward, and what follows: merge it (`merge`), once its conflict with main is
  * put right (`conflict`), once he has seen why the queue took it out or refused it (`queue`); merge a deploy pull
- * request once its checks pass (`checks`) or now (`deploy`); or approve a held merge's head, after which the line adds
+ * request once its checks pass (`checks`), now (`deploy`), or once he has seen why the queue took it out
+ * (`deploy-dequeued`), or nothing, while the merge queue merges the one the line added to it (`deploy-queued`); or approve a held merge's head, after which the line adds
  * it to the merge queue (`approve`) or he merges it there too (`approve-merge`).
  */
-export type WayThere = 'merge' | 'conflict' | 'queue' | 'checks' | 'deploy' | 'approve' | 'approve-merge';
+export type WayThere =
+  | 'merge'
+  | 'conflict'
+  | 'queue'
+  | 'checks'
+  | 'deploy'
+  | 'deploy-queued'
+  | 'deploy-dequeued'
+  | 'approve'
+  | 'approve-merge';
 
 export interface Answered {
   at: number;
@@ -446,6 +456,14 @@ function deployEvidence(item: ItemState): string {
 /** Why a sample's way forward links nowhere, said beside it. */
 export const SAMPLE_PULL = 'A sample’s pull request: it never existed, so it links nowhere.';
 
+/** What Martin does on a deploy pull request that is still the way on, by where it stands. */
+const DEPLOY_THERE = {
+  checking: 'checks',
+  passed: 'deploy',
+  queued: 'deploy-queued',
+  dequeued: 'deploy-dequeued',
+} as const satisfies Record<string, WayThere>;
+
 /** The pull request a merge or a deploy waits for, on GitHub, or only named for a sample's, which never existed. */
 function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
   const pull = (verb: 'Merge' | 'Deploy' | 'Review', pullRequest: number, there: WayThere): Need['way'] => ({
@@ -464,10 +482,12 @@ function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
     const there = why === 'conflict' ? 'conflict' : why === 'queue' || why === 'refused' ? 'queue' : 'merge';
     return pull('Merge', item.pullRequest, there);
   }
-  // Only while its checks run or have passed is the deploy pull request the way on: once they failed, it closed or it
-  // merged, what moves the fix on is a newer build or Argo CD, and the evidence says which.
-  if (cause === 'deploy' && (item.deploy?.state === 'checking' || item.deploy?.state === 'passed')) {
-    return pull('Deploy', item.deploy.pullRequest, item.deploy.state === 'checking' ? 'checks' : 'deploy');
+  // Only while it is open and its checks have not failed (running, passed, in the merge queue or taken out of it) is
+  // the deploy pull request the way on: once they failed, it closed or it merged, what moves the fix on is a newer build
+  // or Argo CD, and the evidence says which.
+  const deploy = item.deploy;
+  if (cause === 'deploy' && deploy && deploy.state in DEPLOY_THERE) {
+    return pull('Deploy', deploy.pullRequest, DEPLOY_THERE[deploy.state as keyof typeof DEPLOY_THERE]);
   }
   return undefined;
 }
@@ -523,8 +543,10 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       const improvement = item.kind === 'improvement';
       const keyed =
         guardrail || (hold.cause === 'spec' && improvement && IMPROVEMENT_STEP_UP['hold.approve-improvement-spec']);
-      // A deploy waits for Martin from when its pull request's checks passed, as the line's gauge counts it.
-      const since = hold.cause === 'deploy' && item.deploy?.state === 'passed' ? item.deploy.at : hold.since;
+      // A deploy waits for Martin from when it became his at its head (its checks passed and the line did not queue it,
+      // or the queue took it out), as the line's gauge counts it.
+      const since =
+        hold.cause === 'deploy' && item.deploy?.waitsSince !== undefined ? item.deploy.waitsSince : hold.since;
       return [
         {
           workItem: item.number,

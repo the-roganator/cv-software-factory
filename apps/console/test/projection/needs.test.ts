@@ -313,7 +313,7 @@ describe('Needs you', () => {
     });
   });
 
-  it('says what a deploy waits for in each state, links its pull request, and says it waits for Martin once its checks pass', () => {
+  it('says what a deploy waits for in each state, links its pull request, and says it waits for Martin once its checks pass and the line does not queue it', () => {
     // Not a sample's: its deploy pull request is GitHub's, and the card links it.
     const merged = work('2042', START)
       .add(0, 'work-item.opened', 'factory', { kind: 'defect-fix', title: 'Item 2042', sample: false })
@@ -342,6 +342,36 @@ describe('Needs you', () => {
         'Deploy #41 carries it, and its checks passed: merging it is yours, on GitHub, and a release that carries it ends this wait by itself.',
       ],
       [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'level' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded with auto-merge on the line would add it. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'verdict', rule: 'held' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; the review gate did not pass it as an exact pin (held), and the line adds only an exact pin to the merge queue: merging it is yours, on GitHub. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'auto-merge' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; with auto-merge off, merging it is yours, on GitHub; switched on, the line adds it to the merge queue. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'refused', said: 'Resource not accessible' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; the line was refused when it added it to the merge queue (Resource not accessible): merging it is yours, on GitHub. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'queued', rule: 'exact-pin', position: 1 },
+        'Its deploy is in the merge queue',
+        'Deploy #41 carries it, and the review gate passed it as an exact pin: the line added it to the merge queue, which merges it once its checks pass there.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'dequeued', reason: 'failed_checks', failed: ['e2e'] },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and the merge queue took it out (failed_checks): e2e failed on its commit. Merging it is yours, on GitHub; a newer build moves it on, and the line tries again.',
+      ],
+      [
         { pullRequest: 41, commit: head(2), state: 'closed' },
         'Its deploy was closed',
         'Deploy #41 was closed unmerged; the next build’s deploy pull request carries it.',
@@ -358,6 +388,12 @@ describe('Needs you', () => {
       /^Merged at \d\d:\d\d\. The App opens the deploy pull request that carries it once its image is built and signed; merging that will be yours, on GitHub\.$/,
     );
     expect(at(2).outcome).toBe('deploying');
+    const THERE: Record<string, string | undefined> = {
+      checking: 'checks',
+      passed: 'deploy',
+      queued: 'deploy-queued',
+      dequeued: 'deploy-dequeued',
+    };
     steps.forEach(([change, kicker, text], i) => {
       merged.add(10 + i, 'deploy.changed', 'factory', change);
       const { need, outcome } = at(10 + i);
@@ -365,23 +401,26 @@ describe('Needs you', () => {
       expect(
         String((need?.evidence as { text?: string } | undefined)?.text).replace(/^Merged at \d\d:\d\d\. /, ''),
       ).toBe(text);
-      // The deploy pull request is the way on only while its checks run or have passed: failed, closed or merged, a
-      // newer build or Argo CD moves the fix on, and the card offers no way there.
+      // The deploy pull request is the way on only while it is open and its checks have not failed: failed, closed or
+      // merged, a newer build or Argo CD moves the fix on, and the card offers no way there.
       expect(need?.way).toEqual(
-        change.state === 'checking' || change.state === 'passed'
+        THERE[change.state]
           ? {
               verb: 'Deploy',
               pullRequest: change.pullRequest,
               href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
-              // Merged once its checks pass, and the card says so while they run.
-              there: change.state === 'checking' ? 'checks' : 'deploy',
+              // What Martin does there, which the card says beside it: merge it once its checks pass, now, or once he
+              // has seen why the queue took it out; or nothing, while the queue merges it.
+              there: THERE[change.state],
             }
           : undefined,
       );
       expect(need?.link).toBeUndefined();
-      // Only once its checks pass is it Martin's: then its card says Needs you, flashing, and Needs you counts it.
-      expect(outcome).toBe(change.state === 'passed' ? 'needs-you' : 'deploying');
-      expect(need?.forMartin).toBe(change.state === 'passed');
+      // Only once its checks pass and the line has not queued it, or the queue took it out, is it Martin's: then its
+      // card says Needs you, flashing, and Needs you counts it.
+      const his = change.state === 'passed' || change.state === 'dequeued';
+      expect(outcome).toBe(his ? 'needs-you' : 'deploying');
+      expect(need?.forMartin).toBe(his);
     });
   });
 

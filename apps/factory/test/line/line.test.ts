@@ -2758,7 +2758,7 @@ describe('the deploy pull request that carries a held work item', () => {
       'Deploy pull request #30 carries it; its checks are running',
       'Deploy pull request #30 carries it, and e2e failed on it',
       'Deploy pull request #30 carries it; its checks are running',
-      'Deploy pull request #30 carries it, and its checks passed: it waits for Martin to merge it',
+      'Deploy pull request #30 carries it, and its checks passed: the review gate did not pass it as an exact pin (low-risk), so the line does not add it to the merge queue: it waits for Martin to merge it',
       'Deploy pull request #30, which carries it, merged: its release starts once Argo CD syncs',
     ]);
     expect(await stage(workItem)).toBe('held');

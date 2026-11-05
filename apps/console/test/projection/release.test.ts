@@ -1105,6 +1105,9 @@ describe('a merged fix held for its deploy', () => {
     expect(deployCaption(ended(), deploy, false)).toEqual(['rolled back', 'deploy #1412’s checks running']);
     expect(deployCaption(undefined, deploy, true)).toEqual(['merged', 'waiting for Martin’s deploy']);
     expect(deployCaption(ended(), deploy, true)).toEqual(['rolled back', 'waiting for Martin’s retry or next deploy']);
+    // The line added it to the merge queue: it waits for the queue, not for Martin.
+    const queued = { pullRequest: 1412, state: 'queued' as const, rule: 'exact-pin' as const };
+    expect(deployCaption(undefined, queued, false)).toEqual(['merged', 'deploy #1412 in the merge queue']);
   });
 
   it('names what stopped the release that carried it, whoever it waits for', () => {

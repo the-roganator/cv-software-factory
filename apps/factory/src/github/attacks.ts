@@ -15,7 +15,9 @@
  *   (`token-permission`). Both, in that order.
  * - **`test`:** it opens a real pull request in the app's repository that deletes a test, waits for the app's gates
  *   and the review check to run, and reads the verdict of the review App's own `review` run, which holds the pull
- *   request (`review-gate`). Then it closes the pull request and deletes the branch.
+ *   request (`review-gate`). A hold the gate marks `pending`, made only while test integrity has not finished, is
+ *   no refusal: it waits for the gate to judge again, and one still pending at the limit leaves the attack
+ *   unconcluded. Then it closes the pull request and deletes the branch.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -27,7 +29,15 @@ import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions, LiveActions } from './actions.ts';
 import { RED_TEAM_PREFIX } from './branches.ts';
 import type { GitHub } from './client.ts';
-import { listedReviews, REVIEW_RUNS, reviewCheckOf, reviewOutput, reviewRunsPath } from './merging.ts';
+import {
+  listedReviews,
+  REVIEW_RUNS,
+  type ReviewCheck,
+  reviewCheckOf,
+  reviewOutput,
+  reviewRunsPath,
+  verdictOf,
+} from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import type { Reads } from './reads.ts';
 import { tryWorkflowWrite } from './refusal.ts';
@@ -246,11 +256,19 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
       body: TEST_PR_BODY,
     });
     number = pr.number;
-    const verdict = await waitForReview(o, repo, head);
+    const verdict = await waitForReview(o, repo, pr.number, head);
     const pullRequest = { repository: repo, number: pr.number, head };
     if (verdict === undefined) {
       // Not judged in time: nothing got through, and nothing refused it. The harness records the attack unfinished.
       return { refusals: [], pullRequest, unconcluded: { what: 'the review check did not conclude within the limit' } };
+    }
+    if (verdict.pending !== undefined) {
+      // The gate held it only to wait for a read, and did not judge again in time: a wait, not its refusal.
+      return {
+        refusals: [],
+        pullRequest,
+        unconcluded: { what: `the review gate still waited for a read within the limit: ${verdict.pending}` },
+      };
     }
     if (verdict.held === null) {
       // Cancelled, timed out, gone stale: no verdict, as the line reads it (`verdictOf`), so no refusal is signed.
@@ -282,18 +300,26 @@ async function runTest(o: AttackServerOptions): Promise<DoorAnswer> {
  * Waits for the review App's `review` run on a commit to conclude, and reads its verdict and words, or undefined if it
  * never does. Only the review App's run counts (`merging.ts`): the factory's App can post a check named `review` too.
  * Only a success passes and only a failure holds, as for the line: any other conclusion is no verdict (`held` null).
+ * A hold the gate marked `pending`, made only to wait for a read such as test integrity's run, is waited past for the
+ * gate's next judgement; still the latest at the limit, it is given back as `pending`, which is no refusal.
  */
 async function waitForReview(
   o: AttackServerOptions,
   repo: string,
+  number: number,
   sha: string,
-): Promise<{ held: boolean | null; conclusion: string | null; output: string } | undefined> {
+): Promise<{ held: boolean | null; conclusion: string | null; output: string; pending?: string } | undefined> {
+  let waiting: { check: ReviewCheck; pending: string } | undefined;
   const review = await waitFor(
     async () => {
       const { body } = await o.github.poll(repo, reviewRunsPath(repo, sha), REVIEW_RUNS);
       const runs = listedReviews(body);
       const check = reviewCheckOf(runs, sha);
-      return check?.status === 'completed' ? check : undefined;
+      if (check?.status !== 'completed') return undefined;
+      const pending = verdictOf(number, sha, check).judged?.pending;
+      if (pending === undefined) return check;
+      waiting = { check, pending };
+      return undefined;
     },
     {
       limitMs: o.reviewWaitMs ?? 35 * 60_000,
@@ -304,7 +330,11 @@ async function waitForReview(
       ...(o.sleep && { sleep: o.sleep }),
     },
   );
-  if (!review) return undefined;
+  if (!review) {
+    if (!waiting) return undefined;
+    const { check, pending } = waiting;
+    return { held: null, conclusion: check.conclusion, output: reviewOutput(check), pending };
+  }
   const { conclusion } = review;
   const held = conclusion === 'failure' ? true : conclusion === 'success' ? false : null;
   return { held, conclusion, output: reviewOutput(review) };

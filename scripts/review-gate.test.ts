@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { found, GIVEN_LIMIT, readVerdict } from '../policy/review-verdict.ts';
+import { found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
 import {
   atHead,
   judge,
@@ -348,6 +348,22 @@ describe("the check's summary", () => {
     expect(read.judged.map((j) => j.pending)).toEqual(['x', undefined]);
     expect('pending' in (read.judged[1] ?? {})).toBe(false);
   });
+
+  it('keeps a pending hold within its bound, and the summary within its limit with it', () => {
+    const tags = TAGS.map((t) =>
+      found(
+        t,
+        Array.from({ length: 40 }, (_, i) => `${'p'.repeat(200)}/${i}`),
+      ),
+    );
+    const waits = { pass: false, title: 'Waits', rule: 'held' as const, tags, pending: 'w'.repeat(PENDING_LIMIT * 2) };
+    const judged = Array.from({ length: 12 }, (_, i) => ({ pr: { ...pr(APP), number: i + 1 }, said: waits }));
+    const summary = summaryOf(HEAD, judged);
+    expect(summary.length).toBeLessThanOrEqual(SUMMARY_LIMIT);
+    const read = readVerdict(summary);
+    if ('error' in read) throw new Error(read.error);
+    expect(read.judged.every((j) => j.pending === 'w'.repeat(PENDING_LIMIT))).toBe(true);
+  });
 });
 
 describe("the review gate's workflows", () => {
@@ -493,8 +509,8 @@ describe('judging a pull request through the API', () => {
     const said = await judge(run, theirs);
     expect(said).toMatchObject({ pass: false, rule: 'held' });
     expect(said.title).toContain('could not read');
-    // A read that failed is one the gate waits to make again.
-    expect(said.pending).toContain('a read of GitHub that failed: GET /repos/');
+    // A read that failed is a hold, not a wait: it may fail for ever, and nothing runs the gate again for it.
+    expect(said.pending).toBeUndefined();
     // Martin's own still passes: his say needs no review.
     const his = { ...theirs, user: { id: MARTIN } };
     expect(await judge(run, his)).toMatchObject({ pass: true, rule: 'martin-opened' });
@@ -521,9 +537,12 @@ describe('judging a pull request through the API', () => {
       });
       const said = await judge(run, theirs);
       expect(said).toMatchObject({ pass: false, rule: 'held' });
-      expect(said.title).toContain(`GitHub gave ${given.length} of its 1 annotations`);
-      // A page lost is a read to make again; the warnings it did give are a tag, which holds it anyway.
-      expect(said.pending).toBe(given.length === 0 ? 'GitHub gave 0 of its 1 annotations' : undefined);
+      // The warnings it did give are a tag, which the level does not pass, so the tag is what it is held for.
+      expect(said.title).toContain(
+        given.length ? 'Held for its risk tags (test-loosening)' : 'GitHub gave 0 of its 1 annotations',
+      );
+      // The run has completed, so no new reading is coming: a hold, not a wait.
+      expect(said.pending).toBeUndefined();
     }
   });
 

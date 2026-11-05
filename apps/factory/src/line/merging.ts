@@ -11,16 +11,18 @@
  *   model wrote;
  * - that head is the one the line's own gates passed and its reviewer passed (`review.submitted` names the head it was
  *   given): the gate does not read the factory's reviewer, so `review` alone is never enough;
- * - the gate's rule is one the autonomy level lets the line merge by, with auto-merge on (`ENQUEUES`, `policy/line.ts`);
- * - it is not a change that is never the line's: an improvement, a release, a red-team branch, or a work item whose spec
- *   was ever tagged `out-of-scope`, whatever the rule;
+ * - the gate's rule is one the autonomy level lets the line merge by, with auto-merge on (`ENQUEUES`,
+ *   `policy/line.ts`);
+ * - it is not a change that is never the line's: an improvement, a release, a red-team branch, or a work item whose
+ *   spec was ever tagged `out-of-scope`, whatever the rule;
  * - it does not conflict with main, the queue has not taken it out at that head, and GitHub has not refused to add it.
  *
- * Otherwise it is held for Martin (`hold.started`, cause `merge`), with the gate's rule, its tags and its words, and why
- * the line does not add it (`MERGE_HOLDS`), so Needs you can say so. A hold that would say the same is not made again.
- * Where Martin's approval of the head on GitHub would let the line add it (Guarded or Lights-out, auto-merge on, not a
- * change that is never the line's), the hold says so (`approving`): the gate then passes it as `martin-approved-head`,
- * and the line adds it. A push after his approval fails the gate again, and the line holds it again.
+ * Otherwise it is held for Martin (`hold.started`, cause `merge`), with the gate's rule, its tags and its words, and
+ * why the line does not add it (`MERGE_HOLDS`), so Needs you can say so. A hold that would say the same is not made
+ * again. Where Martin's approval of the head on GitHub would let the line add it (Guarded or Lights-out, auto-merge on,
+ * not a change that is never the line's), the hold says so (`approving`): the gate then passes it as
+ * `martin-approved-head`, and the line adds it. A push after his approval fails the gate again, and the line holds it
+ * again.
  *
  * Only a pull request the gate refused (rule `held`) is a refusal: it is recorded once for each head it held, as
  * `action.refused` with mechanism `review-gate`, signed by the GitHub worker and verified by the line, before the hold.
@@ -52,7 +54,9 @@ import { GIVEN_LIMIT, type Judged } from '../../../../policy/review-verdict.ts';
 import { redTeamBranch } from '../github/branches.ts';
 import type { Decision, WorkItemState } from './machine.ts';
 
-/** What the line reads of a pull request ready to merge, and its controls in force, as it decides whether to queue it. */
+/**
+ * What the line reads of a pull request ready to merge, and its controls in force, as it decides whether to queue it.
+ */
 export interface MergeFacts {
   /** Martin's autonomy level and auto-merge switch, as the line read them this pass. */
   autonomy: Autonomy;

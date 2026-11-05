@@ -379,8 +379,10 @@ export class LiveReads implements Reads {
     const runs = listedReviews(body);
     const check = reviewCheckOf(runs, head.sha);
     const read = verdictOf(number, head.sha, check);
+    // A hold marked pending only waits for the gate to read something it could not yet: no refusal is signed for it.
+    const refused = read.judged?.rule === 'held' && read.judged.pending === undefined;
     const refusal =
-      check && read.judged?.rule === 'held' ? await this.#held(repo, number, head.sha, check, read.judged) : undefined;
+      check && refused && read.judged ? await this.#held(repo, number, head.sha, check, read.judged) : undefined;
     return { number, head: head.sha, check, ...read, ...(refusal && { refusal }) };
   }
 

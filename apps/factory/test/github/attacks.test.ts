@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
+import { verdictBlock } from '../../../../policy/review-verdict.ts';
 import type { Actions, LiveActions } from '../../src/github/actions.ts';
 import { createAttackServer } from '../../src/github/attacks.ts';
 import { type GitHub, GitHubError } from '../../src/github/client.ts';
@@ -46,7 +47,14 @@ interface World {
   foreign?: 'only' | 'newer';
   /** An error GitHub answers when the door first reads, as a client error does, detail and all. */
   readFails?: Error;
+  /**
+   * A gate that first holds the pull request only to wait for test integrity (`pending`), then, when `rejudged`, judges
+   * it again after that many reads of its runs.
+   */
+  waits?: { rejudged?: number };
 }
+
+const PENDING = 'test integrity is still running at bbbbbbb';
 
 /** The factory's own App, which can post a check named `review` too. */
 const FACTORY_APP = 5187559;
@@ -68,6 +76,7 @@ function run(id: number, sha: string, app: number, review: World['review']) {
 function fakes(world: World) {
   const calls: Call[] = [];
   const note = (method: string, repo: string, ...args: unknown[]) => void calls.push({ method, repo, args });
+  let reviewReads = 0;
   const actions = {
     dryRun: false,
     async applyPatch(repo: string, patch: { branch: string; patch: string }) {
@@ -106,6 +115,22 @@ function fakes(world: World) {
       if (path.endsWith('/check-runs?check_name=review&filter=all&per_page=100')) {
         note('reviewRuns', repo, path);
         const sha = path.split('/commits/')[1]?.split('/')[0] ?? '';
+        reviewReads += 1;
+        if (world.waits) {
+          const again = world.waits.rejudged !== undefined && reviewReads > world.waits.rejudged;
+          const waiting = {
+            ...run(9, sha, REVIEW_APP, 'held'),
+            output: {
+              title: 'Waits for test integrity before it judges',
+              summary: verdictBlock({
+                version: 1,
+                commit: sha,
+                judged: [{ number: 77, head: sha, rule: 'held', tags: [], pending: PENDING }],
+              }),
+            },
+          };
+          return { check_runs: again ? [run(11, sha, REVIEW_APP, world.review), waiting] : [waiting] };
+        }
         const ours = world.foreign === 'only' ? [] : [run(9, sha, REVIEW_APP, world.review)];
         const theirs = world.foreign ? [run(10, sha, FACTORY_APP, 'passed')] : [];
         // GitHub lists the newest first.
@@ -282,6 +307,29 @@ describe('the GitHub worker’s attack door', () => {
         expect(calls.slice(-2).map((c) => c.method)).toEqual(['closePullRequest', 'deleteBranch']);
       },
     );
+
+    it('takes a hold the gate marked pending for no refusal, and says the attack was unconcluded', async () => {
+      const { calls, ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'held', waits: {} });
+      const { body } = await ask('test');
+      expect(body.refusals).toEqual([]);
+      expect(body.gotThrough).toBeUndefined();
+      expect(body.unconcluded).toEqual({
+        what: `the review gate still waited for a read within the limit: ${PENDING}`,
+      });
+      expect(calls.slice(-2).map((c) => c.method)).toEqual(['closePullRequest', 'deleteBranch']);
+    });
+
+    it('waits past a pending hold for the gate to judge again, and answers that verdict', async () => {
+      const held = await serve({ guard: 'refuses', workflows: 'refused', review: 'held', waits: { rejudged: 2 } });
+      const refused = (await held.ask('test')).body;
+      expect(refused.unconcluded).toBeUndefined();
+      expect(verified((refused.refusals as SignedRefusal[])[0] as SignedRefusal).mechanism).toBe('review-gate');
+      await close?.();
+      const passed = await serve({ guard: 'refuses', workflows: 'refused', review: 'passed', waits: { rejudged: 2 } });
+      expect((await passed.ask('test')).body.gotThrough).toEqual({
+        what: 'the review check did not hold the pull request',
+      });
+    });
 
     it('says a review check that never concluded was unconcluded, not got through, and still closes the pull request', async () => {
       const { calls, ask } = await serve({ guard: 'refuses', workflows: 'refused', review: 'pending' });

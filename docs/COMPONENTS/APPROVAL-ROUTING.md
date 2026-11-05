@@ -61,7 +61,9 @@ The check's summary has a line for each pull request it judged, with its rule an
 -->
 ```
 
-Read it only from the check named `review` that the review App (5470762) posted for the pull request's current head: the factory's App can post check runs too. A summary with no block, two, or one that does not parse whole carries no verdict.
+A `held` entry carries `pending` when the gate held it only to wait for something it could not read yet: test integrity's run missing, queued or in progress at the head (as it is when a pull request opens), or a read of GitHub that failed. Judged again once it can read it, the gate may pass the pull request, so a pending hold is a wait, not a refusal, and its words say what it waits for. A hold that anything the gate did read decided carries none: a tag the level does not pass, a removed risk label, a base other than `main`, a test-integrity run another app posted, or one that failed, was cancelled or was skipped, and anything in this repository but an exact pin. The field is optional, so the block is still version 1.
+
+Read it only from the check named `review` that the review App (5470762) posted for the pull request's current head: the factory's App can post check runs too. A summary with no block, two, or one that does not parse whole (`pending` beside a passing rule among it) carries no verdict.
 
 To see what the gate would say of a pull request, with nothing posted:
 

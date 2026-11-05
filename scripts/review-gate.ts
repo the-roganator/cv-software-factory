@@ -45,6 +45,7 @@ import {
   type Decision,
   exactPin,
   excusedTests,
+  type Facts,
   type FileChange,
   type IssueEvent,
   MARTIN,
@@ -408,16 +409,20 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       owners(each),
     ]);
     const integrity = testIntegrityRun(runs, head, files, pr.base.ref);
-    let testIntegrity: { read: true } | { read: false; reason: string } = { read: true };
+    let testIntegrity: Facts['testIntegrity'] = { read: true };
     let excused: string[] = [];
     if ('run' in integrity) {
       const annotations = await paged<Annotation>(`/repos/${repo}/check-runs/${integrity.run.id}/annotations`, read);
       const expected = integrity.run.output?.annotations_count ?? 0;
       // Fewer is a page lost, more a set that is not the run's: either way, the excused tests are not known.
       if (annotations.length !== expected)
-        testIntegrity = { read: false, reason: `GitHub gave ${annotations.length} of its ${expected} annotations` };
+        testIntegrity = {
+          read: false,
+          reason: `GitHub gave ${annotations.length} of its ${expected} annotations`,
+          pending: true,
+        };
       excused = excusedTests(annotations);
-    } else testIntegrity = { read: false, reason: integrity.reason };
+    } else testIntegrity = { read: false, ...integrity };
     const complete = files.length >= (pr.changed_files ?? 0);
     const tags = tagsOf({
       files,
@@ -492,6 +497,7 @@ export function summaryOf(commit: string, judged: readonly { pr: PullRequest; sa
       head: pr.head.sha,
       rule: said.rule,
       tags: said.tags,
+      ...(said.pending ? { pending: said.pending } : {}),
     }));
     summary = [
       RULE,

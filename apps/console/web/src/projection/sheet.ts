@@ -713,7 +713,8 @@ function afterRounds(item: ItemState, hold: Hold | undefined, described: boolean
   const cleared = clearanceWords(item);
   const and = (text: string) => (cleared ? `${text.replace(/\.$/, '')}. ${cleared}` : text);
   if (hold.cause === 'merge' && hold.merge?.why === 'held') {
-    return { outcome: item.outcome, text: and(`Held for its risk tags since ${clock(hold.since)}: ${hold.reason}`) };
+    const by = hold.merge.tags?.length ? 'Held for its risk tags' : 'Held by the review gate';
+    return { outcome: item.outcome, text: and(`${by} since ${clock(hold.since)}: ${hold.reason}`) };
   }
   if (hold.cause === 'merge') {
     const since = clock(hold.since);

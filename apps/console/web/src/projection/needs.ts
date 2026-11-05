@@ -154,8 +154,15 @@ const openerOf = (item: ItemState) =>
  * say the same thing. Closed over every cause, so a new one does not type-check until it has its words.
  */
 export const holdKicker = (item: ItemState, hold: Hold) =>
-  (hold.merge && MERGE_KICKER[hold.merge.why]) ??
+  (hold.merge && mergeKicker(hold.merge)) ??
   kickerOf(hold.cause, hold.stage, openerOf(item)?.sense, item.kind === 'improvement');
+
+/**
+ * A merge's kicker. The gate also holds, with no tags, for what it could not read or trust (test integrity's run, a
+ * risk label someone else removed): that hold is the gate's, not its tags'.
+ */
+const mergeKicker = (merge: Merge) =>
+  merge.why === 'held' && !merge.tags?.length ? 'Held by the review gate' : MERGE_KICKER[merge.why];
 
 /** A merge's hold, by why the line does not add it to the merge queue itself, where it is more than a wait for him. */
 const MERGE_KICKER: Partial<Record<MergeWhy, string>> = {

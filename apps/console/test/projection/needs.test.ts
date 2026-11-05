@@ -475,6 +475,10 @@ describe('Needs you', () => {
       );
       // With no tags read, the gate said nothing clear either.
       expect(needOf(merge('held', { tags: undefined }))?.evidence).toMatchObject({ kind: 'gate', tags: [], clear: [] });
+      // Held with no tags, for what the gate could not read or trust: the gate's hold, not its tags'.
+      for (const tags of [undefined, []]) {
+        expect(needOf(merge('held', { rule: 'held', tags }))?.kicker).toBe('Held by the review gate');
+      }
       // Its chapter is a hold, as a gate's is.
       const held = work('2072', START).open().add(1, 'pull-request.pushed', 'coder', pushed);
       held.add(30, 'hold.started', 'factory', merge('held', { rule: 'held' }));

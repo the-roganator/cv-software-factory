@@ -13,7 +13,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { type Check, capture, pixelDifference } from '@software-factory/factory/capture';
+import { BROWSER_LAUNCH, type Check, capture, pixelDifference } from '@software-factory/factory/capture';
 import { DiskArtifacts } from '@software-factory/store';
 import { chromium, type Page } from 'playwright';
 import { ARTIFACTS, CAPTURES, type Captures } from './captures.ts';
@@ -158,7 +158,7 @@ run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--silent']);
 run('node', ['scripts/seed.ts']);
 
 const store = new DiskArtifacts(ARTIFACTS);
-const browser = await chromium.launch();
+const browser = await chromium.launch(BROWSER_LAUNCH);
 // At 1x: sharp enough for a card on a dense screen, a quarter of the bytes for a phone, and a quarter of the memory
 // for a strip of thumbnails, which at 2x left the renderer out of room to draw them all.
 const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });

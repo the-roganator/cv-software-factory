@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
+import { BROWSER_LAUNCH } from '@software-factory/factory/capture';
 import { enrolThroughTheDoor, startHarness, virtualPasskey } from '../e2e/admin.ts';
 
 /**
@@ -69,7 +70,7 @@ const harness = await startHarness(PORT, 'zap');
 let status = 1;
 try {
   // Signed in as a browser signs in: the enrolment door, a passkey, and the cookie the service sets.
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(BROWSER_LAUNCH);
   const context = await browser.newContext({ baseURL: harness.origin });
   const page = await context.newPage();
   await virtualPasskey(page);

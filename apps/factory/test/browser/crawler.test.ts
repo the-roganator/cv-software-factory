@@ -11,6 +11,7 @@ import { validateSignal } from '@software-factory/events/schemas';
 import { DiskArtifacts } from '@software-factory/store';
 import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { BROWSER_LAUNCH } from '../../src/capture.ts';
 import { CLASSES, Crawler } from '../../src/crawler/index.ts';
 import { OF_A_PAGE } from '../../src/crawler/judge.ts';
 import { compareJourneys, type Seen } from '../../src/gates/journeys.ts';
@@ -28,7 +29,7 @@ const log = { warn: () => {} };
 const timing = { slow: SLOW_ANSWER - 200, pageTimeout: 5_000 };
 
 beforeAll(async () => {
-  browser = await chromium.launch();
+  browser = await chromium.launch(BROWSER_LAUNCH);
 });
 afterAll(() => browser?.close());
 

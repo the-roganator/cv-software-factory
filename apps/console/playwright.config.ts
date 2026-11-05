@@ -6,6 +6,7 @@
  * image, so they match from one machine to the next: `make e2e` runs them there.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { BROWSER_LAUNCH } from '@software-factory/factory/capture';
 import { ATTACKS_END, ATTACKS_PORT, END, FIXTURE_END, FIXTURE_PORT, PORT } from './e2e/support.ts';
 
 /** Snapshots only mean something in the pinned image (`make e2e` and CI set this); elsewhere they are skipped. */
@@ -29,10 +30,9 @@ export default defineConfig({
     timezoneId: 'Europe/London',
     locale: 'en-GB',
     trace: 'retain-on-failure',
-    // Headless Chromium on Linux hints fonts fully by default, which snaps each glyph's advance to a whole pixel: at a
-    // small size a space loses half its width ("Pricesbelow zero"), and every line is set wider or narrower than a
-    // browser on a desktop sets it. Unhinted, it places glyphs at fractions of a pixel, as Chrome on the Mac does.
-    launchOptions: { args: ['--font-render-hinting=none'] },
+    // As every browser the factory launches: text unhinted, as Chrome on the Mac sets it, where headless Chromium on
+    // Linux would snap each glyph's advance to a whole pixel ("Pricesbelow zero").
+    launchOptions: BROWSER_LAUNCH,
   },
   projects: [
     {

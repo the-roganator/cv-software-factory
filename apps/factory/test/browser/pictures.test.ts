@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { capturePage } from '../../src/capture.ts';
+import { BROWSER_LAUNCH, capturePage } from '../../src/capture.ts';
 import type { Picture } from '../../src/pictures/index.ts';
 import { Pictures } from '../../src/pictures/take.ts';
 import { discover, httpGet } from '../../src/traffic/traffic.ts';
@@ -20,7 +20,7 @@ const store = new DiskArtifacts(mkdtempSync(join(tmpdir(), 'pictures-artifacts-'
 const log = { info: () => {}, warn: () => {} };
 
 beforeAll(async () => {
-  browser = await chromium.launch();
+  browser = await chromium.launch(BROWSER_LAUNCH);
 });
 afterAll(() => browser?.close());
 

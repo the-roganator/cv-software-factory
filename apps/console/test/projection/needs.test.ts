@@ -454,7 +454,8 @@ describe('Needs you', () => {
       });
       expect(need?.answers.map((a) => [a.label, a.does])).toEqual([
         ['Answer in words', 'Sends it back to the coder, with your words as the reason.'],
-        ['Reject', 'Closes #2070, unmerged.'],
+        // The line closes the work item and its issue, and leaves the pull request open.
+        ['Reject', 'Closes #2070, unmerged. Its pull request #1327 stays open on GitHub until you close it.'],
       ]);
       // Its pull request on GitHub, for one that is not a sample's.
       const real = work('2070', START).add(0, 'work-item.opened', 'factory', {

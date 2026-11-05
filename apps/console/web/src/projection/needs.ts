@@ -213,8 +213,17 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
   }
 }
 
-/** What an answer does, by what the line does with it, for the hold's cause. */
-function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvement: boolean): string {
+/**
+ * What an answer does, by what the line does with it, for the hold's cause. Rejecting closes the work item and its
+ * issue only: a merge's pull request stays open on GitHub, which the card says, so Martin knows to close it there.
+ */
+function doesOf(
+  cause: HoldCause,
+  answer: HoldAnswer,
+  workItem: string,
+  improvement: boolean,
+  pullRequest: number | undefined,
+): string {
   const resolution: Resolution = ANSWERS[cause][answer];
   if (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)) {
     return cause === 'suggestion'
@@ -228,6 +237,9 @@ function doesOf(cause: HoldCause, answer: HoldAnswer, workItem: string, improvem
     if (cause === 'suggestion') return `Closes #${workItem}. Nothing is built.`;
     if (cause === 'burst' || cause === 'environment') {
       return 'Closes it with no tickets. A problem still there is found again.';
+    }
+    if (cause === 'merge' && pullRequest !== undefined) {
+      return `Closes #${workItem}, unmerged. Its pull request #${pullRequest} stays open on GitHub until you close it.`;
     }
     return `Closes #${workItem}${cause === 'question' || cause === 'spec' ? '. Nothing is built.' : ', unmerged.'}`;
   }
@@ -520,7 +532,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
             does:
               answer === 'approved' && hold.needs?.some((n) => n.barred)
                 ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
-                : doesOf(hold.cause, answer, item.number, improvement),
+                : doesOf(hold.cause, answer, item.number, improvement, hold.merge?.pullRequest ?? item.pullRequest),
             stepUp: answer === 'approved' && keyed,
           })),
           aboutReport: opener?.sense === 'report',

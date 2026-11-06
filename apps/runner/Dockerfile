@@ -3,8 +3,10 @@
 #
 #     docker build --file apps/runner/Dockerfile .
 #
-# It holds Node at the version the app pins, git, this repository's pnpm, and the Agent SDK. The app's own
-# dependencies are not here: the prepare pod installs them onto the job's volume, from the app's lockfile.
+# It holds Node at mise.toml's release (scripts/image-pins.test.ts), which the app pins too: the app's pins move in
+# its own repository after this one's, so a coder may run a patch release ahead of the app for a while. Then git, this
+# repository's pnpm, and the Agent SDK. The app's own dependencies are not here: the prepare pod installs them onto the
+# job's volume, from the app's lockfile.
 
 FROM node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS base
 # git, to check out the app and write the agent's patch. The Debian packages are the image's release's.

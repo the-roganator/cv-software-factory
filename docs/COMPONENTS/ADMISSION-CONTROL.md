@@ -24,7 +24,7 @@ It checks the signature, not the SBOM: the deploy pull requests' checks verify t
 
 ## Behaviour
 
-- **A refusal** names the policy, the check and the images. The line records each of Kyverno's as `action.refused` (`admission-control`), from the Events it leaves: Kyverno's own in `default` for a request it blocked, or a controller's `FailedCreate` for a pod it could not make ([the line](ORCHESTRATOR.md#refusals-it-records-for-others)). The ValidatingAdmissionPolicies below leave no Event, and are not recorded.
+- **A refusal** names the policy, the check and the images. The line records each of Kyverno's as `action.refused` (`admission-control`), from the Events it leaves: Kyverno's own in `default` for a request it blocked, or a controller's `FailedCreate` for a pod it could not make ([the line](ORCHESTRATOR.md#refusals-it-records-for-others)). The ValidatingAdmissionPolicies below leave no Event, and are not recorded. Nor is Pod Security's: every guarded namespace enforces the `restricted` standard, which refuses a pod before Kyverno sees it. A pod applied by hand that it refuses leaves no Event, and a controller's `FailedCreate` for one carries Pod Security's words, which the line does not take for a refusal it records, so a refusal tried by hand in a guarded namespace needs a pod that passes `restricted`.
 - **It fails closed.**
 - **Outside it:** Kyverno's namespace, Argo CD's and the system's. Telemetry's, the pod log collector's and Argo Rollouts' are not guarded, since they run only upstream charts.
 - **Every copy enforces.**

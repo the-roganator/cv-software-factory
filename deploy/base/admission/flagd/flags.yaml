@@ -1,8 +1,7 @@
-# `flags` is the only FeatureFlag in `flagd`, and is never deleted. flagd's watch lists the whole namespace, so its
-# Role (deploy/base/flagd/flagd.yaml) may read every FeatureFlag there, with no names; this keeps there nothing to read
-# but `flags`. And flagd keeps serving the last flags it read when its resource goes (at v0.17.0 it only logs the
-# deletion), so a deletion would leave every flag as it was, a kill switch included: off is a change to a flag in
-# `flags`, never a deletion of it.
+# `flags` is the only FeatureFlag in `flagd`, and is never deleted. flagd's Role (deploy/base/flagd/flagd.yaml) reads
+# `flags` alone, by name; this keeps there nothing else, should a Role ever read more. And flagd keeps serving the last
+# flags it read when its resource goes (at v0.18.2 it only logs the deletion), so a deletion would leave every flag as
+# it was, a kill switch included: off is a change to a flag in `flags`, never a deletion of it.
 #
 # It holds every request, Argo CD's, an administrator's and the admin service's: nothing may make another FeatureFlag
 # in `flagd` or delete `flags`. What the admin service may change in `flags` is held by flag-stages.yaml. The one

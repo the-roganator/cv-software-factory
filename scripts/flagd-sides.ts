@@ -12,9 +12,9 @@
  * - **in-process**: the flag set as flagd's sync service hands it out (`FetchAllFlags`, the payload the app's in-process
  *   provider streams), evaluated with flagd's evaluation library, the one the app evaluates with, in the context the
  *   app builds for a signed request. This is the side the app puts the id on, and the one the test holds Verify to.
- * - **rpc**: flagd's own answer over its evaluation service, which the app does not ask: flagd v0.17.0 hashes a
- *   `fractional` rule's bucket differently from the evaluation library at 5.0.0, so the two disagree on some ids. It is
- *   kept to show the difference, which is why Verify works out the sides with the library and not by asking flagd.
+ * - **rpc**: flagd's own answer over its evaluation service, which the app does not ask: another implementation of the
+ *   `fractional` rule, which a flagd release may change apart from the library (v0.17.0's disagreed on some ids, v0.18.2's
+ *   agrees). It is kept for contrast; Verify works out the sides with the library, not by asking flagd.
  *
  * Run it whenever the flagd image, the evaluation library's version, `policy/flags.ts` or the generator's ids change. It
  * needs Docker, and the ports 18013 and 18015 free on 127.0.0.1.
@@ -111,7 +111,6 @@ async function recordAt(share: Share, recorded: Recorded): Promise<void> {
   execFileSync('docker', [
     'run',
     '--detach',
-    '--rm',
     '--name',
     NAME,
     '--publish',
@@ -147,7 +146,9 @@ async function recordAt(share: Share, recorded: Recorded): Promise<void> {
       recorded[flag] = { ...recorded[flag], [share]: { on, rpcOn } } as Recorded[string];
     }
   } finally {
-    execFileSync('docker', ['stop', NAME]);
+    // Removed before the next share's flagd takes its name: `docker stop` of a `--rm` container returns before Docker
+    // has removed it, and the next `docker run --name` then finds the name still in use.
+    execFileSync('docker', ['rm', '--force', NAME]);
   }
 }
 

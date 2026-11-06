@@ -8,7 +8,10 @@
 # namespace, which lists and watches with a field selector on `metadata.name`, so `flags` alone, and a `get` of `flags`
 # by name when the informer's cache misses. Kubernetes authorizes a list or watch with that selector against a Role's
 # names, so its Role grants get, list and watch on `flags` alone, by name, and writes nothing; admission keeps `flags`
-# the only one there all the same (deploy/base/admission/flagd/flags.yaml).
+# the only one there all the same (deploy/base/admission/flagd/flags.yaml). No test here sees flagd's selector: a flagd
+# whose watch dropped it would start on its `get`, and be ready, but be refused its list and watch, and follow no change
+# to `flags` (caught only by the admin service's check on the revision the app holds). So a new flagd is tried on the
+# cluster before it merges, until it follows a staged change.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

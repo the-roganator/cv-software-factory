@@ -4,7 +4,8 @@
  * that passed postgres.js a list to `= any(...)` did, so the harness's own query is run here.
  */
 import { VERSIONS } from '@software-factory/events';
-import type { JSONValue, Sql } from 'postgres';
+import type { JSONValue } from '@software-factory/store';
+import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { ATTACK_TITLE } from '../../../../policy/attacks.ts';

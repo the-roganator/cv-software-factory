@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { JSONValue } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { JSONValue } from '../src/client.ts';
 import { type Database, freshDatabase } from './database.ts';
 
 /**

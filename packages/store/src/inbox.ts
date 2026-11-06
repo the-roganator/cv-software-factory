@@ -4,7 +4,8 @@
  */
 import type { InboxSignal } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
-import type { JSONValue, Sql } from 'postgres';
+import type { Sql } from 'postgres';
+import type { JSONValue } from './client.ts';
 
 /** What a sense found, as triage matches it: the route and the symptom class. A report or a finding has none. */
 export function fingerprintOf(found: Pick<InboxSignal, 'sense' | 'route' | 'symptom'>): string | null {

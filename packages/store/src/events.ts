@@ -13,8 +13,9 @@ import {
 } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { validate } from '@software-factory/events/schemas';
-import type { JSONValue, Sql, TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { ArtifactStore } from './artifacts.ts';
+import type { JSONValue } from './client.ts';
 import { fromMartin, openedAsImprovement } from './commands.ts';
 
 /**

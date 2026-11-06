@@ -118,6 +118,7 @@ import {
   flagsTaken,
   fromMartin,
   IgnoredCommands,
+  type JSONValue,
   LINE_ROLE,
   lastEnd,
   latestControls,
@@ -126,7 +127,7 @@ import {
 } from '@software-factory/store';
 import { uuidFrom } from '@software-factory/triage/events';
 import type { Logger } from 'pino';
-import type { JSONValue, Sql } from 'postgres';
+import type { Sql } from 'postgres';
 import { type Controls, controlsInForce } from '../../../../policy/line.ts';
 import { release as RELEASE } from '../../../../policy/release.ts';
 import { sendCounts } from '../counts.ts';

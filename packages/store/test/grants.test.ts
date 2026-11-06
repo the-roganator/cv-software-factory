@@ -19,7 +19,7 @@ import {
   type RefusalMechanism,
   VERSIONS,
 } from '@software-factory/events';
-import type { JSONValue, Sql } from 'postgres';
+import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ENROLMENT_CODE, PASSKEYS, SESSION } from '../../../policy/access.ts';
 import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../policy/refusals.ts';
@@ -31,6 +31,7 @@ import {
   STORE_GRANTS,
 } from '../../../policy/store-grants.ts';
 import { DiskArtifacts } from '../src/artifacts.ts';
+import type { JSONValue } from '../src/client.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
 import { type Database, freshDatabase } from './database.ts';

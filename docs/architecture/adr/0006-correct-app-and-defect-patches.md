@@ -6,7 +6,7 @@ The World's Worst Website is written as a correct app, with full tests, in the p
 
 The private repository's CI proves the set on every change: the correct app trips no detector; each patch, applied alone, trips its own detector and no other, and leaves the app passing its own checks; every patch together gives the published tree, which trips every detector, passes its own checks and contains nothing from the answer key.
 
-The private repository publishes once. After the first commit the app lives in its public repository and changes there like any other code.
+The private repository publishes the app's first commit, and publishes again only at a reset (ADR 0016). Between them the app lives in its public repository and changes there like any other code.
 
 ## Why
 
@@ -20,8 +20,8 @@ It also means a defect can be put back. The alternatives for the injector and fo
 
 - **The scoreboard** matches tickets against fingerprints that have each been shown to appear when, and only when, their defect is present. A false positive is a ticket that matches none of them.
 - **The injector** (milestone 8) needs no catalogue of its own: it applies one of the same patches to the app as it then stands, as an ordinary pull request. A patch that no longer applies is a catalogue entry to refresh, and CI in the private repository is where that shows.
-- **Reset** (milestone 10) restores the tree the patches produced. Once the factory has shipped improvements, that tree is out of date; whether the baseline moves or reset re-applies the patches is still open (an issue).
+- **Reset** applies the patches again to a correct app that has taken in Martin's changes to the public one, so the baseline moves with them, and publishes the result as a new repository under the same name (ADR 0016).
 - **Each patch removes the tests its defect would fail**, so the published app passes its own checks. The factory therefore cannot find a seeded defect by running the app's tests; it has to notice the symptom. A fix is expected to bring its test back.
 - **Nothing in public says which defects exist**: not this repository, the app's, a commit message, a pull request or an issue. The plan gives their number and kinds only.
-- **Publishing is one-way.** The tree is built by a script, checked by CI for giveaways, and read by Martin before it goes public. A defect added later arrives as a pull request, through the injector.
-- The correct app carries on existing only in private. It is not kept in step with the public app: after publishing it is a record of the baseline, not a second source of truth.
+- **Publishing is one-way.** The tree is built by a script, checked by CI for giveaways, and read by Martin before it goes public. A defect added between resets arrives as a pull request, through the injector.
+- The correct app carries on existing only in private. It is not kept in step with the public app day to day: Martin's changes are brought into it when a reset needs them, and the line's fixes never are, since the patches they undo are applied again.

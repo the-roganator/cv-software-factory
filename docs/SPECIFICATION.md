@@ -60,12 +60,12 @@ A deliberately bad, funny, small web app that gives the factory real work.
   - **Errors:** a 500 on a specific input, unhandled rejections, browser console errors
   - **Performance:** a slow endpoint, an N+1 query, a 5 MB hero image
   - **Accessibility:** missing alt text, poor contrast, unlabelled fields
-  - **Security hygiene:** missing security headers, verbose error pages. Benign only; no vulnerable dependencies.
+  - **Security hygiene:** missing security headers, verbose error pages, a dependency, Node or a base image pinned at a version with a known vulnerability that has a fix. Benign only: a vulnerable pin is one that cannot be reached in production or in CI, has a security review before it is seeded, and is only ever in the app (ADR 0016).
   - **Observability:** a route that logs nothing, a metric with a wrong label
-- Every defect is fixable alone, benign, and out of the way of the line: none touches the health or version endpoints, the report endpoint or start-up, or stops telemetry leaving the pod.
-- The app's public history starts from a clean first commit already containing the defects. No names, comments, tests or TODOs hint at them, and no public repository lists them.
+- Every defect is fixable alone, benign, and out of the way of the line: none touches the health or version endpoints, the report endpoint or start-up, or stops telemetry leaving the pod. None is in a file the app's CODEOWNERS gives Martin, but a vulnerable Node or base image, which can only be pinned there.
+- The app's public history starts from a clean first commit already containing the defects. No names, comments, tests or TODOs hint at them, and no public repository lists them. A vulnerable pin needs no hiding: a deterministic scan finds it, so a drill may put one back in an announced pull request.
 - The app is written correctly in the private repository, and each defect is a patch kept beside it. The first commit is the correct app with every patch applied (ADR 0006).
-- A **reset** restores the app to the seeded baseline through a normal PR.
+- A **reset** publishes the app again as a new repository with no history, under the same name, once the one it replaces has been renamed, made private and moved to Martin's account. Its first commit is the correct app with Martin's changes to the public app brought in and every patch applied again, new seeds included; the line's fixes and improvements are left out, and the improvements are run again on the line. Neither a pull request nor a force-push will do: either would leave the fix for every defect public (ADR 0016).
 
 ### 3.2 Answer key and scoreboard
 
@@ -296,7 +296,7 @@ Small judgements about untrusted text use TypeSafe's Jev model rather than a gen
 
 The two public repositories are the organisation `the-roganator`'s, for GitHub's merge queue (ADR 0014). The private one stays with Martin's account, `mrogan`: GitHub Apps installed across the organisation, the review App among them, must never reach the answer key, which only the scoreboard reads.
 
-Nothing from the private repo is ever copied into a public repo, a visitor-visible log or an agent's context. The one exception happens once: the private repo publishes the app's first commit, after a check that the tree gives no defect away. From then on the app changes only in its public repo.
+Nothing from the private repo is ever copied into a public repo, a visitor-visible log or an agent's context. The one exception is the app's first commit, which the private repo publishes after a check that the tree gives no defect away, at the start and again at each reset (ADR 0016). Between them the app changes only in its public repo.
 
 The gates the two public repos share (the pull request title check, CodeQL, Scorecard, and the app's gates: its journeys compared with the base's, test integrity, tests first, dependency review and an image scan) live in `cv-software-factory` and are called from the app's repo at a pinned commit, and one script applies the same rulesets and security settings to both. An agent that can write to the app's repo cannot loosen them.
 

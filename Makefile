@@ -76,8 +76,10 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@# The Kubernetes API's binding is fixed when the cluster is made, and `k3d cluster edit` cannot move it: a cluster
 	@# made before deploy/k3d/cluster.yaml bound it to 127.0.0.1 still publishes it on every interface. Said, not mended:
 	@# only a new cluster moves it, and a new cluster starts with an empty store.
-	@[ "$$(docker inspect -f '{{range index .HostConfig.PortBindings "6443/tcp"}}{{.HostIp}} {{end}}' k3d-$(CLUSTER)-serverlb)" = "127.0.0.1 " ] || \
-		echo "  This cluster's Kubernetes API is published beyond 127.0.0.1. Only a new cluster binds it there: 'make down' and 'make up', which empty the store."
+	@# Each address it is published on, a line each; with none, or no load balancer to read, it says nothing.
+	@hosts="$$(docker inspect -f '{{range index .HostConfig.PortBindings "6443/tcp"}}{{println .HostIp}}{{end}}' k3d-$(CLUSTER)-serverlb 2>/dev/null)"; \
+	if [ -n "$$hosts" ] && printf '%s\n' "$$hosts" | grep -qvx '127\.0\.0\.1'; then \
+		echo "  This cluster's Kubernetes API is published beyond 127.0.0.1. Only a new cluster binds it there: 'make down' and 'make up', which empty the store."; fi
 	helm upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm --version $(ARGOCD_CHART) \
 		--kube-context $(CONTEXT) --namespace argocd --create-namespace \
 		--values deploy/argocd/values.yaml --wait --timeout 5m --hide-notes

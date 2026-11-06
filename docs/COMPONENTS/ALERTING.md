@@ -27,6 +27,8 @@ flowchart LR
 
 `apps/factory/src/alerts/rules.ts` generates Prometheus's alerting rules from it, and the alerts to Martin ([security events](#security-events), [holds](#holds), [the flags the app holds](#the-flags-the-app-holds), [the shop's pod](#the-shops-pod), and [the factory's health, releases and spend](#the-factorys-health)), into `deploy/base/telemetry/values/prometheus-rules.yaml`, labelled with the route and the symptom class (`server-error`, `slow-response`). Each rule compares every route's error ratio or p95 over the window, once it has had enough requests, with the objective, by the same expression Prometheus records for dashboards ([recording rules](TELEMETRY.md#each-route-against-the-objectives)), and reads only the app's own series. `make check` fails when the file is out of date.
 
+The rules reach Prometheus when their pull request merges, as Argo CD syncs `main`, and a new image only when the App's deploy pull request pins it. So a rule on a series that only an image not yet pinned exports, or that fires when a series is missing, pages from its merge until that pin syncs. Write such a rule to wait until the series has existed, or say in its pull request that it pages until the pin, so Martin knows before he merges it.
+
 ## Levels and routes
 
 Each rule says how loudly it is told by a `level` label, and Alertmanager routes by it (`deploy/base/telemetry/values/prometheus.yaml`):

@@ -98,6 +98,17 @@ Run one work item at a time: two steps on one LM Studio halve its speed. The dry
 
 **The smoke run** posts to the line's step API (root `AGENTS.md`) with `"round"`: a job's name, and so its token, is used once, so each smoke run on the same commit needs a new round.
 
+## What a dry run cannot show
+
+A dry run goes round, but some of what the line does live never happens in it (`github/dry-run-reads.ts`):
+
+- **Its gate passes everything:** the review check on a pull request it made passes as `low-risk` (`exact-pin` for a deploy pull request), so a merge held for risk tags or by the review gate's refusal is never seen, nor is a conflict, which none of its pull requests has, or a dequeue for a check that failed in the queue.
+- **It fails no gate:** every required check on its commits passes `GITHUB_DRY_RUN_CHECKS_SECONDS` after it.
+- **It opens no deploy pull request:** its merges never reach the app's `main`, so the deploy watch has nothing to pin, and what the line does with a deploy pull request is not seen.
+- **Its merge comes on its own clock:** `GITHUB_DRY_RUN_MERGE_SECONDS` after the line adds the pull request to the queue, or after it is readied, whatever the autonomy level, so a hold for Martin's merge at Supervised lasts only that long.
+
+What stands in for each: the bench, for an agent's step; a read of GitHub as it is, through the GitHub worker on the host (`POST /v1/reads/<read>`, root `AGENTS.md`); the tests; and, for what none of these reaches, a live proof, named in the brief before review (the implement skill's "Before starting").
+
 ## A stack of unmerged branches
 
 A task of several pull requests is tried together, before review (the implement skill's Try before review), from branches with no pull request yet:
@@ -125,18 +136,18 @@ An agent's step after a hold (a replan, say) is tried on the bench first, on a f
 
 ## Putting it back
 
-Order matters. Giving `root` its sync policy back restores images and the values `main` sets, but not env variables that `main` does not set: with `LINE_ONLY` left behind and `LINE_MODE` restored to `live`, the line would act in GitHub on that work item. And a line in dry run with neither `LINE_ONLY` nor `LINE_TAKE` takes the next ticket at once, which a live line then carries to its end, with the dry run's made-up issue. So first set `LINE_MODE=off` on `line`, which takes nothing; then remove the added env; then delete any runner Jobs left in `runners` (`bin/k -n runners delete jobs --all`), or wait until there are none, since `root` puts `factory-images` back to Deny before it moves the deployments off the local images, and a Job on one would be refused; then restore the sync policy, which sets `LINE_MODE` back and puts `factory-images` back as `main` says; then check each deployment's env against what you recorded, that `bin/k get imagevalidatingpolicy -o custom-columns=NAME:.metadata.name,ACTIONS:.spec.validationActions` shows the four policies as `main` sets them (all `[Deny]`), that no pod or Job in `factory` or `runners` still runs a local image (`bin/k -n factory get pods,jobs -o jsonpath='{..image}'`, and the same for `runners`, with nothing `local-` and none of the digest references made for the run: a pod admitted under Audit keeps running after Deny returns), that no red-team attack pod is left in `runners` (`bin/k -n runners delete pods -l factory.mrogan.dev/red-team`, as they are bare pods and not Jobs), that each manifest applied by hand is gone, or `main`'s again, that the `prometheus` Application is back on `main` (`bin/argocd-core app get prometheus`), and that `select work_item, stage from line` has nothing new. The node's digest references are not Argo CD's: remove each one made for the run.
+Order matters. Giving `root` its sync policy back restores images and the values `main` sets, but not env variables that `main` does not set: with `LINE_ONLY` left behind and `LINE_MODE` restored to `live`, the line would act in GitHub on that work item. And a line in dry run with neither `LINE_ONLY` nor `LINE_TAKE` takes the next ticket at once, which a live line then carries to its end, with the dry run's made-up issue. So first, in one `set env` on `line`, set `LINE_MODE=off`, which takes nothing, and remove every env the try added (`LINE_ONLY`, `ALL_LOCAL`), and do the same for each other deployment (`github`'s dry-run delays, `gateway`'s and `console`'s `ALL_LOCAL`), waiting for each rollout (`bin/k -n factory rollout status deployment/<name>`): each `set env` makes a new ReplicaSet on the local image, which admission refuses, and the Guardrails panel records, once `root` has put `factory-images` back to Deny. Then stop the line (`make stop-the-line`, which aborts a release in flight: look first, as [Stopping the line](#stopping-the-line-and-a-cap) says): once `root` sets `LINE_MODE` back to `live`, the line reopens every ticket the dry run verified ("the dry run's fix never shipped") and takes it again, in GitHub for real, so it stays stopped until Martin, told which work items those are, starts it. Then delete any runner Jobs left in `runners` (`bin/k -n runners delete jobs --all`), or wait until there are none, since `root` puts `factory-images` back to Deny before it moves the deployments off the local images, and a Job on one would be refused; then restore the sync policy, which sets `LINE_MODE` back and puts `factory-images` back as `main` says; then check each deployment's env against what you recorded, that `bin/k get imagevalidatingpolicy -o custom-columns=NAME:.metadata.name,ACTIONS:.spec.validationActions` shows the four policies as `main` sets them (all `[Deny]`), that no pod or Job in `factory` or `runners` still runs a local image (`bin/k -n factory get pods,jobs -o jsonpath='{..image}'`, and the same for `runners`, with nothing `local-` and none of the digest references made for the run: a pod admitted under Audit keeps running after Deny returns), that no red-team attack pod is left in `runners` (`bin/k -n runners delete pods -l factory.mrogan.dev/red-team`, as they are bare pods and not Jobs), that each manifest applied by hand is gone, or `main`'s again, that the `prometheus` Application is back on `main` (`bin/argocd-core app get prometheus`), and that `select work_item, stage from line` has nothing new. The node's digest references are not Argo CD's: remove each one made for the run.
 
 Copy this into `scratch/` at the start:
 
 ```markdown
 # To undo after <the run>
 
-- [ ] `line`: `LINE_MODE=off` first, so it takes nothing while the rest comes off.
-- [ ] `line` env: remove `LINE_ONLY`, `ALL_LOCAL` and anything else added; was: …
-- [ ] `gateway` env: remove `ALL_LOCAL`; was: …
-- [ ] `console` env: remove `ALL_LOCAL`; was: …
-- [ ] `github` env: remove `GITHUB_DRY_RUN_CHECKS_SECONDS`, `GITHUB_DRY_RUN_MERGE_SECONDS`; was: …
+- [ ] `line`: `LINE_MODE=off`, and `LINE_ONLY`, `ALL_LOCAL` and anything else added removed, in one `set env`, its rollout finished, before `root` gets its sync policy back; was: …
+- [ ] `gateway` env: remove `ALL_LOCAL`, rollout finished; was: …
+- [ ] `console` env: remove `ALL_LOCAL`, rollout finished; was: …
+- [ ] `github` env: remove `GITHUB_DRY_RUN_CHECKS_SECONDS`, `GITHUB_DRY_RUN_MERGE_SECONDS`, rollout finished; was: …
+- [ ] The line stopped (`make stop-the-line`) before `root` sets `LINE_MODE` back, and the work items the dry run verified, which a live line reopens, listed for Martin: …
 - [ ] `runners`: no Jobs left before `root` gets its sync policy back, and no red-team attack pods (`bin/k -n runners delete pods -l factory.mrogan.dev/red-team`).
 - [ ] `factory-images`: back as `main` sets it, which `root`'s self-heal does, whether a launch of attack 5 left it on Deny or Audit; was: …
 - [ ] No pod or Job in `factory` or `runners` on a `local-` image, or on a digest reference made for the run.
@@ -147,7 +158,7 @@ Copy this into `scratch/` at the start:
 - [ ] Any copied `migrate` Job deleted (migrations stay applied).
 - [ ] Digest references made on the node removed: `docker exec k3d-software-factory-server-0 ctr -n k8s.io images rm <repo>@<digest>` for each; which: …
 - [ ] Local images removed: `docker rmi` each `local-*` tag.
-- [ ] The line started (`make start-the-line`), so triage takes work again, unless a held work item answered for the try waits on Martin.
+- [ ] The line started (`make start-the-line`), so triage takes work again, only once Martin knows which work items it will reopen and has said so, and no held work item answered for the try waits on him.
 - [ ] LM Studio's server running (`lms server status`).
 - [ ] The Claude Console workspace's limit back where it was, if Martin lowered it.
 - [ ] The bench's Postgres removed (`docker rm -f sf-bench-pg`), its Claude spend noted.

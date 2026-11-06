@@ -94,7 +94,7 @@ spec:
         - name: flagd
           # Named by digest in `flagd-images` (deploy/base/admission/flagd), which deploy/base/kustomization.yaml copies
           # from here: this is its one pin.
-          image: ghcr.io/open-feature/flagd:v0.17.0@sha256:c9f21380dfe51d3ad662a116bc350c7692dead7a8d1e640aa0f6b40cd3d966df
+          image: ghcr.io/open-feature/flagd:v0.18.2@sha256:a1b6de22ef4f8a4f10af2f9d0009ccef946d707d4211db342f0f2422778b764a
           args:
             - start
             - --uri=core.openfeature.dev/flagd/flags

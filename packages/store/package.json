@@ -13,7 +13,7 @@
   "dependencies": {
     "@opentelemetry/api": "^1.10.0",
     "@software-factory/events": "workspace:*",
-    "postgres": "^4.0.0"
+    "postgres": "^4.1.0"
   },
   "devDependencies": {
     "@opentelemetry/sdk-metrics": "^3.0.0",

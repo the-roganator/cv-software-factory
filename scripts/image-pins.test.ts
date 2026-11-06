@@ -150,9 +150,12 @@ describe("Playwright's pins", () => {
  * which pin it. Dependabot moves the images' pins and not mise.toml, which moves by hand, so a Node update fails here
  * until mise.toml moves with it.
  *
- * Playwright's image, which the factory's browser image is built on, carries a Node of its own that its tag does not
- * name, so nothing here can check it. When Node moves, see what that image's pin runs (`docker run --rm --entrypoint
- * node <pin> --version`); if it is behind, pin its tag's latest digest once Microsoft has rebuilt it.
+ * Two images carry a Node of their own that their tags do not name, so nothing here can check them: the distroless
+ * runtime under the console and the factory, which Dependabot moves by digest in a pull request of its own, and
+ * Playwright's, which the factory's browser image is built on. When Node moves, see what each pin runs (`docker run
+ * --rm --entrypoint node <pin> --version`, `/nodejs/bin/node` for distroless): take distroless's digest that runs the
+ * new release into the same change, and if Playwright's is behind, pin its tag's latest digest once Microsoft has
+ * rebuilt it.
  */
 const MISE_NODE = /^node = "(\d+\.\d+\.\d+)"$/m;
 

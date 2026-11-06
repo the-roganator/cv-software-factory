@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -121,5 +121,41 @@ jq -c '.[]' "${join(dir, 'pages.json')}" | while IFS= read -r page; do jq -r "$5
 
   it('keeps a path with spaces whole', () => {
     expect(prFiles([['docs/a file.md', '.github/CODEOWNERS']])).toEqual(['docs/a file.md', '.github/CODEOWNERS']);
+  });
+});
+
+describe('names_path', () => {
+  /** Whether names_path finds `line` naming deploy/a.yaml. */
+  function names(line: string): boolean {
+    const run = spawnSync('bash', ['-c', `. "${REPO_SH}" && names_path deploy/a.yaml`], { env: ENV, input: line });
+    expect(run.stderr.toString()).toBe('');
+    return run.status === 0;
+  }
+
+  it('finds the path in backticks, bare, bold, as a link, or ending a sentence', () => {
+    for (const line of [
+      '`deploy/a.yaml`: why it changed',
+      '- deploy/a.yaml — why it changed',
+      '- **deploy/a.yaml**: why it changed',
+      '- [deploy/a.yaml](https://github.com/o/r/blob/main/deploy/a.yaml): why it changed',
+      'Why it changed: deploy/a.yaml.',
+      '(It changed: see deploy/a.yaml.) Why',
+      '`/deploy/a.yaml`: why it changed',
+      '`./deploy/a.yaml`: why it changed',
+    ])
+      expect(names(line), line).toBe(true);
+  });
+
+  it('does not take a longer path for it, before or after', () => {
+    for (const line of [
+      '`deploy/a.yaml.bak`: why it changed',
+      '`deploy/a.yaml~`: why it changed',
+      '`deploy/a.yaml-old`: why it changed',
+      '`deploy/a.yaml+old`: why it changed',
+      '`other/deploy/a.yaml`: why it changed',
+      '`../deploy/a.yaml`: why it changed',
+      '`deployXa.yaml`: why it changed',
+    ])
+      expect(names(line), line).toBe(false);
   });
 });

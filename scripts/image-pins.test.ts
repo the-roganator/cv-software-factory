@@ -151,8 +151,8 @@ describe("Playwright's pins", () => {
  * until mise.toml moves with it.
  *
  * Playwright's image, which the factory's browser image is built on, carries a Node of its own that its tag does not
- * name, so nothing here can check it. When Node moves, see what that image's pin runs (`docker run --rm --entrypoint
- * node <pin> --version`); if it is behind, pin its tag's latest digest once Microsoft has rebuilt it.
+ * name, and that moves a major when Playwright's does. So Dockerfile.browser takes that Node out and puts in the Node
+ * image's, which is pinned like any other, and checked here with them.
  */
 const MISE_NODE = /^node = "(\d+\.\d+\.\d+)"$/m;
 
@@ -172,7 +172,12 @@ describe("Node's release", () => {
   it('is read from mise.toml and the images', () => {
     expect(found.mise).toMatch(/^\d+\.\d+\.\d+$/);
     expect(found.images.map(([file]) => file)).toEqual(
-      expect.arrayContaining(['apps/console/Dockerfile', 'apps/factory/Dockerfile', 'apps/runner/Dockerfile']),
+      expect.arrayContaining([
+        'apps/console/Dockerfile',
+        'apps/factory/Dockerfile',
+        'apps/factory/Dockerfile.browser',
+        'apps/runner/Dockerfile',
+      ]),
     );
   });
 
@@ -185,5 +190,14 @@ describe("Node's release", () => {
     expect(behind(node(moved)).map(([file]) => file)).toEqual(
       expect.arrayContaining(['apps/console/Dockerfile', 'apps/factory/Dockerfile', 'apps/runner/Dockerfile']),
     );
+  });
+
+  it("is the Node image's in the browser image, in place of Playwright's own", () => {
+    const browser = readFileSync('apps/factory/Dockerfile.browser', 'utf-8');
+    const stage = browser.split(/^FROM browsers AS playwright$/m)[1]?.split(/^FROM /m)[0] ?? '';
+    expect(stage).toMatch(/^RUN dpkg --purge nodejs /m);
+    expect(stage).toContain('COPY --from=node /usr/local/bin/node /usr/local/bin/node');
+    // The probes' image and `make e2e` are built on that stage.
+    expect(browser.match(/^FROM \S+/gm)?.slice(2)).toEqual(['FROM browsers', 'FROM playwright', 'FROM playwright']);
   });
 });

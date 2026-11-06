@@ -264,11 +264,10 @@ describe('what the browser tests run', () => {
       ),
     ).toEqual([]);
     const uses = browser.flatMap((job) => [...job.matchAll(/uses: ([\w/-]+)@/g)].map(([, action = '']) => action));
-    // ZAP's scan runs on the runner, with the toolchain mise.lock holds.
+    // Every job takes Node and pnpm from mise.lock: ZAP's scan on the runner, the others in Playwright's image.
     expect(new Set(uses)).toEqual(new Set(['actions/checkout', 'actions/upload-artifact', 'jdx/mise-action']));
     expect(new Set(runs)).toEqual(
       new Set([
-        'corepack enable && pnpm install --frozen-lockfile --ignore-scripts',
         'pnpm install --frozen-lockfile --ignore-scripts',
         'pnpm --filter @software-factory/console build',
         'pnpm exec playwright test $TESTS',

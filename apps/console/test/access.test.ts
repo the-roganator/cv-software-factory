@@ -91,8 +91,8 @@ describe('the access table', () => {
     expect(Object.keys(PHONE_STEP_UP).sort()).toEqual(switches.sort());
   });
 
-  it('holds the plan’s figures: 30 minutes a session with no idle timeout, five minutes a passkey given again', () => {
-    expect(SESSION).toEqual({ minutes: 30, idleTimeout: false });
+  it('holds the plan’s figures: an hour a session with no idle timeout, five minutes a passkey given again', () => {
+    expect(SESSION).toEqual({ minutes: 60, idleTimeout: false });
     // The console's copy, which its image is built with in place of the table.
     expect(SESSION_MINUTES).toBe(SESSION.minutes);
     expect(STEP_UP).toEqual({ minutes: 5 });

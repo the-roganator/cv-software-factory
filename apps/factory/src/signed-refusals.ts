@@ -15,16 +15,13 @@
  * ConfigMap `refusal-key` (`make refusal-key`).
  */
 import { createHash, createPrivateKey, createPublicKey, type KeyObject, sign, verify } from 'node:crypto';
-import type { PayloadOf, REFUSAL_MECHANISMS } from '@software-factory/events';
+import type { PayloadOf } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
+import { canonical, recordBytes, SIGNED_MECHANISMS } from '@software-factory/events/signed';
 import { z } from 'zod';
 
-/** The mechanisms a refusal is signed for: those with no role of their own in the store, which a worker relays. */
-export const SIGNED_MECHANISMS = [
-  'github-guard',
-  'token-permission',
-  'review-gate',
-] as const satisfies (typeof REFUSAL_MECHANISMS)[number][];
+/** The record's bytes, in order, so that the same refusal is always the same bytes; and the mechanisms signed for. */
+export { canonical, recordBytes, SIGNED_MECHANISMS };
 
 /** A refusal as it is signed: the payload without what the relay adds (its record, its signature, its fold). */
 export type SignedPayload = Omit<PayloadOf<'action.refused'>, 'record' | 'signature' | 'count' | 'lastAt'>;
@@ -43,11 +40,6 @@ export interface RefusalFacts {
 export interface SignedRefusal extends RefusalFacts {
   record: string;
   signature?: string;
-}
-
-/** The record's bytes: its fields, and theirs, in order, so that the same refusal is always the same bytes. */
-export function recordBytes({ repo, number, at, payload }: RefusalFacts): Uint8Array {
-  return new TextEncoder().encode(`${canonical({ type: 'action.refused', repo, number, at, payload })}\n`);
 }
 
 /** The record's hash, as the artifact store names it. */
@@ -130,16 +122,4 @@ export function verifyRefusal(key: KeyObject, answer: unknown): Verified {
     good = false;
   }
   return good ? { ok: true, refusal: { ...refusal, signature } } : { ok: false, why: 'its signature does not verify' };
-}
-
-/** JSON with every object's keys in order: the one way to write a value. */
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

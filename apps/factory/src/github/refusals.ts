@@ -9,8 +9,9 @@
  * - **GitHub's** (`token-permission`): a write GitHub answered 403, which is GitHub refusing the App's token. A 401 is a
  *   bad or expired token, and a 403 that is a rate limit is GitHub asking it to wait: neither refuses anything.
  * - **The review check's** (`review-gate`): the `review` check run the review App posted on a pull request's head,
- *   failing it, read when the red-team harness asks for its verdict on the pull request its attack opened
- *   (`attacks.ts`). Its words are the check's own: its title, and its summary.
+ *   failing it, read when the line reads the gate's verdict on its pull request (`merging.ts`, a verdict whose rule is
+ *   `held`), or when the red-team harness asks for its verdict on the pull request its attack opened (`attacks.ts`).
+ *   Its words are the check's own: its title, and its summary.
  *
  * Without the signing key it still keeps and logs each refusal, and answers it unsigned, which no reader trusts.
  */
@@ -81,9 +82,11 @@ export class RefusalRecorder {
 
   /**
    * Keeps one refusal, logs it with its record's hash, and gives it back signed, to answer with; undefined only with
-   * nowhere to keep it. A store that cannot keep it throws, as an action that cannot be recorded does.
+   * nowhere to keep it. A store that cannot keep it throws, as an action that cannot be recorded does. `at` is when it
+   * was refused, if not now: a review check's refusal is when the check concluded, so reading it again keeps the same
+   * record.
    */
-  async record(refusal: GitHubRefusal): Promise<SignedRefusal | undefined> {
+  async record(refusal: GitHubRefusal, at?: Date): Promise<SignedRefusal | undefined> {
     const payload: SignedPayload = PAYLOADS['action.refused'].parse({
       mechanism: refusal.mechanism,
       action: cutTo(refusal.action, 200),
@@ -94,7 +97,7 @@ export class RefusalRecorder {
     const facts: RefusalFacts = {
       repo: refusal.repo,
       number: refusal.number,
-      at: (this.#o.now?.() ?? new Date()).toISOString(),
+      at: (at ?? this.#o.now?.() ?? new Date()).toISOString(),
       payload,
     };
     const bytes = recordBytes(facts);

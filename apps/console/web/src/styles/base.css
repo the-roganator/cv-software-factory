@@ -107,7 +107,7 @@ textarea.field {
   background-color: var(--bg);
   resize: vertical;
 }
-/* An outlined pill: a state or a fact beside a name, never a control. */
+/* An outlined pill: a state or a fact beside a name, never a control but the passkey's while it is fresh (controls.css). */
 .pill {
   display: inline-flex;
   align-items: center;

@@ -364,13 +364,20 @@ export function deployPicture(item: ItemState): Extract<Picture, { type: 'deploy
       pullRequest: deploy.pullRequest,
       state: deploy.state,
       ...(deploy.failed && { failed: deploy.failed }),
+      ...(deploy.waits && { waits: deploy.waits }),
+      ...(deploy.rule && { rule: deploy.rule }),
+      ...(deploy.reason && { reason: deploy.reason }),
+      ...(deploy.said && { said: deploy.said }),
     },
     waitsForMartin: deployWaitsForMartin(item),
   };
 }
 
 /** A deploy pull request that carries a held fix, as the line recorded it: what the console says of it. */
-type DeployRecord = Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed'>;
+type DeployRecord = Pick<
+  PayloadOf<'deploy.changed'>,
+  'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason' | 'said'
+>;
 
 /** The checks that failed, in a few words: "e2e", "e2e and lint", "e2e, lint and 2 more". */
 function failedWords(failed: readonly string[] | undefined): string {
@@ -385,14 +392,35 @@ interface DeployWording {
   /** For a row or a caption, after "Merged ·": "deploy #412’s checks running". */
   short: (n: number) => string;
   /** The line the waiting picture draws for it, and whether that line is done (a tick), to come (a ring) or not (a cross). */
-  tick: (n: number, failed: string) => string;
+  tick: (n: number, failed: string, deploy: DeployRecord | undefined) => string;
   ok: boolean | undefined;
   /** Its card's kicker in Needs you. */
   kicker: string;
   /** The sheet's facts, after its link: "checks running". */
   fact: string;
   /** Its card's evidence in Needs you, after "Merged at 15:58.". */
-  evidence: (n: number, failed: string) => string;
+  evidence: (n: number, failed: string, deploy: DeployRecord | undefined) => string;
+}
+
+/**
+ * Why a deploy pull request whose checks passed is Martin's to merge, as its card's evidence goes on: what would let the
+ * line add it to the merge queue itself, by why the line did not (`waits`).
+ */
+function passedWhy({ waits, rule, said }: Pick<DeployRecord, 'waits' | 'rule' | 'said'>): string {
+  switch (waits) {
+    case undefined:
+      return 'merging it is yours, on GitHub';
+    case 'verdict':
+      return `the review gate did not pass it as an exact pin${rule ? ` (${rule})` : ''}, and the line adds only an exact pin to the merge queue: merging it is yours, on GitHub`;
+    case 'level':
+      return 'at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded with auto-merge on the line would add it';
+    case 'auto-merge':
+      return 'with auto-merge off, merging it is yours, on GitHub; switched on, the line adds it to the merge queue';
+    case 'conflict':
+      return 'it conflicts with main, so the line cannot add it to the merge queue: putting that right or merging it is yours, on GitHub';
+    case 'refused':
+      return `the line was refused when it added it to the merge queue${said ? ` (${said})` : ''}: merging it is yours, on GitHub`;
+  }
 }
 
 /**
@@ -425,8 +453,29 @@ const DEPLOY_WORDS: Record<DeployRecord['state'] | 'none', DeployWording> = {
     ok: true,
     kicker: 'Waiting for your deploy',
     fact: 'checks passed',
+    evidence: (n, _, deploy) =>
+      deploy?.waits
+        ? `Deploy #${n} carries it, and its checks passed; ${passedWhy(deploy)}. A release that carries it ends this wait by itself.`
+        : `Deploy #${n} carries it, and its checks passed: merging it is yours, on GitHub, and a release that carries it ends this wait by itself.`,
+  },
+  queued: {
+    short: (n) => `deploy #${n} in the merge queue`,
+    tick: (n) => `Deploy #${n} carries it; the line added it to the merge queue`,
+    ok: undefined,
+    kicker: 'Its deploy is in the merge queue',
+    fact: 'in the merge queue',
     evidence: (n) =>
-      `Deploy #${n} carries it, and its checks passed: merging it is yours, on GitHub, and a release that carries it ends this wait by itself.`,
+      `Deploy #${n} carries it, and the review gate passed it as an exact pin: the line added it to the merge queue, which merges it once its checks pass there.`,
+  },
+  dequeued: {
+    short: (n) => `deploy #${n} out of the merge queue`,
+    tick: (n, failed, deploy) =>
+      `Deploy #${n} carries it; the merge queue took it out${deploy?.failed ? `, as ${failed} failed there` : ''}`,
+    ok: false,
+    kicker: 'Waiting for your deploy',
+    fact: 'out of the merge queue',
+    evidence: (n, failed, deploy) =>
+      `Deploy #${n} carries it, and the merge queue took it out (${deploy?.reason ?? 'unknown'})${deploy?.failed ? `: ${failed} failed on its commit` : ''}. Merging it is yours, on GitHub; a newer build moves it on, and the line tries again.`,
   },
   failed: {
     short: (n) => `deploy #${n}’s checks failed`,
@@ -470,11 +519,11 @@ export function deployWords(deploy: DeployRecord | undefined): {
   const failed = failedWords(deploy?.failed);
   return {
     short: words.short(n),
-    tick: words.tick(n, failed),
+    tick: words.tick(n, failed, deploy),
     ok: words.ok,
     kicker: words.kicker,
     fact: words.fact,
-    evidence: words.evidence(n, failed),
+    evidence: words.evidence(n, failed, deploy),
   };
 }
 

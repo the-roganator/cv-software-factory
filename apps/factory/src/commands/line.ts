@@ -308,6 +308,8 @@ async function serve(): Promise<number> {
       tempo: env.TEMPO_URL?.trim() ? telemetryFrom(env).tempo : null,
     },
     flagChecks: probes,
+    // The review gate's refusal of its pull request, which the GitHub worker signs, verified with the same key.
+    refusalKey: refusalKey ?? null,
   });
   // Martin's security events and the holds waiting for him, from the store, whatever LINE_MODE is: the alerts that page
   // him read them (line/security.ts). Its judgement of each red-team attack verifies a relayed refusal with the GitHub

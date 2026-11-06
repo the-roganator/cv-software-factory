@@ -37,8 +37,9 @@
  *
  * Every deploy pull request lists the pull requests it brings, read from GitHub: each commit main has between the
  * one pinned now and the one proposed, for each pin it moves, once however many pins it reaches, its Conventional
- * Commit subject split into columns (`bringsSection`). Main is squash-merged, so each commit is one pull request. A
- * read that fails leaves the list out rather than hold the deploy back, and a later pass fills it in.
+ * Commit subject split into columns (`bringsSection`). Main is squash-merged, so each commit is one pull request. The
+ * worker's own deploy pull requests are left out: each moves only pins, so it brings nothing to any image. A read
+ * that fails leaves the list out rather than hold the deploy back, and a later pass fills it in.
  *
  * The app's deploy pull request also says what it carries: the line's work items whose fixes merged between the
  * pinned commit and the proposed one, each with its ticket, issue and pull request. The line works that out from its
@@ -163,9 +164,16 @@ const named = ({ pin, commit }: Runs) => `${pin.what ? `${pin.what} ` : ''}${com
 export const deployTitle = (target: DeployTarget, runs: readonly Runs[]) =>
   `chore(deploy): run ${runs.map(named).join(' and ')} on the ${target.profile} cluster`;
 
+/**
+ * A deploy pull request's title as `deployTitle` writes it, to any profile: what it runs, each pin at its commit as
+ * `named` writes it, and where.
+ */
+const NAMED = '(?:[a-z][a-z ]* )?[0-9a-f]{7}';
+const DEPLOY_TITLE = new RegExp(`^chore\\(deploy\\): run (${NAMED}(?: and ${NAMED})*) on the (\\S+) cluster$`);
+
 /** What a deploy pull request's title says it runs, each pin at its commit as `named` writes it. */
 const said = (target: DeployTarget, title: string): string[] => {
-  const runs = /^chore\(deploy\): run (.+) on the (\S+) cluster$/.exec(title);
+  const runs = DEPLOY_TITLE.exec(title);
   return runs?.[2] === target.profile ? (runs[1] ?? '').split(' and ') : [];
 };
 
@@ -303,7 +311,10 @@ export interface Brought {
   reaches: Pin[];
 }
 
-/** The commits a deploy brings, newest first: every one read, and how many there are in all. */
+/**
+ * The commits a deploy brings, newest first: every one read, and how many there are in all, leaving out the deploy
+ * pull requests among them.
+ */
 export interface Brings {
   /** The pins whose range was read: each pin moved from a commit its pinned images' labels name. */
   pins: Pin[];
@@ -312,6 +323,8 @@ export interface Brings {
   commits: Brought[];
   /** How many commits it brings: exact when every range was read whole, at least this many when not. */
   count: number;
+  /** How many of the worker's own deploy pull requests merged in its ranges, left out of `commits` and `count`. */
+  deploys: number;
   whole: boolean;
 }
 
@@ -332,6 +345,19 @@ const BRINGS_END = '<!-- factory: /brings -->';
 export const bringsIn = (body: string | null | undefined): boolean =>
   !!body && body.includes(BRINGS_START) && body.includes(BRINGS_END);
 
+/** A squash commit's first line, without the pull request's number it ends with, and that number. */
+function squashed(message: string): { number: number | null; rest: string } {
+  const line = message.split('\n', 1)[0]?.trim() ?? '';
+  const numbered = /^(.*?)\s*\(#(\d+)\)$/.exec(line);
+  return { number: numbered ? Number(numbered[2]) : null, rest: numbered?.[1] ?? line };
+}
+
+/**
+ * Whether a commit of main's is one of the worker's own deploy pull requests, by the title `deployTitle` gives it. A
+ * person's `chore(deploy)` change is not one: it may change more than a pin.
+ */
+export const deployCommit = (message: string): boolean => DEPLOY_TITLE.test(squashed(message).rest);
+
 /**
  * A squash commit's subject, `type(scope)!: subject (#N)`, in its parts; one that is not a Conventional Commit keeps
  * its whole first line as the subject, and its pull request's number if it ends with one.
@@ -343,10 +369,7 @@ export function conventional(message: string): {
   breaking: boolean;
   subject: string;
 } {
-  const line = message.split('\n', 1)[0]?.trim() ?? '';
-  const numbered = /^(.*?)\s*\(#(\d+)\)$/.exec(line);
-  const rest = numbered?.[1] ?? line;
-  const number = numbered ? Number(numbered[2]) : null;
+  const { number, rest } = squashed(message);
   const parts = /^([a-z]+)(?:\(([^()]+)\))?(!)?: (.+)$/i.exec(rest);
   if (!parts) return { number, type: null, scope: null, breaking: false, subject: rest };
   return {
@@ -361,7 +384,8 @@ export function conventional(message: string): {
 /**
  * The section of a deploy pull request's body that lists the pull requests it brings, newest first: each one's
  * number, the pins it reaches when the deploy moves more than one, and its type, scope and subject. A breaking change
- * is marked as its commit marks it, `feat!`. A commit with no pull request's number is named by its commit.
+ * is marked as its commit marks it, `feat!`. A commit with no pull request's number is named by its commit. The
+ * worker's own deploy pull requests are not in it, nor in its counts; one that brings nothing else says so.
  */
 export function bringsSection(target: DeployTarget, brings: Brings): string {
   const url = `https://github.com/${target.repo}`;
@@ -407,7 +431,9 @@ export function bringsSection(target: DeployTarget, brings: Brings): string {
     said.push(
       brings.count
         ? `${who} ${bring} ${all} merged since ${since}, newest first:\n\n| ${head.join(' | ')} |\n|${head.map(() => '---').join('|')}|\n${rows.join('\n')}`
-        : `${who} ${bring} no pull request: nothing merged since ${since}.`,
+        : brings.whole
+          ? `${who} ${bring} no pull request: ${brings.deploys ? 'only deploy pull requests' : 'nothing'} merged since ${since}.`
+          : `${who} ${bring} no pull request among the commits read since ${since}, which were only deploy pull requests; the rest were not read.`,
     );
   }
   if (unranged.length) {
@@ -619,7 +645,8 @@ async function range(github: GitHub, repo: string, pinned: string, commit: strin
 
 /**
  * What a deploy brings: the commits in the range of each pin it moves from a known commit, each once, with the pins
- * it reaches, newest first, and the pins it moves with no range, whose changes it cannot list. Main's history is linear, so each commit's place in it
+ * it reaches, newest first, and the pins it moves with no range, whose changes it cannot list. The worker's own
+ * deploy pull requests are counted apart and not listed: each moves only pins. Main's history is linear, so each commit's place in it
  * (`order`, main's newest commits from the head the pass read, newest first) orders them; one older than those is
  * ordered by when it was committed.
  */
@@ -634,7 +661,7 @@ export async function brings(
     proposal.pinned ? [{ pin, pinned: proposal.pinned, commit: proposal.commit }] : [],
   );
   const unranged = moves.filter((m) => !m.proposal.pinned).map((m) => m.pin);
-  if (!ranged.length) return { pins: [], unranged, commits: [], count: 0, whole: true };
+  if (!ranged.length) return { pins: [], unranged, commits: [], count: 0, deploys: 0, whole: true };
   // Pins moved from the same commit to the same commit, as pins built together are, share one read.
   const ranges = new Map<string, { pinned: string; commit: string; pins: Pin[] }>();
   for (const { pin, pinned, commit } of ranged) {
@@ -646,11 +673,13 @@ export async function brings(
   const each = [...ranges.values()];
   const read = await Promise.all(each.map((r) => range(github, repo, r.pinned, r.commit)));
   const found = new Map<string, { sha: string; message: string; date: string; at: number; reaches: Set<Pin> }>();
+  const deploys = new Set<string>();
   read.forEach(({ commits }, i) => {
     const pins = each[i]?.pins ?? [];
     commits.forEach((c, at) => {
       const seen = found.get(c.sha);
-      if (seen) for (const pin of pins) seen.reaches.add(pin);
+      if (deployCommit(c.commit.message)) deploys.add(c.sha);
+      else if (seen) for (const pin of pins) seen.reaches.add(pin);
       else
         found.set(c.sha, {
           sha: c.sha,
@@ -677,8 +706,9 @@ export async function brings(
       message,
       reaches: target.pins.filter((p) => reaches.has(p)),
     })),
-    // Every one read, or more if a range was not read whole: the union is at least as long as its longest range.
-    count: Math.max(found.size, ...read.map((r) => r.total)),
+    // Every one read. A range not read whole may hold more, deploys or not, so its count is the least it can be.
+    count: found.size,
+    deploys: deploys.size,
     whole: read.every((r) => r.commits.length >= r.total),
   };
 }

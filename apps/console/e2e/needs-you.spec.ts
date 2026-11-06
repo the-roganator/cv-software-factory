@@ -90,7 +90,7 @@ test('Martin answers a card, which moves to Answered today, and gives his passke
     await dialog.getByRole('button', { name: 'Use your passkey' }).click();
     await expect.poll(async () => (await answers('1319')).map((a) => a.payload.decision)).toEqual(['approved']);
     await expect(capped).toHaveCount(0);
-    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
+    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left. End it now');
   });
 
   await test.step('Back to the planner on a merge’s hold opens a field of its own, and sends his words', async () => {

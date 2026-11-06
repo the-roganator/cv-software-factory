@@ -45,7 +45,7 @@ The part's session orchestrates with the `/implement` skill (`.claude/skills/imp
 
 - **A passkey, and nothing else.** Martin signs in with a passkey (WebAuthn, user verification required): it cannot be phished, nothing reusable is kept on the server, and it works the same on every profile. There is no password and no third party.
 - **Enrolled from the command line.** `factory admin enrol` runs with a role of its own, `factory_enrol`, whose password `make` fetches and no pod holds, and which may only add codes and revoke. It prints a one-time code of 128 random bits that lasts ten minutes and allows five tries, counted across every client; Martin enters it on the console's enrolment page and makes a passkey. Enrolment is the one write that takes no session: the code is its credential, used once, and the page still checks `Origin`, accepts only `POST` and is rate-limited by client address. `policy/access.ts` gives it a role of its own, `enrolment code`, and the access tests prove it refuses a request with no code, a used one, an expired one and a sixth try. Every passkey is enrolled this way, so a signed-in session can never add one. He may hold two (a laptop and a phone). `factory admin enrol --revoke-others` is recovery: it revokes every other passkey and every session. Each passkey belongs to its host, so each profile is enrolled on its own.
-- **Sessions are kept on the server.** The browser holds only a random id in a cookie named `__Host-session`, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`; the store keeps its hash. A session lasts 30 minutes from sign-in with no idle timeout, a figure in `policy/access.ts`: ASVS asks for an idle timeout, and ADR 0012 records why there is none (one admin, who signs in with a passkey and gives it again for every high-impact action). The id changes at sign-in, signing out ends it on the server, and "sign out everywhere" ends them all.
+- **Sessions are kept on the server.** The browser holds only a random id in a cookie named `__Host-session`, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`; the store keeps its hash. A session lasts an hour from sign-in with no idle timeout, a figure in `policy/access.ts`: ASVS asks for an idle timeout, and ADR 0012 records why there is none (one admin, who signs in with a passkey and gives it again for every high-impact action). The id changes at sign-in, signing out ends it on the server, and "sign out everywhere" ends them all.
 - **Every action that loosens a control, raises spend, promotes something or overrides a guardrail needs the passkey again,** given within the last five minutes, so a stolen session does none of it:
   - raising a spend cap, or a setting that raises spend (a dearer model, more effort, a larger take);
   - loosening autonomy;
@@ -486,15 +486,15 @@ Three pull requests, a stack: the rules, the phone's switch, and the admin servi
 
 ### Part C is done when
 
-- [ ] Every guardrail in spec 6 has a test or a demo that runs from one command, and the guardrails panel shows each one's last proof.
-- [ ] The proofs in CI fail when a workflow, a required check, a key's mount or a runner's fence is loosened.
-- [ ] Each red-team attack, launched from admin, is stopped by its mechanism, with the refusal shown verbatim on its card.
-- [ ] Every mechanism records its refusals as `action.refused`.
+- [x] Every guardrail in spec 6 has a test or a demo that runs from one command, and the guardrails panel shows each one's last proof: `make guardrails` held all fourteen of its proofs (2026-11-02), and guardrail 8, which none of them proves, is proved by its attack, launched from the console.
+- [x] The proofs in CI fail when a workflow, a required check, a key's mount or a runner's fence is loosened: each was shown failing on a broken copy (#722), and the tests that prove them are Martin's (#781).
+- [x] Each red-team attack, launched from admin, is stopped by its mechanism, with the refusal shown verbatim on its card: all five, on `main`'s images (2026-11-04).
+- [x] Every mechanism records its refusals as `action.refused`, but the native ValidatingAdmissionPolicies, which leave no Event to read, and Pod Security, which the line does not read: Martin kept those policies native, which the API server runs with no webhook to fail (2026-10-31).
 - [ ] A fix goes end to end at Guarded with nobody touching it, and a risk-tagged change waits in Needs you until Martin approves its head.
-- [ ] With auto-rollback off, a failed canary waits for Martin, and switching it off took the passkey again and paged him.
-- [ ] An outside issue gets the polite reply and leads to no work.
-- [ ] The factory's health, releases and spend alert at their levels, and a change by the admin service with no event behind it alerts too.
-- [ ] Part C's retrospective is written in this file, each lesson with its home.
+- [x] With auto-rollback off, a failed canary waits for Martin, and switching it off took the passkey again and paged him: at task 25's drill on local images (2026-10-31), and checked on the cluster after its pin (#748).
+- [x] An outside issue gets the polite reply and leads to no work: the app's #122, opened from another account, answered once, 10 seconds later (2026-10-29).
+- [x] The factory's health, releases and spend alert at their levels, and a change by the admin service with no event behind it alerts too: each fired at task 27's try and reached Martin's phone at its level (2026-10-30), but `LineStuck`, `LeaseOverrun` and `ReleaseErrored`, proved by their tests.
+- [x] Part C's retrospective is written in this file, each lesson with its home.
 
 ## Part D: patching
 
@@ -597,7 +597,7 @@ Then each finding open when task 30 lands is fixed or excepted: Dependabot's pul
   - a Critical fix bundled with an unrelated bump;
   - a fix rated Critical by its publisher and High by the scanner.
 - **34. The factory's and the platform's findings.** A finding opens or updates the issue here, with its deadline, and notifies Martin, at task 11's Notify level.
-- **35. The run and its documentation.** At Guarded, a Critical fix for the app from the scan to verified with nobody touching it, and a routine update waiting in Needs you at the merge. `COMPONENTS/` (security scanning, the senses), the spec's senses and gates, and `AGENTS.md` for the scan, the exceptions and the issue. Part D's retrospective, in this file, as Parts A, B and C's, and the milestone's own after it.
+- **35. The run and its documentation.** At Guarded, a Critical fix for the app from the scan to verified with nobody touching it, and a routine update waiting in Needs you at the merge. The vulnerability is one the app's reset seeded, unreachable in production and in CI (ADR 0016); a repeat run brings a vulnerable pin in again in an announced `chore(drill)` pull request, and how that passes the lockfile gate and the image scan, with no bypass and the finding still scanned, is settled when tasks 31 to 35 are detailed. `COMPONENTS/` (security scanning, the senses), the spec's senses and gates, and `AGENTS.md` for the scan, the exceptions and the issue. Part D's retrospective, in this file, as Parts A, B and C's, and the milestone's own after it.
 
 **Done when:** every lockfile, image of ours, third-party image and platform image is scanned every day, a test fails when a deployed image is not, and no finding is past its deadline unexcepted; a security release or fixable vulnerability in what the app runs becomes a ticket within a day of being published, goes down the line ahead of waiting work and is verified in production, merging without Martin when its scans show it fixes a Critical one; a routine update follows behind and waits for him; a finding in the factory or the platform opens an issue and notifies Martin's phone; and Part D's retrospective and the milestone's are written in this file, each lesson with its home.
 
@@ -694,3 +694,51 @@ Written after Part B's pull requests (#592 to #707, and the app's from #108) mer
 **What Part C changed because of it:** it tries before review and answers a stack's review in one pass; its designs were agreed in one pull request before any was built (#739); its state is on the board; and the share stage's refusal was shown at a drill's canary rather than waited for.
 
 **Left open:** none of Part B's boxes. What it carried is in Part C's tasks (#720).
+
+### Part C
+
+Written as Part C's pull requests (#721 to #895, and the app's #124 to #170) merged, with what its tries on the local cluster and its live proof at Guarded found. What Part C taught, and where each lesson now lives.
+
+**Learned on the cluster**
+
+- Trying each task on local images before review found what review had passed:
+  - Task 27's try, and its check on rebuilt images, found eight faults. The console's image did not build, as its `.dockerignore` left out a file its Dockerfile copies (`scripts/dockerfiles.test.ts` now checks every `COPY` against it). `WorkerCrashLooping` took eight minutes, as it waited on a reason that clears at each restart (it counts restarts, `ALERTING.md`). `SpendCapReached` went on firing 14 minutes after a cap was cleared (the gateway reports `NO_CAP`, `gateway/metrics.ts`). The line exported its lease overrun only while it took work. Two dashboards showed text in cells that should have been blank, and the Alerts dashboard counted `PhoneOff` itself among its "Dashboard only". `ALERTING.md` did not say that the cap figures lag by up to a minute.
+  - Task 25's try ran an Inconclusive analysis, and the Rollout's pause on it, for the first time. Abort and Retry showed nothing in the console until the line recorded them, 30 seconds later; they show at once now (#743). Review, not the try, found the line reading Argo Rollouts' pause reason as `InconclusiveAnalysis`, where it is `InconclusiveAnalysisRun`: the try had no work item for the line to hold (#741, `release/rollout.ts`).
+  - The red-team harness's first try found four faults: Postgres's ingress did not admit it, a list went wrongly to `= any()`, its readiness probe had the wrong path, and an attack that failed recorded no attempt (#855). Its second found that a runner pod on k3d reaches the outside for about two seconds before its fence applies, as milestone 5 found for `factory`, and that the egress probe, which did not wait for its fence as the agent step does, followed a redirect: it waits now (`policy/egress-probe.ts`).
+- A new alert rule on a series whose image is not yet pinned pages from the rule's merge until the pin syncs: `ProbesDown` paged on the laptop from task 27's merge until the probes' pin (`ALERTING.md` "The rules").
+- Kyverno writes a refusal's Event in `default`, not in the refused object's namespace, and a pod a controller makes from `generateName` gets none of its own, so the line reads the controller's `FailedCreate` too (#759, `ADMISSION-CONTROL.md`). Pod Security's `restricted` refuses a pod before Kyverno sees it, and a pod applied by hand that it refuses leaves no Event, as the native ValidatingAdmissionPolicies leave none: a refusal tried by hand in a guarded namespace needs a pod that passes `restricted` (`ADMISSION-CONTROL.md`).
+- The stop-the-line drill could never see the gateway refuse an agent: the stop ends the runner pods it would refuse, and the gateway, which then held the line's state for five seconds, answered the calls in between. CI proves the refusal (`ci:stopped-line`, #774), the gateway hears a stop at once (#779), and the drill proves what a stop can show (`GUARDRAILS.md` "The drill"). A drill cannot wait for what its own action prevents.
+- The proof that nobody bypasses `main`'s ruleset failed, rightly, for its first week, on Martin's own pushes from before the merge queue, and held from 2026-11-02 (`REPOSITORIES-AND-RULESETS.md`).
+- Live at Guarded, the line merged two fixes through the queue with nobody touching them (the app's #168 and #169), then did not add their deploy pull request (the app's #170) to the queue. Task 24's brief had read the plan's "its own pull request" as the fix's alone, and no deploy pull request carries a dry run's fix, so neither the try nor review could see it. #882 adds it as an exact pin (`APPROVAL-ROUTING.md`, `test/line/deploy-queue.test.ts`). That showed the GitHub worker's poll cache keeping a body as one caller's schema had stripped it, and giving it to another on a 304 (#886, `github/client.ts`).
+- Putting task 24's try back had side effects. The live line reopened the tickets the dry run had verified, as their fixes never shipped, and opened issues for them in the app's repository (#164, #165). And a `set env` after `LINE_MODE=off` made a ReplicaSet on the local image just as `root` put `factory-images` back to Deny, so admission refused it ten times, on the Guardrails panel. `try-the-line`'s "Putting it back" now makes each deployment's changes in one rollout before `root` takes over, and stops the line before it goes live.
+- Verifying #168's fix by the logs waited, as `/api/products` had no requests on the new version: Verify needs 20 on a route in 30 minutes, and the traffic generator walks only what the app's pages link to and its search. Martin agreed to 30 requests sent to it by hand (`RELEASE-AND-VERIFY.md` "A quiet route waits").
+
+**How the run worked**
+
+- Try before review found most of the above. Task 24 went the other way: its try at Guarded needed Martin's passkey, so its reviews and pull requests came first. Its dry run passed, and #882 and #886 showed only live. `/implement` now traces a brief's whole path against the plan's words before building, to what runs after the change, and has each part a dry run cannot show named, with its live proof chosen before review.
+- What a dry run cannot show is now listed in `try-the-line`: it passes every pull request as low-risk, so a hold, a refusal, a conflict and a dequeue were shown by tests; it fails no gate; no deploy pull request carries its fix; and its stand-in merge comes on its own clock, so a hold at Supervised lasts only that long.
+- Writing the briefs for tasks 21 to 25 as one set, against the code, found what the plan had missed: the GitHub worker had no way to the store, so it could neither record its refusals nor read an attack's launch, and nothing read Kyverno's Events.
+- Review across a stack was answered in one pass (#721) for tasks 21, 22 and 23's recording. In task 24, reading the stack together found a race; its fix changed the design and took three more rounds. Nothing bounds that loop but `worker.md`'s rule that a fix which changes the design is reviewed again: no home.
+- Two workers at once worked wherever their files did not overlap (tasks 21, 22 and 24, the app's part of 24 among them; `/implement`).
+- A build-only worker stopped without reporting, its branch pushed and its worktree clean. `/implement` now says how to take such a branch on.
+- A worktree made with Claude Code's own tool, rather than `worktree.sh`, sits where `verify.sh` does not look: `worker.md` says to use `worktree.sh` alone.
+- When `main` conflicted with an upper branch of a stack alone, GitHub marked that pull request CONFLICTING and ran no checks on it or those above (#843), though the rule said the bottom took `origin/main` only if it conflicted. `/implement`'s Stacks now has the bottom take it then too.
+- A safety check stopped agents writing the red-team attempts, three times. Martin wrote the GitHub worker's and the harness's briefs, and the harness's branch; agents then reviewed, fixed and tried it (#855). No home: it is the model's limit, not the factory's.
+- Deciding while Martin was away from the keyboard never weakened a test, a check or a proof: what needed him was ordered after, not skipped, and a pull request's description gives no cost or "not running" as a reason (#830's was rewritten). A rule of the run, with no home in the repository.
+- The run's state was kept on a board outside this repository from 2026-10-31, and `/implement` keeps no ledger or follow-ups file (#750).
+
+**What Part D changes because of it:** its briefs trace each change to what runs after it, against the plan's words, and name the live proof of what a dry run cannot show before review; its tries use the list of what a dry run cannot show; a stack's bottom takes `origin/main` when any branch in it conflicts. And before Part D the app's reset seeds defects that reach what Part C left unproved.
+
+**Left open:**
+
+- "A fix goes end to end at Guarded … and a risk-tagged change waits in Needs you until Martin approves its head" stays unticked. Its first half held live on 2026-11-05: at Guarded with auto-merge on, the app's #168 and #169 merged through the queue, the line added their deploy pull request (#170) as an exact pin, and 7fbce12 was released, promoted and verified, #168's fix by the logs once requests were sent to its route by hand, and #169's, which only the planner had found, by Martin. The hold for risk tags, Martin's approval of its head, a push after it failing the check, and Lights-out were never reached, as no fix in that time touched a tagged path. They are proved on defects the app's reset seeds, before Part D.
+- Carried:
+  - #702, answering a held review's threads, at the first real escalation.
+  - The review gate posts a failure on every pull request that waits for Martin's approval, so one that only waits reads as broken (`scripts/review-gate.ts`).
+  - No event carries attack 3's pull request, so its card does not draw the design's section for it.
+  - The harness's attack pods in a namespace of their own (#856).
+  - Rejecting a hold whose pull request is open closes the work item and its issue, but not the pull request.
+  - The review gate to read only the judged pull request's own test-integrity run.
+  - `latestPhone` passing over a newer `alerts.switched` (#762).
+  - The fences on the cloud profiles, at milestone 10.
+  - Nothing tells Martin when a provider has a new model (#548).

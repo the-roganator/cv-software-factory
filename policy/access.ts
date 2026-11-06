@@ -42,7 +42,7 @@ export interface Access {
 }
 
 /** A session lasts this long from sign-in, however busy. There is no idle timeout: ADR 0012 says why. */
-export const SESSION = { minutes: 30, idleTimeout: false } as const;
+export const SESSION = { minutes: 60, idleTimeout: false } as const;
 
 /** The passkey, given again, is fresh for this long. */
 export const STEP_UP = { minutes: 5 } as const;
@@ -82,6 +82,11 @@ export const ACCESS = {
   events: { ...read('Every public event after the one given'), server: 'console', routes: ['GET /api/events'] },
   stream: { ...read('The public events, live'), server: 'console', routes: ['GET /api/events/stream'] },
   artifacts: { ...read('An artifact a public event refers to'), server: 'console', routes: ['GET /artifacts/:hash'] },
+  refusals: {
+    ...read('Whether each relayed refusal is what the GitHub worker signed'),
+    server: 'console',
+    routes: ['GET /api/refusals'],
+  },
   health: { ...read('Whether the console is up'), server: 'console', routes: ['GET /health'] },
   version: { ...read('The commit the console was built from'), server: 'console', routes: ['GET /version'] },
 
@@ -142,6 +147,12 @@ export const ACCESS = {
     ...admin('Give the passkey again, for the actions that ask for it in the next five minutes'),
     server: 'admin',
     routes: ['POST /admin/step-up/options', 'POST /admin/step-up'],
+  },
+  // Ending the passkey's five minutes early only tightens: the next action that needs it asks for it again.
+  'step-up.end': {
+    ...admin('End the passkey given again now, so the next action that asks for it asks again'),
+    server: 'admin',
+    routes: ['POST /admin/step-up/end'],
   },
   'sign-out': { ...admin('Sign out on this device'), server: 'admin', routes: ['POST /admin/sign-out'] },
   'sign-out-everywhere': {

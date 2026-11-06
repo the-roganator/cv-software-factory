@@ -12,6 +12,7 @@ import { validateSignal } from '@software-factory/events/schemas';
 import { DiskArtifacts } from '@software-factory/store';
 import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { BROWSER_LAUNCH } from '../../src/capture.ts';
 import { PROBES } from '../../src/probes/index.ts';
 import { Shop } from '../../src/probes/site.ts';
 import { type BrowserCheck, BrowserSense } from '../../src/senses/browser.ts';
@@ -26,7 +27,7 @@ const warnings: string[] = [];
 const log = { warn: (fields: object, message: string) => warnings.push(`${message} ${JSON.stringify(fields)}`) };
 
 beforeAll(async () => {
-  browser = await chromium.launch();
+  browser = await chromium.launch(BROWSER_LAUNCH);
 });
 beforeEach(() => {
   warnings.length = 0;

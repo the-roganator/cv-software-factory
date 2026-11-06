@@ -100,6 +100,8 @@ export const PUBLIC_VIEWS = {
   'gates.finished': redacted,
   'review.submitted': redacted,
   'review.accepted': redacted,
+  'pull-request.enqueued': redacted,
+  'pull-request.dequeued': redacted,
   'pull-request.merged': redacted,
   'deploy.changed': redacted,
   'release.started': redacted,
@@ -133,6 +135,11 @@ export const PUBLIC_VIEWS = {
   'admin.signed-in': (event) => ({ ...event, summary: 'Martin signed in with a passkey', payload: {} }),
   'admin.signed-out': redacted,
   'admin.stepped-up': (event) => ({ ...event, summary: 'Martin gave his passkey again', payload: {} }),
+  'admin.step-up-ended': (event) => ({
+    ...event,
+    summary: 'Martin ended his passkey’s five minutes early',
+    payload: {},
+  }),
   'passkey.enrolled': (event) => ({ ...event, summary: 'Martin enrolled a passkey', payload: {} }),
   'passkey.revoked': ({ payload: { passkey: _name, ...payload }, ...event }) =>
     redacted({ ...event, summary: 'Martin revoked a passkey', payload }),

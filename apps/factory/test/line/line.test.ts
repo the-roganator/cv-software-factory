@@ -108,6 +108,7 @@ describe('the line', () => {
       ],
       flag: 'delivery-dates',
       pages: ['/products/blue-mug'],
+      scope: [...SPEC.scope, 'src/flag-names.ts'],
     };
     const title = 'feat(products): show each product’s delivery date';
     const agents = {
@@ -491,7 +492,11 @@ describe('the line', () => {
     const before = await types(workItem);
     const reads = vi.spyOn(github, 'read');
     await pass();
-    expect(await types(workItem)).toEqual(before);
+    // The head the gate judges now is not the one its reviewer passed: the hold says so, and nothing else is recorded.
+    expect((await types(workItem)).slice(before.length)).toEqual(['hold.started']);
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
+      merge: { why: 'unreviewed', head: updated },
+    });
     expect(reads.mock.calls.map(([read]) => read)).not.toContain('checkRuns');
     reads.mockRestore();
     github.merge();
@@ -857,6 +862,7 @@ describe('the line', () => {
     expect(check?.args).toMatchObject({ conclusion: 'failure', title: 'Changes requested: 1 blocking finding' });
     expect((await payloads(workItem, 'review.submitted'))[0]).toEqual({
       pullRequest: 12,
+      commit: github.pulls.get(12)?.head.sha,
       verdict: 'changes-requested',
       note: 'The quote is still not escaped.',
       findings: [blocking, elsewhere],
@@ -1677,6 +1683,9 @@ describe('the line', () => {
       imageRevision: no('such image'),
       imageSigned: no('such image'),
       deployProposal: async () => null,
+      reviewVerdict: no('such pull request'),
+      mergeQueue: no('such pull request'),
+      mergeability: no('such pull request'),
     };
     const files: Record<string, string> = { 'src/search.ts': 'old\n' };
     const recorded = mkdtempSync(join(tmpdir(), 'dry-run-'));
@@ -2326,6 +2335,9 @@ describe('the line', () => {
         imageRevision: no('such image'),
         imageSigned: no('such image'),
         deployProposal: async () => null,
+        reviewVerdict: no('such pull request'),
+        mergeQueue: no('such pull request'),
+        mergeability: no('such pull request'),
       };
       const dir = mkdtempSync(join(tmpdir(), 'dry-run-'));
       // Its pull request, #12, is the App's, as the GitHub worker's guard would read it from GitHub.
@@ -2746,7 +2758,7 @@ describe('the deploy pull request that carries a held work item', () => {
       'Deploy pull request #30 carries it; its checks are running',
       'Deploy pull request #30 carries it, and e2e failed on it',
       'Deploy pull request #30 carries it; its checks are running',
-      'Deploy pull request #30 carries it, and its checks passed: it waits for Martin to merge it',
+      'Deploy pull request #30 carries it, and its checks passed: the review gate did not pass it as an exact pin (low-risk), so the line does not add it to the merge queue: it waits for Martin to merge it',
       'Deploy pull request #30, which carries it, merged: its release starts once Argo CD syncs',
     ]);
     expect(await stage(workItem)).toBe('held');

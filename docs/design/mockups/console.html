@@ -667,7 +667,9 @@ table.steps { width: 100%; border-collapse: collapse; font: 12px/1.35 var(--font
 /* ---- Admin (milestone 7) --------------------------------------------------------------- */
 /* Step-up: a key after a control's label says it asks for the passkey again (unless given in the last five minutes). */
 .key { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.fresh { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font: 11px/1.4 var(--font-mono); color: var(--text-2); white-space: nowrap; }
+.fresh { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font: 11px/1.4 var(--font-mono); color: var(--text-2); white-space: nowrap; background: transparent; cursor: pointer; }
+.fresh:hover { border-color: var(--text-muted); color: var(--text); }
+.fresh .glyph.end { width: 10px; height: 10px; color: var(--text-muted); }
 /* Needs you: one card per hold, each answer a row with what it does. */
 .needs-list { display: flex; flex-direction: column; gap: 12px; }
 .need .kick { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; align-items: baseline; }
@@ -681,6 +683,9 @@ table.steps { width: 100%; border-collapse: collapse; font: 12px/1.35 var(--font
 .answers .btn { min-height: 36px; padding: 0 12px; font-size: 13px; justify-content: flex-start; }
 .answers p { margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--text-2); }
 .answers .ro { justify-self: start; }
+.answers .way { border-color: var(--text); color: var(--text); font-weight: 500; }
+.answers .way-words { display: inline-flex; align-items: center; gap: 8px; }
+.answers .way-words svg { width: 14px; height: 14px; }
 .words-form { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
 .words-form .row { justify-content: space-between; align-items: center; }
 .need-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); }
@@ -1025,6 +1030,7 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
   <symbol id="logo-trivy" viewBox="0 0 24 24"><path fill="#1904da" d="M4.375 7.311L1.962 5.918a.1.1 0 0 1 0-.174L11.828.047a.34.34 0 0 1 .344 0l9.864 5.696a.1.1 0 0 1 0 .175L19.624 7.31a1 1 0 0 1-.052-.074c-.914-1.478-2.124-2.592-3.596-3.31c-4.088-1.994-9.164-.505-11.6 3.385Zm7.887 16.588v-3.14c5.693-2.087 9.01-7.766 7.588-12.985l2.436-1.42a.1.1 0 0 1 .151.088v11.645a.1.1 0 0 1-.05.087l-9.973 5.812a.1.1 0 0 1-.152-.087m-.559-3.141v3.14a.1.1 0 0 1-.151.086l-9.933-5.81a.11.11 0 0 1-.056-.099V6.436a.1.1 0 0 1 .15-.087l2.44 1.41c-1.455 5.307 1.846 10.993 7.55 13ZM7.013 8.834L4.807 7.561c2.306-3.665 7.094-5.066 10.95-3.186c1.385.676 2.526 1.727 3.39 3.124l.04.062l-2.195 1.268a5.57 5.57 0 0 0-2.429-2.307c-2.603-1.27-5.901-.253-7.552 2.311Zm9.337 5.2c.813-1.371 1.088-2.99.798-4.685l2.255-1.314c1.245 4.86-1.864 10.169-7.14 12.192v-3.072c1.86-.67 3.272-1.747 4.087-3.12ZM4.6 8.018l2.27 1.31c-.225 1.571.112 3.204.951 4.606c.919 1.536 2.225 2.629 3.881 3.25v3.045C6.327 18.25 3.297 13.042 4.601 8.017Zm5.303 2.486l-2.459-1.42c1.52-2.34 4.53-3.268 6.9-2.112A5.1 5.1 0 0 1 16.56 9.08l-2.471 1.427a2.31 2.31 0 0 0-2.03-1.195c-.825 0-1.645.43-2.156 1.192m4.338.522l2.443-1.408c.22 1.51-.043 2.945-.765 4.162c-.735 1.238-1.998 2.224-3.658 2.856v-2.631c1.25-.691 1.968-1.771 1.98-2.979m-5.991 2.65A6.58 6.58 0 0 1 7.34 9.6l2.446 1.412c-.016 1.271.73 2.437 1.917 2.997v2.624a6.98 6.98 0 0 1-3.453-2.956Zm3.853-.148l-.137.073l-.157-.075c-1.023-.504-1.524-1.606-1.557-2.417a2 2 0 0 1 .004-.23a2.15 2.15 0 0 1 1.163-.957c.508-.178 1.034-.153 1.444.071c.6.327.84.797.86.86c.008.156.004.253.004.256c-.038.981-.63 1.863-1.624 2.419"/></symbol>
   <symbol id="logo-dependabot" viewBox="0 0 24 24"><path fill="#025e8c" d="M10.949.314a1.92 1.92 0 0 1 2.102 0l9.333 6.118c.541.354.866.957.866 1.604v7.928c0 .647-.326 1.25-.866 1.604l-9.333 6.118a1.92 1.92 0 0 1-2.102 0l-9.333-6.118a1.92 1.92 0 0 1-.866-1.604V8.036c0-.647.326-1.25.866-1.604zM12.75 7.5v.75h-6A.75.75 0 0 0 6 9v3h-.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25H6v1.5c0 .415.336.75.75.75h10.5a.75.75 0 0 0 .75-.75V15h.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25H18V9a.75.75 0 0 0-.75-.75H13.5V5.5a.25.25 0 0 0-.25-.25H11.5a.25.25 0 0 0-.25.25v1.75c0 .138.112.25.25.25zm3.286 5.089l-1.572 1.572a.303.303 0 0 1-.428 0l-.947-.947a.303.303 0 0 1 0-.428l.322-.322a.303.303 0 0 1 .428 0l.41.411l1.037-1.036a.303.303 0 0 1 .428 0l.322.322a.303.303 0 0 1 0 .428M9.464 14.16a.303.303 0 0 1-.428 0l-.948-.947a.3.3 0 0 1 0-.428l.323-.322a.303.303 0 0 1 .427 0l.412.411l1.036-1.037a.303.303 0 0 1 .427 0l.323.322a.303.303 0 0 1 0 .428z"/></symbol>
   <symbol id="logo-anthropic" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M13.827 3.52h3.603L24 20h-3.603zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017l-1.344 3.46H0L6.57 3.522zm4.132 9.959L8.453 7.687L6.205 13.48H10.7z"/></symbol>
+  <symbol id="logo-github" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.6 0 0 3.6 0 8C0 11.5 2.3 14.5 5.5 15.6C5.9 15.7 6 15.4 6 15.2C6 15 6 14.4 6 13.7C4 14.1 3.5 13.2 3.3 12.8C3.2 12.6 2.8 11.8 2.5 11.7C2.2 11.5 1.8 11.1 2.5 11.1C3.1 11.1 3.6 11.7 3.7 11.9C4.4 13.2 5.6 12.8 6 12.6C6.1 12.1 6.3 11.7 6.6 11.5C4.8 11.3 2.9 10.6 2.9 7.6C2.9 6.7 3.2 6 3.7 5.4C3.7 5.2 3.4 4.4 3.8 3.3C3.8 3.3 4.5 3.1 6 4.1C6.7 4 7.3 3.9 8 3.9C8.7 3.9 9.4 4 10 4.1C11.6 3.1 12.2 3.3 12.2 3.3C12.7 4.4 12.4 5.2 12.3 5.4C12.8 6 13.1 6.7 13.1 7.6C13.1 10.7 11.2 11.3 9.5 11.5C9.8 11.8 10 12.3 10 13C10 14.1 10 14.9 10 15.2C10 15.4 10.2 15.7 10.6 15.6C13.7 14.5 16 11.5 16 8C16 3.6 12.4 0 8 0Z"/></symbol>
   <symbol id="logo-jev" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M3 4.5h10M3 8h6M3 11.5h8"/></symbol>
 </svg>
 
@@ -1043,7 +1049,7 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
       <span class="status" id="status"></span>
       <span id="admin-top" class="top-right">
         <button type="button" class="btn small" id="preview-btn">Preview as visitor</button>
-        <span class="fresh" id="fresh" hidden></span>
+        <button type="button" class="fresh" id="fresh" data-end-fresh hidden></button>
         <button type="button" class="btn attn" id="stop-btn"></button>
         <span class="account">
           <button type="button" class="account-btn" id="account-btn" aria-expanded="false" aria-controls="menu"><span class="me" aria-hidden="true">M</span><span class="name">Martin</span></button>
@@ -2100,8 +2106,8 @@ function renderChrome() {
   $('status').hidden = door;
   $('fresh').hidden = !S.fresh;
   const left = Math.max(1, Math.ceil((S.freshUntil - Date.now()) / 60000));
-  $('fresh').innerHTML = `${glyph('key', 'key')}<span class="long">Passkey given · </span>${left}min`;
-  $('fresh').title = 'You gave your passkey in the last five minutes: actions that ask for it act at once until then.';
+  $('fresh').innerHTML = `${glyph('key', 'key')}<span class="long">Passkey given · </span>${left}min<span class="sr"> left. End it now</span>${glyph('cross', 'glyph end')}`;
+  $('fresh').title = 'End it now: the next action that asks for your passkey will ask again';
   document.querySelectorAll('.admin-only').forEach((el) => { el.hidden = S.visitor; });
   document.querySelectorAll('.visitor-only').forEach((el) => { el.hidden = !S.visitor; });
   const status = S.stopped
@@ -2755,11 +2761,12 @@ const HOLDS = [
 ✓ not a release, not an improvement
 → waits for Martin’s approval of its head commit, 4e1c2a9</p>
       <p class="ev">Every required check passed and the reviewer approved. Approving is {who} own review of its head commit, on GitHub: the console can’t give it. A push after {whoS} approve{s} needs {whom} again.</p>`,
-    link: ['https://github.com/the-roganator/cv-worlds-worst-website/pull/1327', 'Review #1327 on GitHub', 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue under Guarded with auto-merge on; otherwise you merge it there.', 'Martin approves its head commit there, with his own review.'],
+    way: ['https://github.com/the-roganator/cv-worlds-worst-website/pull/1327', 'Review', 1327, 'Approve its head commit there: the review check then passes it, and the line adds it to the merge queue.', 'Martin approves its head commit there, with his own review, and the line adds it to the merge queue.'],
     answers: [['answered', 'Answer in words', 'Sends it back to the coder, with your words as the reason.'],
       ['rejected', 'Reject', 'Closes #1326 and its pull request, unmerged.']] },
   { id: '1314', cause: 'deploy', kicker: 'Waiting for your deploy', stage: 'Release', age: '25min', title: 'The contact form loses your message',
-    ev: `<p class="ev">Merged at 15:58. Deploy #1330 carries it, and its checks passed: merging it is yours, on GitHub, and a release that carries it ends this wait by itself.</p><p class="ev"><a href="#">Deploy #1330 on GitHub</a></p>`,
+    ev: `<p class="ev">Merged at 15:58. Deploy #1330 carries it, and its checks passed: merging it is yours, on GitHub, and a release that carries it ends this wait by itself.</p>`,
+    way: ['https://github.com/the-roganator/cv-worlds-worst-website/pull/1330', 'Deploy', 1330, 'Opens #1330 on GitHub to merge it. Argo CD then starts its release, which ends this wait by itself.', 'Martin merges #1330 there. Argo CD then starts its release, which ends this wait by itself.'],
     answers: [['rejected', 'Reject', 'Closes #1314. Its change stays merged, and goes out with the next deploy anyway.']] },
   { id: '1318', cause: 'scope', kicker: 'Held to its scope', stage: 'Build', age: '20min', title: 'The contact form loses your message on a slow connection',
     ev: `<p class="words">The coder needs 2 files outside the spec’s scope to meet its criteria, and no scope may name deploy/app.yaml: deploy/app.yaml, test/contact.test.ts\ndeploy/app.yaml<b class="barred"> · no scope may name it</b>: The request times out before the form is sent; the timeout is set here.\ntest/contact.test.ts: It expects the old error message.</p>`,
@@ -2798,8 +2805,9 @@ function needCard(h, where = 'needs') {
   }).join('');
   const foot = sheet ? (v ? '<span>Martin answers, signed in</span>' : '')
     : `<button type="button" class="linkish" data-open="${indexOf(h.id) >= 0 ? h.id : '1312'}">Open the work item</button>${v ? '<span>Martin answers, signed in</span>' : ''}`;
-  // A link the card offers before its answers: the pull request to review on GitHub, which is where Martin approves it.
-  const link = h.link ? `<a class="btn" href="${h.link[0]}" target="_blank" rel="noopener">${h.link[1]}<span aria-hidden="true"> ↗</span><span class="sr"> (opens GitHub)</span></a><p>${v ? h.link[3] : h.link[2]}</p>` : '';
+  // The way forward, first among the answers: the verb and GitHub's mark, a link to the pull request on GitHub, where
+  // Martin merges it or reviews it, in the column of buttons and as wide as they are, with what it does beside it.
+  const link = h.way ? `<a class="btn way" href="${h.way[0]}" target="_blank" rel="noopener"><span class="way-words" aria-hidden="true">${h.way[1]}<svg viewBox="0 0 16 16"><use href="#logo-github"/></svg></span><span class="sr">${h.way[1]} #${h.way[2]} on GitHub (opens GitHub in a new tab)</span></a><p>${v ? h.way[4] : h.way[3]}</p>` : '';
   const ev = h.ev.replace('{who}', v ? 'Martin’s' : 'your').replace('{whoS}', v ? 'he' : 'you').replace('{s}', v ? 's' : '').replace('{whom}', v ? 'him' : 'you');
   return `<article class="need" ${sheet ? `aria-label="${h.kicker}"` : `aria-labelledby="need-${h.id}"`}>
     <div class="kick"><b>${h.kicker}</b><span>#${h.id} · ${h.stage} · ${h.age}</span></div>
@@ -3231,7 +3239,7 @@ function confirmDialog() {
 function renderMenu() {
   $('account-btn').setAttribute('aria-expanded', String(S.menu));
   $('menu').hidden = !S.menu;
-  $('menu').innerHTML = `<div class="who">Martin Rogan<small>Signed in with a passkey at 15:40<br>The session ends at 16:10${S.fresh ? `<br>Passkey given again: ${Math.max(1, Math.ceil((S.freshUntil - Date.now()) / 60000))}min left` : ''}</small></div>
+  $('menu').innerHTML = `<div class="who">Martin Rogan<small>Signed in with a passkey at 15:40<br>The session ends at 16:40${S.fresh ? `<br>Passkey given again: ${Math.max(1, Math.ceil((S.freshUntil - Date.now()) / 60000))}min left` : ''}</small></div>
     <a href="?view=settings">Settings</a><a href="?view=audit">Audit log</a>
     <button type="button" data-preview>Preview as visitor</button><hr>
     <a href="?view=signin&amp;signin=out">Sign out</a>
@@ -3244,7 +3252,7 @@ function signinPage() {
   const k = q.get('signin') || 'ready';
   const note = {
     none: `<div class="refusal">No passkey was used.<small>Either the passkey sheet was closed, or this device has no passkey for the factory. Each device is enrolled once, from the command line: <code>factory admin enrol</code> prints a one-time code for the <a href="?view=enrol">enrolment page</a>.</small></div>`,
-    expired: `<div class="done" style="border-left-color: var(--line-strong)">Your session ended at 16:10. A session lasts 30 minutes from signing in, however busy.</div>`,
+    expired: `<div class="done" style="border-left-color: var(--line-strong)">Your session ended at 16:40. A session lasts 60 minutes from signing in, however busy.</div>`,
     out: `<div class="done" style="border-left-color: var(--line-strong)">Signed out. This browser holds no session now.</div>`,
     everywhere: `<div class="done" style="border-left-color: var(--line-strong)">Signed out everywhere: every session on every device has ended, this one too.</div>`,
   }[k] ?? '';
@@ -3310,7 +3318,7 @@ function settingsPage() {
         <div><span>iPhone<small>Enrolled 12 Oct · used yesterday, 21:02</small></span><button type="button" class="btn small" data-revoke="iPhone">Revoke${keyIf(!S.fresh)}</button></div></div>
         <p class="help">Two at most. Each is added with <code>factory admin enrol</code> on the command line, never from here.</p></article>
       <article class="panel" aria-labelledby="session-title"><h2 id="session-title">This session</h2>
-        <p class="help" style="font-size: 13px">Signed in at 15:40 with the MacBook Air’s passkey. It ends at 16:10: 30 minutes, however busy.</p>
+        <p class="help" style="font-size: 13px">Signed in at 15:40 with the MacBook Air’s passkey. It ends at 16:40: 60 minutes, however busy.</p>
         <div class="actions" style="margin-top: 0"><a class="btn small" href="?view=signin&amp;signin=out">Sign out</a><a class="btn small" href="?view=signin&amp;signin=everywhere">Sign out everywhere</a></div></article>`;
   const save = v ? '' : `<div class="save-bar"><p>1 change: the coder’s effort, medium → high. It raises spend, so saving asks for your passkey.</p>
       <div class="row"><button type="button" class="btn small">Discard</button><button type="button" class="btn primary small" data-save>Save${keyIf(!S.fresh)}</button></div></div>`;
@@ -3414,6 +3422,8 @@ document.addEventListener('click', (e) => {
     return;
   }
   const d = t.dataset;
+  // The pill ends the passkey's five minutes at once: it only tightens, so nothing asks first.
+  if ('endFresh' in d) { S.fresh = false; S.freshUntil = 0; renderAll(); $('account-btn').focus(); return; }
   if (t.classList.contains('stage')) return openStage(+d.i);
   if ('add' in d) { if (S.stage !== null) openStage(S.stage); return openDialog('improve'); }
   if (d.launch) return openDialog('attack', { attack: d.launch });

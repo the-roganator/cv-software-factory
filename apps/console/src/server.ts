@@ -13,6 +13,10 @@
  *
  * PORT sets the port (default 8080), and HOST the one address to listen on: unset, as in the cluster, it listens on every
  * address; the browser tests set 127.0.0.1, the address they ask, so they cannot reach another program on the port.
+ * REFUSAL_PUBLIC_KEY is the GitHub worker's public key (PEM), from the ConfigMap `refusal-key`, which each relayed
+ * refusal in the store is checked with, against its record in ARTIFACTS_DIR (`refusals.ts`); without either, every
+ * relayed refusal reads as unverified. An event-log folder holds no records, only the checks made when it was written
+ * (`refusals.json`), which the server answers from.
  * GIT_COMMIT is the commit the build was made from, set by the image. FACTORY_PROFILE (default local) and ALL_LOCAL, as
  * the gateway's, are written into the page (`site.ts`).
  */
@@ -21,11 +25,13 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ARTIFACTS_DIR } from '@software-factory/events';
+import { REFUSAL_CHECKS_FILE } from '@software-factory/events/signed-check';
 import { connect, DiskArtifacts } from '@software-factory/store';
 import { createApp } from './app.ts';
 import { Feed, logFeed, storeFeed } from './feed.ts';
 import { listenOn } from './listen.ts';
 import { log } from './log.ts';
+import { RecordedChecks, RefusalChecks, refusalKey } from './refusals.ts';
 import { loadSite, pageSettings } from './site.ts';
 import { sendMetrics, shutdownTelemetry } from './telemetry.ts';
 
@@ -43,12 +49,27 @@ const source = sql
     : { feed: new Feed(), artifacts: undefined };
 if (!sql && !EVENT_LOG) log.warn('no event store or event log configured: the console will show an empty store');
 
+const artifacts = new DiskArtifacts(source.artifacts ?? mkdtempSync(join(tmpdir(), 'no-artifacts-')));
+// Serving the store, each relayed refusal is checked against its record with the GitHub worker's key; serving an
+// event-log folder, the checks made when it was written are the answer.
+function refusalChecks() {
+  if (!sql && EVENT_LOG) return new RecordedChecks(join(EVENT_LOG, REFUSAL_CHECKS_FILE));
+  // An empty REFUSAL_PUBLIC_KEY, as an optional ConfigMap's missing key can leave it, is none. A key given but not an
+  // Ed25519 public key is logged as such (`refusalKey`); only none at all is warned of here.
+  const pem = process.env.REFUSAL_PUBLIC_KEY?.trim() || undefined;
+  if (sql && !pem) log.warn('no REFUSAL_PUBLIC_KEY: every relayed refusal reads as unverified');
+  if (sql && !source.artifacts)
+    log.warn('no ARTIFACTS_DIR: no relayed refusal’s record can be read, so each reads as unverified');
+  return new RefusalChecks(artifacts, refusalKey(pem));
+}
+
 const server = createServer(
   createApp({
     commit,
     site: loadSite(undefined, pageSettings(process.env)),
     feed: source.feed,
-    artifacts: new DiskArtifacts(source.artifacts ?? mkdtempSync(join(tmpdir(), 'no-artifacts-'))),
+    artifacts,
+    refusals: refusalChecks(),
   }),
 );
 // The event stream's count from 0 (stream.ts), before a browser that was waiting reconnects.

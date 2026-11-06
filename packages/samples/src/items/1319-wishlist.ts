@@ -1,6 +1,7 @@
 /**
  * Held at Build by the spend cap: the reviewer sent the first attempt back, and the coder's second step reached the
- * work item's cap part way through. The gateway refused its next call, and the line holds the work for Martin.
+ * work item's cap part way through. The gateway refused its next calls, three within a minute, which it recorded as
+ * one refusal, and the line holds the work for Martin.
  */
 import { Item } from '../build.ts';
 
@@ -72,4 +73,13 @@ export default new Item('1319', '2026-10-06T11:30:00+01:00')
     cause: 'spend',
     reason: 'The work item has spent $5.03 on models, and may spend $5.00',
     limitUsd: 5,
+  })
+  // Written after the hold, so every event before keeps its id; in time it comes first.
+  .at('41:22', 'action.refused', 'factory', 'The gateway refused 3 model calls: the work item’s cap', {
+    mechanism: 'gateway',
+    action: 'A model call by the coder agent, the work item’s cap',
+    output: 'The work item has spent $5.03 on models, and may spend $5.00: the gateway takes no more of its calls.',
+    guardrails: [7],
+    count: 3,
+    lastAt: '2026-10-06T11:11:24.000Z',
   });

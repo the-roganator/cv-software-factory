@@ -1,7 +1,7 @@
 /**
  * The privacy page's figures against where each is set: what Loki, Tempo and Prometheus keep, how long the admin
  * service counts the tries to sign in from one address, and the app's preview cookie as the probes' `/device` check
- * allows it. The session's 30 minutes are held by `access.test.ts`.
+ * allows it. The session's hour is held by `access.test.ts`.
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';

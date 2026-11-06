@@ -61,6 +61,19 @@ function live(asked: string[] = []): Reads {
     imageRevision: async () => SHA,
     imageSigned: async () => ({ signed: true, reason: null }),
     deployProposal: async () => ({ number: 30, commit: SHA, pinned: null, digests: [] }),
+    reviewVerdict: async (_repo, number) => {
+      asked.push(`reviewVerdict ${number}`);
+      const head = 'c'.repeat(40);
+      return { number, head, check: null, verdict: null, judged: null, problem: 'no check' };
+    },
+    mergeQueue: async (_repo, number) => {
+      asked.push(`mergeQueue ${number}`);
+      return { number, head: 'c'.repeat(40), state: 'open', queued: null, added: null, removed: null, checks: [] };
+    },
+    mergeability: async (_repo, number) => {
+      asked.push(`mergeability ${number}`);
+      return { number, head: 'c'.repeat(40), conflicts: true, state: 'dirty' };
+    },
   };
 }
 

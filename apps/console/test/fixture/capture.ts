@@ -10,7 +10,7 @@
  */
 import { writeFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
-import { type Check, capture } from '@software-factory/factory/capture';
+import { BROWSER_LAUNCH, type Check, capture } from '@software-factory/factory/capture';
 import { DiskArtifacts } from '@software-factory/store';
 import { ARTIFACTS, CAPTURES, type Captures, VERSION } from './captures.ts';
 import { PAGES } from './pages.ts';
@@ -42,7 +42,7 @@ const SHOTS: Shot[] = [
 ];
 
 const store = new DiskArtifacts(ARTIFACTS);
-const browser = await chromium.launch();
+const browser = await chromium.launch(BROWSER_LAUNCH);
 const tab = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
 const captures: Captures = { shots: {}, elements: {} };
 try {

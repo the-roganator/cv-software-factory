@@ -6,7 +6,8 @@
  * - Enrolling: `POST /admin/enrol/options` with the code from `factory admin enrol`, then `POST /admin/enrol` with the
  *   new passkey, which signs in.
  * - Signing in: `POST /admin/sign-in/options`, then `POST /admin/sign-in` with the passkey's answer.
- * - The passkey again: `POST /admin/step-up/options`, then `POST /admin/step-up`, for the next five minutes.
+ * - The passkey again: `POST /admin/step-up/options`, then `POST /admin/step-up`, for the next five minutes, and
+ *   `POST /admin/step-up/end` to end them early.
  * - `POST /admin/sign-out`, `POST /admin/sign-out-everywhere` and `POST /admin/passkeys/:id/revoke`.
  * - The Canary panel's controls (`rollout.ts`): `POST /admin/release/promote` (with `fully` to send the canary all of
  *   the traffic), `/pause`, `/resume`, `/abort` and `/retry`, each naming the release the panel showed.
@@ -39,7 +40,15 @@ import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { type HoldAnswer, REQUEST_WORDS, type ReleaseControl, WORDED_ANSWERS } from '@software-factory/events';
 import { z } from 'zod';
-import { ACCESS, ENROLMENT_CODE, PASSKEYS, routeOf, SESSION, type ServedBy } from '../../../../policy/access.ts';
+import {
+  ACCESS,
+  ENROLMENT_CODE,
+  PASSKEYS,
+  routeOf,
+  SESSION,
+  type ServedBy,
+  STEP_UP,
+} from '../../../../policy/access.ts';
 import type { Logger } from '../log.ts';
 import { LAUNCH, launchAttack } from './attacks.ts';
 import { clientAddress, LIMITS, RateLimit } from './client.ts';
@@ -357,6 +366,20 @@ export function createAdminApp({
         () => [adminEvent('admin.stepped-up', 'Martin gave his passkey again', { passkey: passkey.name })],
       );
       return { status: 200, body: { steppedUpAt: stepped.toISOString() } };
+    },
+
+    // Only this session's, and only while it is fresh: one that has run out, or was never given, is recorded as nothing.
+    'step-up.end': async ({ session }) => {
+      const live = session as Session;
+      const { count } = await store.record(
+        (tx) => tx`
+          update sessions set stepped_up_at = null
+          where id_sha256 = ${live.hash} and ended_at is null and expires_at > now()
+            and stepped_up_at > now() - make_interval(mins => ${STEP_UP.minutes})`,
+        ({ count }) =>
+          count ? [adminEvent('admin.step-up-ended', 'Martin ended his passkey’s five minutes early', {})] : [],
+      );
+      return { status: 200, body: { ended: count === 1 } };
     },
 
     'sign-out': async ({ session }) => {

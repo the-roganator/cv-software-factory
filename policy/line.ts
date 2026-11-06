@@ -1,8 +1,8 @@
 /**
- * Martin's controls of the line, within policy: the autonomy level, whether agents take new work, whether low-risk
- * changes merge by themselves, what the line takes, and whether a canary the analysis judges bad rolls back by itself,
- * as he chose them in the console (`controls.changed`). This is
- * the one check: the line and the admin service each turn the latest controls event into the controls in force with
+ * Martin's controls of the line, within policy: the autonomy level, whether agents take new work, whether the line adds
+ * the changes the level allows to the merge queue itself (auto-merge, by `ENQUEUES`), what the line takes, and whether a
+ * canary the analysis judges bad rolls back by itself, as he chose them in the console (`controls.changed`). This is the
+ * one check: the line and the admin service each turn the latest controls event into the controls in force with
  * `controlsInForce`, and the console's Controls is to as well, so all agree on what is in force.
  *
  * Controls are checked where they are read, not only where they are written: whatever an event says, anything outside
@@ -17,6 +17,24 @@
  * Human-owned: see `README.md`.
  */
 import { AUTONOMY, type Autonomy, type TakeKind } from '../packages/events/src/vocabulary.ts';
+import type { Rule } from './review-verdict.ts';
+
+/**
+ * The review gate's rules the line adds its own pull request to the merge queue by, at each autonomy level, with
+ * auto-merge on (spec 4.3, deviation 2): at Supervised none, so every change waits for Martin's merge; at Guarded a
+ * low-risk change, an exact pin, and a head Martin approved on GitHub; at Lights-out those, and the gate's Lights-out
+ * pass of a risk-tagged change. Martin's own pull request (`martin-opened`) is his to merge, at every level. The gate
+ * passes by a rule only when its own reading of the diff allows it, so the stricter of the two always wins.
+ */
+export const ENQUEUES: Readonly<Record<Autonomy, readonly Rule[]>> = {
+  supervised: [],
+  guarded: ['low-risk', 'exact-pin', 'martin-approved-head'],
+  'lights-out': ['low-risk', 'exact-pin', 'martin-approved-head', 'lights-out'],
+};
+
+/** Whether the line adds its own pull request to the merge queue by the gate's rule, at the level and switch in force. */
+export const enqueues = ({ autonomy, autoMerge }: Pick<Controls, 'autonomy' | 'autoMerge'>, rule: Rule): boolean =>
+  autoMerge && ENQUEUES[autonomy].includes(rule);
 
 /** The most work items "The next few" may take: the console's field allows 1 to this. */
 export const TAKE = { most: 20 } as const;
@@ -48,8 +66,8 @@ export interface ControlsInForce extends Controls {
 }
 
 /**
- * Before Martin sets any: Supervised (every change waits for him, as it does until approval routing comes, whatever
- * the level), agents taking new work, no auto-merge, no take set, and auto-rollback on.
+ * Before Martin sets any: Supervised (every change waits for his merge), agents taking new work, no auto-merge, no take
+ * set, and auto-rollback on.
  */
 export const DEFAULT_CONTROLS: Controls = {
   autonomy: 'supervised',

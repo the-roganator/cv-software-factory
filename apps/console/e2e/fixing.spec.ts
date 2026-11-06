@@ -284,6 +284,28 @@ test.describe('tool marks', () => {
     );
   });
 
+  test('every answer on a visitor’s card is the answers column’s width and a button’s height, a flag’s and the way forward’s too', async ({
+    page,
+  }) => {
+    await page.goto(consoleUrl({}));
+    await ready(page);
+    const cards = page.locator('article.needs .need');
+    await expect(cards.first()).toBeVisible();
+    for (const card of await cards.all()) {
+      // One width and one height: a visitor's labels are drawn at a small button's size, as the way forward and Martin's answers are.
+      const sizes = await card
+        .locator('.answers > .answer > .ro, .answers > .answer > .way, .answers > .answer > .btn')
+        .evaluateAll((controls) =>
+          controls.map((control) => {
+            const { width, height } = control.getBoundingClientRect();
+            return { width: Math.round(width), height: Math.round(height) };
+          }),
+        );
+      expect(new Set(sizes.map((size) => size.width)).size).toBeLessThanOrEqual(1);
+      expect(new Set(sizes.map((size) => size.height)).size).toBeLessThanOrEqual(1);
+    }
+  });
+
   test('a real pull request’s way is GitHub’s: “Merge” and its mark, in a new tab, said to a screen reader', async ({
     page,
   }) => {
@@ -307,7 +329,21 @@ test.describe('tool marks', () => {
       .filter({ has: page.getByText('#1311 ·', { exact: false }) })
       .locator('.answers');
     const way = answers.getByRole('link', { name: 'Merge #1312 on GitHub (opens GitHub in a new tab)' });
-    await expect(answers.locator(':scope > *').first()).toHaveClass(/\bway\b/);
+    // First among the answers, in a row of its own like theirs, with what it does beside it, in a visitor's words.
+    const first = answers.locator('.answer').first();
+    await expect(first.locator('.way')).toHaveCount(1);
+    await expect(first.locator('a.way')).toHaveAccessibleName('Merge #1312 on GitHub (opens GitHub in a new tab)');
+    await expect(first.locator('p')).toHaveText(
+      'Martin merges #1312 there. The line goes on by itself once it merges.',
+    );
+    // As wide as the answers under it, in the column they share: a visitor's labels take its width too.
+    const [wayBox, answerBox] = await Promise.all([
+      way.boundingBox(),
+      answers.locator('.ro', { hasText: 'Answer in words' }).boundingBox(),
+    ]);
+    if (!wayBox || !answerBox) throw new Error('the way or the answer under it is not drawn');
+    expect(wayBox.x).toBeCloseTo(answerBox.x, 0);
+    expect(wayBox.width).toBeCloseTo(answerBox.width, 0);
     await expect(way).toHaveAttribute('href', 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1312');
     await expect(way).toHaveAttribute('target', '_blank');
     await expect(way).toHaveAttribute('rel', 'noopener');

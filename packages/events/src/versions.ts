@@ -28,11 +28,13 @@ export const VERSIONS = {
   'gates.started': 1,
   'gate.finished': 2,
   'gates.finished': 1,
-  'review.submitted': 4,
+  'review.submitted': 5,
   'review.accepted': 1,
+  'pull-request.enqueued': 1,
+  'pull-request.dequeued': 1,
   'pull-request.merged': 1,
   // Release and verify
-  'deploy.changed': 1,
+  'deploy.changed': 2,
   'release.started': 3,
   'canary.stepped': 2,
   'canary.measuring': 1,
@@ -44,7 +46,7 @@ export const VERSIONS = {
   'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,
-  'hold.started': 10,
+  'hold.started': 11,
   'hold.answered': 3,
   'action.refused': 3,
   'model.called': 2,
@@ -60,6 +62,7 @@ export const VERSIONS = {
   'admin.signed-in': 1,
   'admin.signed-out': 1,
   'admin.stepped-up': 1,
+  'admin.step-up-ended': 1,
   'passkey.enrolled': 1,
   'passkey.revoked': 1,
   // Martin's controls of a release in flight (the admin service)
@@ -94,6 +97,7 @@ export const LINE_TYPES: readonly EventType[] = [
   'admin.signed-in',
   'admin.signed-out',
   'admin.stepped-up',
+  'admin.step-up-ended',
   'passkey.enrolled',
   'passkey.revoked',
   'release.controlled',
@@ -150,9 +154,9 @@ export const REDTEAM_ONLY_TYPES: readonly EventType[] = ['attack.finished'];
 /**
  * Martin's commands: the types only his roles may append (row security on `events`, `0023_martins-commands.sql`), and
  * that the line, triage and the gateway act on only when one of his roles appended it. Signing in and out, giving his
- * passkey again, and his passkeys are among them, so no worker can forge one (`0025_admin-service.sql`,
- * `0026_admin-stepped-up.sql`), and so are his controls of a release (`release.controlled`,
- * `0027_release-controls.sql`), his settings (`settings.changed`, `0028_settings.sql`), and his controls of the line
+ * passkey again or ending its five minutes early, and his passkeys are among them, so no worker can forge one
+ * (`0025_admin-service.sql`, `0026_admin-stepped-up.sql`, `0049_admin-step-up-ended.sql`), and so are his controls of
+ * a release (`release.controlled`, `0027_release-controls.sql`), his settings (`settings.changed`, `0028_settings.sql`), and his controls of the line
  * (`controls.changed`, `0030_line-controls.sql`), his switch of alerts to his phone (`alerts.switched`,
  * `0037_alerts-switched.sql`), his stages of a feature flag (`flag.staged`,
  * `0033_flag-stages.sql`), his requests for an improvement (`improvement.requested`, `0035_improvement-requests.sql`,
@@ -170,6 +174,7 @@ export const ADMIN_TYPES: readonly EventType[] = [
   'admin.signed-in',
   'admin.signed-out',
   'admin.stepped-up',
+  'admin.step-up-ended',
   'passkey.enrolled',
   'passkey.revoked',
   'release.controlled',

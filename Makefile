@@ -73,6 +73,13 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@docker inspect -f '{{json .HostConfig.PortBindings}}' k3d-$(CLUSTER)-serverlb | grep -q '"443/tcp"' || { \
 		echo "  This cluster has no HTTPS port: adding 127.0.0.1:8443, which restarts its load balancer and nothing else."; \
 		k3d cluster edit $(CLUSTER) --port-add 127.0.0.1:8443:443@loadbalancer; }
+	@# The Kubernetes API's binding is fixed when the cluster is made, and `k3d cluster edit` cannot move it: a cluster
+	@# made before deploy/k3d/cluster.yaml bound it to 127.0.0.1 still publishes it on every interface. Said, not mended:
+	@# only a new cluster moves it, and a new cluster starts with an empty store.
+	@# Each address it is published on, a line each; with none, or no load balancer to read, it says nothing.
+	@hosts="$$(docker inspect -f '{{range index .HostConfig.PortBindings "6443/tcp"}}{{println .HostIp}}{{end}}' k3d-$(CLUSTER)-serverlb 2>/dev/null)"; \
+	if [ -n "$$hosts" ] && printf '%s\n' "$$hosts" | grep -qvx '127\.0\.0\.1'; then \
+		echo "  This cluster's Kubernetes API is published beyond 127.0.0.1. Only a new cluster binds it there: 'make down' and 'make up', which empty the store."; fi
 	helm upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm --version $(ARGOCD_CHART) \
 		--kube-context $(CONTEXT) --namespace argocd --create-namespace \
 		--values deploy/argocd/values.yaml --wait --timeout 5m --hide-notes
@@ -211,11 +218,12 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 # The GitHub worker's key for signing its refusals (apps/factory/src/github/refusals.ts): an Ed25519 key pair, made once,
 # as share-key's is. The private key is the Secret refusal-signing-key in `factory`, which only the GitHub worker reads;
 # once made, that Secret is the source, and the ConfigMap refusal-key in `factory`, its public key and nothing else, is
-# written again from it each time, for the line to verify each refusal it records. Each goes through stdin, never a file
-# or a command line. Admission lets only this user, the local kubeconfig's, write refusal-key
-# (deploy/base/admission/factory/refusal-key.yaml). Each pod reads its key when it starts: a new Secret restarts the
-# worker and the line, and a public key that was missing or not the Secret's restarts the line.
-refusal-key: ## Give the GitHub worker its key for signing refusals, made once, and the line its public half (refusal-key)
+# written again from it each time, for the line to verify each refusal it records and the console each it shows. Each
+# goes through stdin, never a file or a command line. Admission lets only this user, the local kubeconfig's, write
+# refusal-key (deploy/base/admission/factory/refusal-key.yaml). Each pod reads its key when it starts: a new Secret
+# restarts the worker, the line and the console, and a public key that was missing or not the Secret's restarts the line
+# and the console.
+refusal-key: ## Give the GitHub worker its key for signing refusals, made once, and the line and console its public half
 	@$(call namespace,factory)
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the key.
 	@made="$$($(KUBECTL) -n factory get secret refusal-signing-key -o name --ignore-not-found)" || exit 1; \
@@ -229,11 +237,11 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 		$(KUBECTL) -n factory create configmap refusal-key --from-file=public-key=/dev/stdin --dry-run=client -o yaml | \
 		$(KUBECTL) apply -f - >/dev/null && echo "  The line has the GitHub worker's public key, in refusal-key." || exit 1; \
 	if [ -z "$$made" ]; then \
-		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (github,line)' --ignore-not-found >/dev/null && \
+		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (github,line,console)' --ignore-not-found >/dev/null && \
 		echo "  The GitHub worker has a new key, so it signs each refusal it answers."; \
 	elif [ "$$was" != "$$public" ]; then \
-		$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=line --ignore-not-found >/dev/null && \
-		echo "  refusal-key was missing or not the GitHub worker's, so the line starts again with the right one."; fi
+		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (line,console)' --ignore-not-found >/dev/null && \
+		echo "  refusal-key was missing or not the GitHub worker's, so the line and the console start again with the right one."; fi
 
 # Triage's caller token for the gateway's judgements (docs/COMPONENTS/LLM-GATEWAY.md#judgements): 32 random bytes in hex,
 # in the Secret judgements-token in `factory`, which only triage and the gateway name, through stdin and never a file or

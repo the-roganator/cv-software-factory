@@ -27,6 +27,8 @@ flowchart LR
 
 `apps/factory/src/alerts/rules.ts` generates Prometheus's alerting rules from it, and the alerts to Martin ([security events](#security-events), [holds](#holds), [the flags the app holds](#the-flags-the-app-holds), [the shop's pod](#the-shops-pod), and [the factory's health, releases and spend](#the-factorys-health)), into `deploy/base/telemetry/values/prometheus-rules.yaml`, labelled with the route and the symptom class (`server-error`, `slow-response`). Each rule compares every route's error ratio or p95 over the window, once it has had enough requests, with the objective, by the same expression Prometheus records for dashboards ([recording rules](TELEMETRY.md#each-route-against-the-objectives)), and reads only the app's own series. `make check` fails when the file is out of date.
 
+The rules reach Prometheus when their pull request merges, as Argo CD syncs `main`, and a new image only when the App's deploy pull request pins it. So a rule that fires on a series missing (`absent`, as `ProbesDown` does, or a count of nothing read as 0), where only an image not yet pinned exports that series, pages from its merge until the pin syncs; a rule that compares a series with a threshold returns nothing while it is missing, and waits. Write such a rule to wait until the series has existed, or say in its pull request that it pages until the pin, so Martin knows before he merges it.
+
 ## Levels and routes
 
 Each rule says how loudly it is told by a `level` label, and Alertmanager routes by it (`deploy/base/telemetry/values/prometheus.yaml`):
@@ -110,7 +112,7 @@ Martin is alerted to each of his security events, at its kind's level, counted f
 | `attack-wrong-mechanism` | `attack.finished`, as above, that says refused where the line, reading the refusals it cites again, cannot agree ([how the line judges an attack](RED-TEAM-HARNESS.md#how-the-line-judges-an-attack)) | Page |
 | `attack-unfinished` | `attack.launched` by Martin's roles with no `attack.finished` from `factory_redteam` saying how it went within the attack's limit (`policy/attacks.ts`), counted once the limit passes, by the store's clock; or one the harness says it could not see to its end | Page |
 
-Giving the passkey again (`admin.stepped-up`) alerts no one, though the audit log keeps it: every action that needs it alerts as its own kind, and the sign-in before it informs him.
+Giving the passkey again (`admin.stepped-up`), or ending it early (`admin.step-up-ended`), alerts no one, though the audit log keeps it: every action that needs it alerts as its own kind, and the sign-in before it informs him.
 
 Every change of the line's controls alerts him, each told from the stored change's before and after alone (`policy/line.ts`), as every change of the settings does, and every move of a feature flag, from its stages before and after alone (`policy/flag-moves.ts`).
 
@@ -158,7 +160,7 @@ Martin is notified of each hold that waits for him, once, as it starts to wait (
 > Firing since 09:41 UTC, 24 October.
 > <u>#1304 in the console</u> · <u>Pull request #57</u>
 
-- **It reads the line's `line_hold_age_seconds`,** one series for each hold that waits for him, by work item, cause and pull request, from the store ([telemetry](TELEMETRY.md#the-lines-metrics)). A merge hold's pull request is its latest pushed; a deploy hold waits for him, and alerts, only once its deploy pull request's checks have passed, or at once after a release he aborted or that erred, with no pull request.
+- **It reads the line's `line_hold_age_seconds`,** one series for each hold that waits for him, by work item, cause and pull request, from the store ([telemetry](TELEMETRY.md#the-lines-metrics)). A merge hold's pull request is its latest pushed; a deploy hold waits for him, and alerts, only once its deploy pull request's checks have passed and the line has not added it to the merge queue, or the queue took it out, or at once after a release he aborted or that erred, with no pull request.
 - **Once:** it fires while the hold has waited less than half an hour (`HOLD_ALERT_MINUTES`), or while its series is newer than that, and resolves after, which sends nothing: Alertmanager would send it again only after four hours. The line exports every 15 seconds and Prometheus evaluates every minute, so half an hour cannot miss it.
   - A hold that waits again under the same labels, as a deploy pull request whose checks pass again after a newer build, is told again: its series reads 0 between, and its age starts again. Not if it waits again within the minute Alertmanager takes to see the first resolve, which a new build and its checks never are.
   - A series that appears having waited already is told as it appears: a merge hold's newer pull request, which is a new one to look at, or a hold triage started while the line was down. So is one the line or Prometheus had not sent or read for over half an hour, which may tell a hold twice.

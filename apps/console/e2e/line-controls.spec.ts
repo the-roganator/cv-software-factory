@@ -109,6 +109,9 @@ test('a visitor sees every control read-only, and no Stop or Start', async ({ pa
   }
   await expect(panel.getByRole('switch', { name: /Agents take new work/ })).toBeChecked();
   await expect(panel.getByRole('switch', { name: /Auto-merge/ })).not.toBeChecked();
+  await expect(panel.getByRole('switch', { name: /Auto-merge/ })).toContainText(
+    'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for Martin anyway.',
+  );
   await expect(panel.getByRole('switch', { name: /Auto-rollback/ })).toBeChecked();
   await expect(panel.getByRole('switch', { name: /Auto-rollback/ })).toContainText(
     'On: a canary the analysis judges bad rolls back by itself. Off, errors or latency judged bad would pause it for Martin instead.',
@@ -126,7 +129,7 @@ test('a visitor sees every control read-only, and no Stop or Start', async ({ pa
   await expect(panel).toContainText('The next 5 work items from');
   // Every level's words are in the panel, the others invisible: the chosen one's are what show.
   await expect(panel.locator('.means .chosen')).toHaveText(
-    'Low-risk changes ship on their own. Anything risky waits for Martin. Recorded: until approval routing comes, every merge waits for Martin.',
+    'Low-risk changes ship on their own. Anything risky waits for Martin.',
   );
   await expect(panel.locator('.means > span:not(.chosen)')).toHaveCount(2);
   for (const words of await panel.locator('.means > span:not(.chosen)').all()) await expect(words).toBeHidden();
@@ -167,7 +170,7 @@ test('Martin stops the line with a reason, and starts it with his passkey', asyn
     // No second dialog asked for it.
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(status(page)).toHaveText('Line running · Guarded');
-    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left');
+    await expect(page.locator('.top-right .fresh')).toHaveText('Passkey given · 5min left. End it now');
     const started = await stored<{ reason?: string }>('line.started');
     expect(started.map((e) => [e.actor, e.payload.reason])).toEqual([['martin', 'The deploy is fine']]);
     await expect(page.getByRole('button', { name: 'Stop the line' })).toBeVisible();
@@ -255,7 +258,8 @@ test('Martin tightens and loosens autonomy, turns a switch, and widens and narro
   await test.step('loosening it asks for the passkey again', async () => {
     await autonomy.getByRole('button', { name: 'Guarded (asks for your passkey)' }).click();
     const dialog = page.getByRole('dialog', { name: 'Loosen autonomy' });
-    await expect(dialog).toContainText('The line runs at Guarded.');
+    await expect(dialog).toContainText('Autonomy goes from Supervised to Guarded.');
+    await expect(dialog).not.toContainText('Lights-out takes two settings.');
     await dialog.getByRole('button', { name: 'Use your passkey' }).click();
     await expect(dialog).toBeHidden();
     await expect(status(page)).toHaveText('Line running · Guarded');
@@ -306,6 +310,10 @@ test('Martin tightens and loosens autonomy, turns a switch, and widens and narro
       await autonomy.getByRole('button', { name: level, exact: true }).click();
       await expect(autonomy.getByRole('button', { name: level, exact: true })).toHaveAttribute('aria-pressed', 'true');
       await steady(level);
+      // Lights-out's note shows while it is chosen: the review gate reads a variable of the app's repository too.
+      const note = 'Also needs AUTONOMY set to lights-out in the app’s repository, which only you can set.';
+      if (level === 'Lights-out') await expect(panel.locator('.means .chosen .ctl-note')).toHaveText(note);
+      else await expect(panel.locator('.means .chosen .ctl-note')).toHaveCount(0);
     }
   });
 

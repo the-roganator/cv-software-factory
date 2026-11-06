@@ -1,7 +1,7 @@
 /*
  * Needs you, the left of the bottom row: a card per hold, with the `attn` rule on its left edge, its answers in a
  * column of outlined buttons (or, for a visitor, labels) beside what each does, headed by the way a merge or a deploy
- * ends, on GitHub, and Answered today under a `line-strong` hairline.
+ * ends, on GitHub, beside what it does too, and Answered today under a `line-strong` hairline.
  */
 .count-attn {
   font: 12px / 1 var(--font-mono);
@@ -61,8 +61,10 @@
   padding: 8px 10px;
   white-space: pre-wrap;
 }
-/* A file no scope may name, among those a coder needs outside its scope: the face's own warm colour. */
-.need .barred {
+/* A file no scope may name, among those a coder needs outside its scope, and what the review gate held a merge for,
+   its check and each risk tag: the face's own warm colour. */
+.need .barred,
+.need .words .x {
   color: var(--station-led-attn);
 }
 .answers {
@@ -76,15 +78,25 @@
 .answers .answer {
   display: contents;
 }
-.answers .btn {
+/* Every answer takes the column's width, Martin's buttons (a disabled one too) and a visitor's labels alike, so each
+   card's answers are one column of equal width, the way forward among them. A visitor's labels take a small button's
+   size and shape too, so the card is drawn as Martin's is, keeping only their read-only colours. */
+.answers .btn,
+.answers .ro {
+  justify-self: stretch;
   justify-content: flex-start;
 }
-/* The way a merge or a deploy ends, on GitHub: "Merge" and GitHub's mark, drawn as the buttons are, on a row of its
-   own above them, bordered and weighted in the text's colour, as it is the way forward and they are the ways back. A
-   sample's, which links nowhere, looks the same in its own cell, its reason beside it, muted. */
+.answers .ro {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-radius: var(--radius-card);
+}
+/* The way a merge or a deploy ends, on GitHub: "Merge", "Deploy" or "Review" and GitHub's mark, in the column of
+   buttons and as wide as they are, with what it does beside it, bordered and weighted in the text's colour, as it is
+   the way forward and they are the ways back. A sample's, which links nowhere, looks the same, its reason beside it,
+   muted. */
 .answers .way {
-  grid-column: 1 / -1;
-  justify-self: start;
   border-color: var(--text);
   color: var(--text);
   font-weight: 500;
@@ -94,14 +106,13 @@
   color: var(--text);
   text-decoration: underline;
 }
+.answers span.way {
+  cursor: default;
+}
 .answers .way-words {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-.answers span.way {
-  grid-column: auto;
-  cursor: default;
 }
 .answers p.nowhere {
   color: var(--text-muted);
@@ -126,9 +137,6 @@
   font-size: 12.5px;
   line-height: 1.4;
   color: var(--text-2);
-}
-.answers .ro {
-  justify-self: start;
 }
 .words-form {
   grid-column: 1 / -1;

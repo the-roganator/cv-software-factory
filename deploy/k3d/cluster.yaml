@@ -6,6 +6,12 @@ metadata:
 servers: 1
 agents: 0
 image: rancher/k3s:v1.37.1-k3s1
+# The Kubernetes API, on the Mac alone and at a port of its own: left out, k3d publishes it on every interface at a
+# random port, reachable from any network the Mac is on. The kubeconfig k3d writes names this address. `k3d cluster
+# edit` cannot move it, so a cluster made before it keeps its old binding until `make down` and `make up`.
+kubeAPI:
+  hostIP: 127.0.0.1
+  hostPort: '6550'
 ports:
   # k3s's Traefik ingress: plain HTTP for the app's hosts (http://website.localhost:8080) and the local UIs, and HTTPS
   # for the console (https://console.localhost:8443). `make up` adds the second to a cluster made before it.

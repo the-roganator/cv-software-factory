@@ -7,7 +7,7 @@ Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#git
 
 ## CodeQL
 
-`codeql.yml` analyses the TypeScript and the workflows, with the `security-and-quality` queries, on every pull request, the merge queue's commit, `main` and once a week, in both public repositories: the app's calls it. Each repository's `main` ruleset holds a pull request while its own analysis finds a new security alert of medium severity or higher, or a new error ([repositories and rulesets](REPOSITORIES-AND-RULESETS.md#the-ruleset)); a false positive is dismissed in code scanning, with a written reason.
+`codeql.yml` analyses the TypeScript and the workflows, with the `security-and-quality` queries, on every pull request, `main` and once a week, in both public repositories: the app's calls it. Each repository's `main` ruleset holds a pull request while its own analysis finds a new security alert of medium severity or higher, or a new error ([repositories and rulesets](REPOSITORIES-AND-RULESETS.md#the-ruleset)). A false positive is dismissed in code scanning, with a written reason. CodeQL does not run in the merge queue, which does not wait for it.
 
 ## On the app's pull requests
 

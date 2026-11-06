@@ -28,6 +28,7 @@ import {
 } from './line.ts';
 import { type NeedsView, needsView } from './needs.ts';
 import { type AppVersions, appVersions, type Card, card, type Timeline, timeline } from './reel.ts';
+import { type Checks, type FoldedRefusals, foldRefusals, type LastRollback, lastRollback } from './refusals.ts';
 import {
   type CanaryView,
   canaryView,
@@ -81,9 +82,12 @@ export type {
   Status,
 } from './line.ts';
 export { whileSending } from './line.ts';
-export type { Answered, CanaryNeed, Evidence, Need, NeedsView } from './needs.ts';
+export type { Answered, CanaryNeed, Evidence, Need, NeedsView, WayThere } from './needs.ts';
+export { SAMPLE_PULL } from './needs.ts';
 export type { Card, Picture, Refused, Source, Tag, Timeline, Versions } from './reel.ts';
 export { QUARANTINE_AT, segmentsLabel } from './reel.ts';
+export type { Check, Checks, LastRollback, RefusalLine, RefusalsView, Standing } from './refusals.ts';
+export { MECHANISM_WORDS, toCheck } from './refusals.ts';
 export type { CanaryView, Carried, End, Measured, Release, Step } from './release.ts';
 export { SENSE } from './senses.ts';
 export type { Meter, SettingsView, SpendView } from './settings.ts';
@@ -150,6 +154,10 @@ export interface Fold {
   settings: SettingsFold;
   /** Each guardrail's latest proof of each kind from `make guardrails`. */
   proofs: FoldedProofs;
+  /** Each guardrail's trusted refusals, in time order: which are in its seven days is a matter of t. */
+  refusals: FoldedRefusals;
+  /** The line's last rollback, which proves guardrail 9 where nothing refuses. */
+  rollback: LastRollback | undefined;
   /** Every return, newest first: which are in the last day is a matter of t. */
   returns: Return[];
   versions: AppVersions;
@@ -198,6 +206,8 @@ export function fold(seen: readonly PublicEvent[]): Fold {
     flags: foldFlags(seen, items),
     settings: foldSettings(seen),
     proofs: foldProofs(seen),
+    refusals: foldRefusals(seen),
+    rollback: lastRollback(seen),
     returns: everyReturn(seen),
     versions,
     closed: items.map((item) => (item.closedAt === undefined ? undefined : card(item, versions, item.closedAt))),
@@ -245,12 +255,17 @@ export const foldOf = (view: View): Fold => {
   return folded;
 };
 
-/** The console at t, from a fold of the events by t: what depends on the time. */
 /**
- * The view at t. `available` says which attacks Martin can launch: policy's (`attackAvailable`), unless a browser test
- * stands in for the flag (`attacks-seam.ts`).
+ * The console at t, from a fold of the events by t: what depends on the time. `available` says which attacks Martin can
+ * launch: policy's (`attackAvailable`), unless a browser test stands in for the flag (`attacks-seam.ts`). `checks` are
+ * the server's word on each relayed refusal (`/api/refusals`), as far as it has answered.
  */
-export function viewAt(folded: Fold, t: number, available: (attack: Attack) => boolean = attackAvailable): View {
+export function viewAt(
+  folded: Fold,
+  t: number,
+  available: (attack: Attack) => boolean = attackAvailable,
+  checks: Checks = new Map(),
+): View {
   const { items, header: line } = folded;
   const sent = returnsWithin(folded.returns, t);
   const shipped = releasesAt(folded.releases, t);
@@ -276,7 +291,12 @@ export function viewAt(folded: Fold, t: number, available: (attack: Attack) => b
     flags: flagsView(folded.flags, items, shipped, t),
     improve: folded.improve,
     releases: shipped,
-    guardrails: guardrailsView(folded.proofs, items, t, available),
+    guardrails: guardrailsView(folded.proofs, items, t, available, {
+      refusals: folded.refusals,
+      checks,
+      rollback: folded.rollback,
+      autoRollback: folded.controls.autoRollback,
+    }),
   };
   drawnFrom.set(shown, folded);
   return shown;
@@ -286,4 +306,5 @@ export const project = (
   events: readonly PublicEvent[],
   t: number,
   available: (attack: Attack) => boolean = attackAvailable,
-): View => viewAt(foldAt(events, t), t, available);
+  checks: Checks = new Map(),
+): View => viewAt(foldAt(events, t), t, available, checks);

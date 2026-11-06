@@ -9,7 +9,7 @@ import type { FlagAction } from '@software-factory/policy/flag-moves';
 import type { ControlAction } from '@software-factory/policy/line';
 
 /** How long a session lasts from sign-in, however busy: `SESSION.minutes`. */
-export const SESSION_MINUTES = 30;
+export const SESSION_MINUTES = 60;
 
 /** How long the passkey, given again, is fresh: `STEP_UP.minutes`. */
 export const FRESH_MINUTES = 5;

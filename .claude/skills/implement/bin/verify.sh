@@ -13,6 +13,8 @@
 #                          threads, alerts still open on main and summary): its worktree and branch may be gone.
 #                          Whether a branch is behind main is never checked: the merge queue tests it on main as it
 #                          will be.
+#                          A file renamed or moved is checked under both its paths. Every file is listed, up to the
+#                          files API's 3000; past that the pull request fails, as some of its files go unchecked.
 #   verify.sh <key>        skipped: nothing was left behind (no commit on the worktree since it was made, so one made
 #                          from a stack's branch below counts from there), no branch pushed and no pull request opened.
 # A key of 278-2 is issue 278's second pull request. A key that begins app- is a work item in the app's repository
@@ -45,8 +47,9 @@ if [[ -z $pr ]]; then
   exit $fail
 fi
 
-IFS=$'\t' read -r state branch head opened < <(gh pr view "$pr" -R "$repo" --json state,headRefName,headRefOid,createdAt \
-  -q '[.state, .headRefName, .headRefOid, (.createdAt | fromdateiso8601)] | @tsv')
+IFS=$'\t' read -r state branch head opened changed < <(gh pr view "$pr" -R "$repo" \
+  --json state,headRefName,headRefOid,createdAt,changedFiles \
+  -q '[.state, .headRefName, .headRefOid, (.createdAt | fromdateiso8601), .changedFiles] | @tsv')
 body=$(gh pr view "$pr" -R "$repo" --json body -q .body)
 say pr "#$pr $state $branch ${head:0:8}"
 [[ $state == OPEN || $state == MERGED ]] || bad state "pull request is $state"
@@ -57,26 +60,31 @@ if [[ $key =~ ^(app-)?([0-9]+)(-[0-9]+)?$ ]]; then
   grep -qiE "(closes|part of) $ref#$issue\b" <<<"$body" || bad body "no 'Closes $ref#$issue' or 'Part of $ref#$issue'"
 fi
 
-# Every changed file CODEOWNERS gives Martin has a line in the description's section on them, with its reason beside it.
+# Every changed file CODEOWNERS gives Martin, by its path or the path a rename moved it from, has a line in the
+# description's section on them, with its reason beside it.
 owners=$(git -C "$checkout" show origin/main:.github/CODEOWNERS | sed 's/#.*//' | awk 'NF { print $1 }')
-files=$(gh pr diff "$pr" -R "$repo" --name-only)
+files=$(pr_files "$repo" "$pr")
+listed=$(grep -c . <<<"$files" || true)
+(( listed == changed )) || bad files "GitHub lists $listed of the $changed files it changes: the rest go unchecked"
 owned=()
-while IFS= read -r file; do
-  while IFS= read -r pattern; do
-    # As GitHub reads them: globs, a folder owns what is in it, and a pattern with no slash but a trailing one is
-    # unanchored, matching at any depth. Unquoted on purpose: the patterns are globs.
-    p=${pattern#/} p=${p//\*\*/*} p=${p%/}
-    at=''
-    [[ $pattern == /* || $p == */* ]] || at='*/'
-    # shellcheck disable=SC2053
-    if [[ $file == $p || $file == $p/* || $file == $at$p || $file == $at$p/* ]]; then owned+=("$file"); break; fi
-  done <<<"$owners"
+while IFS=$'\t' read -r path previous; do
+  for file in "$path" ${previous:+"$previous"}; do
+    while IFS= read -r pattern; do
+      # As GitHub reads them: globs, a folder owns what is in it, and a pattern with no slash but a trailing one is
+      # unanchored, matching at any depth. Unquoted on purpose: the patterns are globs.
+      p=${pattern#/} p=${p//\*\*/*} p=${p%/}
+      at=''
+      [[ $pattern == /* || $p == */* ]] || at='*/'
+      # shellcheck disable=SC2053
+      if [[ $file == $p || $file == $p/* || $file == $at$p || $file == $at$p/* ]]; then owned+=("$file"); break; fi
+    done <<<"$owners"
+  done
 done <<<"$files"
 say owned "${#owned[@]} file(s) CODEOWNERS gives Martin"
 section=$(awk '/^#+ / { inside = /CODEOWNERS/; next } inside' <<<"$body")
 if (( ${#owned[@]} )) && [[ -z $section ]]; then bad owned "no section on them: a heading naming CODEOWNERS"; fi
 for file in ${owned[@]+"${owned[@]}"}; do
-  line=$(grep -F "$file" <<<"$section" | head -1 || true)
+  line=$(names_path "$file" <<<"$section" || true)
   words=$(tr -d '`*' <<<"${line//"$file"/}" | tr -cs '[:alnum:]' '\n' | grep -c . || true)
   if [[ -z $line ]]; then bad owned "$file changes and the section does not name it"
   elif (( words < 3 )); then bad owned "$file is named with no reason beside it"; fi

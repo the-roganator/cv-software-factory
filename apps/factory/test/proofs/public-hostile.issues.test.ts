@@ -148,6 +148,7 @@ describe('the guard on pull requests', () => {
       ['back to draft', () => actions.convertToDraft(REPO, ref)],
       ['close', () => actions.closePullRequest(REPO, 121, 'Closing.')],
       ['describe a deploy', () => actions.describeDeploy(REPO, 121, { commit: SHA40, carries: [] })],
+      ['add to the merge queue', () => actions.enqueuePullRequest(REPO, 121, SHA40)],
     ];
     for (const [what, attempt] of attempts) {
       await expect(attempt(), what).rejects.toBeInstanceOf(IssueRefused);

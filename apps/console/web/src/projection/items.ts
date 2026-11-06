@@ -23,7 +23,7 @@ import type { StoppedBy } from './release.ts';
  * the planner, with nothing being done to it yet; `waits-on-work`, a spec queued before Build while work in flight
  * whose spec shares its files is verified or closed; `merged`, a fix Martin merged, queued at Release for a release to
  * take it; `deploying`, a fix Martin merged, held for a deploy whose pull request is not his to merge yet (not open,
- * its checks running or failed, or already merged); `quarantined`, a report that gave orders to the system;
+ * its checks running or failed, in the merge queue, or already merged); `quarantined`, a report that gave orders to the system;
  * `no-ticket`, a report that described nothing wrong. A red-team attack ends `refused`, `not-refused`, `unfinished`, or
  * `unconfirmed`: refused, as its harness recorded, but not as the stream bears out (`attacks.ts`).
  */
@@ -60,6 +60,11 @@ export interface Hold {
   question: string | undefined;
   /** A scope hold the coder asked for: each file outside the spec's scope it needs, and why. */
   needs: { path: string; reason: string; barred?: true | undefined }[] | undefined;
+  /**
+   * A merge's hold: the pull request as the review gate judged it, and why the line does not add it to the merge queue
+   * itself. None on a merge hold the line made before it said.
+   */
+  merge: PayloadOf<'hold.started'>['merge'];
   since: number;
 }
 
@@ -156,14 +161,20 @@ export interface ItemState {
   cleared: PayloadOf<'signal.rechecked'> | undefined;
   /**
    * While it is held for a deploy: the deploy pull request that carries it, as the line last recorded it under that
-   * hold, and when. None before the App opens one.
+   * hold, and when; and, while it waits for Martin, since when it has at that head, however the line's word on why
+   * changed meanwhile. None before the App opens one.
    */
-  deploy: (PayloadOf<'deploy.changed'> & { at: number }) | undefined;
+  deploy: (PayloadOf<'deploy.changed'> & { at: number; waitsSince?: number }) | undefined;
   /**
    * The release that carried its latest merge rolled back, or was stopped, by Martin, the line or an error, and none has
    * started since: Martin may retry it.
    */
   releaseStopped: boolean;
+  /**
+   * The line's adding of its pull request to the merge queue, and when, until the queue merges it or takes it out, or
+   * the branch moves: the queue merges it once its checks pass on the queue's commit.
+   */
+  inQueue: (PayloadOf<'pull-request.enqueued'> & { at: number }) | undefined;
   /** A red-team attack Martin launched: which, when, and how it ended, checked. */
   attack: AttackState | undefined;
 }
@@ -312,6 +323,8 @@ const ENDS_A_WAIT = new Set<PublicEvent['type']>([
   'work-item.summarised',
   'work.returned',
   'hold.started',
+  'pull-request.enqueued',
+  'pull-request.dequeued',
   'pull-request.merged',
   'release.started',
   ...ENDS,
@@ -378,6 +391,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     cleared: undefined,
     deploy: undefined,
     releaseStopped: false,
+    inQueue: undefined,
     attack: undefined,
   };
   /** Moves the item into a stage: leaving the one it was in, if this is further along the line. */
@@ -547,6 +561,20 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         break;
       case 'pull-request.pushed':
         state.pullRequest = event.payload.number;
+        state.inQueue = undefined;
+        break;
+      // The line added its pull request to the merge queue: that ends its hold for the merge, as the line reads it.
+      case 'pull-request.enqueued':
+        if (event.payload.number !== state.pullRequest) break;
+        state.inQueue = { ...event.payload, at: time };
+        if (state.hold?.cause === 'merge') state.hold = undefined;
+        break;
+      // The queue took it out unmerged: the line holds it for Martin again, saying why. Only the commit it was added at
+      // counts, as the line reads it: a late word on an older commit leaves the newer one in the queue.
+      case 'pull-request.dequeued':
+        if (event.payload.number === state.inQueue?.number && event.payload.commit === state.inQueue.commit) {
+          state.inQueue = undefined;
+        }
         break;
       case 'work.returned':
         state.sentBack = time;
@@ -564,6 +592,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.releaseStopped = false;
         // The merge is Martin's answer to a wait for it: the line writes no other.
         state.hold = undefined;
+        state.inQueue = undefined;
         // And it leaves Review, even when a round recorded with it, which failed after the gates had passed, took the
         // work item back to Gates first.
         if (state.visits.review && state.visits.review.leftAt === undefined) {
@@ -614,12 +643,24 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
           spentUsd: event.payload.spentUsd,
           question: event.payload.question,
           needs: event.payload.needs,
+          merge: event.payload.merge,
           since: time,
         };
         break;
-      case 'deploy.changed':
-        state.deploy = { ...event.payload, at: time };
+      case 'deploy.changed': {
+        const before = state.deploy;
+        const his = (d: PayloadOf<'deploy.changed'>) => d.state === 'passed' || d.state === 'dequeued';
+        const still =
+          before?.waitsSince !== undefined &&
+          before.pullRequest === event.payload.pullRequest &&
+          before.commit === event.payload.commit;
+        state.deploy = {
+          ...event.payload,
+          at: time,
+          ...(his(event.payload) ? { waitsSince: still ? before.waitsSince : time } : {}),
+        };
         break;
+      }
       case 'hold.answered':
         // A canary's hold is answered on the Canary panel and ends with its release, as the line reads it: an answer
         // of the holds' settles nothing.
@@ -780,14 +821,15 @@ export function clearanceWords(item: ItemState): string | undefined {
 }
 
 /**
- * Whether a work item held for a deploy waits for Martin: once the deploy pull request that carries it is open and its
- * required checks have passed, so that it is his to merge; or when the release that carried it was stopped, which his
- * retry carries on. Before that, it waits for the image to be built and signed, for the checks, for Argo CD after
- * that pull request merged, or for the next build's after one was closed unmerged.
+ * Whether a work item held for a deploy waits for Martin: once the deploy pull request that carries it is open, its
+ * required checks have passed and the line has not added it to the merge queue (the line's record says why), or the
+ * queue took it out, so that it is his to merge; or when the release that carried it was stopped, which his retry
+ * carries on. Before that, it waits for the image to be built and signed, for the checks, for the merge queue the line
+ * added it to, for Argo CD after that pull request merged, or for the next build's after one was closed unmerged.
  */
 export function deployWaitsForMartin(item: Pick<ItemState, 'hold' | 'deploy' | 'releaseStopped'>): boolean {
   if (item.hold?.cause !== 'deploy') return false;
-  return item.deploy?.state === 'passed' || item.releaseStopped;
+  return item.deploy?.state === 'passed' || item.deploy?.state === 'dequeued' || item.releaseStopped;
 }
 
 /** Ends a hold of a canary paused for Martin: its release has ended, however it ended, as the line's fold reads it. */

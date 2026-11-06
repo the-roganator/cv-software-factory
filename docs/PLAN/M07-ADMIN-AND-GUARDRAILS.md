@@ -727,7 +727,7 @@ Written as Part C's pull requests (#721 to #895, and the app's #124 to #170) mer
 - Deciding while Martin was away from the keyboard never weakened a test, a check or a proof: what needed him was ordered after, not skipped, and a pull request's description gives no cost or "not running" as a reason (#830's was rewritten). A rule of the run, with no home in the repository.
 - The run's state was kept on a board outside this repository from 2026-10-31, and `/implement` keeps no ledger or follow-ups file (#750).
 
-**What Part D changes because of it:** its briefs trace each change to what runs after it, against the plan's words, and name the live proof of what a dry run cannot show before review; its tries use the list of what a dry run cannot show of what it cannot show; a stack's bottom takes `origin/main` when any branch in it conflicts. And before Part D the app's reset seeds defects that reach what Part C left unproved.
+**What Part D changes because of it:** its briefs trace each change to what runs after it, against the plan's words, and name the live proof of what a dry run cannot show before review; its tries use the list of what a dry run cannot show; a stack's bottom takes `origin/main` when any branch in it conflicts. And before Part D the app's reset seeds defects that reach what Part C left unproved.
 
 **Left open:**
 

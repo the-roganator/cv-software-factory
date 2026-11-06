@@ -7,34 +7,33 @@
  *   `23505`, or the client's own, such as `CONNECTION_CLOSED` or `ECONNREFUSED`. It runs from when the query is asked
  *   for to its answer, so a wait for a free connection counts too.
  * - `store.connections`: the connections the client holds open now.
- * - `store.connection.attempts`, by `outcome`: `connected`, or `failed` for one that closed before it opened.
+ * - `store.connection.attempts`, by `outcome`: `connected`, or `failed` for one that never became ready to take a
+ *   query: refused, closed, timed out or turned away at login.
  *
  * Never a work item, a row or the statement's text: they would make a series of each, and a statement's text or
  * parameters can hold what a visitor wrote. Until `telemetry.ts` starts an SDK, the instruments are no-ops.
+ *
+ * postgres.js publishes what it does on Node's diagnostics channels, and the counts are read from there. The channels
+ * are the process's, so they count every client of postgres.js in it from the first `connect` on: the clients made
+ * here, the connection each keeps for `listen`, and any made otherwise.
  */
-import net from 'node:net';
+import { subscribe } from 'node:diagnostics_channel';
 import { metrics } from '@opentelemetry/api';
 import postgres, { type Sql } from 'postgres';
 
 type Options = NonNullable<Parameters<typeof postgres>[1]>;
 
+/** A value postgres.js sends as JSON, as `sql.json` takes it. */
+export type JSONValue = postgres.JSONValue;
+
 /**
  * A client of the store, by URL, or by the standard PG* variables without one, with its notices kept off the log. The
- * options are postgres.js's own; given its own `socket`, a client's connections go uncounted.
+ * options are postgres.js's own.
  */
 export function connect(url?: string, options: Options = {}): Sql {
+  observe();
   const settings = { onnotice: () => {}, ...options };
-  const sql = url ? postgres(url, settings) : postgres(settings);
-  timeQueries(sql);
-  // The instruments, and the connection attempts' zeros, before the first attempt, which is often moments away.
-  counted(instruments);
-  // One address, by host or by Unix socket, is all the factory uses: more hosts or ports, and postgres.js rotates
-  // through them itself, by its ports, and its connections go uncounted.
-  const { host, port } = sql.options;
-  if (host.length === 1 && port.length === 1 && !('socket' in options)) {
-    Object.assign(sql.options, { socket: countedSocket });
-  }
-  return sql;
+  return url ? postgres(url, settings) : postgres(settings);
 }
 
 // Made when they are first used, so the SDK telemetry.ts starts is the one they report to, and made again if another
@@ -95,8 +94,8 @@ const OPERATIONS = new Set([
   'truncate',
   'do',
 ]);
-function operation(strings: readonly string[] | undefined): string {
-  const word = strings?.[0]?.match(/^\s*([a-z]+)/i)?.[1]?.toLowerCase();
+function operation(text: string | null | undefined): string {
+  const word = text?.match(/^\s*([a-z]+)/i)?.[1]?.toLowerCase();
   return word && OPERATIONS.has(word) ? word : 'other';
 }
 
@@ -106,96 +105,53 @@ const code = (error: unknown) => {
   return typeof value === 'string' && /^[A-Z0-9_]{1,40}$/.test(value) ? value : 'unknown';
 };
 
-interface Query {
-  strings?: readonly string[];
-  executed: boolean;
-  handle(): Promise<void>;
-  resolve(value: unknown): void;
-  reject(error: unknown): void;
-}
-
-const TIMED = Symbol('store.timed');
-
-// Counting is never worth a query: one that settled while its count threw would never answer, and a socket whose
-// count threw would never connect.
+// Counting is never worth a query: a subscriber that throws would end the process, as Node raises its error again.
 function counted(count: () => void) {
   try {
     count();
   } catch {}
 }
 
-/**
- * Times every query postgres.js runs in this process, a transaction's and a cursor's too. A query is a lazy promise
- * that runs when it is first awaited, through its `handle`: that is where the clock starts. It ends when postgres.js
- * settles the query through its `resolve` or `reject`, which a cursor replaces as it goes, so each replacement is
- * watched too. Nothing is attached to the promise, so a failed query nobody awaits fails as loudly as ever; a fragment
- * nested in another query never runs, and is never timed. The class is postgres.js's and is not exported, so it is
- * found from a query made and never run. Should a release of postgres.js change any of this, the client's tests fail.
- */
-function timeQueries(sql: Sql) {
-  const prototype = Object.getPrototypeOf(sql`select 1`) as Query & { [TIMED]?: true };
-  const handle = prototype.handle;
-  if (prototype[TIMED] || typeof handle !== 'function') return;
-  prototype.handle = function (this: Query) {
-    if (!this.executed) timeQuery(this);
-    return handle.call(this);
-  };
-  prototype[TIMED] = true;
+/** What postgres.js publishes of a query once it has settled, and of an attempt to connect. */
+interface Traced {
+  query?: string | null;
+  queued?: number;
+  complete?: number | null;
+  error?: unknown;
 }
 
-function timeQuery(query: Query) {
-  const started = performance.now();
-  const attributes = { operation: operation(query.strings) };
-  let settled = false;
-  const record = (extra: Record<string, string>) => {
-    if (settled) return;
-    settled = true;
-    counted(() => instruments().duration.record((performance.now() - started) / 1000, { ...attributes, ...extra }));
-  };
-  for (const key of ['resolve', 'reject'] as const) {
-    let current = query[key];
-    const settle = (value: unknown) => {
-      record(key === 'resolve' ? { outcome: 'ok' } : { outcome: 'error', code: code(value) });
-      return current.call(query, value);
-    };
-    Object.defineProperty(query, key, {
-      configurable: true,
-      enumerable: true,
-      get: () => settle,
-      set: (replacement: typeof current) => {
-        current = replacement;
-      },
-    });
-  }
-}
+let observing = false;
 
-/**
- * The socket postgres.js would make, counted. It is returned connecting, as postgres.js's own is before it writes, so
- * what postgres.js writes waits for the connection, and its own timeout and errors apply as ever. Its `emit` is
- * watched rather than its events, since postgres.js takes every listener off a socket it then wraps in TLS.
- */
-function countedSocket(options: { host: string[]; port: number[]; path: string | false }): net.Socket {
-  const host = options.host[0] as string;
-  const socket = options.path ? net.connect(options.path) : net.connect(options.port[0] as number, host);
-  // postgres.js names the server for TLS from these, as it does on its own sockets.
-  Object.assign(socket, { host, port: options.port[0] });
-  let open = false;
-  let ended = false;
-  const emit = socket.emit;
-  socket.emit = function (this: net.Socket, event: string | symbol, ...args: unknown[]) {
-    if (event === 'connect' && !open && !ended) {
-      open = true;
-      counted(() => {
-        instruments().connections.add(1);
-        instruments().attempts.add(1, { outcome: 'connected' });
-      });
-    } else if (event === 'close' && !ended) {
-      ended = true;
-      counted(() => (open ? instruments().connections.add(-1) : instruments().attempts.add(1, { outcome: 'failed' })));
-    }
-    return Reflect.apply(emit, this, [event, ...args]);
-  } as typeof socket.emit;
-  // Until postgres.js listens for it, which it does as soon as it has the socket, an error would end the process.
-  socket.on('error', () => {});
-  return socket;
+/** Subscribes to postgres.js's channels, once in the process. */
+function observe() {
+  // The instruments, and the connection attempts' zeros, before the first attempt, which is often moments away.
+  counted(instruments);
+  if (observing) return;
+  observing = true;
+  // A query is published from when postgres.js is asked to run it, and its tracing channel's `asyncEnd` once it has
+  // settled, failed or not: a transaction's `begin` and `commit`, and a cursor, each once. A fragment nested in another
+  // query never runs, and is never published.
+  subscribe('tracing:postgres:query:asyncEnd', (message) =>
+    counted(() => {
+      const query = message as Traced;
+      const seconds = ((query.complete ?? performance.now()) - (query.queued ?? performance.now())) / 1000;
+      const outcome = query.error === undefined ? { outcome: 'ok' } : { outcome: 'error', code: code(query.error) };
+      instruments().duration.record(seconds, { operation: operation(query.query), ...outcome });
+    }),
+  );
+  // Each attempt to connect to a host, settled once the connection is ready for queries or has failed.
+  subscribe('tracing:postgres:connect:asyncEnd', (message) =>
+    counted(() => {
+      const outcome = (message as Traced).error === undefined ? 'connected' : 'failed';
+      instruments().attempts.add(1, { outcome });
+    }),
+  );
+  // A connection the pool opened, and the same connection closing: a failed attempt is never one of the pool's.
+  subscribe('postgres:pool', (message) =>
+    counted(() => {
+      const { event } = message as { event?: string };
+      if (event === 'open') instruments().connections.add(1);
+      else if (event === 'close') instruments().connections.add(-1);
+    }),
+  );
 }

@@ -1,9 +1,10 @@
-import { createServer } from 'node:net';
+import { connect as connectTcp, createServer, type Socket } from 'node:net';
 import { metrics } from '@opentelemetry/api';
 import { type DataPoint, type Histogram, MeterProvider, MetricReader } from '@opentelemetry/sdk-metrics';
 import { listenLocal } from '@software-factory/testing';
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import { connect } from '../src/client.ts';
+import { listen } from '../src/events.ts';
 
 // Collected on demand, as Prometheus would scrape them.
 class Reader extends MetricReader {
@@ -31,7 +32,8 @@ const find = (points: DataPoint<number | Histogram>[], attributes: Record<string
 
 describe("the store's client", () => {
   it('times each query by its first word and how it ended, and holds no text of it', async () => {
-    const sql = connect(inject('databaseUrl'), { max: 1 });
+    // Without the read of the server's own types, which postgres.js makes when it needs them.
+    const sql = connect(inject('databaseUrl'), { max: 1, fetch_types: false });
     try {
       const secret = 'a visitor wrote this';
       await sql`select ${secret}::text as said`;
@@ -45,9 +47,9 @@ describe("the store's client", () => {
       await expect(sql.unsafe('selec nothing')).rejects.toThrow();
 
       const points = await series('store.query.duration');
-      // Four selects, the transaction's and the cursor's included, and postgres.js's own of the server's array types as it first
-      // connects; a fragment inside another query is never a query of its own.
-      expect(count(find(points, { operation: 'select', outcome: 'ok' }))).toBe(5);
+      // Four selects, the transaction's and the cursor's included; a fragment inside another query is never a query of
+      // its own.
+      expect(count(find(points, { operation: 'select', outcome: 'ok' }))).toBe(4);
       expect(count(find(points, { operation: 'begin', outcome: 'ok' }))).toBe(1);
       expect(count(find(points, { operation: 'commit', outcome: 'ok' }))).toBe(1);
       expect(count(find(points, { operation: 'select', outcome: 'error', code: '22012' }))).toBe(1);
@@ -117,18 +119,72 @@ describe("the store's client", () => {
     }
   });
 
-  it('leaves postgres.js its own sockets for more than one address, which it rotates through by port', async () => {
-    const one = connect('postgres://nobody@127.0.0.1:5432/none');
-    const hosts = connect('postgres://nobody@127.0.0.1:5432,127.0.0.2:5432/none');
-    const ports = connect(undefined, { host: '127.0.0.1', port: [5432, 5433] as unknown as number });
-    // postgres.js's types leave the socket out of the options it parsed.
-    const socket = (sql: typeof one) => (sql.options as { socket?: unknown }).socket;
+  it('counts the connections of a client given more than one address', async () => {
+    const store = new URL(inject('databaseUrl'));
+    const address = `${store.hostname}:${store.port}`;
+    const before = count(find(await series('store.connection.attempts'), { outcome: 'connected' }));
+    const sql = connect(
+      `${store.protocol}//${store.username}:${store.password}@${address},${address}${store.pathname}`,
+      {
+        max: 1,
+      },
+    );
     try {
-      expect(socket(one)).toBeTypeOf('function');
-      expect(socket(hosts)).toBeFalsy();
-      expect(socket(ports)).toBeFalsy();
+      await sql`select 1`;
+      expect(count((await series('store.connections'))[0])).toBe(1);
+      expect(count(find(await series('store.connection.attempts'), { outcome: 'connected' }))).toBe(before + 1);
     } finally {
-      await Promise.all([one.end(), hosts.end(), ports.end()]);
+      await sql.end();
     }
+    expect(count((await series('store.connections'))[0])).toBe(0);
   });
+
+  it('listens again after its connection drops, however long the store turns it away meanwhile', async () => {
+    // A relay to the store that can cut its connections, and close each new one at once, as a restarting store does.
+    const store = new URL(inject('databaseUrl'));
+    const sockets = new Set<Socket>();
+    let refusing = false;
+    const relay = createServer((client) => {
+      if (refusing) return void client.destroy();
+      const upstream = connectTcp(Number(store.port), store.hostname);
+      for (const socket of [client, upstream]) {
+        sockets.add(socket);
+        socket.on('error', () => {});
+        socket.on('close', () => {
+          sockets.delete(socket);
+          client.destroy();
+          upstream.destroy();
+        });
+      }
+      client.pipe(upstream).pipe(client);
+    });
+    const { port } = await listenLocal(relay);
+    const through = new URL(store);
+    through.port = String(port);
+    // Trying again soon, and for longer than one attempt's timeout, so a client that gives up shows here.
+    const sql = connect(through.href, { backoff: () => 0.05, connect_timeout: 1 });
+    const notifier = connect(inject('databaseUrl'), { max: 1 });
+    try {
+      const heard: number[] = [];
+      let ready = 0;
+      const listening = await listen(
+        sql,
+        (seq) => heard.push(seq),
+        () => ready++,
+      );
+      expect(ready).toBe(1);
+      refusing = true;
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      refusing = false;
+      // Ready again, so its caller reads what it missed, and hearing what is notified from then on.
+      await vi.waitFor(() => expect(ready).toBe(2), { timeout: 5_000 });
+      await notifier`select pg_notify('events', '7')`;
+      await vi.waitFor(() => expect(heard).toEqual([7]));
+      await listening.unlisten();
+    } finally {
+      await Promise.all([sql.end({ timeout: 0 }), notifier.end()]);
+      await new Promise((resolve) => relay.close(resolve));
+    }
+  }, 15_000);
 });

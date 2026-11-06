@@ -120,26 +120,34 @@ interface Traced {
   error?: unknown;
 }
 
-let observing = false;
+// Once in the process, as the channels are: a second copy of this module, such as a bundler's beside Node's own, would
+// otherwise count everything twice. It holds the ids of the connections seen opening, so a connection opened before the
+// first `connect`, by a client made otherwise, is never taken off the count as it closes.
+const OBSERVING = Symbol.for('@software-factory/store.observing');
 
 /** Subscribes to postgres.js's channels, once in the process. */
 function observe() {
   // The instruments, and the connection attempts' zeros, before the first attempt, which is often moments away.
   counted(instruments);
-  if (observing) return;
-  observing = true;
+  const shared = globalThis as { [OBSERVING]?: Set<unknown> };
+  if (shared[OBSERVING]) return;
+  const open = new Set<unknown>();
+  shared[OBSERVING] = open;
   // A query is published from when postgres.js is asked to run it, and its tracing channel's `asyncEnd` once it has
   // settled, failed or not: a transaction's `begin` and `commit`, and a cursor, each once. A fragment nested in another
   // query never runs, and is never published.
   subscribe('tracing:postgres:query:asyncEnd', (message) =>
     counted(() => {
       const query = message as Traced;
-      const seconds = ((query.complete ?? performance.now()) - (query.queued ?? performance.now())) / 1000;
+      // A query published without when it was asked for has no time to record.
+      if (typeof query.queued !== 'number') return;
+      const seconds = ((query.complete ?? performance.now()) - query.queued) / 1000;
       const outcome = query.error === undefined ? { outcome: 'ok' } : { outcome: 'error', code: code(query.error) };
       instruments().duration.record(seconds, { operation: operation(query.query), ...outcome });
     }),
   );
-  // Each attempt to connect to a host, settled once the connection is ready for queries or has failed.
+  // Each attempt to connect to a host, settled once the connection is ready for queries or has failed. One that was ready
+  // is `connected` even if the pool then lets it go unused, as it does when it is ending.
   subscribe('tracing:postgres:connect:asyncEnd', (message) =>
     counted(() => {
       const outcome = (message as Traced).error === undefined ? 'connected' : 'failed';
@@ -149,9 +157,11 @@ function observe() {
   // A connection the pool opened, and the same connection closing: a failed attempt is never one of the pool's.
   subscribe('postgres:pool', (message) =>
     counted(() => {
-      const { event } = message as { event?: string };
-      if (event === 'open') instruments().connections.add(1);
-      else if (event === 'close') instruments().connections.add(-1);
+      const { event, connection } = message as { event?: string; connection?: unknown };
+      if (event === 'open' && !open.has(connection)) {
+        open.add(connection);
+        instruments().connections.add(1);
+      } else if (event === 'close' && open.delete(connection)) instruments().connections.add(-1);
     }),
   );
 }

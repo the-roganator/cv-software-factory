@@ -1,3 +1,4 @@
+import { channel } from 'node:diagnostics_channel';
 import { connect as connectTcp, createServer, type Socket } from 'node:net';
 import { metrics } from '@opentelemetry/api';
 import { type DataPoint, type Histogram, MeterProvider, MetricReader } from '@opentelemetry/sdk-metrics';
@@ -32,8 +33,7 @@ const find = (points: DataPoint<number | Histogram>[], attributes: Record<string
 
 describe("the store's client", () => {
   it('times each query by its first word and how it ended, and holds no text of it', async () => {
-    // Without the read of the server's own types, which postgres.js makes when it needs them.
-    const sql = connect(inject('databaseUrl'), { max: 1, fetch_types: false });
+    const sql = connect(inject('databaseUrl'), { max: 1 });
     try {
       const secret = 'a visitor wrote this';
       await sql`select ${secret}::text as said`;
@@ -48,7 +48,7 @@ describe("the store's client", () => {
 
       const points = await series('store.query.duration');
       // Four selects, the transaction's and the cursor's included; a fragment inside another query is never a query of
-      // its own.
+      // its own, and postgres.js's read of the server's types, as it first connects, is never published.
       expect(count(find(points, { operation: 'select', outcome: 'ok' }))).toBe(4);
       expect(count(find(points, { operation: 'begin', outcome: 'ok' }))).toBe(1);
       expect(count(find(points, { operation: 'commit', outcome: 'ok' }))).toBe(1);
@@ -97,6 +97,16 @@ describe("the store's client", () => {
     } finally {
       await sql.end();
     }
+  });
+
+  it('takes no connection off the count that it never saw open, and times no query it was not told the start of', async () => {
+    const before = count(find(await series('store.query.duration'), { operation: 'select', outcome: 'ok' }));
+    connect(inject('databaseUrl')).end();
+    // As postgres.js publishes them, for a connection opened before the first connect() and a query with no start.
+    channel('postgres:pool').publish({ event: 'close', connection: -1 });
+    channel('tracing:postgres:query:asyncEnd').publish({ query: 'select 1', complete: 1 });
+    expect(count((await series('store.connections'))[0])).toBe(0);
+    expect(count(find(await series('store.query.duration'), { operation: 'select', outcome: 'ok' }))).toBe(before);
   });
 
   it('answers every query and opens every connection when counting them throws', async () => {

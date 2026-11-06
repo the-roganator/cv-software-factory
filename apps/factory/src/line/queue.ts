@@ -35,8 +35,7 @@
  * (ended, or not yet ended when it reopened), and until then the line hands it to nobody.
  */
 import { cutTo } from '@software-factory/events';
-import type { JSONValue } from '@software-factory/store';
-import { askedByMartin, byMartin, lastEnd, openedAsImprovement } from '@software-factory/store';
+import { askedByMartin, byMartin, type JSONValue, lastEnd, openedAsImprovement } from '@software-factory/store';
 import type { Sql, TransactionSql } from 'postgres';
 import type { Take } from '../../../../policy/line.ts';
 import type { Handback } from '../runners/steps.ts';

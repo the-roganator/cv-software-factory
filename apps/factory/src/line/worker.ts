@@ -103,7 +103,6 @@ import {
   WORDS_LEAVE_HELD,
   workItemsWords,
 } from '@software-factory/events';
-import type { JSONValue } from '@software-factory/store';
 import {
   askedByMartin,
   byMartin,
@@ -111,6 +110,7 @@ import {
   flagsTaken,
   fromMartin,
   IgnoredCommands,
+  type JSONValue,
   LINE_ROLE,
   lastEnd,
   latestControls,

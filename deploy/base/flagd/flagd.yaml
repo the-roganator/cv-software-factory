@@ -4,10 +4,14 @@
 # the app, so the app's pods hold no token and no route to the API, and nothing the app's repository may write in
 # `website` can touch flagd, its account or its state.
 #
-# What it reads, at v0.17.0 (core/pkg/sync/kubernetes/kubernetes_sync.go): an informer on `featureflags` in its own
-# namespace, which lists and watches the whole namespace with no selector, and a `get` of `flags` by name when the
-# informer's cache misses. So its Role grants get, list and watch on `featureflags` in `flagd`, with no names, and
-# writes nothing; admission keeps `flags` the only one there (deploy/base/admission/flagd/flags.yaml).
+# What it reads, at v0.18.2 (core/pkg/sync/kubernetes/kubernetes_sync.go): an informer on `featureflags` in its own
+# namespace, which lists and watches with a field selector on `metadata.name`, so `flags` alone, and a `get` of `flags`
+# by name when the informer's cache misses. Kubernetes authorizes a list or watch with that selector against a Role's
+# names, so its Role grants get, list and watch on `flags` alone, by name, and writes nothing; admission keeps `flags`
+# the only one there all the same (deploy/base/admission/flagd/flags.yaml). No test here sees flagd's selector: a flagd
+# whose watch dropped it would start on its `get`, and be ready, but be refused its list and watch, and follow no change
+# to `flags` (caught only by the admin service's check on the revision the app holds). So a new flagd is tried on the
+# cluster before it merges, until it follows a staged change.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -24,6 +28,7 @@ metadata:
 rules:
   - apiGroups: [core.openfeature.dev]
     resources: [featureflags]
+    resourceNames: [flags]
     verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -41,7 +46,7 @@ subjects:
     name: flagd
     namespace: flagd
 ---
-# Its readiness, as v0.17.0 has it (flagd/pkg/runtime/runtime.go and the kubernetes sync above): `/readyz` on the
+# Its readiness, as v0.18.2 has it (flagd/pkg/runtime/runtime.go and the kubernetes sync above): `/readyz` on the
 # management port answers 200 once the first flag set it read is in its evaluator and its watch has started, and 412
 # before. flagd reads `flags` before it serves anything, and exits if it cannot: the resource missing, its Role or
 # binding missing, or the API out of reach. So a flagd that starts without its watch restarts until it has one, and is
@@ -94,7 +99,7 @@ spec:
         - name: flagd
           # Named by digest in `flagd-images` (deploy/base/admission/flagd), which deploy/base/kustomization.yaml copies
           # from here: this is its one pin.
-          image: ghcr.io/open-feature/flagd:v0.17.0@sha256:c9f21380dfe51d3ad662a116bc350c7692dead7a8d1e640aa0f6b40cd3d966df
+          image: ghcr.io/open-feature/flagd:v0.18.2@sha256:a1b6de22ef4f8a4f10af2f9d0009ccef946d707d4211db342f0f2422778b764a
           args:
             - start
             - --uri=core.openfeature.dev/flagd/flags

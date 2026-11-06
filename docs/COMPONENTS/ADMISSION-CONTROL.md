@@ -56,7 +56,7 @@ Everything else in the spec and the status, and the Rollout's labels, annotation
 
 ## `flags`
 
-`flags` in `flagd` holds the state of every [feature flag](FEATURE-FLAGS.md). flagd's watch lists the whole namespace, so its Role may read every FeatureFlag there, and flagd keeps serving the last flags it read when its resource goes. So `flagd-flags` (`deploy/base/admission/flagd/flags.yaml`) refuses any FeatureFlag in `flagd` but `flags`, and refuses the deletion of `flags`, but as its namespace is deleted, which takes flagd with it: off is a change to a flag, never a deletion. It holds every request, Argo CD's and an administrator's included. Like the hold on the Rollout, it is a ValidatingAdmissionPolicy, which holds whether or not Kyverno is up; it denies, and fails closed.
+`flags` in `flagd` holds the state of every [feature flag](FEATURE-FLAGS.md). flagd's Role reads `flags` alone, by name, and flagd keeps serving the last flags it read when its resource goes. So `flagd-flags` (`deploy/base/admission/flagd/flags.yaml`) refuses any FeatureFlag in `flagd` but `flags`, and refuses the deletion of `flags`, but as its namespace is deleted, which takes flagd with it: off is a change to a flag, never a deletion. It holds every request, Argo CD's and an administrator's included. Like the hold on the Rollout, it is a ValidatingAdmissionPolicy, which holds whether or not Kyverno is up; it denies, and fails closed.
 
 ## The admin service's hold on `flags`
 

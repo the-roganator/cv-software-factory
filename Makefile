@@ -298,7 +298,7 @@ e2e: ## Run every browser test CI runs, in the pinned Playwright image beside a 
 	@set -e; net=software-factory-e2e-$$$$; db=$$net-postgres; url=; \
 	trap 'docker rm -f -v $$db >/dev/null 2>&1 || true; docker network rm $$net >/dev/null 2>&1 || true' EXIT; \
 	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
-	image=$$(docker build --quiet --target playwright - < apps/factory/Dockerfile.browser); \
+	image=$$(docker build --load --quiet --target playwright - < apps/factory/Dockerfile.browser); [ -n "$$image" ]; \
 	docker network create $$net >/dev/null; \
 	if [ -z "$(UPDATE)" ]; then \
 		docker run -d --name $$db --network $$net -e POSTGRES_USER=factory -e POSTGRES_PASSWORD=test $(POSTGRES) \

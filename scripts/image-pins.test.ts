@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Docker's official images are pinned by digest, and Dependabot moves the pins it can read. Node is pinned in three
+ * Docker's official images are pinned by digest, and Dependabot moves the pins it can read. Node is pinned in four
  * Dockerfiles, which Dependabot moves together; a pin left behind runs a different image from the others. Postgres
  * has one pin, its StatefulSet's, which everything else that runs it reads, so that Dependabot's update of it is the
  * whole update. Pins of one image share a name, a major version and a tag suffix (node 24's alpine3.24 and
@@ -193,7 +193,12 @@ describe("Node's release", () => {
   it('disagrees when the images move to a release mise.toml has not', () => {
     const moved = (file: string) => readFileSync(file, 'utf-8').replace(/(FROM node:)\d+\.\d+\.\d+/g, '$124.99.0');
     expect(behind(node(moved)).map(([file]) => file)).toEqual(
-      expect.arrayContaining(['apps/console/Dockerfile', 'apps/factory/Dockerfile', 'apps/runner/Dockerfile']),
+      expect.arrayContaining([
+        'apps/console/Dockerfile',
+        'apps/factory/Dockerfile',
+        'apps/factory/Dockerfile.browser',
+        'apps/runner/Dockerfile',
+      ]),
     );
   });
 
@@ -202,6 +207,12 @@ describe("Node's release", () => {
     const stage = browser.split(/^FROM browsers AS playwright$/m)[1]?.split(/^FROM /m)[0] ?? '';
     expect(stage).toMatch(/^RUN dpkg --purge nodejs /m);
     expect(stage).toContain('COPY --from=node /usr/local/bin/node /usr/local/bin/node');
+    // pnpm comes through corepack, which `corepack enable` needs on the path.
+    expect(stage).toContain(
+      'COPY --from=node /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack',
+    );
+    expect(stage).toContain('RUN ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack');
+    expect(stage).toContain('[ "$(which -a node)" = /usr/local/bin/node ]');
     // The probes' image and `make e2e` are built on that stage.
     expect(browser.match(/^FROM \S+/gm)?.slice(2)).toEqual(['FROM browsers', 'FROM playwright', 'FROM playwright']);
   });

@@ -4,9 +4,10 @@
 #
 #     docker build --file apps/factory/Dockerfile.browser .
 #
-# The Playwright package in the lockfile and the browsers in the image must be the same release. This is the image's
-# one pin: the Makefile and the pull request checks run their browser tests in it too. Dependabot moves it and the
-# package in one pull request, and scripts/image-pins.test.ts fails while they disagree.
+# The Playwright package in the lockfile and the browsers in the image must be the same release. This is the
+# Playwright image's one pin: `make e2e` runs the browser tests in the `playwright` stage below, and the pull request
+# checks in the image itself, with mise.toml's Node put first. Dependabot moves it and the package in one pull
+# request, and scripts/image-pins.test.ts fails while they disagree.
 #
 # Playwright's image carries a Node of its own, which its tag does not name and which moves to Node's next major
 # when Playwright's does (1.65 moved it from 24 to 26, with no corepack). The probes run on the repository's Node
@@ -31,7 +32,9 @@ FROM browsers AS playwright
 RUN dpkg --purge nodejs && rm -rf /usr/lib/node_modules /usr/bin/npm /usr/bin/npx /usr/bin/yarn /usr/bin/yarnpkg
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
-RUN ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+# Then the one Node left on the path is the Node image's.
+RUN ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+  && [ "$(which -a node)" = /usr/local/bin/node ]
 
 # The production dependencies, readable by the unprivileged runtime user and writable by root alone, set in the layer
 # that installs them, so a change to the code alone writes none of them again.

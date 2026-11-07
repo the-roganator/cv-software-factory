@@ -108,7 +108,16 @@ export interface TriageOptions {
   onTriaged?: (outcome: Outcome, signal: InboxSignal, waitedSeconds: number, ticketOpened: boolean) => void;
   /** How `run` waits out a store it cannot reach: `OUTAGE`, unless a test shortens it. */
   outage?: Outage;
+  /** How often a copy waiting for triage's lock asks for it again: `LOCK_ASKED_MS`, unless a test shortens it. */
+  lockAskedMs?: number;
 }
+
+/**
+ * A second copy asks for the lock every few seconds, rather than waiting on it in a query: a query cancelled when the
+ * copy is stopped could be granted the lock just before, and the cancel then land on the unlock, which would leave the
+ * lock held on a connection back in the pool.
+ */
+export const LOCK_ASKED_MS = 2000;
 
 /** How `run` waits out an event store it cannot reach. */
 export interface Outage {
@@ -172,7 +181,7 @@ export class Triage {
   readonly #ignored: IgnoredCommands;
 
   constructor(options: TriageOptions) {
-    this.#o = { now: () => new Date(), outage: OUTAGE, ...options };
+    this.#o = { now: () => new Date(), outage: OUTAGE, lockAskedMs: LOCK_ASKED_MS, ...options };
     this.#ignored = new IgnoredCommands(this.#o.sql, this.#o.log);
     this.#events = {
       append: async (events) => {
@@ -235,13 +244,13 @@ export class Triage {
     const { sql, log, outage } = this.#o;
     const wake = new Wake();
     abort.addEventListener('abort', wake.nudge);
-    const listening = await Promise.all([
-      sql.listen('inbox', wake.nudge),
-      sql.listen('events', () => {
-        this.#settleDue = true;
-        wake.nudge();
-      }),
-    ]);
+    const heard = () => {
+      this.#settleDue = true;
+      wake.nudge();
+    };
+    // Each listen is made again after its connection drops, with nothing heard meanwhile: so when it is, triage looks,
+    // and finds out at once whether it still holds its lock.
+    const listening = await Promise.all([sql.listen('inbox', wake.nudge, heard), sql.listen('events', heard, heard)]);
     let failures = 0;
     try {
       while (!abort.aborted) {
@@ -269,24 +278,17 @@ export class Triage {
   /**
    * Takes triage's lock on a connection of its own, then triages while it holds, until aborted or until anything fails,
    * which it throws. `going` is told each time the store answered as it should: a pass went through, or another copy
-   * holds the lock, which this one then waits for, as no failure.
+   * holds the lock, which this one then waits for, as no failure. Waking for a signal or an event, it asks for the lock
+   * then too.
    */
   async #whileLocked(abort: AbortSignal, wake: Wake, going: () => void): Promise<void> {
     const lock = await this.#o.sql.reserve();
     try {
-      const [taken] = await lock<{ taken: boolean }[]>`select pg_try_advisory_lock(hashtext('triage')) as taken`;
-      if (!taken?.taken) {
+      // Another copy may hold it: this one waits, asking again, until it has it or is stopped.
+      while (!(await lock<{ taken: boolean }[]>`select pg_try_advisory_lock(hashtext('triage')) as taken`)[0]?.taken) {
         going();
-        // Waits as long as the other copy triages, unless stopped meanwhile.
-        const waiting = lock`select pg_advisory_lock(hashtext('triage'))`;
-        const stop = () => void waiting.cancel();
-        abort.addEventListener('abort', stop);
-        if (abort.aborted) stop();
-        try {
-          await waiting;
-        } finally {
-          abort.removeEventListener('abort', stop);
-        }
+        await wake.after(this.#o.lockAskedMs);
+        if (abort.aborted) return;
       }
       this.#lock = lock;
       // An event appended while the store was out of reach was heard by no one, and a pass that failed may have been

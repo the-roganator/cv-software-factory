@@ -71,6 +71,7 @@ const triage = (sql: Sql, options: Partial<TriageOptions> = {}) =>
     read: async () => null,
     log: quiet,
     outage: brief,
+    lockAskedMs: 100,
     ...options,
   });
 
@@ -112,13 +113,19 @@ describe('triage through a store it cannot reach', () => {
     expect(await lockers()).toEqual([]);
   });
 
-  it('never has two copies hold the lock, and the one waiting takes over when the other loses it', async () => {
-    const one = start(triage(database.as.triage));
+  it('never has two copies hold the lock, and the one waiting may take it when the other loses it', async () => {
+    /** The signals each copy triaged. */
+    const took = { one: [] as string[], two: [] as string[] };
+    const logged = (copy: keyof typeof took) => ({
+      info: (fields: { signal?: string }, message: string) => {
+        if (message === 'triaged a signal' && fields.signal) took[copy].push(fields.signal);
+      },
+      warn: () => {},
+    });
+    const one = start(triage(database.as.triage, { log: logged('one') }));
     await expect.poll(holder).toBeDefined();
     const first = (await holder()) as number;
-    const two = start(triage(other));
-    // The second copy waits for the lock.
-    await expect.poll(async () => (await lockers()).length).toBe(2);
+    const two = start(triage(other, { log: logged('two') }));
     const watch = { granted: 0, stop: false };
     const watching = (async () => {
       while (!watch.stop) {
@@ -126,12 +133,16 @@ describe('triage through a store it cannot reach', () => {
         await new Promise((tick) => setTimeout(tick, 10));
       }
     })();
+    // The second copy waits: the first triages.
+    const before = await sendSignal(database.owner, found('/two-copies/before'));
+    await expect.poll(() => triaged(before)).toBe('opened');
+    expect(took).toEqual({ one: [before], two: [] });
     await drop(first);
-    // The copy that waited holds it at once. The first finds its lock gone when it next wakes, here for a signal, and
-    // waits in turn, on a new connection; the one that holds the lock triages the signal.
-    const id = await sendSignal(database.owner, found('/two-copies'));
-    await expect.poll(() => triaged(id), { timeout: 4000 }).toBe('opened');
-    await expect.poll(async () => (await lockers()).map((l) => l.granted)).toEqual([true, false]);
+    // The first finds its lock gone when it next wakes, here for a signal, and asks for it again on a new connection.
+    // Whichever copy has it then triages the signal, once.
+    const after = await sendSignal(database.owner, found('/two-copies/after'));
+    await expect.poll(() => triaged(after), { timeout: 4000 }).toBe('opened');
+    expect([...took.one, ...took.two].filter((id) => id === after)).toHaveLength(1);
     expect(await holder()).not.toBe(first);
     watch.stop = true;
     await watching;

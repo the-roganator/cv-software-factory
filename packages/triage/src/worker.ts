@@ -54,7 +54,7 @@ import {
   lineStopped,
   nextWorkItem,
 } from '@software-factory/store';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { BURST, ENVIRONMENT, INBOX, REPORT_TEXT, SYMPTOMS } from '../../../policy/triage.ts';
 import {
   type AskedAgain,
@@ -183,12 +183,31 @@ export class Triage {
   constructor(options: TriageOptions) {
     this.#o = { now: () => new Date(), outage: OUTAGE, lockAskedMs: LOCK_ASKED_MS, ...options };
     this.#ignored = new IgnoredCommands(this.#o.sql, this.#o.log);
-    this.#events = {
-      append: async (events) => {
-        await this.#holding();
-        return this.#o.events.append(events);
-      },
-    };
+    this.#events = { append: (events) => this.#append(events) };
+  }
+
+  /**
+   * Appends, while `run` holds the lock, on the lock's own connection, in one transaction: it commits only while that
+   * connection is the one that took the lock, so a copy that has lost it appends nothing (`LockLost`).
+   */
+  async #append(events: Parameters<EventWriter['append']>[0]) {
+    const lock = this.#lock;
+    if (!lock) return this.#o.events.append(events);
+    await this.#holding();
+    // A reserved connection has no `begin` of its own: it is the transaction, between this begin and its commit.
+    const tx = lock.sql as unknown as TransactionSql;
+    try {
+      await lock.sql`begin`;
+      const stored = await this.#o.events.appendWithin(tx, events);
+      await lock.sql`commit`;
+      return stored;
+    } catch (error) {
+      await lock.sql`rollback`.catch(() => {});
+      // A refused append is refused; one that failed because the connection went is the lock lost. If the commit was
+      // the one that failed, the events may be stored: their ids are the signal's, so taking it again stores none twice.
+      await this.#holding();
+      throw error;
+    }
   }
 
   /**
@@ -227,8 +246,11 @@ export class Triage {
     } catch (error) {
       if (error instanceof LockLost) {
         // Not the signal's fault either: it keeps its attempt, and the copy that holds the lock may take it at once.
+        // Only its own claim: one whose lease ran out may be another copy's by now.
         await this.#o.sql`update inbox set attempts = attempts - 1, not_before = clock_timestamp()
-                          where id = ${taken.id}`.catch(() => {});
+                          where id = ${taken.id} and attempts = ${taken.attempts} and triaged_at is null`.catch(
+          () => {},
+        );
         throw error;
       }
       const reason = error instanceof Error ? error.message : String(error);
@@ -268,7 +290,14 @@ export class Triage {
     };
     // Each listen is made again after its connection drops, with nothing heard meanwhile: so when it is, triage looks,
     // and finds out at once whether it still holds its lock.
-    const listening = await Promise.all([sql.listen('inbox', wake.nudge, heard), sql.listen('events', heard, heard)]);
+    const made = await Promise.allSettled([sql.listen('inbox', wake.nudge, heard), sql.listen('events', heard, heard)]);
+    const listening = made.flatMap((m) => (m.status === 'fulfilled' ? [m.value] : []));
+    const failed = made.find((m) => m.status === 'rejected');
+    if (failed) {
+      abort.removeEventListener('abort', wake.nudge);
+      await Promise.all(listening.map((l) => l.unlisten())).catch(() => {});
+      throw failed.reason;
+    }
     let failures = 0;
     try {
       while (!abort.aborted) {
@@ -285,7 +314,8 @@ export class Triage {
             { err: error, failures, waitMs },
             'triage could not reach the store, and takes its lock again first',
           );
-          await wake.after(waitMs);
+          // A timer alone, which only stopping cuts short: a signal heard meanwhile would bring the next try forward.
+          await pause(waitMs, abort);
         }
       }
     } finally {
@@ -489,6 +519,7 @@ export class Triage {
       this.#settleFailures.delete(key);
       log.warn({ workItem, cause: held.cause, decision }, 'left an answer it could not act on, and asked Martin again');
     } catch (failure) {
+      if (failure instanceof LockLost) throw failure;
       this.#settleFailures.set(key, tries - 1);
       log.warn({ workItem, cause: held.cause, err: failure }, 'could not ask Martin again');
     }
@@ -1107,4 +1138,17 @@ class LockLost extends Error {
     super('triage lost its lock on the store', { cause });
     this.name = 'LockLost';
   }
+}
+
+/** Waits `ms`, or until aborted. */
+function pause(ms: number, abort: AbortSignal): Promise<void> {
+  return new Promise((done) => {
+    const timer = setTimeout(stop, ms);
+    abort.addEventListener('abort', stop, { once: true });
+    function stop() {
+      clearTimeout(timer);
+      abort.removeEventListener('abort', stop);
+      done();
+    }
+  });
 }

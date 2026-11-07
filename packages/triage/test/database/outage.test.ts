@@ -182,7 +182,7 @@ describe('triage through a store it cannot reach', () => {
     await running;
   });
 
-  it('gives up on a store that keeps failing, so the restarts say so', async () => {
+  it('gives up on a store that keeps failing, so the restarts say so, waiting each time however often it is woken', async () => {
     let tried = 0;
     class Down extends Triage {
       override async takeOne(): Promise<never> {
@@ -190,7 +190,9 @@ describe('triage through a store it cannot reach', () => {
         throw new Error('connect ECONNREFUSED 127.0.0.1:5432');
       }
     }
+    const outage: Outage = { firstMs: 200, mostMs: 1000, tries: 4 };
     const sql = database.as.triage;
+    const began = Date.now();
     const running = start(
       new Down({
         sql,
@@ -198,11 +200,24 @@ describe('triage through a store it cannot reach', () => {
         judge: noJudge,
         read: async () => null,
         log: quiet,
-        outage: brief,
+        outage,
       }),
     );
+    // Signals keep arriving while it waits: none brings the next try forward.
+    let flooding = true;
+    const flood = (async () => {
+      while (flooding) {
+        await database.owner`select pg_notify('inbox', 'a signal')`;
+        await new Promise((tick) => setTimeout(tick, 20));
+      }
+    })();
     await expect(running).rejects.toThrow('ECONNREFUSED');
-    expect(tried).toBe(brief.tries);
+    const took = Date.now() - began;
+    flooding = false;
+    await flood;
+    expect(tried).toBe(outage.tries);
+    // 200, 400 and 800 ms between the four tries.
+    expect(took).toBeGreaterThanOrEqual(1400);
     expect(await lockers()).toEqual([]);
   });
 

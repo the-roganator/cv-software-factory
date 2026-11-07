@@ -25,7 +25,7 @@ Each public repository's `build.yml` pushes its images to GHCR from `main`. Then
 
 Fulcio certifies the workflow's identity for minutes, and the signature goes into Rekor, so there is no key to keep or steal.
 
-Each cosign command is tried again, up to four times over about three and a half minutes, when it fails on something that passes: Rekor, Fulcio or GHCR answering 429 or 5xx, or the network failing on the way. Any other failure fails the job at once. An image whose job still fails is in GHCR unsigned, and the deploy watch does not propose it until the job is run again. A try again can leave a second signature or SBOM by the same identity, which changes nothing: each place that checks accepts any one that verifies.
+Each repository's job runs each cosign command up to four times, 20, 60 and 120 seconds apart, when cosign's error names something that passes: Rekor, Fulcio or GHCR answering 429, 500, 502, 503 or 504, or the network failing on the way. It starts no try once it has spent eight minutes on Sigstore, which leaves the job inside its 20-minute limit. Any other error fails the job at once. An image whose job still fails is in GHCR unsigned, and the deploy watch does not propose it until the job is run again. A try again can leave a second signature or SBOM by the same identity, which changes nothing: each place that checks accepts any one that verifies.
 
 ## Whose signature
 

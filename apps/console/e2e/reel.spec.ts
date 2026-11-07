@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { attacksUrl, consoleUrl, END, expect, MERGE_WAITING, ready, test, WIDTHS } from './support.ts';
+import { attacksUrl, consoleUrl, END, expect, fixtureUrl, MERGE_WAITING, ready, test, WIDTHS } from './support.ts';
 
 const renders = (page: Page) =>
   page.evaluate(() => (globalThis as { sfRenders?: { reel: number } }).sfRenders?.reel ?? -1);
@@ -279,6 +279,15 @@ for (const viewport of [WIDTHS.phone, { width: 320, height: 640 }]) {
       await page.evaluate(() => document.fonts.ready);
       await expect(page.locator('.sheet-head .out')).toHaveText(/waiting for release/i);
       expect(await page.locator('.sheet-head').evaluate(headClash)).toBe('');
+    });
+
+    test('keeps a ticket’s summary, a commit’s whole hash and all, on the screen', async ({ page }) => {
+      await page.goto(fixtureUrl({ item: '1000', sheet: true }));
+      await page.getByRole('dialog').first().waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      await expect(page.locator('.sheet .lead')).toContainText(/[0-9a-f]{40}/);
+      const scroller = page.locator('.sheet-scroll');
+      expect(await scroller.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
     });
   });
 }

@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.11.0](https://github.com/the-roganator/cv-software-factory/compare/v0.10.0...v0.11.0) (2026-11-07)
+
+
+### Features
+
+* **admin:** a session lasts an hour from sign-in ([#871](https://github.com/the-roganator/cv-software-factory/issues/871)) ([baf1bc9](https://github.com/the-roganator/cv-software-factory/commit/baf1bc9a8e6c92c1c12dce3aa0f8260ff4271442))
+* **admin:** end the passkey given again early from the console's pill ([#872](https://github.com/the-roganator/cv-software-factory/issues/872)) ([324f19f](https://github.com/the-roganator/cv-software-factory/commit/324f19f0a5566bfbf97df3766b455c52406c546b))
+* **console:** show a merge held for its risk tags, and what Lights-out and auto-merge need ([#879](https://github.com/the-roganator/cv-software-factory/issues/879)) ([d80b862](https://github.com/the-roganator/cv-software-factory/commit/d80b86288d12d986311c3a05fd19bf41b99ca6e6))
+* **console:** show each guardrail's refusals in the last seven days ([#873](https://github.com/the-roganator/cv-software-factory/issues/873)) ([15a57d8](https://github.com/the-roganator/cv-software-factory/commit/15a57d830320c63bee79b043c259020badb11990))
+* **github:** let the line add its pull request to the merge queue, and read what it decides by ([#876](https://github.com/the-roganator/cv-software-factory/issues/876)) ([91805dd](https://github.com/the-roganator/cv-software-factory/commit/91805ddc658bc4e730a7c39aa66e1c530177107c))
+* **implement:** hold a pull request while code scanning has an alert open on it ([#861](https://github.com/the-roganator/cv-software-factory/issues/861)) ([b3bbe6a](https://github.com/the-roganator/cv-software-factory/commit/b3bbe6ae824130521d62cb06006ad700830ecedb))
+* **line:** add the app's deploy pull request to the merge queue as an exact pin ([#882](https://github.com/the-roganator/cv-software-factory/issues/882)) ([e7a1ba3](https://github.com/the-roganator/cv-software-factory/commit/e7a1ba31ebc4584fb88d8e852710d08271eaf033))
+* **line:** merge its own pull requests through the queue when the level allows ([#878](https://github.com/the-roganator/cv-software-factory/issues/878)) ([b7525f1](https://github.com/the-roganator/cv-software-factory/commit/b7525f18a20106bbd0fbf2b6d103e209b1b0323c))
+* **review:** route approval by the diff's risk tags, in one required check ([#875](https://github.com/the-roganator/cv-software-factory/issues/875)) ([fa97ff5](https://github.com/the-roganator/cv-software-factory/commit/fa97ff5727ef535db3b433042072e080366039c0))
+
+
+### Bug Fixes
+
+* **admin:** leave a canary whose stable version has no pod when the line stops ([#903](https://github.com/the-roganator/cv-software-factory/issues/903)) ([14724ff](https://github.com/the-roganator/cv-software-factory/commit/14724ff40272ee003c966b16a8b123a90e58117f))
+* **console:** draw every way forward to GitHub as one, beside what it does ([#884](https://github.com/the-roganator/cv-software-factory/issues/884)) ([6b5b93a](https://github.com/the-roganator/cv-software-factory/commit/6b5b93a7b16ab4e83af8fccd7c4ad9128f00202a))
+* **console:** render the e2e snapshots' text unhinted, as a desktop browser does ([#881](https://github.com/the-roganator/cv-software-factory/issues/881)) ([13ce880](https://github.com/the-roganator/cv-software-factory/commit/13ce8807a006320f3996caddeb7645c335cc2482))
+* **deploy:** publish the local cluster's Kubernetes API on 127.0.0.1 alone ([#897](https://github.com/the-roganator/cv-software-factory/issues/897)) ([3edfe04](https://github.com/the-roganator/cv-software-factory/commit/3edfe0475f774fe87a8a6dad1d4d1630f26321d2))
+* **github:** leave the factory's deploy pull requests out of what a deploy brings ([#891](https://github.com/the-roganator/cv-software-factory/issues/891)) ([762b050](https://github.com/the-roganator/cv-software-factory/commit/762b050bcc977b92ea4bbb973fcf625f15e7e51b))
+* **github:** read a polled answer through each caller's schema, 304 included ([#886](https://github.com/the-roganator/cv-software-factory/issues/886)) ([2d87504](https://github.com/the-roganator/cv-software-factory/commit/2d875045a04f19fda0ed216f14857012177ea572))
+* **github:** the attack door answers no error text it did not write ([#859](https://github.com/the-roganator/cv-software-factory/issues/859)) ([5588599](https://github.com/the-roganator/cv-software-factory/commit/5588599a72fb188736edc66a32162d89980929c6))
+* **implement:** list a pull request's files from the files API in verify.sh ([#885](https://github.com/the-roganator/cv-software-factory/issues/885)) ([782b27b](https://github.com/the-roganator/cv-software-factory/commit/782b27b2bc2ddb559cb68e1b84f45f973b2c1b88))
+* **implement:** match a code-owned file's whole path in verify.sh's CODEOWNERS section ([#895](https://github.com/the-roganator/cv-software-factory/issues/895)) ([ee23717](https://github.com/the-roganator/cv-software-factory/commit/ee23717fdf5abd027f8bb3c147f8a13ca1051333))
+* **line:** a new store's line waits for Martin's first start, and takes every ticket by default ([#902](https://github.com/the-roganator/cv-software-factory/issues/902)) ([8bcc217](https://github.com/the-roganator/cv-software-factory/commit/8bcc2176d681cdbc1d28be446096cdc837d2d47e))
+* **probes:** launch every factory browser with text unhinted, from one setting ([#887](https://github.com/the-roganator/cv-software-factory/issues/887)) ([a3877b3](https://github.com/the-roganator/cv-software-factory/commit/a3877b35c80a3613c671d3d81776ccbb812e567c))
+* **samples:** give each variant's copy of the app a port of its own ([#894](https://github.com/the-roganator/cv-software-factory/issues/894)) ([57fd7ff](https://github.com/the-roganator/cv-software-factory/commit/57fd7ff7fc1d52ec94918bc87d9b4e445a0f0e51))
+
 ## [0.10.0](https://github.com/the-roganator/cv-software-factory/compare/v0.9.0...v0.10.0) (2026-11-04)
 
 

@@ -64,6 +64,17 @@ html[data-motion="off"] .scrim {
 .sheet-head .kind {
   font-size: 13px;
 }
+/* A long state wraps inside the title's column, where the reel's card keeps it to one line, its dot beside the first. */
+.sheet-head .out,
+.rel-head .out {
+  align-items: flex-start;
+  white-space: normal;
+  line-height: 1.4;
+}
+.sheet-head .out .dot,
+.rel-head .out .dot {
+  margin-top: calc(0.7em - 4px);
+}
 .sheet-head h2 {
   margin: 8px 0 0;
   font: 400 40px / 1.02 var(--font-display);
@@ -412,10 +423,6 @@ details.rel:not([open]) {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 6px 12px;
-}
-.rel-head .out {
-  white-space: normal;
-  line-height: 1.4;
 }
 summary.rel-head {
   cursor: pointer;

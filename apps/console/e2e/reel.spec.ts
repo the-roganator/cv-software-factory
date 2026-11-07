@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { attacksUrl, consoleUrl, END, expect, ready, test, WIDTHS } from './support.ts';
+import { attacksUrl, consoleUrl, END, expect, MERGE_WAITING, ready, test, WIDTHS } from './support.ts';
 
 const renders = (page: Page) =>
   page.evaluate(() => (globalThis as { sfRenders?: { reel: number } }).sfRenders?.reel ?? -1);
@@ -226,6 +226,48 @@ test.describe('the sheet', () => {
     await expect(page.locator('.event.now')).toContainText('Ticket #1296');
   });
 });
+
+/**
+ * The sheet's head keeps its words clear of its buttons: on a phone, and on the narrowest screen reflow allows, every
+ * work item's kicker and title stay inside their column, a long state wrapping rather than running under the buttons.
+ * At the samples' end, and as #1310's merge waits for a release, the longest state they show.
+ */
+for (const viewport of [WIDTHS.phone, { width: 320, height: 640 }]) {
+  test.describe(`${viewport.width}px, the sheet's head`, () => {
+    test.use({ viewport });
+
+    for (const at of [END, MERGE_WAITING]) {
+      test(`keeps every work item's words clear of its buttons, at ${new Date(at).toISOString()}`, async ({ page }) => {
+        await page.goto(consoleUrl({ item: '1310', sheet: true, at }));
+        const sheet = page.getByRole('dialog').first();
+        await sheet.waitFor();
+        await page.evaluate(() => document.fonts.ready);
+        // Back to the first work item, then forward through every one.
+        const previous = sheet.getByRole('button', { name: 'Previous work item' });
+        while (await previous.isEnabled()) await previous.click();
+        const next = sheet.getByRole('button', { name: 'Next work item' });
+        for (;;) {
+          const clash = await page.locator('.sheet-head').evaluate((head) => {
+            const nav = head.querySelector('.sheet-nav')?.getBoundingClientRect();
+            const column = head.querySelector('.sheet-title')?.getBoundingClientRect();
+            if (!nav || !column) return 'no head';
+            for (const el of head.querySelectorAll('.sheet-title *')) {
+              const box = el.getBoundingClientRect();
+              if (box.width === 0) continue;
+              if (box.right > column.right + 0.5) return `${el.textContent} runs out of its column`;
+              const apart = box.right <= nav.left || box.bottom <= nav.top || box.top >= nav.bottom;
+              if (!apart) return `${el.textContent} touches the buttons`;
+            }
+            return '';
+          });
+          expect(clash, (await page.locator('#sheet-title').textContent()) ?? '').toBe('');
+          if (!(await next.isEnabled())) break;
+          await next.click();
+        }
+      });
+    }
+  });
+}
 
 test.describe('the line', () => {
   test('opens a stage panel that lists what is in the stage, each opening its sheet', async ({ page }) => {

@@ -87,7 +87,7 @@
  */
 import { parseArgs } from 'node:util';
 import { type NewEvent, VERSIONS } from '@software-factory/events';
-import { connect, DiskArtifacts, EventWriter, lineState } from '@software-factory/store';
+import { connect, DiskArtifacts, EventWriter, lineState, lockAppends } from '@software-factory/store';
 import type { Change } from '../admin/line.ts';
 import { rolloutRefOf } from '../release/rollout-ref.ts';
 
@@ -132,13 +132,22 @@ export async function run(args: string[]): Promise<number> {
       artifacts: [],
     }) as NewEvent;
   try {
-    if (command === 'stop' && (await lineState(sql)) === 'not-started') {
-      // As the console's Stop refuses it: a new store's line takes nothing until Martin first starts it.
-      console.log('The line has not started: there is nothing to stop. Workers take nothing until it starts.');
-    } else if (command === 'stop') {
+    if (command === 'stop') {
       const reason = values.reason?.trim() || 'Martin stopped the line';
-      await writer.append(event('line.stopped', `The line stopped: ${reason}`, { reason }));
-      console.log('The line is stopped. Workers finish what they hold and take nothing new.');
+      // Read and appended under the lock every append takes, so a start that commits meanwhile is either seen, and
+      // stopped, or not yet there, and nothing to stop.
+      const stopped = await sql.begin(async (tx) => {
+        await lockAppends(tx);
+        // As the console's Stop refuses it: a new store's line takes nothing until Martin first starts it.
+        if ((await lineState(tx)) === 'not-started') return false;
+        await writer.appendWithin(tx, event('line.stopped', `The line stopped: ${reason}`, { reason }));
+        return true;
+      });
+      console.log(
+        stopped
+          ? 'The line is stopped. Workers finish what they hold and take nothing new.'
+          : 'The line has not started: there is nothing to stop. Workers take nothing until it starts.',
+      );
     } else {
       const reason = values.reason?.trim();
       await writer.append(event('line.started', 'The line started', reason ? { reason } : {}));

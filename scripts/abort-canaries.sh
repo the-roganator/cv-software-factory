@@ -10,19 +10,20 @@
 #
 # A canary whose stable version has no pod ready to serve is left alone, and the script says so: aborting it would send
 # every request to a version that cannot serve one, as on the first release after the app is reset, whose stable
-# version is one admission never let run. The stable version's pods are its ReplicaSet's available ones (Argo Rollouts
-# names it `<rollout>-<stable hash>`); no such ReplicaSet has none. The release stays at its first step until promoted
-# fully, as Argo Rollouts does not finish setting its first weight without a stable pod, and the script prints both the
-# promotion and the abort to make by hand. A ReplicaSet it cannot read aborts nothing, and fails.
+# version is one admission never let run (that release stays at its first step until promoted fully, as Argo Rollouts
+# does not finish setting its first weight without a stable pod). It prints both the promotion and the abort to make by
+# hand. Endpoints it cannot read abort nothing, and it fails.
 #
 # It runs with Martin's own kubeconfig. The factory holds no right to change a Rollout: the line may only read them.
 #
 # KUBECTL is the kubectl command, with its context (the Makefile's). WAIT is how long to wait, in seconds, for each
-# abort to take traffic off the canary (default 60).
+# abort to take traffic off the canary (default 60). STABLE_TRIES is how many times, a second apart, it looks for a
+# stable pod ready to serve before it leaves a canary (default 3), so a moment's readiness blip aborts all the same.
 set -euo pipefail
 
 read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
 wait="${WAIT:-60}"
+tries="${STABLE_TRIES:-3}"
 
 # Without Argo Rollouts there is nothing to abort; a cluster that cannot be asked is a failure, not an empty answer.
 if ! found=$("${kubectl[@]}" get crd rollouts.argoproj.io -o name 2>&1); then
@@ -33,6 +34,31 @@ if ! found=$("${kubectl[@]}" get crd rollouts.argoproj.io -o name 2>&1); then
   echo "Couldn't ask the cluster about releases: $found" >&2
   exit 1
 fi
+
+# Whether a pod of the stable version (hash $3) of Rollout $2 in namespace $1 is ready to serve: 0 if one is, 1 if
+# none is, 2 if the app's endpoints cannot be read (said on stderr). The pods are the ready endpoints, not shutting
+# down, of the namespace's Services whose pod is the stable version's, by name: Argo Rollouts names a version's
+# ReplicaSet `<rollout>-<hash>`, and Kubernetes names its pods from that, cut to 58 characters. The admin service's
+# Stop the line reads the same, by the same rule (apps/factory/src/admin/rollout.ts).
+stable_ready() {
+  local prefix="$2-$3-" said err kind pod ready terminating
+  prefix=${prefix:0:58}
+  err=$(mktemp)
+  if ! said=$("${kubectl[@]}" -n "$1" get endpointslices -o jsonpath='{range .items[*].endpoints[*]}{.targetRef.kind}|{.targetRef.name}|{.conditions.ready}|{.conditions.terminating}{"\n"}{end}' 2>"$err"); then
+    echo "Couldn't read the endpoints of $1, so the release of $1/$2 wasn't aborted: $(cat "$err")" >&2
+    rm -f "$err"
+    return 2
+  fi
+  rm -f "$err"
+  while IFS='|' read -r kind pod ready terminating; do
+    # Kubernetes says to read a ready condition it does not give as ready; one shutting down is not.
+    if [ "${kind:-Pod}" = Pod ] && [[ -n "$pod" && "$pod" == "$prefix"* ]] && [ "$ready" != false ] &&
+      [ "$terminating" != true ]; then
+      return 0
+    fi
+  done <<<"$said"
+  return 1
+}
 
 # One line per Rollout: namespace|name|stable hash|current hash|aborted.
 rollouts=$("${kubectl[@]}" get rollouts --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}|{.metadata.name}|{.status.stableRS}|{.status.currentPodHash}|{.status.abort}{"\n"}{end}')
@@ -49,18 +75,20 @@ while IFS='|' read -r namespace name stable current abort; do
     echo "The release of $namespace/$name was aborted already."
     continue
   fi
-  if ! available=$("${kubectl[@]}" -n "$namespace" get replicaset "$name-$stable" \
-    -o jsonpath='{.status.availableReplicas}' 2>&1); then
-    if [[ "$available" != *NotFound* ]]; then
-      echo "Couldn't read the stable version of $namespace/$name, so its release wasn't aborted: $available" >&2
-      failed=1
-      continue
-    fi
-    available=0
+  ready=1
+  for ((try = 1; try <= tries; try++)); do
+    [ "$try" = 1 ] || sleep 1
+    ready=0
+    stable_ready "$namespace" "$name" "$stable" || ready=$?
+    [ "$ready" = 1 ] || break
+  done
+  if [ "$ready" = 2 ]; then
+    failed=1
+    continue
   fi
-  if [ "${available:-0}" = 0 ]; then
+  if [ "$ready" = 1 ]; then
     echo "Didn't abort the release of $namespace/$name: its stable version has no pod ready to serve, so aborting it"
-    echo "  would leave nothing to serve the app. It stays at its first step until promoted fully, which is yours:"
+    echo "  would leave nothing to serve the app. Whether it goes out is yours. To promote it fully:"
     echo "  ${kubectl[*]} -n $namespace patch rollout $name --subresource=status --type=merge -p '{\"status\":{\"promoteFull\":true}}'"
     echo "  Or to abort it all the same:"
     echo "  ${kubectl[*]} -n $namespace patch rollout $name --subresource=status --type=merge -p '{\"status\":{\"abort\":true}}'"

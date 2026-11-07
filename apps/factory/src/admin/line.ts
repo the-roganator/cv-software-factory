@@ -69,10 +69,14 @@ import { type AdminStore, adminEvent, Refused, type Session, steppedUpNow } from
  */
 export const REASON = z.strictObject({ reason: PAYLOADS['line.stopped'].shape.reason });
 
-/** What stopping the line did: the line is stopped, and the canary in flight was aborted, or there was none, or not. */
+/**
+ * What stopping the line did: the line is stopped, and the canary in flight was aborted, or there was none, or it could
+ * not be aborted, or it was left alone (`kept`).
+ */
 export interface Stopped {
   stopped: true;
-  canary: 'aborted' | 'none' | 'not-aborted';
+  /** `kept`: left alone, its stable version having no pod ready to serve. */
+  canary: 'aborted' | 'none' | 'not-aborted' | 'kept';
   /** The release aborted, or left alone because its stable version has no pod ready to serve. */
   release?: string;
   /**
@@ -87,13 +91,13 @@ export interface Stopped {
 /** What the answer says when the canary in flight could not be aborted. */
 export const NOT_ABORTED =
   'The line is stopped, but a canary in flight was not aborted: the admin service could not read the release or ' +
-  'patch the Rollout. Run `make stop-the-line`, which will abort it.';
+  'patch the Rollout. Run `make stop-the-line`, which will abort it if its stable version has a pod ready to serve.';
 
 /** What the answer says when the canary was left alone, its stable version having no pod to take its traffic back. */
 export const NO_STABLE =
   'The line is stopped, but the canary in flight was not aborted: its stable version has no pod ready to serve, so ' +
-  'aborting it would leave nothing to serve the app. It stays at its first step until promoted fully, which is yours: ' +
-  'from the Canary panel, or with `kubectl argo rollouts` while the panel has no record of it.';
+  'aborting it would leave nothing to serve the app. Whether it goes out is yours: promote it fully or pause it from ' +
+  'the Canary panel, or with `kubectl argo rollouts` while the panel has no record of it.';
 
 /** What the answer says when the admin service has no Rollout to control. */
 export const NO_ROLLOUT =
@@ -119,7 +123,7 @@ export async function stopLine(
     const abort = await controls.stop();
     if (abort.canary === 'none') return { stopped: true, canary: 'none' };
     if (abort.canary === 'kept') {
-      return { stopped: true, canary: 'not-aborted', release: abort.release, warning: NO_STABLE };
+      return { stopped: true, canary: 'kept', release: abort.release, warning: NO_STABLE };
     }
     return {
       stopped: true,

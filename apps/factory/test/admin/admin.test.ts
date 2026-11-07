@@ -866,6 +866,8 @@ describe('a command a role not Martin’s appended', () => {
  * The app's Rollout, as Kubernetes keeps it for the admin service: read, and merge-patched, each patch conditional on
  * the `resourceVersion` it names, as the API server makes it.
  */
+type StablePod = 'ready' | 'unready' | 'terminating' | 'gone' | 'unreachable';
+
 class RolloutKube implements KubeWriter {
   object: Record<string, unknown>;
   version = 1;
@@ -887,10 +889,11 @@ class RolloutKube implements KubeWriter {
   controller: ((object: Record<string, unknown>) => Record<string, unknown>) | undefined;
   /**
    * The stable version's pods among the app's endpoints: one ready (`ready`), one not ready yet, one shutting down, none
-   * (`gone`, the canary's alone), or no answer (`unreachable`). The canary's pod is always there, and ready.
+   * (`gone`, the canary's alone), or no answer (`unreachable`); a list says each read's in turn, the last again after
+   * that. The canary's pod is always there, and ready.
    */
-  stablePod: 'ready' | 'unready' | 'terminating' | 'gone' | 'unreachable' = 'ready';
-  /** The paths of the EndpointSlices read. */
+  stablePod: StablePod | StablePod[] = 'ready';
+  /** The paths of the EndpointSlices read, a read each. */
   readonly slices: string[] = [];
 
   constructor(state: RolloutState, paused = false) {
@@ -901,7 +904,9 @@ class RolloutKube implements KubeWriter {
   async get<T>(path: string, schema: { parse(v: unknown): T }): Promise<T | undefined> {
     if (path.includes('/endpointslices')) {
       this.slices.push(path);
-      const pod = this.stablePod;
+      const pod = Array.isArray(this.stablePod)
+        ? ((this.stablePod.length > 1 ? this.stablePod.shift() : this.stablePod[0]) ?? 'ready')
+        : this.stablePod;
       if (pod === 'unreachable') throw new KubeError(403, `GET ${path} answered 403`);
       const endpoint = (hash: string, conditions: object) => ({
         addresses: ['10.42.0.9'],
@@ -1547,22 +1552,37 @@ describe('the release controls', () => {
       expect(kube.patches.map((p) => p.body)).toEqual([{ status: { abort: true } }]);
     });
 
-    it('leaves a canary whose stable version has no pod ready, and says so, the line stopped all the same', async () => {
-      const { browser } = await signedIn();
-      for (const pod of ['gone', 'unready', 'terminating'] as const) {
+    it.each(['gone', 'unready', 'terminating'] as const)(
+      'leaves a canary whose stable version has no pod ready (%s), and says so, the line stopped all the same',
+      async (pod) => {
         await running();
         const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
         kube.stablePod = pod;
+        const { browser } = await signedIn();
         const before = (await controls()).length;
-        expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' }), pod).toEqual({
+        expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toEqual({
           status: 200,
-          body: { stopped: true, canary: 'not-aborted', release: RELEASE, warning: NO_STABLE },
+          body: { stopped: true, canary: 'kept', release: RELEASE, warning: NO_STABLE },
         });
         expect(await stopped()).toBe(true);
-        expect(kube.slices).toEqual(['/apis/discovery.k8s.io/v1/namespaces/website/endpointslices']);
+        // Looked at three times, a second apart, before it is left.
+        expect(kube.slices).toEqual(Array(3).fill('/apis/discovery.k8s.io/v1/namespaces/website/endpointslices'));
         expect(kube.patches).toEqual([]);
         expect(await controls()).toHaveLength(before);
-      }
+      },
+    );
+
+    it('aborts a canary whose stable version has a pod ready again at the next look', async () => {
+      await running();
+      const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
+      kube.stablePod = ['unready', 'ready'];
+      const { browser } = await signedIn();
+      expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toMatchObject({
+        status: 200,
+        body: { stopped: true, canary: 'aborted', release: RELEASE },
+      });
+      expect(kube.slices).toHaveLength(2);
+      expect(kube.patches.map((p) => p.body)).toEqual([{ status: { abort: true } }]);
     });
 
     it('aborts no canary whose stable version it cannot read, and says what will', async () => {

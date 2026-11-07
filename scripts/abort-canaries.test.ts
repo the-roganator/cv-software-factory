@@ -20,30 +20,41 @@ interface Cluster {
   /** Whether the controller acts on an abort (the Rollout turns Degraded) before the wait ends. */
   acts?: boolean;
   /**
-   * What each stable ReplicaSet (`<rollout>-<stable hash>`) says of its available pods, by name: a count (`''` for
-   * none, as Kubernetes leaves out a zero), `missing`, or `unreachable`. One not named has one available.
+   * What the endpoints of each namespace named say, read after read (the last again after that), as the script's
+   * jsonpath prints them: a line `kind|pod|ready|terminating` each, or `unreachable`. A namespace not named has a ready
+   * pod of each of its Rollouts' stable versions.
    */
-  stable?: Record<string, string>;
+  endpoints?: Record<string, (string[] | 'unreachable')[]>;
+  /** Whether kubectl warns on stderr as it answers, as it does of a version skew. */
+  warns?: boolean;
 }
 
-/** The fake kubectl's answers for the stable ReplicaSets named, as `case` arms matched on its arguments. */
-function replicaSets(stable: Record<string, string>): string {
-  const said = (rs: string, what: string) =>
-    what === 'missing'
-      ? `echo 'Error from server (NotFound): replicasets.apps "${rs}" not found' >&2; exit 1`
-      : what === 'unreachable'
-        ? "echo 'The connection to the server 0.0.0.0:6443 was refused' >&2; exit 1"
-        : `printf '%s' '${what}'`;
-  return Object.entries(stable)
-    .map(([rs, what]) => `      *"get replicaset ${rs} "*) ${said(rs, what)} ;;`)
-    .join('\n');
-}
+/** A ready endpoint of a pod of Rollout `name`'s version `hash`, as Kubernetes names it. */
+const podOf = (name: string, hash: string, ready = 'true', terminating = '') =>
+  `Pod|${name}-${hash}-x7k2p|${ready}|${terminating}`;
 
 async function stop(cluster: Cluster) {
   const dir = await mkdtemp(join(tmpdir(), 'abort-canaries-'));
   const calls = join(dir, 'calls');
   const kubectl = join(dir, 'kubectl');
   await writeFile(calls, '');
+  // Each namespace's answers, one file a read, the last read again after that.
+  const rollouts = (cluster.rollouts ?? []).map((r) => r.split('|'));
+  const namespaces = new Set([
+    ...rollouts.map(([namespace]) => namespace ?? ''),
+    ...Object.keys(cluster.endpoints ?? {}),
+  ]);
+  for (const namespace of namespaces) {
+    const answers = cluster.endpoints?.[namespace] ?? [
+      rollouts.filter(([ns]) => ns === namespace).map(([, name, stable]) => podOf(name ?? '', stable ?? '')),
+    ];
+    for (const [i, answer] of answers.entries()) {
+      await writeFile(
+        join(dir, `ep-${namespace}-${i + 1}`),
+        answer === 'unreachable' ? 'UNREACHABLE' : answer.join('\n'),
+      );
+    }
+  }
   await writeFile(
     kubectl,
     `#!/usr/bin/env bash
@@ -57,18 +68,24 @@ case "$*" in
     esac ;;
   *"get rollouts --all-namespaces"*) printf '%b' ${JSON.stringify((cluster.rollouts ?? []).map((r) => `${r}\n`).join(''))} ;;
   *patch*) echo patched ;;
-  *"get replicaset"*)
-    case "$*" in
-${replicaSets(cluster.stable ?? {})}
-      *) printf 1 ;;
-    esac ;;
+  *"get endpointslices"*)
+    ${cluster.warns ? "echo 'Warning: version difference between client and server exceeds the supported skew' >&2" : ''}
+    count=${JSON.stringify(dir)}/count-$2
+    n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$count"
+    answer=${JSON.stringify(dir)}/ep-$2-$n
+    [ -f "$answer" ] || answer=$(ls ${JSON.stringify(dir)}/ep-$2-* 2>/dev/null | sort -V | tail -1)
+    if [ "$(cat "$answer")" = UNREACHABLE ]; then echo 'The connection to the server 0.0.0.0:6443 was refused' >&2; exit 1; fi
+    cat "$answer" ;;
   *wait*) ${cluster.acts === false ? 'exit 1' : 'exit 0'} ;;
   *"get rollout"*) printf '100/0' ;;
 esac
 `,
   );
   await chmod(kubectl, 0o755);
-  const result = await promisify(execFile)(SCRIPT, [], { env: { ...process.env, KUBECTL: kubectl, WAIT: '1' } }).then(
+  const result = await promisify(execFile)(SCRIPT, [], {
+    env: { ...process.env, KUBECTL: kubectl, WAIT: '1', STABLE_TRIES: '2' },
+  }).then(
     ({ stdout, stderr }) => ({ code: 0, out: stdout + stderr }),
     (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, out: e.stdout + e.stderr }),
   );
@@ -94,21 +111,26 @@ describe('aborting a canary in flight (make stop-the-line)', () => {
     expect(out).not.toContain('quiet');
   });
 
-  it('leaves a canary whose stable version has no pod available, says so, and gives the abort to make by hand', async () => {
+  it('leaves a canary whose stable version has no pod ready to serve, says so, and gives both commands', async () => {
     const { code, out, calls } = await stop({
       crd: 'installed',
       rollouts: ['website|website|5f7c|8d9e|', 'shop|front|1a2b|3c4d|', 'shop|back|6e7f|9a0b|'],
-      stable: { 'website-5f7c': '', 'front-1a2b': 'missing', 'back-6e7f': '0' },
+      endpoints: {
+        // The canary's pod alone; the stable version's not ready, or shutting down.
+        website: [[podOf('website', '8d9e')]],
+        shop: [[podOf('front', '1a2b', 'false'), podOf('back', '6e7f', 'true', 'true'), podOf('front', '3c4d')]],
+      },
+      warns: true,
     });
     expect(code).toBe(0);
-    expect(calls).toContain('-n website get replicaset website-5f7c -o jsonpath={.status.availableReplicas}');
+    expect(calls.filter((c) => c.startsWith('-n website get endpointslices'))).toHaveLength(2);
     expect(patches(calls)).toEqual([]);
     for (const rollout of ['website/website', 'shop/front', 'shop/back']) {
       expect(out).toContain(
         `Didn't abort the release of ${rollout}: its stable version has no pod ready to serve, so aborting it`,
       );
     }
-    expect(out).toContain('It stays at its first step until promoted fully, which is yours:');
+    expect(out).toContain('Whether it goes out is yours. To promote it fully:');
     expect(out).toContain(
       `-n website patch rollout website --subresource=status --type=merge -p '{"status":{"promoteFull":true}}'`,
     );
@@ -119,14 +141,38 @@ describe('aborting a canary in flight (make stop-the-line)', () => {
     expect(out).not.toContain('No release is in flight');
   });
 
+  it('aborts a canary whose stable pod is ready again at the next look, and reads a ready it is not told as ready', async () => {
+    const { code, calls } = await stop({
+      crd: 'installed',
+      rollouts: ['website|website|5f7c|8d9e|', 'shop|front|1a2b|3c4d|'],
+      endpoints: { website: [[], [podOf('website', '5f7c')]], shop: [[podOf('front', '1a2b', '')]] },
+      warns: true,
+    });
+    expect(code).toBe(0);
+    expect(patches(calls)).toEqual([
+      '-n website patch rollout website --subresource=status --type=merge -p {"status":{"abort":true}}',
+      '-n shop patch rollout front --subresource=status --type=merge -p {"status":{"abort":true}}',
+    ]);
+  });
+
+  it('knows a stable pod by its name as Kubernetes cuts it to 58 characters', async () => {
+    const name = 'a-rollout-whose-name-is-long-enough-to-be-cut-short';
+    const { calls } = await stop({
+      crd: 'installed',
+      rollouts: [`website|${name}|5f7c8d9e6b|1a2b3c4d5e|`],
+      endpoints: { website: [[`Pod|${`${name}-5f7c8d9e6b-`.slice(0, 58)}x7k2p|true|`]] },
+    });
+    expect(patches(calls)).toHaveLength(1);
+  });
+
   it('aborts no canary whose stable version it cannot read, and fails, still aborting the rest', async () => {
     const { code, out, calls } = await stop({
       crd: 'installed',
       rollouts: ['website|website|5f7c|8d9e|', 'shop|front|1a2b|3c4d|'],
-      stable: { 'website-5f7c': 'unreachable' },
+      endpoints: { website: ['unreachable'] },
     });
     expect(code).toBe(1);
-    expect(out).toContain("Couldn't read the stable version of website/website, so its release wasn't aborted");
+    expect(out).toContain("Couldn't read the endpoints of website, so the release of website/website wasn't aborted");
     expect(patches(calls)).toEqual([
       '-n shop patch rollout front --subresource=status --type=merge -p {"status":{"abort":true}}',
     ]);

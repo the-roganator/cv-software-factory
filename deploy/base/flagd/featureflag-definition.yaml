@@ -1,6 +1,6 @@
 # The FeatureFlag kind's definition, and nothing else of OpenFeature's operator: flagd reads the one FeatureFlag,
 # `flags` (flags.yaml), through the Kubernetes API, and no controller acts on it. Vendored from
-# open-feature/open-feature-operator at api/v0.2.47 (3d77eda), the API module flagd v0.17.0 builds against, from
+# open-feature/open-feature-operator at api/v0.2.47 (3d77eda), the API module flagd v0.18.2 builds against, from
 # config/crd/bases/core.openfeature.dev_featureflags.yaml. A new flagd that builds against a newer module brings this
 # file with it. Unchanged but for Argo CD's annotations: its sync wave, with the namespaces (wave -1), so the kind exists
 # before `flags` is made (wave 0); and never pruned, nor deleted with root, since deleting the kind deletes `flags`

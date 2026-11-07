@@ -123,14 +123,16 @@ const writes = (rule: Rule) =>
   (rule.verbs ?? []).some((v) => !READ.includes(v));
 
 describe('flagd’s rights', () => {
-  it('read featureflags in flagd, with no names, and write nothing', async () => {
+  it('read flags alone in flagd, by name, and write nothing', async () => {
     const all = await manifests();
     const roles = all.filter(
       ({ manifest }) => manifest.kind === 'Role' && manifest.metadata?.name === 'flagd-reads-flags',
     );
     expect(roles.map(({ file, namespace }) => [file, namespace])).toEqual([['base/flagd/flagd.yaml', 'flagd']]);
-    // Its watch lists the whole namespace, so no names; admission keeps `flags` the only one there.
-    expect(roles[0]?.manifest.rules).toEqual([{ apiGroups: [GROUP], resources: ['featureflags'], verbs: READ }]);
+    // Its watch selects `flags` by name, which Kubernetes authorizes against the Role's names.
+    expect(roles[0]?.manifest.rules).toEqual([
+      { apiGroups: [GROUP], resources: ['featureflags'], resourceNames: ['flags'], verbs: READ },
+    ]);
   });
 
   it('are bound to flagd’s own service account alone, and its account holds no other', async () => {

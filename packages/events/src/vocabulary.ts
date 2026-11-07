@@ -309,6 +309,14 @@ export const DEPLOY_WAITS = ['verdict', 'level', 'auto-merge', 'conflict', 'refu
 export type DeployWait = (typeof DEPLOY_WAITS)[number];
 
 /**
+ * Why the app's build that carries a work item held for a deploy is not proposed, as the GitHub worker's deploy watch
+ * finds it: its images still have no signature of their pipeline's once signing has had its time (`unsigned`), or have
+ * one, but by someone else (`other`). Either way no deploy pull request carries it until a build of it is signed.
+ */
+export const UNSIGNED_BUILDS = ['unsigned', 'other'] as const;
+export type UnsignedBuild = (typeof UNSIGNED_BUILDS)[number];
+
+/**
  * Martin's answers to a hold: approve it, reject it, answer it in words, or send it back to the planner with his words,
  * where the spec may be what is wrong.
  */

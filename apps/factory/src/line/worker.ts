@@ -163,7 +163,7 @@ import {
 import type { Request, Signal } from './agents/evidence.ts';
 import { AGENTS, type Agents } from './agents/index.ts';
 import { capOn, capsInForce, lastSeq } from './caps.ts';
-import { type HeldForDeploy, latestDeploy, recordDeploys } from './deploy.ts';
+import { type HeldForDeploy, latestBuild, latestDeploy, recordBuilds, recordDeploys } from './deploy.ts';
 import { FlagPass } from './flags.ts';
 import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
 import { closeIssue } from './issues.ts';
@@ -2053,7 +2053,8 @@ export class Line {
    * The app's deploy pull request, once a minute: tells it what it carries, unless the line acts on one work item only,
    * and records where it stands for each held work item it carries (`deploy.ts`), that one's included, adding it to the
    * merge queue once its checks have passed when the gate passed it as an exact pin and Martin's controls allow. What it
-   * carries is read once for both; a failure of one leaves the other to go on.
+   * carries is read once for both; a failure of one leaves the other to go on. Then whether the newest build, which no
+   * pull request may carry yet, is signed, for each held work item it carries and the pull request does not.
    */
   async #deploy(): Promise<void> {
     const { github, repo, log } = this.#o;
@@ -2078,7 +2079,9 @@ export class Line {
       if (item.stage !== 'held' || this.#inFlight.has(item.workItem) || this.#dryRunLeft.has(item.workItem)) continue;
       const { raw } = await this.#raw(item.workItem);
       const { hold } = fold(raw as LineEvent[]);
-      if (hold?.cause === 'deploy') held.push({ workItem: item.workItem, recorded: latestDeploy(raw, hold) });
+      if (hold?.cause === 'deploy') {
+        held.push({ workItem: item.workItem, recorded: latestDeploy(raw, hold), build: latestBuild(raw, hold) });
+      }
     }
     if (!held.length) return;
     await recordDeploys(
@@ -2098,6 +2101,37 @@ export class Line {
       new Set((carries ?? []).map((c) => c.workItem)),
       held,
     );
+    await this.#builds(target.branch, proposal, carries, held);
+  }
+
+  /**
+   * Records whether the deploy watch's newest build is signed on each held work item it carries and the open proposal
+   * does not (`recordBuilds`). Not while what the proposal carries is unknown: a work item it carries waits for its
+   * pull request, not its build.
+   */
+  async #builds(
+    branch: string,
+    proposal: DeployProposal | null,
+    carries: Carried[] | undefined,
+    held: HeldForDeploy[],
+  ): Promise<void> {
+    const { github, repo, log } = this.#o;
+    if (proposal && !carries) return;
+    try {
+      const build = await github.read('deployBuild', repo, { branch });
+      if (!build || build.signature === 'signing') return;
+      const byBuild = await carried(this.#o, build.commit, build.pinned ?? undefined);
+      if (!byBuild) return;
+      await recordBuilds(
+        { append: (workItem, drafts) => this.#append(workItem, drafts), log },
+        build,
+        new Set(byBuild.map((c) => c.workItem)),
+        new Set((carries ?? []).map((c) => c.workItem)),
+        held,
+      );
+    } catch (error) {
+      log.warn({ err: error }, 'could not read whether the build that carries the held work items is signed');
+    }
   }
 
   /**

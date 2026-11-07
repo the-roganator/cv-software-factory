@@ -14,7 +14,15 @@
 import type { PayloadOf, PublicEvent, Stage } from '@software-factory/events';
 import { knownInScope, returnWords } from '@software-factory/events';
 import { RULES } from './app.ts';
-import { deployWaitsForMartin, type Hold, type ItemState, ofType, type ReleaseStop, stopsRelease } from './items.ts';
+import {
+  deployWaitsForMartin,
+  type Hold,
+  type ItemState,
+  ofType,
+  type ReleaseStop,
+  stopsRelease,
+  type UnsignedBuild,
+} from './items.ts';
 import type { Ended, Picture } from './reel.ts';
 import { backWords, stopWait } from './release.ts';
 
@@ -350,6 +358,7 @@ export function deployPicture(item: ItemState): Extract<Picture, { type: 'deploy
   const pushed = ofType(item, 'pull-request.pushed').at(-1)?.payload;
   const ended = endedSinceMerge(item);
   const deploy = item.deploy;
+  const { unsigned } = item;
   return {
     type: 'deploy',
     pullRequest: pushed?.number ?? item.pullRequest,
@@ -360,15 +369,22 @@ export function deployPicture(item: ItemState): Extract<Picture, { type: 'deploy
       byMartin: merged.payload.by === 'martin',
     },
     ended,
-    deploy: deploy && {
-      pullRequest: deploy.pullRequest,
-      state: deploy.state,
-      ...(deploy.failed && { failed: deploy.failed }),
-      ...(deploy.waits && { waits: deploy.waits }),
-      ...(deploy.rule && { rule: deploy.rule }),
-      ...(deploy.reason && { reason: deploy.reason }),
-      ...(deploy.said && { said: deploy.said }),
-    },
+    deploy: unsigned
+      ? {
+          state: 'unsigned',
+          commit: unsigned.commit,
+          signature: unsigned.signature,
+          ...(unsigned.job && { job: unsigned.job }),
+        }
+      : deploy && {
+          pullRequest: deploy.pullRequest,
+          state: deploy.state,
+          ...(deploy.failed && { failed: deploy.failed }),
+          ...(deploy.waits && { waits: deploy.waits }),
+          ...(deploy.rule && { rule: deploy.rule }),
+          ...(deploy.reason && { reason: deploy.reason }),
+          ...(deploy.said && { said: deploy.said }),
+        },
     waitsForMartin: deployWaitsForMartin(item),
   };
 }
@@ -505,8 +521,31 @@ const DEPLOY_WORDS: Record<DeployRecord['state'] | 'none', DeployWording> = {
   },
 };
 
-/** Where the deploy pull request that carries a held fix stands, in each place's words (`DEPLOY_WORDS`). */
-export function deployWords(deploy: DeployRecord | undefined): {
+/**
+ * A build that carries a held fix, which its pipeline did not sign, in each place's words: no deploy pull request may
+ * carry it, and its job to run again, when the line named one.
+ */
+function unsignedWords({ commit, signature, job }: UnsignedBuild): ReturnType<typeof deployWords> {
+  const other = signature === 'other';
+  const build = `The build of ${commit.slice(0, 7)} that carries it`;
+  const why = other
+    ? ' is signed by someone other than its pipeline'
+    : ` was never signed${job ? `: ${job.name} did not succeed` : ''}`;
+  return {
+    short: other ? 'its build signed by someone else' : 'its build not signed',
+    tick: build + why,
+    ok: false,
+    kicker: other ? 'Its build is not its pipeline’s' : 'Its build is not signed',
+    fact: other ? 'signed by someone else' : 'not signed',
+    evidence: `${build}${why}, so no deploy pull request carries it. ${other ? 'A newer build its pipeline signs carries it.' : 'Running its signing again on GitHub signs it, or a newer signed build carries it.'}`,
+  };
+}
+
+/**
+ * Where the deploy pull request that carries a held fix stands, in each place's words (`DEPLOY_WORDS`); or, while the
+ * build that carries it is not signed, that build's (`unsignedWords`).
+ */
+export function deployWords(deploy: DeployRecord | UnsignedBuild | undefined): {
   short: string;
   tick: string;
   ok: boolean | undefined;
@@ -514,6 +553,7 @@ export function deployWords(deploy: DeployRecord | undefined): {
   fact: string;
   evidence: string;
 } {
+  if (deploy?.state === 'unsigned') return unsignedWords(deploy);
   const words = DEPLOY_WORDS[deploy?.state ?? 'none'];
   const n = deploy?.pullRequest ?? 0;
   const failed = failedWords(deploy?.failed);
@@ -533,7 +573,7 @@ export function deployWords(deploy: DeployRecord | undefined): {
  */
 export function deployCaption(
   ended: Ended | undefined,
-  deploy: DeployRecord | undefined,
+  deploy: DeployRecord | UnsignedBuild | undefined,
   waitsForMartin: boolean,
 ): [done: string, waiting: string] {
   const done = ended ? backWords(ended.stopped) : 'merged';

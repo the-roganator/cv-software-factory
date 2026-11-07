@@ -33,7 +33,7 @@ import { ENQUEUES } from '@software-factory/policy/line';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
 import { APP_REPO, AUTONOMY, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
-import { deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
+import { deployRecord, deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
 
 /** The one piece of evidence that explains a hold: a check's or the fence's own output, a question, or words. */
@@ -81,7 +81,10 @@ export interface Need {
   since: number;
   title: string;
   evidence: Evidence;
-  /** A link the card offers beside its evidence: the settings, to raise a spend cap. */
+  /**
+   * A link the card offers beside its evidence: the settings, to raise a spend cap; the build's job that did not
+   * succeed, for a deploy its pipeline did not sign.
+   */
   link: { href: string; label: string } | undefined;
   /**
    * A sentence after the evidence: what would let the line merge a change it holds for Martin's merge itself, or why a
@@ -448,15 +451,15 @@ function mergeNote(merge: Merge | undefined): string | undefined {
 
 /**
  * What a fix held for a deploy waits for, from the deploy pull request that carries it as the line last recorded it:
- * none yet, while its image is built and signed; its checks running or failed; passed, when merging it is Martin's;
+ * none yet, while its image is built and signed, or a build its pipeline did not sign; its checks running or failed; passed, when merging it is Martin's;
  * merged, until Argo CD syncs; or closed unmerged, for the next build's. After a release that carried it was stopped,
  * the hold's own reason, which names his retry.
  */
 function deployEvidence(item: ItemState): string {
   const merged = latest(item, 'pull-request.merged');
   const at = `Merged${merged ? ` at ${clock(Date.parse(merged.ts))}` : ''}.`;
-  if (!item.deploy && item.releaseStopped) return item.hold?.reason ?? at;
-  return `${at} ${deployWords(item.deploy).evidence}`;
+  if (!item.deploy && !item.unsigned && item.releaseStopped) return item.hold?.reason ?? at;
+  return `${at} ${deployWords(deployRecord(item)).evidence}`;
 }
 
 /** Why a sample's way forward links nowhere, said beside it. */
@@ -519,9 +522,16 @@ const noteOf = (hold: Hold, aboutReport: boolean) =>
     .filter(Boolean)
     .join(' ') || undefined;
 
-/** The settings, for a spend cap. */
-const linkOf = (cause: HoldCause): Need['link'] =>
-  cause === 'spend' ? { href: '?view=settings', label: 'Raise the cap in the settings' } : undefined;
+/**
+ * The settings, for a spend cap; and the build's job that did not succeed, on GitHub, for a deploy whose build its
+ * pipeline did not sign, where Martin runs it again. A sample's job never ran, so it links nowhere.
+ */
+const linkOf = (item: ItemState, cause: HoldCause): Need['link'] => {
+  if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings' };
+  const job = cause === 'deploy' && item.unsigned?.signature === 'unsigned' ? item.unsigned.job : undefined;
+  if (!job || item.sample) return undefined;
+  return { href: `${APP_REPO}/actions/runs/${job.run}/job/${job.id}`, label: `See ${job.name} on GitHub` };
+};
 
 /** Whole units: "1d", "50min", the first part of a duration. */
 /** How long something has waited, to its largest unit: "1d", "50min". */
@@ -575,14 +585,14 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           cause: hold.cause,
           kicker:
             hold.cause === 'deploy' && !deployWaitsForMartin(item)
-              ? deployWords(item.deploy).kicker
+              ? deployWords(deployRecord(item)).kicker
               : holdKicker(item, hold),
           stage: hold.stage,
           waited: waited(t - since),
           since,
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
-          link: linkOf(hold.cause),
+          link: linkOf(item, hold.cause),
           note: noteOf(hold, aboutReport),
           way: wayOf(item, hold.cause),
           answers: answersOf(hold, aboutReport).map((answer) => ({

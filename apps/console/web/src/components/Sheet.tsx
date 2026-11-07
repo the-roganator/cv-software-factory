@@ -508,7 +508,7 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                     )}
                   </Fact>
                 )}
-                {sheet.deploy?.deploy && (
+                {sheet.deploy?.deploy && sheet.deploy.deploy.state !== 'unsigned' && (
                   <Fact name="Deploy">
                     {/* As the pull request's: a sample's deploy pull request never existed either. */}
                     {card.sample ? (
@@ -520,6 +520,24 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                           #{sheet.deploy.deploy.pullRequest} on GitHub
                         </a>
                       </>
+                    )}{' '}
+                    · {deployWords(sheet.deploy.deploy).fact}
+                  </Fact>
+                )}
+                {sheet.deploy?.deploy?.state === 'unsigned' && (
+                  <Fact name="Build">
+                    {/* The build's job, where Martin runs it again: a sample's never ran, so it links nowhere. */}
+                    {sheet.deploy.deploy.job && !card.sample ? (
+                      <>
+                        <ToolMark name="github" />{' '}
+                        <a
+                          href={`${APP_REPO}/actions/runs/${sheet.deploy.deploy.job.run}/job/${sheet.deploy.deploy.job.id}`}
+                        >
+                          {sheet.deploy.deploy.commit.slice(0, 7)} on GitHub
+                        </a>
+                      </>
+                    ) : (
+                      sheet.deploy.deploy.commit.slice(0, 7)
                     )}{' '}
                     · {deployWords(sheet.deploy.deploy).fact}
                   </Fact>

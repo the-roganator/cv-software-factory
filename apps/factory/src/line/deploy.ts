@@ -37,13 +37,21 @@
  * pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
  * GitHub worker that restarted) is read by its number, and only what GitHub says of it is recorded: an empty proposal
  * is never taken for a merge or a close. A dry run's deploy pull request, which GitHub never had, is never recorded.
+ *
+ * Before there is a pull request to carry it, a held work item waits for its build to be signed. The watch proposes
+ * only a build its pipeline signed, so one still unsigned once signing has had its time, or signed by someone else,
+ * is never proposed, and the wait would look like any slow build. So the line also reads the watch's newest build
+ * (`deployBuild`), and records it as not signed (`build.unsigned`, `recordBuilds`) on each held work item it carries
+ * and the open proposal does not, once for each build, with the build workflow's job that failed on that commit; and,
+ * once a later look finds a build that carries it signed, that it is (`build.signed`), so the console says why it
+ * waits until it no longer does.
  */
 import type { PayloadOf } from '@software-factory/events';
 import { cutAt, cutTo } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { type Controls, enqueues } from '../../../../policy/line.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
-import type { DeployProposal } from '../github/deploys.ts';
+import type { DeployBuild, DeployProposal } from '../github/deploys.ts';
 import type { ReviewVerdict } from '../github/merging.ts';
 import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { GitHubWorkerError } from '../github/worker-client.ts';
@@ -190,10 +198,98 @@ export function deployLine(change: DeployChange): string {
   }
 }
 
-/** A work item held for a deploy, and its record under that hold. */
+/** The line's latest word on whether the build that carries a held work item is signed. */
+export type BuildRecord =
+  | { type: 'build.unsigned'; payload: PayloadOf<'build.unsigned'> }
+  | { type: 'build.signed'; payload: PayloadOf<'build.signed'> };
+
+/**
+ * The latest `build.unsigned` or `build.signed` of a work item under the hold in force (`hold`, the payload the line's
+ * `fold` took), as `latestDeploy` reads its deploy pull request: a hold that starts again starts with none.
+ */
+export function latestBuild(
+  events: readonly { type: string; payload: unknown }[],
+  hold: unknown,
+): BuildRecord | undefined {
+  let latest: BuildRecord | undefined;
+  for (const event of events) {
+    if (event.type === 'hold.started' && event.payload === hold) latest = undefined;
+    if (event.type === 'build.unsigned' || event.type === 'build.signed') latest = event as BuildRecord;
+  }
+  return latest;
+}
+
+/** A work item held for a deploy, and its records under that hold. */
 export interface HeldForDeploy {
   workItem: string;
   recorded: DeployChange | undefined;
+  /** Whether the build that carries it is signed, as the line last recorded it under that hold. */
+  build?: BuildRecord | undefined;
+}
+
+/** A build not signed, as its event's summary says it. */
+export function unsignedLine({ commit, signature, job }: PayloadOf<'build.unsigned'>): string {
+  const build = `The build of ${commit.slice(0, 7)} that carries it`;
+  const why = signature === 'other' ? 'is signed by someone other than its pipeline' : 'was never signed';
+  return `${build} ${why}, so no deploy pull request carries it${job ? `: ${job.name} did not succeed` : ''}`;
+}
+
+/**
+ * Records, on each work item held for a deploy, whether the newest build that carries it is signed, from the deploy
+ * watch's `build` (`deployBuild`): not signed (`build.unsigned`), once for each build and digest, on each the build
+ * carries (`byBuild`) and the open proposal does not (`byProposal`), whose deploy pull request says where it stands;
+ * and signed (`build.signed`) on each it carries that was last recorded as not. A build still signing records nothing:
+ * it is the wait the hold's reason already names. A work item whose append fails is tried again on the next pass.
+ */
+export async function recordBuilds(
+  o: Pick<DeployContext, 'append' | 'log'>,
+  build: DeployBuild | null,
+  byBuild: ReadonlySet<string>,
+  byProposal: ReadonlySet<string>,
+  held: readonly HeldForDeploy[],
+): Promise<void> {
+  if (!build || build.signature === 'signing') return;
+  for (const { workItem, build: recorded } of held) {
+    if (!byBuild.has(workItem)) continue;
+    let draft: Draft | undefined;
+    if (build.signature === 'signed') {
+      if (recorded?.type !== 'build.unsigned') continue;
+      draft = {
+        type: 'build.signed',
+        actor: 'factory',
+        summary: `A build that carries it, of ${build.commit.slice(0, 7)}, is signed: it waits for its deploy pull request`,
+        payload: { commit: build.commit, digest: build.digest },
+      };
+    } else {
+      if (byProposal.has(workItem)) continue;
+      const same =
+        recorded?.type === 'build.unsigned' &&
+        recorded.payload.commit === build.commit &&
+        recorded.payload.digest === build.digest;
+      if (same) continue;
+      const payload: PayloadOf<'build.unsigned'> = {
+        commit: build.commit,
+        image: cutAt(build.image, 200),
+        digest: build.digest,
+        signature: build.signature,
+        reason: cutTo(build.reason?.trim() || 'no signature of its pipeline’s', 300),
+        ...(build.job ? { job: { ...build.job, name: cutAt(build.job.name, 100) } } : {}),
+      };
+      draft = { type: 'build.unsigned', actor: 'factory', summary: unsignedLine(payload), payload };
+    }
+    try {
+      await o.append(workItem, [draft]);
+      o.log.info(
+        { workItem, commit: build.commit, signature: build.signature },
+        'recorded whether its build is signed',
+      );
+    } catch (error) {
+      o.log.warn(
+        { workItem, err: error },
+        'could not record whether the build that carries a held work item is signed',
+      );
+    }
+  }
 }
 
 export interface DeployContext {

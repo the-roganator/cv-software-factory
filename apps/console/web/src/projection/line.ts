@@ -8,7 +8,7 @@ import { DEFAULT_CONTROLS } from '@software-factory/policy/line';
 import { capital, lower, plural, shortVersion, startOfDay } from '../format.ts';
 import { deployCaption, endedSinceMerge } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
-import type { ItemState } from './items.ts';
+import { deployRecord, type ItemState } from './items.ts';
 import { holdKicker } from './needs.ts';
 import { endedAt, inFlight, type Release, SIGNALLED } from './release.ts';
 
@@ -387,7 +387,7 @@ function holdNote(item: ItemState, stage: Stage, behind: boolean): string {
   }
   // Held for a deploy that is not Martin's yet: what it waits for, and the deploy pull request by number.
   if (item.outcome === 'deploying') {
-    const [done, waiting] = deployCaption(endedSinceMerge(item), item.deploy, false);
+    const [done, waiting] = deployCaption(endedSinceMerge(item), deployRecord(item), false);
     return `${capital(done)} · ${waiting}`;
   }
   if (item.queued) return item.stage === 'release' ? 'Merged · waiting for release' : 'Waiting for the planner';
@@ -396,7 +396,7 @@ function holdNote(item: ItemState, stage: Stage, behind: boolean): string {
   // stopped by an analysis error, or for Martin's retry of that release.
   if (item.hold?.cause === 'deploy') {
     const ended = endedSinceMerge(item);
-    const [done, waiting] = deployCaption(ended, item.deploy, true);
+    const [done, waiting] = deployCaption(ended, deployRecord(item), true);
     return `Needs you · ${ended ? `${done}, ` : ''}${waiting}`;
   }
   // Every other hold in its card's words, never the agent's own: those are on its sheet and its card.

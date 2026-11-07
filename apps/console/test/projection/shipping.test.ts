@@ -51,8 +51,18 @@ describe('Release and Verify on the sheet', () => {
       deploy: { pullRequest: 1331, state: 'checking' },
       waitsForMartin: false,
     });
-    // Earlier, #1314's deploy pull request had passed its checks, and waited for Martin.
-    const before = project(SAMPLES, Date.parse('2026-10-06T09:30:00Z')).cards.find((c) => c.number === '1314');
+    // Earlier, #1314's build was not signed, so no deploy pull request carried it, and it was not Martin's to merge.
+    const unsigned = project(SAMPLES, Date.parse('2026-10-06T09:50:00Z')).cards.find((c) => c.number === '1314');
+    expect(unsigned).toMatchObject({
+      outcome: 'deploying',
+      picture: {
+        type: 'deploy',
+        deploy: { state: 'unsigned', signature: 'unsigned', job: { name: 'sign and attest' } },
+        waitsForMartin: false,
+      },
+    });
+    // Its job run again, the build was signed; then its deploy pull request had passed its checks, and waited for Martin.
+    const before = project(SAMPLES, Date.parse('2026-10-06T10:30:00Z')).cards.find((c) => c.number === '1314');
     expect(before?.picture).toMatchObject({ type: 'deploy', deploy: { pullRequest: 1330, state: 'passed' } });
     expect(before).toMatchObject({ outcome: 'needs-you', picture: { waitsForMartin: true } });
     expect(sheet('1321')?.deploy).toEqual(picture);

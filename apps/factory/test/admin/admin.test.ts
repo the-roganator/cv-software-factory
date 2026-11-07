@@ -2762,9 +2762,33 @@ describe('Needs you', () => {
     ]);
   });
 
+  it('refuses words on a work item a visitor’s report opened where no agent could read them, a question among them', async () => {
+    const { browser } = await signedIn();
+    const report = await held('question', { report: true, stage: 'plan' });
+    expect(
+      await browser.post(`/admin/holds/${report.workItem}/answer`, { hold: report.hold, words: 'Keep them' }),
+    ).toMatchObject({ status: 422, body: { refused: 'answer' } });
+    expect(await answers(report.workItem)).toEqual([]);
+    // Approving it carries on, as anywhere: the planner plans again with no answer.
+    expect((await browser.post(`/admin/holds/${report.workItem}/approve`, { hold: report.hold })).status).toBe(200);
+    expect((await answers(report.workItem)).map((answer) => answer.payload)).toEqual([
+      { decision: 'approved', hold: report.hold, report: true },
+    ]);
+    // So with every hold whose words would do no more there, a gate's among them, which approving sends back as well.
+    const gates = await held('gates', { report: true, stage: 'gates' });
+    expect(
+      await browser.post(`/admin/holds/${gates.workItem}/answer`, { hold: gates.hold, words: 'Keep them' }),
+    ).toMatchObject({ status: 422, body: { refused: 'answer' } });
+    // A question on any other work item still takes his words.
+    const plain = await held('question', { stage: 'plan' });
+    expect(
+      (await browser.post(`/admin/holds/${plain.workItem}/answer`, { hold: plain.hold, words: 'Keep them' })).status,
+    ).toBe(200);
+  });
+
   it('keeps his words from the public view on a work item a visitor’s report opened, at any stage', async () => {
     const { browser } = await signedIn();
-    for (const cause of ['suggestion', 'question'] as const) {
+    for (const cause of ['suggestion', 'spec'] as const) {
       const { workItem, hold } = await held(cause, { report: true, stage: 'plan' });
       const said = await browser.post(`/admin/holds/${workItem}/answer`, { hold, words: 'Search should keep them' });
       expect(said.body).toMatchObject({ report: true });

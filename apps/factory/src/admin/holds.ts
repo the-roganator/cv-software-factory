@@ -15,7 +15,9 @@
  *   merge, which Martin does on GitHub, a deploy, which a release ends by itself, or a suggestion, which never starts
  *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is
  *   taken only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests
- *   first), and only with his words, which are his reason for it.
+ *   first), and only with his words, which are his reason for it. Words on a question on a work item a visitor's
+ *   report opened are refused too (`WORDS_UNREAD_ON_REPORT`): they stay his, so the agent that asked could never read
+ *   them, and would only ask again.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
@@ -257,7 +259,8 @@ export async function answerHold(
             : `#${workItem} has no hold waiting now: it was answered, or moved on.`,
         );
       }
-      if (!answersTo(open.cause).includes(decision)) {
+      const report = await openedByReport(tx, workItem);
+      if (!answersTo(open.cause, report).includes(decision)) {
         throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
       }
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(open.cause);
@@ -271,7 +274,7 @@ export async function answerHold(
         // Asked again as the answer is taken, after the lock: the passkey given may have gone stale while it waited.
         if (!(await steppedUpNow(tx, session))) throw new Refused('step-up', 403, 'This needs your passkey again.');
       }
-      return { report: await openedByReport(tx, workItem) };
+      return { report };
     },
     ({ report }) => [answerEvent(workItem, decision, given.hold, report, given.words)],
   );

@@ -13,6 +13,7 @@ import {
   scopesOverlap,
   sharedPath,
   WORDS_LEAVE_HELD,
+  WORDS_UNREAD_ON_REPORT,
 } from '../src/line.ts';
 import { formatLog, parseLog } from '../src/log-format.ts';
 import { PUBLIC_VIEWS, publicView, redactSecrets } from '../src/public.ts';
@@ -1770,6 +1771,22 @@ describe('the answers a hold takes', () => {
     // Approving a suggestion does nothing: a suggestion never starts work, and Martin asks with the "+".
     expect(answersTo('suggestion')).toEqual(['answered', 'rejected']);
     expect(answersTo('finding')).toEqual(['approved', 'answered', 'rejected']);
+  });
+
+  it('leave words off a hold on a work item a visitor’s report opened, where they would do nothing more', () => {
+    expect(answersTo('question')).toEqual(['approved', 'answered', 'rejected']);
+    expect(answersTo('question', true)).toEqual(['approved', 'rejected']);
+    expect(answersTo('gates', true)).toEqual(['approved', 'replanned', 'rejected']);
+    expect(answersTo('merge', true)).toEqual(['replanned', 'rejected']);
+    // Where words move the work somewhere no other answer does, they stay, as do triage's, kept with the hold.
+    for (const cause of ['spec', 'scope', 'nothing-to-fix', 'beyond-ticket', 'verify', 'review'] as const) {
+      expect(answersTo(cause, true), cause).toEqual(answersTo(cause));
+    }
+    for (const cause of WORDS_LEAVE_HELD) expect(WORDS_UNREAD_ON_REPORT).not.toContain(cause);
+    for (const cause of HOLD_CAUSES) {
+      const left = answersTo(cause).filter((answer) => !answersTo(cause, true).includes(answer));
+      expect(left, cause).toEqual(WORDS_UNREAD_ON_REPORT.includes(cause) ? ['answered'] : []);
+    }
   });
 
   it('send the work back to the planner only from a hold whose words would go to the coder', () => {

@@ -116,13 +116,39 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
 };
 
 /**
+ * The causes of a hold that words cannot answer on a work item a visitor's report opened. His words there stay his, and
+ * no agent reads them, as none reads a report, so words do only what the answer itself does: these are the holds where
+ * that is nothing another answer does not already do, or a rerun told nothing new. A `question` or a `ticket-rejected`
+ * hold would run the planner again told nothing, so it asks again or rejects again; on `failures`, `spend` and
+ * `unknown` words carry on exactly as approving does, and on `gates` they send the work back to the coder as approving
+ * does; on `merge` and `tests-first` they send it back to the coder told only that he sent it back. Words keep their
+ * place where the answer moves the work somewhere no other answer does, with what the agent there is told beside it:
+ * `spec`, `scope`, `nothing-to-fix`, `beyond-ticket` and `verify` go back to the planner, `review` to the coder with
+ * the review's findings, and every Back to the planner, told why the work was held. Triage's holds keep their words
+ * with them (`WORDS_LEAVE_HELD`).
+ */
+export const WORDS_UNREAD_ON_REPORT: readonly HoldCause[] = [
+  'question',
+  'ticket-rejected',
+  'failures',
+  'gates',
+  'merge',
+  'spend',
+  'tests-first',
+  'unknown',
+];
+
+/**
  * The answers a hold of this cause takes from the console, in the order Needs you shows them: each that does
  * something. An answer the line would only wait after is left off (a fix waiting for Martin's deploy takes only his
- * rejection), but for words on one of triage's holds, which are kept with it while it stays held.
+ * rejection), but for words on one of triage's holds, which are kept with it while it stays held. On a work item a
+ * visitor's report opened (`aboutReport`), words are left off where no agent could read them (`WORDS_UNREAD_ON_REPORT`).
  */
-export const answersTo = (cause: HoldCause): HoldAnswer[] =>
+export const answersTo = (cause: HoldCause, aboutReport = false): HoldAnswer[] =>
   (['approved', 'answered', 'replanned', 'rejected'] as const).filter(
-    (answer) => ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)),
+    (answer) =>
+      !(aboutReport && answer === 'answered' && WORDS_UNREAD_ON_REPORT.includes(cause)) &&
+      (ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause))),
   );
 
 /**

@@ -4,20 +4,37 @@
 #
 #     docker build --file apps/factory/Dockerfile.browser .
 #
-# The Playwright package in the lockfile and the browsers in the image must be the same release. This is the image's
-# one pin: the Makefile and the pull request checks run their browser tests in it too. Dependabot moves it and the
-# package in one pull request, and scripts/image-pins.test.ts fails while they disagree.
+# The Playwright package in the lockfile and the browsers in the image must be the same release. This is the
+# Playwright image's one pin: `make e2e` runs the browser tests in the `playwright` stage below, and the pull request
+# checks in the image itself, with mise.toml's Node put first. Dependabot moves it and the package in one pull
+# request, and scripts/image-pins.test.ts fails while they disagree.
 #
-# The image also carries its own Node, which its tag does not name and no test can see. When mise.toml's Node moves,
-# check this pin's (`docker run --rm --entrypoint node <pin> --version`), and move the pin to the tag's latest digest
-# when Microsoft's rebuild catches up.
+# Playwright's image carries a Node of its own, which its tag does not name and which moves to Node's next major
+# when Playwright's does (1.65 moved it from 24 to 26, with no corepack). The probes run on the repository's Node
+# instead, mise.toml's, from the Node image pinned below, which scripts/image-pins.test.ts holds to mise.toml as it
+# does every other image's: the image's own Node is taken out, so there is one.
 #
 # It runs as an unprivileged user, never root. Chromium cannot use its own sandbox without privileges that the
 # restricted Pod Security Standard refuses, so Playwright starts it with the sandbox off (its default), and the pod's
 # fences carry that instead: a non-root user, no capabilities, a read-only filesystem and a network policy that
 # lets it reach only the app and Postgres.
 
-FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea AS playwright
+# The Node, with its corepack, that the Playwright image's own is replaced with: the runner's, on Debian, whose
+# glibc build runs on the Playwright image's Ubuntu.
+FROM node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS node
+
+FROM mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d AS browsers
+
+# Playwright's browsers on mise.toml's Node. `make e2e` runs the browser tests in this stage too. The image's Node is
+# its Debian package, and npm's global packages (npm itself and yarn) beside it; dpkg takes the package out with no
+# network.
+FROM browsers AS playwright
+RUN dpkg --purge nodejs && rm -rf /usr/lib/node_modules /usr/bin/npm /usr/bin/npx /usr/bin/yarn /usr/bin/yarnpkg
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
+# Then the one Node left on the path is the Node image's.
+RUN ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+  && [ "$(which -a node)" = /usr/local/bin/node ]
 
 # The production dependencies, readable by the unprivileged runtime user and writable by root alone, set in the layer
 # that installs them, so a change to the code alone writes none of them again.

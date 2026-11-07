@@ -118,7 +118,7 @@ updates:
       prefix: chore
       include: scope
     # An image pinned in several directories moves in all of them in one pull request, an image to a pull request:
-    # distroless's digest in the console's and the factory's Dockerfiles, and Node in three, as scripts/image-pins.test.ts
+    # distroless's digest in the console's and the factory's Dockerfiles, and Node in four, as scripts/image-pins.test.ts
     # requires (Node's then waits for mise.toml, which follows by hand). Without `group-by`, a group here would make a
     # pull request per directory instead; nothing makes one for every image.
     groups:

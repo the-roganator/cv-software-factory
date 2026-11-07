@@ -238,7 +238,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: corepack enable && pnpm install --frozen-lockfile --ignore-scripts
+      # Node and pnpm as mise.lock holds them, in place of the Node Playwright's image carries, as everywhere else.
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: node pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --filter @software-factory/console build
       - run: pnpm exec playwright test $TESTS
         working-directory: apps/console
@@ -267,7 +273,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: corepack enable && pnpm install --frozen-lockfile --ignore-scripts
+      # Node and pnpm as mise.lock holds them, in place of the Node Playwright's image carries, as everywhere else.
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: node pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm exec vitest run --project browser
 
   # ZAP's baseline scan of the console with Martin's session (apps/console/zap/scan.ts, ADR 0012): the console's server

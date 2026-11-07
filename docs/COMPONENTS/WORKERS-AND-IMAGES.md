@@ -22,7 +22,7 @@ Three images, built by `build.yml`, signed there by digest with cosign's keyless
 | Image | What it is | Runs |
 |---|---|---|
 | `factory` | Distroless Node | The gateway, the GitHub worker, triage, the intake, the log watcher, the line and the traffic generator |
-| `factory-browser` | From the pinned Playwright image, running as an unprivileged user | The probes, the crawler and the canary's journeys |
+| `factory-browser` | From the pinned Playwright image, with its own Node replaced by `mise.toml`'s, running as an unprivileged user | The probes, the crawler and the canary's journeys |
 | `factory-runner` | Node, git, this repository's pnpm (from `mise.lock`), the Agent SDK | The [runners'](AGENT-RUNNERS.md) Jobs; the line is given its pinned reference as `RUNNER_IMAGE` |
 
 Chromium runs without its own sandbox, which the restricted Pod Security Standard refuses it, so the pod's other fences carry that. It sets text unhinted (`--font-render-hinting=none`, `BROWSER_LAUNCH` in `apps/factory/src/capture.ts`), as every browser the factory launches does, the console's browser tests included, and as Chrome on a desktop does. On Linux, Chromium would otherwise hint a web font fully, snapping each glyph's advance to a whole pixel, so small text would come out squeezed or stretched. System fonts, which the app uses, are set the same either way.

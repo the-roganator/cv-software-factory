@@ -13,6 +13,7 @@ import { listenLocal } from '@software-factory/testing';
 import type { Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { startLine } from '../../../../packages/store/test/line.ts';
 import type { SpendPolicy } from '../../../../policy/spend.ts';
 import { AgentCassettes } from '../../src/gateway/agent-cassettes.ts';
 import { AgentCalls } from '../../src/gateway/agents.ts';
@@ -187,6 +188,8 @@ export async function start({
   client,
 }: Options = {}) {
   database = await freshDatabase('agents');
+  // A new store's line has not started, and the gateway refuses every agent's call until Martin starts it.
+  await startLine(database.admin);
   cassettesDir = mkdtempSync(join(tmpdir(), 'cassettes-'));
   const sql = client ? client(database.as.gateway) : database.as.gateway;
   const events = new EventWriter(sql, { kind: 'real', artifacts: new DiskArtifacts(cassettesDir) });

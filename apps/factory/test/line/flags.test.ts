@@ -20,6 +20,7 @@ import pino from 'pino';
 import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { setTake, startLine } from '../../../../packages/store/test/line.ts';
 import { flagsFrom } from '../../../../policy/flag-moves.ts';
 import type { Stage } from '../../../../policy/flags.ts';
 import { release as RELEASE } from '../../../../policy/release.ts';
@@ -641,6 +642,7 @@ describe('the flag pass, against the store', () => {
     database = await freshDatabase('flags');
     events = writer(database.as.line);
     now = Date.parse('2026-10-27T09:00:00Z');
+    await startLine(database.admin);
   });
   afterEach(() => database?.end());
 
@@ -987,7 +989,8 @@ describe('the flag pass, against the store', () => {
     const other = await improvement('other');
     await move(one, 'one', CHECKS, OFF, 'This one');
     await move(other, 'other', CHECKS, OFF, 'The other');
-    await line({ only: one }).pass();
+    await setTake(database.admin, { kind: 'just-one', workItem: one });
+    await line().pass();
     expect(await closes(one)).toHaveLength(1);
     expect(await closes(other)).toEqual([]);
   });

@@ -1425,6 +1425,32 @@ describe('the release controls', () => {
       expect(await lineEvents()).toHaveLength(count + 1);
     });
 
+    it('starts a new store’s line, which has not started, and refuses to stop it, with nothing to stop', async () => {
+      await service.stop();
+      const shared = db;
+      db = await freshDatabase('admin_not_started');
+      try {
+        await start();
+        const { browser, passkey } = await signedIn();
+        expect((await stepUp(browser, passkey)).status).toBe(200);
+        expect(await browser.post('/admin/line/stop', { reason: 'Lunch' })).toMatchObject({
+          status: 409,
+          body: { refused: 'line', message: 'The line has not started: there is nothing to stop.' },
+        });
+        expect(await lineEvents()).toEqual([]);
+        expect(await browser.post('/admin/line/start', { reason: 'The first run' })).toEqual({
+          status: 200,
+          body: { started: true },
+        });
+        expect((await lineEvents()).map((e) => [e.type, e.appended_by])).toEqual([['line.started', 'factory_admin']]);
+      } finally {
+        await service.stop();
+        await db.end();
+        db = shared;
+        await start();
+      }
+    });
+
     it('starts only with the passkey again, decided from the stored line, with Martin’s reason', async () => {
       await withRollout({ current: STABLE, stable: STABLE });
       const { browser, passkey } = await signedIn();
@@ -1826,7 +1852,7 @@ describe('the line’s controls', () => {
     expect(await browser.post('/admin/line/controls', { autonomy: 'guarded' })).toEqual({
       status: 200,
       body: {
-        controls: { autonomy: 'guarded', newWork: true, autoMerge: false, take: null, autoRollback: true },
+        controls: { autonomy: 'guarded', newWork: true, autoMerge: false, take: { kind: 'every' }, autoRollback: true },
         change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
       },
     });
@@ -1838,7 +1864,7 @@ describe('the line’s controls', () => {
         autonomy: 'guarded',
         newWork: true,
         autoMerge: false,
-        take: null,
+        take: { kind: 'every' },
         change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
       },
     });
@@ -1861,11 +1887,13 @@ describe('the line’s controls', () => {
     // Every other control stays as it was in force.
     expect((await changes()).at(-1)?.payload).toMatchObject({ autoMerge: true });
     // What policy does not allow is not in force, whatever the event says: the next fifty are more than it allows, so
-    // no take is, and the next three, though fewer, are wider than none.
+    // every ticket is, and the next three are narrower, and ask nothing.
     await stored({ take: { kind: 'next-few', count: 50, since: new Date().toISOString() } });
-    expect((await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).body.refused).toBe(
-      'step-up',
-    );
+    expect(await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).toMatchObject({
+      status: 200,
+      body: { change: { control: 'take', before: { kind: 'every' } } },
+    });
+    expect((await changes()).at(-1)?.summary).toBe('Martin narrowed what the line takes to the next 3 from now');
   });
 
   it('turns new work off and on without the passkey, and auto-merge on only with it', async () => {
@@ -1926,16 +1954,24 @@ describe('the line’s controls', () => {
     await stored({});
     const workItem = await ticketed();
     const { browser, passkey } = await signedIn();
-    // A first take, over the line's own default, which the service cannot see: wider, whatever it is.
-    expect((await browser.post('/admin/line/controls', { take: { kind: 'just-one', workItem } })).body.refused).toBe(
-      'step-up',
-    );
-    expect((await stepUp(browser, passkey)).status).toBe(200);
+    // With no take set, the line takes every ticket: choosing it changes nothing, and records nothing.
+    const before = (await changes()).length;
+    expect(await browser.post('/admin/line/controls', { take: { kind: 'every' } })).toMatchObject({
+      status: 200,
+      body: { controls: { take: { kind: 'every' } }, change: null },
+    });
+    expect(await changes()).toHaveLength(before);
+    // A first take narrows every ticket, whatever it is, and asks nothing.
     expect(await browser.post('/admin/line/controls', { take: { kind: 'just-one', workItem } })).toMatchObject({
       status: 200,
       body: { controls: { take: { kind: 'just-one', workItem } } },
     });
-    expect((await changes()).at(-1)?.summary).toBe(`Martin widened what the line takes to just #${workItem}`);
+    expect((await changes()).at(-1)?.summary).toBe(`Martin narrowed what the line takes to just #${workItem}`);
+    // The next few are wider than just one.
+    expect((await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).body.refused).toBe(
+      'step-up',
+    );
+    expect((await stepUp(browser, passkey)).status).toBe(200);
     expect(await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).toMatchObject({
       status: 200,
     });

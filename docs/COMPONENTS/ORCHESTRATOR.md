@@ -56,16 +56,16 @@ Each stage can also hold for Martin (see [Holds](#holds-and-martins-answers)).
 - As a ticket enters Plan, it opens the ticket's issue through the App, from the ticket's public view. The fix's pull request refers to that issue. An improvement's issue has its title and Martin's words, from their public views.
 - After the merge, the line's through the queue or Martin's, it carries the work item through Release and Verify until it closes ([the merge](#the-merge)).
 
-What it takes is Martin's to set in the console's Controls ([admin service](ADMIN-SERVICE.md#the-lines-controls)), read at each pass as `controls.changed`'s latest from his roles, held to policy by `policy/line.ts` as it is read: Every ticket, The next few (counted from when he last chose a number, at most 20), or Just one. The next few count improvements as they count tickets, and count the work items the line worked on: a ticket that closed on the look as it was taken (ended before its issue opened, with no step started) counts for nothing. Just one takes an improvement at once, as it takes a ticket. With none in force, before he sets one or when the latest is outside policy, two settings are the line's own default:
+What it takes is Martin's to set in the console's Controls ([admin service](ADMIN-SERVICE.md#the-lines-controls)), or with `make take-the-line` from his command line, read at each pass as `controls.changed`'s latest from his roles, held to policy by `policy/line.ts` as it is read: Every ticket, The next few, or Just one. With none in force, before he sets one or when the latest is outside policy, the line takes every ticket, and says at its start whether what it takes is his setting or that default.
 
-- **`LINE_ONLY`**, set to a work item, makes the line act on that one alone, as Just one does.
-  - It takes that ticket or improvement onto the line whatever else is in Plan or Build.
+- **The next few** are counted from when he last chose a number, at most 20. They count improvements as they count tickets, and count the work items the line worked on: a ticket that closed on the look as it was taken (ended before its issue opened, with no step started) counts for nothing. The count comes from the `line` table, by when each work item came onto it, so a restart takes none more. Then the line takes no more, and carries those it has to their end.
+- **Just one** makes the line act on that work item alone.
+  - It takes that ticket or improvement onto the line at once, whatever else is in Plan or Build.
   - It starts no step for any other work item, reads nothing for it and appends nothing.
   - It says nothing of what the deploy pull request carries, but still records where that pull request stands for this work item ([its state](RELEASE-AND-VERIFY.md#the-deploy-pull-requests-state)).
   - It still watches the app's releases, and records one that carries that work item or none (those go on the line). A release that also carries another work item is left for the whole line. The work item stays held at Release (cause `deploy`, so Needs you lists it) until the line records that release, or finds it live.
-- **`LINE_TAKE`**, set to a number, has the line take work by its own rule until it has taken that many work items in all, as The next few do from when Martin chose them, and counts the same ones. The count comes from the `line` table, by when each work item came onto it, so a restart takes none more. It then takes no more, and carries those it has to their end.
 
-A take Martin sets applies from the line's next pass, which his change wakes.
+`make take-the-line` takes one of `ONLY=<work item>`, `NEXT=<how many>` or `EVERY=1`. It makes the change the console's Controls would, through the same check (`decideChange` in `admin/line.ts`), keeps every other control as it stands, and records it as his, appended by his command line's role (`factory_operator`); like `make start-the-line`, it needs no passkey. A take Martin sets applies from the line's next pass, which his change wakes.
 
 ### Agents take new work
 
@@ -84,7 +84,7 @@ Two tickets can be one defect, seen by two checks on two pages, and that shows o
 - **While it waits**, each release is looked at as for a hold, and one that clears its signal closes it.
 - **No cycles.** A work item never waits on one that waits on it, directly or through others.
 - A spec written again before any push is checked again; one written once there is a pull request is not.
-- **With just one work item** (Martin's take, or `LINE_ONLY`) there is no wait: a line of one work item sees nothing else.
+- **With just one work item** (Martin's take) there is no wait: a line of one work item sees nothing else.
 
 ### An improvement
 
@@ -113,7 +113,7 @@ A dry run works on real tickets, so a line that starts `live` on the same store 
 - **A work item whose pull request or issue was the dry run's**, the pull request merged or not, closes with no change, saying so. Its issue closes too, as not planned, when GitHub has it. The next signal of its defect opens a fresh ticket. An improvement the dry run handed over closes the same way, and Martin asks for it again if he still wants it.
 - **A ticket the dry run verified** still has its defect, and reopens (`work-item.reopened`, with `dryRun: true` and the line as its actor). It comes back into Plan as any reopened ticket does, with a new issue, since its own was the dry run's. The planner is told of no fix that came back: none shipped.
 
-What it cannot end on one pass, because GitHub or the store failed, it tries again on the next, and until then it reads no gates and starts nothing for that work item. A reopened work item waiting to come back into Plan is left to that, which forgets a dry run's issue. With `LINE_ONLY`, it ends only that work item's.
+What it cannot end on one pass, because GitHub or the store failed, it tries again on the next, and until then it reads no gates and starts nothing for that work item. A reopened work item waiting to come back into Plan is left to that, which forgets a dry run's issue. With Just one, it ends only that work item's.
 
 ### Its metrics
 
@@ -244,7 +244,7 @@ A step's `model.called` records the settings it ran under: its turns, and the ef
 
 ## Stopping the line
 
-Every worker checks for `line.stopped` before it takes work, and heeds a stop or a start only from one of [Martin's roles](EVENT-STORE.md#martins-commands). Martin stops the line from the console's header, through the [admin service](ADMIN-SERVICE.md#stopping-and-starting-the-line), or with `make stop-the-line`, as his command line's role, which works when the console and the admin service do not; each records his reason. Then:
+Every worker checks that the line is running before it takes work, and heeds a stop or a start only from one of [Martin's roles](EVENT-STORE.md#martins-commands). A new store has neither, and its line has not started: it counts as stopped to every worker, so nothing moves, no model is called and signals wait in the inbox until Martin first starts it, from the console's header or with `make start-the-line`. The console shows it as not started, which is no fault, and Stop the line is refused there, with nothing to stop. Martin stops the line from the console's header, through the [admin service](ADMIN-SERVICE.md#stopping-and-starting-the-line), or with `make stop-the-line`, as his command line's role, which works when the console and the admin service do not; each records his reason. Then:
 
 - the line deletes the Jobs of every step in hand at once, starts none still preparing, and records nothing of them;
 - it runs them afresh when the line starts, which from the console needs his passkey again;

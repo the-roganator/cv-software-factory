@@ -357,7 +357,7 @@ export function limitsFor(
 
 /** What the line is carrying, as it last read Martin's controls and its settings. */
 export interface Carrying {
-  /** The one work item it acts on, under Just one or LINE_ONLY: no other is carried. */
+  /** The one work item it acts on, under Just one: no other is carried. */
   only: string | null;
   /** Whether agents take new work: with it off no step starts, so a work item at Plan, Build or Review stands. */
   newWork: boolean;

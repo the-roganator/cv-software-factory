@@ -79,8 +79,8 @@ function propose(github: FakeGitHub, head: string, number = DEPLOY) {
 }
 
 /** The line with the app's deploy pull request open on `d`, its checks passed, and the gate's rule for its head. */
-function lineWith(rule: PayloadOf<'pull-request.enqueued'>['rule'] = 'exact-pin', repo?: string, only?: string) {
-  const it = line(undefined, undefined, { deployEveryMs: 0, ...(repo ? { repo } : {}), ...(only ? { only } : {}) });
+function lineWith(rule: PayloadOf<'pull-request.enqueued'>['rule'] = 'exact-pin', repo?: string) {
+  const it = line(undefined, undefined, { deployEveryMs: 0, ...(repo ? { repo } : {}) });
   it.github.gate = { rule };
   propose(it.github, sha('d'));
   // Every time the line asks, refused or not.
@@ -223,10 +223,10 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
   });
 
   it('acting on one work item, adds none that carries another', async () => {
-    await controls({});
     const one = await heldForDeploy(sha('2'));
     await heldForDeploy(sha('3'), '/cart');
-    const { pass, enqueues } = lineWith('exact-pin', undefined, one);
+    await controls({ take: { kind: 'just-one', workItem: one } });
+    const { pass, enqueues } = lineWith('exact-pin');
     await pass();
     expect(enqueues()).toEqual([]);
     expect(await changes(one)).toEqual([{ head: 'd', pullRequest: DEPLOY, state: 'passed' }]);
@@ -239,11 +239,13 @@ describe('the line, adding the app’s deploy pull request to the merge queue', 
     const whole = lineWith('exact-pin');
     await whole.pass();
     expect(whole.enqueues()).toHaveLength(1);
-    const soak = lineWith('exact-pin', undefined, one);
+    await controls({ take: { kind: 'just-one', workItem: one } });
+    const soak = lineWith('exact-pin');
     soak.github.queued.add(DEPLOY);
     await soak.pass();
     soak.github.dequeue(DEPLOY, 'failed_checks', ['e2e']);
     await soak.pass();
+    await controls({});
     const again = lineWith('exact-pin');
     await again.pass();
     expect([...soak.enqueues(), ...again.enqueues()]).toEqual([]);

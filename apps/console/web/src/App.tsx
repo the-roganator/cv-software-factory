@@ -265,7 +265,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
               t={view.t}
               onOpen={setOpen}
               admin={admin}
-              lineStopped={view.header.stopped !== undefined}
+              lineStopped={!view.header.running}
               ticking={ticks(from.kind === 'live')}
               motion={motion}
               autoRollback={view.controls.autoRollback}

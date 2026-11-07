@@ -9,6 +9,7 @@ import { type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/event
 import { DiskArtifacts, EventWriter, nextWorkItem } from '@software-factory/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { EVER, setTake, startLine } from '../../../../packages/store/test/line.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { Line, type LineOptions } from '../../src/line/worker.ts';
 import type { VerifyAnswer } from '../../src/probes/verify.ts';
@@ -26,6 +27,7 @@ beforeEach(async () => {
     artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
   });
   now = Date.parse('2026-10-17T13:00:00Z');
+  await startLine(database.admin);
 });
 afterEach(() => database?.end());
 
@@ -470,7 +472,8 @@ describe('a spec that overlaps work in flight', () => {
     expect(await stage(first)).toBe('build');
 
     const third = await planned('plan', 31, ['src/departments.ts']);
-    await pass(line(probes, { only: third }).line);
+    await setTake(database.admin, { kind: 'just-one', workItem: third });
+    await pass(line(probes).line);
     expect(await payloads(third, 'wait.started')).toEqual([]);
   });
 });
@@ -660,7 +663,8 @@ describe('an open ticket a release since already fixed', () => {
   it('closes beside a verified fix of the same sense and symptom, naming the fix, and leaves others open', async () => {
     const probes = new FakeProbes(CLEARED);
     // One work item at a time, so the line takes none of the tickets while the fix goes through.
-    const { line: it, github } = line(probes, { take: 1 });
+    await setTake(database.admin, { kind: 'next-few', count: 1, since: EVER });
+    const { line: it, github } = line(probes);
     const first = await planned('held', 11, SCOPE, '/', 'missing-alt');
     await events.append([
       event(

@@ -2915,7 +2915,7 @@ function flagHolds() {
   });
 }
 
-// The line's take: LINE_TAKE and LINE_ONLY as settings. Taking more than now asks for the passkey.
+// The line's take: Just one, the next few, or every ticket, as with none set. Taking more than now asks for the passkey.
 // Tightest first, as Autonomy is: a key on each choice looser than the one in force.
 const TAKES = [['only', 'Just one'], ['next', 'The next few'], ['all', 'Every ticket']];
 const takeSize = (t) => ({ all: 3, next: 2, only: 1 })[t];

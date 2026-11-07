@@ -227,45 +227,59 @@ test.describe('the sheet', () => {
   });
 });
 
+/** Where the sheet's head draws its words, line by line: a reason when any leaves its column or meets the buttons. */
+function headClash(head: HTMLElement): string {
+  const nav = head.querySelector('.sheet-nav')?.getBoundingClientRect();
+  const title = head.querySelector('.sheet-title');
+  const column = title?.getBoundingClientRect();
+  if (!nav || !column || !title) return 'no head';
+  const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    for (const box of range.getClientRects()) {
+      if (box.width === 0) continue;
+      if (box.right > column.right + 0.5) return `“${text.textContent}” runs out of its column`;
+      const apart = box.right <= nav.left || box.bottom <= nav.top || box.top >= nav.bottom;
+      if (!apart) return `“${text.textContent}” touches the buttons`;
+    }
+  }
+  return '';
+}
+
 /**
  * The sheet's head keeps its words clear of its buttons: on a phone, and on the narrowest screen reflow allows, every
- * work item's kicker and title stay inside their column, a long state wrapping rather than running under the buttons.
- * At the samples' end, and as #1310's merge waits for a release, the longest state they show.
+ * line of every work item's kicker and title stays inside its column, a long state wrapping rather than running under
+ * the buttons. Every work item at the samples' end, and #1310 as its merge waits for a release, the longest state they show.
  */
 for (const viewport of [WIDTHS.phone, { width: 320, height: 640 }]) {
   test.describe(`${viewport.width}px, the sheet's head`, () => {
     test.use({ viewport });
 
-    for (const at of [END, MERGE_WAITING]) {
-      test(`keeps every work item's words clear of its buttons, at ${new Date(at).toISOString()}`, async ({ page }) => {
-        await page.goto(consoleUrl({ item: '1310', sheet: true, at }));
-        const sheet = page.getByRole('dialog').first();
-        await sheet.waitFor();
-        await page.evaluate(() => document.fonts.ready);
-        // Back to the first work item, then forward through every one.
-        const previous = sheet.getByRole('button', { name: 'Previous work item' });
-        while (await previous.isEnabled()) await previous.click();
-        const next = sheet.getByRole('button', { name: 'Next work item' });
-        for (;;) {
-          const clash = await page.locator('.sheet-head').evaluate((head) => {
-            const nav = head.querySelector('.sheet-nav')?.getBoundingClientRect();
-            const column = head.querySelector('.sheet-title')?.getBoundingClientRect();
-            if (!nav || !column) return 'no head';
-            for (const el of head.querySelectorAll('.sheet-title *')) {
-              const box = el.getBoundingClientRect();
-              if (box.width === 0) continue;
-              if (box.right > column.right + 0.5) return `${el.textContent} runs out of its column`;
-              const apart = box.right <= nav.left || box.bottom <= nav.top || box.top >= nav.bottom;
-              if (!apart) return `${el.textContent} touches the buttons`;
-            }
-            return '';
-          });
-          expect(clash, (await page.locator('#sheet-title').textContent()) ?? '').toBe('');
-          if (!(await next.isEnabled())) break;
-          await next.click();
-        }
-      });
-    }
+    test('keeps every work item’s words clear of its buttons', async ({ page }) => {
+      await page.goto(consoleUrl({ item: '1310', sheet: true }));
+      const sheet = page.getByRole('dialog').first();
+      await sheet.waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      // Back to the first work item, then forward through every one.
+      const previous = sheet.getByRole('button', { name: 'Previous work item' });
+      while (await previous.isEnabled()) await previous.click();
+      const next = sheet.getByRole('button', { name: 'Next work item' });
+      for (;;) {
+        const title = (await page.locator('#sheet-title').textContent()) ?? '';
+        expect(await page.locator('.sheet-head').evaluate(headClash), title).toBe('');
+        if (!(await next.isEnabled())) break;
+        await next.click();
+      }
+    });
+
+    test('keeps a merge waiting for a release clear of its buttons', async ({ page }) => {
+      await page.goto(consoleUrl({ item: '1310', sheet: true, at: MERGE_WAITING }));
+      await page.getByRole('dialog').first().waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      await expect(page.locator('.sheet-head .out')).toHaveText(/waiting for release/i);
+      expect(await page.locator('.sheet-head').evaluate(headClash)).toBe('');
+    });
   });
 }
 

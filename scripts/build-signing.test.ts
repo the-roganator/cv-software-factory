@@ -18,11 +18,8 @@ const steps = (file: string, job: string) =>
     ?.steps ?? [];
 const sign = steps('build.yml', 'sign').find((s) => s.run?.includes('cosign sign'))?.run ?? '';
 const verify =
-  Object.values(
-    (parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as { jobs: Record<string, { steps: Step[] }> }).jobs,
-  )
-    .flatMap((job) => job.steps ?? [])
-    .find((s) => s.run?.includes('cosign verify '))?.run ?? '';
+  steps('check.yml', 'image').find((s) => s.name === 'Check the images it moves to were signed by build.yml on main')
+    ?.run ?? '';
 const retry = (script: string) => /^retry\(\) \{\n[\s\S]*?\n\}$/m.exec(script)?.[0] ?? '';
 
 function run(failures: number) {
@@ -48,7 +45,7 @@ const calls = (script: string) =>
     .map((line) => line.trim())
     .filter(
       (line) =>
-        !line.startsWith('#') && !line.startsWith('echo') && /(?:^|[\s"(])(?:cosign|\$SYFT|\$\{SYFT\})\b/.test(line),
+        !line.startsWith('#') && !line.startsWith('echo') && /(?:^|[\s"(])(?:cosign\b|\$SYFT\b|\$\{SYFT\})/.test(line),
     );
 
 describe('trying Sigstore and GHCR again (build.yml, check.yml)', () => {

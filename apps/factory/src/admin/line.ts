@@ -92,8 +92,8 @@ export const NOT_ABORTED =
 /** What the answer says when the canary was left alone, its stable version having no pod to take its traffic back. */
 export const NO_STABLE =
   'The line is stopped, but the canary in flight was not aborted: its stable version has no pod ready to serve, so ' +
-  'aborting it would leave nothing to serve the app. Whether it goes out is yours: promote it fully or pause it from ' +
-  'the Canary panel, or with `kubectl argo rollouts` while the panel has no record of it.';
+  'aborting it would leave nothing to serve the app. It stays at its first step until promoted fully, which is yours: ' +
+  'from the Canary panel, or with `kubectl argo rollouts` while the panel has no record of it.';
 
 /** What the answer says when the admin service has no Rollout to control. */
 export const NO_ROLLOUT =

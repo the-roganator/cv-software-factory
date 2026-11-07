@@ -108,7 +108,11 @@ describe('aborting a canary in flight (make stop-the-line)', () => {
         `Didn't abort the release of ${rollout}: its stable version has no pod ready to serve, so aborting it`,
       );
     }
-    expect(out).toContain('The release goes on. To abort it all the same:');
+    expect(out).toContain('It stays at its first step until promoted fully, which is yours:');
+    expect(out).toContain(
+      `-n website patch rollout website --subresource=status --type=merge -p '{"status":{"promoteFull":true}}'`,
+    );
+    expect(out).toContain('Or to abort it all the same:');
     expect(out).toContain(
       `-n website patch rollout website --subresource=status --type=merge -p '{"status":{"abort":true}}'`,
     );

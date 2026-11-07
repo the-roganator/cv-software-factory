@@ -11,8 +11,9 @@
 # A canary whose stable version has no pod ready to serve is left alone, and the script says so: aborting it would send
 # every request to a version that cannot serve one, as on the first release after the app is reset, whose stable
 # version is one admission never let run. The stable version's pods are its ReplicaSet's available ones (Argo Rollouts
-# names it `<rollout>-<stable hash>`); no such ReplicaSet has none. The release goes on, and the script prints the
-# abort to make by hand. A ReplicaSet it cannot read aborts nothing, and fails.
+# names it `<rollout>-<stable hash>`); no such ReplicaSet has none. The release stays at its first step until promoted
+# fully, as Argo Rollouts does not finish setting its first weight without a stable pod, and the script prints both the
+# promotion and the abort to make by hand. A ReplicaSet it cannot read aborts nothing, and fails.
 #
 # It runs with Martin's own kubeconfig. The factory holds no right to change a Rollout: the line may only read them.
 #
@@ -59,7 +60,9 @@ while IFS='|' read -r namespace name stable current abort; do
   fi
   if [ "${available:-0}" = 0 ]; then
     echo "Didn't abort the release of $namespace/$name: its stable version has no pod ready to serve, so aborting it"
-    echo "  would leave nothing to serve the app. The release goes on. To abort it all the same:"
+    echo "  would leave nothing to serve the app. It stays at its first step until promoted fully, which is yours:"
+    echo "  ${kubectl[*]} -n $namespace patch rollout $name --subresource=status --type=merge -p '{\"status\":{\"promoteFull\":true}}'"
+    echo "  Or to abort it all the same:"
     echo "  ${kubectl[*]} -n $namespace patch rollout $name --subresource=status --type=merge -p '{\"status\":{\"abort\":true}}'"
     continue
   fi

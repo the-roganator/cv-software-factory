@@ -6,7 +6,7 @@
  */
 import { cutTo } from './text.ts';
 import type { PayloadOf } from './types.ts';
-import type { HoldAnswer, HoldCause, Stage } from './vocabulary.ts';
+import { type HoldAnswer, type HoldCause, type Stage, WORDED_ANSWERS } from './vocabulary.ts';
 
 /** How far the line lets a work item go round before it holds for Martin. */
 export const LIMITS = {
@@ -116,28 +116,74 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
 };
 
 /**
- * The causes of a hold that words cannot answer on a work item a visitor's report opened. His words there stay his, and
- * no agent reads them, as none reads a report, so words do only what the answer itself does: these are the holds where
- * that is exactly what approving does, with nothing told beside it. A `question` runs the planner again told nothing,
- * as approving does, so it would ask again; on `failures`, `spend` and `unknown` words carry on as approving does, and
- * on `gates` they send the work back to the coder as approving does. Everywhere else words keep their place, as the
- * answer moves the work somewhere approving does not: the planner again after a `ticket-rejected` hold, back to the
- * planner from a `spec`, `scope`, `nothing-to-fix`, `beyond-ticket` or `verify` hold, back to the coder from a
- * `review`, `merge` or `tests-first` one. Triage's holds keep their words with them (`WORDS_LEAVE_HELD`).
+ * What sends the work back without words on a work item a visitor's report opened, for each cause: the answers that
+ * go with words elsewhere (`WORDED_ANSWERS`) which still reach an agent with something the line tells it there. His
+ * words on such a work item stay his, and no agent reads them, as none reads a report, since what an agent writes is
+ * public and a paraphrase of a report would pass any redactor. So no hold there takes words, but triage's
+ * (`WORDS_LEAVE_HELD`), whose words wait for him and for no agent; an answer whose words would have been all it carried
+ * is not offered, as it would do nothing that approving or rejecting does not, and the agent it reached would hand back
+ * the same again. Those left:
+ *
+ * - `review`: back to the coder, with the review's blocking findings, for another round (`answered`); or back to the
+ *   planner, told why review held it (`replanned`).
+ * - `beyond-ticket`: back to the planner, told the reviewer's findings beyond the ticket, to take them out (`answered`).
+ * - `gates` and `tests-first`: back to the planner, told why the change was held (`replanned`): the gate's output, or
+ *   tests that pass without the fix.
+ *
+ * Every other cause takes none. A `question`, a `ticket-rejected` hold, `failures`, `spend` and `unknown` would run the
+ * held step again with nothing new; a `spec` would have the planner guess what kept it from his approval; `scope` would
+ * tell the planner what approving does, and `nothing-to-fix` only what the coder said, which led to the spec it wrote
+ * last; on `gates` words send the coder what approving does, on `merge` and `tests-first` the coder is told nothing,
+ * and `merge` would tell the planner only how the merge stands; at `verify` no sense of a report's looks again, so a
+ * new spec would hold there just the same. Triage's, a `deploy` and a `canary` take none of these answers anywhere.
+ * A record of every cause, so a new one is decided here.
  */
-export const WORDS_UNREAD_ON_REPORT: readonly HoldCause[] = ['question', 'failures', 'gates', 'spend', 'unknown'];
+export const PLAIN_ON_REPORT: Record<HoldCause, readonly HoldAnswer[]> = {
+  suggestion: [],
+  finding: [],
+  burst: [],
+  environment: [],
+  spec: [],
+  question: [],
+  'ticket-rejected': [],
+  scope: [],
+  'nothing-to-fix': [],
+  failures: [],
+  gates: ['replanned'],
+  review: ['answered', 'replanned'],
+  'beyond-ticket': ['answered'],
+  merge: [],
+  deploy: [],
+  canary: [],
+  verify: [],
+  spend: [],
+  'tests-first': ['replanned'],
+  unknown: [],
+};
+
+/**
+ * Whether an answer to a hold of this cause goes with Martin's words: those that do elsewhere (`WORDED_ANSWERS`), but
+ * where his words stay his (`wordsStayHis`, on a work item a visitor's report opened), where only triage's holds
+ * take them (`WORDS_LEAVE_HELD`), and every other is plain (`PLAIN_ON_REPORT`).
+ */
+export const takesWords = (cause: HoldCause, answer: HoldAnswer, wordsStayHis = false): boolean =>
+  WORDED_ANSWERS.includes(answer) && (!wordsStayHis || WORDS_LEAVE_HELD.includes(cause));
 
 /**
  * The answers a hold of this cause takes from the console, in the order Needs you shows them: each that does
  * something. An answer the line would only wait after is left off (a fix waiting for Martin's deploy takes only his
- * rejection), but for words on one of triage's holds, which are kept with it while it stays held. On a work item a
- * visitor's report opened (`aboutReport`), words are left off where no agent could read them (`WORDS_UNREAD_ON_REPORT`).
+ * rejection), but for words on one of triage's holds, which are kept with it while it stays held. Where his words stay
+ * his (`wordsStayHis`), an answer that goes with words elsewhere is taken only plain, where it still does something
+ * (`PLAIN_ON_REPORT`), or with words on triage's holds.
  */
-export const answersTo = (cause: HoldCause, aboutReport = false): HoldAnswer[] =>
+export const answersTo = (cause: HoldCause, wordsStayHis = false): HoldAnswer[] =>
   (['approved', 'answered', 'replanned', 'rejected'] as const).filter(
     (answer) =>
-      !(aboutReport && answer === 'answered' && WORDS_UNREAD_ON_REPORT.includes(cause)) &&
-      (ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause))),
+      (ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause))) &&
+      (!wordsStayHis ||
+        !WORDED_ANSWERS.includes(answer) ||
+        takesWords(cause, answer, true) ||
+        PLAIN_ON_REPORT[cause].includes(answer)),
   );
 
 /**

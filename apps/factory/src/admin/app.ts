@@ -228,7 +228,7 @@ export function createAdminApp({
       return refused(
         400,
         'body',
-        WORDED_ANSWERS.includes(decision) ? 'Send the hold, and your words.' : 'Send the hold.',
+        WORDED_ANSWERS.includes(decision) ? 'Send the hold, and your words if it takes them.' : 'Send the hold.',
       );
     }
     return { status: 200, body: await answerHold(store, session as Session, workItem, decision, given.data) };

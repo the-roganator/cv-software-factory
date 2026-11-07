@@ -1044,6 +1044,32 @@ describe('Martin’s answer to a hold', () => {
     expect(decide(verify, facts).next).toEqual({ do: 'verified', verification: undefined });
   });
 
+  it('sends a review back to the coder plain on a visitor’s report, with the review’s findings as what it is told', () => {
+    const plain: LineEvent = { type: 'hold.answered', payload: { decision: 'answered', report: true } };
+    const waiting = [
+      ticket,
+      spec,
+      pushed(),
+      started(),
+      finished('passed'),
+      review('changes-requested'),
+      held('review', 'review'),
+    ];
+    expect(decide([...waiting, plain], facts).next).toEqual({
+      do: 'return',
+      from: 'review',
+      to: 'build',
+      reason: 'Martin sent it back',
+    });
+    // The coder is given a review's blocking findings when review sent the work back (`coder.ts`).
+    const back = fold([...waiting, plain, returned('review')]);
+    expect(back.rebuild?.from).toBe('review');
+    expect(back.review?.findings.filter((f) => f.blocking)).toEqual([finding]);
+    // Back to the planner plain, it is told why the change was held, with no words of his.
+    const replanned = fold([...waiting, { type: 'hold.answered', payload: { decision: 'replanned', report: true } }]);
+    expect(replanned.replan).toMatchObject({ cause: 'review', answered: false, reason: 'Held for Martin' });
+  });
+
   it('closes the work item when he rejects it, whatever the cause, but a canary paused for him', () => {
     // A canary paused for Martin is answered from the Canary panel, never by a hold's answer: the admin service takes
     // none (`answersTo`), and the line would wait after one.

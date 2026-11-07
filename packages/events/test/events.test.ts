@@ -7,13 +7,14 @@ import {
   knownInScope,
   measurementOf,
   PATH_CHARS,
+  PLAIN_ON_REPORT,
   recordedPath,
   returnWords,
   sameVersion,
   scopesOverlap,
   sharedPath,
+  takesWords,
   WORDS_LEAVE_HELD,
-  WORDS_UNREAD_ON_REPORT,
 } from '../src/line.ts';
 import { formatLog, parseLog } from '../src/log-format.ts';
 import { PUBLIC_VIEWS, publicView, redactSecrets } from '../src/public.ts';
@@ -22,7 +23,14 @@ import { PAYLOADS, validate, validateSignal } from '../src/schemas.ts';
 import type { NewEvent, PublicEvent } from '../src/types.ts';
 import { type Catalogue, upcast } from '../src/upcast.ts';
 import { ADMIN_TYPES, EVENT_TYPES, VERSIONS } from '../src/versions.ts';
-import { HOLD_CAUSES, MARTIN_ANSWER_CHARS, MARTIN_REASON_CHARS, REFUSAL_MECHANISMS } from '../src/vocabulary.ts';
+import {
+  HOLD_ANSWERS,
+  HOLD_CAUSES,
+  MARTIN_ANSWER_CHARS,
+  MARTIN_REASON_CHARS,
+  REFUSAL_MECHANISMS,
+  WORDED_ANSWERS,
+} from '../src/vocabulary.ts';
 import { gate, judgement, opened, REPORT_TEXT, signal, VISITOR_KEY } from './fixtures.ts';
 
 /** An event read back, as one about to be appended again: what it reads as must be valid now. */
@@ -709,6 +717,13 @@ describe('public views', () => {
     });
     expect(JSON.stringify(back)).not.toContain('old error page');
     expect(validate({ ...replanned, ...back })).toEqual({ ok: true });
+    // Sent back with no words, it has none to leave out: its summary, the admin service's, says where it went.
+    const plain = {
+      ...answer({ decision: 'answered', hold: opened.id, report: true }),
+      summary: 'Martin sent the hold on #1306 back to the coder',
+    } as NewEvent;
+    expect(viewOf(plain)).toMatchObject({ summary: plain.summary, payload: { decision: 'answered', report: true } });
+    expect(viewOf({ ...plain, ...viewOf(plain) } as NewEvent)).toEqual(viewOf(plain));
   });
 
   it('redact anything secret-shaped, wherever it is', () => {
@@ -1773,31 +1788,52 @@ describe('the answers a hold takes', () => {
     expect(answersTo('finding')).toEqual(['approved', 'answered', 'rejected']);
   });
 
-  it('leave words off a hold on a work item a visitor’s report opened, where they would do nothing more', () => {
-    expect(answersTo('question')).toEqual(['approved', 'answered', 'rejected']);
-    expect(answersTo('question', true)).toEqual(['approved', 'rejected']);
-    expect(answersTo('gates', true)).toEqual(['approved', 'replanned', 'rejected']);
-    // Only where words, with none of his read, do what approving does.
-    for (const cause of WORDS_UNREAD_ON_REPORT) expect(ANSWERS[cause].answered, cause).toBe(ANSWERS[cause].approved);
-    // Where words move the work somewhere approving does not, they stay, as do triage's, kept with the hold.
-    for (const cause of [
-      'ticket-rejected',
-      'spec',
-      'scope',
-      'nothing-to-fix',
-      'beyond-ticket',
-      'verify',
-      'review',
-      'merge',
-      'tests-first',
-    ] as const) {
-      expect(answersTo(cause, true), cause).toEqual(answersTo(cause));
-    }
-    for (const cause of WORDS_LEAVE_HELD) expect(WORDS_UNREAD_ON_REPORT).not.toContain(cause);
+  it('take no words where his words stay his, but on triage’s holds, which wait for him', () => {
+    // The rule, for every cause, so a new one cannot offer words no agent reads.
     for (const cause of HOLD_CAUSES) {
-      const left = answersTo(cause).filter((answer) => !answersTo(cause, true).includes(answer));
-      expect(left, cause).toEqual(WORDS_UNREAD_ON_REPORT.includes(cause) ? ['answered'] : []);
+      for (const answer of answersTo(cause, true)) {
+        expect(takesWords(cause, answer, true), `${cause}: ${answer}`).toBe(
+          WORDED_ANSWERS.includes(answer) && WORDS_LEAVE_HELD.includes(cause),
+        );
+      }
     }
+    expect(answersTo('suggestion', true)).toEqual(answersTo('suggestion'));
+    expect(answersTo('finding', true)).toEqual(answersTo('finding'));
+    for (const cause of HOLD_CAUSES) {
+      for (const answer of HOLD_ANSWERS)
+        expect(takesWords(cause, answer), `${cause}: ${answer}`).toBe(WORDED_ANSWERS.includes(answer));
+    }
+  });
+
+  it('send the work back plain where his words stay his only where it still tells an agent something', () => {
+    for (const cause of HOLD_CAUSES) {
+      const plain = answersTo(cause, true).filter(
+        (answer) => WORDED_ANSWERS.includes(answer) && !takesWords(cause, answer, true),
+      );
+      expect(plain, cause).toEqual(PLAIN_ON_REPORT[cause]);
+      // Each is one the hold takes anyway, and moves the work somewhere approving does not.
+      for (const answer of plain) {
+        expect(answersTo(cause), `${cause}: ${answer}`).toContain(answer);
+        expect(ANSWERS[cause][answer], `${cause}: ${answer}`).not.toBe(ANSWERS[cause].approved);
+      }
+      // Approving and rejecting stay as they are.
+      expect(
+        answersTo(cause, true).filter((a) => !WORDED_ANSWERS.includes(a)),
+        cause,
+      ).toEqual(answersTo(cause).filter((a) => !WORDED_ANSWERS.includes(a)));
+    }
+    expect(answersTo('review', true)).toEqual(['approved', 'answered', 'replanned', 'rejected']);
+    expect(answersTo('beyond-ticket', true)).toEqual(['approved', 'answered', 'rejected']);
+    expect(answersTo('gates', true)).toEqual(['approved', 'replanned', 'rejected']);
+    expect(answersTo('tests-first', true)).toEqual(['approved', 'replanned', 'rejected']);
+    // The planner rejected it, or asked: words would run it again with nothing new, so it would do the same again.
+    expect(answersTo('ticket-rejected', true)).toEqual(['approved', 'rejected']);
+    expect(answersTo('question', true)).toEqual(['approved', 'rejected']);
+    for (const cause of ['spec', 'scope', 'nothing-to-fix', 'failures', 'verify', 'spend', 'unknown'] as const) {
+      expect(answersTo(cause, true), cause).toEqual(['approved', 'rejected']);
+    }
+    expect(answersTo('merge', true)).toEqual(['rejected']);
+    expect(answersTo('deploy', true)).toEqual(['rejected']);
   });
 
   it('send the work back to the planner only from a hold whose words would go to the coder', () => {

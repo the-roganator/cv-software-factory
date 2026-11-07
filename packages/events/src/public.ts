@@ -116,9 +116,10 @@ export const PUBLIC_VIEWS = {
   'work.returned': redacted,
   'hold.started': redacted,
   // Martin's answer, through the redactor, but for his words on a hold about a visitor's report, which stay his: the
-  // summary too says only how he answered.
+  // summary of one that had words says only how he answered.
   'hold.answered': (event) => {
-    if (!event.payload.report) return redacted(event);
+    // One with no words has none to leave out, and its summary is the admin service's, which says what it did.
+    if (!event.payload.report || event.payload.answer === undefined) return redacted(event);
     const { answer: _words, ...payload } = event.payload;
     return redacted({ ...event, summary: ANSWERED[payload.decision], payload });
   },

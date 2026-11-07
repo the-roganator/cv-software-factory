@@ -5,8 +5,9 @@
  *
  * What each answer does is the line's own table, `ANSWERS` in the events package, so the two cannot drift; only the
  * words are the console's. An answer that would do nothing is left off (`answersTo`): a fix waiting for Martin's
- * deploy takes only his rejection, and a question on a work item a visitor's report opened takes no words, which no
- * agent would read, and says so.
+ * deploy takes only his rejection. On a work item a visitor's report opened no hold takes words but triage's, as no
+ * agent would read them: an answer that still sends the work back with something the line tells the agent is offered
+ * plain, and the card says why there are no words.
  *
  * A canary paused for Martin (auto-rollback off, judged bad) has one card of its own, drawn from the release's events
  * (`release.ts`'s `judgedBad`), whether or not it carries a work item: Martin's drill releases a change that carries
@@ -25,9 +26,9 @@ import {
   type PublicEvent,
   type Resolution,
   type Stage,
+  takesWords,
   WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
-  WORDS_UNREAD_ON_REPORT,
 } from '@software-factory/events';
 import { ENQUEUES } from '@software-factory/policy/line';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
@@ -64,6 +65,8 @@ interface AnswerRow {
   label: string;
   /** What it does, in a sentence. */
   does: string;
+  /** Whether it goes with his words, in a field the card opens: not where they stay his, but on triage's holds. */
+  words: boolean;
   /** Whether it asks for the passkey again: approving a guardrail's hold, or an improvement's spec. */
   stepUp: boolean;
 }
@@ -85,7 +88,7 @@ export interface Need {
   link: { href: string; label: string } | undefined;
   /**
    * A sentence after the evidence: what would let the line merge a change it holds for Martin's merge itself, or why a
-   * question takes no words.
+   * hold on a work item a visitor's report opened takes no words.
    */
   note: string | undefined;
   /**
@@ -250,8 +253,16 @@ function doesOf(
   workItem: string,
   improvement: boolean,
   pullRequest: number | undefined,
+  plain: boolean,
 ): string {
   const resolution: Resolution = ANSWERS[cause][answer];
+  // Sent back with no words, where his stay his: what the agent is told instead.
+  if (plain) {
+    if (resolution === 'return') return 'Sends it back to the coder for another round, with the reviewer’s findings.';
+    if (cause === 'beyond-ticket')
+      return 'The planner writes the spec again, told what the reviewer found beyond the ticket.';
+    return 'The planner writes the spec again for why it was held, and the coder rebuilds the change on it.';
+  }
   if (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)) {
     return cause === 'suggestion'
       ? 'Kept with the hold. It stays held until you reject it.'
@@ -316,6 +327,10 @@ const LABEL: Record<HoldAnswer, string> = {
   replanned: 'Back to the planner',
   rejected: 'Reject',
 };
+
+/** An answer that goes with words elsewhere, given plain: where it sends the work. */
+const labelOf = (cause: HoldCause, answer: HoldAnswer, plain: boolean) =>
+  !plain ? LABEL[answer] : ANSWERS[cause][answer] === 'return' ? 'Back to the coder' : 'Back to the planner';
 
 /** How Martin answered, for Answered today. */
 const HOW: Record<HoldAnswer, string> = {
@@ -507,14 +522,24 @@ const answersOf = (hold: Hold, aboutReport: boolean): HoldAnswer[] => {
   return hold.merge?.why === 'held' ? offered.filter((answer) => answer !== 'replanned') : offered;
 };
 
-/** Why a question on a work item a visitor's report opened takes no words. */
+/** Why a hold on a work item a visitor's report opened takes no words. */
 export const NO_WORDS_ON_REPORT = 'No answer in words: a visitor’s report opened this, so no agent reads them.';
+
+/** What Martin may do himself where the planner rejected a visitor's report's ticket: ask for the change. */
+export const ASK_YOURSELF =
+  'Where it needs what only you can decide, ask for that yourself, as an improvement, with the “+”.';
+
+/** Whether a hold takes words anywhere but on a work item a visitor's report opened. */
+const wordsOnlyElsewhere = (cause: HoldCause) =>
+  answersTo(cause).some((answer) => takesWords(cause, answer)) &&
+  !answersTo(cause, true).some((answer) => takesWords(cause, answer, true));
 
 /** The sentences after a hold's evidence, if it has any. */
 const noteOf = (hold: Hold, aboutReport: boolean) =>
   [
     hold.cause === 'merge' && mergeNote(hold.merge),
-    aboutReport && WORDS_UNREAD_ON_REPORT.includes(hold.cause) && NO_WORDS_ON_REPORT,
+    aboutReport && wordsOnlyElsewhere(hold.cause) && NO_WORDS_ON_REPORT,
+    aboutReport && hold.cause === 'ticket-rejected' && ASK_YOURSELF,
   ]
     .filter(Boolean)
     .join(' ') || undefined;
@@ -585,22 +610,28 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           link: linkOf(hold.cause),
           note: noteOf(hold, aboutReport),
           way: wayOf(item, hold.cause),
-          answers: answersOf(hold, aboutReport).map((answer) => ({
-            answer,
-            label: LABEL[answer],
-            does:
-              answer === 'approved' && hold.needs?.some((n) => n.barred)
-                ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
-                : doesOf(
-                    hold.cause,
-                    answer,
-                    item.number,
-                    improvement,
-                    // A sample's pull request never existed, so nothing stays open.
-                    item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
-                  ),
-            stepUp: answer === 'approved' && keyed,
-          })),
+          answers: answersOf(hold, aboutReport).map((answer) => {
+            const words = takesWords(hold.cause, answer, aboutReport);
+            const plain = WORDED_ANSWERS.includes(answer) && !words;
+            return {
+              answer,
+              label: labelOf(hold.cause, answer, plain),
+              words,
+              does:
+                answer === 'approved' && hold.needs?.some((n) => n.barred)
+                  ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
+                  : doesOf(
+                      hold.cause,
+                      answer,
+                      item.number,
+                      improvement,
+                      // A sample's pull request never existed, so nothing stays open.
+                      item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                      plain,
+                    ),
+              stepUp: answer === 'approved' && keyed,
+            };
+          }),
           aboutReport,
           forMartin: hold.cause !== 'deploy' || deployWaitsForMartin(item),
         },
@@ -619,13 +650,19 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       if (at < from || at > t) continue;
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
-      const how = HOW[decision];
+      // Sent back with no words, where his stay his: where it went says what it did.
+      const plain =
+        !answer && cause !== undefined && WORDED_ANSWERS.includes(decision) && !takesWords(cause, decision, report);
+      const how =
+        plain && cause
+          ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
+          : HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words: answer ?? (report && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
-        did: didOf(cause, decision),
+        words: answer ?? (report && cause && takesWords(cause, decision, true) ? 'kept' : undefined),
+        did: plain ? undefined : didOf(cause, decision),
       });
     }
   }

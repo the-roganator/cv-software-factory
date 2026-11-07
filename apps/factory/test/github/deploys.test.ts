@@ -1203,7 +1203,7 @@ describe('the newest build, as the line reads it', () => {
     expect(writes(gh.sent)).toEqual([]);
   });
 
-  it('says a build signed by someone else is, with no job when none of the build’s failed', async () => {
+  it('says a build whose signatures are refused is, with no job when none of the build’s failed', async () => {
     const proposals = new DeployProposals();
     const gh = github(APP, { pins: APP_PINS, checkRuns: () => [job(1, 'build and push', 'success')] });
     await watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals)();
@@ -1212,7 +1212,7 @@ describe('the newest build, as the line reads it', () => {
       pinned: commit('a'),
       image: WEBSITE,
       digest: digest('7'),
-      signature: 'other',
+      signature: 'refused',
       reason: `${WEBSITE}@${digest('7')} has no signature by them`,
     });
   });
@@ -1226,11 +1226,29 @@ describe('the newest build, as the line reads it', () => {
     });
     const pass = watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals);
     await pass();
-    expect(proposals.build(APP_REPO, APP.branch)).toMatchObject({ signature: 'other' });
+    expect(proposals.build(APP_REPO, APP.branch)).toMatchObject({ signature: 'refused' });
     expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
     fail = false;
     await pass();
     expect(proposals.build(APP_REPO, APP.branch)?.job).toEqual({ run: 901, id: 2, name: 'sign and attest' });
+  });
+
+  it('looks again for the job that failed while the build’s jobs are still running, and keeps it once found', async () => {
+    let running = true;
+    const proposals = new DeployProposals();
+    const gh = github(APP, {
+      pins: APP_PINS,
+      checkRuns: () => [job(2, 'sign and attest', running ? null : 'failure')],
+    });
+    const pass = watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals);
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
+    running = false;
+    await pass();
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toEqual({ run: 900, id: 2, name: 'sign and attest' });
+    // Found, it is not read again.
+    expect(calls(gh.sent).filter((c) => c.path.includes('/check-runs'))).toHaveLength(2);
   });
 
   it('links no job whose address is not one of the repository’s runs', async () => {

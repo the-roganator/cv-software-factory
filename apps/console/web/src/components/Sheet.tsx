@@ -21,6 +21,7 @@ import {
   duration,
   inWords,
   isCommit,
+  jobUrl,
   listed,
   modelTitle,
   money,
@@ -529,12 +530,8 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                     {/* The build's job, where Martin runs it again: a sample's never ran, so it links nowhere. */}
                     {sheet.deploy.deploy.job && !card.sample ? (
                       <>
-                        <ToolMark name="github" />{' '}
-                        <a
-                          href={`${APP_REPO}/actions/runs/${sheet.deploy.deploy.job.run}/job/${sheet.deploy.deploy.job.id}`}
-                        >
-                          {sheet.deploy.deploy.commit.slice(0, 7)} on GitHub
-                        </a>
+                        <ToolMark name="github" /> {sheet.deploy.deploy.commit.slice(0, 7)} ·{' '}
+                        <a href={jobUrl(sheet.deploy.deploy.job)}>{sheet.deploy.deploy.job.name} on GitHub</a>
                       </>
                     ) : (
                       sheet.deploy.deploy.commit.slice(0, 7)

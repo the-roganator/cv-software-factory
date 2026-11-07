@@ -100,7 +100,7 @@ export default new Item('1314', '2026-10-06T09:00:00+01:00')
     '1:46:00',
     'build.unsigned',
     'factory',
-    `The build of ${commitFor('1314/merge').slice(0, 7)} that carries it was never signed, so no deploy pull request carries it: sign and attest did not succeed`,
+    `The build of ${commitFor('1314/merge').slice(0, 7)} that carries it was never signed: sign and attest did not succeed, so no deploy pull request carries it`,
     {
       commit: commitFor('1314/merge'),
       image: 'the-roganator/cv-worlds-worst-website',
@@ -114,7 +114,7 @@ export default new Item('1314', '2026-10-06T09:00:00+01:00')
     '2:03:00',
     'build.signed',
     'factory',
-    `A build that carries it, of ${commitFor('1314/merge').slice(0, 7)}, is signed: it waits for its deploy pull request`,
+    `A build that carries it, of ${commitFor('1314/merge').slice(0, 7)}, is signed by its pipeline`,
     { commit: commitFor('1314/merge'), digest: digestFor('1314/merge') },
   )
   .deploy('2:05:00', 1330, 1, 'checking')

@@ -12,7 +12,7 @@
  * judged, pushed or refused.
  */
 import type { PayloadOf, PublicEvent, Stage } from '@software-factory/events';
-import { knownInScope, returnWords } from '@software-factory/events';
+import { knownInScope, returnWords, unsignedBuildWords } from '@software-factory/events';
 import { RULES } from './app.ts';
 import {
   deployWaitsForMartin,
@@ -525,19 +525,16 @@ const DEPLOY_WORDS: Record<DeployRecord['state'] | 'none', DeployWording> = {
  * A build that carries a held fix, which its pipeline did not sign, in each place's words: no deploy pull request may
  * carry it, and its job to run again, when the line named one.
  */
-function unsignedWords({ commit, signature, job }: UnsignedBuild): ReturnType<typeof deployWords> {
-  const other = signature === 'other';
-  const build = `The build of ${commit.slice(0, 7)} that carries it`;
-  const why = other
-    ? ' is signed by someone other than its pipeline'
-    : ` was never signed${job ? `: ${job.name} did not succeed` : ''}`;
+function unsignedWords(build: UnsignedBuild): ReturnType<typeof deployWords> {
+  const refused = build.signature === 'refused';
+  const said = unsignedBuildWords(build);
   return {
-    short: other ? 'its build signed by someone else' : 'its build not signed',
-    tick: build + why,
+    short: refused ? 'its build’s signature refused' : 'its build not signed',
+    tick: said,
     ok: false,
-    kicker: other ? 'Its build is not its pipeline’s' : 'Its build is not signed',
-    fact: other ? 'signed by someone else' : 'not signed',
-    evidence: `${build}${why}, so no deploy pull request carries it. ${other ? 'A newer build its pipeline signs carries it.' : 'Running its signing again on GitHub signs it, or a newer signed build carries it.'}`,
+    kicker: refused ? 'Its build’s signature is refused' : 'Its build is not signed',
+    fact: refused ? 'signature refused' : 'not signed',
+    evidence: `${said}, so no deploy pull request carries it. Signing it again on GitHub, or a newer build its pipeline signs, carries it on.`,
   };
 }
 

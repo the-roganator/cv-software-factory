@@ -31,7 +31,7 @@ import {
 } from '@software-factory/events';
 import { ENQUEUES } from '@software-factory/policy/line';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
-import { APP_REPO, AUTONOMY, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
+import { APP_REPO, AUTONOMY, clock, duration, jobUrl, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployRecord, deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
@@ -458,7 +458,7 @@ function mergeNote(merge: Merge | undefined): string | undefined {
 function deployEvidence(item: ItemState): string {
   const merged = latest(item, 'pull-request.merged');
   const at = `Merged${merged ? ` at ${clock(Date.parse(merged.ts))}` : ''}.`;
-  if (!item.deploy && !item.unsigned && item.releaseStopped) return item.hold?.reason ?? at;
+  if (!item.deploy && item.releaseStopped) return item.hold?.reason ?? at;
   return `${at} ${deployWords(deployRecord(item)).evidence}`;
 }
 
@@ -528,9 +528,10 @@ const noteOf = (hold: Hold, aboutReport: boolean) =>
  */
 const linkOf = (item: ItemState, cause: HoldCause): Need['link'] => {
   if (cause === 'spend') return { href: '?view=settings', label: 'Raise the cap in the settings' };
-  const job = cause === 'deploy' && item.unsigned?.signature === 'unsigned' ? item.unsigned.job : undefined;
+  // Once the deploy waits for Martin (his retry, after a stop), the card is that wait's, and links nothing of the build.
+  const job = cause === 'deploy' && !deployWaitsForMartin(item) ? item.unsigned?.job : undefined;
   if (!job || item.sample) return undefined;
-  return { href: `${APP_REPO}/actions/runs/${job.run}/job/${job.id}`, label: `See ${job.name} on GitHub` };
+  return { href: jobUrl(job), label: `See ${job.name} on GitHub` };
 };
 
 /** Whole units: "1d", "50min", the first part of a duration. */

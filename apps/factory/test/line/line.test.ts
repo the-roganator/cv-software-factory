@@ -2810,7 +2810,7 @@ describe('the deploy pull request that carries a held work item', () => {
       },
     ]);
     expect(await summaries(workItem, 'build.unsigned')).toEqual([
-      'The build of 3333333 that carries it was never signed, so no deploy pull request carries it: sign and attest did not succeed',
+      'The build of 3333333 that carries it was never signed: sign and attest did not succeed, so no deploy pull request carries it',
     ]);
     // Its signing job run again, the same build is signed: said once, and the deploy pull request is waited for.
     github.build = built(sha('3'), 'signed');
@@ -2819,15 +2819,43 @@ describe('the deploy pull request that carries a held work item', () => {
     expect(await payloads(workItem, 'build.signed')).toEqual([
       { commit: sha('3'), digest: `sha256:${'3'.repeat(64)}` },
     ]);
-    // A newer build signed by someone else is a build of its own.
+    // A newer build whose signatures are refused is a build of its own.
     github.deployCommits = [sha('2'), sha('3'), sha('4')];
-    github.build = built(sha('4'), 'other', { reason: 'signed by them' });
+    github.build = built(sha('4'), 'refused', { reason: 'signed by them' });
     await pass();
     expect((await payloads(workItem, 'build.unsigned')).map((p) => [p.commit, p.signature, p.job])).toEqual([
       [sha('3'), 'unsigned', job],
-      [sha('4'), 'other', undefined],
+      [sha('4'), 'refused', undefined],
     ]);
     expect(await stage(workItem)).toBe('held');
+  });
+
+  it('says the build again once the job that failed on it is found', async () => {
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
+    github.deployCommits = [sha('2'), sha('3')];
+    github.build = built(sha('3'), 'unsigned', { reason: 'no signature' });
+    await pass();
+    github.build = built(sha('3'), 'unsigned', {
+      reason: 'no signature',
+      job: { run: 9, id: 10, name: 'sign and attest' },
+    });
+    await pass();
+    await pass();
+    expect((await payloads(workItem, 'build.unsigned')).map((p) => p.job?.id)).toEqual([undefined, 10]);
+  });
+
+  it('records no build as unsigned on a work item whose deploy pull request is recorded open, though the watch knows none', async () => {
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
+    propose(github, sha('d'));
+    await pass();
+    // The GitHub worker started again, and its newest build is refused: it knows no proposal yet.
+    github.deploy = null;
+    github.deployCommits = [sha('2'), sha('3'), sha('4')];
+    github.build = built(sha('4'), 'refused', { reason: 'signed by them' });
+    await pass();
+    expect(await payloads(workItem, 'build.unsigned')).toEqual([]);
   });
 
   it('records no build as unsigned on a work item the open deploy pull request carries', async () => {

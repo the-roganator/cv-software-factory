@@ -310,10 +310,11 @@ export type DeployWait = (typeof DEPLOY_WAITS)[number];
 
 /**
  * Why the app's build that carries a work item held for a deploy is not proposed, as the GitHub worker's deploy watch
- * finds it: its images still have no signature of their pipeline's once signing has had its time (`unsigned`), or have
- * one, but by someone else (`other`). Either way no deploy pull request carries it until a build of it is signed.
+ * finds it: its image still has no signature at all once signing has had its time (`unsigned`), or has signatures, but
+ * none its check accepts as its pipeline's (`refused`): someone else's, or its pipeline's own that did not verify.
+ * Either way no deploy pull request carries it until a build of it is signed.
  */
-export const UNSIGNED_BUILDS = ['unsigned', 'other'] as const;
+export const UNSIGNED_BUILDS = ['unsigned', 'refused'] as const;
 export type UnsignedBuild = (typeof UNSIGNED_BUILDS)[number];
 
 /**

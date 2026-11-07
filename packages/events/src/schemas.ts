@@ -860,7 +860,7 @@ export const PAYLOADS = {
   /**
    * The app's build that carries a merged work item held for a deploy is not proposed, as no image of it may run: the
    * GitHub worker's deploy watch found it still unsigned by its pipeline (`build.yml` on main) after signing has had
-   * its time, or signed by someone else. The line records it, once for each build, on every held work item that build
+   * its time, or with signatures none of which its check accepts as its pipeline's. The line records it, once for each build, on every held work item that build
    * carries and no open deploy pull request does, so the console can say why it waits, and link the build's job that
    * failed. A later build that carries it being signed ends it (`build.signed`), as does a deploy pull request.
    */

@@ -163,7 +163,14 @@ import {
 import type { Request, Signal } from './agents/evidence.ts';
 import { AGENTS, type Agents } from './agents/index.ts';
 import { capOn, capsInForce, lastSeq } from './caps.ts';
-import { type HeldForDeploy, latestBuild, latestDeploy, recordBuilds, recordDeploys } from './deploy.ts';
+import {
+  buildsToRecord,
+  type HeldForDeploy,
+  latestBuild,
+  latestDeploy,
+  recordBuilds,
+  recordDeploys,
+} from './deploy.ts';
 import { FlagPass } from './flags.ts';
 import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
 import { closeIssue } from './issues.ts';
@@ -2119,7 +2126,7 @@ export class Line {
     if (proposal && !carries) return;
     try {
       const build = await github.read('deployBuild', repo, { branch });
-      if (!build || build.signature === 'signing') return;
+      if (!buildsToRecord(build, held) || !build) return;
       const byBuild = await carried(this.#o, build.commit, build.pinned ?? undefined);
       if (!byBuild) return;
       await recordBuilds(

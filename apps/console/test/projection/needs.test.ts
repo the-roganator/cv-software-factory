@@ -456,26 +456,26 @@ describe('Needs you', () => {
       forMartin: false,
     });
     expect(text(5)).toBe(
-      'The build of ccccccc that carries it was never signed: sign and attest did not succeed, so no deploy pull request carries it. Running its signing again on GitHub signs it, or a newer signed build carries it.',
+      'The build of ccccccc that carries it was never signed: sign and attest did not succeed, so no deploy pull request carries it. Signing it again on GitHub, or a newer build its pipeline signs, carries it on.',
     );
     expect(at(5).item?.outcome).toBe('deploying');
     // Its job run again, the build is signed: it waits for its deploy pull request, as before.
     merged.add(6, 'build.signed', 'factory', { commit: unsigned.commit, digest: unsigned.digest });
     expect(at(6).need).toMatchObject({ kicker: 'Its deploy is being built', link: undefined });
-    // A newer build signed by someone else names no job, and links none.
+    // A newer build whose signatures its check refuses, with no job that failed, links none.
     merged.add(7, 'build.unsigned', 'factory', {
       ...unsigned,
       commit: 'd'.repeat(40),
-      signature: 'other',
+      signature: 'refused',
       job: undefined,
     });
-    expect(at(7).need).toMatchObject({ kicker: 'Its build is not its pipeline’s', link: undefined });
+    expect(at(7).need).toMatchObject({ kicker: 'Its build’s signature is refused', link: undefined });
     expect(text(7)).toBe(
-      'The build of ddddddd that carries it is signed by someone other than its pipeline, so no deploy pull request carries it. A newer build its pipeline signs carries it.',
+      'The build of ddddddd that carries it has no signature of its pipeline’s that its check accepts, so no deploy pull request carries it. Signing it again on GitHub, or a newer build its pipeline signs, carries it on.',
     );
     // A deploy pull request that carries it is the wait from then on; a close of an older one is not.
     merged.add(8, 'deploy.changed', 'factory', { pullRequest: 40, commit: 'e'.repeat(40), state: 'closed' });
-    expect(at(8).need?.kicker).toBe('Its build is not its pipeline’s');
+    expect(at(8).need?.kicker).toBe('Its build’s signature is refused');
     merged.add(9, 'deploy.changed', 'factory', { pullRequest: 41, commit: 'f'.repeat(40), state: 'checking' });
     expect(at(9).need?.kicker).toBe('Its deploy’s checks are running');
   });

@@ -476,11 +476,11 @@ export class ReleaseControls {
     const { namespace, name } = this.#rollout;
     const prefix = `${name}-${stable}-`;
     if (!stable || prefix.length > POD_NAME_BASE) return true;
-    const slices = await this.#kube.get(
-      `/apis/discovery.k8s.io/v1/namespaces/${encodeURIComponent(namespace)}/endpointslices`,
-      ENDPOINT_SLICES,
-    );
-    return (slices?.items ?? []).some((slice) =>
+    const path = `/apis/discovery.k8s.io/v1/namespaces/${encodeURIComponent(namespace)}/endpointslices`;
+    const slices = await this.#kube.get(path, ENDPOINT_SLICES);
+    // A list is never missing: an answer of none is the API not serving EndpointSlices, which says nothing of the pods.
+    if (!slices) throw new Error(`GET ${path} answered 404`);
+    return slices.items.some((slice) =>
       (slice.endpoints ?? []).some(
         ({ conditions, targetRef }) =>
           // Kubernetes says to read a ready condition it does not know as ready; one shutting down is not.

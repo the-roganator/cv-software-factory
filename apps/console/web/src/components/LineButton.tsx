@@ -120,7 +120,8 @@ function LineDialog({
       {stop ? (
         <p>
           Every agent stops at the end of its step, nothing new is taken, and a canary in flight is aborted: the version
-          before takes all the traffic. <code>make stop-the-line</code> does the same when the console can’t.
+          before takes all the traffic, unless it has no pod to take it. <code>make stop-the-line</code> does the same
+          when the console can’t.
         </p>
       ) : (
         <p>

@@ -866,7 +866,7 @@ describe('a command a role not Martin’s appended', () => {
  * The app's Rollout, as Kubernetes keeps it for the admin service: read, and merge-patched, each patch conditional on
  * the `resourceVersion` it names, as the API server makes it.
  */
-type StablePod = 'ready' | 'unready' | 'terminating' | 'gone' | 'unreachable';
+type StablePod = 'ready' | 'unready' | 'terminating' | 'gone' | 'unreachable' | 'unserved';
 
 class RolloutKube implements KubeWriter {
   object: Record<string, unknown>;
@@ -908,6 +908,7 @@ class RolloutKube implements KubeWriter {
         ? ((this.stablePod.length > 1 ? this.stablePod.shift() : this.stablePod[0]) ?? 'ready')
         : this.stablePod;
       if (pod === 'unreachable') throw new KubeError(403, `GET ${path} answered 403`);
+      if (pod === 'unserved') return undefined;
       const endpoint = (hash: string, conditions: object) => ({
         addresses: ['10.42.0.9'],
         conditions,
@@ -1585,18 +1586,21 @@ describe('the release controls', () => {
       expect(kube.patches.map((p) => p.body)).toEqual([{ status: { abort: true } }]);
     });
 
-    it('aborts no canary whose stable version it cannot read, and says what will', async () => {
-      await running();
-      const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
-      kube.stablePod = 'unreachable';
-      const { browser } = await signedIn();
-      expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toEqual({
-        status: 200,
-        body: { stopped: true, canary: 'not-aborted', warning: NOT_ABORTED },
-      });
-      expect(await stopped()).toBe(true);
-      expect(kube.patches).toEqual([]);
-    });
+    it.each(['unreachable', 'unserved'] as const)(
+      'aborts no canary whose stable version it cannot read (%s), and says what will',
+      async (pod) => {
+        await running();
+        const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
+        kube.stablePod = pod;
+        const { browser } = await signedIn();
+        expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toEqual({
+          status: 200,
+          body: { stopped: true, canary: 'not-aborted', warning: NOT_ABORTED },
+        });
+        expect(await stopped()).toBe(true);
+        expect(kube.patches).toEqual([]);
+      },
+    );
 
     it('stops the line and says so when the admin service has no Rollout', async () => {
       await running();

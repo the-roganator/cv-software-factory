@@ -165,7 +165,7 @@ export class Triage {
    * The connection that holds triage's advisory lock while `run` does. The lock is the connection's, so it is asked
    * before each pass and each append: one that no longer answers has lost the lock, which another copy may hold now.
    */
-  #lock: Awaited<ReturnType<Sql['reserve']>> | undefined;
+  #lock: { sql: Awaited<ReturnType<Sql['reserve']>>; pid: number } | undefined;
   /** The writer, but each append is refused unless the lock still holds, while `run` holds it. */
   readonly #events: Pick<EventWriter, 'append'>;
   /** Until when reports wait: the gateway cannot answer before then. The senses' signals need no model. */
@@ -191,9 +191,21 @@ export class Triage {
     };
   }
 
-  /** Throws unless the connection that holds the lock still answers, while `run` holds it. */
+  /**
+   * Throws `LockLost` unless the connection that holds the lock still answers, as the backend that took it, while `run`
+   * holds it. A reserved connection that dropped refuses every query; the backend's pid is asked too, so no client that
+   * reconnected one in its place could pass for it.
+   */
   async #holding(): Promise<void> {
-    if (this.#lock) await this.#lock`select 1`;
+    const lock = this.#lock;
+    if (!lock) return;
+    let pid: number | undefined;
+    try {
+      [{ pid } = { pid: undefined }] = await lock.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    } catch (error) {
+      throw new LockLost(error);
+    }
+    if (pid !== lock.pid) throw new LockLost(new Error(`the lock's connection is backend ${pid}, not ${lock.pid}`));
   }
 
   /** Takes one signal, if the line is running and one is waiting, and triages it. */
@@ -213,6 +225,12 @@ export class Triage {
       this.#o.onTriaged?.(outcome, taken.signal, waited, ticketOpened);
       return outcome;
     } catch (error) {
+      if (error instanceof LockLost) {
+        // Not the signal's fault either: it keeps its attempt, and the copy that holds the lock may take it at once.
+        await this.#o.sql`update inbox set attempts = attempts - 1, not_before = clock_timestamp()
+                          where id = ${taken.id}`.catch(() => {});
+        throw error;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       if (error instanceof JudgeWaiting) {
         // Not the signal's fault: it keeps its attempt, and no report is taken until the gateway can answer. The
@@ -271,6 +289,7 @@ export class Triage {
         }
       }
     } finally {
+      abort.removeEventListener('abort', wake.nudge);
       await Promise.all(listening.map((l) => l.unlisten())).catch(() => {});
     }
   }
@@ -290,7 +309,8 @@ export class Triage {
         await wake.after(this.#o.lockAskedMs);
         if (abort.aborted) return;
       }
-      this.#lock = lock;
+      const [{ pid } = { pid: 0 }] = await lock<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      this.#lock = { sql: lock, pid };
       // An event appended while the store was out of reach was heard by no one, and a pass that failed may have been
       // settling.
       this.#settleDue = true;
@@ -455,6 +475,8 @@ export class Triage {
   ): Promise<void> {
     const { log } = this.#o;
     const events = this.#events;
+    // Not the answer's fault: tried again once the lock is held again.
+    if (error instanceof LockLost) throw error;
     const { workItem, answered } = hold;
     const key = settleKey(hold);
     const tries = (this.#settleFailures.get(key) ?? 0) + 1;
@@ -1076,5 +1098,13 @@ class Wake {
     await this.#woken.promise;
     clearTimeout(timer);
     this.#woken = Promise.withResolvers<void>();
+  }
+}
+
+/** Triage's lock is no longer held by the connection that took it: another copy may hold it now. */
+class LockLost extends Error {
+  constructor(cause: unknown) {
+    super('triage lost its lock on the store', { cause });
+    this.name = 'LockLost';
   }
 }

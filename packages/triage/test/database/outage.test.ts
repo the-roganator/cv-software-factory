@@ -206,7 +206,7 @@ describe('triage through a store it cannot reach', () => {
     expect(await lockers()).toEqual([]);
   });
 
-  it('appends nothing once the lock is lost in the middle of a signal, and takes the signal again', async () => {
+  it('appends nothing once the lock is lost in the middle of a signal, and gives the signal back with its attempt', async () => {
     const held = Promise.withResolvers<void>();
     const reading = Promise.withResolvers<void>();
     let reads = 0;
@@ -226,18 +226,15 @@ describe('triage through a store it cannot reach', () => {
     await reading.promise;
     await drop(first);
     held.resolve();
-    await expect
-      .poll(
-        async () =>
-          (await database.owner<{ failure: string | null }[]>`select failure from inbox where id = ${id}`)[0]?.failure,
-      )
-      .toBeTruthy();
-    expect(await database.owner`select 1 from events where id = ${idsFor(id)()}`).toHaveLength(0);
-    // Taken again once its retry is due, here at once, on the lock taken again.
-    await expect.poll(async () => (await holder()) ?? first, { timeout: 5000 }).not.toBe(first);
-    await database.owner`update inbox set not_before = now() where id = ${id}`;
-    await database.owner`select pg_notify('inbox', ${id})`;
-    await expect.poll(() => triaged(id), { timeout: 5000 }).toBe('opened');
+    // Its first try appended nothing and gave the signal back, with its attempt: the lock taken again, it is decided
+    // again, looked at a second time, and triaged once, with no failure.
+    await expect.poll(() => triaged(id), { timeout: 4000 }).toBe('opened');
+    expect(reads).toBe(2);
+    expect(await holder()).not.toBe(first);
+    const [row] = await database.owner<{ attempts: number; failure: string | null }[]>`
+      select attempts, failure from inbox where id = ${id}`;
+    expect(row).toEqual({ attempts: 1, failure: null });
+    expect(await database.owner`select 1 from events where id = ${idsFor(id)()}`).toHaveLength(1);
     abort.abort();
     await running;
   });

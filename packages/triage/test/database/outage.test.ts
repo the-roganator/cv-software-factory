@@ -43,6 +43,8 @@ afterEach(async () => {
   abort.abort();
   await Promise.allSettled(copies.splice(0));
   abort = new AbortController();
+  // A day back, so that no test's tickets count toward the next one's burst.
+  await database.owner`update inbox set received_at = received_at - interval '1 day'`;
 });
 afterAll(async () => {
   await other?.end();
@@ -63,17 +65,18 @@ const noJudge: Judge = async () => {
   throw new Error('No report in these tests');
 };
 
-const triage = (sql: Sql, options: Partial<TriageOptions> = {}) =>
-  new Triage({
-    sql,
-    events: new EventWriter(sql, { kind: 'real', artifacts }),
-    judge: noJudge,
-    read: async () => null,
-    log: quiet,
-    outage: brief,
-    lockAskedMs: 100,
-    ...options,
-  });
+/** A copy's options, as triage's role on `sql`, with the waits shortened. */
+const options = (sql: Sql, more: Partial<TriageOptions> = {}): TriageOptions => ({
+  sql,
+  events: new EventWriter(sql, { kind: 'real', artifacts }),
+  judge: noJudge,
+  read: async () => null,
+  log: quiet,
+  outage: brief,
+  lockAskedMs: 100,
+  ...more,
+});
+const triage = (sql: Sql, more: Partial<TriageOptions> = {}) => new Triage(options(sql, more));
 
 /** Runs a copy until the test ends, or until `abort` stops it. */
 const start = (copy: Triage) => {
@@ -153,6 +156,25 @@ describe('triage through a store it cannot reach', () => {
     expect(await lockers()).toEqual([]);
   });
 
+  it('waits out a store it cannot listen to as it starts', async () => {
+    const sql = database.as.triage;
+    let refused = 2;
+    // The store refuses the first two tries to listen, as one restarting does.
+    const starting = new Proxy(sql, {
+      get(target, key, receiver) {
+        if (key !== 'listen') return Reflect.get(target, key, receiver);
+        return (...args: Parameters<Sql['listen']>) =>
+          refused-- > 0
+            ? Promise.reject(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }))
+            : target.listen(...args);
+      },
+    });
+    start(triage(starting));
+    const id = await sendSignal(database.owner, found('/starting'));
+    await expect.poll(() => triaged(id), { timeout: 4000 }).toBe('opened');
+    expect(refused).toBeLessThan(0);
+  });
+
   it('rides out a store that fails a few times, of either shape, and takes the signal after', async () => {
     let failing = 2;
     const warnings: string[] = [];
@@ -166,14 +188,7 @@ describe('triage through a store it cannot reach', () => {
     }
     const sql = database.as.triage;
     const running = start(
-      new Flaky({
-        sql,
-        events: new EventWriter(sql, { kind: 'real', artifacts }),
-        judge: noJudge,
-        read: async () => null,
-        log: { info: () => {}, warn: (_fields, message) => warnings.push(message) },
-        outage: brief,
-      }),
+      new Flaky(options(sql, { log: { info: () => {}, warn: (_fields, message) => warnings.push(message) } })),
     );
     const id = await sendSignal(database.owner, found('/flaky'));
     await expect.poll(() => triaged(id), { timeout: 5000 }).toBe('opened');
@@ -193,16 +208,7 @@ describe('triage through a store it cannot reach', () => {
     const outage: Outage = { firstMs: 200, mostMs: 1000, tries: 4 };
     const sql = database.as.triage;
     const began = Date.now();
-    const running = start(
-      new Down({
-        sql,
-        events: new EventWriter(sql, { kind: 'real', artifacts }),
-        judge: noJudge,
-        read: async () => null,
-        log: quiet,
-        outage,
-      }),
-    );
+    const running = start(new Down(options(sql, { outage })));
     // Signals keep arriving while it waits: none brings the next try forward.
     let flooding = true;
     const flood = (async () => {

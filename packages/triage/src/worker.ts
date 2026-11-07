@@ -37,6 +37,8 @@
  * One worker decides at a time (it holds an advisory lock), so two signals with the same new fingerprint cannot
  * open two tickets. It takes nothing while the line is stopped, and no report while the gateway waits on a spend cap.
  */
+
+import { setTimeout as pause } from 'node:timers/promises';
 import type {
   Environment,
   InboxSignal,
@@ -289,19 +291,27 @@ export class Triage {
       wake.nudge();
     };
     // Each listen is made again after its connection drops, with nothing heard meanwhile: so when it is, triage looks,
-    // and finds out at once whether it still holds its lock.
-    const made = await Promise.allSettled([sql.listen('inbox', wake.nudge, heard), sql.listen('events', heard, heard)]);
-    const listening = made.flatMap((m) => (m.status === 'fulfilled' ? [m.value] : []));
-    const failed = made.find((m) => m.status === 'rejected');
-    if (failed) {
-      abort.removeEventListener('abort', wake.nudge);
-      await Promise.all(listening.map((l) => l.unlisten())).catch(() => {});
-      throw failed.reason;
-    }
+    // and finds out at once whether it still holds its lock. They are made in the loop, so a store out of reach as
+    // triage starts is waited out too.
+    const listening: { unlisten(): Promise<void> }[] = [];
+    const listen = async () => {
+      if (listening.length) return;
+      const made = await Promise.allSettled([
+        sql.listen('inbox', wake.nudge, heard),
+        sql.listen('events', heard, heard),
+      ]);
+      for (const m of made) if (m.status === 'fulfilled') listening.push(m.value);
+      const failed = made.find((m) => m.status === 'rejected');
+      if (failed) {
+        await Promise.all(listening.splice(0).map((l) => l.unlisten())).catch(() => {});
+        throw failed.reason;
+      }
+    };
     let failures = 0;
     try {
       while (!abort.aborted) {
         try {
+          await listen();
           await this.#whileLocked(abort, wake, () => {
             failures = 0;
           });
@@ -315,7 +325,7 @@ export class Triage {
             'triage could not reach the store, and takes its lock again first',
           );
           // A timer alone, which only stopping cuts short: a signal heard meanwhile would bring the next try forward.
-          await pause(waitMs, abort);
+          await pause(waitMs, undefined, { signal: abort }).catch(() => {});
         }
       }
     } finally {
@@ -1138,17 +1148,4 @@ class LockLost extends Error {
     super('triage lost its lock on the store', { cause });
     this.name = 'LockLost';
   }
-}
-
-/** Waits `ms`, or until aborted. */
-function pause(ms: number, abort: AbortSignal): Promise<void> {
-  return new Promise((done) => {
-    const timer = setTimeout(stop, ms);
-    abort.addEventListener('abort', stop, { once: true });
-    function stop() {
-      clearTimeout(timer);
-      abort.removeEventListener('abort', stop);
-      done();
-    }
-  });
 }

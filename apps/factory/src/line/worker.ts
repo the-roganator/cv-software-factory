@@ -443,7 +443,8 @@ export class Line {
     // watch records by the take in force while the line is stopped too.
     if (this.#o.takesWork) {
       const chosen = await latestControls(this.#o.sql);
-      this.#control(controlsInForce(chosen), takeSet(chosen));
+      const inForce = controlsInForce(chosen);
+      this.#control(inForce, takeSet(chosen) ? 'set' : inForce.outside.includes('take') ? 'outside' : 'none');
     }
     const state = await lineState(this.#o.sql);
     if (state !== 'running') {
@@ -506,7 +507,8 @@ export class Line {
    */
   #control(
     { take, newWork, autonomy, autoMerge }: Pick<Controls, 'take' | 'newWork' | 'autonomy' | 'autoMerge'>,
-    set: boolean,
+    /** Whether the take in force is Martin's, or he has set none, or his is outside policy: every ticket, for either. */
+    set: 'set' | 'none' | 'outside',
   ): void {
     if (autonomy !== this.#merging.autonomy || autoMerge !== this.#merging.autoMerge) {
       this.#o.log.info({ autonomy, autoMerge }, 'the line merges as Martin set its autonomy and auto-merge');
@@ -516,7 +518,11 @@ export class Line {
     if (JSON.stringify(takes) !== JSON.stringify(this.#takes) || newWork !== this.#newWork) {
       this.#o.log.info(
         { take, newWork, set },
-        set ? 'the line takes what Martin set it to take' : 'the line takes every ticket: Martin has set no take',
+        set === 'set'
+          ? 'the line takes what Martin set it to take'
+          : set === 'none'
+            ? 'the line takes every ticket: Martin has set no take'
+            : 'the line takes every ticket: what Martin set it to take is outside policy',
       );
     }
     this.#only = takes.only;

@@ -6,7 +6,9 @@
  *   one is the rollback switch's (task 25).
  * - `stop-the-line`, in two parts. The drill, against the line as it is, after Martin says yes: `make stop-the-line`;
  *   then the line's stop is recorded by one of his roles, no pod is left in `runners`, and the line took no work item
- *   while it was stopped; then `make start-the-line`, whatever happened. And the last real canary a stop aborted, by
+ *   while it was stopped; then `make start-the-line`, whatever happened. Only a running line is drilled: one that is
+ *   stopped, or not yet started, as on a new store, is not taken, since starting it after would be a start Martin
+ *   never chose. And the last real canary a stop aborted, by
  *   the line's role, and how long ago: none, and it does not hold.
  *
  * Stopping loses the step in hand, which runs again from its last event when the line starts (`line/worker.ts`):
@@ -16,7 +18,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { upcast } from '@software-factory/events';
-import { storeClock } from '@software-factory/store';
+import { lineState, storeClock } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 
@@ -112,6 +114,14 @@ export type DrillTaken = Taken | { declined: string };
 
 export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
   const { sql } = drill;
+  // Started again at its end, whatever happened: a line Martin has not started, or has stopped, would be started.
+  const state = await lineState(sql);
+  if (state !== 'running') {
+    const why = state === 'stopped' ? 'is stopped' : 'has not started';
+    return {
+      declined: `The line ${why}: the drill stops a running line and starts it again, so it was not taken, and nothing is recorded for it. Start the line, then run it again.`,
+    };
+  }
   const before = await drill.runnerPods();
   const agents = before.filter((p) => p.part === 'agent');
   drill.say(

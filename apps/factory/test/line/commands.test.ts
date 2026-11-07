@@ -1,6 +1,6 @@
 /**
- * `factory line take` (`make take-the-line`): what the line takes, set from Martin's own command line, as the console's
- * Controls set it, through the same check, keeping every other control as it stands.
+ * `factory line` from Martin's own command line: `take` (`make take-the-line`), what the line takes, set as the console's
+ * Controls set it, through the same check, keeping every other control as it stands; and `stop` on a new store.
  */
 import { type NewEvent, VERSIONS } from '@software-factory/events';
 import { DiskArtifacts, EventWriter, latestControls, nextWorkItem } from '@software-factory/store';
@@ -30,7 +30,7 @@ describe('what take asks for', () => {
   });
 });
 
-describe('take, against the store', () => {
+describe('take and stop, against the store', () => {
   let database: Database;
   const said: string[] = [];
   beforeEach(async () => {
@@ -109,6 +109,18 @@ describe('take, against the store', () => {
     expect(await run(['take', 'every'])).toBe(0);
     expect(said.at(-1)).toBe('Martin widened what the line takes to every ticket.');
     expect((await changes()).map((c) => c.appended_by)).toEqual(Array(3).fill('factory_operator'));
+  });
+
+  it('records no stop on a new store, whose line has not started, and stops one that has', async () => {
+    const stops = () => database.owner`select 1 from events where type = 'line.stopped'`;
+    expect(await run(['stop'])).toBe(0);
+    expect(said.at(-1)).toBe(
+      'The line has not started: there is nothing to stop. Workers take nothing until it starts.',
+    );
+    expect(await stops()).toHaveLength(0);
+    expect(await run(['start', '--reason', 'The first run'])).toBe(0);
+    expect(await run(['stop'])).toBe(0);
+    expect(await stops()).toHaveLength(1);
   });
 
   it('says how to use it when asked for anything else', async () => {

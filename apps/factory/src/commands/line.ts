@@ -79,7 +79,7 @@
  *
  * Every worker checks the line before it takes work, so a stopped line finishes what is in hand and takes nothing
  * new; signals wait in the inbox until it starts again. A new store's line has not started: nothing moves until Martin
- * first starts it. `stop` and `start` each record Martin's reason if he gives one
+ * first starts it, and `stop` records nothing there, with nothing to stop. `stop` and `start` each record Martin's reason if he gives one
  * (`stop` has its own words if not). The console's header stops and starts the line too, through the admin service
  * (`admin/line.ts`), with the same events; `stop`, which `make stop-the-line` runs before it aborts the canary in flight,
  * works when neither the console nor the admin service does. `stop`, `start` and `take` connect with DATABASE_URL, or
@@ -87,7 +87,7 @@
  */
 import { parseArgs } from 'node:util';
 import { type NewEvent, VERSIONS } from '@software-factory/events';
-import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
+import { connect, DiskArtifacts, EventWriter, lineState } from '@software-factory/store';
 import type { Change } from '../admin/line.ts';
 import { rolloutRefOf } from '../release/rollout-ref.ts';
 
@@ -132,7 +132,10 @@ export async function run(args: string[]): Promise<number> {
       artifacts: [],
     }) as NewEvent;
   try {
-    if (command === 'stop') {
+    if (command === 'stop' && (await lineState(sql)) === 'not-started') {
+      // As the console's Stop refuses it: a new store's line takes nothing until Martin first starts it.
+      console.log('The line has not started: there is nothing to stop. Workers take nothing until it starts.');
+    } else if (command === 'stop') {
       const reason = values.reason?.trim() || 'Martin stopped the line';
       await writer.append(event('line.stopped', `The line stopped: ${reason}`, { reason }));
       console.log('The line is stopped. Workers finish what they hold and take nothing new.');

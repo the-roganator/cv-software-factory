@@ -6,7 +6,7 @@ import { lineState, lineStopped } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import { startLine } from '../../../../packages/store/test/line.ts';
 import { quiet } from '../github/fake.ts';
-import { AGENTS, database, events, justOne, line, stage, ticket, withLineStore } from './harness.ts';
+import { AGENTS, database, events, justOne, line, stage, takes, ticket, withLineStore } from './harness.ts';
 
 withLineStore({ started: false });
 
@@ -42,7 +42,7 @@ describe('the line on a new store', () => {
       'the line takes every ticket: Martin has set no take',
       'the line has not started: it waits for Martin to start it, and takes nothing until then',
     ]);
-    expect(lines[0]?.details).toEqual({ take: { kind: 'every' }, newWork: true, set: false });
+    expect(lines[0]?.details).toEqual({ take: { kind: 'every' }, newWork: true, set: 'none' });
 
     await startLine(database.admin);
     await pass();
@@ -58,7 +58,19 @@ describe('the line on a new store', () => {
     await line(AGENTS, events, { log }).pass();
     expect(lines[0]).toEqual({
       message: 'the line takes what Martin set it to take',
-      details: { take: { kind: 'just-one', workItem }, newWork: true, set: true },
+      details: { take: { kind: 'just-one', workItem }, newWork: true, set: 'set' },
+    });
+  });
+
+  it('says when what Martin set it to take is outside policy, and takes every ticket', async () => {
+    await startLine(database.admin);
+    // More of the next few than policy allows, as a role's write past the admin service could leave it.
+    await takes({ kind: 'next-few', count: 50, since: new Date().toISOString() });
+    const { lines, log } = said();
+    await line(AGENTS, events, { log }).pass();
+    expect(lines[0]).toEqual({
+      message: 'the line takes every ticket: what Martin set it to take is outside policy',
+      details: { take: { kind: 'every' }, newWork: true, set: 'outside' },
     });
   });
 });

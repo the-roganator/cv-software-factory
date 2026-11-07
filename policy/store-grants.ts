@@ -184,7 +184,8 @@ export const STORE_GRANTS = {
   },
   factory_operator: {
     for:
-      'Martin from the command line: `make stop-the-line`, `make start-the-line` and `make samples`. It appends any ' +
+      'Martin from the command line: `make stop-the-line`, `make start-the-line`, `make take-the-line` and ' +
+      '`make samples`. It appends any ' +
       "event, his commands among them, but the line's record of a release, which only as a sample " +
       '(0039_release-events-the-lines.sql); no pod holds its password.',
     martin: true,

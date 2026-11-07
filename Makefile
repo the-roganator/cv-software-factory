@@ -374,7 +374,8 @@ start-the-line: node_modules ## Start the line, first on a new store or again; w
 # What the line takes, as the console's Controls set it, through the same check, keeping every other control: one of
 # ONLY (a work item's number), NEXT (how many, from now) or EVERY=1. From Martin's command line, it needs no passkey.
 take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<how many> or EVERY=1
-	@set -- $(if $(ONLY),one "$(ONLY)") $(if $(NEXT),next "$(NEXT)") $(if $(EVERY),every); \
+	@[ -z "$(EVERY)" ] || [ "$(EVERY)" = 1 ] || { echo "EVERY takes 1: EVERY=1." >&2; exit 2; }; \
+	set -- $(if $(ONLY),one "$(ONLY)") $(if $(NEXT),next "$(NEXT)") $(if $(EVERY),every); \
 	if [ "$$#" -eq 0 ] || { [ "$$1" = every ] && [ "$$#" -ne 1 ]; } || { [ "$$1" != every ] && [ "$$#" -ne 2 ]; }; then \
 		echo "Give one of ONLY=<work item>, NEXT=<how many> or EVERY=1." >&2; exit 2; fi; \
 	$(call as-operator,node apps/factory/src/cli.ts line take "$$@")

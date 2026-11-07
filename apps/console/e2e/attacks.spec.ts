@@ -25,7 +25,7 @@ test.describe.configure({ mode: 'serial' });
 let harness: Harness;
 
 test.beforeAll(async () => {
-  harness = await startHarness(PORT, 'attacks', undefined, true);
+  harness = await startHarness(PORT, 'attacks', undefined, 'attacks');
 });
 test.afterAll(async () => {
   await harness?.stop();

@@ -7,6 +7,7 @@ import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { setTake, startLine } from '../../../../packages/store/test/line.ts';
 import { Prometheus } from '../../src/clients/prometheus.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { Line, type LineOptions } from '../../src/line/worker.ts';
@@ -34,6 +35,7 @@ beforeEach(async () => {
     kind: 'real',
     artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
   });
+  await startLine(database.admin);
 });
 afterEach(() => database?.end());
 
@@ -557,7 +559,8 @@ describe('the line’s watch of the app’s release', () => {
 
   it('records a release of the one work item the line acts on, and the line’s own, while it acts on that alone', async () => {
     const workItem = await merged(30, FIX_3);
-    const { line: it, github, kube } = line({ only: workItem });
+    await setTake(database.admin, { kind: 'just-one', workItem });
+    const { line: it, github, kube } = line();
     github.history = HISTORY;
     github.revisions.set(digestOf(STABLE), commitOf(STABLE));
     github.revisions.set(digestOf(CANARY), commitOf(CANARY));
@@ -581,7 +584,8 @@ describe('the line’s watch of the app’s release', () => {
     kube.rollout = rollout({ current: STABLE, stable: STABLE });
     await whole.tick();
     const [workItem, other] = [await merged(30, FIX_3), await merged(31, FIX_4)];
-    const only = line({ only: workItem });
+    await setTake(database.admin, { kind: 'just-one', workItem });
+    const only = line();
     only.github.history = HISTORY;
     for (const [digest, commit] of github.revisions) only.github.revisions.set(digest, commit);
     only.kube.rollout = rollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
@@ -591,6 +595,7 @@ describe('the line’s watch of the app’s release', () => {
     expect(await typesOf(null)).toHaveLength(2);
 
     // The line acts on them all again, and records it on both.
+    await setTake(database.admin, { kind: 'every' });
     kube.rollout = only.kube.rollout;
     await whole.tick();
     for (const carried of [workItem, other]) expect(await typesOf(carried)).toEqual(['release.started by rollouts']);

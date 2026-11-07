@@ -12,6 +12,7 @@ import { DiskArtifacts, EventWriter, issueJobToken } from '@software-factory/sto
 import { listenLocal } from '@software-factory/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../packages/store/test/database.ts';
+import { startLine } from '../../../packages/store/test/line.ts';
 import type { Handback, Step } from '../../runner/src/step.ts';
 import { AgentCassettes } from '../src/gateway/agent-cassettes.ts';
 import { AgentCalls } from '../src/gateway/agents.ts';
@@ -64,6 +65,7 @@ let agents: AgentCalls;
 beforeAll(async () => {
   providerUrl = (await listenLocal(provider)).url;
   database = await freshDatabase('spans');
+  await startLine(database.admin);
   const sql = database.as.gateway;
   const events = new EventWriter(sql, {
     kind: 'real',

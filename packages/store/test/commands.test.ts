@@ -1,5 +1,6 @@
 /**
- * The one rule every reader holds an improvement to: Martin asked for it, by his roles, and it is no sample.
+ * The rules every reader holds Martin's commands to: an improvement is his when his roles asked for it and it is no
+ * sample, and the line runs only once his roles have started it.
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +9,7 @@ import { type NewEvent, VERSIONS } from '@software-factory/events';
 import type { Sql } from 'postgres';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DiskArtifacts } from '../src/artifacts.ts';
-import { askedByMartin, openedAsImprovement } from '../src/commands.ts';
+import { askedByMartin, lineState, lineStopped, openedAsImprovement } from '../src/commands.ts';
 import { EventWriter, nextWorkItem } from '../src/events.ts';
 import { type Database, freshDatabase } from './database.ts';
 
@@ -79,5 +80,43 @@ describe('an improvement Martin asked for', () => {
     database = await freshDatabase('commands_samples');
     const db = database;
     expect(await asked(db, await improvement(db, { sample: true }))).toEqual({ asked: false, opened: true });
+  });
+});
+
+describe('the line as Martin left it', () => {
+  const command = (type: 'line.started' | 'line.stopped') =>
+    ({
+      id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      work_item: null,
+      type,
+      version: VERSIONS[type],
+      actor: 'martin',
+      summary: `${type} for the test`,
+      payload: type === 'line.stopped' ? { reason: 'A test' } : {},
+      artifacts: [],
+    }) as NewEvent;
+  const append = (sql: Sql, type: 'line.started' | 'line.stopped') =>
+    new EventWriter(sql, { kind: 'real', artifacts }).append(command(type));
+  const state = async (db: Database) => [await lineState(db.as.line), await lineStopped(db.as.line)];
+
+  it('has not started on a new store, and is stopped until his roles start it, and as his roles last left it', async () => {
+    database = await freshDatabase('commands_line');
+    const db = database;
+    expect(await state(db)).toEqual(['not-started', true]);
+    // A worker's start, with row security off as a failed guard would leave it, starts nothing.
+    await db.owner`alter table events disable row level security`;
+    try {
+      await append(db.as.line, 'line.started');
+    } finally {
+      await db.owner`alter table events enable row level security`;
+    }
+    expect(await state(db)).toEqual(['not-started', true]);
+    await append(db.operator, 'line.started');
+    expect(await state(db)).toEqual(['running', false]);
+    await append(db.admin, 'line.stopped');
+    expect(await state(db)).toEqual(['stopped', true]);
+    await append(db.admin, 'line.started');
+    expect(await state(db)).toEqual(['running', false]);
   });
 });

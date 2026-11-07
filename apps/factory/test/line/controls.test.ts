@@ -11,6 +11,7 @@ import {
   DEFAULT_CONTROLS,
   TAKE,
   type Take,
+  takeSet,
 } from '../../../../policy/line.ts';
 import { takesOf } from '../../src/line/queue.ts';
 
@@ -20,15 +21,25 @@ const next = (count: number): Take => ({ kind: 'next-few', count, since: SINCE }
 const one = (workItem: string): Take => ({ kind: 'just-one', workItem });
 
 describe('the controls in force', () => {
-  it('are policy’s defaults before Martin sets any: Supervised, new work, no auto-merge, no take, and auto-rollback', () => {
+  it('are policy’s defaults before Martin sets any: Supervised, new work, no auto-merge, every ticket, and auto-rollback', () => {
     expect(controlsInForce()).toEqual({ ...DEFAULT_CONTROLS, outside: [] });
     expect(DEFAULT_CONTROLS).toEqual({
       autonomy: 'supervised',
       newWork: true,
       autoMerge: false,
-      take: null,
+      take: { kind: 'every' },
       autoRollback: true,
     });
+  });
+
+  it('take every ticket with no take set, from an event that sets none', () => {
+    const chosen = { autonomy: 'guarded', newWork: false, autoMerge: true, take: null, autoRollback: false };
+    expect(controlsInForce(chosen)).toEqual({ ...chosen, take: every, outside: [] });
+    expect(takeSet(chosen)).toBe(false);
+    expect(takeSet(undefined)).toBe(false);
+    expect(takeSet({ ...chosen, take: next(50) })).toBe(false);
+    expect(takeSet({ ...chosen, take: every })).toBe(true);
+    expect(takeSet({ ...chosen, take: one('1290') })).toBe(true);
   });
 
   it('are what the latest event says, within policy', () => {
@@ -53,7 +64,7 @@ describe('the controls in force', () => {
     ]) {
       expect(controlsInForce({ ...chosen, take }), JSON.stringify(take)).toEqual({
         ...chosen,
-        take: null,
+        take: every,
         outside: ['take'],
       });
     }
@@ -71,14 +82,11 @@ describe('the controls in force', () => {
 });
 
 describe('what the line takes', () => {
-  const defaults = { only: '1288', take: 13 };
-
-  it('is Martin’s take, or with none in force, the line’s own default', () => {
-    expect(takesOf(null, defaults)).toEqual({ only: '1288', take: { most: 13, since: null } });
-    expect(takesOf(null, { only: null, take: null })).toEqual({ only: null, take: null });
-    expect(takesOf(every, defaults)).toEqual({ only: null, take: null });
-    expect(takesOf(next(3), defaults)).toEqual({ only: null, take: { most: 3, since: SINCE } });
-    expect(takesOf(one('1290'), defaults)).toEqual({ only: '1290', take: null });
+  it('is Martin’s take in force', () => {
+    expect(takesOf(every)).toEqual({ only: null, take: null });
+    expect(takesOf(next(3))).toEqual({ only: null, take: { most: 3, since: SINCE } });
+    expect(takesOf(one('1290'))).toEqual({ only: '1290', take: null });
+    expect(takesOf(controlsInForce().take)).toEqual({ only: null, take: null });
   });
 });
 
@@ -133,7 +141,13 @@ describe('each change', () => {
     expect(change('take', one('1290'), one('1291'))).toBe('take.narrow');
   });
 
-  it('widens whatever it sets over the line’s own default, which policy cannot see', () => {
+  it('narrows, or leaves, every ticket, which is what the line takes with no take set', () => {
+    for (const after of [every, next(1), one('1290')]) {
+      expect(change('take', controlsInForce().take, after)).toBe('take.narrow');
+    }
+  });
+
+  it('widens whatever a change recorded over no take set, which was then a default policy could not see', () => {
     for (const after of [every, next(1), one('1290')]) expect(change('take', null, after)).toBe('take.widen');
   });
 

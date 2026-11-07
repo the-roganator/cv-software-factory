@@ -1,10 +1,8 @@
 # The line (apps/factory/src/line): carries work items from triage's tickets through the agents, the gates and review
 # to Martin's merge. LINE_MODE is `live` here: it acts in GitHub through the GitHub worker; `off`, its default, takes no
-# tickets, and only the step API and the smoke run work. What it takes is Martin's to set in the console's Controls
-# (every ticket, the next few, or just one), which it reads each pass; LINE_TAKE and LINE_ONLY are its defaults until
-# he sets one. LINE_TAKE, 13 here, has it take that many work items in all, by its own rule, and then no more, while it
-# carries those on it to their end. It counts every work item the line has taken, dry runs' included. LINE_ONLY, a
-# work item's number, unset here, has it act on that work item alone, leaving every other as it is.
+# tickets, and only the step API and the smoke run work. On a new store it takes nothing until Martin first starts the
+# line. What it takes is Martin's to set in the console's Controls, or with `make take-the-line` (every ticket, the next
+# few, or just one), which it reads each pass; with none set, it takes every ticket.
 # It starts each step's Jobs in `runners` (apps/factory/src/runners), with its own service account, which may do that
 # (deploy/base/runners/line-access.yaml) and read the app's Rollout and its AnalysisRuns, and list its pods, in
 # `website` (deploy/base/analysis/line-reads-release.yaml), and list the Events admission's denials are in
@@ -118,11 +116,9 @@ spec:
             # the local model is given longer.
             - name: FACTORY_PROFILE
               value: local
-            # The line on Claude, over the senses' tickets: the first thirteen that come onto it, and no other.
+            # The line on Claude, over the senses' tickets, as Martin sets it to take them.
             - name: LINE_MODE
               value: live
-            - name: LINE_TAKE
-              value: "13"
             # After the merge: the read-only watch of the app's releases, with each version's figures from Prometheus,
             # and Verify, which asks the probes (their verify port), Prometheus, Loki and Tempo whether a ticket's signal
             # cleared. Tempo is for the log watcher's agreement check: without it, wrong metrics wait at Verify. The

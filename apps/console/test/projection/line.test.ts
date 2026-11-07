@@ -142,6 +142,14 @@ describe('a station’s state', () => {
     expect(view.header).toMatchObject({ running: false, stopped: 'Martin stopped the line' });
   });
 
+  it('is idle everywhere, not blocked, on a new store whose line has not started, with a ticket waiting', () => {
+    // Triage opened a ticket before Martin's first start: nothing moves, and nothing has failed or been stopped.
+    const view = project(work('1').open().events, Date.now());
+    expect(view.header).toMatchObject({ running: false, stopped: undefined });
+    expect(view.stations.filter((s) => s.status === 'blocked' || s.status === 'failed')).toEqual([]);
+    expect(project([], Date.now()).header).toMatchObject({ running: false, stopped: undefined });
+  });
+
   it('reads the autonomy level from Martin’s controls, Supervised until he sets one, whatever a start names', () => {
     const line = (type: 'line.started' | 'line.stopped' | 'controls.changed', payload: object, actor = 'martin') =>
       ({ ...(work('1').open().events[0] as PublicEvent), work_item: null, type, actor, payload }) as PublicEvent;

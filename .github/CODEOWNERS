@@ -50,6 +50,7 @@
 /apps/factory/test/line/harness.ts              @mrogan
 /packages/store/test/database.ts                @mrogan
 /packages/store/test/postgres.ts                @mrogan
+/packages/store/test/line.ts                    @mrogan
 
 # The factory's own code that no App pull request may change without Martin (spec 4.3): its gates, its GitHub worker,
 # the gateway, the admin service, the store's migrations and the redactor

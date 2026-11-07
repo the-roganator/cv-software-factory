@@ -67,9 +67,8 @@
  *   a work item whose pull request was the dry run's, merged or not, closes with no change, so the next signal of its
  *   defect opens a fresh ticket; a ticket the dry run verified, whose fix never shipped, reopens, and comes back into
  *   Plan as any reopened ticket does.
- * - What it takes is Martin's take from the console's Controls (`policy/line.ts`), read each pass, or, with none in
- *   force, its own default (`only`, `take`: LINE_ONLY and LINE_TAKE): every ticket, the next few from when he chose
- *   them, or just one (`queue.ts`).
+ * - What it takes is Martin's take (`policy/line.ts`), read each pass: every ticket, as with none set, the next few
+ *   from when he chose them, or just one (`queue.ts`).
  * - With just one (`only`), it acts on that one work item, taking its ticket onto the line if it is not there: it
  *   starts no step for any other, reads nothing for it and appends nothing, so a soak can take one ticket end to end.
  *   It still watches the app's releases, and records one that carries that work item or none.
@@ -121,13 +120,13 @@ import {
   LINE_ROLE,
   lastEnd,
   latestControls,
-  lineStopped,
+  lineState,
   sendSignal,
 } from '@software-factory/store';
 import { uuidFrom } from '@software-factory/triage/events';
 import type { Logger } from 'pino';
 import type { JSONValue, Sql } from 'postgres';
-import { type Controls, controlsInForce } from '../../../../policy/line.ts';
+import { type Controls, controlsInForce, takeSet } from '../../../../policy/line.ts';
 import { release as RELEASE } from '../../../../policy/release.ts';
 import { sendCounts } from '../counts.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
@@ -294,16 +293,6 @@ export interface LineOptions {
   /** Martin's settings, read at each pass, so each step starts under those in force; null, as by default, for none. */
   settings?: LineSettings | null;
   /**
-   * The one work item the line acts on, leaving every other as it is; null, as by default, for them all. Its default:
-   * Martin's take, when one is in force, is what the line takes.
-   */
-  only?: string | null;
-  /**
-   * How many work items the line takes in all, counting every one it has taken, before it takes no more; null, as by
-   * default, for no limit. Those already on it go on to their end. Its default, as `only` is.
-   */
-  take?: number | null;
-  /**
    * The GitHub worker's public key (the ConfigMap `refusal-key`), to verify the review gate's refusal it signs; null,
    * as by default, records none.
    */
@@ -379,8 +368,8 @@ export class Line {
   readonly #dryRunLeft = new Set<string>();
   /** Martin's commands that a role not his appended: ignored, and each logged once. */
   readonly #ignored: IgnoredCommands;
-  /** The one work item the line acts on, as this pass read Martin's take; until the first pass, the options'. */
-  #only: string | null;
+  /** The one work item the line acts on, as this pass read Martin's take; none until the first pass. */
+  #only: string | null = null;
   /** What the line takes, as this pass read it. */
   #takes: Takes | undefined;
   /** Whether agents take new work, as this pass read Martin's switch. */
@@ -413,16 +402,11 @@ export class Line {
       workItemLimitUsd: null,
       providerOf: () => 'anthropic',
       settings: null,
-      only: null,
-      take: null,
       refusalKey: null,
       ...options,
     };
     this.#ignored = new IgnoredCommands(this.#o.sql, this.#o.log);
-    this.#queue = new Queue(options.sql, options.me ?? `line-${hostname()}`, {
-      only: this.#o.only,
-      take: this.#o.take,
-    });
+    this.#queue = new Queue(options.sql, options.me ?? `line-${hostname()}`);
     this.#releases = new Releases({
       sql: this.#o.sql,
       events: this.#o.events,
@@ -433,7 +417,7 @@ export class Line {
       watch: this.#o.release,
       dryRun: this.#o.dryRun,
       dryRunEveryMs: this.#o.dryRunReleaseMs,
-      only: this.#o.only,
+      only: null,
     });
     this.#flags = new FlagPass({
       sql: this.#o.sql,
@@ -447,7 +431,6 @@ export class Line {
       repo: this.#o.repo,
     });
     this.#dryRunsEnded = this.#o.dryRun;
-    this.#only = this.#o.only;
   }
 
   /**
@@ -458,11 +441,19 @@ export class Line {
     await this.#ignored.check();
     // Martin's controls in force now: what the line takes, and whether agents take new work. Read first, so the release
     // watch records by the take in force while the line is stopped too.
-    if (this.#o.takesWork) this.#control(controlsInForce(await latestControls(this.#o.sql)));
-    if (await lineStopped(this.#o.sql)) {
+    if (this.#o.takesWork) {
+      const chosen = await latestControls(this.#o.sql);
+      this.#control(controlsInForce(chosen), takeSet(chosen));
+    }
+    const state = await lineState(this.#o.sql);
+    if (state !== 'running') {
       if (!this.#stopped) {
         this.#stopped = true;
-        this.#o.log.warn({ steps: [...this.#inFlight.keys()] }, 'the line stopped: deleting the steps in hand');
+        if (state === 'not-started') {
+          this.#o.log.info('the line has not started: it waits for Martin to start it, and takes nothing until then');
+        } else {
+          this.#o.log.warn({ steps: [...this.#inFlight.keys()] }, 'the line stopped: deleting the steps in hand');
+        }
         // A step still preparing has no Jobs yet: the signal stops it before it makes them.
         this.#halt.abort();
         await this.#o.steps.cancel();
@@ -471,7 +462,7 @@ export class Line {
       return;
     }
     if (this.#stopped) {
-      this.#o.log.info('the line started again: carrying on from the last events');
+      this.#o.log.info('the line started: carrying on from the last events');
       this.#halt = new AbortController();
     }
     this.#stopped = false;
@@ -510,22 +501,23 @@ export class Line {
   }
 
   /**
-   * Acts on Martin's controls from this pass on: what the line takes, his take or else its own default (`only`,
-   * `take`), and whether agents take new work.
+   * Acts on Martin's controls from this pass on: what the line takes, his take or, with none set, every ticket, and
+   * whether agents take new work.
    */
-  #control({
-    take,
-    newWork,
-    autonomy,
-    autoMerge,
-  }: Pick<Controls, 'take' | 'newWork' | 'autonomy' | 'autoMerge'>): void {
+  #control(
+    { take, newWork, autonomy, autoMerge }: Pick<Controls, 'take' | 'newWork' | 'autonomy' | 'autoMerge'>,
+    set: boolean,
+  ): void {
     if (autonomy !== this.#merging.autonomy || autoMerge !== this.#merging.autoMerge) {
       this.#o.log.info({ autonomy, autoMerge }, 'the line merges as Martin set its autonomy and auto-merge');
     }
     this.#merging = { autonomy, autoMerge };
-    const takes = takesOf(take, { only: this.#o.only, take: this.#o.take });
+    const takes = takesOf(take);
     if (JSON.stringify(takes) !== JSON.stringify(this.#takes) || newWork !== this.#newWork) {
-      this.#o.log.info({ ...takes, newWork }, 'the line acts on what Martin set it to take');
+      this.#o.log.info(
+        { take, newWork, set },
+        set ? 'the line takes what Martin set it to take' : 'the line takes every ticket: Martin has set no take',
+      );
     }
     this.#only = takes.only;
     this.#takes = takes;

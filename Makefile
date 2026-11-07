@@ -60,7 +60,7 @@ password = $(call namespace,$(1)) && \
 		$(apply-secret) >/dev/null; }; }; }
 
 .DEFAULT_GOAL := help
-.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
+.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line enrol guardrails
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -368,8 +368,16 @@ stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing 
 	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason "$(REASON)")); } || failed=1; \
 		KUBECTL="$(KUBECTL)" scripts/abort-canaries.sh || failed=1; exit $${failed:-0}
 
-start-the-line: node_modules ## Start the line again; workers take what waited in the inbox (REASON="...")
+start-the-line: node_modules ## Start the line, first on a new store or again; workers take what waited in the inbox (REASON="...")
 	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason "$(REASON)"))
+
+# What the line takes, as the console's Controls set it, through the same check, keeping every other control: one of
+# ONLY (a work item's number), NEXT (how many, from now) or EVERY=1. From Martin's command line, it needs no passkey.
+take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<how many> or EVERY=1
+	@set -- $(if $(ONLY),one "$(ONLY)") $(if $(NEXT),next "$(NEXT)") $(if $(EVERY),every); \
+	if [ "$$#" -eq 0 ] || { [ "$$1" = every ] && [ "$$#" -ne 1 ]; } || { [ "$$1" != every ] && [ "$$#" -ne 2 ]; }; then \
+		echo "Give one of ONLY=<work item>, NEXT=<how many> or EVERY=1." >&2; exit 2; fi; \
+	$(call as-operator,node apps/factory/src/cli.ts line take "$$@")
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

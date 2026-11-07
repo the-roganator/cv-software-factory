@@ -10,7 +10,7 @@
  * What a change did shows as its event arrives: the control moves. A visitor, or Martin previewing as one, sees every
  * control in its read-only form: the choice filled, a switch's track faded, nothing to press.
  *
- * Alerts is one switch, whether alerts reach Martin's phone (`policy/phone.ts`): his latest `alerts.switched`, or the
+ * Alerts is one switch, whether alerts reach the phone through Pushover (`policy/phone.ts`): his latest `alerts.switched`, or the
  * profile's default, off on the laptop. Each switch is one write (`POST /admin/alerts/phone`); off asks for the
  * passkey again.
  *
@@ -181,13 +181,8 @@ const TAKE_LABEL: Record<TakeKind, string> = {
  */
 const TAKES: readonly TakeKind[] = [...LOOSEST_FIRST].reverse();
 
-/** What the line will do with a take, in a sentence. */
-function takeWords(take: Take | null, nextFew: ControlsView['nextFew'], viewer: Viewer): string {
-  if (!take) {
-    return viewer === 'martin'
-      ? 'Not set here: the line takes what its Deployment says (LINE_TAKE, LINE_ONLY). Choosing one asks for your passkey.'
-      : 'Not set from the console: the line takes what its Deployment says.';
-  }
+/** What the line will do with a take, in a sentence: with none set, it takes every ticket. */
+function takeWords(take: Take, nextFew: ControlsView['nextFew']): string {
   switch (take.kind) {
     case 'every':
       return 'The oldest open ticket of the highest severity, one after another, then each improvement Martin asked for, oldest first, for as long as the line runs.';
@@ -485,7 +480,11 @@ function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; 
   );
 }
 
-/** Alerts: whether they reach Martin's phone, every one at its level, or none. Only off asks for the passkey. */
+/**
+ * Alerts: whether they reach the phone, every one at its level, or none. They reach it through Pushover, with the keys
+ * `make up` gives Alertmanager from the Keychain, so whoever runs the factory gets them on their own phone. Only off
+ * asks for the passkey.
+ */
 function AlertsGroup({ on, viewer, changer }: { on: boolean; viewer: Viewer; changer: Changer }) {
   const martin = viewer === 'martin';
   return (
@@ -495,7 +494,7 @@ function AlertsGroup({ on, viewer, changer }: { on: boolean; viewer: Viewer; cha
       </span>
       <div className="switches">
         <Switch
-          label={martin ? 'Alerts to my phone' : 'Alerts to Martin’s phone'}
+          label="Alerts to your phone (Pushover)"
           note={DASHBOARD}
           on={on}
           live={martin}
@@ -551,12 +550,12 @@ function TakeGroup({ controls, viewer, changer }: { controls: ControlsView; view
   // The field shows what is in force until Martin types: the next few's number, or the work item.
   const shown: Draft | undefined =
     draft ??
-    (take?.kind === 'next-few'
+    (take.kind === 'next-few'
       ? { kind: 'next-few', count: String(take.count) }
-      : take?.kind === 'just-one'
+      : take.kind === 'just-one'
         ? { kind: 'just-one', workItem: take.workItem }
         : undefined);
-  const pressed = shown?.kind ?? take?.kind;
+  const pressed = shown?.kind ?? take.kind;
   const after = shown && draftTake(shown, Date.now());
 
   const set = async (next: Take) => {
@@ -600,26 +599,26 @@ function TakeGroup({ controls, viewer, changer }: { controls: ControlsView; view
               if (changer.busy) return;
               if (kind === 'every') {
                 setDraft(undefined);
-                if (take?.kind !== 'every') void set({ kind: 'every' });
+                if (take.kind !== 'every') void set({ kind: 'every' });
                 return;
               }
-              if (kind === take?.kind) return setDraft(undefined);
+              if (kind === take.kind) return setDraft(undefined);
               setDraft(
                 kind === 'next-few'
                   ? { kind, count: String(FIRST_FEW) }
-                  : { kind, workItem: take?.kind === 'just-one' ? take.workItem : '' },
+                  : { kind, workItem: take.kind === 'just-one' ? take.workItem : '' },
               );
             }}
           >
             {TAKE_LABEL[kind]}
             {martin &&
               !changer.fresh &&
-              kind !== take?.kind &&
+              kind !== take.kind &&
               asks({ control: 'take', before: take, after: offered(kind) }) && <Key />}
           </button>
         ))}
       </div>
-      <p className="help">{takeWords(take, nextFew, viewer)}</p>
+      <p className="help">{takeWords(take, nextFew)}</p>
       {martin && shown && (
         <form
           className="take-field"

@@ -3,6 +3,7 @@
  *
  *     factory line stop [--reason <why>]
  *     factory line start [--reason <why>]
+ *     factory line take (every | next <how many> | one <work item>)
  *     factory line serve
  *     factory line bench [<agent> [<fixture>]] [--commit <sha>]
  *     factory line soak-check [--since <time>] [--no-spend] [--json]
@@ -13,20 +14,19 @@
  * real or recording what it would have done. LINE_MODE is `off` by default: the line takes no tickets, and only the
  * step API and the smoke run work, and stopping the line still stops their agents.
  *
- * What the line takes is Martin's to set in the console's Controls (every ticket, the next few, or just one), which the
- * line reads at each pass (`policy/line.ts`). LINE_ONLY and LINE_TAKE are its defaults, for a line with no take set (a
- * line on a host, a fresh store), and stop applying once he sets one. LINE_ONLY, a work item, has the line act on that
- * one alone: it takes the work item's ticket onto the line if it is not there, whatever else is in Plan or Build, and
- * starts no step for any other, reads nothing for it and appends nothing. It is unset by default, when the line acts on
- * every work item; a soak sets it to take one ticket end to end, with one step at a time on the local model. LINE_TAKE,
- * a number, is how many work items the line takes in all, by its own rule, counting every one it has ever taken: once
- * it has taken that many it takes no more, and carries those on it to their end. Unset, as by default, the line takes
- * tickets without limit; a first run on Claude sets it to 1, so that no one chooses the ticket and only one goes
- * through. The console's switch for new work stops the line taking tickets and starting agents' steps, as its own.
+ * What the line takes is Martin's to set, in the console's Controls or with `take` (`make take-the-line`): every ticket,
+ * the next few, or just one, which the line reads at each pass (`policy/line.ts`). With none set, it takes every ticket.
+ * Just one has the line act on that work item alone: it takes its ticket onto the line if it is not there, whatever
+ * else is in Plan or Build, and starts no step for any other, reads nothing for it and appends nothing, so a soak takes
+ * one ticket end to end, with one step at a time on the local model. The next few have it take that many work items, by
+ * its own rule, from when he chose them, and then no more, while it carries those on it to their end. `take` makes the
+ * change the console's Controls would, through the same check (`admin/line.ts`'s `decideChange`), keeping every other
+ * control as it stands, and records it as his; from his own command line it needs no passkey. The console's switch for
+ * new work stops the line taking tickets and starting agents' steps, as its own.
  *
  * RELEASE_ROLLOUT, the app's Rollout as `<namespace>/<name>`, has the line watch the app's releases: it reads the
  * Rollout and its AnalysisRuns, and each version's figures from Prometheus at PROMETHEUS_URL (required with it), and
- * records each release on the work items it carries. It changes nothing in Kubernetes. With LINE_ONLY, it records a
+ * records each release on the work items it carries. It changes nothing in Kubernetes. With just one, it records a
  * release only when it carries that work item or none, and leaves one that carries another for the whole line. Unset,
  * as by default, the line watches no release. In `dry-run`, the line answers for the release of each merge the dry
  * run made, by its own word, taking LINE_DRY_RUN_RELEASE_SECONDS (60 by default) over each move: to start after the
@@ -56,7 +56,7 @@
  *
  * Settings: RUNNER_IMAGE, the `factory-runner` image; GITHUB_WORKER_URL (default http://github:8080);
  * RUNNER_GATEWAY_URL and RUNNER_HANDBACK_URL, how an agent pod reaches the gateway and the handback; PORT (8080) and
- * HANDBACK_PORT (8081); ARTIFACTS_DIR; REFUSAL_PUBLIC_KEY; KUBE_API_URL on a host (what `kubectl proxy` serves); LINE_MODE; LINE_ONLY; LINE_TAKE;
+ * HANDBACK_PORT (8081); ARTIFACTS_DIR; REFUSAL_PUBLIC_KEY; KUBE_API_URL on a host (what `kubectl proxy` serves); LINE_MODE;
  * RELEASE_ROLLOUT, PROMETHEUS_URL and LINE_DRY_RUN_RELEASE_SECONDS; PROBES_URL, LOKI_URL and TEMPO_URL; FEATURE_FLAGS;
  * FACTORY_PROFILE (default local) and ALL_LOCAL, as the gateway's, with Martin's settings within the profile's policy,
  * read at each pass (`settings.ts`): the cap on a work item's spend, which the line holds at, and where each agent's
@@ -78,19 +78,22 @@
  * a host it reads the cluster through KUBE_API_URL (what `kubectl proxy` serves).
  *
  * Every worker checks the line before it takes work, so a stopped line finishes what is in hand and takes nothing
- * new; signals wait in the inbox until it starts again. `stop` and `start` each record Martin's reason if he gives one
+ * new; signals wait in the inbox until it starts again. A new store's line has not started: nothing moves until Martin
+ * first starts it. `stop` and `start` each record Martin's reason if he gives one
  * (`stop` has its own words if not). The console's header stops and starts the line too, through the admin service
  * (`admin/line.ts`), with the same events; `stop`, which `make stop-the-line` runs before it aborts the canary in flight,
- * works when neither the console nor the admin service does. Connects with DATABASE_URL, or the PG* variables, as Martin's
- * own role (`factory_operator`): only his roles may append his commands, and the workers heed them from no other.
+ * works when neither the console nor the admin service does. `stop`, `start` and `take` connect with DATABASE_URL, or
+ * the PG* variables, as Martin's own role (`factory_operator`): only his roles may append his commands, and the workers heed them from no other.
  */
 import { parseArgs } from 'node:util';
 import { type NewEvent, VERSIONS } from '@software-factory/events';
 import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
+import type { Change } from '../admin/line.ts';
 import { rolloutRefOf } from '../release/rollout-ref.ts';
 
 export const USAGE = `  factory line stop [--reason <why>]
   factory line start [--reason <why>]
+  factory line take (every | next <how many> | one <work item>)
   factory line serve
   factory line bench [<agent> [<fixture>]] [--commit <sha>]
   factory line soak-check [--since <time>] [--no-spend] [--json]`;
@@ -98,6 +101,7 @@ export const USAGE = `  factory line stop [--reason <why>]
 export async function run(args: string[]): Promise<number> {
   if (args[0] === 'bench') return bench(args.slice(1));
   if (args[0] === 'soak-check') return soakCheck(args.slice(1));
+  if (args[0] === 'take') return setTake(args.slice(1));
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
@@ -146,6 +150,49 @@ export async function run(args: string[]): Promise<number> {
   }
 }
 
+/** A change of what the line takes. */
+type TakeAsked = Extract<Change, { take: unknown }>;
+
+/** What `take` asks for, as the console's Controls send it. */
+export function takeAsked(args: string[]): TakeAsked | undefined {
+  const [kind, value, ...rest] = args;
+  if (rest.length) return undefined;
+  if (kind === 'every' && value === undefined) return { take: { kind: 'every' } };
+  if (kind === 'next' && value !== undefined && /^\d{1,3}$/.test(value)) {
+    return { take: { kind: 'next-few', count: Number(value) } };
+  }
+  if (kind === 'one' && value !== undefined && /^#?\d{1,12}$/.test(value)) {
+    return { take: { kind: 'just-one', workItem: value.replace(/^#/, '') } };
+  }
+  return undefined;
+}
+
+/** Sets what the line takes, as Martin's change of its controls, keeping every other control as it stands. */
+async function setTake(args: string[]): Promise<number> {
+  const asked = takeAsked(args);
+  if (!asked) {
+    console.log(`Usage:\n  factory line take (every | next <how many> | one <work item>)`);
+    return 2;
+  }
+  const { changedEvent, changeSummary, decideChange } = await import('../admin/line.ts');
+  const { appendMartins, Refused } = await import('../admin/store.ts');
+  const sql = connect(process.env.DATABASE_URL);
+  try {
+    const { change } = await sql.begin(async (tx) => {
+      const decided = await decideChange(tx, asked);
+      if (decided.change) await appendMartins(sql, tx, [changedEvent(decided.controls, decided.change)]);
+      return decided;
+    });
+    console.log(change ? `${changeSummary(change)}.` : 'The line takes that already: nothing changed.');
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    return error instanceof Refused ? 2 : 1;
+  } finally {
+    await sql.end();
+  }
+}
+
 const MODES = ['off', 'dry-run', 'live'] as const;
 
 async function serve(): Promise<number> {
@@ -160,19 +207,6 @@ async function serve(): Promise<number> {
     console.error(`LINE_MODE is ${JSON.stringify(process.env.LINE_MODE)}; it must be one of ${MODES.join(', ')}.`);
     return 2;
   }
-  // One work item, by its number, or none: anything else stops it starting, rather than the line acting on them all.
-  const only = (process.env.LINE_ONLY ?? '').trim() || null;
-  if (only !== null && !/^\d{1,12}$/.test(only)) {
-    console.error(`LINE_ONLY is ${JSON.stringify(process.env.LINE_ONLY)}; it must be a work item's number, or unset.`);
-    return 2;
-  }
-  // How many work items in all, or no limit: anything but a whole number from 0 stops it starting.
-  const takeSetting = (process.env.LINE_TAKE ?? '').trim();
-  if (takeSetting !== '' && !/^\d{1,6}$/.test(takeSetting)) {
-    console.error(`LINE_TAKE is ${JSON.stringify(process.env.LINE_TAKE)}; it must be a whole number, or unset.`);
-    return 2;
-  }
-  const take = takeSetting === '' ? null : Number(takeSetting);
   // The Rollout to watch, or none: a name of another shape stops it starting, rather than the line watching nothing.
   const rolloutSetting = (process.env.RELEASE_ROLLOUT ?? '').trim();
   const rollout = rolloutRefOf(rolloutSetting);
@@ -265,7 +299,7 @@ async function serve(): Promise<number> {
   await listenOn(api, port, '127.0.0.1');
   await listenOn(handback, handbackPort);
   log.info(
-    { port, handbackPort, mode, only, take, rollout: rolloutSetting || null },
+    { port, handbackPort, mode, rollout: rolloutSetting || null },
     `line listening on :${port}, the handback on :${handbackPort}`,
   );
 
@@ -290,8 +324,6 @@ async function serve(): Promise<number> {
     workItemLimitUsd: defaults.caps.workItemUsd,
     providerOf: providerUnder(defaults, allLocal),
     settings,
-    only,
-    take,
     release: rollout
       ? {
           kube,

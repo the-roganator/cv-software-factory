@@ -123,7 +123,7 @@ test('a visitor sees every control read-only, and no Stop or Start', async ({ pa
     'Every ticket',
   ]);
   // Off by default on the laptop's profile, the harness's.
-  await expect(panel.getByRole('switch', { name: /Alerts to Martin’s phone/ })).not.toBeChecked();
+  await expect(panel.getByRole('switch', { name: /Alerts to your phone \(Pushover\)/ })).not.toBeChecked();
   const take = panel.getByRole('group', { name: 'What the line takes' });
   await expect(take.getByRole('button', { name: 'The next few' })).toHaveAttribute('aria-pressed', 'true');
   await expect(panel).toContainText('The next 5 work items from');
@@ -341,7 +341,7 @@ test('Martin sends alerts to his phone, and stops them with his passkey again', 
   await enrolThroughTheDoor(page, await harness.code());
   // The enrolment page stays where it is once the passkey is made: Controls is on the console's.
   await page.goto('/?motion=off');
-  const phone = controls(page).getByRole('switch', { name: /Alerts to my phone/ });
+  const phone = controls(page).getByRole('switch', { name: /Alerts to your phone \(Pushover\)/ });
   await expect(phone).not.toBeChecked();
   const switched = async () => (await stored<{ phone: boolean }>('alerts.switched')).map((e) => e.payload.phone);
 
@@ -354,7 +354,7 @@ test('Martin sends alerts to his phone, and stops them with his passkey again', 
 
   await test.step('off asks for the passkey again, and says the dashboard still shows them', async () => {
     await expect(
-      controls(page).getByRole('switch', { name: /Alerts to my phone \(asks for your passkey\)/ }),
+      controls(page).getByRole('switch', { name: /Alerts to your phone \(Pushover\) \(asks for your passkey\)/ }),
     ).toBeVisible();
     await phone.click();
     const dialog = page.getByRole('dialog', { name: 'Stop alerts to your phone' });

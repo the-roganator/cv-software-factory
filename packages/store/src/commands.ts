@@ -47,14 +47,26 @@ export const openedAsImprovement = (sql: Sql | TransactionSql, workItem: string)
               and io.payload->>'kind' = 'improvement')`;
 
 /**
- * Whether the line is stopped: the last of `line.started` and `line.stopped` that one of Martin's roles appended
- * decides. Every worker asks before it takes work.
+ * The line as Martin left it: the last of `line.started` and `line.stopped` that one of his roles appended decides, and
+ * a store with neither has a line not yet started, which waits for his first Start.
  */
-export async function lineStopped(sql: Sql | TransactionSql): Promise<boolean> {
+export type LineState = 'running' | 'stopped' | 'not-started';
+
+/** The line as Martin left it (`LineState`). */
+export async function lineState(sql: Sql | TransactionSql): Promise<LineState> {
   const [last] = await sql<{ type: string }[]>`
     select e.type from events e where e.type in ('line.started', 'line.stopped') and ${fromMartin(sql, 'e')}
     order by e.seq desc limit 1`;
-  return last?.type === 'line.stopped';
+  if (!last) return 'not-started';
+  return last.type === 'line.started' ? 'running' : 'stopped';
+}
+
+/**
+ * Whether the line is stopped: stopped by Martin, or not yet started by him. Every worker asks before it takes work, so
+ * on a new store nothing moves, and no model is called, until his first Start.
+ */
+export async function lineStopped(sql: Sql | TransactionSql): Promise<boolean> {
+  return (await lineState(sql)) !== 'running';
 }
 
 /**

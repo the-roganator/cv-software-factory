@@ -13,6 +13,9 @@ beforeEach(async () => {
 });
 afterEach(() => database?.end());
 
+/** A limit that counts every work item the line has ever taken. */
+const few = (most: number) => ({ most, since: '2000-01-01T00:00:00.000000Z' });
+
 const writer = () =>
   new EventWriter(database.as.line, {
     kind: 'real',
@@ -159,14 +162,14 @@ describe('a queue with a limit', () => {
     const cosmetic = await ticket('cosmetic', '/');
     const broken = await ticket('broken', '/search');
     const degraded = await ticket('degraded', '/products');
-    const two = new Queue(database.as.line, 'test', { take: 2 });
+    const two = new Queue(database.as.line, 'test', { take: few(2) });
     expect(await two.admit()).toBe(broken);
     await end(broken);
     expect(await two.admit()).toBe(degraded);
     await end(degraded);
     // Two have come onto the line: the cosmetic ticket waits, for this queue and for one that starts afresh.
     expect(await two.admit()).toBeUndefined();
-    expect(await new Queue(database.as.line, 'again', { take: 2 }).admit()).toBeUndefined();
+    expect(await new Queue(database.as.line, 'again', { take: few(2) }).admit()).toBeUndefined();
     expect(await new Queue(database.as.line, 'all').admit()).toBe(cosmetic);
   });
 
@@ -175,7 +178,7 @@ describe('a queue with a limit', () => {
     const degraded = await ticket('degraded', '/products');
     const cosmetic = await ticket('cosmetic', '/');
     const unsure = await ticket('cosmetic', '/about');
-    const two = new Queue(database.as.line, 'test', { take: 2 });
+    const two = new Queue(database.as.line, 'test', { take: few(2) });
     expect(await two.admit()).toBe(broken);
     // Gone as the line took it, and closed with nothing spent: the line only looked at it.
     await lookedAtTake(broken, 'cleared');
@@ -195,7 +198,7 @@ describe('a queue with a limit', () => {
   it('counts a ticket that has not ended, though its look at take cleared', async () => {
     const broken = await ticket('broken', '/search');
     await ticket('degraded', '/products');
-    const one = new Queue(database.as.line, 'test', { take: 1 });
+    const one = new Queue(database.as.line, 'test', { take: few(1) });
     expect(await one.admit()).toBe(broken);
     // Gone as it was taken, but held before it closed on that look or its issue opened: it has not ended, and counts.
     const look = { for: 'take', outcome: 'cleared', check: 'errors on /search', carried: [], version: 'a'.repeat(40) };
@@ -207,7 +210,7 @@ describe('a queue with a limit', () => {
   it('counts a ticket the look cleared once a step had started for it', async () => {
     const broken = await ticket('broken', '/search');
     await ticket('degraded', '/products');
-    const one = new Queue(database.as.line, 'test', { take: 1 });
+    const one = new Queue(database.as.line, 'test', { take: few(1) });
     expect(await one.admit()).toBe(broken);
     await one.startStep(broken);
     await lookedAtTake(broken, 'cleared');
@@ -216,10 +219,10 @@ describe('a queue with a limit', () => {
 
   it('counts the work items already on the line, and takes none at all with a limit of none', async () => {
     await ticket('broken', '/search');
-    expect(await new Queue(database.as.line, 'test', { take: 0 }).admit()).toBeUndefined();
+    expect(await new Queue(database.as.line, 'test', { take: few(0) }).admit()).toBeUndefined();
     await database.owner`insert into line (work_item, stage, steps) values ('1001', 'ended', 1)`;
-    expect(await new Queue(database.as.line, 'test', { take: 1 }).admit()).toBeUndefined();
-    expect(await new Queue(database.as.line, 'test', { take: 2 }).admit()).toBeDefined();
+    expect(await new Queue(database.as.line, 'test', { take: few(1) }).admit()).toBeUndefined();
+    expect(await new Queue(database.as.line, 'test', { take: few(2) }).admit()).toBeDefined();
   });
 });
 
@@ -232,8 +235,8 @@ describe('a queue set to take what Martin chose', () => {
     const broken = await ticket('broken', '/search');
     const degraded = await ticket('degraded', '/products');
     const cosmetic = await ticket('cosmetic', '/');
-    const queue = new Queue(database.as.line, 'test', { take: 2 });
-    // LINE_TAKE's two are spent; the next one, counted from now, takes one more.
+    const queue = new Queue(database.as.line, 'test', { take: few(2) });
+    // Two in all are spent; the next one, counted from now, takes one more.
     expect(await queue.admit()).toBeUndefined();
     queue.takes({ only: null, take: { most: 1, since } });
     expect(await queue.admit()).toBe(broken);
@@ -314,7 +317,7 @@ describe('an improvement Martin asked for', () => {
     const asked = await improvement();
     const one = new Queue(database.as.line, 'test', { only: asked });
     expect(await one.admit()).toBe(asked);
-    const queue = new Queue(database.as.line, 'other', { take: 1 });
+    const queue = new Queue(database.as.line, 'other', { take: few(1) });
     expect(await queue.admit()).toBeUndefined();
   });
 
@@ -430,7 +433,7 @@ describe('a reopened work item', () => {
 
   it('comes back into Plan from its end, afresh, whatever else is on the line and whatever the limit', async () => {
     const reopened = await ticket('degraded', '/search');
-    const queue = new Queue(database.as.line, 'test', { take: 1 });
+    const queue = new Queue(database.as.line, 'test', { take: few(1) });
     expect(await queue.admit()).toBe(reopened);
     await database.as.line`update line set stage = 'ended', failures = 2, failure = 'It failed', session = 'abc'
                           where work_item = ${reopened}`;

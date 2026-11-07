@@ -16,18 +16,18 @@
  * opening, so a ticket appended to an improvement does not make it one, and a ticket's work item is never taken as an
  * improvement.
  *
- * What the queue takes (`Takes`) is Martin's take from the console's Controls, read each pass, or else the line's own
- * default (LINE_ONLY, LINE_TAKE):
+ * What the queue takes (`Takes`) is Martin's take from the console's Controls, read each pass, and every ticket while he
+ * has set none:
  *
- * - A queue for one work item only (`only`: Just one, or LINE_ONLY) sees nothing else on the line, and takes that
- *   ticket or improvement onto it whatever else is in Plan or Build: every other work item is left as it is, so it
- *   holds up nothing.
- * - A queue with a limit (`take`: The next few, or LINE_TAKE) takes work by the same rule until that many work items
- *   have come onto the line since the limit was set (`since`; LINE_TAKE counts every one there has ever been), and
- *   then no more, while those on it go on to their end. It counts the line's own rows, which are never deleted, by
- *   when each was taken, under the same lock: a restart, or a second worker, takes none beyond the limit. A ticket
- *   whose signal was gone as the line took it, and that closed on that look before its issue opened or any step
- *   started (`closedAtTake`), is one the line looked at, not one it worked on, and counts for neither limit.
+ * - A queue for one work item only (`only`: Just one) sees nothing else on the line, and takes that ticket or
+ *   improvement onto it whatever else is in Plan or Build: every other work item is left as it is, so it holds up
+ *   nothing.
+ * - A queue with a limit (`take`: The next few) takes work by the same rule until that many work items have come onto
+ *   the line since the limit was set (`since`), and then no more, while those on it go on to their end. It counts the
+ *   line's own rows, which are never deleted, by when each was taken, under the same lock: a restart, or a second
+ *   worker, takes none beyond the limit. A ticket whose signal was gone as the line took it, and that closed on that
+ *   look before its issue opened or any step started (`closedAtTake`), is one the line looked at, not one it worked on,
+ *   and counts for none of the limit.
  *
  * A work item that closed as verified and reopened (triage reopens it when its signal comes back, and a line running
  * live one a dry run verified) is taken back into Plan for a fresh pass (`revive`), whatever else is on the line and
@@ -139,21 +139,12 @@ const VOLUME_GONE_SECONDS = 60;
 export interface Takes {
   /** The one work item it sees, if it sees only one. */
   only: string | null;
-  /**
-   * How many work items the line takes, if it takes only so many: counted from `since`, or, with none, every one it has
-   * ever taken.
-   */
-  take: { most: number; since: string | null } | null;
+  /** How many work items the line takes, if it takes only so many, counted from `since`, the store's clock. */
+  take: { most: number; since: string } | null;
 }
 
-/**
- * What the line takes, from Martin's take (`policy/line.ts`), or, with none in force, from its own default: LINE_ONLY's
- * one work item, and LINE_TAKE's count of every work item it has ever taken.
- */
-export function takesOf(take: Take | null, defaults: { only: string | null; take: number | null }): Takes {
-  if (take === null) {
-    return { only: defaults.only, take: defaults.take === null ? null : { most: defaults.take, since: null } };
-  }
+/** What the line takes, from Martin's take in force (`policy/line.ts`). */
+export function takesOf(take: Take): Takes {
   switch (take.kind) {
     case 'every':
       return { only: null, take: null };
@@ -171,14 +162,15 @@ export class Queue {
   #only: string | null;
   #take: Takes['take'];
 
-  constructor(sql: Sql, me: string, { only = null, take = null }: { only?: string | null; take?: number | null } = {}) {
+  /** A queue that takes every ticket, or, for a test, what `takes` says, until the line sets it from Martin's take. */
+  constructor(sql: Sql, me: string, { only = null, take = null }: Partial<Takes> = {}) {
     this.#sql = sql;
     this.#me = me;
     this.#only = only;
-    this.#take = take === null ? null : { most: take, since: null };
+    this.#take = take;
   }
 
-  /** What it takes from now on: the line sets it each pass, from Martin's take or its own default. */
+  /** What it takes from now on: the line sets it each pass, from Martin's take in force. */
   takes({ only, take }: Takes): void {
     this.#only = only;
     this.#take = take;
@@ -202,7 +194,7 @@ export class Queue {
         const [row] = await tx<{ taken: number }[]>`
           select count(*)::int as taken from line l
           where not ${closedAtTake(tx)}
-            ${take.since === null ? tx`` : tx`and l.taken_at >= ${take.since}::text::timestamptz`}`;
+            and l.taken_at >= ${take.since}::text::timestamptz`;
         if ((row?.taken ?? 0) >= take.most) return undefined;
       }
       const [busy] = only ? [] : await tx`select 1 from line where stage in ('plan', 'build') limit 1`;

@@ -1575,7 +1575,7 @@ export const PAYLOADS = {
     autonomy: z.enum(V.AUTONOMY),
     newWork: z.boolean(),
     autoMerge: z.boolean(),
-    /** None: no take set, so the line's own default (`LINE_TAKE`, `LINE_ONLY`) is in force. */
+    /** None: no take set, so the line takes every ticket. */
     take: take.nullable(),
     /** Whether a canary the analysis judges bad rolls back by itself; off, it pauses for Martin. */
     autoRollback: z.boolean(),

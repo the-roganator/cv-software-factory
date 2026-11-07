@@ -363,7 +363,7 @@ real-store: node_modules ## Replace the cluster's store with an empty one for re
 	@$(KUBECTL) -n factory rollout restart deployment/console >/dev/null
 	@echo "  Console  https://console.localhost:8443"
 
-stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts (REASON="...")
+stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts if its stable version has a pod (REASON="...")
 	@# Both halves run whichever fails: a canary is aborted even if the store cannot be reached, and the other way round.
 	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason "$(REASON)")); } || failed=1; \
 		KUBECTL="$(KUBECTL)" scripts/abort-canaries.sh || failed=1; exit $${failed:-0}

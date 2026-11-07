@@ -6,7 +6,9 @@
  *   flight, if there is one, through the admin service's own Role on the app's Rollout (`rollout.ts`), as
  *   `scripts/abort-canaries.sh` does with Martin's credentials. The stop is appended first, so the agents stop even if
  *   Kubernetes cannot be reached; if the abort fails, the line stays stopped, and the answer says that the canary was
- *   not aborted and that `make stop-the-line` will abort it. It never asks for the passkey again: it tightens.
+ *   not aborted and that `make stop-the-line` will abort it. A canary whose stable version has no pod ready to serve is
+ *   left alone, and the answer says so: aborting it would leave nothing to serve the app. It never asks for the passkey
+ *   again: it tightens.
  * - **Start the line** (`POST /admin/line/start`) appends `line.started`, and needs the passkey again (`line.start` in
  *   the access table). A release stopped with the line stays stopped until Martin retries it from the Canary panel.
  *
@@ -31,7 +33,8 @@
  * - A change to what is already so records nothing.
  * - Auto-rollback switched off overrides a guardrail, so it needs the passkey again, and the line pages Martin from its
  *   event. It reaches the canary's analysis only through the two series the admin service and the line report of it
- *   (`auto-rollback.ts`, `release/analysis.ts`). Stopping the line still aborts a canary, whatever it says.
+ *   (`auto-rollback.ts`, `release/analysis.ts`). Stopping the line still aborts a canary, whatever it says, as long as
+ *   its stable version has a pod to take its traffic back.
  */
 import { AUTONOMY } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
@@ -70,7 +73,7 @@ export const REASON = z.strictObject({ reason: PAYLOADS['line.stopped'].shape.re
 export interface Stopped {
   stopped: true;
   canary: 'aborted' | 'none' | 'not-aborted';
-  /** The release aborted. */
+  /** The release aborted, or left alone because its stable version has no pod ready to serve. */
   release?: string;
   /**
    * Whether the abort's control was recorded: not for a release the line had not recorded yet, nor when the store did
@@ -83,8 +86,14 @@ export interface Stopped {
 
 /** What the answer says when the canary in flight could not be aborted. */
 export const NOT_ABORTED =
-  'The line is stopped, but a canary in flight was not aborted: the admin service could not read or patch the ' +
-  'Rollout. Run `make stop-the-line`, which will abort it.';
+  'The line is stopped, but a canary in flight was not aborted: the admin service could not read the release or ' +
+  'patch the Rollout. Run `make stop-the-line`, which will abort it.';
+
+/** What the answer says when the canary was left alone, its stable version having no pod to take its traffic back. */
+export const NO_STABLE =
+  'The line is stopped, but the canary in flight was not aborted: its stable version has no pod ready to serve, so ' +
+  'aborting it would leave nothing to serve the app. Whether it goes out is yours: promote it fully or pause it from ' +
+  'the Canary panel, or with `kubectl argo rollouts` while the panel has no record of it.';
 
 /** What the answer says when the admin service has no Rollout to control. */
 export const NO_ROLLOUT =
@@ -109,6 +118,9 @@ export async function stopLine(
   try {
     const abort = await controls.stop();
     if (abort.canary === 'none') return { stopped: true, canary: 'none' };
+    if (abort.canary === 'kept') {
+      return { stopped: true, canary: 'not-aborted', release: abort.release, warning: NO_STABLE };
+    }
     return {
       stopped: true,
       canary: 'aborted',

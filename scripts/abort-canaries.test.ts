@@ -19,6 +19,24 @@ interface Cluster {
   rollouts?: string[];
   /** Whether the controller acts on an abort (the Rollout turns Degraded) before the wait ends. */
   acts?: boolean;
+  /**
+   * What each stable ReplicaSet (`<rollout>-<stable hash>`) says of its available pods, by name: a count (`''` for
+   * none, as Kubernetes leaves out a zero), `missing`, or `unreachable`. One not named has one available.
+   */
+  stable?: Record<string, string>;
+}
+
+/** The fake kubectl's answers for the stable ReplicaSets named, as `case` arms matched on its arguments. */
+function replicaSets(stable: Record<string, string>): string {
+  const said = (rs: string, what: string) =>
+    what === 'missing'
+      ? `echo 'Error from server (NotFound): replicasets.apps "${rs}" not found' >&2; exit 1`
+      : what === 'unreachable'
+        ? "echo 'The connection to the server 0.0.0.0:6443 was refused' >&2; exit 1"
+        : `printf '%s' '${what}'`;
+  return Object.entries(stable)
+    .map(([rs, what]) => `      *"get replicaset ${rs} "*) ${said(rs, what)} ;;`)
+    .join('\n');
 }
 
 async function stop(cluster: Cluster) {
@@ -39,6 +57,11 @@ case "$*" in
     esac ;;
   *"get rollouts --all-namespaces"*) printf '%b' ${JSON.stringify((cluster.rollouts ?? []).map((r) => `${r}\n`).join(''))} ;;
   *patch*) echo patched ;;
+  *"get replicaset"*)
+    case "$*" in
+${replicaSets(cluster.stable ?? {})}
+      *) printf 1 ;;
+    esac ;;
   *wait*) ${cluster.acts === false ? 'exit 1' : 'exit 0'} ;;
   *"get rollout"*) printf '100/0' ;;
 esac
@@ -69,6 +92,40 @@ describe('aborting a canary in flight (make stop-the-line)', () => {
     );
     expect(out).toContain('{"status":{"abort":false}}');
     expect(out).not.toContain('quiet');
+  });
+
+  it('leaves a canary whose stable version has no pod available, says so, and gives the abort to make by hand', async () => {
+    const { code, out, calls } = await stop({
+      crd: 'installed',
+      rollouts: ['website|website|5f7c|8d9e|', 'shop|front|1a2b|3c4d|', 'shop|back|6e7f|9a0b|'],
+      stable: { 'website-5f7c': '', 'front-1a2b': 'missing', 'back-6e7f': '0' },
+    });
+    expect(code).toBe(0);
+    expect(calls).toContain('-n website get replicaset website-5f7c -o jsonpath={.status.availableReplicas}');
+    expect(patches(calls)).toEqual([]);
+    for (const rollout of ['website/website', 'shop/front', 'shop/back']) {
+      expect(out).toContain(
+        `Didn't abort the release of ${rollout}: its stable version has no pod ready to serve, so aborting it`,
+      );
+    }
+    expect(out).toContain('The release goes on. To abort it all the same:');
+    expect(out).toContain(
+      `-n website patch rollout website --subresource=status --type=merge -p '{"status":{"abort":true}}'`,
+    );
+    expect(out).not.toContain('No release is in flight');
+  });
+
+  it('aborts no canary whose stable version it cannot read, and fails, still aborting the rest', async () => {
+    const { code, out, calls } = await stop({
+      crd: 'installed',
+      rollouts: ['website|website|5f7c|8d9e|', 'shop|front|1a2b|3c4d|'],
+      stable: { 'website-5f7c': 'unreachable' },
+    });
+    expect(code).toBe(1);
+    expect(out).toContain("Couldn't read the stable version of website/website, so its release wasn't aborted");
+    expect(patches(calls)).toEqual([
+      '-n shop patch rollout front --subresource=status --type=merge -p {"status":{"abort":true}}',
+    ]);
   });
 
   it('sends every abort before it waits for any, so a slow controller holds up no other release', async () => {

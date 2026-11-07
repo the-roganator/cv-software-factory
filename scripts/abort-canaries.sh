@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Aborts every release in flight: the second half of `make stop-the-line`, after the line has stopped its agents.
+# Aborts every release in flight that its stable version can take back: the second half of `make stop-the-line`, after
+# the line has stopped its agents.
 #
 # A Rollout is mid-canary when the version it is rolling out (its current pod hash) is not yet its stable one, and it
 # has not been aborted already. Aborting is a patch of the Rollout's status, `abort: true`, which is what Argo Rollouts'
 # own `kubectl argo rollouts abort` does: the controller sends all traffic back to the stable version and scales the
 # canary down. Nothing is rolled back in Git; the release stays aborted until the next one starts, or until Martin
 # retries it, which is the same patch with `abort: false`.
+#
+# A canary whose stable version has no pod ready to serve is left alone, and the script says so: aborting it would send
+# every request to a version that cannot serve one, as on the first release after the app is reset, whose stable
+# version is one admission never let run. The stable version's pods are its ReplicaSet's available ones (Argo Rollouts
+# names it `<rollout>-<stable hash>`); no such ReplicaSet has none. The release goes on, and the script prints the
+# abort to make by hand. A ReplicaSet it cannot read aborts nothing, and fails.
 #
 # It runs with Martin's own kubeconfig. The factory holds no right to change a Rollout: the line may only read them.
 #
@@ -39,6 +46,21 @@ while IFS='|' read -r namespace name stable current abort; do
   in_flight=$((in_flight + 1))
   if [ "$abort" = "true" ]; then
     echo "The release of $namespace/$name was aborted already."
+    continue
+  fi
+  if ! available=$("${kubectl[@]}" -n "$namespace" get replicaset "$name-$stable" \
+    -o jsonpath='{.status.availableReplicas}' 2>&1); then
+    if [[ "$available" != *NotFound* ]]; then
+      echo "Couldn't read the stable version of $namespace/$name, so its release wasn't aborted: $available" >&2
+      failed=1
+      continue
+    fi
+    available=0
+  fi
+  if [ "${available:-0}" = 0 ]; then
+    echo "Didn't abort the release of $namespace/$name: its stable version has no pod ready to serve, so aborting it"
+    echo "  would leave nothing to serve the app. The release goes on. To abort it all the same:"
+    echo "  ${kubectl[*]} -n $namespace patch rollout $name --subresource=status --type=merge -p '{\"status\":{\"abort\":true}}'"
     continue
   fi
   if "${kubectl[@]}" -n "$namespace" patch rollout "$name" --subresource=status --type=merge \

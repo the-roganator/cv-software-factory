@@ -85,7 +85,7 @@ function LineDialog({
       {
         passkey: asks ? 'prove' : undefined,
         done: (got) => {
-          // Stopped, with a canary in flight it could not abort: Martin must know, and that `make stop-the-line` will.
+          // Stopped, with a canary in flight it did not abort: Martin must know, and why, and what he can do.
           if (typeof got.body?.warning === 'string') {
             setDone(true);
             return got.body.warning;

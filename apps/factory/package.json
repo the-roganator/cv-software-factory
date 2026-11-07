@@ -41,7 +41,7 @@
     "pixelmatch": "^8.0.0",
     "playwright": "^1.65.0",
     "pngjs": "^7.0.0",
-    "postgres": "^3.4.9",
+    "postgres": "^4.1.0",
     "release-please": "^17.11.2",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"

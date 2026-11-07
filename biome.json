@@ -17,7 +17,7 @@
           "options": {
             "paths": {
               "postgres": {
-                "allowImportNames": ["JSONValue", "Sql", "TransactionSql"],
+                "allowImportNames": ["Sql", "TransactionSql"],
                 "message": "Make the store's client with connect() from @software-factory/store, which counts its queries and connections. Only postgres.js's types may be imported, by name: add a type here if one is needed."
               }
             }

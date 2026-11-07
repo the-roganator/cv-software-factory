@@ -1,0 +1,233 @@
+/**
+ * Triage's worker through a store it cannot reach for a while: it waits it out, takes its lock again on a new
+ * connection before another pass, and never triages alongside another copy.
+ */
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { InboxSignal } from '@software-factory/events';
+import { DiskArtifacts, EventWriter, sendSignal } from '@software-factory/store';
+import postgres, { type Sql } from 'postgres';
+import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest';
+import { type Database, freshDatabase } from '../../../store/test/database.ts';
+import { startLine } from '../../../store/test/line.ts';
+import { PASSWORDS } from '../../../store/test/postgres.ts';
+import { idsFor } from '../../src/events.ts';
+import type { Judge } from '../../src/judge.ts';
+import { type Outage, Triage, type TriageOptions } from '../../src/worker.ts';
+
+let database: Database;
+/** A second copy's own connections, as triage's role. */
+let other: Sql;
+const artifacts = new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-')));
+const quiet = { info: () => {}, warn: () => {} };
+const brief: Outage = { firstMs: 50, mostMs: 200, tries: 4 };
+
+beforeAll(async () => {
+  database = await freshDatabase('triage_outage');
+  const server = new URL(inject('databaseUrl'));
+  other = postgres({
+    host: server.hostname,
+    port: Number(server.port),
+    database: database.name,
+    username: 'factory_triage',
+    password: PASSWORDS.triage,
+    onnotice: () => {},
+  });
+  await startLine(database.admin);
+});
+/** Each test's copies, stopped after it, so a test that fails leaves none running into the next. */
+const copies: Promise<void>[] = [];
+let abort = new AbortController();
+afterEach(async () => {
+  abort.abort();
+  await Promise.allSettled(copies.splice(0));
+  abort = new AbortController();
+});
+afterAll(async () => {
+  await other?.end();
+  await database?.end();
+});
+
+const found = (route: string): InboxSignal => ({
+  sense: 'crawler',
+  check: 'links lead somewhere',
+  route,
+  version: 'c02efd8',
+  symptom: 'broken-link',
+  observedAt: new Date().toISOString(),
+  artifacts: [],
+});
+
+const noJudge: Judge = async () => {
+  throw new Error('No report in these tests');
+};
+
+const triage = (sql: Sql, options: Partial<TriageOptions> = {}) =>
+  new Triage({
+    sql,
+    events: new EventWriter(sql, { kind: 'real', artifacts }),
+    judge: noJudge,
+    read: async () => null,
+    log: quiet,
+    outage: brief,
+    ...options,
+  });
+
+/** Runs a copy until the test ends, or until `abort` stops it. */
+const start = (copy: Triage) => {
+  const running = copy.run(abort.signal);
+  copies.push(running);
+  return running;
+};
+
+/** Who holds triage's advisory lock, and who waits for it, by backend. */
+const lockers = () =>
+  database.owner<{ pid: number; granted: boolean }[]>`
+    select pid, granted from pg_locks
+    where locktype = 'advisory' and objsubid = 1
+      and database = (select oid from pg_database where datname = current_database())
+      and ((classid::bigint << 32) | objid::bigint) = hashtext('triage')::bigint
+    order by granted desc, pid`;
+const holder = async () => (await lockers()).find((l) => l.granted)?.pid;
+
+/** Ends a backend, as a dropped connection or a restart of Postgres does. */
+const drop = (pid: number) => database.owner`select pg_terminate_backend(${pid})`;
+
+const triaged = async (id: string) =>
+  (await database.owner<{ outcome: string | null }[]>`select outcome from inbox where id = ${id}`)[0]?.outcome;
+
+describe('triage through a store it cannot reach', () => {
+  it('takes its lock again on a new connection when the old one drops, before the next signal', async () => {
+    const running = start(triage(database.as.triage));
+    await expect.poll(holder).toBeDefined();
+    const first = (await holder()) as number;
+    await drop(first);
+    // Idle, it finds the lock gone when it next wakes: here for a signal.
+    const id = await sendSignal(database.owner, found('/after-the-drop'));
+    await expect.poll(() => triaged(id), { timeout: 4000 }).toBe('opened');
+    expect(await holder()).not.toBe(first);
+    abort.abort();
+    await running;
+    expect(await lockers()).toEqual([]);
+  });
+
+  it('never has two copies hold the lock, and the one waiting takes over when the other loses it', async () => {
+    const one = start(triage(database.as.triage));
+    await expect.poll(holder).toBeDefined();
+    const first = (await holder()) as number;
+    const two = start(triage(other));
+    // The second copy waits for the lock.
+    await expect.poll(async () => (await lockers()).length).toBe(2);
+    const watch = { granted: 0, stop: false };
+    const watching = (async () => {
+      while (!watch.stop) {
+        watch.granted = Math.max(watch.granted, (await lockers()).filter((l) => l.granted).length);
+        await new Promise((tick) => setTimeout(tick, 10));
+      }
+    })();
+    await drop(first);
+    // The copy that waited holds it at once. The first finds its lock gone when it next wakes, here for a signal, and
+    // waits in turn, on a new connection; the one that holds the lock triages the signal.
+    const id = await sendSignal(database.owner, found('/two-copies'));
+    await expect.poll(() => triaged(id), { timeout: 4000 }).toBe('opened');
+    await expect.poll(async () => (await lockers()).map((l) => l.granted)).toEqual([true, false]);
+    expect(await holder()).not.toBe(first);
+    watch.stop = true;
+    await watching;
+    expect(watch.granted).toBe(1);
+    // Stopping ends the copy that waits for the lock too.
+    abort.abort();
+    await Promise.all([one, two]);
+    expect(await lockers()).toEqual([]);
+  });
+
+  it('rides out a store that fails a few times, of either shape, and takes the signal after', async () => {
+    let failing = 2;
+    const warnings: string[] = [];
+    class Flaky extends Triage {
+      override async takeOne() {
+        if (failing-- === 2)
+          throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' });
+        if (failing >= 0) throw new TypeError("Cannot read properties of null (reading 'write')");
+        return super.takeOne();
+      }
+    }
+    const sql = database.as.triage;
+    const running = start(
+      new Flaky({
+        sql,
+        events: new EventWriter(sql, { kind: 'real', artifacts }),
+        judge: noJudge,
+        read: async () => null,
+        log: { info: () => {}, warn: (_fields, message) => warnings.push(message) },
+        outage: brief,
+      }),
+    );
+    const id = await sendSignal(database.owner, found('/flaky'));
+    await expect.poll(() => triaged(id), { timeout: 5000 }).toBe('opened');
+    expect(warnings.filter((w) => w.startsWith('triage could not reach the store'))).toHaveLength(2);
+    abort.abort();
+    await running;
+  });
+
+  it('gives up on a store that keeps failing, so the restarts say so', async () => {
+    let tried = 0;
+    class Down extends Triage {
+      override async takeOne(): Promise<never> {
+        tried += 1;
+        throw new Error('connect ECONNREFUSED 127.0.0.1:5432');
+      }
+    }
+    const sql = database.as.triage;
+    const running = start(
+      new Down({
+        sql,
+        events: new EventWriter(sql, { kind: 'real', artifacts }),
+        judge: noJudge,
+        read: async () => null,
+        log: quiet,
+        outage: brief,
+      }),
+    );
+    await expect(running).rejects.toThrow('ECONNREFUSED');
+    expect(tried).toBe(brief.tries);
+    expect(await lockers()).toEqual([]);
+  });
+
+  it('appends nothing once the lock is lost in the middle of a signal, and takes the signal again', async () => {
+    const held = Promise.withResolvers<void>();
+    const reading = Promise.withResolvers<void>();
+    let reads = 0;
+    // A sense's signal is looked at before it is decided: the look waits here while the lock goes.
+    const look = async (at: Date) => {
+      reads += 1;
+      if (reads === 1) {
+        reading.resolve();
+        await held.promise;
+      }
+      return { at: at.toISOString(), dependencies: [] };
+    };
+    const running = start(triage(database.as.triage, { look }));
+    await expect.poll(holder).toBeDefined();
+    const first = (await holder()) as number;
+    const id = await sendSignal(database.owner, found('/mid-signal'));
+    await reading.promise;
+    await drop(first);
+    held.resolve();
+    await expect
+      .poll(
+        async () =>
+          (await database.owner<{ failure: string | null }[]>`select failure from inbox where id = ${id}`)[0]?.failure,
+      )
+      .toBeTruthy();
+    expect(await database.owner`select 1 from events where id = ${idsFor(id)()}`).toHaveLength(0);
+    // Taken again once its retry is due, here at once, on the lock taken again.
+    await expect.poll(async () => (await holder()) ?? first, { timeout: 5000 }).not.toBe(first);
+    await database.owner`update inbox set not_before = now() where id = ${id}`;
+    await database.owner`select pg_notify('inbox', ${id})`;
+    await expect.poll(() => triaged(id), { timeout: 5000 }).toBe('opened');
+    abort.abort();
+    await running;
+  });
+});

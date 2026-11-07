@@ -106,7 +106,26 @@ export interface TriageOptions {
   look?: ((at: Date) => Promise<Environment>) | undefined;
   /** Told of each signal triaged, with how long it waited in the inbox. */
   onTriaged?: (outcome: Outcome, signal: InboxSignal, waitedSeconds: number, ticketOpened: boolean) => void;
+  /** How `run` waits out a store it cannot reach: `OUTAGE`, unless a test shortens it. */
+  outage?: Outage;
 }
+
+/** How `run` waits out an event store it cannot reach. */
+export interface Outage {
+  /** The first wait after a failure, in milliseconds; each failure in a row doubles it. */
+  firstMs: number;
+  /** The longest wait. */
+  mostMs: number;
+  /** Failures in a row, with no pass between them, after which `run` gives up and throws the last. */
+  tries: number;
+}
+
+/**
+ * A restart of Postgres or a short outage is waited out, 1 s, 2 s, 4 s and so on up to 30 s apart: a 45 s outage costs
+ * at most 30 s more. Twelve failures in a row are three and a half minutes with nothing triaged, which is no blip: `run` throws,
+ * the process exits, and the pod's restarts say so (`WorkerCrashLooping`).
+ */
+export const OUTAGE: Outage = { firstMs: 1000, mostMs: 30_000, tries: 12 };
 
 interface Taken {
   id: string;
@@ -133,6 +152,13 @@ interface Made {
 
 export class Triage {
   readonly #o: Required<Omit<TriageOptions, 'onTriaged' | 'look'>> & Pick<TriageOptions, 'onTriaged' | 'look'>;
+  /**
+   * The connection that holds triage's advisory lock while `run` does. The lock is the connection's, so it is asked
+   * before each pass and each append: one that no longer answers has lost the lock, which another copy may hold now.
+   */
+  #lock: Awaited<ReturnType<Sql['reserve']>> | undefined;
+  /** The writer, but each append is refused unless the lock still holds, while `run` holds it. */
+  readonly #events: Pick<EventWriter, 'append'>;
   /** Until when reports wait: the gateway cannot answer before then. The senses' signals need no model. */
   #reportsWaitUntil = 0;
   /** Whether an event has been appended since the held findings were last settled: only an answer can settle one. */
@@ -146,8 +172,19 @@ export class Triage {
   readonly #ignored: IgnoredCommands;
 
   constructor(options: TriageOptions) {
-    this.#o = { now: () => new Date(), ...options };
+    this.#o = { now: () => new Date(), outage: OUTAGE, ...options };
     this.#ignored = new IgnoredCommands(this.#o.sql, this.#o.log);
+    this.#events = {
+      append: async (events) => {
+        await this.#holding();
+        return this.#o.events.append(events);
+      },
+    };
+  }
+
+  /** Throws unless the connection that holds the lock still answers, while `run` holds it. */
+  async #holding(): Promise<void> {
+    if (this.#lock) await this.#lock`select 1`;
   }
 
   /** Takes one signal, if the line is running and one is waiting, and triages it. */
@@ -187,24 +224,76 @@ export class Triage {
 
   /**
    * Triages until aborted: woken by a new signal or a new event (the line starting again), and every half a minute
-   * for signals waiting to be tried again. Only one worker runs at a time.
+   * for signals waiting to be tried again. Only one worker runs at a time: it holds triage's advisory lock.
+   *
+   * A store it cannot reach is waited out (`OUTAGE`). The lock is held on a connection of its own, and goes when that
+   * connection drops, so after any failure the worker lets go of the lock and takes it again, on a new connection,
+   * before another pass: a copy waiting for the lock may take it meanwhile, and this one then waits instead. A signal in
+   * hand when the store went is taken again once its lease is up, as after a restart.
    */
   async run(abort: AbortSignal): Promise<void> {
-    const { sql } = this.#o;
-    const lock = await sql.reserve();
+    const { sql, log, outage } = this.#o;
+    const wake = new Wake();
+    abort.addEventListener('abort', wake.nudge);
+    const listening = await Promise.all([
+      sql.listen('inbox', wake.nudge),
+      sql.listen('events', () => {
+        this.#settleDue = true;
+        wake.nudge();
+      }),
+    ]);
+    let failures = 0;
     try {
-      await lock`select pg_advisory_lock(hashtext('triage'))`;
-      let wake = Promise.withResolvers<void>();
-      const nudge = () => wake.resolve();
-      const listening = await Promise.all([
-        sql.listen('inbox', nudge),
-        sql.listen('events', () => {
-          this.#settleDue = true;
-          nudge();
-        }),
-      ]);
-      abort.addEventListener('abort', nudge);
       while (!abort.aborted) {
+        try {
+          await this.#whileLocked(abort, wake, () => {
+            failures = 0;
+          });
+        } catch (error) {
+          if (abort.aborted) break;
+          failures += 1;
+          if (failures >= outage.tries) throw error;
+          const waitMs = Math.min(outage.firstMs * 2 ** (failures - 1), outage.mostMs);
+          log.warn(
+            { err: error, failures, waitMs },
+            'triage could not reach the store, and takes its lock again first',
+          );
+          await wake.after(waitMs);
+        }
+      }
+    } finally {
+      await Promise.all(listening.map((l) => l.unlisten())).catch(() => {});
+    }
+  }
+
+  /**
+   * Takes triage's lock on a connection of its own, then triages while it holds, until aborted or until anything fails,
+   * which it throws. `going` is told each time the store answered as it should: a pass went through, or another copy
+   * holds the lock, which this one then waits for, as no failure.
+   */
+  async #whileLocked(abort: AbortSignal, wake: Wake, going: () => void): Promise<void> {
+    const lock = await this.#o.sql.reserve();
+    try {
+      const [taken] = await lock<{ taken: boolean }[]>`select pg_try_advisory_lock(hashtext('triage')) as taken`;
+      if (!taken?.taken) {
+        going();
+        // Waits as long as the other copy triages, unless stopped meanwhile.
+        const waiting = lock`select pg_advisory_lock(hashtext('triage'))`;
+        const stop = () => void waiting.cancel();
+        abort.addEventListener('abort', stop);
+        if (abort.aborted) stop();
+        try {
+          await waiting;
+        } finally {
+          abort.removeEventListener('abort', stop);
+        }
+      }
+      this.#lock = lock;
+      // An event appended while the store was out of reach was heard by no one, and a pass that failed may have been
+      // settling.
+      this.#settleDue = true;
+      while (!abort.aborted) {
+        await this.#holding();
         // Martin's answers arrive as events, so the held findings are looked at only after one is appended. The flag is
         // cleared before looking, so an event appended meanwhile sets it again; one settled may leave more.
         let settled = false;
@@ -214,16 +303,14 @@ export class Triage {
           if (settled) this.#settleDue = true;
         }
         const took = await this.takeOne();
+        going();
         if (!settled && (took === 'idle' || took === 'stopped' || took === 'waiting')) {
           const pause = took === 'waiting' ? Math.max(1000, this.#reportsWaitUntil - Date.now()) : 30_000;
-          const timer = setTimeout(nudge, Math.min(pause, 30_000));
-          await wake.promise;
-          clearTimeout(timer);
-          wake = Promise.withResolvers<void>();
+          await wake.after(Math.min(pause, 30_000));
         }
       }
-      await Promise.all(listening.map((l) => l.unlisten()));
     } finally {
+      this.#lock = undefined;
       await lock`select pg_advisory_unlock(hashtext('triage'))`.catch(() => {});
       lock.release();
     }
@@ -238,7 +325,8 @@ export class Triage {
    * waiting for an answer that has read it.
    */
   async settleOne(): Promise<boolean> {
-    const { sql, events, log } = this.#o;
+    const { sql, log } = this.#o;
+    const events = this.#events;
     const now = this.#o.now();
     await this.#ignored.check();
     if (await lineStopped(sql)) return false;
@@ -283,7 +371,8 @@ export class Triage {
    * closes the hold, naming the tickets. Rejecting closes it, with none.
    */
   async #settleHeld(): Promise<boolean> {
-    const { sql, events, log } = this.#o;
+    const { sql, log } = this.#o;
+    const events = this.#events;
     const now = this.#o.now();
     const answered = (await heldSignals(sql)).find((held) => held.decision !== null);
     if (!answered?.decision) return false;
@@ -336,7 +425,8 @@ export class Triage {
    * improvements do (Needs you does not offer it), and his words leave it waiting.
    */
   async #settleSuggestion(): Promise<boolean> {
-    const { sql, events, log } = this.#o;
+    const { sql, log } = this.#o;
+    const events = this.#events;
     const rejected = (await heldSuggestions(sql)).find((held) => held.decision === 'rejected');
     if (!rejected) return false;
     try {
@@ -361,7 +451,8 @@ export class Triage {
     decision: 'approved' | 'rejected',
     error: unknown,
   ): Promise<void> {
-    const { events, log } = this.#o;
+    const { log } = this.#o;
+    const events = this.#events;
     const { workItem, answered } = hold;
     const key = settleKey(hold);
     const tries = (this.#settleFailures.get(key) ?? 0) + 1;
@@ -433,7 +524,8 @@ export class Triage {
   }
 
   async #triage(taken: Taken): Promise<{ outcome: Outcome; workItem: string; ticketOpened: boolean }> {
-    const { sql, events } = this.#o;
+    const { sql } = this.#o;
+    const events = this.#events;
     const now = this.#o.now();
     const signal = taken.signal;
 
@@ -971,3 +1063,16 @@ const candidateOf = (ticket: Ticket): Candidate => ({
   category: ticket.category,
   symptom: 'class' in ticket.fingerprint ? ticket.fingerprint.class : undefined,
 });
+
+/** What `run` waits on: a nudge (a signal, an event, the abort), or the time it was given, whichever is first. */
+class Wake {
+  #woken = Promise.withResolvers<void>();
+  readonly nudge = () => this.#woken.resolve();
+
+  async after(ms: number): Promise<void> {
+    const timer = setTimeout(this.nudge, ms);
+    await this.#woken.promise;
+    clearTimeout(timer);
+    this.#woken = Promise.withResolvers<void>();
+  }
+}

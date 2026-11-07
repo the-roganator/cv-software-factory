@@ -34,6 +34,12 @@ flowchart TD
 - **More new problems than a handful from one sense at once** wait for Martin as one [burst](#a-burst), before any has a ticket. An open ticket's problem seen again where no release explains it counts as new.
 - **A new problem seen while what its sense reads was not healthy** waits for Martin too, its cause [the environment](#what-a-sense-reads).
 
+## One copy at a time
+
+Triage decides one signal at a time, holding an advisory lock on a connection of its own, so two signals with the same new fingerprint cannot open two tickets. A second copy waits for the lock, and stopping it ends the wait.
+
+A store it cannot reach, such as Postgres restarting, is waited out, not exited on: 1 s after the first failure, then twice as long each time, up to 30 s. The lock goes with its connection, so after any failure triage lets go of it and takes it again on a new connection before it takes another signal, and it asks that connection before each pass and each append: a copy that has lost the lock appends nothing, and waits while another holds it. A signal in hand when the store went is taken again once its lease is up, as after a restart; its events have ids from the signal, so none is appended twice. Twelve failures in a row, three and a half minutes with nothing triaged, is no blip: triage exits, and its restarts page Martin (`WorkerCrashLooping`, unless `StoreDown` already has).
+
 ## Matching an open ticket
 
 A sense's signal on an open ticket adds its evidence (`signal.received`) the first time that sense sees it in each version of the app. So the ticket records every version the problem was seen in, so every version of the app rolled back on it, and the planner is told each. Within a version, the inbox counts it (outcome `counted`) and nothing is appended: the events grow with tickets and releases, not with the minutes a defect stays unfixed.

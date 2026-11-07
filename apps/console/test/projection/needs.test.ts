@@ -471,7 +471,7 @@ describe('Needs you', () => {
     });
     expect(at(7).need).toMatchObject({ kicker: 'Its build’s signature is refused', link: undefined });
     expect(text(7)).toBe(
-      'The build of ddddddd that carries it has no signature of its pipeline’s that its check accepts, so no deploy pull request carries it. Signing it again on GitHub, or a newer build its pipeline signs, carries it on.',
+      'The build of ddddddd that carries it has signatures, but none its check accepts as its pipeline’s, so no deploy pull request carries it. Signing it again on GitHub, or a newer build its pipeline signs, carries it on.',
     );
     // A deploy pull request that carries it is the wait from then on; a close of an older one is not.
     merged.add(8, 'deploy.changed', 'factory', { pullRequest: 40, commit: 'e'.repeat(40), state: 'closed' });

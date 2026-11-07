@@ -1166,7 +1166,7 @@ describe('the newest build, as the line reads it', () => {
     expect(proposals.build(APP_REPO, APP.branch)).toEqual({ ...base, signature: 'signed' });
   });
 
-  it('says a build unsigned past the grace is, with the build job that failed on its commit, read once', async () => {
+  it('says a build unsigned past the grace is, with the build job that failed on its commit', async () => {
     let clock = 0;
     const proposals = new DeployProposals();
     const gh = github(APP, {
@@ -1199,7 +1199,8 @@ describe('the newest build, as the line reads it', () => {
       reason: `${WEBSITE}@${digest('7')} has no signature`,
       job: { run: 900, id: 2, name: 'sign and attest' },
     });
-    expect(calls(gh.sent).filter((c) => c.path.includes('/check-runs'))).toHaveLength(1);
+    // Read each pass the build is not signed, and only then.
+    expect(calls(gh.sent).filter((c) => c.path.includes('/check-runs'))).toHaveLength(2);
     expect(writes(gh.sent)).toEqual([]);
   });
 
@@ -1233,12 +1234,16 @@ describe('the newest build, as the line reads it', () => {
     expect(proposals.build(APP_REPO, APP.branch)?.job).toEqual({ run: 901, id: 2, name: 'sign and attest' });
   });
 
-  it('looks again for the job that failed while the build’s jobs are still running, and keeps it once found', async () => {
+  it('looks again for the job that failed while the build’s jobs are still running, and takes each job’s latest run', async () => {
     let running = true;
+    let rerun = false;
     const proposals = new DeployProposals();
     const gh = github(APP, {
       pins: APP_PINS,
-      checkRuns: () => [job(2, 'sign and attest', running ? null : 'failure')],
+      checkRuns: () => [
+        job(2, 'sign and attest', running ? null : 'failure'),
+        ...(rerun ? [job(5, 'sign and attest', null, 902)] : []),
+      ],
     });
     const pass = watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals);
     await pass();
@@ -1247,8 +1252,10 @@ describe('the newest build, as the line reads it', () => {
     await pass();
     await pass();
     expect(proposals.build(APP_REPO, APP.branch)?.job).toEqual({ run: 900, id: 2, name: 'sign and attest' });
-    // Found, it is not read again.
-    expect(calls(gh.sent).filter((c) => c.path.includes('/check-runs'))).toHaveLength(2);
+    // Martin runs it again: while the re-run goes, the failure before it is not the job to link.
+    rerun = true;
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
   });
 
   it('links no job whose address is not one of the repository’s runs', async () => {

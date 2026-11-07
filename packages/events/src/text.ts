@@ -38,6 +38,6 @@ export function unsignedBuildWords({
   job?: { name: string } | undefined;
 }): string {
   const why =
-    signature === 'refused' ? 'has no signature of its pipeline’s that its check accepts' : 'was never signed';
+    signature === 'refused' ? 'has signatures, but none its check accepts as its pipeline’s' : 'was never signed';
   return `The build of ${commit.slice(0, 7)} that carries it ${why}${job ? `: ${job.name} did not succeed` : ''}`;
 }

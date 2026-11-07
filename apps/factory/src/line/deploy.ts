@@ -249,10 +249,16 @@ const saysSame = (recorded: BuildRecord | undefined, build: DeployBuild) =>
  * out: a signed build only on one last recorded as not, and one not signed only where it is not already said. Each
  * pass of a build that stays unsigned for hours then reads nothing more.
  */
-export function buildsToRecord(build: DeployBuild | null, held: readonly HeldForDeploy[]): boolean {
+export function buildsToRecord(
+  build: DeployBuild | null,
+  held: readonly HeldForDeploy[],
+  byProposal: ReadonlySet<string>,
+): boolean {
   if (!build || build.signature === 'signing') return false;
   if (build.signature === 'signed') return held.some((h) => h.build?.type === 'build.unsigned');
-  return held.some((h) => !saysSame(h.build, build));
+  // One a deploy pull request carries is never recorded, so it asks nothing.
+  const open = (h: HeldForDeploy) => byProposal.has(h.workItem) || (h.recorded !== undefined && !settled(h.recorded));
+  return held.some((h) => !open(h) && !saysSame(h.build, build));
 }
 
 /**

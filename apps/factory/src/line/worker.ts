@@ -2126,14 +2126,15 @@ export class Line {
     if (proposal && !carries) return;
     try {
       const build = await github.read('deployBuild', repo, { branch });
-      if (!buildsToRecord(build, held) || !build) return;
+      const byProposal = new Set((carries ?? []).map((c) => c.workItem));
+      if (!buildsToRecord(build, held, byProposal) || !build) return;
       const byBuild = await carried(this.#o, build.commit, build.pinned ?? undefined);
       if (!byBuild) return;
       await recordBuilds(
         { append: (workItem, drafts) => this.#append(workItem, drafts), log },
         build,
         new Set(byBuild.map((c) => c.workItem)),
-        new Set((carries ?? []).map((c) => c.workItem)),
+        byProposal,
         held,
       );
     } catch (error) {

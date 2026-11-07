@@ -777,7 +777,7 @@ export async function brings(
 
 /**
  * The build workflow's latest job on a commit that did not succeed, from the check runs GitHub Actions posted there,
- * among the pin's `jobs` by name, judged failed as the gates judge a check (`outcomeOf`); undefined when none of them
+ * among the pin's `jobs` by name, each by its latest run, judged failed as the gates judge a check (`outcomeOf`); undefined when none of them
  * failed. Read with the App's Checks permission: it has no
  * Actions permission, so it cannot list the workflow's runs, and a job's check run says which run it is of only in its
  * address.
@@ -792,8 +792,13 @@ export async function failedJob(
   if (!names.size) return undefined;
   const { body } = await github.poll(repo, `/repos/${repo}/commits/${commit}/check-runs?per_page=100`, CHECK_RUNS);
   const runs = `https://github.com/${repo}/actions/runs/`;
-  const failed = body.check_runs
-    .filter((r) => r.app?.slug === 'github-actions' && names.has(r.name))
+  // Each job's latest run alone: a re-run still going, or passed, is not the failure before it.
+  const latest = new Map<string, (typeof body.check_runs)[number]>();
+  for (const run of body.check_runs) {
+    if (run.app?.slug !== 'github-actions' || !names.has(run.name)) continue;
+    if (run.id > (latest.get(run.name)?.id ?? -1)) latest.set(run.name, run);
+  }
+  const failed = [...latest.values()]
     .filter((r) => r.status === 'completed' && outcomeOf(r.conclusion) === 'failure')
     .sort((a, b) => b.id - a.id);
   for (const run of failed) {
@@ -823,9 +828,9 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
   const waiting = new Map<string, number>();
   const warned = new Set<string>();
 
-  // The build workflow's job that failed on the newest build's commit, once found: until then, its check runs are
-  // polled each pass, as a job may still be running when the build is found not signed.
-  const jobs = new Map<string, FailedJob>();
+  // The build workflow's job that failed on the newest unsigned build's commit, as last read: its check runs are polled
+  // each pass (a conditional request), as a job may still be running, or be run again, while the build is not signed.
+  let lastJob: { commit: string; job: FailedJob | undefined } | undefined;
 
   /**
    * Whether every image of a build carries its pipeline's signature: `waiting` while one may yet, `refused` once it
@@ -859,8 +864,8 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
 
   /**
    * The newest build of a deploy of one pin file as the line reads it (`DeployBuild`), from its move and its check. The
-   * job that failed is looked for on each pass until it is found, for the newest build's commit alone; a read that
-   * fails is tried on the next pass, and the build is said meanwhile without it.
+   * job that failed is read on each pass, by its latest run; a read that fails keeps what the last read of that commit
+   * found.
    */
   const buildOf = async (move: Move, check: Awaited<ReturnType<typeof signed>>): Promise<DeployBuild> => {
     const { commit, pinned } = move.proposal;
@@ -868,19 +873,12 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     const base = { commit, pinned: pinned ?? null, image, digest };
     if (check.state === 'signed') return { ...base, signature: 'signed' };
     if (check.state === 'waiting') return { ...base, signature: 'signing' };
-    if (!jobs.has(commit)) {
-      try {
-        const found = await failedJob(github, repo, move.pin, commit);
-        // Only the newest build's is kept.
-        if (found) {
-          jobs.clear();
-          jobs.set(commit, found);
-        }
-      } catch (read) {
-        log.warn({ repo, commit, err: read }, 'could not read which job of an unsigned build failed: asks again');
-      }
+    try {
+      lastJob = { commit, job: await failedJob(github, repo, move.pin, commit) };
+    } catch (read) {
+      log.warn({ repo, commit, err: read }, 'could not read which job of an unsigned build failed: asks again');
     }
-    const job = jobs.get(commit);
+    const job = lastJob?.commit === commit ? lastJob.job : undefined;
     return {
       ...base,
       signature: error?.kind === 'refused' ? 'refused' : 'unsigned',

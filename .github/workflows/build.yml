@@ -275,8 +275,8 @@ jobs:
 
   # Signs each image the jobs above pushed, by digest, and attests an SBOM of each of its platforms, made by Syft. Jobs
   # of their own, so that only they can ask for the workflow's OIDC token, and nothing an image's build runs ever can:
-  # one for each image, side by side. If one fails, its image is in GHCR unsigned, and the deploy watch will not propose
-  # it until it is run again.
+  # one for each image, side by side. Each tries Sigstore again for a few minutes when it fails on what passes; if one
+  # still fails, its image is in GHCR unsigned, and the deploy watch will not propose it until it is run again.
   sign:
     name: sign
     needs: [push-console, push-factory]
@@ -337,10 +337,34 @@ jobs:
           failed=0
           for scan in "${scans[@]}"; do wait "$scan" || failed=1; done
           [ "$failed" = 0 ] || exit 1
+          # Runs a cosign command, and again after a wait when it fails on what passes: Rekor, Fulcio or GHCR answering
+          # 429 or 5xx, or the network failing on the way. Four tries, over about three and a half minutes: cosign
+          # gives up on Rekor after two, a second apart. Anything else (an identity Fulcio refuses, another 4xx) fails
+          # at once. A try again after one that failed late leaves at most a second signature or SBOM by the same
+          # identity, and everything that verifies one accepts any that verifies.
+          # scripts/build-signing.test.ts runs it against a stand-in for cosign.
+          sigstore() {
+            local log status wait
+            log=$(mktemp)
+            for wait in 20 60 120 ''; do
+              status=0
+              "$@" 2>&1 | tee "$log" || status=$?
+              [ "$status" = 0 ] && return 0
+              if ! grep -qE 'giving up after [0-9]+ attempt|status( code)? (429|5[0-9][0-9])([^0-9]|$)|429 Too Many Requests|5[0-9][0-9] (Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout)|connection reset|connection refused|i/o timeout|TLS handshake timeout|context deadline exceeded|unexpected EOF' "$log"; then
+                echo "::error::$1 $2 failed on something a try again would not pass"
+                return "$status"
+              fi
+              [ -n "$wait" ] || break
+              echo "::warning::$1 $2 failed on what may pass: trying again in ${wait}s"
+              sleep "$wait"
+            done
+            echo "::error::$1 $2 still failed after four tries"
+            return "$status"
+          }
           # Each attested on the image index that the cluster pins. The signature comes last, so an image that carries
           # one has its SBOMs too: the deploy watch looks for the signature alone.
           for arch in amd64 arm64; do
-            cosign attest --yes --type spdxjson --predicate "sbom-$arch.spdx.json" "$ref"
+            sigstore cosign attest --yes --type spdxjson --predicate "sbom-$arch.spdx.json" "$ref"
           done
-          cosign sign --yes "$ref"
+          sigstore cosign sign --yes "$ref"
           echo "$ref: signed, with an SBOM of each platform attested"

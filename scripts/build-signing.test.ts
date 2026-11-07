@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -175,5 +175,6 @@ exit 0
     expect(result.stdout).toBe(`ghcr.io/owner/repo/console@${digest}\n`);
     expect(result.stderr).toContain('::warning::docker buildx failed (try 1 of 4)');
     expect(readFileSync(join(dir, 'output'), 'utf-8')).toBe(`console=${digest}\n`);
+    rmSync(dir, { recursive: true });
   });
 });

@@ -218,7 +218,8 @@ jobs:
     needs: console
     if: needs.console.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Room for GHCR's tries: its index takes two calls, each with up to 105 seconds of waiting between tries.
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -247,7 +248,9 @@ jobs:
     needs: factory
     if: needs.factory.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Room for GHCR's tries: each of its three indexes takes two calls, each with up to 105 seconds of waiting between
+    # tries.
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write

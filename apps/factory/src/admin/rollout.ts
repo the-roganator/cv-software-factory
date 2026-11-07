@@ -328,13 +328,15 @@ export class ReleaseControls {
    * failure to record it is logged and no more: the line tells the abort by time then, from the stop just before.
    */
   async stop(): Promise<StopAbort> {
+    // Each wait counts against its own: the status catching up, and the stable version's pods.
+    let waited = 0;
     let looked = 0;
-    for (let wait = 1; ; wait++) {
+    for (;;) {
       try {
         return await this.#tried(() => this.#stopOnce(looked + 1 >= STABLE_LOOKS));
       } catch (error) {
         if (error instanceof NoStablePod) looked += 1;
-        else if (!(error instanceof BetweenReleases) || wait > STOP_WAITS) throw error;
+        else if (!(error instanceof BetweenReleases) || ++waited > STOP_WAITS) throw error;
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
     }
@@ -465,17 +467,19 @@ export class ReleaseControls {
   /**
    * Whether the stable version has a pod ready to serve: an endpoint of one of the app's Services that is ready, and not
    * shutting down, whose pod is the stable version's. Argo Rollouts names a version's ReplicaSet `<rollout>-<hash>`,
-   * and Kubernetes names its pods from that, cut to 58 characters, so the pod's name says its version.
-   * `scripts/abort-canaries.sh` reads the same, by the same rule.
+   * and Kubernetes names its pods `<that>-<5 random>`, cutting what comes before them to 58 characters, so the pod's
+   * name says its version. With no stable version, or a name so long the cut takes some of the hash, there is nothing
+   * to tell by: the canary is aborted, as before a stable pod was looked for. `scripts/abort-canaries.sh` reads the
+   * same, by the same rule.
    */
   async #available(stable: string | undefined): Promise<boolean> {
-    if (!stable) return false;
     const { namespace, name } = this.#rollout;
+    const prefix = `${name}-${stable}-`;
+    if (!stable || prefix.length > POD_NAME_BASE) return true;
     const slices = await this.#kube.get(
       `/apis/discovery.k8s.io/v1/namespaces/${encodeURIComponent(namespace)}/endpointslices`,
       ENDPOINT_SLICES,
     );
-    const prefix = `${name}-${stable}-`.slice(0, POD_NAME_BASE);
     return (slices?.items ?? []).some((slice) =>
       (slice.endpoints ?? []).some(
         ({ conditions, targetRef }) =>

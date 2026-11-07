@@ -149,20 +149,34 @@ describe('aborting a canary in flight (make stop-the-line)', () => {
       warns: true,
     });
     expect(code).toBe(0);
+    // The one ready at the first look is aborted first: the second look holds up no other release.
     expect(patches(calls)).toEqual([
-      '-n website patch rollout website --subresource=status --type=merge -p {"status":{"abort":true}}',
       '-n shop patch rollout front --subresource=status --type=merge -p {"status":{"abort":true}}',
+      '-n website patch rollout website --subresource=status --type=merge -p {"status":{"abort":true}}',
     ]);
   });
 
-  it('knows a stable pod by its name as Kubernetes cuts it to 58 characters', async () => {
-    const name = 'a-rollout-whose-name-is-long-enough-to-be-cut-short';
+  it('aborts as before a Rollout whose name is too long for its pods’ names to say their version', async () => {
+    // Kubernetes cuts what comes before a pod's random suffix to 58 characters, which here takes the hash.
+    const name = 'a-rollout-whose-name-is-long-enough-to-lose-its-hash';
     const { calls } = await stop({
       crd: 'installed',
       rollouts: [`website|${name}|5f7c8d9e6b|1a2b3c4d5e|`],
-      endpoints: { website: [[`Pod|${`${name}-5f7c8d9e6b-`.slice(0, 58)}x7k2p|true|`]] },
+      endpoints: { website: [[`Pod|${`${name}-1a2b3c4d5e-`.slice(0, 58)}x7k2p|true|`]] },
     });
     expect(patches(calls)).toHaveLength(1);
+    expect(calls.some((c) => c.includes('endpointslices'))).toBe(false);
+  });
+
+  it('refuses a number of looks that is not one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'abort-canaries-'));
+    const result = await promisify(execFile)(SCRIPT, [], {
+      env: { ...process.env, KUBECTL: join(dir, 'none'), STABLE_TRIES: '0' },
+    }).then(
+      () => ({ code: 0, out: '' }),
+      (e: { code: number; stderr: string }) => ({ code: e.code, out: e.stderr }),
+    );
+    expect(result).toEqual({ code: 1, out: "STABLE_TRIES must be a whole number of looks, 1 or more, not '0'.\n" });
   });
 
   it('aborts no canary whose stable version it cannot read, and fails, still aborting the rest', async () => {

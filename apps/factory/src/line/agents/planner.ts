@@ -595,7 +595,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
             ({ path, reason, barred }) => `- ${path}${barred ? ', which no scope may name' : ''}: ${reason}`,
           ),
           heDid(replan),
-          'So take into the scope each of those files a scope may name, and keep the rest of the spec as it is, unless his words ask for more. A file no scope may name stays out of it: if the work needs one, reject it.',
+          `So take into the scope each of those files a scope may name, and keep the rest of the spec as it is${replan.answered ? ', unless his words ask for more' : ''}. A file no scope may name stays out of it: if the work needs one, reject it.`,
         ];
       }
       return [

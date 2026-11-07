@@ -925,6 +925,11 @@ describe('the planner planning again', () => {
         'So take into the scope each of those files a scope may name',
       ].join('\n'),
     );
+    // Only words he wrote that the planner can read ask for more than the files.
+    expect(prompt).toContain('keep the rest of the spec as it is. A file no scope may name');
+    expect(
+      planner.prompt({ ...AGAIN, replan: { cause: 'scope', approved: true, answered: true, reason: 'x', needs: [] } }),
+    ).toContain('keep the rest of the spec as it is, unless his words ask for more.');
     const why = (replan: PlannerInput['replan']) => planner.prompt({ ...AGAIN, replan });
     const held = { approved: false, answered: true, reason: 'Held for Martin' };
     expect(why({ ...held, cause: 'scope', fenced: 'scope: src/money.ts\nrefused src/cart.ts +1 −1' })).toContain(

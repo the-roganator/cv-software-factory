@@ -367,7 +367,7 @@ const run = promisify(execFile);
  * each signature it could not verify under "no matching signatures".
  */
 const LOOK_FAILED =
-  /timed? ?out|deadline exceeded|connection (refused|reset)|unexpected EOF|TLS handshake|i\/o timeout|temporar(y|ily)|service unavailable|too many requests|status code:? (408|429|5\d\d)/i;
+  /timed? ?out|deadline exceeded|connection (refused|reset)|unexpected EOF|TLS handshake|i\/o timeout|no such host|network is unreachable|dial tcp|temporar(y|ily)|service unavailable|too many requests|status code:? \d{3}/i;
 export function unsigned(said: string): boolean {
   if (!/no matching signatures|no signatures found/i.test(said)) return false;
   return !LOOK_FAILED.test(said);
@@ -390,6 +390,7 @@ function signedAt(repo: string, image: string, digest: string): Promise<string |
         revision = await revisionOf(image, digest);
       } catch (error) {
         if (error instanceof Answered) return { reason: error.message };
+        if (error instanceof SyntaxError) return { reason: `ghcr.io answered what is not JSON (${cause(error)})` };
         throw new Error(`could not read ${image}@${short(digest.slice(7))} from ghcr.io (${cause(error)})`);
       }
       if (typeof revision !== 'string') return revision;
@@ -476,13 +477,23 @@ export async function retrying<T>(
   const { backoff, tryMs, until } = limits;
   if (clock.now() + tryMs > until) throw new Error('the job had no time left to check it');
   for (let tried = 0; ; tried++) {
+    // A try that runs to the deadline is ended there, whatever it waits on: the verdict must still fit the job.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, fail) => {
+      timer = setTimeout(() => fail(new Error('a try ran out of the time the job leaves it')), until - clock.now());
+      timer.unref?.();
+    });
+    const trying = attempt();
+    trying.catch(() => {});
     try {
-      return await attempt();
+      return await Promise.race([trying, expired]);
     } catch (error) {
       const wait = backoff[tried];
       if (definite(error) || wait === undefined || clock.now() + wait + tryMs > until) throw error;
       console.log(`::notice::Trying the exact pin's check again in ${wait / 1000}s: ${cause(error)}`);
       await clock.sleep(wait);
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
@@ -871,4 +882,8 @@ async function main(): Promise<void> {
   await settle(each, commit, said, judged);
 }
 
-if (import.meta.main) await main();
+if (import.meta.main) {
+  await main();
+  // A try ended at its deadline may leave cosign running: the verdict is said, so nothing is left to wait for.
+  process.exit();
+}

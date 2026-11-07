@@ -719,6 +719,13 @@ describe('trying a check that could not be made again', () => {
     expect(tried).toBe(0);
   });
 
+  it('ends a try at the deadline, whatever it waits on', async () => {
+    const hangs = () => new Promise<string>(() => {});
+    await expect(retrying(hangs, limits([5], Date.now() + 20, 0))).rejects.toThrow(
+      'a try ran out of the time the job leaves it',
+    );
+  });
+
   it('does not try again an answer a later try would not change', async () => {
     const c = clock();
     let tried = 0;
@@ -742,6 +749,8 @@ describe('trying a check that could not be made again', () => {
     expect(unsigned('Error: no matching signatures: unexpected status code 503')).toBe(false);
     expect(unsigned('Error: getting signatures: GET https://ghcr.io/v2/x: unexpected EOF')).toBe(false);
     expect(unsigned('Error: fetching TUF root: connection refused')).toBe(false);
+    expect(unsigned('Error: no matching signatures: dial tcp: lookup rekor.sigstore.dev: no such host')).toBe(false);
+    expect(unsigned('Error: no matching signatures: GET https://ghcr.io/v2/x: unexpected status code 401')).toBe(false);
     // Numbers and words in what it found are no failed look: a log index, a subject naming a connection.
     expect(unsigned('Error: no matching signatures: log index 503 got subject https://x/connection')).toBe(true);
     expect([408, 429, 500, 502, 503].every(momentary)).toBe(true);

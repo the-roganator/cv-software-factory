@@ -393,6 +393,16 @@ describe('the detail under a row', () => {
         event(2, 'improvement.requested', 'martin', { words: 'Dates.', steppedUp: true }, 'Asked', '1400'),
       ],
       'hold.approve-improvement-spec': [opened('improvement'), specHeld, approvedSpec],
+      'hold.share-words': [
+        held,
+        event(2, 'hold.answered', 'martin', {
+          decision: 'answered',
+          answer: 'Sizes first',
+          hold: held.id,
+          report: true,
+          shared: true,
+        }),
+      ],
       'phone.off': [event(2, 'alerts.switched', 'martin', { phone: false })],
     };
     const marked = Object.entries(ACCESS as Record<string, { stepUp: boolean }>)

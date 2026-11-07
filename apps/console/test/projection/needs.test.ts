@@ -521,6 +521,33 @@ describe('Needs you', () => {
     expect(two?.note).toBe(`${NO_WORDS_ON_REPORT} ${ASK_YOURSELF}`);
   });
 
+  it('offers his words again on a visitor’s report once he shares them, each with the passkey', () => {
+    const item = work('2057', START)
+      .open('visitor-report')
+      .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
+      .add(1, 'hold.started', 'planner', hold('question', { stage: 'plan', kind: 'question', question: 'Which?' }));
+    const [need] = needsView(foldItems(item.events), START + 3_600_000).holds;
+    expect(need?.answers.map((a) => a.answer)).toEqual(['approved', 'rejected']);
+    expect(need?.shared?.map((a) => [a.answer, a.words, a.stepUp])).toEqual([
+      ['approved', false, false],
+      ['answered', true, true],
+      ['rejected', false, false],
+    ]);
+    // Where no answer takes words anywhere, or they are taken already, there is nothing to share.
+    for (const cause of ['deploy', 'suggestion'] as const) {
+      const other = work('2058', START)
+        .open('visitor-report')
+        .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
+        .add(1, 'hold.started', 'factory', hold(cause));
+      expect(needsView(foldItems(other.events), START + 3_600_000).holds[0]?.shared, cause).toBeUndefined();
+    }
+    // Nor on any other work item, where his words are public anyway.
+    const plain = work('2059', START)
+      .open()
+      .add(1, 'hold.started', 'factory', hold('review', { stage: 'review' }));
+    expect(needsView(foldItems(plain.events), START + 3_600_000).holds[0]?.shared).toBeUndefined();
+  });
+
   describe('a merge the line holds for Martin, by why it does not add it to the merge queue itself', () => {
     const HEAD = '4e1c2a9'.padEnd(40, '0');
     const merge = (

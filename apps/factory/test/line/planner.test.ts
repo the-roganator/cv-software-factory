@@ -299,14 +299,14 @@ describe('the planner’s scope', () => {
     expect(plannerResult().safeParse({ verdict: 'reject', reason: 'x'.repeat(301) }).success).toBe(false);
   });
 
-  it('takes no question on a ticket a visitor’s report opened, where no answer of Martin’s could reach it', () => {
+  it('takes no question once Martin approved its last with no answer, where it would only ask the same', () => {
     const question = { verdict: 'question', question: 'Should a sold-out item still show?', findings: [] };
-    const parsed = planner.schema({ ...INPUT, hisWords: false }).safeParse(question);
+    const parsed = planner.schema({ ...INPUT, unanswered: true }).safeParse(question);
     expect(parsed.success).toBe(false);
     // Refused as any result that does not fit, so the step fails and is tried again told why.
     expect(parsed.error?.issues[0]).toMatchObject({ path: ['verdict'] });
     expect(parsed.error?.issues[0]?.message).toContain("'spec' | 'reject'");
-    expect(planner.schema({ ...INPUT, hisWords: false }).safeParse({ verdict: 'reject', reason: 'No.' }).success).toBe(
+    expect(planner.schema({ ...INPUT, unanswered: true }).safeParse({ verdict: 'reject', reason: 'No.' }).success).toBe(
       true,
     );
     expect(planner.schema(INPUT).safeParse(question).success).toBe(true);
@@ -500,34 +500,42 @@ describe('the planner’s prompt', () => {
     expect(prompt).toContain('The coder’s first step is a failing test that reproduces it');
   });
 
-  it('offers no question on a ticket a visitor’s report opened, and says why', () => {
-    const prompt = planner.prompt({ ...INPUT, hisWords: false });
+  it('offers no question once Martin approved its last with no answer, and says none will come', () => {
+    const prompt = planner.prompt({ ...INPUT, unanswered: true });
     expect(prompt).toContain('Then write the result, one of two, each with its `findings`:');
     expect(prompt).not.toContain('"verdict":"question"');
     expect(prompt).toContain(
-      'Martin cannot be asked a question about this ticket: a visitor’s report opened it, so his words on it stay his, and no answer of his would reach you.',
+      'Martin approved your last question without an answer: none will come, so ask him nothing.',
     );
     expect(prompt).toContain('reject it, and say what he would have to decide');
     const other = planner.prompt(INPUT);
     expect(other).toContain('Then write the result, one of three, each with its `findings`:');
     expect(other).toContain('3. {"verdict":"question","question"}');
-    expect(other).not.toContain('Martin cannot be asked');
+    expect(other).not.toContain('none will come');
   });
 
-  it('knows a ticket a visitor’s report opened by its first signal, as the line does', async () => {
-    const inputOf = (firstSense: string | undefined) =>
+  it('offers an improvement no question either once Martin approved its last with no answer', () => {
+    const prompt = planner.prompt({ ...REQUEST, unanswered: true });
+    expect(prompt).toContain('Then write the result, one of two, each with its `findings`:');
+    expect(prompt).not.toContain('"verdict":"question"');
+    expect(prompt).toContain('none will come');
+    expect(planner.prompt(REQUEST)).toContain('3. {"verdict":"question","question"}');
+  });
+
+  it('is told a question approved with no answer from the line, on any work item, a visitor’s report’s among them', async () => {
+    const inputOf = (state: object) =>
       planner.input({
         workItem: '1301',
         commit: 'c'.repeat(40),
         failure: null,
-        state: { firstSense, answers: [], persisted: [], reopened: [] },
+        state: { answers: [], persisted: [], reopened: [], ...state },
         ticket: async () => TICKET,
         signals: async () => [],
         read: async () => PROTECTED,
       } as unknown as Parameters<typeof planner.input>[0]);
-    expect((await inputOf('report')).hisWords).toBe(false);
-    expect((await inputOf('probe')).hisWords).toBeUndefined();
-    expect((await inputOf('planner')).hisWords).toBeUndefined();
+    expect((await inputOf({ firstSense: 'probe', unanswered: true })).unanswered).toBe(true);
+    // A visitor's report's ticket may ask: Martin may share his words to answer it.
+    expect((await inputOf({ firstSense: 'report', unanswered: false })).unanswered).toBeUndefined();
   });
 
   it('tells it why its last attempt failed', () => {
@@ -973,7 +981,7 @@ describe('the planner planning again', () => {
     ).toContain('the coder found nothing to fix at your spec: The coder found nothing to fix: it pads already.');
     expect(why({ ...held, cause: 'spec' })).toContain('Martin read your last spec and did not approve it.');
     // On a work item a visitor's report opened, it is told his words stay his, and never to follow them.
-    const unread = planner.prompt({ ...AGAIN, hisWords: false, replan: { ...held, answered: false, cause: 'spec' } });
+    const unread = planner.prompt({ ...AGAIN, replan: { ...held, answered: false, cause: 'spec' } });
     expect(unread).toContain('His words stay his, so you are not told them');
     expect(unread).not.toContain('as his answer asks');
     expect(why({ ...held, cause: 'verify', reason: 'No sense can tell' })).toContain(

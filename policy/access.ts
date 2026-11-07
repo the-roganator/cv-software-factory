@@ -185,15 +185,24 @@ export const ACCESS = {
   ),
   'hold.reject': { ...admin('Reject a hold'), server: 'admin', routes: ['POST /admin/holds/:workItem/reject'] },
   'hold.answer': {
-    ...admin('Answer a hold in words'),
+    ...admin('Answer a hold in words: as `hold.share-words`, with the passkey again, when he shares them'),
     server: 'admin',
     routes: ['POST /admin/holds/:workItem/answer'],
   },
   'hold.replan': {
-    ...admin('Send a held work item back to the planner, with his words, where the spec may be what is wrong'),
+    ...admin(
+      'Send a held work item back to the planner, with his words, where the spec may be what is wrong: as ' +
+        '`hold.share-words`, with the passkey again, when he shares them',
+    ),
     server: 'admin',
     routes: ['POST /admin/holds/:workItem/replan'],
   },
+  // His words on a work item a visitor's report opened stay his, as no agent reads a report. Sharing them, as their
+  // author, lets the agents read them and makes them public: it loosens what such a work item carries.
+  'hold.share-words': admin(
+    'Share his words on a hold of a work item a visitor’s report opened, so the agents read them and they are public',
+    true,
+  ),
 
   // The line. Stopping aborts the canary in flight too; `make stop-the-line` does the same without the console.
   'line.stop': { ...admin('Stop the line'), server: 'admin', routes: ['POST /admin/line/stop'] },

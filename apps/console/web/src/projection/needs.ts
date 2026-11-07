@@ -31,7 +31,7 @@ import {
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { ENQUEUES } from '@software-factory/policy/line';
-import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
+import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP, SHARE_STEP_UP } from '../access.ts';
 import { APP_REPO, AUTONOMY, clock, duration, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
@@ -102,6 +102,11 @@ export interface Need {
     | { verb: 'Merge' | 'Deploy' | 'Review'; pullRequest: number; href: string | undefined; there: WayThere }
     | undefined;
   answers: AnswerRow[];
+  /**
+   * On a work item a visitor's report opened, the answers it takes once Martin shares his words, with the passkey
+   * again, where words go to an agent elsewhere: as on any other work item. None where no answer would take them.
+   */
+  shared: AnswerRow[] | undefined;
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
   /** Whether it waits for Martin now: every hold but a deploy that is not his to merge yet, which the count leaves out. */
@@ -523,7 +528,8 @@ const answersOf = (hold: Hold, aboutReport: boolean): HoldAnswer[] => {
 };
 
 /** Why a hold on a work item a visitor's report opened takes no words. */
-export const NO_WORDS_ON_REPORT = 'No answer in words: a visitor’s report opened this, so no agent reads them.';
+export const NO_WORDS_ON_REPORT =
+  'No answer in words unless they are shared: a visitor’s report opened this, so no agent reads them.';
 
 /** What Martin may do himself where the planner rejected a visitor's report's ticket: ask for the change. */
 export const ASK_YOURSELF =
@@ -593,6 +599,30 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       // or the queue took it out), as the line's gauge counts it.
       const since =
         hold.cause === 'deploy' && item.deploy?.waitsSince !== undefined ? item.deploy.waitsSince : hold.since;
+      // The rows of its answers, where his words stay his or not; shared, each that takes words asks for the passkey.
+      const rowsOf = (stay: boolean, sharing = false): AnswerRow[] =>
+        answersOf(hold, stay).map((answer) => {
+          const words = takesWords(hold.cause, answer, stay);
+          const plain = WORDED_ANSWERS.includes(answer) && !words;
+          return {
+            answer,
+            label: labelOf(hold.cause, answer, plain),
+            words,
+            does:
+              answer === 'approved' && hold.needs?.some((n) => n.barred)
+                ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
+                : doesOf(
+                    hold.cause,
+                    answer,
+                    item.number,
+                    improvement,
+                    // A sample's pull request never existed, so nothing stays open.
+                    item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                    plain,
+                  ),
+            stepUp: (answer === 'approved' && keyed) || (sharing && words && SHARE_STEP_UP['hold.share-words']),
+          };
+        });
       return [
         {
           workItem: item.number,
@@ -610,28 +640,8 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           link: linkOf(hold.cause),
           note: noteOf(hold, aboutReport),
           way: wayOf(item, hold.cause),
-          answers: answersOf(hold, aboutReport).map((answer) => {
-            const words = takesWords(hold.cause, answer, aboutReport);
-            const plain = WORDED_ANSWERS.includes(answer) && !words;
-            return {
-              answer,
-              label: labelOf(hold.cause, answer, plain),
-              words,
-              does:
-                answer === 'approved' && hold.needs?.some((n) => n.barred)
-                  ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
-                  : doesOf(
-                      hold.cause,
-                      answer,
-                      item.number,
-                      improvement,
-                      // A sample's pull request never existed, so nothing stays open.
-                      item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
-                      plain,
-                    ),
-              stepUp: answer === 'approved' && keyed,
-            };
-          }),
+          answers: rowsOf(aboutReport),
+          shared: aboutReport && wordsOnlyElsewhere(hold.cause) ? rowsOf(false, true) : undefined,
           aboutReport,
           forMartin: hold.cause !== 'deploy' || deployWaitsForMartin(item),
         },

@@ -32,6 +32,7 @@ import {
   IMPROVEMENT_STEP_UP,
   PHONE_STEP_UP,
   SETTINGS_STEP_UP,
+  SHARE_STEP_UP,
   STEP_UP,
 } from '../access.ts';
 import { changeWords, clock, count, dayLabel, modelTitle, money, plural, startOfDay, tokens } from '../format.ts';
@@ -298,7 +299,8 @@ function askedForPasskey(
     case 'improvement.requested':
       return IMPROVEMENT_STEP_UP['improvement.request'];
     case 'hold.answered': {
-      // A guardrail's hold, or an improvement's spec (`IMPROVEMENT_STEP_UP`).
+      // His words shared on a visitor's report (`SHARE_STEP_UP`), a guardrail's hold, or an improvement's spec.
+      if (event.payload.shared) return SHARE_STEP_UP['hold.share-words'];
       const cause = event.payload.hold ? causes.get(event.payload.hold) : undefined;
       return (
         event.payload.decision === 'approved' &&

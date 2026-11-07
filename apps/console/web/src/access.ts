@@ -98,3 +98,9 @@ export const IMPROVEMENT_STEP_UP = {
   'improvement.request': true,
   'hold.approve-improvement-spec': true,
 } as const;
+
+/**
+ * Sharing his words on a hold of a work item a visitor's report opened (`hold.share-words`) asks for the passkey again:
+ * the agents then read them, and they are public.
+ */
+export const SHARE_STEP_UP = { 'hold.share-words': true } as const;

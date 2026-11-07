@@ -687,7 +687,7 @@ describe('public views', () => {
       ({
         ...opened,
         type: 'hold.answered',
-        version: 3,
+        version: 4,
         actor: 'martin',
         summary: 'Martin answered #1306 in words',
         payload,
@@ -1283,25 +1283,59 @@ describe('upcasting the real catalogue', () => {
     expect(hold({ ...scope, cause: 'gates', needs }).ok).toBe(false);
   });
 
-  it('reads versions 1 and 2 of hold.answered as they were at 3, which names the hold and a report’s as 2 did', () => {
+  it('reads versions 1 and 2 of hold.answered as they were at 4, which names the hold and a report’s as 2 did', () => {
     const approved = { decision: 'approved', answer: 'Go on' };
     expect(upcast({ type: 'hold.answered', version: 1, payload: approved })).toMatchObject({
-      event: { version: 3, payload: approved },
+      event: { version: 4, payload: approved },
     });
     const answer = (payload: object) =>
-      validate({ ...opened, type: 'hold.answered', version: 3, actor: 'martin', payload });
+      validate({ ...opened, type: 'hold.answered', version: 4, actor: 'martin', payload });
     expect(answer({ ...approved, hold: opened.id, report: true })).toEqual({ ok: true });
     expect(answer({ ...approved, hold: 'hold-1' }).ok).toBe(false);
     expect(answer({ ...approved, report: false }).ok).toBe(false);
     const words = { decision: 'answered', answer: 'Keep the old page', hold: opened.id, report: true };
     expect(upcast({ type: 'hold.answered', version: 2, payload: words })).toMatchObject({
-      event: { version: 3, payload: words },
+      event: { version: 4, payload: words },
     });
   });
 
-  it('takes sending the work back to the planner at version 3, only with his words', () => {
+  it('reads version 3 of hold.answered as it was at 4, which says when he shared his words on a report', () => {
+    const words = { decision: 'answered', answer: 'Keep the old page', hold: opened.id, report: true };
+    expect(upcast({ type: 'hold.answered', version: 3, payload: words })).toMatchObject({
+      event: { version: 4, payload: words },
+    });
     const answer = (payload: object) =>
-      validate({ ...opened, type: 'hold.answered', version: 3, actor: 'martin', payload });
+      validate({ ...opened, type: 'hold.answered', version: 4, actor: 'martin', payload });
+    expect(answer({ ...words, shared: true })).toEqual({ ok: true });
+    // Only his words on a visitor's report's work item are shared: none with no words, and none elsewhere.
+    expect(answer({ decision: 'approved', hold: opened.id, report: true, shared: true }).ok).toBe(false);
+    expect(answer({ decision: 'answered', answer: 'Keep the old page', hold: opened.id, shared: true }).ok).toBe(false);
+  });
+
+  it('carries the words he shared on a visitor’s report to the public view, through the redactor', () => {
+    const shared = {
+      ...opened,
+      type: 'hold.answered',
+      version: 4,
+      actor: 'martin',
+      summary: 'Martin answered the hold on #1306 in words',
+      payload: {
+        decision: 'answered',
+        answer: 'Keep it; sk-ant-api03-abcdefghijklmnop',
+        hold: opened.id,
+        report: true,
+        shared: true,
+      },
+    } as NewEvent;
+    expect(viewOf(shared)).toMatchObject({
+      summary: shared.summary,
+      payload: { answer: 'Keep it; [redacted]', report: true, shared: true },
+    });
+  });
+
+  it('takes sending the work back to the planner, only with his words', () => {
+    const answer = (payload: object) =>
+      validate({ ...opened, type: 'hold.answered', version: 4, actor: 'martin', payload });
     const back = { decision: 'replanned', hold: opened.id };
     expect(answer({ ...back, answer: 'The spec contradicts a test the app has' })).toEqual({ ok: true });
     expect(answer(back).ok).toBe(false);

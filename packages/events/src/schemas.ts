@@ -1279,12 +1279,22 @@ export const PAYLOADS = {
        * leaves them out, since a paraphrase of a report would pass any redactor. An answer from before never said.
        */
       report: z.literal(true).optional(),
+      /**
+       * On such a work item, Martin chose to share his words, as their author, judging they do not repeat the visitor:
+       * the agents read them, and the public view shows them, through the redactor, as on any other work item.
+       */
+      shared: z.literal(true).optional(),
     })
-    // Sending the work back to the planner is his reason for it, in words; the public view of one about a visitor's
-    // report leaves them out, and says so.
+    // Sending the work back to the planner is his reason for it, in words, but where they stay his and none go with it;
+    // the public view of one about a visitor's report leaves them out, and says so.
     .refine((answer) => answer.decision !== 'replanned' || answer.answer !== undefined || answer.report, {
       message: 'sending the work back to the planner takes his words',
       path: ['answer'],
+    })
+    // Only words on a visitor's report's work item are shared.
+    .refine((answer) => !answer.shared || (answer.report && answer.answer !== undefined), {
+      message: 'only his words on a work item a visitor’s report opened are shared',
+      path: ['shared'],
     }),
   /**
    * A mechanism stopped an action: the platform's (a token's permissions, a ruleset, the egress policy, admission

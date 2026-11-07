@@ -2650,6 +2650,46 @@ describe('Needs you', () => {
     expect(await answers(gates.workItem)).toMatchObject([{ actor: 'martin', payload: { decision: 'approved' } }]);
   });
 
+  it('takes his shared words on a visitor’s report, with the passkey again, as on any other work item', async () => {
+    const { browser, passkey } = await signedIn();
+    await db.owner`update sessions set stepped_up_at = null where id_sha256 = ${sessionOf(browser)}`;
+    const { workItem, hold } = await held('question', { report: true, stage: 'plan' });
+    const share = { hold, words: 'Sizes first, then colours', share: true };
+    expect(await browser.post(`/admin/holds/${workItem}/answer`, share)).toMatchObject({
+      status: 403,
+      body: { refused: 'step-up' },
+    });
+    expect(await answers(workItem)).toEqual([]);
+    expect((await stepUp(browser, passkey)).status).toBe(200);
+    // Sharing takes words: none is refused, as on any other work item.
+    expect(await browser.post(`/admin/holds/${workItem}/answer`, { hold, share: true })).toMatchObject({
+      status: 422,
+      body: { refused: 'words' },
+    });
+    const said = await browser.post(`/admin/holds/${workItem}/answer`, share);
+    expect(said, JSON.stringify(said.body)).toMatchObject({ status: 200, body: { report: true, shared: true } });
+    const [answer] = await answers(workItem);
+    expect(answer?.payload).toEqual({
+      decision: 'answered',
+      answer: 'Sizes first, then colours',
+      hold,
+      report: true,
+      shared: true,
+    });
+    // Public, through the redactor, as on any other work item.
+    expect(answer?.public).toMatchObject({ payload: { answer: 'Sizes first, then colours', shared: true } });
+    // On any other work item his words are public anyway: there is nothing to share.
+    const plain = await held('question', { stage: 'plan' });
+    expect(
+      await browser.post(`/admin/holds/${plain.workItem}/answer`, { hold: plain.hold, words: 'Sizes', share: true }),
+    ).toMatchObject({ status: 422, body: { refused: 'share' } });
+    // Nor is anything but words shared.
+    const approve = await held('question', { report: true, stage: 'plan' });
+    expect(
+      (await browser.post(`/admin/holds/${approve.workItem}/approve`, { hold: approve.hold, share: true })).status,
+    ).toBe(400);
+  });
+
   it('asks for the passkey again to approve an improvement’s spec, decided by the stored kind, and no other spec', async () => {
     const { browser, passkey } = await signedIn();
     await db.owner`update sessions set stepped_up_at = null where id_sha256 = ${sessionOf(browser)}`;

@@ -24,10 +24,14 @@
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
  *   it sets the line building something new. That is a `spec` hold on a work item whose opening says it is an
- *   improvement, both read from the store, whoever opened it. Rejecting, words, and approving any other hold never ask.
+ *   improvement, both read from the store, whoever opened it. Sharing his words on a work item a visitor's report
+ *   opened is `hold.share-words`, which needs it too: it loosens what such a work item carries. Rejecting, unshared
+ *   words, and approving any other hold never ask.
  * - **Words about a visitor's report stay Martin's.** On a work item a visitor's report opened (its first signal is a
  *   report), the answer is marked `report`, and its public view leaves his words out, at any stage: a paraphrase of a
- *   report would pass any redactor.
+ *   report would pass any redactor. Martin, their author, may share them (`share`), judging they do not repeat the
+ *   visitor: the answer is marked `shared` too, and his words are then read and shown as on any other work item, and
+ *   take every answer they take there. Sharing words on any other work item, where they are public anyway, is refused.
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -56,7 +60,10 @@ import { type AdminStore, Refused, type Session, steppedUpNow } from './store.ts
 export const WORK_ITEM = /^[1-9][0-9]{0,8}$/;
 
 const hold = z.strictObject({ hold: z.uuid() });
-const withWords = hold.extend({ words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS).optional() });
+const withWords = hold.extend({
+  words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS).optional(),
+  share: z.literal(true).optional(),
+});
 
 /**
  * What an answer sends: the hold the card showed, and for those that go with words (`WORDED_ANSWERS`), the words,
@@ -66,12 +73,13 @@ export const ANSWER = Object.fromEntries(
   HOLD_ANSWERS.map((answer) => [answer, WORDED_ANSWERS.includes(answer) ? withWords : hold]),
 ) as Record<HoldAnswer, typeof hold | typeof withWords>;
 
-/** What an answer did: the work item, the hold, the answer, and whether Martin's words stay his. */
+/** What an answer did: the work item, the hold, the answer, whether Martin's words stay his, and whether he shared them. */
 export interface Answered {
   workItem: string;
   hold: string;
   decision: HoldAnswer;
   report: boolean;
+  shared: boolean;
 }
 
 /** A work item's open hold: its event's id, and its cause. */
@@ -233,6 +241,7 @@ function answerEvent(
   hold: string,
   report: boolean,
   words?: string,
+  shared = false,
 ): NewEvent {
   const back = decision === 'answered' && words === undefined ? BACK[ANSWERS[cause][decision]] : undefined;
   return {
@@ -243,7 +252,13 @@ function answerEvent(
     version: VERSIONS['hold.answered'],
     actor: 'martin',
     summary: back ? `Martin sent the hold on #${workItem} back to ${back}` : `Martin ${DID[decision](workItem)}`,
-    payload: { decision, ...(words !== undefined && { answer: words }), hold, ...(report && { report: true }) },
+    payload: {
+      decision,
+      ...(words !== undefined && { answer: words }),
+      hold,
+      ...(report && { report: true }),
+      ...(shared && { shared: true }),
+    },
     artifacts: [],
   } as NewEvent;
 }
@@ -254,8 +269,9 @@ export async function answerHold(
   session: Session,
   workItem: string,
   decision: HoldAnswer,
-  given: { hold: string; words?: string },
+  given: { hold: string; words?: string; share?: true },
 ): Promise<Answered> {
+  const shared = given.share === true;
   const { report } = await store.record(
     async (tx) => {
       // One answer at a time, and none between a hold the line or triage appends and the next.
@@ -279,34 +295,40 @@ export async function answerHold(
         );
       }
       const report = await openedByReport(tx, workItem);
-      if (!answersTo(open.cause, report).includes(decision)) {
+      if (shared && !report) {
+        throw new Refused('share', 422, 'Your words here are public anyway: send them without sharing.');
+      }
+      // Words he shares are taken as on any other work item.
+      const stay = report && !shared;
+      if (!answersTo(open.cause, stay).includes(decision)) {
         throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
       }
-      const takes = takesWords(open.cause, decision, report);
+      const takes = takesWords(open.cause, decision, stay);
       if (takes && given.words === undefined) throw new Refused('words', 422, 'That answer takes your words.');
       if (!takes && given.words !== undefined) {
         throw new Refused(
           'words',
           422,
-          report
-            ? 'A visitor’s report opened this, so your words would stay yours, and no agent would read them: send it without them.'
+          stay
+            ? 'A visitor’s report opened this, so your words would stay yours, and no agent would read them: send it without them, or share them.'
             : 'That answer takes no words.',
         );
       }
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(open.cause);
       const asks =
-        decision === 'approved' &&
-        ((guardrail && ACCESS['hold.approve-guardrail'].stepUp) ||
-          (open.cause === 'spec' &&
-            ACCESS['hold.approve-improvement-spec'].stepUp &&
-            (await isImprovement(tx, workItem))));
+        (shared && ACCESS['hold.share-words'].stepUp) ||
+        (decision === 'approved' &&
+          ((guardrail && ACCESS['hold.approve-guardrail'].stepUp) ||
+            (open.cause === 'spec' &&
+              ACCESS['hold.approve-improvement-spec'].stepUp &&
+              (await isImprovement(tx, workItem)))));
       if (asks) {
         // Asked again as the answer is taken, after the lock: the passkey given may have gone stale while it waited.
         if (!(await steppedUpNow(tx, session))) throw new Refused('step-up', 403, 'This needs your passkey again.');
       }
       return { report, cause: open.cause };
     },
-    ({ report, cause }) => [answerEvent(workItem, cause, decision, given.hold, report, given.words)],
+    ({ report, cause }) => [answerEvent(workItem, cause, decision, given.hold, report, given.words, shared)],
   );
-  return { workItem, hold: given.hold, decision, report };
+  return { workItem, hold: given.hold, decision, report, shared };
 }

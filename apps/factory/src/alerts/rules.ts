@@ -112,6 +112,7 @@ export const SECURITY_LEVELS: Record<SecurityKind, Level> = {
   'flag-widened': LEVELS.notify,
   'improvement-requested': LEVELS.notify,
   'improvement-approved': LEVELS.notify,
+  'words-shared': LEVELS.notify,
   // Off loosens what reaches him, as nothing will; Alertmanager lets both through its mute (`PHONE_KINDS`).
   'phone-off': LEVELS.page,
   'phone-on': LEVELS.inform,
@@ -208,6 +209,11 @@ const SECURITY_WORDS: Record<SecurityKind, { summary: string; description: strin
   'improvement-approved': {
     summary: "An improvement's spec was approved",
     description: "An improvement's spec was approved in the console: the line will build it.",
+  },
+  'words-shared': {
+    summary: "Your words on a visitor's report were shared",
+    description:
+      "Your answer to a hold on a work item a visitor's report opened was shared in the console, with the passkey given again: the agents read it, and it is public.",
   },
   'phone-off': {
     summary: 'Alerts no longer reach your phone',

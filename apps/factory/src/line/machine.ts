@@ -259,7 +259,7 @@ export interface WorkItemState {
         stage: Stage;
         decision: HoldAnswer;
         resolution: Resolution;
-        /** His words, unless they stay his, on a work item a visitor's report opened. */
+        /** His words, unless they stay his, on a work item a visitor's report opened, where he did not share them. */
         text: string | undefined;
       }
     | undefined;
@@ -269,6 +269,11 @@ export interface WorkItemState {
    * planner's: a second question should not forget the first answer.
    */
   answers: Answer[];
+  /**
+   * Martin approved the planner's question with no answer, until it writes a spec: no answer will come, so the planner
+   * is told so and may not ask again, where it would only ask the same.
+   */
+  unanswered: boolean;
   /**
    * Why the work item is back at Plan for another spec, from the hold Martin answered or the return that sent it,
    * until the planner writes one: what the planner is told of why its last spec came back.
@@ -352,6 +357,7 @@ const initial = (): WorkItemState => ({
   hold: undefined,
   answer: undefined,
   answers: [],
+  unanswered: false,
   replan: undefined,
   merged: false,
   enqueued: undefined,
@@ -412,6 +418,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         state.lastSpec = event.payload;
         if (event.payload.risks.includes('out-of-scope')) state.outOfScope = true;
         state.replan = undefined;
+        state.unanswered = false;
         state.specApproved = false;
         // A hold on the spec before is a hold on what Martin read: his answer to it says nothing of this one, which
         // is held afresh if it needs him. His approval of the old card, appended after, finds no hold, and approves
@@ -546,8 +553,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         const resolution = ANSWERS[cause][event.payload.decision];
         // His words on a work item a visitor's report opened stay his: no agent reads them, as none reads a report,
         // since what an agent writes is public and a paraphrase of a report would pass any redactor. His answer still
-        // does what it does.
-        const words = event.payload.report ? undefined : event.payload.answer;
+        // does what it does. Words he shared there, as their author, are read as on any other work item.
+        const words = event.payload.report && !event.payload.shared ? undefined : event.payload.answer;
         // Approved or answered in words, a scope hold goes back to the planner, which is told what it may not take in.
         const replanScope = cause === 'scope' && resolution === 'replan';
         const reading = replanScope
@@ -560,6 +567,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         if ((stage === 'plan' || resolution === 'replan') && reading) {
           state.answers.push({ ...askedOf(state.hold, state.fenced), ...reading });
         }
+        // A question carried on with no words: the planner plans again told none will come, and may not ask again.
+        if (cause === 'question') state.unanswered = resolution === 'carry-on' && words === undefined;
         if (resolution === 'replan') {
           // The reviewer's findings that cite the ticket (beyond it, or short of Martin's answer), when its escalation
           // is what he answered.
@@ -736,7 +745,7 @@ export type Replan =
       cause: HoldCause;
       /** Whether he approved, rather than answering in words. */
       approved: boolean;
-      /** Whether he answered in words the planner is told: not on a work item a visitor's report opened. */
+      /** Whether he answered in words the planner is told: not on a work item a visitor's report opened, unshared. */
       answered: boolean;
       /** Why the work item was held, as the hold said it. */
       reason: string;

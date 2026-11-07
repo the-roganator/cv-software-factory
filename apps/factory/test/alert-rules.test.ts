@@ -285,6 +285,7 @@ describe('the alerts to Martin', () => {
       'release-control',
       'setting-changed',
       'take-widened',
+      'words-shared',
     ]);
     expect(at(LEVELS.inform)).toEqual([
       'auto-merge-off',

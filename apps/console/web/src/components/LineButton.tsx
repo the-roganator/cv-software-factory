@@ -92,7 +92,7 @@ function LineDialog({
       {
         passkey: asks ? 'prove' : undefined,
         done: (got) => {
-          // Stopped, with a canary in flight it could not abort: Martin must know, and that `make stop-the-line` will.
+          // Stopped, with a canary in flight it did not abort: Martin must know, and why, and what he can do.
           if (typeof got.body?.warning === 'string') {
             setDone(true);
             return got.body.warning;
@@ -127,7 +127,8 @@ function LineDialog({
       {stop ? (
         <p>
           Every agent stops at the end of its step, nothing new is taken, and a canary in flight is aborted: the version
-          before takes all the traffic. <code>make stop-the-line</code> does the same when the console can’t.
+          before takes all the traffic, unless it has no pod to take it. <code>make stop-the-line</code> does the same
+          when the console can’t.
         </p>
       ) : first ? (
         <p>

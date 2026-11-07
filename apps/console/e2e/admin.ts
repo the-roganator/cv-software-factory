@@ -315,7 +315,13 @@ export class Rollout implements KubeWriter {
     },
   };
 
-  async get<T>(_path: string, schema: { parse(v: unknown): T }): Promise<T> {
+  async get<T>(path: string, schema: { parse(v: unknown): T }): Promise<T> {
+    // The app's endpoints, which Stop the line reads for a pod of the stable version ready to take the traffic back.
+    if (path.endsWith('/endpointslices')) {
+      const { stableRS } = (this.object as { status: { stableRS: string } }).status;
+      const endpoint = { conditions: { ready: true }, targetRef: { kind: 'Pod', name: `website-${stableRS}-x7k2p` } };
+      return schema.parse({ items: [{ endpoints: [endpoint] }] });
+    }
     const { metadata, ...rest } = this.object as { metadata: object };
     return schema.parse({ ...rest, metadata: { ...metadata, resourceVersion: String(this.version) } });
   }

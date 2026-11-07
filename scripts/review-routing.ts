@@ -18,11 +18,13 @@
  * `held` (`route`).
  */
 import {
+  type Verdict as Block,
   FLAG_NAMES_FILE,
   type Found,
   found,
   HEADERS_FILE,
   NEVER_LIGHTS_OUT,
+  passes,
   RISK_LABELS,
   type Rule,
   TAGS,
@@ -31,6 +33,9 @@ import {
 
 /** Martin's GitHub account, by its id, which never changes: a login can be renamed and taken by someone else. */
 export const MARTIN = 6206459;
+
+/** The review App, which alone posts the `review` check the rulesets require. */
+export const REVIEW_APP = 5470762;
 
 /** The factory's App's bot user (`mrogan-software-factory[bot]`), which opens its pull requests. */
 export const FACTORY_APP = 337765427;
@@ -85,6 +90,11 @@ export interface Decision extends Verdict {
    * (`cutPending`).
    */
   pending?: string;
+  /**
+   * Set only on a hold for an exact pin the gate could not check (`Facts.pin`'s `unchecked`), with nothing it did read
+   * holding the pull request: the cause, which `pending` says too.
+   */
+  unchecked?: string;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -496,14 +506,15 @@ export interface PinChecks {
 
 /**
  * Whether a pull request is an exact pin: every changed line a `digest:` value, each to an image `build.yml` signed on
- * main from a commit that descends from the one the pin it replaces was built from. `undefined` when its diff is not
- * all digest lines, which is no pin at all.
+ * main from a commit that descends from the one the pin it replaces was built from. A reason when it is not, marked
+ * `digests` when every line it changes is a digest under `deploy/`, so it is a pin, but not an exact one. A check that
+ * could not be made (GitHub, GHCR or Sigstore not answering) throws, as `checks` do: that is no judgement of the pin.
  */
 export async function exactPin(
   files: readonly FileChange[],
   checks: PinChecks,
   complete: boolean,
-): Promise<{ pins: Pin[] } | { reason: string }> {
+): Promise<{ pins: Pin[] } | { reason: string; digests?: true }> {
   if (files.length === 0) return { reason: 'it changes no file' };
   if (!complete) return { reason: 'GitHub lists only some of its files, and the rest are unread' };
   const pins: Pin[] = [];
@@ -513,13 +524,13 @@ export async function exactPin(
     const content = await checks.content(file.filename);
     for (const { from, to } of moves) {
       const image = imageOf(content, to);
-      if (!image) return { reason: `${file.filename} names no one image for ${short(to.slice(7))}` };
+      if (!image) return { reason: `${file.filename} names no one image for ${short(to.slice(7))}`, digests: true };
       pins.push({ file: file.filename, image, from, to });
     }
   }
   for (const pin of pins) {
     if (!signerOf(pin.image))
-      return { reason: `${pin.image} is not an image the factory's or the app's build.yml signs` };
+      return { reason: `${pin.image} is not an image the factory's or the app's build.yml signs`, digests: true };
   }
   // Each pin is checked at once, as cosign takes a while for each, and the first to fail in order says why.
   const checked = await Promise.all(
@@ -537,7 +548,7 @@ export async function exactPin(
     }),
   );
   const reason = checked.find((each) => each !== undefined);
-  if (reason) return { reason };
+  if (reason) return { reason, digests: true };
   return { pins };
 }
 
@@ -557,8 +568,11 @@ export interface Facts {
   labelsRemoved: readonly string[];
   /** What the gate could not read from GitHub, which holds the pull request unless Martin has had his say. */
   unread?: string;
-  /** The exact pin check's result, for a pull request of the App's. */
-  pin?: { pins: Pin[] } | { reason: string };
+  /**
+   * The exact pin check's result, for a pull request of the App's: its pins, why it is not an exact pin (`digests` when
+   * it changes digests alone), or why the check could not be made, after the gate tried again.
+   */
+  pin?: { pins: Pin[] } | { reason: string; digests?: true } | { unchecked: string };
 }
 
 const tagNames = (tags: readonly Found[]) => tags.map((t) => t.tag).join(', ');
@@ -589,14 +603,24 @@ export function route(facts: Facts): Decision {
   if (!appOpened(pr)) return { pass: false, title: martin.title, rule: 'held', tags };
   if (facts.labelsRemoved.length)
     return held(`Someone other than Martin removed its ${facts.labelsRemoved.join(', ')} label`);
-  if (facts.pin && 'pins' in facts.pin) {
-    const images = [...new Set(facts.pin.pins.map((p) => p.image.slice(p.image.lastIndexOf('/') + 1)))];
+  const { pin } = facts;
+  if (pin && 'pins' in pin) {
+    const images = [...new Set(pin.pins.map((p) => p.image.slice(p.image.lastIndexOf('/') + 1)))];
     return { pass: true, title: `An exact pin of ${images.join(', ')}, each signed on main`, rule: 'exact-pin', tags };
   }
+  // A check that could not be made is no judgement, of the pin or of its risk: a wait for the gate to judge it again,
+  // in either repository, which never passes it and never falls through to its tags.
+  if (pin && 'unchecked' in pin) {
+    const cause = `the gate could not check its exact pin: ${pin.unchecked}`;
+    return { ...held(`Not judged yet: ${cause}`), pending: cause, unchecked: pin.unchecked };
+  }
   if (repo !== APP_REPO) {
-    const why = facts.pin && 'reason' in facts.pin ? `: ${facts.pin.reason}` : '';
+    const why = pin && 'reason' in pin ? `: ${pin.reason}` : '';
     return held(`Not an exact pin${why}, and here only a pin passes without Martin`);
   }
+  // A change of digests alone passes only as an exact pin, in the app's repository too, and its hold says why not.
+  if (pin && 'reason' in pin && pin.digests)
+    return held(`Not an exact pin: ${pin.reason}, and a change of digests alone passes only as one`);
   const passed = levelPasses(tags, facts.autonomy);
   // Tags the level does not pass hold it whatever test integrity says, so they decide first, and it is no wait.
   // Its title names test integrity's reading too when there is none, so Martin does not approve on the tags alone.
@@ -621,6 +645,28 @@ export function route(facts: Facts): Decision {
       tags,
     };
   return { pass: true, title: `Lights-out passes its risk tags: ${tagNames(tags)}`, rule: 'lights-out', tags };
+}
+
+/**
+ * Whether the review App's latest verdict on a commit, which passed, stands when this run could only fail it for exact
+ * pins it could not check: so a check that could not be made does not overturn one that was. It stands only when
+ * every pull request held now is held for that alone, the verdict judged the same pull requests at the same heads, on
+ * this commit, each by a rule that passes, and each held now by `exact-pin`, whose pins at a head do not change. Every
+ * other fact was read afresh by this run and passes. `earlier` is the block of that check, read by `readVerdict`.
+ */
+export function stands(
+  earlier: Block,
+  commit: string,
+  now: readonly { number: number; head: string; said: Decision }[],
+): boolean {
+  if (earlier.commit !== commit || earlier.judged.length !== now.length) return false;
+  if (!now.some(({ said }) => !said.pass) || now.some(({ said }) => !said.pass && said.unchecked === undefined))
+    return false;
+  return now.every(({ number, head, said }) => {
+    const was = earlier.judged.find((entry) => entry.number === number);
+    if (!was || was.head !== head || !passes(was.rule) || was.pending !== undefined) return false;
+    return said.pass || was.rule === 'exact-pin';
+  });
 }
 
 /**

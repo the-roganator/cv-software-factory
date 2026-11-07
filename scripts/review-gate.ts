@@ -22,7 +22,10 @@
  *   saying why.
  *
  * A pull request it finds open always gets a verdict, passing or failing, so a missing check never hides why a pull
- * request waits. The verdict is in the check's title and the run's log; the gate writes no file.
+ * request waits. The verdict is in the check's title and the run's log; the gate writes no file. An exact pin's check
+ * that could not be made is tried again, and if it still cannot be, holds the pull request as a wait, saying why,
+ * unless the review App's pass on the commit, which checked the same pins, stands: then that is its verdict, and the
+ * log says so.
  *
  * Anyone who can push a branch can make a run of a workflow named "review requested", so a `workflow_run` says only
  * which pull request to look at again. The verdict is always read afresh from GitHub, so a forged request reruns the
@@ -36,7 +39,7 @@
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { cutPending, type Found, type Judged, verdictBlock } from '../policy/review-verdict.ts';
+import { cutPending, type Found, type Judged, readVerdict, verdictBlock } from '../policy/review-verdict.ts';
 import {
   type Annotation,
   appOpened,
@@ -51,9 +54,11 @@ import {
   MARTIN,
   type OwnerRule,
   type PullRequest,
+  REVIEW_APP,
   type Review,
   riskLabelsRemoved,
   route,
+  stands,
   TEST_INTEGRITY_CHECK,
   tagsOf,
   testIntegrityRun,
@@ -301,10 +306,20 @@ const MANIFESTS = [
   'application/vnd.docker.distribution.manifest.v2+json',
 ].join(', ');
 
+/**
+ * Whether an answer's status says the server could not answer just then, rather than what it has: a later try may
+ * succeed.
+ */
+export const momentary = (status: number) => status === 408 || status === 429 || status >= 500;
+
+/** An answer that says what GHCR has, or has not: a judgement of the pin, not a check that could not be made. */
+class Answered extends Error {}
+
 /** The commit an image says it was built from: its one `org.opencontainers.image.revision` label, on every platform. */
 async function revisionOf(image: string, digest: string): Promise<string | { reason: string }> {
   const name = image.replace(/^ghcr\.io\//, '');
   const auth = await fetch(`${GHCR}/token?scope=repository:${name}:pull`, { signal: AbortSignal.timeout(15_000) });
+  if (momentary(auth.status)) throw new Error(`ghcr.io answered ${auth.status} for a token to read ${name}`);
   if (!auth.ok) return { reason: `ghcr.io gave no token to read it: ${auth.status}` };
   const { token } = (await auth.json()) as { token?: string };
   const get = async <T>(path: string, accept: string): Promise<T> => {
@@ -312,7 +327,10 @@ async function revisionOf(image: string, digest: string): Promise<string | { rea
       headers: { accept, authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) throw new Error(`ghcr.io answered ${response.status} for ${path}`);
+    if (!response.ok) {
+      const said = `ghcr.io answered ${response.status} for ${path}`;
+      throw momentary(response.status) ? new Error(said) : new Answered(said);
+    }
     return (await response.json()) as T;
   };
   type Manifest = { config?: { digest: string }; manifests?: { digest: string; platform?: { os?: string } }[] };
@@ -339,9 +357,22 @@ async function revisionOf(image: string, digest: string): Promise<string | { rea
 const run = promisify(execFile);
 
 /**
+ * Whether cosign's failure says the image has no signature that matches, rather than that it could not look: one
+ * that names no match but also a network or a server's error is a look that failed, as cosign gathers the error of
+ * each signature it could not verify under "no matching signatures".
+ */
+const LOOK_FAILED =
+  /time(d)? ?out|deadline exceeded|connection|EOF|TLS|i\/o|temporar|unavailable|too many requests|\b(408|429|5\d\d)\b/i;
+export function unsigned(said: string): boolean {
+  if (!/no matching signatures|no signatures found/i.test(said)) return false;
+  return !LOOK_FAILED.test(said);
+}
+
+/**
  * The commit `build.yml` on main signed an image at, verified by cosign: keyless, the certificate Fulcio gave that
  * workflow, on main, at the commit the image names, logged in Rekor. The commit the image names is only a claim until
- * the certificate says the same.
+ * the certificate says the same. A reason when GHCR or cosign says it is not signed so; it throws when they could not
+ * say, and that is not kept, so the gate's next try asks again.
  */
 const signatures = new Map<string, Promise<string | { reason: string }>>();
 function signedAt(repo: string, image: string, digest: string): Promise<string | { reason: string }> {
@@ -349,9 +380,15 @@ function signedAt(repo: string, image: string, digest: string): Promise<string |
   let checked = signatures.get(key);
   if (!checked) {
     checked = (async () => {
+      let revision: string | { reason: string };
       try {
-        const revision = await revisionOf(image, digest);
-        if (typeof revision !== 'string') return revision;
+        revision = await revisionOf(image, digest);
+      } catch (error) {
+        if (error instanceof Answered) return { reason: error.message };
+        throw new Error(`could not read ${image}@${short(digest.slice(7))} from ghcr.io (${cause(error)})`);
+      }
+      if (typeof revision !== 'string') return revision;
+      try {
         await run(
           'cosign',
           [
@@ -368,17 +405,70 @@ function signedAt(repo: string, image: string, digest: string): Promise<string |
             revision,
             `${image}@${digest}`,
           ],
-          { timeout: 120_000 },
+          { timeout: COSIGN_TIMEOUT_MS },
         );
         return revision;
       } catch (error) {
-        const said = error instanceof Error ? error.message.split('\n').find((l) => /error/i.test(l)) : undefined;
-        return { reason: `cosign does not verify it as signed by build.yml on main${said ? ` (${said.trim()})` : ''}` };
+        const said = error instanceof Error ? error.message : String(error);
+        const line = said
+          .split('\n')
+          .find((l) => /error/i.test(l))
+          ?.trim();
+        const killed = typeof error === 'object' && error !== null && 'killed' in error && error.killed === true;
+        if (!killed && unsigned(said))
+          return { reason: `cosign does not verify it as signed by build.yml on main${line ? ` (${line})` : ''}` };
+        throw new Error(
+          `cosign could not verify ${image}@${short(digest.slice(7))}${killed ? `: no answer in ${COSIGN_TIMEOUT_MS / 1000}s` : line ? ` (${line})` : ''}`,
+        );
       }
     })();
     signatures.set(key, checked);
+    // A check that could not be made is asked again on the next try, never kept.
+    checked.catch(() => signatures.delete(key));
   }
   return checked;
+}
+
+/** An error's first line, at most 200 characters: a cause, not a log. */
+const cause = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200) ?? '';
+
+/** How long one cosign verify may take: each try at a pin fits the job's five minutes with the tries after it. */
+const COSIGN_TIMEOUT_MS = 60_000;
+
+/**
+ * How long, from the gate starting, it goes on trying an exact pin's check that could not be made: within the job's
+ * five minutes, with room for a last try and the verdict.
+ */
+export const PIN_TRIES_MS = 150_000;
+const STARTED = Date.now();
+
+/** The waits between tries of an exact pin's check that could not be made. */
+export const PIN_BACKOFF_MS = [5_000, 15_000, 30_000];
+
+/**
+ * `attempt`, tried again after each wait in `backoff` while it throws and the next try would start before `until`:
+ * the last error, if every try throws. A check that could not be made is often one that can, a moment later.
+ */
+export async function retrying<T>(
+  attempt: () => Promise<T>,
+  backoff: readonly number[],
+  until: number,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> } = {
+    now: Date.now,
+    sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+  },
+): Promise<T> {
+  for (let tried = 0; ; tried++) {
+    try {
+      return await attempt();
+    } catch (error) {
+      const wait = backoff[tried];
+      if (wait === undefined || clock.now() + wait >= until) throw error;
+      console.log(`::notice::Trying the exact pin's check again in ${wait / 1000}s: ${cause(error)}`);
+      await clock.sleep(wait);
+    }
+  }
 }
 
 /** Whether `to` descends from `from`, by the compare API. */
@@ -428,22 +518,28 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       owners: rules,
       excused,
     });
-    // Martin's say passes it before an exact pin is looked at, so cosign is not asked.
-    const pin =
+    // Martin's say passes it before an exact pin is looked at, so cosign is not asked. A check that could not be made
+    // is tried again, and if it still cannot be, says why: no judgement of the pin, which `route` never passes.
+    const pin: Facts['pin'] =
       appOpened(judged) && !verdict(judged, reviews).pass
-        ? await exactPin(
-            files,
-            {
-              signedAt,
-              ahead: (where, from, to) => ahead(where, from, to, read),
-              content: async (path) => {
-                const text = await fileAt(repo, path, head, read);
-                if (text === undefined) throw new Error(`${path} is not at ${short(head)}`);
-                return text;
-              },
-            },
-            complete,
-          ).catch((error: Error) => ({ reason: `the gate could not check it: ${error.message}` }))
+        ? await retrying(
+            () =>
+              exactPin(
+                files,
+                {
+                  signedAt,
+                  ahead: (where, from, to) => ahead(where, from, to, read),
+                  content: async (path) => {
+                    const text = await fileAt(repo, path, head, read);
+                    if (text === undefined) throw new Error(`${path} is not at ${short(head)}`);
+                    return text;
+                  },
+                },
+                complete,
+              ),
+            PIN_BACKOFF_MS,
+            STARTED + PIN_TRIES_MS,
+          ).catch((error: unknown) => ({ unchecked: cause(error) }))
         : undefined;
     return route({
       ...facts(),
@@ -526,6 +622,69 @@ async function post(each: Run, commit: string, pass: boolean, title: string, sum
   console.log(`Posted ${CHECK}: ${pass ? 'success' : 'failure'} on ${commit}.`);
 }
 
+/** The check run a review App posted, as the checks API lists them, with its summary. */
+interface PostedRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  app: { id: number } | null;
+  output?: { summary?: string | null };
+}
+
+/**
+ * Whether the review App's latest `review` check on `commit` passed, and stands though this run could only fail it
+ * for exact pins it could not check (`stands`): then the gate posts nothing, rather than overturn a check that was
+ * made with one that could not be. Any doubt, a read that fails among it, is no: the verdict is posted.
+ */
+async function earlierStands(
+  each: Run,
+  commit: string,
+  judged: readonly { pr: PullRequest; said: Decision }[],
+): Promise<boolean> {
+  if (!judged.some(({ said }) => said.unchecked !== undefined)) return false;
+  try {
+    const runs = await paged<PostedRun>(
+      `/repos/${each.repo}/commits/${commit}/check-runs?filter=all&check_name=${CHECK}&app_id=${REVIEW_APP}`,
+      each.read,
+      'check_runs',
+    );
+    const latest = runs
+      .filter((one) => one.name === CHECK && one.app?.id === REVIEW_APP)
+      .sort((a, b) => b.id - a.id)[0];
+    if (latest?.status !== 'completed' || latest.conclusion !== 'success') return false;
+    const block = readVerdict(latest.output?.summary);
+    if ('error' in block) return false;
+    return stands(
+      block,
+      commit,
+      judged.map(({ pr, said }) => ({ number: pr.number, head: pr.head.sha, said })),
+    );
+  } catch (error) {
+    console.log(`::warning::${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+/**
+ * Posts the verdict on `commit`, unless the review App's passing one there stands (`earlierStands`), which the log
+ * says instead.
+ */
+async function settle(
+  each: Run,
+  commit: string,
+  said: Verdict,
+  judged: readonly { pr: PullRequest; said: Decision }[],
+): Promise<void> {
+  if (!said.pass && (await earlierStands(each, commit, judged))) {
+    console.log(
+      `The review App's earlier pass on ${short(commit)} stands: this run could not check its exact pins, which that one did at the same heads. Nothing is posted.`,
+    );
+    return;
+  }
+  await post(each, commit, said.pass, said.title, summaryOf(commit, judged));
+}
+
 /** Each pull request judged at its own head, each said in the run's log. */
 async function judgeEach(each: Run, prs: readonly PullRequest[]) {
   const judged = [];
@@ -582,7 +741,7 @@ async function judgeHead(each: Run, pr: PullRequest): Promise<void> {
   const said = together(judged);
   const numbers = judged.map((one) => `#${one.number}`).join(', ');
   console.log(`${short(commit)}, the head of ${numbers}: ${said.pass ? `passes: ${said.title}` : said.title}.`);
-  await post(each, commit, said.pass, said.title, summaryOf(commit, judged));
+  await settle(each, commit, said, judged);
 }
 
 /** What a run is asked, from the environment Actions sets, or, by hand, `--print <owner/name> <number>`. */
@@ -684,7 +843,7 @@ async function main(): Promise<void> {
   console.log(
     `The merge queue's ${short(commit)}, for #${pr.number}: ${said.pass ? `passes: ${said.title}` : said.title}.`,
   );
-  await post(each, commit, said.pass, said.title, summaryOf(commit, judged));
+  await settle(each, commit, said, judged);
 }
 
 if (import.meta.main) await main();

@@ -10,7 +10,7 @@ The new repository's first commit is built in the private repository, as the fir
 
 - the correct app, with Martin's and Dependabot's changes to the public app brought into it (the private repository's `baseline-sync` skill);
 - every defect patch, applied again;
-- any new seeds, each a patch with its answer-key entry and its detector, like the rest.
+- any new seeds, each a patch with its answer-key entry and its detector, like the rest; a vulnerable pin has no answer-key entry until Part D (milestone 7) decides how a scan's find is counted.
 
 The line's fixes are left out: they are what the reset undoes. So is any change of Dependabot's that moved a seeded pin: it fixed a defect, as the line's do. Its improvements are left out too, and are run again on the line after the reset, from the same requests.
 

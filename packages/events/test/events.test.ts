@@ -1777,9 +1777,20 @@ describe('the answers a hold takes', () => {
     expect(answersTo('question')).toEqual(['approved', 'answered', 'rejected']);
     expect(answersTo('question', true)).toEqual(['approved', 'rejected']);
     expect(answersTo('gates', true)).toEqual(['approved', 'replanned', 'rejected']);
-    expect(answersTo('merge', true)).toEqual(['replanned', 'rejected']);
-    // Where words move the work somewhere no other answer does, they stay, as do triage's, kept with the hold.
-    for (const cause of ['spec', 'scope', 'nothing-to-fix', 'beyond-ticket', 'verify', 'review'] as const) {
+    // Only where words, with none of his read, do what approving does.
+    for (const cause of WORDS_UNREAD_ON_REPORT) expect(ANSWERS[cause].answered, cause).toBe(ANSWERS[cause].approved);
+    // Where words move the work somewhere approving does not, they stay, as do triage's, kept with the hold.
+    for (const cause of [
+      'ticket-rejected',
+      'spec',
+      'scope',
+      'nothing-to-fix',
+      'beyond-ticket',
+      'verify',
+      'review',
+      'merge',
+      'tests-first',
+    ] as const) {
       expect(answersTo(cause, true), cause).toEqual(answersTo(cause));
     }
     for (const cause of WORDS_LEAVE_HELD) expect(WORDS_UNREAD_ON_REPORT).not.toContain(cause);

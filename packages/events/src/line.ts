@@ -118,25 +118,14 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
 /**
  * The causes of a hold that words cannot answer on a work item a visitor's report opened. His words there stay his, and
  * no agent reads them, as none reads a report, so words do only what the answer itself does: these are the holds where
- * that is nothing another answer does not already do, or a rerun told nothing new. A `question` or a `ticket-rejected`
- * hold would run the planner again told nothing, so it asks again or rejects again; on `failures`, `spend` and
- * `unknown` words carry on exactly as approving does, and on `gates` they send the work back to the coder as approving
- * does; on `merge` and `tests-first` they send it back to the coder told only that he sent it back. Words keep their
- * place where the answer moves the work somewhere no other answer does, with what the agent there is told beside it:
- * `spec`, `scope`, `nothing-to-fix`, `beyond-ticket` and `verify` go back to the planner, `review` to the coder with
- * the review's findings, and every Back to the planner, told why the work was held. Triage's holds keep their words
- * with them (`WORDS_LEAVE_HELD`).
+ * that is exactly what approving does, with nothing told beside it. A `question` runs the planner again told nothing,
+ * as approving does, so it would ask again; on `failures`, `spend` and `unknown` words carry on as approving does, and
+ * on `gates` they send the work back to the coder as approving does. Everywhere else words keep their place, as the
+ * answer moves the work somewhere approving does not: the planner again after a `ticket-rejected` hold, back to the
+ * planner from a `spec`, `scope`, `nothing-to-fix`, `beyond-ticket` or `verify` hold, back to the coder from a
+ * `review`, `merge` or `tests-first` one. Triage's holds keep their words with them (`WORDS_LEAVE_HELD`).
  */
-export const WORDS_UNREAD_ON_REPORT: readonly HoldCause[] = [
-  'question',
-  'ticket-rejected',
-  'failures',
-  'gates',
-  'merge',
-  'spend',
-  'tests-first',
-  'unknown',
-];
+export const WORDS_UNREAD_ON_REPORT: readonly HoldCause[] = ['question', 'failures', 'gates', 'spend', 'unknown'];
 
 /**
  * The answers a hold of this cause takes from the console, in the order Needs you shows them: each that does

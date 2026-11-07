@@ -148,6 +148,9 @@ export interface PlannerInput {
   change?: { pullRequest: number; files: string[]; commit: string } | undefined;
 }
 
+/** Whether the planner may ask Martin a question: only where his words can reach it (`hisWords`). */
+const asksMartin = (input: PlannerInput) => input.hisWords !== false;
+
 /** What is wrong with a scope entry, if anything: it must be a plain path in the repository, and keep out of the protected paths. */
 function scopeProblem(entry: string, protectedPaths: readonly string[]): string | undefined {
   // A folder ends in its slash; the rest of it is a path like any other.
@@ -611,7 +614,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
         heDid(replan),
         hisWords
           ? `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.`
-          : `So take out what goes beyond ${it}, as each finding says, and keep the rest of the spec as it is.`,
+          : `So take out what goes beyond ${it}${replan.beyond?.length ? ', as each finding says' : ''}, and keep the rest of the spec as it is.`,
       ];
     }
     case 'nothing-to-fix':
@@ -623,7 +626,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
       return [
         'Why it came back: Martin read your last spec and did not approve it.',
         heDid(replan),
-        hisWords
+        replan.answered
           ? 'So change the spec as his answer asks, and keep the rest of it as it is.'
           : 'His words stay his, so you are not told them: change what in the spec you judge kept it from his approval, and keep the rest of it as it is.',
       ];
@@ -652,7 +655,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
  * What the planner is told when the work has come back to it: its last spec, as it wrote it, why the work came back,
  * the pull request that holds the work so far, and to keep what still holds. Nothing on a first plan.
  */
-function replanLines({ asked, lastSpec, replan, change, answers, hisWords }: PlannerInput): string[] {
+function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput): string[] {
   if (!lastSpec) return [];
   const kind = asked.kind === 'ticket' ? 'ticket' : 'improvement';
   return [
@@ -661,7 +664,13 @@ function replanLines({ asked, lastSpec, replan, change, answers, hisWords }: Pla
     '```json',
     JSON.stringify(lastSpec, null, 2),
     '```',
-    ...(replan ? whyBack(replan, asked.kind, hisWords !== false && answers.some((a) => a.answer)) : []),
+    ...(replan
+      ? whyBack(
+          replan,
+          asked.kind,
+          answers.some((a) => a.answer),
+        )
+      : []),
     ...(change
       ? [
           `Pull request #${change.pullRequest} holds the work so far, which is this ${kind}’s own: no other change’s. It changes ${change.files.length ? change.files.join(', ') : 'no file yet'}. Your checkout is not that work: it is ${change.commit}, where the pull request’s branch left main, which the coder’s tests are judged against, as your first plan was. Plan against this commit: what the pull request adds is not in it.`,
@@ -674,7 +683,7 @@ function replanLines({ asked, lastSpec, replan, change, answers, hisWords }: Pla
 /** A fix's plan: the ticket, what the senses saw and what came of fixes before, to a diagnosis and a spec. */
 function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): string {
   const { workItem, signals, protectedPaths, answers, persisted = [], reopened = [], failure } = input;
-  const asks = input.hisWords !== false;
+  const asks = asksMartin(input);
   return [
     `Plan the fix for ticket #${workItem}: ${ticket.title}.`,
     ...ticketLines(ticket, signals),
@@ -810,7 +819,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       input.protectedPaths,
       sourcesOf(input),
       input.asked.kind === 'request' ? { flagsTaken: input.flagsTaken ?? [], keeps: input.lastSpec?.flag } : undefined,
-      input.hisWords !== false,
+      asksMartin(input),
     ),
   prompt: (input) =>
     input.asked.kind === 'ticket' ? ticketPrompt(input, input.asked.ticket) : requestPrompt(input, input.asked.request),

@@ -116,13 +116,28 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
 };
 
 /**
+ * The causes of a hold that words cannot answer on a work item a visitor's report opened. His words there stay his, and
+ * no agent reads them, as none reads a report, so words do only what the answer itself does: these are the holds where
+ * that is exactly what approving does, with nothing told beside it. A `question` runs the planner again told nothing,
+ * as approving does, so it would ask again; on `failures`, `spend` and `unknown` words carry on as approving does, and
+ * on `gates` they send the work back to the coder as approving does. Everywhere else words keep their place, as the
+ * answer moves the work somewhere approving does not: the planner again after a `ticket-rejected` hold, back to the
+ * planner from a `spec`, `scope`, `nothing-to-fix`, `beyond-ticket` or `verify` hold, back to the coder from a
+ * `review`, `merge` or `tests-first` one. Triage's holds keep their words with them (`WORDS_LEAVE_HELD`).
+ */
+export const WORDS_UNREAD_ON_REPORT: readonly HoldCause[] = ['question', 'failures', 'gates', 'spend', 'unknown'];
+
+/**
  * The answers a hold of this cause takes from the console, in the order Needs you shows them: each that does
  * something. An answer the line would only wait after is left off (a fix waiting for Martin's deploy takes only his
- * rejection), but for words on one of triage's holds, which are kept with it while it stays held.
+ * rejection), but for words on one of triage's holds, which are kept with it while it stays held. On a work item a
+ * visitor's report opened (`aboutReport`), words are left off where no agent could read them (`WORDS_UNREAD_ON_REPORT`).
  */
-export const answersTo = (cause: HoldCause): HoldAnswer[] =>
+export const answersTo = (cause: HoldCause, aboutReport = false): HoldAnswer[] =>
   (['approved', 'answered', 'replanned', 'rejected'] as const).filter(
-    (answer) => ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)),
+    (answer) =>
+      !(aboutReport && answer === 'answered' && WORDS_UNREAD_ON_REPORT.includes(cause)) &&
+      (ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause))),
   );
 
 /**

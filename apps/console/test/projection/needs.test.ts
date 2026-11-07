@@ -11,7 +11,7 @@ import { GUARDRAIL_HOLDS } from '../../web/src/access.ts';
 import { clock } from '../../web/src/format.ts';
 import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
-import { needsView } from '../../web/src/projection/needs.ts';
+import { NO_WORDS_ON_REPORT, needsView } from '../../web/src/projection/needs.ts';
 import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, payloads, SAMPLES, work } from './support.ts';
 
@@ -435,6 +435,40 @@ describe('Needs you', () => {
       ['2050', true],
       ['2051', false],
     ]);
+  });
+
+  it('offers no words on a question on a work item a visitor’s report opened, and says why', () => {
+    const question = hold('question', { stage: 'plan', kind: 'question', question: 'Which?' });
+    const report = work('2052', START)
+      .open('visitor-report')
+      .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
+      .add(1, 'hold.started', 'planner', question);
+    const plain = work('2053', START).open().add(2, 'hold.started', 'planner', question);
+    const [onReport, other] = needsView(foldItems([...report.events, ...plain.events]), START + 3_600_000).holds;
+    expect(onReport?.answers.map((a) => [a.answer, a.does])).toEqual([
+      ['approved', 'The planner plans again, with no answer.'],
+      ['rejected', 'Closes #2052. Nothing is built.'],
+    ]);
+    expect(onReport?.answers.map((a) => a.answer)).toEqual(answersTo('question', true));
+    expect(onReport?.note).toBe(NO_WORDS_ON_REPORT);
+    expect(other?.answers.map((a) => a.answer)).toEqual(['approved', 'answered', 'rejected']);
+    expect(other?.note).toBeUndefined();
+  });
+
+  it('offers words on a hold of a visitor’s report only where they do more than another answer', () => {
+    for (const cause of HOLD_CAUSES.filter((c) => c !== 'canary')) {
+      const item = work('2054', START)
+        .open('visitor-report')
+        .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
+        .add(1, 'hold.started', 'factory', hold(cause));
+      const [need] = needsView(foldItems(item.events), START + 3_600_000).holds;
+      expect(
+        need?.answers.map((a) => a.answer),
+        cause,
+      ).toEqual(answersTo(cause, true));
+      if (answersTo(cause, true).length < answersTo(cause).length)
+        expect(need?.note, cause).toContain(NO_WORDS_ON_REPORT);
+    }
   });
 
   describe('a merge the line holds for Martin, by why it does not add it to the merge queue itself', () => {

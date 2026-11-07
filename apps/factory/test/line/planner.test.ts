@@ -298,6 +298,19 @@ describe('the planner’s scope', () => {
     expect(plannerResult().safeParse({ verdict: 'maybe' }).success).toBe(false);
     expect(plannerResult().safeParse({ verdict: 'reject', reason: 'x'.repeat(301) }).success).toBe(false);
   });
+
+  it('takes no question on a ticket a visitor’s report opened, where no answer of Martin’s could reach it', () => {
+    const question = { verdict: 'question', question: 'Should a sold-out item still show?', findings: [] };
+    const parsed = planner.schema({ ...INPUT, hisWords: false }).safeParse(question);
+    expect(parsed.success).toBe(false);
+    // Refused as any result that does not fit, so the step fails and is tried again told why.
+    expect(parsed.error?.issues[0]).toMatchObject({ path: ['verdict'] });
+    expect(parsed.error?.issues[0]?.message).toContain("'spec' | 'reject'");
+    expect(planner.schema({ ...INPUT, hisWords: false }).safeParse({ verdict: 'reject', reason: 'No.' }).success).toBe(
+      true,
+    );
+    expect(planner.schema(INPUT).safeParse(question).success).toBe(true);
+  });
 });
 
 describe('the tests a spec contradicts', () => {
@@ -485,6 +498,36 @@ describe('the planner’s prompt', () => {
     expect(prompt).toContain('Stop as soon as you can name the code at fault');
     expect(prompt).toContain('Do not reproduce the defect: start no server, send no requests, write no scripts');
     expect(prompt).toContain('The coder’s first step is a failing test that reproduces it');
+  });
+
+  it('offers no question on a ticket a visitor’s report opened, and says why', () => {
+    const prompt = planner.prompt({ ...INPUT, hisWords: false });
+    expect(prompt).toContain('Then write the result, one of two, each with its `findings`:');
+    expect(prompt).not.toContain('"verdict":"question"');
+    expect(prompt).toContain(
+      'Martin cannot be asked a question about this ticket: a visitor’s report opened it, so his words on it stay his, and no answer of his would reach you.',
+    );
+    expect(prompt).toContain('reject it, and say what he would have to decide');
+    const other = planner.prompt(INPUT);
+    expect(other).toContain('Then write the result, one of three, each with its `findings`:');
+    expect(other).toContain('3. {"verdict":"question","question"}');
+    expect(other).not.toContain('Martin cannot be asked');
+  });
+
+  it('knows a ticket a visitor’s report opened by its first signal, as the line does', async () => {
+    const inputOf = (firstSense: string | undefined) =>
+      planner.input({
+        workItem: '1301',
+        commit: 'c'.repeat(40),
+        failure: null,
+        state: { firstSense, answers: [], persisted: [], reopened: [] },
+        ticket: async () => TICKET,
+        signals: async () => [],
+        read: async () => PROTECTED,
+      } as unknown as Parameters<typeof planner.input>[0]);
+    expect((await inputOf('report')).hisWords).toBe(false);
+    expect((await inputOf('probe')).hisWords).toBeUndefined();
+    expect((await inputOf('planner')).hisWords).toBeUndefined();
   });
 
   it('tells it why its last attempt failed', () => {
@@ -882,6 +925,11 @@ describe('the planner planning again', () => {
         'So take into the scope each of those files a scope may name',
       ].join('\n'),
     );
+    // Only words he wrote that the planner can read ask for more than the files.
+    expect(prompt).toContain('keep the rest of the spec as it is. A file no scope may name');
+    expect(
+      planner.prompt({ ...AGAIN, replan: { cause: 'scope', approved: true, answered: true, reason: 'x', needs: [] } }),
+    ).toContain('keep the rest of the spec as it is, unless his words ask for more.');
     const why = (replan: PlannerInput['replan']) => planner.prompt({ ...AGAIN, replan });
     const held = { approved: false, answered: true, reason: 'Held for Martin' };
     expect(why({ ...held, cause: 'scope', fenced: 'scope: src/money.ts\nrefused src/cart.ts +1 −1' })).toContain(
@@ -917,13 +965,17 @@ describe('the planner planning again', () => {
       'the reviewer found the spec, or the change, goes beyond the ticket:\n- Criterion 2: No signal asks for separators.',
     );
     expect(none).toContain(
-      'So take out what goes beyond the ticket, as his answer says, and keep the rest of the spec as it is.',
+      'So take out what goes beyond the ticket, as each finding says, and keep the rest of the spec as it is.',
     );
     expect(none).not.toContain('lack');
     expect(
       why({ ...held, cause: 'nothing-to-fix', reason: 'The coder found nothing to fix: it pads already' }),
     ).toContain('the coder found nothing to fix at your spec: The coder found nothing to fix: it pads already.');
     expect(why({ ...held, cause: 'spec' })).toContain('Martin read your last spec and did not approve it.');
+    // On a work item a visitor's report opened, it is told his words stay his, and never to follow them.
+    const unread = planner.prompt({ ...AGAIN, hisWords: false, replan: { ...held, answered: false, cause: 'spec' } });
+    expect(unread).toContain('His words stay his, so you are not told them');
+    expect(unread).not.toContain('as his answer asks');
     expect(why({ ...held, cause: 'verify', reason: 'No sense can tell' })).toContain(
       'at Verify it was held for Martin: No sense can tell.',
     );

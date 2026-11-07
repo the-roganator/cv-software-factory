@@ -5,7 +5,8 @@
  *
  * What each answer does is the line's own table, `ANSWERS` in the events package, so the two cannot drift; only the
  * words are the console's. An answer that would do nothing is left off (`answersTo`): a fix waiting for Martin's
- * deploy takes only his rejection.
+ * deploy takes only his rejection, and a question on a work item a visitor's report opened takes no words, which no
+ * agent would read, and says so.
  *
  * A canary paused for Martin (auto-rollback off, judged bad) has one card of its own, drawn from the release's events
  * (`release.ts`'s `judgedBad`), whether or not it carries a work item: Martin's drill releases a change that carries
@@ -26,6 +27,7 @@ import {
   type Stage,
   WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
+  WORDS_UNREAD_ON_REPORT,
 } from '@software-factory/events';
 import { ENQUEUES } from '@software-factory/policy/line';
 import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
@@ -81,7 +83,10 @@ export interface Need {
   evidence: Evidence;
   /** A link the card offers beside its evidence: the settings, to raise a spend cap. */
   link: { href: string; label: string } | undefined;
-  /** A sentence after the evidence: what would let the line merge a change it holds for Martin's merge itself. */
+  /**
+   * A sentence after the evidence: what would let the line merge a change it holds for Martin's merge itself, or why a
+   * question takes no words.
+   */
   note: string | undefined;
   /**
    * The way a merge or a deploy ends, which the card offers first: its pull request, on GitHub, where Martin merges it,
@@ -275,7 +280,8 @@ function doesOf(
       return 'The coder starts: tests first, with the flag on and off. Its pull request waits for you too.';
     }
     if (cause === 'spec') return 'The spec goes on to Build as it stands.';
-    if (cause === 'question') return 'The line carries on with the spec as it stands.';
+    // Only the planner asks: approving has it plan again with no answer, which, about a report, it cannot ask for.
+    if (cause === 'question') return 'The planner plans again, with no answer.';
   }
   if (answer === 'answered' && cause === 'question') return 'The planner reads your answer, and carries on with it.';
   // Words that would go to the coder go to the planner instead: the spec, not the change, is what is wrong.
@@ -493,11 +499,25 @@ function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
 }
 
 /**
- * The answers a hold takes: a merge the gate held for its risk tags is approved on GitHub, so it takes words, which
- * send it back to the coder, and Reject.
+ * The answers a hold takes, as the admin service takes them (`answersTo`): a merge the gate held for its risk tags is
+ * approved on GitHub, so it takes words, which send it back to the coder, and Reject.
  */
-const answersOf = (hold: Hold): HoldAnswer[] =>
-  hold.merge?.why === 'held' ? answersTo(hold.cause).filter((answer) => answer !== 'replanned') : answersTo(hold.cause);
+const answersOf = (hold: Hold, aboutReport: boolean): HoldAnswer[] => {
+  const offered = answersTo(hold.cause, aboutReport);
+  return hold.merge?.why === 'held' ? offered.filter((answer) => answer !== 'replanned') : offered;
+};
+
+/** Why a question on a work item a visitor's report opened takes no words. */
+export const NO_WORDS_ON_REPORT = 'No answer in words: a visitor’s report opened this, so no agent reads them.';
+
+/** The sentences after a hold's evidence, if it has any. */
+const noteOf = (hold: Hold, aboutReport: boolean) =>
+  [
+    hold.cause === 'merge' && mergeNote(hold.merge),
+    aboutReport && WORDS_UNREAD_ON_REPORT.includes(hold.cause) && NO_WORDS_ON_REPORT,
+  ]
+    .filter(Boolean)
+    .join(' ') || undefined;
 
 /** The settings, for a spend cap. */
 const linkOf = (cause: HoldCause): Need['link'] =>
@@ -537,6 +557,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       // A canary's hold is the release's card, drawn from its events once, not one per work item it carries.
       if (!hold || item.closedAt !== undefined || hold.cause === 'canary') return [];
       const opener = openerOf(item);
+      const aboutReport = opener?.sense === 'report';
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(hold.cause);
       // Approving an improvement's spec sets the line building something new, so it asks for the passkey too, by the
       // work item's kind, as the admin service decides.
@@ -562,9 +583,9 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
           link: linkOf(hold.cause),
-          note: hold.cause === 'merge' ? mergeNote(hold.merge) : undefined,
+          note: noteOf(hold, aboutReport),
           way: wayOf(item, hold.cause),
-          answers: answersOf(hold).map((answer) => ({
+          answers: answersOf(hold, aboutReport).map((answer) => ({
             answer,
             label: LABEL[answer],
             does:
@@ -580,7 +601,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
                   ),
             stepUp: answer === 'approved' && keyed,
           })),
-          aboutReport: opener?.sense === 'report',
+          aboutReport,
           forMartin: hold.cause !== 'deploy' || deployWaitsForMartin(item),
         },
       ];

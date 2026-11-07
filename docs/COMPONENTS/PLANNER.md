@@ -32,7 +32,7 @@ For an improvement, instead of a ticket and its signals:
 
 ## Its result
 
-A spec, a rejection or a question, read with Zod, each with up to five `findings`. A result the schema refuses fails the step, and the next attempt is told why. A finding is an extra for triage, so one that does not fit never costs the result: it is left out, logged once for its handback, and counted in the spec's summary.
+A spec, a rejection or a question, read with Zod, each with up to five `findings`; on a ticket a visitor's report opened, a spec or a rejection alone ([below](#a-rejection-or-a-question)). A result the schema refuses fails the step, and the next attempt is told why. A finding is an extra for triage, so one that does not fit never costs the result: it is left out, logged once for its handback, and counted in the spec's summary.
 
 ### A spec
 
@@ -59,6 +59,8 @@ It rejects what it cannot make testable, or what only a protected path would fix
 
 - his answer to either reaches every later plan, with what he was asked;
 - rejecting closes the work item, and so does approving the planner's rejection.
+
+On a ticket a visitor's report opened (its first signal is a report, as the line reads it), it is offered no question, and its schema takes none: Martin's words there stay his, and no agent reads them, so all it would be told of his answer is that he gave one, and it would ask again. It decides from the evidence it has, and where the fix would turn on what only he can say, it rejects the ticket, saying what he would have to decide. A question handed back there anyway does not fit the schema, and fails the step like any other.
 
 ### Findings
 

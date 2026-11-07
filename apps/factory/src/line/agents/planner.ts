@@ -4,6 +4,11 @@
  * Given/When/Then criteria the coder can write as failing tests, the files that may change, risk tags and a rollout
  * note. Or it rejects the ticket, or asks Martin a question, and the work item holds for him.
  *
+ * Where Martin's words cannot reach it (`hisWords`: not on a ticket a visitor's report opened, where they stay his and
+ * no agent reads them), it is offered no question, and its schema takes none: no answer could tell it anything, so it
+ * would only ask again. It decides from the evidence, a spec or a rejection; a question handed back anyway is a result
+ * that does not fit, and fails the step, which is tried again told why, as any other.
+ *
  * What it is told is the ticket's public view and what the senses saw, by their typed fields (`evidence.ts`): never
  * a visitor's words, and never a log message, which may carry them.
  *
@@ -123,6 +128,11 @@ export interface PlannerInput {
   /** Why the planner's last attempt failed, such as a scope its schema refused, so it does not hand that back again. */
   failure?: string | null | undefined;
   /**
+   * Whether Martin's words on the work item can reach the planner: not on one a visitor's report opened (`false`),
+   * where they stay his, so no answer of his to a question could tell it anything, and it is offered none.
+   */
+  hisWords?: boolean | undefined;
+  /**
    * For an improvement, the flags other improvements Martin asked for have named, open or closed: a closed one's code
    * stays in the app behind its flag, off, so its name is never given to another change.
    */
@@ -137,6 +147,9 @@ export interface PlannerInput {
    */
   change?: { pullRequest: number; files: string[]; commit: string } | undefined;
 }
+
+/** Whether the planner may ask Martin a question: only where his words can reach it (`hisWords`). */
+const asksMartin = (input: PlannerInput) => input.hisWords !== false;
 
 /** What is wrong with a scope entry, if anything: it must be a plain path in the repository, and keep out of the protected paths. */
 function scopeProblem(entry: string, protectedPaths: readonly string[]): string | undefined {
@@ -468,12 +481,14 @@ const withFindings = <T extends { findings: Sorted }>(result: T): WithFindings<T
 /**
  * The planner's result, with its scope held to the protected paths given; with none, to the rules of the line that
  * hold whatever the repository's CODEOWNERS says. Its criteria quote the sources given (`sourcesOf`); with none, no
- * spec fits.
+ * spec fits. A question fits only where Martin's words can reach the planner (`asks`, from `hisWords`): not on a
+ * work item a visitor's report opened.
  */
 export const plannerResult = (
   protectedPaths: readonly string[] = NEVER,
   sources: Sources = NOTHING,
   improvement?: Improvement,
+  asks = true,
 ) =>
   z
     .discriminatedUnion('verdict', [
@@ -484,7 +499,7 @@ export const plannerResult = (
        */
       z.strictObject({ verdict: z.literal('reject'), reason: words(300), findings }),
       /** Something about what the app should do that only Martin can say. */
-      z.strictObject({ verdict: z.literal('question'), question: words(300), findings }),
+      ...(asks ? [z.strictObject({ verdict: z.literal('question'), question: words(300), findings })] : []),
     ])
     .transform(withFindings);
 
@@ -580,7 +595,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
             ({ path, reason, barred }) => `- ${path}${barred ? ', which no scope may name' : ''}: ${reason}`,
           ),
           heDid(replan),
-          'So take into the scope each of those files a scope may name, and keep the rest of the spec as it is, unless his words ask for more. A file no scope may name stays out of it: if the work needs one, reject it.',
+          `So take into the scope each of those files a scope may name, and keep the rest of the spec as it is${replan.answered ? ', unless his words ask for more' : ''}. A file no scope may name stays out of it: if the work needs one, reject it.`,
         ];
       }
       return [
@@ -599,7 +614,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
         heDid(replan),
         hisWords
           ? `So take out what goes beyond ${it}, or carry in what his answer asks and the spec lacks, as each finding and his answer say, and keep the rest of the spec as it is.`
-          : `So take out what goes beyond ${it}, as his answer says, and keep the rest of the spec as it is.`,
+          : `So take out what goes beyond ${it}${replan.beyond?.length ? ', as each finding says' : ''}, and keep the rest of the spec as it is.`,
       ];
     }
     case 'nothing-to-fix':
@@ -611,7 +626,9 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
       return [
         'Why it came back: Martin read your last spec and did not approve it.',
         heDid(replan),
-        'So change the spec as his answer asks, and keep the rest of it as it is.',
+        replan.answered
+          ? 'So change the spec as his answer asks, and keep the rest of it as it is.'
+          : 'His words stay his, so you are not told them: change what in the spec you judge kept it from his approval, and keep the rest of it as it is.',
       ];
     case 'verify':
       return [
@@ -666,6 +683,7 @@ function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput)
 /** A fix's plan: the ticket, what the senses saw and what came of fixes before, to a diagnosis and a spec. */
 function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): string {
   const { workItem, signals, protectedPaths, answers, persisted = [], reopened = [], failure } = input;
+  const asks = asksMartin(input);
   return [
     `Plan the fix for ticket #${workItem}: ${ticket.title}.`,
     ...ticketLines(ticket, signals),
@@ -697,11 +715,21 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
     '',
     'A fix does what the ticket’s evidence asks, and no more. The app is full of other defects: anything else you notice that is wrong with it, or that it could do better, goes in `findings`, never in the spec. Triage judges each one as it judges a visitor’s report; it opens no ticket on your word alone. Leave `findings` empty when you noticed nothing else.',
     '',
-    'Then write the result, one of three, each with its `findings`:',
+    ...(!asks
+      ? [
+          'Martin cannot be asked a question about this ticket: a visitor’s report opened it, so his words on it stay his, and no answer of his would reach you. Decide from the evidence you have. Where the fix would turn on what the app should do, which only Martin can say, reject it, and say what he would have to decide.',
+          '',
+        ]
+      : []),
+    `Then write the result, one of ${asks ? 'three' : 'two'}, each with its \`findings\`:`,
     '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to:',
     ...SPEC_TEMPLATE.map((line) => `   ${line}`),
     `2. {"verdict":"reject","reason"} when you cannot make it testable: the cause is not in this repository, or you cannot find the defect the evidence shows, or no test could tell the fix from the defect. Reject it too when the fix needs a path no scope may name: ${protectedWords(protectedPaths).join(', ')}. The reason is one or two short sentences for Martin, at most 300 characters, naming the file or what is missing.`,
-    '3. {"verdict":"question","question"} when the fix turns on what the app should do, which only Martin can say: one question he can answer in a line, at most 300 characters.',
+    ...(asks
+      ? [
+          '3. {"verdict":"question","question"} when the fix turns on what the app should do, which only Martin can say: one question he can answer in a line, at most 300 characters.',
+        ]
+      : []),
     `\`findings\`: at most ${MAX_PLANNER_FINDINGS}, each with \`page\`, a page of the app that shows it, as the path a visitor opens, without its query (\`/\` when it shows on none); \`route\`, the route that serves that page, as the app’s code names it, such as \`/products/:slug\`; and \`text\`, what is wrong or could be better, in a sentence or two of at most 300 characters, with the query if it shows only with one.`,
   ].join('\n');
 }
@@ -779,6 +807,8 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
     persisted: state.persisted,
     reopened: state.reopened.filter((r) => !r.dryRun),
     failure,
+    // His words on a work item a visitor's report opened stay his, as the line reads it (`machine.ts`).
+    ...(state.firstSense === 'report' ? { hisWords: false } : {}),
     ...(state.request ? { flagsTaken: await flagsTaken() } : {}),
     ...(state.lastSpec ? { lastSpec: state.lastSpec } : {}),
     ...(state.replan ? { replan: state.replan } : {}),
@@ -789,6 +819,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       input.protectedPaths,
       sourcesOf(input),
       input.asked.kind === 'request' ? { flagsTaken: input.flagsTaken ?? [], keeps: input.lastSpec?.flag } : undefined,
+      asksMartin(input),
     ),
   prompt: (input) =>
     input.asked.kind === 'ticket' ? ticketPrompt(input, input.asked.ticket) : requestPrompt(input, input.asked.request),

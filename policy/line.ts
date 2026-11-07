@@ -1,13 +1,13 @@
 /**
- * Martin's controls of the line, within policy: the autonomy level, whether agents take new work, whether low-risk
- * changes merge by themselves, what the line takes, and whether a canary the analysis judges bad rolls back by itself,
- * as he chose them in the console (`controls.changed`). This is
- * the one check: the line and the admin service each turn the latest controls event into the controls in force with
+ * Martin's controls of the line, within policy: the autonomy level, whether agents take new work, whether the line adds
+ * the changes the level allows to the merge queue itself (auto-merge, by `ENQUEUES`), what the line takes, and whether a
+ * canary the analysis judges bad rolls back by itself, as he chose them in the console (`controls.changed`). This is the
+ * one check: the line and the admin service each turn the latest controls event into the controls in force with
  * `controlsInForce`, and the console's Controls is to as well, so all agree on what is in force.
  *
  * Controls are checked where they are read, not only where they are written: whatever an event says, anything outside
- * policy is not in force, and policy's default is, control by control. A take that is not in force is none: the line's
- * own default (`LINE_TAKE`, `LINE_ONLY`) is in force then, as it is before Martin sets one.
+ * policy is not in force, and policy's default is, control by control. With no take set, or one outside policy, the
+ * line takes every ticket, as it does before Martin sets one.
  *
  * And which of the access table's actions a change is (`policy/access.ts`), so the admin service asks for the passkey
  * again for one that loosens, and the line counts each as a security event, from the change alone. The next few,
@@ -17,6 +17,24 @@
  * Human-owned: see `README.md`.
  */
 import { AUTONOMY, type Autonomy, type TakeKind } from '../packages/events/src/vocabulary.ts';
+import type { Rule } from './review-verdict.ts';
+
+/**
+ * The review gate's rules the line adds its own pull request to the merge queue by, at each autonomy level, with
+ * auto-merge on (spec 4.3, deviation 2): at Supervised none, so every change waits for Martin's merge; at Guarded a
+ * low-risk change, an exact pin, and a head Martin approved on GitHub; at Lights-out those, and the gate's Lights-out
+ * pass of a risk-tagged change. Martin's own pull request (`martin-opened`) is his to merge, at every level. The gate
+ * passes by a rule only when its own reading of the diff allows it, so the stricter of the two always wins.
+ */
+export const ENQUEUES: Readonly<Record<Autonomy, readonly Rule[]>> = {
+  supervised: [],
+  guarded: ['low-risk', 'exact-pin', 'martin-approved-head'],
+  'lights-out': ['low-risk', 'exact-pin', 'martin-approved-head', 'lights-out'],
+};
+
+/** Whether the line adds its own pull request to the merge queue by the gate's rule, at the level and switch in force. */
+export const enqueues = ({ autonomy, autoMerge }: Pick<Controls, 'autonomy' | 'autoMerge'>, rule: Rule): boolean =>
+  autoMerge && ENQUEUES[autonomy].includes(rule);
 
 /** The most work items "The next few" may take: the console's field allows 1 to this. */
 export const TAKE = { most: 20 } as const;
@@ -33,8 +51,7 @@ export interface Controls {
   autonomy: Autonomy;
   newWork: boolean;
   autoMerge: boolean;
-  /** None: no take set, and the line's own default is in force. */
-  take: Take | null;
+  take: Take;
   /**
    * Whether a canary the analysis judges bad rolls back by itself. Off, the analysis calls the same verdict
    * inconclusive, and Argo Rollouts pauses the canary for Martin to promote fully or abort (`release/analysis.ts`).
@@ -48,14 +65,14 @@ export interface ControlsInForce extends Controls {
 }
 
 /**
- * Before Martin sets any: Supervised (every change waits for him, as it does until approval routing comes, whatever
- * the level), agents taking new work, no auto-merge, no take set, and auto-rollback on.
+ * Before Martin sets any: Supervised (every change waits for his merge), agents taking new work, no auto-merge, every
+ * ticket, and auto-rollback on. Nothing moves until he first starts the line, whatever these say.
  */
 export const DEFAULT_CONTROLS: Controls = {
   autonomy: 'supervised',
   newWork: true,
   autoMerge: false,
-  take: null,
+  take: { kind: 'every' },
   autoRollback: true,
 };
 
@@ -64,6 +81,7 @@ export type ControlChange =
   | { control: 'autonomy'; before: Autonomy; after: Autonomy }
   | { control: 'new-work'; before: boolean; after: boolean }
   | { control: 'auto-merge'; before: boolean; after: boolean }
+  /** `before` is null in a change recorded when no take set meant the line's own default, which policy could not see. */
   | { control: 'take'; before: Take | null; after: Take }
   | { control: 'auto-rollback'; before: boolean; after: boolean };
 
@@ -106,6 +124,9 @@ export function takeOf(value: unknown): Take | undefined {
   }
 }
 
+/** Whether the latest controls event's payload (or none) sets a take within policy, rather than leaving every ticket. */
+export const takeSet = (chosen?: unknown): boolean => isRecord(chosen) && takeOf(chosen.take) !== undefined;
+
 /**
  * The controls in force, from the latest controls event's payload (or none). The payload is read as anything at all:
  * what is outside policy, or not there, is not in force, and policy's default is.
@@ -125,8 +146,8 @@ export function controlsInForce(chosen?: unknown): ControlsInForce {
   const newWork = flag('newWork');
   const autoMerge = flag('autoMerge');
   const autoRollback = flag('autoRollback');
-  const take = chosen.take === null ? null : (takeOf(chosen.take) ?? null);
-  if (chosen.take !== null && take === null) outside.push('take');
+  const take = chosen.take === null ? DEFAULT_CONTROLS.take : (takeOf(chosen.take) ?? DEFAULT_CONTROLS.take);
+  if (chosen.take !== null && takeOf(chosen.take) === undefined) outside.push('take');
   return { autonomy, newWork, autoMerge, take, autoRollback, outside };
 }
 
@@ -142,9 +163,9 @@ const breadth = (take: Take) => ({ 'just-one': 0, 'next-few': 1, every: 2 })[tak
  * again is what asks). A take is wider when it takes more kinds of work (every ticket, then the next few, then just
  * one) or, the next few still, a larger number or a count started again. Only the next few counted from the same start,
  * with a smaller number, are narrower: policy cannot prove a restart admits no more, since it sees neither how many the
- * line has taken nor when. Just one moved from one work item to another is no wider. A first take,
- * set over the line's own default, which policy cannot see (`LINE_TAKE` may be spent, or `LINE_ONLY` set), counts as
- * wider whatever it is.
+ * line has taken nor when. Just one moved from one work item to another is no wider. With no take set the line takes
+ * every ticket, so the first take Martin chooses is no wider. A change recorded with no take before (`before` null)
+ * was made over a default policy could not see, and counts as wider whatever it is.
  */
 export function controlAction(change: ControlChange): ControlAction {
   switch (change.control) {

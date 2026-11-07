@@ -33,11 +33,11 @@ flowchart LR
 
 ## Release
 
-- **The hold.** Martin's merge clears any hold the change had, and the work item holds at Release (cause `deploy`, for his approval, so Needs you lists it) until a release that carries it starts. He settles it by merging the app's deploy pull request, not by answering, and `release.started` ends the hold by itself. That pull request is his to merge only once it is open and its checks have passed ([the deploy pull request's state](#the-deploy-pull-requests-state)); until then the console says what the hold waits for.
+- **The hold.** The merge, Martin's or the merge queue's for the line ([the merge](ORCHESTRATOR.md#the-merge)), clears any hold the change had, and the work item holds at Release (cause `deploy`, for his approval, so Needs you lists it) until a release that carries it starts. It is settled by the app's deploy pull request merging, not by answering, and `release.started` ends the hold by itself. The line adds that pull request to the merge queue itself when the review gate passed it as an exact pin and Martin's level and auto-merge allow ([the line adds it to the queue](#the-line-adds-it-to-the-queue)). It is his to merge only once it is open and its checks have passed and the line has not added it, or the queue took it out ([the deploy pull request's state](#the-deploy-pull-requests-state)); until then the console says what the hold waits for.
 - **A rollback.** A release that rolls back holds it again, for the next release that carries it, or Martin's retry, which starts the same release again, judged afresh.
 - **A canary paused for Martin.** With auto-rollback off, a canary whose errors or latency the analysis judges bad is paused rather than rolled back ([progressive delivery](PROGRESSIVE-DELIVERY.md#auto-rollback)): the line holds each work item it carries (cause `canary`), which takes no answer of the holds'. He promotes it fully or aborts it from the Canary panel, and the release's end, whatever it is, ends the hold. Switching auto-rollback on again does not: the canary stays paused for him. His abort is a rollback (`release.rolled-back` by `martin`): it fails Release as any rollback does, and sends triage what the analysis judged bad. Stop the line's abort stays an abort. A release that carries no work item has none to hold: its events, on the line, say it is paused.
 - **An analysis error.** A release whose analysis could not judge it holds it again too, as an abort does: Martin's retry starts the same release again, or the next release that carries it ends the hold.
-- **An abort.** A release Martin aborts holds it again too, with the hold's reason saying whether Stop the line aborted it or he did. His retry starts the same release again, which ends the hold as any start does; otherwise the next release that carries it does.
+- **An abort.** A release Martin aborts holds it again too, with the hold's reason saying whether Stop the line aborted it or he did. His retry starts the same release again, which ends the hold as any start does; otherwise the next release that carries it does. Stop the line aborts no release whose stable version has no pod ready to serve, such as the first after the app is reset, whose stable version admission never let run ([admin service](ADMIN-SERVICE.md#stopping-and-starting-the-line)): that release stays at its first step until promoted fully. The line has no record of a stable version admission never let run, so it records nothing of such a release while it is in flight, and records it found live once Martin promotes it fully ([Found live](#found-live)).
 - **A dry run's merge**, which no deploy pull request can carry, is not held: it waits at Release for the dry run's release, and Needs you never lists it ([Dry run](#dry-run)).
 
 ### What a deploy carries
@@ -60,8 +60,10 @@ The App opens the deploy pull request once main has a newer signed build ([deplo
 | `state` | When |
 | --- | --- |
 | `checking` | It is open, and a required check on its head has not finished, or none has started: on a new head, they start again |
-| `passed` | Every required check on its head finished, and none failed: a skipped check, such as the browser tests a deploy pull request skips, is no failure. It now waits for Martin |
+| `passed` | Every required check on its head finished, and none failed: a skipped check, such as the browser tests a deploy pull request skips, is no failure. The line has not added it to the merge queue, and `waits` says why: it now waits for Martin |
 | `failed` | A required check on its head failed, named in `failed` |
+| `queued` | The line added it to the merge queue at that head, by the gate's `rule` (`exact-pin`): it waits for the queue |
+| `dequeued` | The queue took it out without merging it, with GitHub's `reason` and the checks that failed on the queue's commit in `failed`: it waits for Martin |
 | `merged` | It merged: the release starts once Argo CD syncs, and ends the hold |
 | `closed` | It was closed unmerged: the next build's carries the work item |
 
@@ -69,8 +71,25 @@ The App opens the deploy pull request once main has a newer signed build ([deplo
 - A work item's record is the latest `deploy.changed` since its hold started, so a hold that starts again (after a rollback) waits for a deploy pull request of its own. A state that differs from it is appended, so the decision is the store's, and a line that starts again appends nothing twice.
 - A pull request recorded for a work item that is no longer the open proposal is read by its number: merged or closed is recorded only as GitHub says, never because the GitHub worker, just restarted, knows no proposal yet.
 - Once the pull request that carries it has merged, a newer build's is not followed: until Argo CD syncs, `carried` still counts the fix from the version the app runs, and the newer one is not its deploy.
-- A dry run's deploy pull request, which GitHub never had (`DRY_RUN_NUMBERS_FROM` up), is never recorded.
+- A dry run's deploy pull request, which GitHub never had (`DRY_RUN_NUMBERS_FROM` up), is never recorded, so a dry run never adds one to the queue either.
 - A read that fails leaves that work item to the next pass.
+
+### The line adds it to the queue
+
+Once the app's deploy pull request's checks have passed, the line adds it to the merge queue itself (`enqueuePullRequest`, through the GitHub worker, at the head whose checks passed, so a newer build since is refused) when every one of these holds; otherwise it waits for Martin, and `waits` says why:
+
+| `waits` | The line does not add it because |
+| --- | --- |
+| `verdict` | the review gate's verdict on that head, read from the review App's own `review` check alone ([approval routing](APPROVAL-ROUTING.md#the-lines-part)), is not an exact pin: a hold, another rule (in `rule`), none, or one for another head |
+| `level` | the autonomy level adds nothing to the queue by `exact-pin`: Supervised (`ENQUEUES`, `policy/line.ts`) |
+| `auto-merge` | auto-merge is off |
+| `conflict` | it conflicts with main |
+| `refused` | the GitHub worker's guard or GitHub refused to add it (in `said`) |
+
+- While the gate's check on the head runs, or concluded with a hold marked `pending` less than fifteen minutes ago (`PENDING_LIMIT_MS`, as for a fix), the gate is still judging it: the record stays `checking`, since the gate is not among the checks the line judges, and the pull request is nobody's yet.
+- It adds a head once. Added, the queue merges it, which the read of the pull request records as `merged`, or takes it out, recorded as `dequeued`; a head refused is not asked again. A newer build's head is judged afresh. A refusal for a head that moved since (409) records nothing, and the next pass reads the new head.
+- The action is for the first held work item the pull request carries, so a refusal the worker signs is relayed once, on that one ([refusals](ORCHESTRATOR.md#refusals-it-records-for-others)); every carried work item records where the pull request stands.
+- Only the app's deploy pull requests. The factory's own deploy pull requests are Martin's to merge, and the line does not watch them. Acting on one work item (Just one), the line adds one only when it carries no other, as the release watch leaves a release that carries another to the whole line.
 
 ## The release watch
 
@@ -152,6 +171,7 @@ The windows and counts are `policy/release.ts`'s `verify`.
 - **A gap in the metrics.** A path whose series had a gap in one of the windows (no sample at its start, some in the day before, as the watcher counts it) came back with its running total, which would read as wrong metrics or a missing log either way, so it is left out, as the watcher leaves it out. The route's other paths can still show the ticket persists; it clears only once none of its paths had a gap, and until then Verify waits ("the metrics had a gap"). On `*` the other routes are judged, and Verify waits only when too few requests are left without the gap.
 - **Without Tempo.** A missing log is judged on the metrics and the log alone, as the watcher judges it when the traces are late; wrong metrics wait, since only the traces say the metrics are the odd one out.
 - **Can't tell yet.** A look that cannot tell (too little traffic, a check that could not finish, a sense the line has no address for) looks again later, and holds after 24 hours with its reason.
+- **A quiet route waits.** Where a sense counts requests (an alert, a log pattern, the agreement check), "enough requests" is the objectives' `minRequests` (20) on the route, on the new version, within the window (`policy/release.ts`'s `verify`, 30 minutes). The traffic generator walks only what the app's pages link to and its search, so a route no page links to, such as `/api/products`, waits for visitors: on the local cluster, until someone sends it requests.
 - **Another release.** A look during which another release promoted counts for nothing.
 
 ### Outcomes
@@ -176,7 +196,7 @@ One fix can clear more than its own ticket: a change that gives the home page's 
 
 - **As the line takes a ticket** (`for: take`), before its issue opens and the planner starts, when its signal was last seen on a version before the one the stable Service runs. Not for a ticket planned before, reopened, held or waiting, nor once its issue is open or a step of it has failed. A sense that cannot tell is recorded as `unsure` at once, so a sense that is down holds up no ticket; `persists` or `unsure`, the ticket goes on to Plan, and that release is not looked at for it again.
 - **As Verify clears a fix** (`for: fix`), at each open ticket the line has not taken whose first signal's sense and symptom are the fix's own, up to ten, oldest first, whose signal was last seen on a version before the one Verify looked at, one at a time, and no other look again starts meanwhile. Only what cleared or persists is recorded; a ticket the sense could not tell of is looked at as it is taken. Not with Just one, which leaves every other work item as it is.
-- **Cleared**, the ticket closes as verified by itself, with no issue opened and nothing spent on a model. Its `work-item.closed` says what cleared it and names the fixes released since its signal and their pull requests ("with the fix of work item #1009 (pull request #120)"); nothing is added to the fixing work item's own events. A ticket closed as the line took it is one the line looked at, not one it worked on: it counts toward neither The next few nor `LINE_TAKE`, and the line takes the next at once.
+- **Cleared**, the ticket closes as verified by itself, with no issue opened and nothing spent on a model. Its `work-item.closed` says what cleared it and names the fixes released since its signal and their pull requests ("with the fix of work item #1009 (pull request #120)"); nothing is added to the fixing work item's own events. A ticket closed as the line took it is one the line looked at, not one it worked on: it does not count toward The next few, and the line takes the next at once.
 - Events are never rewritten: tickets closed before this look, as #1010 and #1011 were with no change, stay as they closed.
 
 ### Pictures
@@ -246,4 +266,4 @@ A dry run's release never shipped, so it sets off no look again at a held or wai
 
 ## With just one work item
 
-With Martin's take of Just one, or `LINE_ONLY` with no take set ([orchestrator](ORCHESTRATOR.md#taking-work)), the watch records only a release that carries that work item or none. One that also carries another is left for the whole line, and that work item stays held at Release. The line says nothing of what the deploy pull request carries, but still records where it stands for that work item. Its spec waits for no other work item, and the stable version a look again reads may lag the app's, since a release that carries others goes unrecorded.
+With Martin's take of Just one ([orchestrator](ORCHESTRATOR.md#taking-work)), the watch records only a release that carries that work item or none. One that also carries another is left for the whole line, and that work item stays held at Release. The line says nothing of what the deploy pull request carries, but still records where it stands for that work item. Its spec waits for no other work item, and the stable version a look again reads may lag the app's, since a release that carries others goes unrecorded.

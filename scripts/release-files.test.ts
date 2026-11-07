@@ -27,6 +27,9 @@ describe('the files a release changes', () => {
       // The kind job, which tells a release by them.
       'scripts/check-kind.sh',
       'scripts/check-kind.test.ts',
+      // The review gate, which tags a change to them alone as a release.
+      'scripts/review-routing.test.ts',
+      'scripts/review-routing.ts',
     ]);
   });
 
@@ -58,6 +61,8 @@ describe('the files a release changes', () => {
       'scripts/check-kind.test.ts',
       // flagd's evaluation library's own package.json, as for the test above.
       'scripts/flagd-sides.ts',
+      // The review gate's tests, which tag a change to package.json, and read its verdict's version.
+      'scripts/review-routing.test.ts',
       // package.json's packageManager, beside mise.lock's pnpm, and not its version line.
       'scripts/toolchain.test.ts',
     ]);

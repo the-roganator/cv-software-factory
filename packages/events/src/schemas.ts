@@ -770,6 +770,11 @@ export const PAYLOADS = {
    */
   'review.submitted': z.strictObject({
     pullRequest,
+    /**
+     * The pull request's head the reviewer was given: the line adds a pull request to the merge queue only at the head
+     * its reviewer passed. Absent from a review before review.submitted version 5.
+     */
+    commit: commit.optional(),
     verdict: z.enum(['approved', 'changes-requested', 'escalated']),
     note: text(300),
     findings: z
@@ -818,26 +823,101 @@ export const PAYLOADS = {
       refused: z.literal(true).optional(),
     })
     .refine((a) => a.findings + a.suggestions > 0, 'an acceptance answers at least one thread'),
+  /**
+   * The line added its pull request to the merge queue, at the head the review gate judged (`expectedHeadOid`), by the
+   * gate's rule that the autonomy level allows with auto-merge on. The queue merges it once every required check
+   * passes on its commit; GitHub then names the factory as the merger. A dry run's is recorded by the GitHub worker,
+   * and marked.
+   */
+  'pull-request.enqueued': z.strictObject({
+    number: pullRequest,
+    commit,
+    rule: z.enum(V.GATE_RULES),
+    /** Its place in the queue, as GitHub gave it, when it gave one. */
+    position: z.number().int().positive().optional(),
+    dryRun: z.literal(true).optional(),
+  }),
+  /**
+   * The merge queue took a pull request the line had added out, without merging it: its checks failed on the queue's
+   * commit, it conflicted, or someone took it out. GitHub's reason, and the required checks that failed there, so the
+   * wait that follows is explained. The work item holds for Martin.
+   */
+  'pull-request.dequeued': z.strictObject({
+    number: pullRequest,
+    /** The head that was queued. */
+    commit,
+    /** GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `dequeued`, … */
+    reason: text(60),
+    /** Who took it out, as GitHub names them: `github-merge-queue` when the queue did. */
+    by: text(39).optional(),
+    /** The queue's commit it was tested on. */
+    queueCommit: commit.optional(),
+    /** The checks that failed on that commit. */
+    failed: z.array(text(80)).max(40),
+  }),
   'pull-request.merged': z.strictObject({ number: pullRequest, commit, by: z.enum(['martin', 'factory']) }),
 
   /**
    * The app's deploy pull request that carries a merged work item held for a deploy changed for it: it opened or
-   * moved to a new head, and its required checks run there; they all passed, or some failed; it merged; or it was
-   * closed unmerged. The line reads it from GitHub and records each change on every held work item it carries, so the
-   * console can link it and say whether it waits for Martin yet. A dry run's deploy pull request is never recorded.
+   * moved to a new head, and its required checks run there; they all passed, or some failed; the line added it to the
+   * merge queue, or the queue took it out; it merged; or it was closed unmerged. The line reads it from GitHub and
+   * records each change on every held work item it carries, so the console can link it and say whether it waits for
+   * Martin yet, and why. A dry run's deploy pull request is never recorded.
    */
   'deploy.changed': z
     .strictObject({
       pullRequest,
-      /** The pull request's head: the commit its checks run on. */
+      /** The pull request's head: the commit its checks run on, and the one the line added to the queue. */
       commit,
       state: z.enum(V.DEPLOY_STATES),
-      /** The required checks that failed there, on `failed` only. */
+      /**
+       * The required checks that failed: on its head, on `failed`, which always names one; on the queue's commit, on
+       * `dequeued`, when any did.
+       */
       failed: z.array(text(80)).min(1).max(40).optional(),
+      /** On `passed`, why the line has not added it to the queue, so it waits for Martin. A version 1 record never said. */
+      waits: z.enum(V.DEPLOY_WAITS).optional(),
+      /**
+       * The review gate's rule for its head: on `queued`, the one the line added it by, `exact-pin`; on `passed` waiting for the
+       * verdict, the one the gate gave instead of an exact pin, when it gave one.
+       */
+      rule: z.enum(V.GATE_RULES).optional(),
+      /** On `queued`, its place in the queue, as GitHub gave it, when it gave one. */
+      position: z.number().int().positive().optional(),
+      /** On `dequeued`, GitHub's reason, lower-case: `failed_checks`, `merge_conflict`, `dequeued`, … */
+      reason: text(60).optional(),
+      /** On `passed` and refused, what the GitHub worker said. */
+      said: text(300).optional(),
     })
-    .refine((d) => (d.state === 'failed') === (d.failed !== undefined), {
-      message: 'a deploy whose checks failed names them, and no other does',
+    .refine((d) => (d.state === 'failed' ? d.failed !== undefined : d.state === 'dequeued' || !d.failed), {
+      message: 'a deploy whose checks failed names them, and only one taken out of the queue may too',
       path: ['failed'],
+    })
+    .refine((d) => d.state === 'passed' || d.waits === undefined, {
+      message: 'only a deploy whose checks passed waits for a reason',
+      path: ['waits'],
+    })
+    .refine(
+      (d) =>
+        d.state === 'queued'
+          ? d.rule === 'exact-pin'
+          : d.rule === undefined || (d.waits === 'verdict' && d.rule !== 'exact-pin'),
+      {
+        message: 'a queued deploy was added as an exact pin, and only one that waits for a verdict names another rule',
+        path: ['rule'],
+      },
+    )
+    .refine((d) => d.state === 'queued' || d.position === undefined, {
+      message: 'only a queued deploy has a place in the queue',
+      path: ['position'],
+    })
+    .refine((d) => (d.state === 'dequeued') === (d.reason !== undefined), {
+      message: 'a deploy taken out of the queue says why, and no other does',
+      path: ['reason'],
+    })
+    .refine((d) => d.waits === 'refused' || d.said === undefined, {
+      message: 'only a deploy the queue would not take says what was said',
+      path: ['said'],
     }),
 
   /**
@@ -1138,6 +1218,43 @@ export const PAYLOADS = {
        * or Error ends the hold.
        */
       release: releaseId.optional(),
+      /**
+       * A `merge` hold's pull request as the review gate judged it, and why the line does not add it to the merge
+       * queue itself. Absent from a merge hold before hold.started version 11, and from one made with nothing read.
+       */
+      merge: z
+        .strictObject({
+          pullRequest,
+          /** The head it was held at. */
+          head: commit,
+          why: z.enum(V.MERGE_HOLDS),
+          /** The gate's rule, when it judged that head. */
+          rule: z.enum(V.GATE_RULES).optional(),
+          /** The risk tags the gate found in the diff, each with what gave it, as its verdict names them. */
+          tags: z
+            .array(
+              z.strictObject({
+                tag: z.enum(V.GATE_TAGS),
+                because: z.array(text(PATH_CHARS)).max(20),
+                more: z.number().int().positive().optional(),
+              }),
+            )
+            .max(V.GATE_TAGS.length)
+            .optional(),
+          /** The gate's own words: its check's title, verbatim. */
+          said: text(300).optional(),
+          /** The gate's check run, to read it on GitHub. */
+          check: z.url().max(300).optional(),
+          /** Whether Martin's approval of the head on GitHub sends it to the merge queue: the line then adds it. */
+          approving: z.boolean(),
+          /** A queue's hold: GitHub's reason, and the checks that failed on the queue's commit. */
+          queue: z.strictObject({ reason: text(60), failed: z.array(text(80)).max(40) }).optional(),
+        })
+        .optional(),
+    })
+    .refine((hold) => hold.merge === undefined || hold.cause === 'merge', {
+      message: 'only a merge hold names the pull request as the gate judged it',
+      path: ['merge'],
     })
     .refine((hold) => (hold.cause === 'finding') === (hold.defect !== undefined), {
       message: 'a finding’s hold, and only one, names the defect',
@@ -1358,6 +1475,11 @@ export const PAYLOADS = {
    * table marks as needing it. Its name is Martin's alone, as above.
    */
   'admin.stepped-up': z.strictObject({ passkey: passkeyName.optional() }),
+  /**
+   * Martin ended the passkey given again before its five minutes were up, in the session that gave it: the next action
+   * that needs it asks for it again. It only tightens, so it takes no passkey of its own.
+   */
+  'admin.step-up-ended': z.strictObject({}),
   /** A passkey made with a one-time code from `factory admin enrol`. Its name is Martin's alone, as above. */
   'passkey.enrolled': z.strictObject({ passkey: passkeyName.optional() }),
   /**
@@ -1445,15 +1567,15 @@ export const PAYLOADS = {
    * Martin changed one of the line's controls in the console (`policy/line.ts`): every control as it now stands, and
    * the one he changed, with its value before and after. The line and the admin service read the latest one his roles
    * appended, and check it against policy as they read it: anything outside it is not in force, and policy's default
-   * is. Nothing routes by the autonomy level or auto-merge until approval routing comes (Part C); the line acts on
-   * the switch for new work and on what it takes from its next pass. Auto-rollback reaches the canary's analysis as
+   * is. The line acts on the switch for new work and on what it takes from its next pass, and adds its pull request to
+   * the merge queue only by a review gate rule the autonomy level allows, with auto-merge on (`ENQUEUES`). Auto-rollback reaches the canary's analysis as
    * two series, the admin service's read of it and the line's (`release/analysis.ts`).
    */
   'controls.changed': z.strictObject({
     autonomy: z.enum(V.AUTONOMY),
     newWork: z.boolean(),
     autoMerge: z.boolean(),
-    /** None: no take set, so the line's own default (`LINE_TAKE`, `LINE_ONLY`) is in force. */
+    /** None: no take set, so the line takes every ticket. */
     take: take.nullable(),
     /** Whether a canary the analysis judges bad rolls back by itself; off, it pauses for Martin. */
     autoRollback: z.boolean(),

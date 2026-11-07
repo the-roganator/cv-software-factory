@@ -4,11 +4,11 @@
  * no label on one, does.
  *
  * - **The guard.** Any action on an issue or pull request the App did not open (commenting, labelling, closing,
- *   reopening; updating, describing, readying or drafting, reviewing, resolving threads) is refused before GitHub is
- *   asked to change anything, whoever asks: the line through the worker's step API, or a watch. Each refusal is kept,
- *   logged and signed as `github-guard` (`refusals.ts`), and the action fails with `IssueRefused`, carrying it, which
- *   the worker answers 403, as GitHub answers an issue the App may not change. A pull request is an issue to GitHub,
- *   so one the App opened passes, as its issues do.
+ *   reopening; updating, describing, readying or drafting, reviewing, resolving threads, adding to the merge queue)
+ *   is refused before GitHub is asked to change anything, whoever asks: the line through the worker's step API, or a
+ *   watch. Each refusal is kept, logged and signed as `github-guard` (`refusals.ts`), and the action fails with
+ *   `IssueRefused`, carrying it, which the worker answers 403, as GitHub answers an issue the App may not change. A
+ *   pull request is an issue to GitHub, so one the App opened passes, as its issues do.
  * - **The reply.** An issue opened by anyone but Martin or the App gets one comment, `OUTSIDE_REPLY`, the one
  *   exception the guard makes, and only with those words: it echoes nothing of the issue, so nothing anyone writes
  *   in one is repeated by the App. Nothing else is done to it.
@@ -54,7 +54,8 @@ export type IssueAction =
   | 'convertToDraft'
   | 'review'
   | 'resolveThreads'
-  | 'closePullRequest';
+  | 'closePullRequest'
+  | 'enqueuePullRequest';
 
 /** What an issue's opener is, as the guard asks: their numeric id (null for a deleted account), and whether it is a pull request. */
 export interface Opened {
@@ -103,6 +104,7 @@ const DOING: Record<IssueAction, string> = {
   review: 'Review',
   resolveThreads: 'Resolve the threads on',
   closePullRequest: 'Close',
+  enqueuePullRequest: 'Add to the merge queue',
 };
 
 export interface IssueGuardOptions {

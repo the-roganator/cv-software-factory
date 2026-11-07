@@ -12,6 +12,7 @@ import { type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/event
 import { DiskArtifacts, EventWriter, nextWorkItem } from '@software-factory/store';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { setTake, startLine } from '../../../../packages/store/test/line.ts';
 import type { Handback } from '../../../runner/src/step.ts';
 import { LOCAL_MODEL_PACE } from '../../src/line/agents/agent.ts';
 import type { Carrying } from '../../src/line/metrics.ts';
@@ -45,7 +46,8 @@ beforeEach(async () => {
   events = new EventWriter(database.as.line, {
     kind: 'real',
     artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
-  });
+  }); // Started a day ago: a work item's time runs from the line's last start.
+  await startLine(database.admin, new Date(Date.now() - 24 * 60 * 60_000));
 });
 afterEach(() => database?.end());
 
@@ -581,7 +583,8 @@ describe('the line’s metrics', () => {
     const workItem = await ticket();
     await database.as.line`insert into line (work_item, stage) values (${workItem}, 'review')`;
     // A line for another work item leaves this one where it is; the figures are the whole store's.
-    const { line: it } = line({}, { only: 'none' });
+    await setTake(database.admin, { kind: 'just-one', workItem: '999999999' });
+    const { line: it } = line({});
     const abort = new AbortController();
     const running = it.run(abort.signal);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -639,6 +642,8 @@ describe('the line’s metrics', () => {
     }
     at(hour);
     await events.append([
+      // Held again for its merge, as the review gate's word on it changed: the wait is one, from the first.
+      event(merge, 'hold.started', hold('merge', 'review')),
       event(ready, 'deploy.changed', deploy('passed')),
       event(closed, 'work-item.closed', { outcome: 'no-change', reason: 'Closed' }, 'martin'),
     ]);

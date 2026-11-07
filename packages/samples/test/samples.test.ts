@@ -1,12 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { createHash, createPublicKey, verify } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ADMIN_TYPES, AGENTS, KINDS, type PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { mayAppend } from '../../../policy/refusals.ts';
 import { MARTINS_ROLES, STORE_GRANTS } from '../../../policy/store-grants.ts';
-import { LOG } from '../src/captures.ts';
+import { ARTIFACTS, LOG } from '../src/captures.ts';
 import { publicSamples } from '../src/export.ts';
 import { sampleEvents } from '../src/index.ts';
+import { RECORDS, SAMPLE_REFUSAL_KEY } from '../src/refusals.ts';
 import { appenderOf } from '../src/roles.ts';
 
 const events = sampleEvents();
@@ -174,7 +176,8 @@ describe('the samples', () => {
         expect(mayAppend(event.payload.mechanism, event.appended_by ?? ''), event.payload.mechanism).toBe(true);
       }
     }
-    // The coder's scope fence is the line's to record; triage records its own quarantine.
+    // The coder's scope fence is the line's to record, as are admission control's refusals and those the GitHub worker
+    // answers it with; triage records its own quarantine, and the gateway its own.
     expect(
       Object.fromEntries(
         Object.entries(Object.groupBy(of('action.refused'), (event) => event.payload.mechanism)).map(
@@ -182,10 +185,48 @@ describe('the samples', () => {
         ),
       ),
     ).toEqual({
+      'admission-control': ['factory_line'],
+      gateway: ['factory_gateway'],
+      'github-guard': ['factory_line'],
+      'review-gate': ['factory_line'],
       'scope-fence': ['factory_line'],
+      'token-permission': ['factory_line'],
       'typed-judgement': ['factory_triage'],
     });
     expect(new Set(of('signal.received').map((event) => event.appended_by))).toEqual(new Set(['factory_triage']));
+  });
+
+  it('sign each relayed refusal’s record with their own key, but the one changed after, and publish only its check', () => {
+    const key = createPublicKey(SAMPLE_REFUSAL_KEY);
+    const relayed = of('action.refused').filter((event) => event.payload.record !== undefined);
+    // The folder is published whole: it holds each one's check, and never its record or the key.
+    expect(existsSync(join(LOG, 'refusal-key.pem'))).toBe(false);
+    expect(Object.keys(JSON.parse(readFileSync(join(LOG, 'refusals.json'), 'utf-8')))).toEqual(
+      relayed.map((event) => String(event.seq)),
+    );
+    const checked = relayed.map((event) => {
+      const { record = '', signature = '' } = event.payload;
+      expect(existsSync(join(ARTIFACTS, record))).toBe(false);
+      const bytes = Buffer.from(RECORDS.get(record) ?? new Uint8Array());
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(record);
+      expect(verify(null, bytes, key, Buffer.from(signature, 'base64'))).toBe(true);
+      // The record holds the payload as signed: one whose public words differ was redacted, or changed after.
+      const signed = (JSON.parse(bytes.toString('utf-8')) as { payload: { action: string; output: string } }).payload;
+      return [
+        event.payload.mechanism,
+        signed.action === event.payload.action && signed.output === event.payload.output
+          ? 'as signed'
+          : signed.action === event.payload.action
+            ? 'redacted'
+            : 'changed',
+      ];
+    });
+    expect(checked).toEqual([
+      ['github-guard', 'as signed'],
+      ['review-gate', 'redacted'],
+      ['token-permission', 'changed'],
+      ['github-guard', 'as signed'],
+    ]);
   });
 
   it('hold no red-team attack: the samples never fabricate one, as Martin launches each live', () => {

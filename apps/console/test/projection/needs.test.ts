@@ -8,6 +8,7 @@ import { answersTo, HOLD_CAUSES, type HoldCause, type PayloadOf } from '@softwar
 import { describe, expect, it } from 'vitest';
 import { GUARDRAIL_HOLDS as TABLE } from '../../../../policy/access.ts';
 import { GUARDRAIL_HOLDS } from '../../web/src/access.ts';
+import { clock } from '../../web/src/format.ts';
 import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { needsView } from '../../web/src/projection/needs.ts';
@@ -312,7 +313,7 @@ describe('Needs you', () => {
     });
   });
 
-  it('says what a deploy waits for in each state, links its pull request, and says it waits for Martin once its checks pass', () => {
+  it('says what a deploy waits for in each state, links its pull request, and says it waits for Martin once its checks pass and the line does not queue it', () => {
     // Not a sample's: its deploy pull request is GitHub's, and the card links it.
     const merged = work('2042', START)
       .add(0, 'work-item.opened', 'factory', { kind: 'defect-fix', title: 'Item 2042', sample: false })
@@ -341,6 +342,36 @@ describe('Needs you', () => {
         'Deploy #41 carries it, and its checks passed: merging it is yours, on GitHub, and a release that carries it ends this wait by itself.',
       ],
       [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'level' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; at Supervised the line adds nothing to the merge queue: merging it is yours, on GitHub, and at Guarded with auto-merge on the line would add it. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'verdict', rule: 'held' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; the review gate did not pass it as an exact pin (held), and the line adds only an exact pin to the merge queue: merging it is yours, on GitHub. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'auto-merge' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; with auto-merge off, merging it is yours, on GitHub; switched on, the line adds it to the merge queue. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'passed', waits: 'refused', said: 'Resource not accessible' },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and its checks passed; the line was refused when it added it to the merge queue (Resource not accessible): merging it is yours, on GitHub. A release that carries it ends this wait by itself.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'queued', rule: 'exact-pin', position: 1 },
+        'Its deploy is in the merge queue',
+        'Deploy #41 carries it, and the review gate passed it as an exact pin: the line added it to the merge queue, which merges it once its checks pass there.',
+      ],
+      [
+        { pullRequest: 41, commit: head(2), state: 'dequeued', reason: 'failed_checks', failed: ['e2e'] },
+        'Waiting for your deploy',
+        'Deploy #41 carries it, and the merge queue took it out (failed_checks): e2e failed on its commit. Merging it is yours, on GitHub; a newer build moves it on, and the line tries again.',
+      ],
+      [
         { pullRequest: 41, commit: head(2), state: 'closed' },
         'Its deploy was closed',
         'Deploy #41 was closed unmerged; the next build’s deploy pull request carries it.',
@@ -357,6 +388,12 @@ describe('Needs you', () => {
       /^Merged at \d\d:\d\d\. The App opens the deploy pull request that carries it once its image is built and signed; merging that will be yours, on GitHub\.$/,
     );
     expect(at(2).outcome).toBe('deploying');
+    const THERE: Record<string, string | undefined> = {
+      checking: 'checks',
+      passed: 'deploy',
+      queued: 'deploy-queued',
+      dequeued: 'deploy-dequeued',
+    };
     steps.forEach(([change, kicker, text], i) => {
       merged.add(10 + i, 'deploy.changed', 'factory', change);
       const { need, outcome } = at(10 + i);
@@ -364,21 +401,26 @@ describe('Needs you', () => {
       expect(
         String((need?.evidence as { text?: string } | undefined)?.text).replace(/^Merged at \d\d:\d\d\. /, ''),
       ).toBe(text);
-      // The deploy pull request is the way on only while its checks run or have passed: failed, closed or merged, a
-      // newer build or Argo CD moves the fix on, and the card offers no way there.
+      // The deploy pull request is the way on only while it is open and its checks have not failed: failed, closed or
+      // merged, a newer build or Argo CD moves the fix on, and the card offers no way there.
       expect(need?.way).toEqual(
-        change.state === 'checking' || change.state === 'passed'
+        THERE[change.state]
           ? {
               verb: 'Deploy',
               pullRequest: change.pullRequest,
               href: `https://github.com/the-roganator/cv-worlds-worst-website/pull/${change.pullRequest}`,
+              // What Martin does there, which the card says beside it: merge it once its checks pass, now, or once he
+              // has seen why the queue took it out; or nothing, while the queue merges it.
+              there: THERE[change.state],
             }
           : undefined,
       );
       expect(need?.link).toBeUndefined();
-      // Only once its checks pass is it Martin's: then its card says Needs you, flashing, and Needs you counts it.
-      expect(outcome).toBe(change.state === 'passed' ? 'needs-you' : 'deploying');
-      expect(need?.forMartin).toBe(change.state === 'passed');
+      // Only once its checks pass and the line has not queued it, or the queue took it out, is it Martin's: then its
+      // card says Needs you, flashing, and Needs you counts it.
+      const his = change.state === 'passed' || change.state === 'dequeued';
+      expect(outcome).toBe(his ? 'needs-you' : 'deploying');
+      expect(need?.forMartin).toBe(his);
     });
   });
 
@@ -393,6 +435,220 @@ describe('Needs you', () => {
       ['2050', true],
       ['2051', false],
     ]);
+  });
+
+  describe('a merge the line holds for Martin, by why it does not add it to the merge queue itself', () => {
+    const HEAD = '4e1c2a9'.padEnd(40, '0');
+    const merge = (
+      why: NonNullable<PayloadOf<'hold.started'>['merge']>['why'],
+      extra: Partial<NonNullable<PayloadOf<'hold.started'>['merge']>> = {},
+      reason = `Held: ${why}`,
+    ) =>
+      hold('merge', {
+        stage: 'review',
+        kind: 'approval',
+        reason,
+        merge: { pullRequest: 1327, head: HEAD, why, approving: false, ...extra },
+      });
+    const pushed = {
+      number: 1327,
+      branch: 'factory/2070',
+      commit: HEAD,
+      files: [],
+      whole: [],
+    } as unknown as PayloadOf<'pull-request.pushed'>;
+    const needOf = (payload: PayloadOf<'hold.started'>, opened = work('2070', START).open()) => {
+      const item = opened.add(1, 'pull-request.pushed', 'coder', pushed).add(30, 'hold.started', 'factory', payload);
+      return needsView(foldItems(item.events), START + 60 * 60_000).holds[0];
+    };
+
+    it('draws the review gate’s hold for its risk tags: its words, a cross for each tag, and its way, Review', () => {
+      const need = needOf(
+        merge('held', {
+          rule: 'held',
+          said: 'Guarded: the factory’s App opened #1327, so it passes only if low-risk',
+          tags: [
+            { tag: 'dependency-change', because: ['pnpm-lock.yaml', 'pnpm-workspace.yaml'] },
+            { tag: 'test-loosening', because: ['test/search.test.ts'], more: 2 },
+          ],
+          approving: true,
+        }),
+      );
+      expect(need).toMatchObject({
+        kicker: 'Held for its risk tags',
+        stage: 'review',
+        evidence: {
+          kind: 'gate',
+          said: 'Guarded: the factory’s App opened #1327, so it passes only if low-risk',
+          tags: [
+            { tag: 'dependency-change', because: 'pnpm-lock.yaml, pnpm-workspace.yaml' },
+            { tag: 'test-loosening', because: 'test/search.test.ts, and 2 more' },
+          ],
+          clear: ['no path CODEOWNERS gives Martin', 'not a release, not an improvement'],
+          head: HEAD,
+          approving: true,
+        },
+        // Martin approves it on GitHub: no Merge, no Approve, and words go to the coder.
+        way: { verb: 'Review', pullRequest: 1327, href: undefined, there: 'approve' },
+        note: undefined,
+      });
+      expect(need?.answers.map((a) => [a.label, a.does])).toEqual([
+        ['Answer in words', 'Sends it back to the coder, with your words as the reason.'],
+        // A sample's pull request never existed, so nothing is left open.
+        ['Reject', 'Closes #2070, unmerged.'],
+      ]);
+      // Its pull request on GitHub, for one that is not a sample's.
+      const real = work('2070', START).add(0, 'work-item.opened', 'factory', {
+        kind: 'defect-fix',
+        title: 'Real',
+        sample: false,
+      });
+      const realNeed = needOf(merge('held', { approving: false }), real);
+      expect(realNeed?.way).toEqual({
+        verb: 'Review',
+        pullRequest: 1327,
+        href: 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1327',
+        there: 'approve-merge',
+      });
+      // The line closes the work item and its issue, and leaves the pull request open.
+      expect(realNeed?.answers.find((a) => a.answer === 'rejected')?.does).toBe(
+        'Closes #2070, unmerged. Its pull request #1327 stays open on GitHub until you close it.',
+      );
+      // With no tags read, the gate said nothing clear either.
+      expect(needOf(merge('held', { tags: undefined }))?.evidence).toMatchObject({ kind: 'gate', tags: [], clear: [] });
+      // Held with no tags, for what the gate could not read or trust: the gate's hold, not its tags'.
+      for (const tags of [undefined, []]) {
+        expect(needOf(merge('held', { rule: 'held', tags }))?.kicker).toBe('Held by the review gate');
+      }
+      // Its chapter is a hold, as a gate's is.
+      const held = work('2072', START).open().add(1, 'pull-request.pushed', 'coder', pushed);
+      held.add(30, 'hold.started', 'factory', merge('held', { rule: 'held' }));
+      expect(projectSheet(project(held.events, START + 60 * 60_000), '2072')?.chapters.at(-1)).toMatchObject({
+        label: 'HELD',
+        tone: 'attn',
+      });
+      // A tag it found is not drawn clear.
+      const owned = needOf(merge('held', { tags: [{ tag: 'code-owned', because: ['src/flags/index.ts'] }] }));
+      expect(owned?.evidence).toMatchObject({ clear: ['not a release, not an improvement'] });
+    });
+
+    it('says what would let the line merge one the level or auto-merge holds', () => {
+      expect(needOf(merge('level', { rule: 'low-risk' }))).toMatchObject({
+        kicker: 'Waiting for your merge',
+        evidence: { kind: 'words', text: 'Held: level' },
+        note: 'At Guarded or Lights-out, with auto-merge on, the line would add it to the merge queue itself.',
+        way: { verb: 'Merge', pullRequest: 1327, there: 'merge' },
+      });
+      expect(needOf(merge('level', { rule: 'lights-out' }))?.note).toBe(
+        'At Lights-out, with auto-merge on, the line would add it to the merge queue itself.',
+      );
+      // Martin's own pull request is his to merge at every level.
+      expect(needOf(merge('level', { rule: 'martin-opened' }))?.note).toBeUndefined();
+      expect(needOf(merge('auto-merge', { rule: 'low-risk' }))?.note).toBe(
+        'With auto-merge on, the line would add it to the merge queue itself.',
+      );
+      expect(needOf(merge('never'))?.answers.map((a) => a.answer)).toEqual(['answered', 'replanned', 'rejected']);
+    });
+
+    it('says why a conflict, or the merge queue, holds it, with the checks that failed on the queue’s commit', () => {
+      // Its way says what stands before the merge: the conflict put right, or why the queue took it out or refused it.
+      expect(needOf(merge('conflict'))).toMatchObject({
+        kicker: 'Conflicts with main',
+        way: { verb: 'Merge', there: 'conflict' },
+      });
+      expect(needOf(merge('queue', { queue: { reason: 'dequeued', failed: [] } }))?.way?.there).toBe('queue');
+      expect(needOf(merge('refused'))?.way?.there).toBe('queue');
+      expect(
+        needOf(merge('queue', { queue: { reason: 'failed_checks', failed: ['e2e', 'CodeQL'] } }))?.evidence,
+      ).toEqual({ kind: 'output', heading: 'merge queue · failed_checks · PR #1327', text: '✕ e2e\n✕ CodeQL' });
+      expect(needOf(merge('queue', { queue: { reason: 'dequeued', failed: [] } }))).toMatchObject({
+        kicker: 'Out of the merge queue',
+        evidence: { text: 'No check failed on its commit.' },
+      });
+      expect(needOf(merge('refused'))?.kicker).toBe('The merge queue refused it');
+    });
+
+    it('ends the hold as the line adds it to the merge queue, and the sheet says it is there', () => {
+      const item = work('2071', START)
+        .open()
+        .add(1, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2071' })
+        .add(30, 'hold.started', 'factory', merge('auto-merge', { rule: 'low-risk' }))
+        .add(40, 'pull-request.enqueued', 'factory', { number: 1327, commit: HEAD, rule: 'low-risk' });
+      const t = START + 50 * 60_000;
+      const view = project(item.events, t);
+      expect(view.needs.holds).toEqual([]);
+      const items = foldItems(item.events);
+      expect(items[0]?.inQueue).toMatchObject({ number: 1327, rule: 'low-risk', at: START + 40 * 60_000 });
+      const sheet = projectSheet(view, '2071');
+      expect(sheet?.chapters.map((c) => c.label)).toContain('QUEUED');
+      expect(sheet?.after).toEqual({
+        outcome: 'in-progress',
+        text: `In the merge queue since ${clock(START + 40 * 60_000)}: the line added PR #1327, which the review gate passed as low-risk`,
+      });
+      // Taken out unmerged, it is out of the queue, and the line holds it again.
+      const out = item
+        .add(45, 'pull-request.dequeued', 'factory', {
+          number: 1327,
+          commit: HEAD,
+          reason: 'failed_checks',
+          failed: [],
+        })
+        .add(46, 'hold.started', 'factory', merge('queue', { queue: { reason: 'failed_checks', failed: [] } }));
+      const [again] = foldItems(out.events);
+      expect(again?.inQueue).toBeUndefined();
+      expect(
+        needsView(
+          [again].flatMap((i) => i ?? []),
+          t,
+        ).holds[0]?.kicker,
+      ).toBe('Out of the merge queue');
+      expect(projectSheet(project(out.events, t), '2071')?.chapters.map((c) => c.label)).toContain('OUT OF QUEUE');
+    });
+
+    it('keeps a pull request in the queue when the queue takes out an older commit of it, as the line does', () => {
+      const NEWER = 'b'.repeat(40);
+      const item = work('2073', START)
+        .open()
+        .add(1, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2073' })
+        .add(40, 'pull-request.enqueued', 'factory', { number: 1327, commit: NEWER, rule: 'low-risk' })
+        .add(45, 'pull-request.dequeued', 'factory', {
+          number: 1327,
+          commit: HEAD,
+          reason: 'failed_checks',
+          failed: [],
+        });
+      expect(foldItems(item.events)[0]?.inQueue).toMatchObject({ number: 1327, commit: NEWER });
+      // Nor does the sheet say it went out of the queue: it is there still.
+      const t = START + 50 * 60_000;
+      expect(projectSheet(project(item.events, t), '2073')?.chapters.map((c) => c.label)).not.toContain('OUT OF QUEUE');
+      // Once the commit it was added at comes out, it is out.
+      const out = item.add(48, 'pull-request.dequeued', 'factory', {
+        number: 1327,
+        commit: NEWER,
+        reason: 'failed_checks',
+        failed: [],
+      });
+      expect(foldItems(out.events)[0]?.inQueue).toBeUndefined();
+      expect(
+        projectSheet(project(out.events, t), '2073')?.chapters.filter((c) => c.label === 'OUT OF QUEUE'),
+      ).toHaveLength(1);
+    });
+
+    it('says nothing went out of the queue when a push had already taken it out', () => {
+      const item = work('2074', START)
+        .open()
+        .add(1, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2074' })
+        .add(40, 'pull-request.enqueued', 'factory', { number: 1327, commit: HEAD, rule: 'low-risk' })
+        .add(42, 'pull-request.pushed', 'coder', { ...pushed, branch: 'factory/2074', attempt: 2 })
+        .add(45, 'pull-request.dequeued', 'factory', {
+          number: 1327,
+          commit: HEAD,
+          reason: 'failed_checks',
+          failed: [],
+        });
+      const t = START + 50 * 60_000;
+      expect(projectSheet(project(item.events, t), '2074')?.chapters.map((c) => c.label)).not.toContain('OUT OF QUEUE');
+    });
   });
 
   it('shows the samples’ holds, the visitor’s suggestion among them, and its words answered today', () => {
@@ -418,13 +674,12 @@ describe('Needs you', () => {
       'Reject',
     ]);
     // A sample's pull request never existed: the card's way names it, and links nowhere, as the sheet does.
-    const nowhere = 'A sample’s pull request: it never existed, so it links nowhere.';
-    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, why: nowhere });
+    expect(merge?.way).toEqual({ verb: 'Merge', pullRequest: 1312, href: undefined, there: 'merge' });
     expect(needs.holds.find((need) => need.cause === 'deploy')?.way).toEqual({
       verb: 'Deploy',
       pullRequest: 1331,
       href: undefined,
-      why: nowhere,
+      there: 'checks',
     });
     // A spend cap's settings are a link beside its evidence, not a way: the card's way is GitHub's only.
     const spend = needs.holds.find((need) => need.cause === 'spend');

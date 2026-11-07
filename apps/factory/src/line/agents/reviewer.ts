@@ -21,7 +21,8 @@
  *
  * An improvement's spec is held to Martin's request and his answers the same way, and its change to its flag as well:
  * behaviour a visitor could see with the flag off, a criterion no test shows on its side of the flag, the flag read
- * any way but `request.flag`, anything kept on a visitor's device, or a change to the flag context, each blocks.
+ * any way but `request.flag`, a name on the app's list of flag names but its own, anything kept on a visitor's device,
+ * or a change to the flag context, each blocks.
  *
  * The checkout is the pull request's head, with its base beside it as the branch `base` and every commit between
  * (the runner fetches them: `readsChange`), so `git diff base` is the change and `git log base..HEAD` holds what the
@@ -52,7 +53,7 @@ import {
   suggestionsLeft,
   threadAnswers,
 } from '../review.ts';
-import { askedOf, defineAgent, heAnswered, need, words } from './agent.ts';
+import { askedOf, defineAgent, FLAG_NAMES_FILE, heAnswered, need, words } from './agent.ts';
 import { contradictedList, flagLine, side } from './coder.ts';
 import { type Asked, askedLines, askedName, askedTitle, numbered, type Signal } from './evidence.ts';
 
@@ -205,7 +206,7 @@ const howToReviewAnImprovement = (flag: string) => [
   'How to review:',
   '1. Read the rules as they are at the base, so the change cannot loosen them: `git show base:docs/REVIEWERS.md`, and `git show base:AGENTS.md`, whose rules hold for every change.',
   '2. Hold the spec to the request. An improvement does what Martin asked, in his words and his answers, and no more, in every autonomy mode. A criterion he did not ask for (another feature, a fix, a tidy-up) is a blocking finding that cites that criterion with `"ticket":true`, whatever the planner said it is from. The line checked only that each quote is there, not that it asks for its criterion: read the criterion beside its quote, and judge that. Anchor it to the code or test in the diff that meets that criterion, or to the change itself. The other way round too: something his answer asks for that no criterion carries, such as a test or a file to keep as it is, is the spec’s fault, never the change’s, however the change went against his words. It is a blocking finding with `"ticket":true` that cites the criterion the change was meeting where it went against his words, and says in its comment what his answer asks that the spec lacks. Never send the coder round for words the spec never carried.',
-  `3. Hold the change to its flag, \`${flag}\`. Each of these is a blocking finding: anything a visitor or a caller could see change with the flag off, since the change ships off; the flag read any way but \`await request.flag('${flag}')\`, or another flag read; anything kept on a visitor’s device, such as a cookie or anything in the browser’s storage; and a change to the flag context, src/flags/.`,
+  `3. Hold the change to its flag, \`${flag}\`. Each of these is a blocking finding: anything a visitor or a caller could see change with the flag off, since the change ships off; the flag read any way but \`await request.flag('${flag}')\`, or another flag read; any name but \`${flag}\` added to or taken from the app’s list of flag names, ${FLAG_NAMES_FILE}, and \`${flag}\` missing from it; anything kept on a visitor’s device, such as a cookie or anything in the browser’s storage; and a change to the flag context, src/flags/.`,
   '4. Read the whole diff. For each criterion, find the code that meets it and the test that shows it, with the flag on or off as the criterion says. A criterion that nothing in the change meets, or that no test shows on its side of the flag, is a blocking finding that cites it, whatever the commit messages say. A change that does more than the spec’s criteria ask, when the spec itself is sound, is an ordinary blocking finding that cites the criterion it goes beyond, or a rule, without `"ticket"`: the coder can take it out.',
   '5. Hold the change to each rule. A finding about a rule cites its number.',
   '6. Review the diff, not the code around it. The app has other things wrong with it: ask for nothing outside what Martin asked, and nothing outside the scope.',
@@ -423,7 +424,7 @@ export const reviewer = defineAgent<ReviewerInput, ReviewerResult>({
         type: 'review.submitted',
         actor: 'reviewer',
         summary: cutTo(`Review of PR #${pullRequest}: ${shown.check.title}`, 200),
-        payload: { pullRequest, verdict: review.verdict, note: review.note, findings: review.findings },
+        payload: { pullRequest, commit, verdict: review.verdict, note: review.note, findings: review.findings },
       },
     ];
   },

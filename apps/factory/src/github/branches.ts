@@ -11,6 +11,14 @@ import { DEPLOYS } from './deploys.ts';
 /** Where every branch the line makes starts. */
 export const FACTORY_PREFIX = 'factory/';
 
+/**
+ * Where every branch a red-team attack makes starts (`attacks.ts`): the factory's own, so the worker may make and
+ * delete it, and never merged. A fix's branch starts with its work item's number, so none starts here.
+ */
+export const RED_TEAM_PREFIX = `${FACTORY_PREFIX}red-team-`;
+
+export const redTeamBranch = (branch: string): boolean => branch.startsWith(RED_TEAM_PREFIX);
+
 export class BranchRefused extends Error {
   override name = 'BranchRefused';
 }

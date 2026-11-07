@@ -20,7 +20,7 @@
 import { type ArtifactRef, cutAt, cutTo, type Evidence } from '@software-factory/events';
 import type { ArtifactStore } from '@software-factory/store';
 import { type Browser, type BrowserContext, chromium, type Page, type Request, type Response } from 'playwright';
-import { capture } from '../capture.ts';
+import { BROWSER_LAUNCH, capture } from '../capture.ts';
 import { FLAG_NAME, onDevice } from './device.ts';
 import { evidenceOf, pathOf, type RequestHeaders } from './http.ts';
 import { type Device, type Finding, Found, type Observation, type Sense } from './types.ts';
@@ -289,7 +289,8 @@ export class BrowserSense<Shared> implements Sense {
 }
 
 /**
- * The browser a sense uses, launched when first wanted. Callers that ask together share one launch, and a browser that
+ * The browser a sense uses, launched when first wanted, setting text as every browser the factory launches does
+ * (`BROWSER_LAUNCH`) unless the caller launches its own. Callers that ask together share one launch, and a browser that
  * has died (Chromium can crash or be killed) is launched again rather than kept, so that it does not leave every later
  * pass failing until the pod restarts.
  */
@@ -299,7 +300,7 @@ export class SharedBrowser {
   private browser: Promise<Browser> | undefined;
 
   constructor(launch: (() => Promise<Browser>) | undefined) {
-    this.launcher = launch ?? (() => chromium.launch());
+    this.launcher = launch ?? (() => chromium.launch(BROWSER_LAUNCH));
   }
 
   async ready(): Promise<Browser> {

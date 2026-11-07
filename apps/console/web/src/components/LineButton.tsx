@@ -12,11 +12,13 @@ import { ReasonField, Refusal } from './Words.tsx';
 import { useWrite } from './Write.tsx';
 
 /**
- * Stop the line, in `attn`, always one press away; while it is stopped, Start the line in its place, in `signal`, with
- * the key while the passkey is not fresh. Each opens its dialog, which asks for a reason, for the audit log.
+ * Stop the line, in `attn`, always one press away while it runs; while it is stopped, or not yet started, as on a new
+ * store, Start the line in its place, in `signal`, with the key while the passkey is not fresh. Each opens its dialog,
+ * which asks for a reason, for the audit log.
  */
 export function LineButton({ line, token }: { line: LineState; token: string }) {
-  const stopped = line.stopped !== undefined;
+  const stopped = !line.running;
+  const first = !line.running && line.stopped === undefined;
   const stepUp = useStepUp();
   const [open, setOpen] = useState<'stop' | 'start' | undefined>(undefined);
   return (
@@ -38,7 +40,9 @@ export function LineButton({ line, token }: { line: LineState; token: string }) 
           </>
         )}
       </button>
-      {open && <LineDialog kind={open} stopped={stopped} token={token} onClose={() => setOpen(undefined)} />}
+      {open && (
+        <LineDialog kind={open} stopped={stopped} first={first} token={token} onClose={() => setOpen(undefined)} />
+      )}
     </>
   );
 }
@@ -51,12 +55,15 @@ export function LineButton({ line, token }: { line: LineState; token: string }) 
 function LineDialog({
   kind,
   stopped,
+  first,
   token,
   onClose,
 }: {
   kind: 'stop' | 'start';
-  /** Whether the line is stopped now, as the events say. */
+  /** Whether the line is stopped, or not yet started, now, as the events say. */
   stopped: boolean;
+  /** Whether it has never started: the start is its first. */
+  first: boolean;
   token: string;
   onClose: () => void;
 }) {
@@ -85,7 +92,7 @@ function LineDialog({
       {
         passkey: asks ? 'prove' : undefined,
         done: (got) => {
-          // Stopped, with a canary in flight it could not abort: Martin must know, and that `make stop-the-line` will.
+          // Stopped, with a canary in flight it did not abort: Martin must know, and why, and what he can do.
           if (typeof got.body?.warning === 'string') {
             setDone(true);
             return got.body.warning;
@@ -120,7 +127,13 @@ function LineDialog({
       {stop ? (
         <p>
           Every agent stops at the end of its step, nothing new is taken, and a canary in flight is aborted: the version
-          before takes all the traffic. <code>make stop-the-line</code> does the same when the console can’t.
+          before takes all the traffic, unless it has no pod to take it. <code>make stop-the-line</code> does the same
+          when the console can’t.
+        </p>
+      ) : first ? (
+        <p>
+          The line has not started yet. Starting it lets triage take what waits in its inbox and agents take work, as
+          What the line takes says: every ticket, until you choose otherwise in Controls.
         </p>
       ) : (
         <p>

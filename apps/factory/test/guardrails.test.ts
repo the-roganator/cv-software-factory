@@ -203,9 +203,14 @@ describe('what takes each proof', () => {
 
   it('takes the workflow refusal from GitHub itself, and the drill on the cluster the command was given', async () => {
     const ran: { command: string; args: string[]; env?: Record<string, string> }[] = [];
-    // A store that answers its clock, and nothing else.
-    const sql = (async (strings: TemplateStringsArray) =>
-      strings.join('').includes('clock_timestamp') ? [{ now: '2026-10-31T00:00:00.000000Z' }] : []) as unknown;
+    // A store that answers its clock, and that Martin last started the line, and nothing else. An identifier the query
+    // names (`sql('e.type')`) comes back as itself.
+    const sql = ((strings: TemplateStringsArray | string) => {
+      if (typeof strings === 'string') return strings;
+      const query = strings.join('');
+      if (query.includes('clock_timestamp')) return Promise.resolve([{ now: '2026-10-31T00:00:00.000000Z' }]);
+      return Promise.resolve(query.includes("'line.started'") ? [{ type: 'line.started' }] : []);
+    }) as unknown;
     const context = {
       root: new URL('.', ROOT).pathname,
       tmp: '/nonexistent',

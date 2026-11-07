@@ -113,6 +113,9 @@ describe('the last canary a stop aborted', () => {
 });
 
 describe('the stop-the-line drill', () => {
+  // A running line, as Martin left it: only that is drilled.
+  beforeEach(() => append(database.operator, 'line.started', {}));
+
   /** A drill against the test's store: `make` appends Martin's stop and start; the rest is as each test says. */
   function drill(o: { yes?: boolean; pods?: { name: string; part?: string }[][]; take?: boolean }) {
     let clock = Date.now();
@@ -197,6 +200,21 @@ describe('the stop-the-line drill', () => {
     expect('output' in taken && taken.output).toMatch(
       /✗ no line\.stopped by Martin’s roles was recorded for this drill/,
     );
+  });
+
+  it('takes nothing, asks nothing and records nothing on a line that is not running, which it would start after', async () => {
+    const fresh = await freshDatabase('guardrail_proofs_not_started');
+    try {
+      const { d, made, said } = drill({});
+      expect(await stopTheLine({ ...d, sql: fresh.proofs })).toEqual({
+        declined: expect.stringMatching(/^The line has not started: /),
+      });
+      await append(database.operator, 'line.stopped', { reason: 'Lunch' });
+      expect(await stopTheLine(d)).toEqual({ declined: expect.stringMatching(/^The line is stopped: /) });
+      expect([made, said]).toEqual([[], []]);
+    } finally {
+      await fresh.end();
+    }
   });
 
   it('takes nothing, and records nothing, unless Martin says yes', async () => {

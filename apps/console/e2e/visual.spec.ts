@@ -17,8 +17,8 @@
  * and the sheet, its card and slider for Martin; a held work item's sheet, its card at its head; and the "+" on Plan,
  * for Martin and a visitor, an improvement's spec in Needs you and its sheet's request.
  * Part C's canary paused for Martin, with auto-rollback off: the Canary panel, its card in Needs you, and the switch.
- * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, the
- * attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
+ * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, task
+ * 23's refusals in a row, the attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
  * each way one stands (refused twice, a refusal cut at five lines, not refused, running), and a sheet's refusals whole.
  */
 import type { Page } from '@playwright/test';
@@ -40,6 +40,7 @@ import {
   picturesShown,
   ready,
   SCORE,
+  SESSION,
   scored,
   shown,
   THEMES,
@@ -553,6 +554,19 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       });
     });
 
+    test('the header’s pill while the passkey is fresh, which ends it when pressed', async ({ page }) => {
+      test.skip(width === 'phone', 'on a phone the header has no room for the pill: it is a line in the account menu');
+      await adminService(page, 'martin');
+      await page.route('**/admin/session', (route) =>
+        route.fulfill({ json: { ...SESSION, steppedUp: true, steppedUpAt: new Date().toISOString() } }),
+      );
+      await page.goto(consoleUrl());
+      await ready(page);
+      const pill = page.locator('.top-right .fresh');
+      await pill.hover();
+      await expect(page.locator('header.top')).toHaveScreenshot(`m07-step-up-pill-${width}.png`);
+    });
+
     test('a visitor’s report, quoted on Martin’s sheet', async ({ page }) => {
       await adminService(page, 'martin');
       await page.goto(consoleUrl({ item: '1268', sheet: true }));
@@ -582,7 +596,7 @@ test.describe('the doors in Ink', () => {
 
   test('the sign-in door, after the session ended', async ({ page }) => {
     await adminService(page, 'visitor');
-    await door(page, '/?view=sign-in&theme=ink&ended=expired&at=2026-10-06T15%3A10%3A00Z');
+    await door(page, '/?view=sign-in&theme=ink&ended=expired&at=2026-10-06T15%3A40%3A00Z');
     await expect(page).toHaveScreenshot('m07-sign-in-ended-ink.png');
   });
 });
@@ -755,6 +769,130 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await expect(page.locator('article.controls .ctl-group').filter({ hasText: 'Switches' })).toHaveScreenshot(
         `m07-switches-rollback-off-${width}.png`,
       );
+    });
+  });
+}
+
+/**
+ * Approval routing (Part C): #1311's merge, which the samples hold for Martin's merge, held again by the review gate
+ * for its risk tags, with the gate's words and a cross for each tag, Review and GitHub's mark and no Approve; and Lights-out's
+ * whole note in the passkey's dialog that chooses it.
+ */
+const HELD = {
+  id: '00000000-0000-4000-8000-000000000921',
+  seq: 921,
+  ts: new Date(END - 60_000).toISOString(),
+  work_item: '1311',
+  type: 'hold.started',
+  version: 11,
+  actor: 'factory',
+  summary: 'Held for its risk tags: waiting for Martin',
+  payload: {
+    stage: 'review',
+    kind: 'approval',
+    cause: 'merge',
+    reason:
+      'The review gate held #1312 for dependency-change, test-loosening: Martin’s approval of its head on GitHub sends it to the merge queue',
+    merge: {
+      pullRequest: 1312,
+      head: '4e1c2a9d0b7f3e5a6c8d9e0f1a2b3c4d5e6f7a8b',
+      why: 'held',
+      rule: 'held',
+      tags: [
+        { tag: 'dependency-change', because: ['pnpm-lock.yaml', 'pnpm-workspace.yaml'] },
+        { tag: 'test-loosening', because: ['test/basket.test.ts'] },
+      ],
+      said: 'Guarded: the factory’s App opened #1312, so it passes only if low-risk',
+      approving: true,
+    },
+  },
+  artifacts: [],
+};
+const RISK_TAGGED = [HELD];
+
+/** The same hold on a work item of the factory's own, not a sample's: its Review is a link to GitHub. */
+const REAL_HELD = [
+  {
+    ...HELD,
+    id: '00000000-0000-4000-8000-000000000922',
+    seq: 922,
+    ts: new Date(END - 120_000).toISOString(),
+    work_item: '1390',
+    type: 'work-item.opened',
+    version: 1,
+    summary: 'Quantities over nine are refused',
+    payload: { kind: 'defect-fix', title: 'Quantities over nine are refused', sample: false },
+  },
+  { ...HELD, id: '00000000-0000-4000-8000-000000000923', seq: 923, work_item: '1390' },
+];
+
+for (const [width, viewport] of Object.entries(WIDTHS)) {
+  test.describe(`${width}, approval routing`, () => {
+    test.use({ viewport });
+
+    test('a merge held for its risk tags, in Needs you', async ({ page }) => {
+      await adminService(page, 'martin', RISK_TAGGED);
+      await page.goto(consoleUrl());
+      await ready(page);
+      const card = page.locator('article.needs .need').filter({ hasText: '#1311 ·' });
+      await card.getByRole('button', { name: 'Answer in words' }).waitFor();
+      // Martin approves it on GitHub, with his own review: the console offers no Approve, and no Merge.
+      // A sample's pull request never existed, so its Review links nowhere, and says why beside it.
+      await expect(card.locator('.way .way-words')).toHaveText('Review');
+      await expect(card.locator('.way .sr')).toHaveText('Review #1312');
+      await expect(card.locator('p.nowhere')).toHaveText(
+        'A sample’s pull request: it never existed, so it links nowhere.',
+      );
+      await expect(card.getByRole('button', { name: /^Approve/ })).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Back to the planner' })).toHaveCount(0);
+      await page.evaluate(() => document.fonts.ready);
+      await expect(card).toHaveScreenshot(`m07-needs-risk-tags-${width}.png`);
+    });
+
+    test('a real merge held for its risk tags: Review and GitHub’s mark, with what approving does beside it', async ({
+      page,
+    }) => {
+      await adminService(page, 'martin', REAL_HELD);
+      await page.goto(consoleUrl());
+      await ready(page);
+      const card = page.locator('article.needs .need').filter({ hasText: '#1390 ·' });
+      const link = card.getByRole('link', { name: /^Review #1312 on GitHub/ });
+      await expect(link).toHaveAttribute('href', /\/pull\/1312$/);
+      // What approving there does sits beside the link, as each answer's words sit beside its button; on a phone, under
+      // it, as they do there.
+      const words = card.getByText('Approve its head commit there: the review check then passes it');
+      const a = await link.boundingBox();
+      const w = await words.boundingBox();
+      const b = await card.getByRole('button', { name: 'Answer in words' }).boundingBox();
+      if (!a || !w || !b) throw new Error('the link, its words or the answer under it are not drawn');
+      // As wide as the answers under it, in the column they share.
+      expect(a.x).toBeCloseTo(b.x, 0);
+      expect(a.width).toBeCloseTo(b.width, 0);
+      if (width === 'phone') {
+        expect(w.y).toBeGreaterThanOrEqual(a.y + a.height);
+      } else {
+        expect(w.x).toBeGreaterThan(a.x + a.width);
+        expect(Math.abs(w.y + w.height / 2 - (a.y + a.height / 2))).toBeLessThan(a.height / 2);
+      }
+    });
+
+    test('choosing Lights-out, asking for the passkey again', async ({ page }) => {
+      await adminService(page, 'martin');
+      await page.route('**/admin/line/controls', (route) =>
+        route.fulfill({ status: 403, json: { refused: 'step-up', message: 'This needs your passkey again.' } }),
+      );
+      await page.goto(consoleUrl());
+      await ready(page);
+      await page
+        .locator('article.controls')
+        .getByRole('group', { name: 'Autonomy' })
+        .getByRole('button', { name: /^Lights-out/ })
+        .click();
+      const dialog = page.getByRole('dialog', { name: 'Loosen autonomy' });
+      await dialog.waitFor();
+      await expect(dialog).toContainText('Lights-out takes two settings.');
+      await page.evaluate(() => document.fonts.ready);
+      await expect(dialog).toHaveScreenshot(`m07-lights-out-step-up-${width}.png`);
     });
   });
 }
@@ -1213,6 +1351,12 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     test('the checklist, a guardrail that did not hold opened, for a visitor', async ({ page }) => {
       const panel = await guardrailsAt(page, 'visitor', 5);
       await expect(panel).toHaveScreenshot(`m07-guardrails-visitor-${width}.png`);
+    });
+
+    test('a guardrail’s refusals in the week opened, one unverified, for a visitor', async ({ page }) => {
+      const panel = await guardrailsAt(page, 'visitor', 1);
+      await panel.locator('.reflist small').first().waitFor();
+      await expect(panel).toHaveScreenshot(`m07-guardrails-refusals-${width}.png`);
     });
 
     test('the checklist for Martin, the attack in flight in its row', async ({ page }) => {

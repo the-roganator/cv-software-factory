@@ -18,8 +18,9 @@
  *
  * An improvement is built, not fixed: from Martin's words and its spec, every new behaviour behind the spec's flag,
  * read the one way the app reads a flag (`await request.flag(...)`), and its tests run each criterion with the flag
- * on or off as the criterion says, stubbed as the app's tests stub it. The flag is defined nowhere, since one the flag
- * service does not name is off, and the flag context is a protected path. Its title is a feature's (`feat`).
+ * on or off as the criterion says, stubbed as the app's tests stub it. Its name goes on the app's typed list of flag
+ * names (`FLAG_NAMES_FILE`), which `request.flag` takes its names from, and nowhere else: one the flag service does not
+ * name is off, and the flag context is a protected path. Its title is a feature's (`feat`).
  *
  * Suggestions do not block, and the coder answers them as the factory asks of any agent answering a review: it takes
  * each, changing the code for it, or declines it with a reason (`declined`). The GitHub worker answers each declined
@@ -72,6 +73,7 @@ import {
   commitTitle,
   defineAgent,
   type EffectsContext,
+  FLAG_NAMES_FILE,
   holdDraft,
   need,
   StepFailed,
@@ -397,10 +399,11 @@ function first(input: CoderInput): string[] {
 /**
  * How an improvement is built: behind its flag, read the one way the app reads a flag and nowhere else, so that with
  * it off the app is as it was; each criterion tested with the flag as its side says, stubbed as the app's own tests
- * stub it. The flag is defined nowhere: one the flag service does not name is off, so the change ships off.
+ * stub it. Its name goes on the app's typed list of flag names, and the flag is defined nowhere else: one the flag
+ * service does not name is off, so the change ships off.
  */
 const behindTheFlag = (flag: string) => [
-  `Every new behaviour goes behind the flag: \`await request.flag('${flag}')\`, as AGENTS.md says, and nothing reads the flag any other way. With it off, the app does exactly what it did: the same pages, the same responses. Do not define the flag anywhere: one the flag service does not name is off, so the change ships off, and Martin turns it on from the console.`,
+  `Every new behaviour goes behind the flag: \`await request.flag('${flag}')\`, as AGENTS.md says, and nothing reads the flag any other way. With it off, the app does exactly what it did: the same pages, the same responses. Add its name, \`${flag}\`, to \`FLAG_NAMES\` in ${FLAG_NAMES_FILE}, the app’s typed list of the flags it asks about: \`request.flag\` takes only a name on that list. Add no other name there, and take none away. Define the flag nowhere else: naming it there turns nothing on, since a flag the flag service does not name is off, so the change ships off, and Martin turns it on from the console.`,
   'Never change the flag context, src/flags/, or anything else no scope may name. Keep nothing on a visitor’s device: no cookie, and nothing in the browser’s storage.',
 ];
 

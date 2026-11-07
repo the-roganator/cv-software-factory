@@ -12,6 +12,7 @@ import { DiskArtifacts } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { BROWSER_LAUNCH } from '../../src/capture.ts';
 import { PROBES } from '../../src/probes/index.ts';
 import { readerServer } from '../../src/probes/reader.ts';
 import { Shop } from '../../src/probes/site.ts';
@@ -26,7 +27,7 @@ const log = { warn: () => {} };
 const [[NAME, VALUE]] = Object.entries(UNMEASURED) as [[string, string]];
 
 beforeAll(async () => {
-  browser = await chromium.launch();
+  browser = await chromium.launch(BROWSER_LAUNCH);
 });
 afterAll(() => browser?.close());
 

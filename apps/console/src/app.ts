@@ -1,6 +1,7 @@
 /**
- * The console's HTTP handler: the page and its built files, the events (as JSON and as a stream), the artifacts,
- * `/health` and `/version`, each a route `policy/access.ts` gives the console, and nothing else.
+ * The console's HTTP handler: the page and its built files, the events (as JSON and as a stream), the artifacts, the
+ * checks of relayed refusals, `/health` and `/version`, each a route `policy/access.ts` gives the console, and nothing
+ * else.
  */
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream';
@@ -10,6 +11,7 @@ import { isHash } from '@software-factory/store';
 import { routeOf, type ServedBy } from '../../../policy/access.ts';
 import type { Feed } from './feed.ts';
 import { log } from './log.ts';
+import type { Checker } from './refusals.ts';
 import type { File, Site } from './site.ts';
 import { resumeFrom, stream } from './stream.ts';
 
@@ -19,6 +21,8 @@ export interface AppOptions {
   site: Site;
   feed: Feed;
   artifacts: ArtifactStore;
+  /** Whether each relayed refusal is what the GitHub worker signed. */
+  refusals: Checker;
 }
 
 /**
@@ -59,7 +63,7 @@ export const SECURITY_HEADERS = {
 
 const YEAR = 'public, max-age=31536000, immutable';
 
-export function createApp({ commit, site, feed, artifacts }: AppOptions): RequestListener {
+export function createApp({ commit, site, feed, artifacts, refusals }: AppOptions): RequestListener {
   const version = JSON.stringify({ commit });
 
   return (req, res) => {
@@ -93,6 +97,20 @@ export function createApp({ commit, site, feed, artifacts }: AppOptions): Reques
       },
       events: () => events(req, res, feed, url),
       stream: () => stream(feed, req, res, resumeFrom(req, url)),
+      // Each relayed refusal's check, by seq: `verified`, `redacted` or `unverified`, and nothing of its record.
+      refusals: () => {
+        refusals.of(feed.signedRefusals).then(
+          (checks) => {
+            res.setHeader('cache-control', 'no-store');
+            send(req, res, 200, 'application/json', JSON.stringify(checks));
+          },
+          (error: unknown) => {
+            log.error({ err: error }, 'The refusals could not be checked');
+            if (!res.headersSent)
+              send(req, res, 500, 'text/plain; charset=utf-8', 'The refusals could not be checked.\n');
+          },
+        );
+      },
       artifacts: () => {
         const hash = route.values.hash ?? '';
         // Nothing that goes wrong with one artifact may end the server: it ends that response.

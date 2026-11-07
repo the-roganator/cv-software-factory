@@ -7,6 +7,7 @@ import type { Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { BURST, INBOX, REPORT_TEXT } from '../../../../policy/triage.ts';
 import { type Database, freshDatabase } from '../../../store/test/database.ts';
+import { startLine } from '../../../store/test/line.ts';
 import { burstEvents, idsFor, senseEvidence, senseTicket } from '../../src/events.ts';
 import { type Answer, type Judge, JudgeWaiting } from '../../src/judge.ts';
 import { Triage, type TriageOptions } from '../../src/worker.ts';
@@ -25,6 +26,7 @@ beforeAll(async () => {
   writer = database.as.triage;
   events = new EventWriter(writer, { kind: 'real', artifacts });
   martin = new EventWriter(database.admin, { kind: 'real', artifacts });
+  await startLine(database.admin);
 });
 afterAll(() => database?.end());
 
@@ -987,6 +989,27 @@ describe('triage', () => {
       expect(await closing(item)).toEqual({ outcome: 'no-change', reason: 'Ticket #999 already has it' });
       expect(await writer`select 1 from events where work_item = ${item} and type = 'ticket.opened'`).toHaveLength(0);
     });
+  });
+
+  it('takes nothing on a new store, whose line has not started, until Martin first starts it', async () => {
+    const fresh = await freshDatabase('triage_not_started');
+    try {
+      const sql = fresh.as.triage;
+      const worker = new Triage({
+        sql,
+        events: new EventWriter(sql, { kind: 'real', artifacts }),
+        judge: jev,
+        read: async () => null,
+        log: quiet,
+      });
+      await sendSignal(fresh.owner, found({ route: '/new' }));
+      expect(await worker.takeOne()).toBe('stopped');
+      expect(await sql`select 1 from inbox where triaged_at is not null`).toHaveLength(0);
+      await startLine(fresh.admin);
+      expect(await worker.takeOne()).toBe('opened');
+    } finally {
+      await fresh.end();
+    }
   });
 
   it('takes nothing while the line is stopped, and carries on when it starts again', async () => {

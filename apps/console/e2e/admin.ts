@@ -31,6 +31,9 @@ const ARTIFACTS = fileURLToPath(new URL('../../../packages/samples/log/artifacts
 /** The red-team attacks' test data, which `attacks.spec.ts` loads in place of the samples. */
 const ATTACKS = fileURLToPath(new URL('../test/attacks/log', import.meta.url));
 
+/** What the harness's store holds as it starts. */
+export type Store = 'samples' | 'attacks' | 'empty';
+
 export interface Harness {
   /** The one origin the browser sees, such as `http://localhost:18325`. */
   origin: string;
@@ -44,14 +47,15 @@ export interface Harness {
 
 /**
  * Starts the store, the admin service, the console's server and the proxy, with the proxy listening on `port`. With
- * `release`, the admin service controls that Rollout, through a stand-in for Kubernetes. With `attacks`, the store holds
- * the attacks' test data instead of the samples, and the service lets every attack be launched, as the flag will.
+ * `release`, the admin service controls that Rollout, through a stand-in for Kubernetes. The store holds the samples;
+ * with `attacks`, the attacks' test data instead, and the service lets every attack be launched, as the flag will; with
+ * `empty`, nothing at all, as a new cluster's store does before Martin first starts the line.
  */
 export async function startHarness(
   port: number,
   name = 'admin',
   release?: { rollout: RolloutRef; kube: KubeWriter },
-  attacks = false,
+  store: Store = 'samples',
 ): Promise<Harness> {
   const given = process.env.TEST_DATABASE_URL;
   const postgres = given ? { url: given, stop: () => {} } : await startPostgres();
@@ -68,7 +72,7 @@ export async function startHarness(
   };
   try {
     // The same object, not a copy: the proxy counts cookies on it.
-    return Object.assign(await startOn(postgres.url, started, port, name, release, attacks), { stop });
+    return Object.assign(await startOn(postgres.url, started, port, name, release, store), { stop });
   } catch (error) {
     // Why it could not start, not what stopping the rest said.
     await stop().catch(() => {});
@@ -83,7 +87,7 @@ async function startOn(
   port: number,
   name: string,
   release: { rollout: RolloutRef; kube: KubeWriter } | undefined,
-  attacks: boolean,
+  store: Store,
 ): Promise<Omit<Harness, 'stop'>> {
   const database = await createDatabase(postgresUrl, name);
   started.push(() => database.end());
@@ -96,8 +100,12 @@ async function startOn(
   const { endingAt, readLog } = await import('../../factory/src/events.ts');
 
   // The samples (or the attacks' test data), as `make samples` loads them, by Martin's command line's role, ending now.
-  const events = endingAt(readLog(attacks ? ATTACKS : SAMPLES).map(full<NewEvent>), Date.now());
-  await new EventWriter(database.operator, { kind: 'sample', artifacts: new DiskArtifacts(ARTIFACTS) }).append(events);
+  if (store !== 'empty') {
+    const events = endingAt(readLog(store === 'attacks' ? ATTACKS : SAMPLES).map(full<NewEvent>), Date.now());
+    await new EventWriter(database.operator, { kind: 'sample', artifacts: new DiskArtifacts(ARTIFACTS) }).append(
+      events,
+    );
+  }
 
   // The admin service as its Deployment runs it, connected as its own role; `localhost` is a secure context, so a
   // passkey and a `Secure` cookie work over plain HTTP here.
@@ -109,7 +117,7 @@ async function startOn(
       port: 0,
       profile: 'local',
       ...(release && { rollout: release.rollout }),
-      ...(attacks && { attackAvailable: () => true }),
+      ...(store === 'attacks' && { attackAvailable: () => true }),
     },
     { sql: database.admin, port: 0, host: '127.0.0.1', ...(release && { kube: release.kube }) },
   );
@@ -307,7 +315,13 @@ export class Rollout implements KubeWriter {
     },
   };
 
-  async get<T>(_path: string, schema: { parse(v: unknown): T }): Promise<T> {
+  async get<T>(path: string, schema: { parse(v: unknown): T }): Promise<T> {
+    // The app's endpoints, which Stop the line reads for a pod of the stable version ready to take the traffic back.
+    if (path.endsWith('/endpointslices')) {
+      const { stableRS } = (this.object as { status: { stableRS: string } }).status;
+      const endpoint = { conditions: { ready: true }, targetRef: { kind: 'Pod', name: `website-${stableRS}-x7k2p` } };
+      return schema.parse({ items: [{ endpoints: [endpoint] }] });
+    }
     const { metadata, ...rest } = this.object as { metadata: object };
     return schema.parse({ ...rest, metadata: { ...metadata, resourceVersion: String(this.version) } });
   }

@@ -117,8 +117,8 @@ export class LineRefusals {
       return;
     }
     const { repo, number, at, payload, record, signature } = verified.refusal;
-    // Only what the worker answers the line's own requests with: the review check's verdict it signs is for the
-    // red-team harness, which asks for it, and is never the line's to record.
+    // Only what the worker answers the line's own actions with. The review check's refusal comes with a read of its
+    // verdict, not an action, and the line records it as it decides the merge (`worker.ts`), once for each head.
     if (!RELAYED.includes(payload.mechanism as Relayed)) {
       this.#o.log.warn(
         { workItem, mechanism: payload.mechanism },

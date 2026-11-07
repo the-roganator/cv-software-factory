@@ -4,6 +4,7 @@
  * requests, check runs and issues; and the probes worker, as Verify asks it to run a check again.
  */
 import type { Sql } from 'postgres';
+import type { Found, Rule } from '../../../../policy/review-verdict.ts';
 import type { Handback } from '../../../runner/src/step.ts';
 import type { Contradicted } from '../../src/gates/contradicts.ts';
 import { described } from '../../src/github/actions.ts';
@@ -110,6 +111,8 @@ export class FakeGitHub implements GitHubPort {
   readonly failing = new Map<ActionName, number>();
   /** Actions GitHub refuses once, with the GitHub worker's own error. */
   readonly refusing = new Map<ActionName, Error>();
+  /** Reads that fail, as GitHub failing does, and how many times each will. */
+  readonly failingReads = new Map<ReadName, number>();
   /** An action that is done, and then fails as though the line crashed before it heard back: once. */
   crashAfter: ActionName | undefined;
   /** A read that waits until the test lets it go. */
@@ -142,7 +145,26 @@ export class FakeGitHub implements GitHubPort {
    * not in it is one GitHub never had (404); when not, `commits` answers `deployCommits`.
    */
   history: string[] | undefined;
+  /**
+   * The review gate's verdict on each pull request's head, as the review App's check posts it: by default `low-risk`,
+   * concluded; `pending` while it runs, and `none` for no check at all. A held one carries `refusal`, as the GitHub
+   * worker signs it, and `pending` when the gate held it only to wait for test integrity; `completedAt` is when its check
+   * concluded.
+   */
+  gate: { rule: Rule; tags?: Found[]; refusal?: unknown; pending?: string; completedAt?: string } | 'pending' | 'none' =
+    { rule: 'low-risk' };
+  /** Whether each pull request conflicts with main, as GitHub says. */
+  conflicts: boolean | null = false;
+  /** The pull requests in the merge queue, and the last taken out of it, with why. */
+  readonly queued = new Set<number>();
+  readonly dequeued = new Map<number, { reason: string; failed: string[]; at: string }>();
   #commits = 0;
+
+  /** The merge queue taking a pull request out without merging it, with GitHub's reason and the checks that failed. */
+  dequeue(number: number, reason: string, failed: string[] = []): void {
+    this.queued.delete(number);
+    this.dequeued.set(number, { reason, failed, at: new Date().toISOString() });
+  }
 
   async act<K extends ActionName>(
     action: K,
@@ -222,6 +244,16 @@ export class FakeGitHub implements GitHubPort {
         if (pr) pr.draft = action === 'convertToDraft';
         return undefined;
       }
+      case 'enqueuePullRequest': {
+        const pr = this.pulls.get(Number(args.number));
+        if (pr?.state !== 'open' || pr.head.sha !== args.expectedHead) {
+          this.acts.pop();
+          throw new GitHubWorkerError(409, 'conflict', `Pull request #${args.number} is not at ${args.expectedHead}`);
+        }
+        this.queued.add(pr.number);
+        this.dequeued.delete(pr.number);
+        return { position: 1, state: 'QUEUED' };
+      }
       case 'closePullRequest': {
         const pr = this.pulls.get(Number(args.number));
         if (pr?.state === 'open') pr.state = 'closed';
@@ -243,6 +275,11 @@ export class FakeGitHub implements GitHubPort {
 
   async read<K extends ReadName>(read: K, _repo: string, given: ReadArgs[K]): Promise<ReadResult<K>> {
     await this.holdReads;
+    const failures = this.failingReads.get(read) ?? 0;
+    if (failures > 0) {
+      this.failingReads.set(read, failures - 1);
+      throw new Error(`GitHub failed: ${read} (502)`);
+    }
     const args = given as Record<string, unknown>;
     const answer = (value: unknown) => value as ReadResult<K>;
     switch (read) {
@@ -288,6 +325,72 @@ export class FakeGitHub implements GitHubPort {
             ? { signed: false, reason: 'no signature by the pipeline' }
             : { signed: true, reason: null },
         );
+      case 'reviewVerdict': {
+        const pr = this.pulls.get(Number(args.number));
+        if (!pr) throw new Error(`No pull request #${args.number}`);
+        const head = pr.head.sha;
+        const gate = this.gate;
+        if (gate === 'none') {
+          return answer({ number: pr.number, head, check: null, verdict: null, judged: null, problem: 'none' });
+        }
+        const done = gate !== 'pending';
+        const held = done && gate.rule === 'held';
+        const check = {
+          id: 900,
+          status: done ? 'completed' : 'in_progress',
+          conclusion: done ? (held ? 'failure' : 'success') : null,
+          title: done ? (held ? `#${pr.number}: held for its risk tags` : 'Low-risk') : null,
+          summary: null,
+          completedAt: done ? (gate.completedAt ?? '2026-10-05T10:02:00Z') : null,
+          url: 'https://github.test/runs/900',
+        };
+        if (!done) return answer({ number: pr.number, head, check, verdict: null, judged: null, problem: 'running' });
+        const judged = {
+          number: pr.number,
+          head,
+          rule: gate.rule,
+          tags: gate.tags ?? [],
+          ...(gate.pending ? { pending: gate.pending } : {}),
+        };
+        return answer({
+          number: pr.number,
+          head,
+          check,
+          verdict: { version: 1, commit: head, judged: [judged] },
+          judged,
+          problem: null,
+          ...(held && gate.refusal ? { refusal: gate.refusal } : {}),
+        });
+      }
+      case 'mergeability': {
+        const pr = this.pulls.get(Number(args.number));
+        if (!pr) throw new Error(`No pull request #${args.number}`);
+        return answer({ number: pr.number, head: pr.head.sha, conflicts: this.conflicts, state: 'blocked' });
+      }
+      case 'mergeQueue': {
+        const pr = this.pulls.get(Number(args.number));
+        if (!pr) throw new Error(`No pull request #${args.number}`);
+        const out = this.dequeued.get(pr.number);
+        const queued = this.queued.has(pr.number);
+        return answer({
+          number: pr.number,
+          head: pr.head.sha,
+          state: pr.merged ? 'merged' : pr.state,
+          queued: queued ? { position: 1, state: 'AWAITING_CHECKS', enqueuedAt: '', commit: null } : null,
+          added: queued || out ? { at: new Date().toISOString(), by: 'mrogan-software-factory[bot]' } : null,
+          removed: out ? { at: out.at, by: 'github-merge-queue', reason: out.reason, commit: 'd'.repeat(40) } : null,
+          checks: (out?.failed ?? []).map((name, i) => ({
+            id: 800 + i,
+            name,
+            status: 'completed',
+            conclusion: 'failure',
+            app: 'github-actions',
+            startedAt: null,
+            completedAt: null,
+            title: null,
+          })),
+        });
+      }
       case 'pullRequestFrom': {
         const pr = [...this.pulls.values()].find((p) => p.head.ref === args.branch && p.state === 'open');
         return answer(pr ? structuredClone(pr) : null);

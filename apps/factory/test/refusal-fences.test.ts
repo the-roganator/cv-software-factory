@@ -71,20 +71,27 @@ describe('the GitHub worker’s signing key', () => {
     ]);
   });
 
-  it('has its public half read by the line, from refusal-key, and by nothing that could sign', async () => {
-    const { pod } = await deployment('line');
-    const env = pod.spec.containers.find((c) => c.name === 'line')?.env ?? [];
-    expect(env.find((e) => e.name === 'REFUSAL_PUBLIC_KEY')).toEqual({
-      name: 'REFUSAL_PUBLIC_KEY',
-      valueFrom: { configMapKeyRef: { name: CONFIG_MAP, key: 'public-key', optional: true } },
-    });
-    // Only the line names it, but for the admission policy that holds it, below.
+  it('has its public half read by the line and the console, from refusal-key, and by nothing that could sign', async () => {
+    // The line verifies each refusal it relays, and the console's server each Guardrails shows.
+    for (const name of ['line', 'console']) {
+      const { pod } = await deployment(name);
+      const env = pod.spec.containers.find((c) => c.name === name)?.env ?? [];
+      expect(
+        env.find((e) => e.name === 'REFUSAL_PUBLIC_KEY'),
+        name,
+      ).toEqual({
+        name: 'REFUSAL_PUBLIC_KEY',
+        valueFrom: { configMapKeyRef: { name: CONFIG_MAP, key: 'public-key', optional: true } },
+      });
+    }
+    // Only they name it, but for the admission policy that holds it, below.
     const naming = (await manifests()).filter(({ manifest }) =>
       JSON.stringify(manifest).includes(`"name":"${CONFIG_MAP}"`),
     );
     expect(naming.map(({ file, manifest }) => `${file} ${manifest.kind}`).sort()).toEqual([
       'base/admission/factory/refusal-key.yaml ValidatingAdmissionPolicy',
       'base/admission/factory/refusal-key.yaml ValidatingAdmissionPolicyBinding',
+      'base/console/deployment.yaml Deployment',
       'base/factory/line.yaml Deployment',
     ]);
   });

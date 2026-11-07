@@ -412,6 +412,8 @@ describe('what counts as a security event', () => {
     expect(Object.keys(counted).sort()).toEqual(marked.sort());
     // Giving the passkey again is not counted itself: each action it allows is.
     expect(countAs({ type: 'admin.stepped-up' })).toBeNull();
+    // Nor is ending it early, which only tightens.
+    expect(countAs({ type: 'admin.step-up-ended' })).toBeNull();
     for (const kind of Object.values(counted)) {
       expect(SECURITY_KINDS).toContain(kind);
     }

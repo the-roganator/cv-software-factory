@@ -6,6 +6,7 @@
  * image, so they match from one machine to the next: `make e2e` runs them there.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { BROWSER_LAUNCH } from '@software-factory/factory/capture';
 import { ATTACKS_END, ATTACKS_PORT, END, FIXTURE_END, FIXTURE_PORT, PORT } from './e2e/support.ts';
 
 /** Snapshots only mean something in the pinned image (`make e2e` and CI set this); elsewhere they are skipped. */
@@ -29,22 +30,25 @@ export default defineConfig({
     timezoneId: 'Europe/London',
     locale: 'en-GB',
     trace: 'retain-on-failure',
+    // As every browser the factory launches: text unhinted, as Chrome on the Mac sets it, where headless Chromium on
+    // Linux would snap each glyph's advance to a whole pixel ("Pricesbelow zero").
+    launchOptions: BROWSER_LAUNCH,
   },
   projects: [
     {
       name: 'console',
       use: { ...devices['Desktop Chrome'] },
       testIgnore: pinned
-        ? /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|attacks|speed)\.spec\.ts/
-        : /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|attacks|speed|visual)\.spec\.ts/,
+        ? /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|first-start|improvements|attacks|speed)\.spec\.ts/
+        : /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|first-start|improvements|attacks|speed|visual)\.spec\.ts/,
     },
     // The tests that need a store: the console live, and signing in, Martin's view, the canary's controls and its pause for Martin, Needs you,
-    // the line's controls, the "+" and launching an attack against the admin service.
+    // the line's controls, a new store's first start, the "+" and launching an attack against the admin service.
     {
       name: 'live',
       use: { ...devices['Desktop Chrome'] },
       testMatch:
-        /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|improvements|attacks)\.spec\.ts/,
+        /(live|signing-in|martin|canary-controls|canary-paused|needs-you|line-controls|first-start|improvements|attacks)\.spec\.ts/,
     },
     // Timed alone, so other tests' browsers don't share its CPU: after the rest, or on its own with `--no-deps` as CI
     // and `make e2e` run it.

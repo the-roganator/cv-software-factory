@@ -9,7 +9,10 @@
  * where it enters, and an answer that is not what the factory expects is a `GitHubError` of kind `malformed`.
  *
  * `poll` is a conditional GET: the client keeps each answer's ETag and asks again with `If-None-Match`, so an
- * answer that has not changed costs a 304 and nothing against the rate limit.
+ * answer that has not changed costs a 304 and nothing against the rate limit. It keeps the answer as GitHub sent it,
+ * and reads it through the caller's schema each time, 304 or not: two callers may poll one path with different
+ * schemas, and a schema drops the fields it does not name, so a body kept after one had read it would lack the
+ * other's.
  *
  * A request is tried again after a rate limit, which GitHub answers before doing anything. After a timeout or a
  * server error it is tried again only if doing it twice is harmless: a GET, PATCH, PUT or DELETE. A POST that timed
@@ -70,13 +73,21 @@ export interface GitHubOptions {
 /** The longest the client waits for a rate limit to lift before it gives up and lets the caller try later. */
 const MAX_WAIT_MS = 60_000;
 const BACKOFF_MS = 1_000;
-/** Conditional answers kept; the polled set is small, so this is a guard against a leak and not a working limit. */
+/**
+ * Conditional answers kept, and their text in all, in UTF-16 code units: the polled set is small, so these are guards
+ * against a leak and not working limits. Paths that name a commit (its commits, a pinned file at it) are new with each
+ * head, so the oldest answers go first.
+ */
 const MAX_CACHED = 500;
+const MAX_CACHED_LENGTH = 32 * 1024 * 1024;
 
 export type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
 export interface Polled<T> {
-  /** False when GitHub answered 304: the body is the one it gave last time. */
+  /**
+   * False when GitHub answered 304: the body is the one it gave last time this client asked for the path, whoever
+   * asked, so a caller that acts only on a change must be the path's only poller.
+   */
   changed: boolean;
   body: T;
 }
@@ -90,7 +101,9 @@ export class GitHub {
   readonly #now: () => number;
   readonly #timeoutMs: number;
   readonly #maxRetries: number;
-  readonly #etags = new Map<string, { etag: string; body: unknown }>();
+  /** Each polled path's last answer a caller could read: its ETag, and its body as GitHub sent it. */
+  readonly #etags = new Map<string, { etag: string; text: string }>();
+  #cachedLength = 0;
 
   constructor(options: GitHubOptions) {
     this.api = options.api ?? API;
@@ -125,7 +138,8 @@ export class GitHub {
 
   /** A GET about one repository (`owner/name`), its body read through `schema`. The path is from the API's root. */
   async read<T>(repo: string, path: string, schema: z.ZodType<T>): Promise<T> {
-    return parse(schema, await (await this.#authorised(repo, 'GET', path)).json(), `GET ${path}`);
+    const response = await this.#authorised(repo, 'GET', path);
+    return parse(schema, json(await response.text(), `GET ${path}`), `GET ${path}`);
   }
 
   /** A write about one repository. Its answer is read through `schema` when one is given, and ignored when not. */
@@ -142,7 +156,7 @@ export class GitHub {
       await response.body?.cancel();
       return undefined as T;
     }
-    return parse(schema, await response.json(), `${method} ${path}`);
+    return parse(schema, json(await response.text(), `${method} ${path}`), `${method} ${path}`);
   }
 
   /** A conditional GET: unchanged answers come from the client's cache and cost nothing against the rate limit. */
@@ -150,22 +164,40 @@ export class GitHub {
     const key = `${repo} ${path}`;
     const cached = this.#etags.get(key);
     const response = await this.#authorised(repo, 'GET', path, undefined, cached?.etag);
-    if (response.status === 304 && cached) return { changed: false, body: cached.body as T };
-    const body = parse(schema, await response.json(), `GET ${path}`);
+    if (response.status === 304 && cached) {
+      return { changed: false, body: parse(schema, json(cached.text, `GET ${path}`), `GET ${path}`) };
+    }
+    const text = await response.text();
+    // Read through the caller's schema before it is kept, so an answer no caller has read is asked for again.
+    const body = parse(schema, json(text, `GET ${path}`), `GET ${path}`);
     const etag = response.headers.get('etag');
-    if (etag) {
-      this.#etags.delete(key);
-      this.#etags.set(key, { etag, body });
-      if (this.#etags.size > MAX_CACHED) this.#etags.delete(this.#etags.keys().next().value as string);
+    this.#forget(key);
+    if (etag && text.length <= MAX_CACHED_LENGTH) {
+      this.#etags.set(key, { etag, text });
+      this.#cachedLength += text.length;
+      for (const [oldest] of this.#etags) {
+        if (this.#etags.size <= MAX_CACHED && this.#cachedLength <= MAX_CACHED_LENGTH) break;
+        this.#forget(oldest);
+      }
     }
     return { changed: true, body };
+  }
+
+  #forget(key: string) {
+    const cached = this.#etags.get(key);
+    if (!cached) return;
+    this.#etags.delete(key);
+    this.#cachedLength -= cached.text.length;
   }
 
   /** A GraphQL call. GitHub answers errors with a 200 and an `errors` list; those are thrown as `GitHubError`s. */
   async graphql<T>(repo: string, query: string, variables: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
     if (!this.#tokens) throw new GitHubError('read-only', 'The worker has no App key, so it cannot use GraphQL.');
     const response = await this.#authorised(repo, 'POST', '/graphql', { query, variables });
-    const answer = (await response.json()) as { data?: unknown; errors?: { type?: string; message?: string }[] };
+    const answer = json(await response.text(), 'GraphQL') as {
+      data?: unknown;
+      errors?: { type?: string; message?: string }[];
+    };
     const [first] = Array.isArray(answer?.errors) ? answer.errors : [];
     if (first) {
       const kind: GitHubErrorKind =
@@ -281,6 +313,15 @@ async function errorOf(method: string, path: string, response: Response, now: nu
             ? 'conflict'
             : 'refused';
   return Object.assign(new GitHubError(kind, text, status), { waitMs: 0 });
+}
+
+/** A body as JSON, or a `GitHubError` of kind `malformed`: an empty or cut-off answer is one GitHub did not mean. */
+function json(text: string, where: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new GitHubError('malformed', `${where} answered with something other than JSON`);
+  }
 }
 
 /** A body as the schema reads it, or a `malformed` error naming where, never what: a body can hold a person's words. */

@@ -26,6 +26,7 @@ import { EmptyReel, States } from './components/States.tsx';
 import { StepUpProvider } from './components/StepUp.tsx';
 import { factoryOf } from './profile.ts';
 import { foldOf, project, settingsAt } from './projection/index.ts';
+import { useRefusalChecks } from './refusals.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
 import { type Origin, origin, useEvents } from './source.ts';
 
@@ -116,7 +117,9 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   const held = useHeld(from.kind === 'live' && service && !settingsPage && !auditPage && !privacyPage);
   const latest = source.events.length ? Date.parse(source.events.at(-1)?.ts ?? '') : undefined;
   const t = useTime(latest, from.kind === 'live');
-  const view = useMemo(() => project(source.events, t, attacksOffered), [source.events, t]);
+  // Whether each relayed refusal Guardrails shows is what the GitHub worker signed, as the server checks it.
+  const checks = useRefusalChecks(source.events, from);
+  const view = useMemo(() => project(source.events, t, attacksOffered, checks), [source.events, t, checks]);
   // Whether the canary bird is out of its cage, keeping the Canary panel company.
   const [birdOut, setBirdOut] = useState(false);
   const flying = view.canary.state === 'shown' && !view.canary.release.end ? view.canary.release : undefined;
@@ -262,7 +265,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
               t={view.t}
               onOpen={setOpen}
               admin={admin}
-              lineStopped={view.header.stopped !== undefined}
+              lineStopped={!view.header.running}
               ticking={ticks(from.kind === 'live')}
               motion={motion}
               autoRollback={view.controls.autoRollback}

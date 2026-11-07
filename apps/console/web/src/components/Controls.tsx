@@ -10,7 +10,7 @@
  * What a change did shows as its event arrives: the control moves. A visitor, or Martin previewing as one, sees every
  * control in its read-only form: the choice filled, a switch's track faded, nothing to press.
  *
- * Alerts is one switch, whether alerts reach Martin's phone (`policy/phone.ts`): his latest `alerts.switched`, or the
+ * Alerts is one switch, whether alerts reach the phone through Pushover (`policy/phone.ts`): his latest `alerts.switched`, or the
  * profile's default, off on the laptop. Each switch is one write (`POST /admin/alerts/phone`); off asks for the
  * passkey again.
  *
@@ -129,15 +129,44 @@ const MEANS: Record<Autonomy, Record<Viewer, string>> = {
     visitor: 'Low-risk changes ship on their own. Anything risky waits for Martin.',
   },
   'lights-out': {
-    martin: 'Only the gates and the canary decide. You are told afterwards.',
-    visitor: 'Only the gates and the canary decide. Martin is told afterwards.',
+    martin:
+      'Risky changes ship too, on the gates and the canary alone. Releases, improvements, code-owned paths and anything out of scope still wait for you.',
+    visitor:
+      'Risky changes ship too, on the gates and the canary alone. Releases, improvements, code-owned paths and anything out of scope still wait for Martin.',
   },
 };
 
-/** Until approval routing comes (Part C), the autonomy level and auto-merge are recorded, and route nothing. */
-const RECORDED: Record<Viewer, string> = {
-  martin: 'Recorded: until approval routing comes, every merge waits for you.',
-  visitor: 'Recorded: until approval routing comes, every merge waits for Martin.',
+/** Who may set the app's repository's variables: Martin. */
+const ONLY: Record<Viewer, string> = { martin: 'you', visitor: 'Martin' };
+
+/**
+ * Lights-out's note, while it is chosen: the review gate reads the level from a variable of the app's repository, which
+ * only Martin can set, and the line from this setting, so the stricter of the two wins.
+ */
+const LightsOutLine = ({ viewer }: { viewer: Viewer }) => (
+  <span className="ctl-note">
+    Also needs <code>AUTONOMY</code> set to <code>lights-out</code> in the app’s repository, which only {ONLY[viewer]}{' '}
+    can set.
+  </span>
+);
+
+/** Lights-out's whole note, in the passkey's dialog that chooses it. */
+const LIGHTS_OUT_NOTE = (
+  <p className="ctl-note">
+    <b>Lights-out takes two settings.</b> This one, and <code>AUTONOMY</code> set to <code>lights-out</code> in the
+    app’s repository on GitHub, which only you can set. The line reads this one, and the review gate reads the variable,
+    so the stricter wins: with only one of them set, risky changes still wait for you, as under Guarded. The gate names
+    the rule that passed each pull request, and the line adds one to the queue only by a rule this level allows.
+    Lights-out is never the default.
+  </p>
+);
+
+/** What auto-merge does, to Martin and to anyone else. */
+const AUTO_MERGE: Record<Viewer, string> = {
+  martin:
+    'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for you anyway.',
+  visitor:
+    'The line adds a change to the merge queue once the review check passes it by a rule the autonomy level allows. Under Supervised it waits for Martin anyway.',
 };
 
 const TAKE_LABEL: Record<TakeKind, string> = {
@@ -152,13 +181,8 @@ const TAKE_LABEL: Record<TakeKind, string> = {
  */
 const TAKES: readonly TakeKind[] = [...LOOSEST_FIRST].reverse();
 
-/** What the line will do with a take, in a sentence. */
-function takeWords(take: Take | null, nextFew: ControlsView['nextFew'], viewer: Viewer): string {
-  if (!take) {
-    return viewer === 'martin'
-      ? 'Not set here: the line takes what its Deployment says (LINE_TAKE, LINE_ONLY). Choosing one asks for your passkey.'
-      : 'Not set from the console: the line takes what its Deployment says.';
-  }
+/** What the line will do with a take, in a sentence: with none set, it takes every ticket. */
+function takeWords(take: Take, nextFew: ControlsView['nextFew']): string {
   switch (take.kind) {
     case 'every':
       return 'The oldest open ticket of the highest severity, one after another, then each improvement Martin asked for, oldest first, for as long as the line runs.';
@@ -254,7 +278,11 @@ function AutonomyGroup({ controls, viewer, changer }: { controls: ControlsView; 
                     title: asks(change) ? 'Loosen autonomy' : 'Tighten autonomy',
                     what: (
                       <>
-                        <b>The line runs at {AUTONOMY[level]}.</b> {MEANS[level].martin} {RECORDED.martin}
+                        <b>
+                          Autonomy goes from {AUTONOMY[autonomy]} to {AUTONOMY[level]}.
+                        </b>{' '}
+                        {MEANS[level].martin}
+                        {level === 'lights-out' && LIGHTS_OUT_NOTE}
                       </>
                     ),
                     why: 'Loosening autonomy lets more ship without you',
@@ -269,7 +297,7 @@ function AutonomyGroup({ controls, viewer, changer }: { controls: ControlsView; 
         })}
       </div>
       {/* Every level's words, laid in one place, with only the chosen one shown: the box is as tall as the longest at
-          any width, so nothing under it moves when the level changes. */}
+          any width, so nothing under it moves when the level changes. Lights-out's carries its note. */}
       <p className="help means">
         {LEVELS.map((level) => (
           <span
@@ -278,7 +306,7 @@ function AutonomyGroup({ controls, viewer, changer }: { controls: ControlsView; 
             aria-hidden={level !== autonomy || undefined}
           >
             {MEANS[level][viewer]}
-            {level !== 'supervised' && <span className="recorded"> {RECORDED[viewer]}</span>}
+            {level === 'lights-out' && <LightsOutLine viewer={viewer} />}
           </span>
         ))}
       </p>
@@ -385,12 +413,7 @@ function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; 
         />
         <Switch
           label="Auto-merge low-risk changes"
-          note={
-            <>
-              A low-risk change merges once its gates and review pass.{' '}
-              <span className="recorded">{RECORDED[viewer]}</span>
-            </>
-          }
+          note={AUTO_MERGE[viewer]}
           on={autoMerge}
           live={martin}
           keyed={martin && !changer.fresh && asks(autoMergeOn)}
@@ -407,11 +430,7 @@ function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; 
                   }
                 : {
                     title: 'Turn on auto-merge',
-                    what: (
-                      <>
-                        <b>Auto-merge low-risk changes: on.</b> {RECORDED.martin}
-                      </>
-                    ),
+                    what: <b>Auto-merge low-risk changes: on.</b>,
                     why: 'Auto-merge lets changes merge without you',
                   },
             )
@@ -461,7 +480,11 @@ function SwitchesGroup({ controls, viewer, changer }: { controls: ControlsView; 
   );
 }
 
-/** Alerts: whether they reach Martin's phone, every one at its level, or none. Only off asks for the passkey. */
+/**
+ * Alerts: whether they reach the phone, every one at its level, or none. They reach it through Pushover, with the keys
+ * `make up` gives Alertmanager from the Keychain, so whoever runs the factory gets them on their own phone. Only off
+ * asks for the passkey.
+ */
 function AlertsGroup({ on, viewer, changer }: { on: boolean; viewer: Viewer; changer: Changer }) {
   const martin = viewer === 'martin';
   return (
@@ -471,7 +494,7 @@ function AlertsGroup({ on, viewer, changer }: { on: boolean; viewer: Viewer; cha
       </span>
       <div className="switches">
         <Switch
-          label={martin ? 'Alerts to my phone' : 'Alerts to Martin’s phone'}
+          label="Alerts to your phone (Pushover)"
           note={DASHBOARD}
           on={on}
           live={martin}
@@ -527,12 +550,12 @@ function TakeGroup({ controls, viewer, changer }: { controls: ControlsView; view
   // The field shows what is in force until Martin types: the next few's number, or the work item.
   const shown: Draft | undefined =
     draft ??
-    (take?.kind === 'next-few'
+    (take.kind === 'next-few'
       ? { kind: 'next-few', count: String(take.count) }
-      : take?.kind === 'just-one'
+      : take.kind === 'just-one'
         ? { kind: 'just-one', workItem: take.workItem }
         : undefined);
-  const pressed = shown?.kind ?? take?.kind;
+  const pressed = shown?.kind ?? take.kind;
   const after = shown && draftTake(shown, Date.now());
 
   const set = async (next: Take) => {
@@ -576,26 +599,26 @@ function TakeGroup({ controls, viewer, changer }: { controls: ControlsView; view
               if (changer.busy) return;
               if (kind === 'every') {
                 setDraft(undefined);
-                if (take?.kind !== 'every') void set({ kind: 'every' });
+                if (take.kind !== 'every') void set({ kind: 'every' });
                 return;
               }
-              if (kind === take?.kind) return setDraft(undefined);
+              if (kind === take.kind) return setDraft(undefined);
               setDraft(
                 kind === 'next-few'
                   ? { kind, count: String(FIRST_FEW) }
-                  : { kind, workItem: take?.kind === 'just-one' ? take.workItem : '' },
+                  : { kind, workItem: take.kind === 'just-one' ? take.workItem : '' },
               );
             }}
           >
             {TAKE_LABEL[kind]}
             {martin &&
               !changer.fresh &&
-              kind !== take?.kind &&
+              kind !== take.kind &&
               asks({ control: 'take', before: take, after: offered(kind) }) && <Key />}
           </button>
         ))}
       </div>
-      <p className="help">{takeWords(take, nextFew, viewer)}</p>
+      <p className="help">{takeWords(take, nextFew)}</p>
       {martin && shown && (
         <form
           className="take-field"

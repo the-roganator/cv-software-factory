@@ -46,7 +46,7 @@ import { described, enrol } from '../../src/admin/enrol.ts';
 import { nextRevision } from '../../src/admin/flags.ts';
 import { FlagsHeld } from '../../src/admin/flags-held.ts';
 import { refuseWrite } from '../../src/admin/guard.ts';
-import { NO_ROLLOUT, NOT_ABORTED } from '../../src/admin/line.ts';
+import { NO_ROLLOUT, NO_STABLE, NOT_ABORTED } from '../../src/admin/line.ts';
 import { STILL_PAUSED } from '../../src/admin/rollout.ts';
 import { sha256, tokenOf } from '../../src/admin/secrets.ts';
 import { type AdminService, startAdmin } from '../../src/admin/service.ts';
@@ -198,9 +198,9 @@ async function stepUp(browser: Browser, passkey: Authenticator) {
 
 const sessionOf = (browser: Browser) => sha256(browser.cookie ?? '');
 
-/** Ends a session's 30 minutes, as the store's clock would. */
+/** Ends a session's hour, as the store's clock would. */
 const expire = (browser: Browser) => db.owner`
-  update sessions set signed_in_at = now() - interval '31 minutes', expires_at = now() - interval '1 minute'
+  update sessions set signed_in_at = now() - interval '61 minutes', expires_at = now() - interval '1 minute'
   where id_sha256 = ${sessionOf(browser)}`;
 
 const lastEvents = (n: number) => db.owner<
@@ -530,6 +530,7 @@ const WRITES: [string, Body][] = [
   ['/admin/sign-out-everywhere', {}],
   ['/admin/step-up/options', {}],
   ['/admin/step-up', {}],
+  ['/admin/step-up/end', {}],
   ['/admin/passkeys/whichever-passkey/revoke', {}],
   ['/admin/release/promote', { release: 'whichever-1' }],
   ['/admin/release/promote', { release: 'whichever-1', fully: true }],
@@ -670,6 +671,51 @@ describe('the passkey given again', () => {
     expect((await browser.post('/admin/step-up', { response: crossed })).body.refused).toBe('challenge');
     expect((await browser.get('/admin/session')).body.steppedUp).toBe(false);
     expect(await steppedUp()).toHaveLength(recorded);
+  });
+
+  it('ends early, for this session alone, with no passkey, and the next action asks for it again', async () => {
+    const { browser, passkey } = await signedIn();
+    const phone = await signedIn();
+    const revoke = `/admin/passkeys/${phone.passkey.credentialId}/revoke`;
+    const ended = () => db.owner`select 1 from events where type = 'admin.step-up-ended'`;
+    const before = (await ended()).length;
+    expect((await stepUp(browser, passkey)).status).toBe(200);
+    expect((await stepUp(phone.browser, phone.passkey)).status).toBe(200);
+
+    // A write like any other: the console's origin, a session and its token, but not the passkey again.
+    expect(ACCESS['step-up.end']).toMatchObject({ role: 'admin', does: 'write', stepUp: false });
+    expect(await browser.post('/admin/step-up/end', {}, { origin: 'https://evil.example' })).toMatchObject({
+      status: 403,
+      body: { refused: 'origin' },
+    });
+    expect(await browser.post('/admin/step-up/end', {}, { token: tokenOf('o'.repeat(43)) })).toMatchObject({
+      status: 403,
+      body: { refused: 'token' },
+    });
+    expect((await browser.get('/admin/session')).body.steppedUp).toBe(true);
+
+    expect(await browser.post('/admin/step-up/end')).toMatchObject({ status: 200, body: { ended: true } });
+    const session = (await browser.get('/admin/session')).body;
+    expect(session).toMatchObject({ steppedUp: false, steppedUpAt: null });
+    expect(await browser.post(revoke)).toMatchObject({ status: 403, body: { refused: 'step-up' } });
+    // Recorded as Martin's, with nothing of his session in it.
+    const [record] = await lastEvents(1);
+    expect(record).toMatchObject({ type: 'admin.step-up-ended', actor: 'martin', payload: {} });
+    expect(record?.public).toMatchObject({ summary: 'Martin ended his passkey’s five minutes early', payload: {} });
+    // The phone's session keeps its own.
+    expect((await phone.browser.get('/admin/session')).body.steppedUp).toBe(true);
+
+    // Ended already, or run out: nothing to end, and nothing recorded.
+    expect(await browser.post('/admin/step-up/end')).toMatchObject({ status: 200, body: { ended: false } });
+    await db.owner`
+      update sessions set stepped_up_at = now() - make_interval(mins => ${STEP_UP.minutes + 1})
+      where id_sha256 = ${sessionOf(phone.browser)}`;
+    expect(await phone.browser.post('/admin/step-up/end')).toMatchObject({ status: 200, body: { ended: false } });
+    expect(await ended()).toHaveLength(before + 1);
+
+    // Given again, it counts again.
+    expect((await stepUp(browser, passkey)).status).toBe(200);
+    expect((await browser.get('/admin/session')).body.steppedUp).toBe(true);
   });
 });
 
@@ -820,6 +866,8 @@ describe('a command a role not Martin’s appended', () => {
  * The app's Rollout, as Kubernetes keeps it for the admin service: read, and merge-patched, each patch conditional on
  * the `resourceVersion` it names, as the API server makes it.
  */
+type StablePod = 'ready' | 'unready' | 'terminating' | 'gone' | 'unreachable' | 'unserved';
+
 class RolloutKube implements KubeWriter {
   object: Record<string, unknown>;
   version = 1;
@@ -839,13 +887,45 @@ class RolloutKube implements KubeWriter {
   #unreadable = false;
   /** What the controller does to the Rollout as soon as a patch is made, before anyone reads it again. */
   controller: ((object: Record<string, unknown>) => Record<string, unknown>) | undefined;
+  /**
+   * The stable version's pods among the app's endpoints: one ready (`ready`), one not ready yet, one shutting down, none
+   * (`gone`, the canary's alone), or no answer (`unreachable`); a list says each read's in turn, the last again after
+   * that. The canary's pod is always there, and ready.
+   */
+  stablePod: StablePod | StablePod[] = 'ready';
+  /** The paths of the EndpointSlices read, a read each. */
+  readonly slices: string[] = [];
 
   constructor(state: RolloutState, paused = false) {
     const r = rollout(state);
     this.object = { ...r, spec: { ...r.spec, paused } };
   }
 
-  async get<T>(_path: string, schema: { parse(v: unknown): T }): Promise<T> {
+  async get<T>(path: string, schema: { parse(v: unknown): T }): Promise<T | undefined> {
+    if (path.includes('/endpointslices')) {
+      this.slices.push(path);
+      const pod = Array.isArray(this.stablePod)
+        ? ((this.stablePod.length > 1 ? this.stablePod.shift() : this.stablePod[0]) ?? 'ready')
+        : this.stablePod;
+      if (pod === 'unreachable') throw new KubeError(403, `GET ${path} answered 403`);
+      if (pod === 'unserved') return undefined;
+      const endpoint = (hash: string, conditions: object) => ({
+        addresses: ['10.42.0.9'],
+        conditions,
+        targetRef: { kind: 'Pod', name: `website-${hash}-x7k2p` },
+      });
+      const status = (this.object.status ?? {}) as { stableRS?: string; currentPodHash?: string };
+      const endpoints = [endpoint(status.currentPodHash ?? '', { ready: true })];
+      if (pod !== 'gone') {
+        endpoints.push(
+          endpoint(status.stableRS ?? '', {
+            ready: pod === 'ready',
+            ...(pod === 'terminating' && { terminating: true }),
+          }),
+        );
+      }
+      return schema.parse({ items: [{ addressType: 'IPv4', endpoints }] });
+    }
     if (this.#unreadable) {
       this.#unreadable = false;
       throw new Error('connect ECONNREFUSED');
@@ -1379,6 +1459,32 @@ describe('the release controls', () => {
       expect(await lineEvents()).toHaveLength(count + 1);
     });
 
+    it('starts a new store’s line, which has not started, and refuses to stop it, with nothing to stop', async () => {
+      await service.stop();
+      const shared = db;
+      db = await freshDatabase('admin_not_started');
+      try {
+        await start();
+        const { browser, passkey } = await signedIn();
+        expect((await stepUp(browser, passkey)).status).toBe(200);
+        expect(await browser.post('/admin/line/stop', { reason: 'Lunch' })).toMatchObject({
+          status: 409,
+          body: { refused: 'line', message: 'The line has not started: there is nothing to stop.' },
+        });
+        expect(await lineEvents()).toEqual([]);
+        expect(await browser.post('/admin/line/start', { reason: 'The first run' })).toEqual({
+          status: 200,
+          body: { started: true },
+        });
+        expect((await lineEvents()).map((e) => [e.type, e.appended_by])).toEqual([['line.started', 'factory_admin']]);
+      } finally {
+        await service.stop();
+        await db.end();
+        db = shared;
+        await start();
+      }
+    });
+
     it('starts only with the passkey again, decided from the stored line, with Martin’s reason', async () => {
       await withRollout({ current: STABLE, stable: STABLE });
       const { browser, passkey } = await signedIn();
@@ -1472,6 +1578,55 @@ describe('the release controls', () => {
       });
       expect(kube.patches.map((p) => p.body)).toEqual([{ status: { abort: true } }]);
     });
+
+    it.each(['gone', 'unready', 'terminating'] as const)(
+      'leaves a canary whose stable version has no pod ready (%s), and says so, the line stopped all the same',
+      async (pod) => {
+        await running();
+        const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
+        kube.stablePod = pod;
+        const { browser } = await signedIn();
+        const before = (await controls()).length;
+        expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toEqual({
+          status: 200,
+          body: { stopped: true, canary: 'kept', release: RELEASE, warning: NO_STABLE },
+        });
+        expect(await stopped()).toBe(true);
+        // Looked at three times, a second apart, before it is left.
+        expect(kube.slices).toEqual(Array(3).fill('/apis/discovery.k8s.io/v1/namespaces/website/endpointslices'));
+        expect(kube.patches).toEqual([]);
+        expect(await controls()).toHaveLength(before);
+      },
+    );
+
+    it('aborts a canary whose stable version has a pod ready again at the next look', async () => {
+      await running();
+      const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
+      kube.stablePod = ['unready', 'ready'];
+      const { browser } = await signedIn();
+      expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toMatchObject({
+        status: 200,
+        body: { stopped: true, canary: 'aborted', release: RELEASE },
+      });
+      expect(kube.slices).toHaveLength(2);
+      expect(kube.patches.map((p) => p.body)).toEqual([{ status: { abort: true } }]);
+    });
+
+    it.each(['unreachable', 'unserved'] as const)(
+      'aborts no canary whose stable version it cannot read (%s), and says what will',
+      async (pod) => {
+        await running();
+        const kube = await withRollout({ current: CANARY, stable: STABLE, stepIndex: 1, weight: 25 });
+        kube.stablePod = pod;
+        const { browser } = await signedIn();
+        expect(await browser.post('/admin/line/stop', { reason: 'Something is wrong' })).toEqual({
+          status: 200,
+          body: { stopped: true, canary: 'not-aborted', warning: NOT_ABORTED },
+        });
+        expect(await stopped()).toBe(true);
+        expect(kube.patches).toEqual([]);
+      },
+    );
 
     it('stops the line and says so when the admin service has no Rollout', async () => {
       await running();
@@ -1780,7 +1935,7 @@ describe('the line’s controls', () => {
     expect(await browser.post('/admin/line/controls', { autonomy: 'guarded' })).toEqual({
       status: 200,
       body: {
-        controls: { autonomy: 'guarded', newWork: true, autoMerge: false, take: null, autoRollback: true },
+        controls: { autonomy: 'guarded', newWork: true, autoMerge: false, take: { kind: 'every' }, autoRollback: true },
         change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
       },
     });
@@ -1792,7 +1947,7 @@ describe('the line’s controls', () => {
         autonomy: 'guarded',
         newWork: true,
         autoMerge: false,
-        take: null,
+        take: { kind: 'every' },
         change: { control: 'autonomy', before: 'supervised', after: 'guarded' },
       },
     });
@@ -1815,11 +1970,13 @@ describe('the line’s controls', () => {
     // Every other control stays as it was in force.
     expect((await changes()).at(-1)?.payload).toMatchObject({ autoMerge: true });
     // What policy does not allow is not in force, whatever the event says: the next fifty are more than it allows, so
-    // no take is, and the next three, though fewer, are wider than none.
+    // every ticket is, and the next three are narrower, and ask nothing.
     await stored({ take: { kind: 'next-few', count: 50, since: new Date().toISOString() } });
-    expect((await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).body.refused).toBe(
-      'step-up',
-    );
+    expect(await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).toMatchObject({
+      status: 200,
+      body: { change: { control: 'take', before: { kind: 'every' } } },
+    });
+    expect((await changes()).at(-1)?.summary).toBe('Martin narrowed what the line takes to the next 3 from now');
   });
 
   it('turns new work off and on without the passkey, and auto-merge on only with it', async () => {
@@ -1880,16 +2037,24 @@ describe('the line’s controls', () => {
     await stored({});
     const workItem = await ticketed();
     const { browser, passkey } = await signedIn();
-    // A first take, over the line's own default, which the service cannot see: wider, whatever it is.
-    expect((await browser.post('/admin/line/controls', { take: { kind: 'just-one', workItem } })).body.refused).toBe(
-      'step-up',
-    );
-    expect((await stepUp(browser, passkey)).status).toBe(200);
+    // With no take set, the line takes every ticket: choosing it changes nothing, and records nothing.
+    const before = (await changes()).length;
+    expect(await browser.post('/admin/line/controls', { take: { kind: 'every' } })).toMatchObject({
+      status: 200,
+      body: { controls: { take: { kind: 'every' } }, change: null },
+    });
+    expect(await changes()).toHaveLength(before);
+    // A first take narrows every ticket, whatever it is, and asks nothing.
     expect(await browser.post('/admin/line/controls', { take: { kind: 'just-one', workItem } })).toMatchObject({
       status: 200,
       body: { controls: { take: { kind: 'just-one', workItem } } },
     });
-    expect((await changes()).at(-1)?.summary).toBe(`Martin widened what the line takes to just #${workItem}`);
+    expect((await changes()).at(-1)?.summary).toBe(`Martin narrowed what the line takes to just #${workItem}`);
+    // The next few are wider than just one.
+    expect((await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).body.refused).toBe(
+      'step-up',
+    );
+    expect((await stepUp(browser, passkey)).status).toBe(200);
     expect(await browser.post('/admin/line/controls', { take: { kind: 'next-few', count: 3 } })).toMatchObject({
       status: 200,
     });

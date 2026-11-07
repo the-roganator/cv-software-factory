@@ -53,12 +53,12 @@ export function controlsOf(seen: readonly PublicEvent[]): ControlsView {
   const controls = controlsInForce(last?.payload);
   const { take } = controls;
   let nextFew: ControlsView['nextFew'];
-  if (take?.kind === 'next-few') {
+  if (take.kind === 'next-few') {
     // The change that chose them: the earliest of those since that have kept the same start.
     let since = Date.parse(take.since);
     for (const event of [...made].reverse()) {
       const was = controlsInForce(event.payload).take;
-      if (was?.kind !== 'next-few' || was.since !== take.since) break;
+      if (was.kind !== 'next-few' || was.since !== take.since) break;
       since = Date.parse(event.ts);
     }
     // Each work item with a ticket or Martin's request for an improvement, as the line's queue takes either, and when

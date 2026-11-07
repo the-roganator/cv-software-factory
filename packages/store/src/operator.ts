@@ -2,7 +2,8 @@
  * Readies one of Martin's own roles in the store for a make target on the host, as the database's owner: it gives the
  * role the password read from stdin, so no pod need hold it, and prints the role to connect as.
  *
- * - `factory_operator` (`as-operator` in the Makefile: `make stop-the-line`, `make start-the-line`, `make samples`). A
+ * - `factory_operator` (`as-operator` in the Makefile: `make stop-the-line`, `make start-the-line`, `make take-the-line`,
+ *   `make samples`). A
  *   store not yet migrated to 0023 has no such role and guards none of Martin's commands, so it prints the owner's
  *   own, which it connected as: `make stop-the-line` stops the line either way, and the next sync's migrate Job gives
  *   the store his role. On a store migrated to 0023 whose role cannot append, it fails: a command the owner appended

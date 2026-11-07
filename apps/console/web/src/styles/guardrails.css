@@ -1,7 +1,7 @@
 /*
  * Guardrails: a checklist of spec 6's eleven, full width under the bottom row, in two columns from 1180 up and one
  * below. A row is one line and a button that opens its details in place, one at a time: what holds it, its last proof,
- * and its attack, a `raised` card with Launch. A guardrail that did not hold takes the `attn` rule down its row's left
+ * its refusals in the last seven days, a line each, and its attack, a `raised` card with Launch. A guardrail that did not hold takes the `attn` rule down its row's left
  * edge, as an attack that was not refused does down its card's.
  */
 .guardrails {
@@ -106,6 +106,56 @@ html[data-motion="on"] .gr .chev {
   color: var(--text);
 }
 
+/* A row's refusals: a line each, the time, the mechanism in `attn` mono before what was refused, and where it is. */
+.reflist {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.reflist > li {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  line-height: 1.45;
+  /* A refusal's words can hold one long name, an image's digest, which wraps rather than leaving the column. */
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+.gr .more .reflist .mono {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.reflist .mech {
+  margin-right: 6px;
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--attn);
+}
+.reflist .times {
+  color: var(--text-muted);
+}
+.reflist small {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.gr .more .reflist small.tone-attn {
+  color: var(--attn);
+}
+.reflist .go {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text);
+}
+.gr .more p.instead {
+  margin-top: 4px;
+}
+
 /* An attack, in its guardrail's row: its name and last run on the left, Launch on the right. */
 .gr-attack {
   display: grid;
@@ -207,6 +257,10 @@ html[data-motion="on"] .gr .chev {
   }
   .gr .more {
     padding-left: 0;
+  }
+  .reflist > li {
+    grid-template-columns: 58px minmax(0, 1fr) auto;
+    gap: 8px;
   }
   .gr-attack {
     grid-template-columns: 1fr;

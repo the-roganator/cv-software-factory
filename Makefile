@@ -60,7 +60,7 @@ password = $(call namespace,$(1)) && \
 		$(apply-secret) >/dev/null; }; }; }
 
 .DEFAULT_GOAL := help
-.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line enrol guardrails
+.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line enrol guardrails
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -73,6 +73,13 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@docker inspect -f '{{json .HostConfig.PortBindings}}' k3d-$(CLUSTER)-serverlb | grep -q '"443/tcp"' || { \
 		echo "  This cluster has no HTTPS port: adding 127.0.0.1:8443, which restarts its load balancer and nothing else."; \
 		k3d cluster edit $(CLUSTER) --port-add 127.0.0.1:8443:443@loadbalancer; }
+	@# The Kubernetes API's binding is fixed when the cluster is made, and `k3d cluster edit` cannot move it: a cluster
+	@# made before deploy/k3d/cluster.yaml bound it to 127.0.0.1 still publishes it on every interface. Said, not mended:
+	@# only a new cluster moves it, and a new cluster starts with an empty store.
+	@# Each address it is published on, a line each; with none, or no load balancer to read, it says nothing.
+	@hosts="$$(docker inspect -f '{{range index .HostConfig.PortBindings "6443/tcp"}}{{println .HostIp}}{{end}}' k3d-$(CLUSTER)-serverlb 2>/dev/null)"; \
+	if [ -n "$$hosts" ] && printf '%s\n' "$$hosts" | grep -qvx '127\.0\.0\.1'; then \
+		echo "  This cluster's Kubernetes API is published beyond 127.0.0.1. Only a new cluster binds it there: 'make down' and 'make up', which empty the store."; fi
 	helm upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm --version $(ARGOCD_CHART) \
 		--kube-context $(CONTEXT) --namespace argocd --create-namespace \
 		--values deploy/argocd/values.yaml --wait --timeout 5m --hide-notes
@@ -211,11 +218,12 @@ share-key: ## Give the traffic generator its signing key, made once, and the app
 # The GitHub worker's key for signing its refusals (apps/factory/src/github/refusals.ts): an Ed25519 key pair, made once,
 # as share-key's is. The private key is the Secret refusal-signing-key in `factory`, which only the GitHub worker reads;
 # once made, that Secret is the source, and the ConfigMap refusal-key in `factory`, its public key and nothing else, is
-# written again from it each time, for the line to verify each refusal it records. Each goes through stdin, never a file
-# or a command line. Admission lets only this user, the local kubeconfig's, write refusal-key
-# (deploy/base/admission/factory/refusal-key.yaml). Each pod reads its key when it starts: a new Secret restarts the
-# worker and the line, and a public key that was missing or not the Secret's restarts the line.
-refusal-key: ## Give the GitHub worker its key for signing refusals, made once, and the line its public half (refusal-key)
+# written again from it each time, for the line to verify each refusal it records and the console each it shows. Each
+# goes through stdin, never a file or a command line. Admission lets only this user, the local kubeconfig's, write
+# refusal-key (deploy/base/admission/factory/refusal-key.yaml). Each pod reads its key when it starts: a new Secret
+# restarts the worker, the line and the console, and a public key that was missing or not the Secret's restarts the line
+# and the console.
+refusal-key: ## Give the GitHub worker its key for signing refusals, made once, and the line and console its public half
 	@$(call namespace,factory)
 	@# Made only when the cluster says there is none: any other failure to read it stops here, and keeps the key.
 	@made="$$($(KUBECTL) -n factory get secret refusal-signing-key -o name --ignore-not-found)" || exit 1; \
@@ -229,11 +237,11 @@ refusal-key: ## Give the GitHub worker its key for signing refusals, made once, 
 		$(KUBECTL) -n factory create configmap refusal-key --from-file=public-key=/dev/stdin --dry-run=client -o yaml | \
 		$(KUBECTL) apply -f - >/dev/null && echo "  The line has the GitHub worker's public key, in refusal-key." || exit 1; \
 	if [ -z "$$made" ]; then \
-		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (github,line)' --ignore-not-found >/dev/null && \
+		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (github,line,console)' --ignore-not-found >/dev/null && \
 		echo "  The GitHub worker has a new key, so it signs each refusal it answers."; \
 	elif [ "$$was" != "$$public" ]; then \
-		$(KUBECTL) -n factory delete pod -l app.kubernetes.io/name=line --ignore-not-found >/dev/null && \
-		echo "  refusal-key was missing or not the GitHub worker's, so the line starts again with the right one."; fi
+		$(KUBECTL) -n factory delete pod -l 'app.kubernetes.io/name in (line,console)' --ignore-not-found >/dev/null && \
+		echo "  refusal-key was missing or not the GitHub worker's, so the line and the console start again with the right one."; fi
 
 # Triage's caller token for the gateway's judgements (docs/COMPONENTS/LLM-GATEWAY.md#judgements): 32 random bytes in hex,
 # in the Secret judgements-token in `factory`, which only triage and the gateway name, through stdin and never a file or
@@ -355,13 +363,22 @@ real-store: node_modules ## Replace the cluster's store with an empty one for re
 	@$(KUBECTL) -n factory rollout restart deployment/console >/dev/null
 	@echo "  Console  https://console.localhost:8443"
 
-stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts (REASON="...")
+stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts if its stable version has a pod (REASON="...")
 	@# Both halves run whichever fails: a canary is aborted even if the store cannot be reached, and the other way round.
 	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason "$(REASON)")); } || failed=1; \
 		KUBECTL="$(KUBECTL)" scripts/abort-canaries.sh || failed=1; exit $${failed:-0}
 
-start-the-line: node_modules ## Start the line again; workers take what waited in the inbox (REASON="...")
+start-the-line: node_modules ## Start the line, first on a new store or again; workers take what waited in the inbox (REASON="...")
 	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason "$(REASON)"))
+
+# What the line takes, as the console's Controls set it, through the same check, keeping every other control: one of
+# ONLY (a work item's number), NEXT (how many, from now) or EVERY=1. From Martin's command line, it needs no passkey.
+take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<how many> or EVERY=1
+	@[ -z "$(EVERY)" ] || [ "$(EVERY)" = 1 ] || { echo "EVERY takes 1: EVERY=1." >&2; exit 2; }; \
+	set -- $(if $(ONLY),one "$(ONLY)") $(if $(NEXT),next "$(NEXT)") $(if $(EVERY),every); \
+	if [ "$$#" -eq 0 ] || { [ "$$1" = every ] && [ "$$#" -ne 1 ]; } || { [ "$$1" != every ] && [ "$$#" -ne 2 ]; }; then \
+		echo "Give one of ONLY=<work item>, NEXT=<how many> or EVERY=1." >&2; exit 2; fi; \
+	$(call as-operator,node apps/factory/src/cli.ts line take "$$@")
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

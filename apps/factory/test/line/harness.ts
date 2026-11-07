@@ -1,6 +1,7 @@
 /**
- * The line on a store of its own, as line.test.ts and the proofs in proofs/ run it: a ticket as triage opens one,
- * agents that hand back as the tests say, and fakes of GitHub and the runners.
+ * The line on a store of its own, as line.test.ts and the proofs in proofs/ run it: a store where Martin has started
+ * the line, a ticket as triage opens one, what he sets the line to take, agents that hand back as the tests say, and
+ * fakes of GitHub and the runners.
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,8 @@ import { type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/event
 import { DiskArtifacts, EventWriter, nextWorkItem } from '@software-factory/store';
 import { afterEach, beforeEach } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { EVER, setTake, startLine } from '../../../../packages/store/test/line.ts';
+import type { Take } from '../../../../policy/line.ts';
 import type { Handback } from '../../../runner/src/step.ts';
 import { Line, type LineOptions } from '../../src/line/worker.ts';
 import { quiet } from '../github/fake.ts';
@@ -19,8 +22,11 @@ export let events: EventWriter;
 /** Martin's commands, from the admin service's role: only his roles may append them. */
 export let martin: EventWriter;
 
-/** A store of its own for each of a file's tests, gone after it. */
-export function withLineStore() {
+/**
+ * A store of its own for each of a file's tests, gone after it, where Martin has started the line: a new store's line
+ * has not started, and takes nothing.
+ */
+export function withLineStore({ started = true }: { started?: boolean } = {}) {
   beforeEach(async () => {
     database = await freshDatabase('line');
     events = new EventWriter(database.as.line, {
@@ -31,6 +37,7 @@ export function withLineStore() {
       kind: 'real',
       artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
     });
+    if (started) await startLine(database.admin);
   });
   afterEach(() => database?.end());
 }
@@ -133,6 +140,15 @@ export const AGENTS: Record<string, Agent> = {
       summary: { title: 'Search with a quote', description: 'Fixed.', story: 'The factory fixed search.' },
     }),
 };
+
+/** What Martin sets the line to take, as the admin service appends it. */
+export const takes = (take: Take) => setTake(database.admin, take);
+
+/** Just one work item, as Martin's take. */
+export const justOne = (workItem: string) => takes({ kind: 'just-one', workItem });
+
+/** The next few, counting every work item the line has ever taken, as Martin's take. */
+export const nextFew = (count: number) => takes({ kind: 'next-few', count, since: EVER });
 
 /** The time as the line sees it, which a test can move on. */
 export const clock = { now: Date.parse('2026-10-06T09:00:00Z') };

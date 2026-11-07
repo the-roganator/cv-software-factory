@@ -1,4 +1,5 @@
-# Sourced by worktree.sh, copilot.sh and verify.sh: the repository a work item's key names, and where it is checked out.
+# Sourced by worktree.sh, copilot.sh and verify.sh: the repository a work item's key names, where it is checked out, and
+# the files a pull request in it changes.
 # A key that begins app- (app-flag-context) is a work item in the app's repository, checked out at APP_DIR, by default
 # beside this one; any other key is this repository's. Every worktree lives under this checkout's
 # scratch/worktrees/<key>, whichever repository it belongs to. `root` is this checkout, found from where the scripts
@@ -32,4 +33,19 @@ own_commits() {
 # repo_of <checkout>: owner/name of its origin on GitHub, read from git rather than asked of GitHub.
 repo_of() {
   git -C "$1" remote get-url origin | sed -E 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##; s#\.git$##'
+}
+# pr_files <repo> <pr>: each file the pull request changes, a line each: its path, and for a file renamed or moved, a
+# tab and the path it had. From the files API, a page at a time, which lists any number of files up to its 3000, so a
+# caller that must see them all compares the count of lines with the pull request's changedFiles.
+pr_files() {
+  gh api "repos/$1/pulls/$2/files?per_page=100" --paginate -q '.[] | [.filename, .previous_filename // empty] | join("\t")'
+}
+# names_path <path>: the first line of stdin that names the path whole: no path character ([A-Za-z0-9._/~+@=-])
+# right before or after it, though it may start with / or ./ (as CODEOWNERS writes paths) and end with a `.` that no
+# path character follows (a sentence's). So `deploy/a.yaml`, a bare path and [deploy/a.yaml](…) name deploy/a.yaml;
+# deploy/a.yaml.bak, deploy/a.yaml~ and other/deploy/a.yaml do not.
+names_path() {
+  local not='[^A-Za-z0-9._/~+@=-]' escaped
+  escaped=$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1")
+  grep -m1 -E "(^|$not)(\.?/)?$escaped\.?(\$|$not)"
 }

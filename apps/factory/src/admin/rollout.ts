@@ -29,7 +29,13 @@
  * **Stop the line** aborts whatever canary is in flight as the line stops (`line.ts`), named by nothing: the same abort,
  * recorded with a mark that it came with the stop, so the line records `release.aborted` with `by: stop` from it. A
  * release the line has not recorded yet has no version to record: it is aborted all the same, and the line tells who
- * aborted it by time, from the line's stop just before, as it tells `make stop-the-line`'s.
+ * aborted it by time, from the line's stop just before, as it tells `make stop-the-line`'s. A canary whose stable
+ * version has no pod ready to serve is left alone, and the answer says so: aborting it would send every request to a version
+ * that cannot serve one, as on the first release after the app is reset, whose stable version is one admission never
+ * let run. Its pods are read from the app's EndpointSlices, which the admin service lists already to find the app's
+ * pods (`flags-held.ts`), so it reads nothing more of the cluster for this: a pod of the stable version that is a
+ * ready endpoint is one that can take the traffic back. A read that fails aborts nothing, as a read of the Rollout
+ * failing does.
  *
  * The Rollout is read through the line's own schema and `observe` (`release/rollout.ts`), and the release in it named
  * as the line names it (`namedReleases`), from the line's records of every release of its pod hash, read with the
@@ -90,6 +96,22 @@ type Rollout = z.infer<typeof rolloutWithVersion>;
 const rolloutRaw = z.object({
   spec: z.record(z.string(), z.unknown()),
   status: z.record(z.string(), z.unknown()).default({}),
+});
+
+/** What Stop the line reads of the app's EndpointSlices: each endpoint's pod, and whether it is ready. */
+const ENDPOINT_SLICES = z.object({
+  items: z.array(
+    z.object({
+      endpoints: z
+        .array(
+          z.object({
+            conditions: z.object({ ready: z.boolean().nullish(), terminating: z.boolean().nullish() }).nullish(),
+            targetRef: z.object({ kind: z.string().optional(), name: z.string().optional() }).nullish(),
+          }),
+        )
+        .nullish(),
+    }),
+  ),
 });
 
 /** The release in the Rollout now, as the controls see it. */
@@ -215,6 +237,18 @@ class BetweenReleases extends Refused {
 }
 
 /**
+ * How many times, a second apart, Stop the line looks for a pod of the stable version ready to serve before it leaves
+ * the canary alone, so that a moment's readiness blip of the stable version's pods does not keep a canary from abort.
+ */
+const STABLE_LOOKS = 3;
+
+/** How much of a pod's generated name is its ReplicaSet's, as Kubernetes cuts it: 63 characters less 5 random ones. */
+const POD_NAME_BASE = 58;
+
+/** The stable version had no pod ready to serve at that look: Stop the line looks again, up to `STABLE_LOOKS` times. */
+class NoStablePod extends Error {}
+
+/**
  * How long Stop the line waits for the Rollout's status to catch up with its spec, a second at a time: a release just
  * starting has its canary named in a moment, and is aborted then.
  */
@@ -240,9 +274,13 @@ export const STILL_PAUSED =
 /** The same, after a control that was made and could not be recorded either. */
 const PAUSE_TOO = 'Your pause is still set too: resume the canary when the panel offers it.';
 
-/** What Stop the line did to the canary: there was none in flight, or it aborted it. */
+/**
+ * What Stop the line did to the canary: there was none in flight, it aborted it, or it left it alone (`kept`), its stable
+ * version having no pod ready to serve to take its traffic back.
+ */
 export type StopAbort =
   | { canary: 'none' }
+  | { canary: 'kept'; release: string }
   | {
       canary: 'aborted';
       release: string;
@@ -256,6 +294,8 @@ interface Read {
   canary: Canary;
   /** The line's record of the canary's release, if it has one, and it is not a dry run's. */
   record: TargetRecord | undefined;
+  /** The stable version's pod-template hash (`status.stableRS`), if it has one. */
+  stable: string | undefined;
   /** What naming the release in the Rollout again takes. */
   names: { recorded: Recorded; lastRelease: string | undefined };
 }
@@ -263,6 +303,7 @@ interface Read {
 export class ReleaseControls {
   readonly #kube: KubeWriter;
   readonly #path: string;
+  readonly #rollout: RolloutRef;
   readonly #sql: Sql;
   readonly #log: Logger;
 
@@ -271,6 +312,7 @@ export class ReleaseControls {
     this.#path =
       `/apis/argoproj.io/v1alpha1/namespaces/${encodeURIComponent(rollout.namespace)}` +
       `/rollouts/${encodeURIComponent(rollout.name)}`;
+    this.#rollout = rollout;
     this.#sql = sql;
     this.#log = log;
   }
@@ -286,11 +328,15 @@ export class ReleaseControls {
    * failure to record it is logged and no more: the line tells the abort by time then, from the stop just before.
    */
   async stop(): Promise<StopAbort> {
-    for (let wait = 1; ; wait++) {
+    // Each wait counts against its own: the status catching up, and the stable version's pods.
+    let waited = 0;
+    let looked = 0;
+    for (;;) {
       try {
-        return await this.#tried(() => this.#stopOnce());
+        return await this.#tried(() => this.#stopOnce(looked + 1 >= STABLE_LOOKS));
       } catch (error) {
-        if (!(error instanceof BetweenReleases) || wait > STOP_WAITS) throw error;
+        if (error instanceof NoStablePod) looked += 1;
+        else if (!(error instanceof BetweenReleases) || ++waited > STOP_WAITS) throw error;
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
     }
@@ -316,15 +362,16 @@ export class ReleaseControls {
   async #read(): Promise<Read> {
     const rollout = await this.#kube.get(this.#path, rolloutWithVersion);
     if (!rollout) throw new Refused('rollout', 404, 'There is no Rollout of the app to control.');
+    const observed = observe(rollout, []);
     const [rows, last] = await Promise.all([
-      releaseRecords(this.#sql, podHashes(observe(rollout, [])), true),
+      releaseRecords(this.#sql, podHashes(observed), true),
       lastPromoted(this.#sql),
     ]);
     const names = { recorded: recordedFrom(rows), lastRelease: last?.release };
     const canary = canaryOf(rollout, names.recorded, names.lastRelease);
     if (!canary) throw new BetweenReleases();
     const record = latestRecord([...(names.recorded.get(canary.release)?.values() ?? [])]);
-    return { canary, record: record?.started.dryRun ? undefined : record, names };
+    return { canary, record: record?.started.dryRun ? undefined : record, names, stable: observed.stable };
   }
 
   async #once(action: ReleaseControl, release: string): Promise<Answered> {
@@ -376,9 +423,18 @@ export class ReleaseControls {
     return resumed ? controlled : { ...controlled, warning: STILL_PAUSED };
   }
 
-  async #stopOnce(): Promise<StopAbort> {
-    const { canary, record, names } = await this.#read();
+  /** Stop the line's abort, once; with `last`, a canary whose stable version has no pod ready is left, not looked at again. */
+  async #stopOnce(last: boolean): Promise<StopAbort> {
+    const { canary, record, names, stable } = await this.#read();
     if (!canary.inFlight) return { canary: 'none' };
+    if (!(await this.#available(stable))) {
+      if (!last) throw new NoStablePod();
+      this.#log.warn(
+        { release: canary.release, stable },
+        'Stop the line left the canary: its stable version has no pod',
+      );
+      return { canary: 'kept', release: canary.release };
+    }
     const plan = planOf('abort', canary) as Plan;
     const event =
       record &&
@@ -406,6 +462,34 @@ export class ReleaseControls {
       recorded,
       ...(!resumed && { warning: STILL_PAUSED }),
     };
+  }
+
+  /**
+   * Whether the stable version has a pod ready to serve: an endpoint of one of the app's Services that is ready, and not
+   * shutting down, whose pod is the stable version's. Argo Rollouts names a version's ReplicaSet `<rollout>-<hash>`,
+   * and Kubernetes names its pods `<that>-<5 random>`, cutting what comes before them to 58 characters, so the pod's
+   * name says its version. With no stable version, or a name so long the cut takes some of the hash, there is nothing
+   * to tell by: the canary is aborted, as before a stable pod was looked for. `scripts/abort-canaries.sh` reads the
+   * same, by the same rule.
+   */
+  async #available(stable: string | undefined): Promise<boolean> {
+    const { namespace, name } = this.#rollout;
+    const prefix = `${name}-${stable}-`;
+    if (!stable || prefix.length > POD_NAME_BASE) return true;
+    const path = `/apis/discovery.k8s.io/v1/namespaces/${encodeURIComponent(namespace)}/endpointslices`;
+    const slices = await this.#kube.get(path, ENDPOINT_SLICES);
+    // A list is never missing: an answer of none is the API not serving EndpointSlices, which says nothing of the pods.
+    if (!slices) throw new Error(`GET ${path} answered 404`);
+    return slices.items.some((slice) =>
+      (slice.endpoints ?? []).some(
+        ({ conditions, targetRef }) =>
+          // Kubernetes says to read a ready condition it does not know as ready; one shutting down is not.
+          conditions?.ready !== false &&
+          conditions?.terminating !== true &&
+          (targetRef?.kind ?? 'Pod') === 'Pod' &&
+          targetRef?.name?.startsWith(prefix) === true,
+      ),
+    );
   }
 
   /**

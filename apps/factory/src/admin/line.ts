@@ -6,12 +6,15 @@
  *   flight, if there is one, through the admin service's own Role on the app's Rollout (`rollout.ts`), as
  *   `scripts/abort-canaries.sh` does with Martin's credentials. The stop is appended first, so the agents stop even if
  *   Kubernetes cannot be reached; if the abort fails, the line stays stopped, and the answer says that the canary was
- *   not aborted and that `make stop-the-line` will abort it. It never asks for the passkey again: it tightens.
+ *   not aborted and that `make stop-the-line` will abort it. A canary whose stable version has no pod ready to serve is
+ *   left alone, and the answer says so: aborting it would leave nothing to serve the app. It never asks for the passkey
+ *   again: it tightens.
  * - **Start the line** (`POST /admin/line/start`) appends `line.started`, and needs the passkey again (`line.start` in
  *   the access table). A release stopped with the line stays stopped until Martin retries it from the Canary panel.
  *
- * Each is refused, having appended nothing, when the line is already as asked: stopped, or running. They are taken one
- * at a time, under the lock every append takes, so two presses cannot both stop or both start it.
+ * Each is refused, having appended nothing, when the line is already as asked: stopped, or running. A new store's line
+ * has not started, and waits for Martin's first Start: Start starts it, and Stop is refused, with nothing to stop. They
+ * are taken one at a time, under the lock every append takes, so two presses cannot both stop or both start it.
  *
  * `make stop-the-line` keeps its own path, which needs neither the console nor the admin service.
  *
@@ -31,7 +34,8 @@
  * - A change to what is already so records nothing.
  * - Auto-rollback switched off overrides a guardrail, so it needs the passkey again, and the line pages Martin from its
  *   event. It reaches the canary's analysis only through the two series the admin service and the line report of it
- *   (`auto-rollback.ts`, `release/analysis.ts`). Stopping the line still aborts a canary, whatever it says.
+ *   (`auto-rollback.ts`, `release/analysis.ts`). Stopping the line still aborts a canary, whatever it says, as long as
+ *   its stable version has a pod to take its traffic back.
  */
 import { AUTONOMY } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
@@ -40,7 +44,7 @@ import {
   byMartin,
   lastEnd,
   latestControls,
-  lineStopped,
+  lineState,
   lockAppends,
   openedAsImprovement,
   storeClock,
@@ -66,11 +70,15 @@ import { type AdminStore, adminEvent, Refused, type Session, steppedUpNow } from
  */
 export const REASON = z.strictObject({ reason: PAYLOADS['line.stopped'].shape.reason });
 
-/** What stopping the line did: the line is stopped, and the canary in flight was aborted, or there was none, or not. */
+/**
+ * What stopping the line did: the line is stopped, and the canary in flight was aborted, or there was none, or it could
+ * not be aborted, or it was left alone (`kept`).
+ */
 export interface Stopped {
   stopped: true;
-  canary: 'aborted' | 'none' | 'not-aborted';
-  /** The release aborted. */
+  /** `kept`: left alone, its stable version having no pod ready to serve. */
+  canary: 'aborted' | 'none' | 'not-aborted' | 'kept';
+  /** The release aborted, or left alone because its stable version has no pod ready to serve. */
   release?: string;
   /**
    * Whether the abort's control was recorded: not for a release the line had not recorded yet, nor when the store did
@@ -83,8 +91,14 @@ export interface Stopped {
 
 /** What the answer says when the canary in flight could not be aborted. */
 export const NOT_ABORTED =
-  'The line is stopped, but a canary in flight was not aborted: the admin service could not read or patch the ' +
-  'Rollout. Run `make stop-the-line`, which will abort it.';
+  'The line is stopped, but a canary in flight was not aborted: the admin service could not read the release or ' +
+  'patch the Rollout. Run `make stop-the-line`, which will abort it if its stable version has a pod ready to serve.';
+
+/** What the answer says when the canary was left alone, its stable version having no pod to take its traffic back. */
+export const NO_STABLE =
+  'The line is stopped, but the canary in flight was not aborted: its stable version has no pod ready to serve, so ' +
+  'aborting it would leave nothing to serve the app. Whether it goes out is yours: promote it fully or pause it from ' +
+  'the Canary panel, or with `kubectl argo rollouts` while the panel has no record of it.';
 
 /** What the answer says when the admin service has no Rollout to control. */
 export const NO_ROLLOUT =
@@ -101,7 +115,10 @@ export async function stopLine(
   await store.record(
     async (tx) => {
       await lockAppends(tx);
-      if (await lineStopped(tx)) throw new Refused('line', 409, 'The line is stopped already.');
+      const state = await lineState(tx);
+      if (state === 'stopped') throw new Refused('line', 409, 'The line is stopped already.');
+      if (state === 'not-started')
+        throw new Refused('line', 409, 'The line has not started: there is nothing to stop.');
     },
     () => [adminEvent('line.stopped', 'Martin stopped the line', { reason })],
   );
@@ -109,6 +126,9 @@ export async function stopLine(
   try {
     const abort = await controls.stop();
     if (abort.canary === 'none') return { stopped: true, canary: 'none' };
+    if (abort.canary === 'kept') {
+      return { stopped: true, canary: 'kept', release: abort.release, warning: NO_STABLE };
+    }
     return {
       stopped: true,
       canary: 'aborted',
@@ -129,7 +149,7 @@ export async function startLine(store: AdminStore, session: Session, reason: str
   await store.record(
     async (tx) => {
       await lockAppends(tx);
-      if (!(await lineStopped(tx))) throw new Refused('line', 409, 'The line is running already.');
+      if ((await lineState(tx)) === 'running') throw new Refused('line', 409, 'The line is running already.');
       // Asked again as the start is taken, after the lock: the passkey given may have gone stale while it waited.
       if (!(await steppedUpNow(tx, session))) throw new Refused('step-up', 403, 'This needs your passkey again.');
     },
@@ -244,41 +264,50 @@ async function openWork(tx: TransactionSql, workItem: string): Promise<boolean> 
   return row !== undefined;
 }
 
+/**
+ * The change asked for, decided against the controls in force, read under the lock every append takes: the controls
+ * after it and the change, or none when it is so already; or refused, as outside policy, having changed nothing. Whether
+ * it needs the passkey again is the caller's to ask: the console's change asks it, and `make take-the-line`, from
+ * Martin's own command line, needs none, as `make start-the-line` needs none.
+ */
+export async function decideChange(tx: TransactionSql, asked: Change): Promise<Changed> {
+  await lockAppends(tx);
+  const { outside: _, ...before } = controlsInForce(await latestControls(tx));
+  // The store's clock, to the microsecond, as the line counts the next few by when each work item came onto it.
+  const change = changeOf(before, asked, await storeClock(tx));
+  if (same(change)) return { controls: before, change: null };
+  const after = withChange(before, change);
+  // Only a take can be: the request's shape holds the rest to what policy allows.
+  if (controlsInForce(after).outside.length) {
+    const why =
+      change.control === 'take' && change.after.kind === 'next-few'
+        ? `the next few are 1 to ${TAKE.most} work items`
+        : 'just one is a work item, by its number';
+    throw new Refused('policy', 422, `That is outside policy: ${why}.`);
+  }
+  if (change.control === 'take' && change.after.kind === 'just-one' && !(await openWork(tx, change.after.workItem))) {
+    const why = `#${change.after.workItem} has no open ticket or improvement for the line to take.`;
+    throw new Refused('policy', 422, why);
+  }
+  return { controls: after, change };
+}
+
+/** The event that records a change: every control as it now stands, and the one changed. */
+export const changedEvent = (controls: Controls, change: ControlChange) =>
+  adminEvent('controls.changed', changeSummary(change), { ...controls, change });
+
 /** Makes one change of the line's controls, or refuses having changed nothing. */
 export async function changeControls(store: AdminStore, session: Session, asked: Change): Promise<Changed> {
-  const { after, change } = await store.record(
+  return store.record(
     async (tx) => {
-      await lockAppends(tx);
-      const { outside: _, ...before } = controlsInForce(await latestControls(tx));
-      // The store's clock, to the microsecond, as the line counts the next few by when each work item came onto it.
-      const change = changeOf(before, asked, await storeClock(tx));
-      if (same(change)) return { after: before, change: null };
-      const after = withChange(before, change);
-      // Only a take can be: the request's shape holds the rest to what policy allows.
-      if (controlsInForce(after).outside.length) {
-        const why =
-          change.control === 'take' && change.after.kind === 'next-few'
-            ? `the next few are 1 to ${TAKE.most} work items`
-            : 'just one is a work item, by its number';
-        throw new Refused('policy', 422, `That is outside policy: ${why}.`);
-      }
-      if (
-        change.control === 'take' &&
-        change.after.kind === 'just-one' &&
-        !(await openWork(tx, change.after.workItem))
-      ) {
-        const why = `#${change.after.workItem} has no open ticket or improvement for the line to take.`;
-        throw new Refused('policy', 422, why);
-      }
+      const decided = await decideChange(tx, asked);
       // Asked as the change is taken, after the lock, from the controls in force: the passkey given may have gone
       // stale while it waited.
-      if (ACCESS[controlAction(change)].stepUp && !(await steppedUpNow(tx, session))) {
+      if (decided.change && ACCESS[controlAction(decided.change)].stepUp && !(await steppedUpNow(tx, session))) {
         throw new Refused('step-up', 403, 'This needs your passkey again.');
       }
-      return { after, change };
+      return decided;
     },
-    ({ after, change }) =>
-      change ? [adminEvent('controls.changed', changeSummary(change), { ...after, change })] : [],
+    ({ controls, change }) => (change ? [changedEvent(controls, change)] : []),
   );
-  return { controls: after, change };
 }

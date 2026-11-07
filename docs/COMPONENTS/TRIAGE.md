@@ -113,7 +113,7 @@ Elsewhere the text goes sooner, or is the cluster's to keep:
 - **Loki** keeps the app's log, the widget's records among them, for seven days, and **Tempo** its traces for three ([telemetry](TELEMETRY.md)).
 - **The node's container logs**, the files the app's output is written to before the collector reads them, are rotated by size, not by time, and kubelet has no setting for their age. They go with the pod: every release replaces it, and the shop's weekly dependency and image updates, once Martin merges them, release it well within 30 days. An [alert](ALERTING.md#the-shops-pod) tells Martin when the shop's pod is 25 days old, so that a release replaces it before a report in its logs is 30.
 - **Postgres** keeps the old version of a row it changed or deleted until autovacuum reclaims it, which it does on its own.
-- **Martin's console** keeps the full events it has read in the tab, and a report forgotten meanwhile is quoted there until the tab loads them again; a session lasts 30 minutes at most.
+- **Martin's console** keeps the full events it has read in the tab, and a report forgotten meanwhile is quoted there until the tab loads them again; a session lasts an hour at most.
 - **A gateway on the host** in `replay-record`, as `AGENTS.md` runs one against the cluster's store, prunes nothing: its folder is the one a developer gave it, kept out of the repository, and what it recorded of real reports is theirs to delete.
 
 ## The planner's findings

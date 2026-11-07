@@ -1220,14 +1220,14 @@ describe('signing in', () => {
     );
   });
 
-  it('holds Martin to two passkeys, and a session to 30 minutes, ended when its passkey is revoked', async () => {
+  it('holds Martin to two passkeys, and a session to an hour, ended when its passkey is revoked', async () => {
     expect(PASSKEYS.most).toBe(2);
-    expect(SESSION.minutes).toBe(30);
+    expect(SESSION.minutes).toBe(60);
     await enrolled(1);
     await enrolled(2);
     await expect(enrolled(3)).rejects.toThrow('two passkeys already');
     const session = hex(500);
-    // The store sets a session's 30 minutes from its own clock: the admin service cannot set either end.
+    // The store sets a session's hour from its own clock: the admin service cannot set either end.
     await expect(
       db.admin`insert into sessions (id_sha256, passkey, expires_at)
                values (${session}, ${key(1)}, now() + interval '1 day')`,
@@ -1242,7 +1242,7 @@ describe('signing in', () => {
     expect(Number(lasts?.minutes)).toBe(SESSION.minutes);
     // Nor can the database's owner keep one longer.
     await expect(
-      db.owner`update sessions set expires_at = signed_in_at + interval '31 minutes' where id_sha256 = ${session}`,
+      db.owner`update sessions set expires_at = signed_in_at + interval '61 minutes' where id_sha256 = ${session}`,
     ).rejects.toThrow('sessions_lasts');
     // `factory admin enrol --revoke-others` revokes, and the store ends the passkey's sessions with it.
     await db.enrol`update passkeys set revoked_at = now() where id = ${key(1)}`;
@@ -1256,7 +1256,8 @@ describe('signing in', () => {
   });
 
   it('cuts the sessions it keeps to 30 minutes from their sign-in, ended ones too', async () => {
-    // Sessions kept under the eight hours 0023 allowed, before 0031 cut it to 30 minutes.
+    // Sessions kept under the eight hours 0023 allowed, before 0031 cut it to 30 minutes. 0031 cuts every session kept,
+    // the earlier tests' hour-long ones too, which no test after this one reads.
     const migration = readFileSync(new URL('../migrations/0031_session-30-minutes.sql', import.meta.url), 'utf-8');
     await db.owner`alter table sessions drop constraint sessions_lasts`;
     await db.owner`alter table sessions add constraint sessions_check
@@ -1293,9 +1294,10 @@ describe('signing in', () => {
         db.owner`update sessions set ended_at = null, ended_by = null where id_sha256 = ${hex(602)}`,
       ).rejects.toThrow('stays ended');
     } finally {
-      // Whatever failed, the tests after this one meet the store as 0031 leaves it.
+      // Whatever failed, the tests after this one meet the store as the migrations leave it: 0031, then 0048's hour.
       const [old] = await db.owner`select 1 from pg_constraint where conname = 'sessions_check'`;
       if (old) await db.owner.unsafe(migration);
+      await db.owner.unsafe(readFileSync(new URL('../migrations/0048_session-one-hour.sql', import.meta.url), 'utf-8'));
     }
   });
 

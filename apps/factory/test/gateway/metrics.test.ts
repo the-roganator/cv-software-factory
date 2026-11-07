@@ -11,6 +11,7 @@ import * as metrics from '@opentelemetry/sdk-metrics';
 import { DiskArtifacts, EventWriter, issueJobToken } from '@software-factory/store';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { startLine } from '../../../../packages/store/test/line.ts';
 import type { SpendPolicy } from '../../../../policy/spend.ts';
 import type { MessagesProvider, ProviderName } from '../../src/gateway/providers.ts';
 import { capturingLog, fakeTypeSafe, request } from './helpers.ts';
@@ -86,6 +87,7 @@ const message = (usage: Record<string, number>) =>
 
 async function harness(policy: SpendPolicy, anthropic: MessagesProvider) {
   database = await freshDatabase('gateway_metrics');
+  await startLine(database.admin);
   const sql = database.as.gateway;
   const { log } = capturingLog();
   const dir = mkdtempSync(join(tmpdir(), 'cassettes-'));

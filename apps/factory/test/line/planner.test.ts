@@ -124,6 +124,7 @@ const IMPROVEMENT_SPEC = {
   title: 'Delivery dates on each product',
   flag: 'delivery-dates',
   pages: ['/products/blue-mug'],
+  scope: [...SPEC.scope, 'src/flag-names.ts'],
   criteria: [
     {
       given: 'a product in stock',
@@ -156,6 +157,14 @@ describe('an improvement’s spec', () => {
   const asked = (spec: object) => planner.schema(REQUEST).safeParse({ verdict: 'spec', spec });
   const problems = (spec: object) => asked(spec).error?.issues.map((issue) => issue.message);
   const criteria = IMPROVEMENT_SPEC.criteria;
+
+  it('takes in the app’s list of flag names, where the coder adds its flag’s name', () => {
+    const scope = IMPROVEMENT_SPEC.scope.filter((entry) => entry !== 'src/flag-names.ts');
+    expect(problems({ ...IMPROVEMENT_SPEC, scope })).toEqual([
+      'an improvement’s scope takes in src/flag-names.ts, where the coder adds its flag’s name',
+    ]);
+    expect(asked({ ...IMPROVEMENT_SPEC, scope: [...scope, 'src/'] }).success).toBe(true);
+  });
 
   it('names its title, the flag its change goes behind and the pages it shows on', () => {
     expect(asked(IMPROVEMENT_SPEC).success).toBe(true);

@@ -1,11 +1,12 @@
 # The rules of the line are human-owned (spec section 6, guardrail 1).
-# The review gate holds every pull request Martin did not open for his approval, these files' too (ADR 0014); the
-# factory's App is never a code owner.
+# The review gate reads this file from main, and holds every pull request of the factory's App that touches a path here
+# for Martin's approval, but for an exact pin (ADR 0014); the factory's App is never a code owner.
 
 /.github/                    @mrogan
 /deploy/                     @mrogan
 /scripts/github-settings.ts  @mrogan
 /scripts/review-gate.ts      @mrogan
+/scripts/review-routing.ts   @mrogan
 /scripts/copilot-held-runs.ts @mrogan
 /AGENTS.md                   @mrogan
 
@@ -34,6 +35,7 @@
 /scripts/github-settings.test.ts         @mrogan
 /scripts/merge-decisions.test.ts         @mrogan
 /scripts/review-gate.test.ts             @mrogan
+/scripts/review-routing.test.ts          @mrogan
 /scripts/workflows.test.ts               @mrogan
 # and the helpers they import from the test folders, which could make a proof hold of itself
 /apps/factory/test/deploy.ts                    @mrogan
@@ -48,6 +50,17 @@
 /apps/factory/test/line/harness.ts              @mrogan
 /packages/store/test/database.ts                @mrogan
 /packages/store/test/postgres.ts                @mrogan
+/packages/store/test/line.ts                    @mrogan
+
+# The factory's own code that no App pull request may change without Martin (spec 4.3): its gates, its GitHub worker,
+# the gateway, the admin service, the store's migrations and the redactor
+/apps/factory/src/gates/         @mrogan
+/apps/factory/src/github/        @mrogan
+/apps/factory/src/gateway/       @mrogan
+/apps/factory/src/admin/         @mrogan
+/packages/store/migrations/      @mrogan
+/packages/store/src/migrate.ts   @mrogan
+/packages/events/src/public.ts   @mrogan
 
 # Intent, specification and reference material
 /docs/INTENT.md              @mrogan

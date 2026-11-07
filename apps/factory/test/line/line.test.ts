@@ -30,13 +30,16 @@ import {
   events,
   failures,
   handback,
+  justOne,
   line,
   martin,
+  nextFew,
   PATCH,
   payloads,
   SPEC,
   stage,
   summaries,
+  takes,
   ticket,
   types,
   withLineStore,
@@ -108,6 +111,7 @@ describe('the line', () => {
       ],
       flag: 'delivery-dates',
       pages: ['/products/blue-mug'],
+      scope: [...SPEC.scope, 'src/flag-names.ts'],
     };
     const title = 'feat(products): show each product’s delivery date';
     const agents = {
@@ -491,7 +495,11 @@ describe('the line', () => {
     const before = await types(workItem);
     const reads = vi.spyOn(github, 'read');
     await pass();
-    expect(await types(workItem)).toEqual(before);
+    // The head the gate judges now is not the one its reviewer passed: the hold says so, and nothing else is recorded.
+    expect((await types(workItem)).slice(before.length)).toEqual(['hold.started']);
+    expect((await payloads(workItem, 'hold.started')).at(-1)).toMatchObject({
+      merge: { why: 'unreviewed', head: updated },
+    });
     expect(reads.mock.calls.map(([read]) => read)).not.toContain('checkRuns');
     reads.mockRestore();
     github.merge();
@@ -857,6 +865,7 @@ describe('the line', () => {
     expect(check?.args).toMatchObject({ conclusion: 'failure', title: 'Changes requested: 1 blocking finding' });
     expect((await payloads(workItem, 'review.submitted'))[0]).toEqual({
       pullRequest: 12,
+      commit: github.pulls.get(12)?.head.sha,
       verdict: 'changes-requested',
       note: 'The quote is still not escaped.',
       findings: [blocking, elsewhere],
@@ -1003,7 +1012,8 @@ describe('the line', () => {
     expect(await stage(broken)).toBe('build');
     const untouched = { events: await types(broken), stage: await stage(broken) };
 
-    const one = line(AGENTS, events, { only: cosmetic });
+    await justOne(cosmetic);
+    const one = line(AGENTS, events);
     await one.pass(); // the planner
     await one.pass(); // the coder
     one.github.pass();
@@ -1022,7 +1032,8 @@ describe('the line', () => {
   it('takes as many tickets as it is told by its own rule, carries them to the end, and then takes no more', async () => {
     const cosmetic = await ticket('cosmetic', '/');
     const broken = await ticket('broken', '/search');
-    const one = line(AGENTS, events, { take: 1 });
+    await nextFew(1);
+    const one = line(AGENTS, events);
     await one.pass(); // the planner
     await one.pass(); // the coder
     one.github.pass();
@@ -1033,7 +1044,7 @@ describe('the line', () => {
     expect(one.steps.requests.map((r) => r.agent)).toEqual(['planner', 'coder', 'reviewer', 'describer']);
     // Nothing is in Plan or Build, but the line has taken its one: the cosmetic ticket waits, after a restart too.
     await one.pass();
-    await line(AGENTS, events, { take: 1 }).pass();
+    await line(AGENTS, events).pass();
     expect(await stage(cosmetic)).toBeUndefined();
     expect(new Set(one.steps.requests.map((r) => r.workItem))).toEqual(new Set([broken]));
   });
@@ -1057,26 +1068,25 @@ describe('the line', () => {
       ),
     );
 
-  it('takes what Martin set in the console in place of its own default, from its next pass, and nothing outside policy', async () => {
+  it('takes every ticket while Martin has set no take, or one outside policy, and what he set from its next pass', async () => {
     const cosmetic = await ticket('cosmetic', '/');
     const broken = await ticket('broken', '/search');
-    const it = line(AGENTS, events, { take: 0 });
-    // The next fifty is more than policy allows: not in force, so the line's own default is, and it takes nothing.
+    const it = line(AGENTS, events);
+    // The next fifty is more than policy allows: not in force, so every ticket is, and the broken one comes on first.
     await controls({ take: { kind: 'next-few', count: 50, since: new Date(clock.now).toISOString() } });
     await it.pass();
-    expect(it.steps.requests).toEqual([]);
-    expect(await stage(broken)).toBeUndefined();
-    // Just the cosmetic one: taken on the next pass, whatever else is open, and nothing else.
+    expect(it.steps.requests.map((r) => [r.workItem, r.agent])).toEqual([[broken, 'planner']]);
+    expect(await stage(cosmetic)).toBeUndefined();
+    // Just the cosmetic one: taken on the next pass, though the broken one waits for Build, and nothing else moves.
     const take = { kind: 'just-one', workItem: cosmetic } as const;
-    await controls({ take, change: { control: 'take', before: null, after: take } });
+    await controls({ take, change: { control: 'take', before: { kind: 'every' }, after: take } });
     await it.pass();
-    expect(it.steps.requests.map((r) => [r.workItem, r.agent])).toEqual([[cosmetic, 'planner']]);
-    expect(await stage(broken)).toBeUndefined();
-    // Every ticket: the broken one comes on once nothing waits in Plan or for Build.
+    expect(it.steps.requests.map((r) => [r.workItem, r.agent]).slice(1)).toEqual([[cosmetic, 'planner']]);
+    expect(await stage(broken)).toBe('build');
+    // Every ticket again: the whole line moves on, to Build.
     await controls({ take: { kind: 'every' }, change: { control: 'take', before: take, after: { kind: 'every' } } });
-    await it.pass(); // the coder, on the cosmetic one
     await it.pass();
-    expect(await stage(broken)).toBeDefined();
+    expect(it.steps.requests.at(-1)?.agent).toBe('coder');
   });
 
   it('takes no ticket and starts no agent’s step while Martin has agents take no new work, and goes on after', async () => {
@@ -1677,6 +1687,9 @@ describe('the line', () => {
       imageRevision: no('such image'),
       imageSigned: no('such image'),
       deployProposal: async () => null,
+      reviewVerdict: no('such pull request'),
+      mergeQueue: no('such pull request'),
+      mergeability: no('such pull request'),
     };
     const files: Record<string, string> = { 'src/search.ts': 'old\n' };
     const recorded = mkdtempSync(join(tmpdir(), 'dry-run-'));
@@ -2326,6 +2339,9 @@ describe('the line', () => {
         imageRevision: no('such image'),
         imageSigned: no('such image'),
         deployProposal: async () => null,
+        reviewVerdict: no('such pull request'),
+        mergeQueue: no('such pull request'),
+        mergeability: no('such pull request'),
       };
       const dir = mkdtempSync(join(tmpdir(), 'dry-run-'));
       // Its pull request, #12, is the App's, as the GitHub worker's guard would read it from GitHub.
@@ -2612,13 +2628,15 @@ describe('the deploy pull request', () => {
       items.push(workItem);
     }
     const deploy = { number: 30, commit: sha('f'), pinned: sha('e'), digests: [] };
-    const only = line(AGENTS, events, { deployEveryMs: 0, only: items[0] as string });
+    await justOne(items[0] as string);
+    const only = line(AGENTS, events, { deployEveryMs: 0 });
     only.github.deploy = deploy;
     only.github.deployCommits = items.map((_, i) => (i + 1).toString(16).padStart(40, '0'));
     await only.pass();
     expect(described(only.github)).toEqual([]);
     await only.line.idle();
 
+    await takes({ kind: 'every' });
     const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
     github.deploy = deploy;
     github.deployCommits = only.github.deployCommits;
@@ -2746,7 +2764,7 @@ describe('the deploy pull request that carries a held work item', () => {
       'Deploy pull request #30 carries it; its checks are running',
       'Deploy pull request #30 carries it, and e2e failed on it',
       'Deploy pull request #30 carries it; its checks are running',
-      'Deploy pull request #30 carries it, and its checks passed: it waits for Martin to merge it',
+      'Deploy pull request #30 carries it, and its checks passed: the review gate did not pass it as an exact pin (low-risk), so the line does not add it to the merge queue: it waits for Martin to merge it',
       'Deploy pull request #30, which carries it, merged: its release starts once Argo CD syncs',
     ]);
     expect(await stage(workItem)).toBe('held');
@@ -2818,7 +2836,8 @@ describe('the deploy pull request that carries a held work item', () => {
     await dry.pass();
     expect(await changes(workItem)).toEqual([]);
 
-    const only = line(AGENTS, events, { deployEveryMs: 0, only: workItem });
+    await justOne(workItem);
+    const only = line(AGENTS, events, { deployEveryMs: 0 });
     propose(only.github, sha('d'));
     await only.pass();
     expect(await changes(workItem)).toEqual([{ pullRequest: DEPLOY, head: 'd', state: 'checking' }]);

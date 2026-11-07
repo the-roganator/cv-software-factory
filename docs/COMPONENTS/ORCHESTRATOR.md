@@ -54,18 +54,18 @@ Each stage can also hold for Martin (see [Holds](#holds-and-martins-answers)).
 - It runs one step at a time on the local model, whatever its stage, since LM Studio answers one prediction at a time. A step whose agent the settings in force send there ([below](#settings); every agent, under `ALL_LOCAL`) waits while another such step runs, and the line tries again on its next pass. A step on Claude never waits for one on the local model, so a mixed profile keeps its pace.
 - As a ticket enters Plan, before anything else, the sense that saw it looks again if its signal was last seen on a version before the one the stable Service runs, since a release since may have fixed it ([Verify](RELEASE-AND-VERIFY.md#open-tickets-a-release-may-have-fixed)): cleared, it closes as verified, with no issue opened and no planner, counts toward no limit on what the line takes, and the line takes the next ticket at once.
 - As a ticket enters Plan, it opens the ticket's issue through the App, from the ticket's public view. The fix's pull request refers to that issue. An improvement's issue has its title and Martin's words, from their public views.
-- After Martin's merge, it carries the work item through Release and Verify until it closes.
+- After the merge, the line's through the queue or Martin's, it carries the work item through Release and Verify until it closes ([the merge](#the-merge)).
 
-What it takes is Martin's to set in the console's Controls ([admin service](ADMIN-SERVICE.md#the-lines-controls)), read at each pass as `controls.changed`'s latest from his roles, held to policy by `policy/line.ts` as it is read: Every ticket, The next few (counted from when he last chose a number, at most 20), or Just one. The next few count improvements as they count tickets, and count the work items the line worked on: a ticket that closed on the look as it was taken (ended before its issue opened, with no step started) counts for nothing. Just one takes an improvement at once, as it takes a ticket. With none in force, before he sets one or when the latest is outside policy, two settings are the line's own default:
+What it takes is Martin's to set in the console's Controls ([admin service](ADMIN-SERVICE.md#the-lines-controls)), or with `make take-the-line` from his command line, read at each pass as `controls.changed`'s latest from his roles, held to policy by `policy/line.ts` as it is read: Every ticket, The next few, or Just one. With none in force, before he sets one or when the latest is outside policy, the line takes every ticket, and says at its start whether what it takes is his setting or that default.
 
-- **`LINE_ONLY`**, set to a work item, makes the line act on that one alone, as Just one does.
-  - It takes that ticket or improvement onto the line whatever else is in Plan or Build.
+- **The next few** are counted from when he last chose a number, at most 20. They count improvements as they count tickets, and count the work items the line worked on: a ticket that closed on the look as it was taken (ended before its issue opened, with no step started) counts for nothing. The count comes from the `line` table, by when each work item came onto it, so a restart takes none more. Then the line takes no more, and carries those it has to their end.
+- **Just one** makes the line act on that work item alone.
+  - It takes that ticket or improvement onto the line at once, whatever else is in Plan or Build.
   - It starts no step for any other work item, reads nothing for it and appends nothing.
   - It says nothing of what the deploy pull request carries, but still records where that pull request stands for this work item ([its state](RELEASE-AND-VERIFY.md#the-deploy-pull-requests-state)).
   - It still watches the app's releases, and records one that carries that work item or none (those go on the line). A release that also carries another work item is left for the whole line. The work item stays held at Release (cause `deploy`, so Needs you lists it) until the line records that release, or finds it live.
-- **`LINE_TAKE`**, set to a number, has the line take work by its own rule until it has taken that many work items in all, as The next few do from when Martin chose them, and counts the same ones. The count comes from the `line` table, by when each work item came onto it, so a restart takes none more. It then takes no more, and carries those it has to their end.
 
-A take Martin sets applies from the line's next pass, which his change wakes.
+`make take-the-line` takes one of `ONLY=<work item>`, `NEXT=<how many>` or `EVERY=1`. It makes the change the console's Controls would, through the same check (`decideChange` in `admin/line.ts`), keeps every other control as it stands, and records it as his, appended by his command line's role (`factory_operator`); like `make start-the-line`, it needs no passkey. A take Martin sets applies from the line's next pass, which his change wakes.
 
 ### Agents take new work
 
@@ -73,7 +73,7 @@ Martin's switch in Controls (`newWork`, on by default). Off, the line takes no n
 
 ### Autonomy and auto-merge
 
-Martin's autonomy level (Supervised, Guarded, Lights-out) and auto-merge of low-risk changes are recorded with his controls, and shown, and nothing routes by them yet: every merge waits for him on GitHub until approval routing comes (Part C, [approval routing](APPROVAL-ROUTING.md)). Auto-rollback, on by default, reaches the canary's analysis as two series, the admin service's read of it and the line's own (`line/auto-rollback.ts`): with both off, a canary whose errors or latency the analysis judges bad pauses for Martin rather than rolling back ([progressive delivery](PROGRESSIVE-DELIVERY.md#auto-rollback)).
+Martin's autonomy level (Supervised, Guarded, Lights-out) and auto-merge, read at each pass with his other controls, decide which of the review gate's rules the line adds its own pull request to the merge queue by ([the merge](#the-merge), `ENQUEUES` in `policy/line.ts`). Auto-rollback, on by default, reaches the canary's analysis as two series, the admin service's read of it and the line's own (`line/auto-rollback.ts`): with both off, a canary whose errors or latency the analysis judges bad pauses for Martin rather than rolling back ([progressive delivery](PROGRESSIVE-DELIVERY.md#auto-rollback)).
 
 ### A spec that overlaps
 
@@ -84,7 +84,7 @@ Two tickets can be one defect, seen by two checks on two pages, and that shows o
 - **While it waits**, each release is looked at as for a hold, and one that clears its signal closes it.
 - **No cycles.** A work item never waits on one that waits on it, directly or through others.
 - A spec written again before any push is checked again; one written once there is a pull request is not.
-- **With just one work item** (Martin's take, or `LINE_ONLY`) there is no wait: a line of one work item sees nothing else.
+- **With just one work item** (Martin's take) there is no wait: a line of one work item sees nothing else.
 
 ### An improvement
 
@@ -95,7 +95,7 @@ Martin asks for an improvement with the console's "+" ([admin service](ADMIN-SER
 - **Its spec names its flag and its pages.** The planner's schema refuses an improvement's spec without its title, a flag of its own, its pages, and criteria on each side of the flag ([planner](PLANNER.md#an-improvements-spec)).
 - **Its spec waits for Martin.** Every spec of an improvement is held for his approval before any code (cause `spec`, kind `approval`), whatever its risks and in every autonomy mode. A spec written again is held again, even one written while the last was held: his answer to the old card approves nothing. The line reads a spec only as its own role recorded it. Approving it takes the passkey again ([admin service](ADMIN-SERVICE.md)). Rejecting closes the work item, and answering sends his words to the planner.
 - **No sense looks at it.** It has no signal, so a hold never looks again, and a wait on overlapping work ends when that work closes.
-- **Its merge waits for Martin** in every mode, and its hold says so.
+- **Its merge waits for Martin** in every mode, whatever the review gate says, and its hold says so: the line never adds an improvement to the merge queue.
 - **It is handed over after its release.** Once a release that carries it is promoted, the line hands it over to the [flag pass](RELEASE-AND-VERIFY.md#verify-by-variant). It leaves one comment on its issue, saying the change is in the app behind its flag, off, and that Martin widens the flag a stage at a time from the console; the GitHub worker says nothing an issue says already, so a hand-over tried again after a crash says it once. Its row on the line ends, but the work item stays open, until the flag pass closes it: as verified once its flag is on for everyone, or as turned off ([Verify by variant](RELEASE-AND-VERIFY.md#verify-by-variant)). A spec waiting on it, for files they share, waits no more. The hand-over stands: the release watch records nothing more of a promoted release, so it never rolls back after it, and taking the change back out is a later release or Martin's turning the flag off. A rollback, or a release that erred or was aborted, holds it for the next deploy, as for a fix. A dry run's improvement waits for the dry run's release, then is handed over.
 
 ### A ticket that reopens
@@ -113,7 +113,7 @@ A dry run works on real tickets, so a line that starts `live` on the same store 
 - **A work item whose pull request or issue was the dry run's**, the pull request merged or not, closes with no change, saying so. Its issue closes too, as not planned, when GitHub has it. The next signal of its defect opens a fresh ticket. An improvement the dry run handed over closes the same way, and Martin asks for it again if he still wants it.
 - **A ticket the dry run verified** still has its defect, and reopens (`work-item.reopened`, with `dryRun: true` and the line as its actor). It comes back into Plan as any reopened ticket does, with a new issue, since its own was the dry run's. The planner is told of no fix that came back: none shipped.
 
-What it cannot end on one pass, because GitHub or the store failed, it tries again on the next, and until then it reads no gates and starts nothing for that work item. A reopened work item waiting to come back into Plan is left to that, which forgets a dry run's issue. With `LINE_ONLY`, it ends only that work item's.
+What it cannot end on one pass, because GitHub or the store failed, it tries again on the next, and until then it reads no gates and starts nothing for that work item. A reopened work item waiting to come back into Plan is left to that, which forgets a dry run's issue. With Just one, it ends only that work item's.
 
 ### Its metrics
 
@@ -161,9 +161,26 @@ flowchart TD
 - **An approval's suggestions** go back to the coder once in a pass, before the describer writes the change up, so that every review thread is answered before Martin's merge. The coder takes each or declines it with a reason (`suggestions.answered`). If it takes any, the gates and a fresh reviewer run again, and that review goes on whatever it suggests: suggestions alone never send the work round twice. It counts toward the two reviews like any other, and is at least the second, so if it blocks it holds for Martin. If it declines them all, it changes nothing and the approval stands. Martin's approval of a held review sends the change on with no such round.
 - **An out-of-scope spec.** Every spec tagged `out-of-scope` that the planner wrote under the rule (its criteria name where each comes from), a rewritten one too, holds at Plan for Martin's approval before the coder starts, in every autonomy mode ([approval routing](APPROVAL-ROUTING.md)).
 - **A spec written again** once there is a pull request sends the work back to the coder, held to the new spec, and sets aside the review of the old one, so the change is reviewed again.
+- **The merge.** A change that passed its gates, review and its description merges through the merge queue, by the line or by Martin ([below](#the-merge)).
 - **The end of a pull request.**
   - A pull request closed unmerged closes its work item: as verified while a look again that cleared stands on its hold (below), and with no change otherwise.
   - A work item whose pull request merges, or that closes, has its runners' volume deleted, since a later pass starts afresh from main.
+
+## The merge
+
+Once the describer has written a change up, the line reads, about once a minute through the GitHub worker, the review gate's verdict on the pull request's head (only from the review App's own `review` check, never the factory's reviewer's) and whether it conflicts with main, and decides (`line/merging.ts`):
+
+- **It adds the pull request to the merge queue itself** (`enqueuePullRequest`, at the head the gate judged, so a push since is refused) only when auto-merge is on, the gate's rule is one Martin's autonomy level allows (`ENQUEUES` in `policy/line.ts`: at Supervised none; at Guarded `low-risk`, `exact-pin` and `martin-approved-head`; at Lights-out those and `lights-out`), and that head is the one the line's own gates and reviewer passed (`review.submitted` names the head its reviewer was given). It records `pull-request.enqueued`, and the hold for the merge ends. `martin-opened` is never the line's.
+- **Never** an improvement, a release, a red-team branch, or a work item any of whose specs was tagged `out-of-scope`, whatever the rule.
+- **Otherwise it holds the merge for Martin** (cause `merge`), and the hold names the pull request, the head, the gate's rule, its tags with what gave each, its own words (the check's title, verbatim), a link to the check, and why the line does not add it (`merge.why`: `level`, `auto-merge`, `held`, `never`, `unreviewed`, `no-verdict`, `conflict`, `queue` or `refused`). Where his approval of the head on GitHub would let the line add it (Guarded or Lights-out, auto-merge on, a change that may be the line's), the hold says so (`merge.approving`): the gate then passes it as `martin-approved-head`, and the line adds it. A push after his approval fails the gate, and the line holds it again. The line holds it again whenever what the gate says changes, and not otherwise; the alert for a hold counts the wait from the first.
+- **The gate's refusal** of a head (its rule `held`) is recorded once for that head, before the hold, as `action.refused` with mechanism `review-gate` and the gate's summary as its output, signed by the GitHub worker and appended by the line only once it verifies with the worker's key (`refusal-key`). A merge held only because the level or auto-merge does not let the line add it is Martin's ordinary merge, and no refusal.
+- **While the gate has not judged the head**, or GitHub cannot be read, the change waits at Review, and nothing is held. So it does while the gate's verdict is a hold it marked `pending`, made only to wait for test integrity's run, as on a pull request just opened: no refusal is recorded for it. Still pending fifteen minutes after the later of the line's own gates passing at that head, by the store's time for that event, and the pending check concluding (from the check alone where its gates have not passed at that head, as after Martin's push to a held change), it is held as `no-verdict`, saying what the gate waits for, with no refusal; no hold made while it is pending carries that verdict's words, nor is a conflict's or the queue's hold made again when it resolves ([approval routing](APPROVAL-ROUTING.md#the-lines-part)).
+- **A conflict with main** holds it, saying so, until it does not.
+- **In the queue**, the line reads the queue's own word on the pull request as it reads the gates. The queue taking it out without merging it is recorded as `pull-request.dequeued`, with GitHub's reason and the required checks that failed on the queue's commit, and holds it for Martin (`queue`); the line does not add that head again. GitHub refusing to add it (403, signed and relayed as `token-permission`, or 422) holds it the same way (`refused`). Martin's answer in words sends the work back to the coder, as for any merge hold, and his merge on GitHub carries it on.
+- **The merge** is read as ever: through the queue, GitHub names whoever added the pull request as the merger, so the line's records `by: 'factory'`.
+- **The app's deploy pull request**, which carries the merged fixes to Release, the line adds to the queue as well once its checks have passed, by `exact-pin` alone, at the level and switch that allow it, once for each head, and records it on every work item it carries (`deploy.changed`), with why it waits for Martin when it does not ([the line adds it to the queue](RELEASE-AND-VERIFY.md#the-line-adds-it-to-the-queue)).
+
+In a dry run the GitHub worker records what it would add, and a pull request the line added merges a while after it was added; one it never added merges a while after it was readied, standing in for Martin's merge, so a dry run goes round at every level; one it added that has since moved to another head merges only once added again. A soak tells them apart by `pull-request.enqueued` before the merge.
 
 ## Refusals it records for others
 
@@ -189,7 +206,7 @@ Each hold names its cause, and Martin's answer does what `ANSWERS` says for that
 | `beyond-ticket` | The reviewer escalates a spec that goes beyond its ticket, or lacks what Martin's answer asks | Stands in for the reviewer's approval: the review's open threads are answered and resolved as his acceptance | Sends the spec back to the planner |
 | `merge` | The fix has passed its gates and review | Waits for his merge | Sends the work back to the coder |
 | `tests-first` | The change's new tests pass without the fix (the line makes no such hold yet) | Carries on with the tests as they are | Sends the work back to the coder, with what to test |
-| `deploy` | The merged fix waits for a release ([Release](RELEASE-AND-VERIFY.md#release)) | Waits: he settles it by merging the deploy pull request, his once its checks have passed | Waits |
+| `deploy` | The merged fix waits for a release ([Release](RELEASE-AND-VERIFY.md#release)) | Waits: the deploy pull request merging settles it. The line adds an exact pin to the merge queue when the level and auto-merge allow ([the line adds it to the queue](RELEASE-AND-VERIFY.md#the-line-adds-it-to-the-queue)); otherwise it is his once its checks have passed, or once the queue took it out | Waits |
 | `canary` | With auto-rollback off, the analysis judged the canary's errors or latency bad and Argo Rollouts paused it ([progressive delivery](PROGRESSIVE-DELIVERY.md#auto-rollback)) | Takes no answer here: he promotes it fully or aborts it from the Canary panel, and the release's end ends the hold | Takes no answer here |
 | `verify` | The signal persisted a second time, Verify could not tell for 24 hours, or nothing can judge the fix ([Verify](RELEASE-AND-VERIFY.md#verify)) | Closes the work item as verified, with his words | Sends it back to Plan |
 | `spend` | The work item has spent its cap on models | Carries on, and holds again until the cap is raised; raising it answers the hold | Carries on |
@@ -227,12 +244,12 @@ A step's `model.called` records the settings it ran under: its turns, and the ef
 
 ## Stopping the line
 
-Every worker checks for `line.stopped` before it takes work, and heeds a stop or a start only from one of [Martin's roles](EVENT-STORE.md#martins-commands). Martin stops the line from the console's header, through the [admin service](ADMIN-SERVICE.md#stopping-and-starting-the-line), or with `make stop-the-line`, as his command line's role, which works when the console and the admin service do not; each records his reason. Then:
+Every worker checks that the line is running before it takes work, and heeds a stop or a start only from one of [Martin's roles](EVENT-STORE.md#martins-commands). A new store has neither, and its line has not started: it counts as stopped to every worker, so nothing moves, no model is called and signals wait in the inbox until Martin first starts it, from the console's header or with `make start-the-line`. The console shows it as not started, which is no fault, and Stop the line is refused there, with nothing to stop. Martin stops the line from the console's header, through the [admin service](ADMIN-SERVICE.md#stopping-and-starting-the-line), or with `make stop-the-line`, as his command line's role, which works when the console and the admin service do not; each records his reason. Then:
 
 - the line deletes the Jobs of every step in hand at once, starts none still preparing, and records nothing of them;
 - it runs them afresh when the line starts, which from the console needs his passkey again;
 - Martin is told of the stop, however it was made, at Inform ([alerting](ALERTING.md#security-events));
-- a release of the app in flight is aborted ([progressive delivery](PROGRESSIVE-DELIVERY.md)), which the release watch records as `release.aborted` by `stop` ([release and verify](RELEASE-AND-VERIFY.md#its-events)): from the console, by the admin service, after the stop is recorded, with a control that says it came with the stop; from the command line, by `scripts/abort-canaries.sh`, which records nothing, so the line tells its abort by time.
+- a release of the app in flight is aborted ([progressive delivery](PROGRESSIVE-DELIVERY.md)), unless its stable version has no pod ready to serve, which would leave nothing to serve the app (the stop says so, and whether it goes out is Martin's); which the release watch records as `release.aborted` by `stop` ([release and verify](RELEASE-AND-VERIFY.md#its-events)): from the console, by the admin service, after the stop is recorded, with a control that says it came with the stop; from the command line, by `scripts/abort-canaries.sh`, which records nothing, so the line tells its abort by time.
 
 A stopped line still watches the app's releases: it records whatever they do (a start, a step, a promotion, a rollback, an analysis error, an abort) and sends a rollback's signals to the inbox, where they wait. It moves no work item, and a dry run's releases wait for it to start.
 

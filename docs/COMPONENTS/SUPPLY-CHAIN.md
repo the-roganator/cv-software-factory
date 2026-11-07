@@ -25,7 +25,7 @@ Each public repository's `build.yml` pushes its images to GHCR from `main`. Then
 
 Fulcio certifies the workflow's identity for minutes, and the signature goes into Rekor, so there is no key to keep or steal.
 
-Fulcio, Rekor and GHCR fail now and then and answer again soon after, so the job runs each scan and each cosign call up to four times, 15, 30 and 60 seconds apart, each cosign try cut off after a minute. Every failure is tried again, as cosign's errors do not tell a brief one from a lasting one; four tries bound it. An image whose job still fails is in GHCR unsigned, and the deploy watch does not propose it until the job is run again. A try again can leave a second signature or SBOM by the same identity, which changes nothing: each place that checks accepts any one that verifies. A deploy pull request's `image builds` check tries its `cosign verify` calls the same way.
+Fulcio, Rekor and GHCR fail now and then and answer again soon after, so the job runs each scan and each cosign call up to four times, 15, 30 and 60 seconds apart, each cosign try cut off after a minute. Every failure is tried again, as cosign's errors do not tell a brief one from a lasting one; four tries bound it. An image whose job still fails is in GHCR unsigned, and the deploy watch does not propose it until the job is run again. A try again can leave a second signature or SBOM by the same identity, which changes nothing: each place that checks accepts any one that verifies. The push jobs make each image's index in GHCR (`scripts/image-index.sh`), and a deploy pull request's `image builds` check reads its pins from GHCR and verifies them with `cosign verify`, each call tried the same way.
 
 ## Whose signature
 

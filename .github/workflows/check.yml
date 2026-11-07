@@ -372,14 +372,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # GHCR fails now and then and answers again soon after: each read of it gets four tries, 15, 30 and 60
+          # seconds apart. The same function as build.yml's, which scripts/build-signing.test.ts runs.
+          retry() {
+            local try
+            for try in 1 2 3 4; do
+              "$@" && return 0
+              [ "$try" -lt 4 ] || break
+              echo "::warning::${1##*/} $2 failed (try $try of 4); trying again in $((15 << (try - 1)))s" >&2
+              sleep $((15 << (try - 1)))
+            done
+            echo "::error::${1##*/} $2 failed four times" >&2
+            return 1
+          }
           for file in deploy/overlays/local/*-image/kustomization.yaml; do
             for ref in $(yq '.images[] | .newName + "@" + .digest' "$file"); do
               case "$ref" in
                 "ghcr.io/$GITHUB_REPOSITORY/"*@sha256:*) ;;
                 *) echo "::error file=$file::$ref is not one of this repository's images, pinned by digest"; exit 1 ;;
               esac
-              revisions=$(docker buildx imagetools inspect "$ref" --format '{{ json .Image }}' \
-                | jq -r '[.. | objects | .config?.Labels?["org.opencontainers.image.revision"]? // empty] | unique | .[]')
+              image=$(retry docker buildx imagetools inspect "$ref" --format '{{ json .Image }}') || {
+                echo "::error file=$file::$ref could not be read from GHCR"; exit 1
+              }
+              revisions=$(jq -r '[.. | objects | .config?.Labels?["org.opencontainers.image.revision"]? // empty] | unique | .[]' <<< "$image")
               if [ "$(wc -w <<< "$revisions")" -ne 1 ]; then
                 echo "::error file=$file::$ref does not name the one commit it was built from (found: ${revisions:-none})"; exit 1
               fi

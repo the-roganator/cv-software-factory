@@ -354,7 +354,9 @@ jobs:
     needs: kind
     if: ${{ !cancelled() && needs.kind.outputs.kind != 'release' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Room for the builds, and for every try of the signature check: a deploy moves up to four images, and each image's
+    # two calls take up to four one-minute tries and 105 seconds of waiting between them while Sigstore is down.
+    timeout-minutes: 50
     env:
       BUILD: ${{ !contains(fromJSON('["deploy", "manifests"]'), needs.kind.outputs.kind) }}
     steps:

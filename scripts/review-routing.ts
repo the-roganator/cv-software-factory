@@ -95,6 +95,8 @@ export interface Decision extends Verdict {
    * holding the pull request: the cause, which `pending` says too.
    */
   unchecked?: string;
+  /** Set beside `unchecked` when its base has been changed: an earlier verdict at its head judged other pins. */
+  retargeted?: true;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -517,10 +519,16 @@ export async function exactPin(
 ): Promise<{ pins: Pin[] } | { reason: string; digests?: true }> {
   if (files.length === 0) return { reason: 'it changes no file' };
   if (!complete) return { reason: 'GitHub lists only some of its files, and the rest are unread' };
-  const pins: Pin[] = [];
+  // Every file a change of digests alone first, so a reason for one file's pin is never given to a change that is no
+  // pin at all, and nothing is read for one.
+  const moved: { file: FileChange; moves: { from: string; to: string }[] }[] = [];
   for (const file of files) {
     const moves = digestMoves(file);
     if (!Array.isArray(moves)) return moves;
+    moved.push({ file, moves });
+  }
+  const pins: Pin[] = [];
+  for (const { file, moves } of moved) {
     const content = await checks.content(file.filename);
     for (const { from, to } of moves) {
       const image = imageOf(content, to);
@@ -568,6 +576,8 @@ export interface Facts {
   labelsRemoved: readonly string[];
   /** What the gate could not read from GitHub, which holds the pull request unless Martin has had his say. */
   unread?: string;
+  /** Whether its base has been changed since it opened: its pins are then not the same at the same head. */
+  retargeted?: boolean;
   /**
    * The exact pin check's result, for a pull request of the App's: its pins, why it is not an exact pin (`digests` when
    * it changes digests alone), or why the check could not be made, after the gate tried again.
@@ -612,7 +622,12 @@ export function route(facts: Facts): Decision {
   // in either repository, which never passes it and never falls through to its tags.
   if (pin && 'unchecked' in pin) {
     const cause = `the gate could not check its exact pin: ${pin.unchecked}`;
-    return { ...held(`Not judged yet: ${cause}`), pending: cause, unchecked: pin.unchecked };
+    return {
+      ...held(`Not judged yet: ${cause}`),
+      pending: cause,
+      unchecked: pin.unchecked,
+      ...(facts.retargeted ? { retargeted: true as const } : {}),
+    };
   }
   if (repo !== APP_REPO) {
     const why = pin && 'reason' in pin ? `: ${pin.reason}` : '';
@@ -651,8 +666,9 @@ export function route(facts: Facts): Decision {
  * Whether the review App's latest verdict on a commit, which passed, stands when this run could only fail it for exact
  * pins it could not check: so a check that could not be made does not overturn one that was. It stands only when
  * every pull request held now is held for that alone, the verdict judged the same pull requests at the same heads, on
- * this commit, each by a rule that passes, and each held now by `exact-pin`, whose pins at a head do not change. Every
- * other fact was read afresh by this run and passes. `earlier` is the block of that check, read by `readVerdict`.
+ * this commit, each by a rule that passes, and each held now by `exact-pin`, whose pins at a head do not change while
+ * its base does not: one whose base has ever been changed is judged afresh. Every other fact was read afresh by this
+ * run and passes. `earlier` is the block of that check, read by `readVerdict`.
  */
 export function stands(
   earlier: Block,
@@ -660,8 +676,8 @@ export function stands(
   now: readonly { number: number; head: string; said: Decision }[],
 ): boolean {
   if (earlier.commit !== commit || earlier.judged.length !== now.length) return false;
-  if (!now.some(({ said }) => !said.pass) || now.some(({ said }) => !said.pass && said.unchecked === undefined))
-    return false;
+  if (!now.some(({ said }) => !said.pass)) return false;
+  if (now.some(({ said }) => !said.pass && (said.unchecked === undefined || said.retargeted))) return false;
   return now.every(({ number, head, said }) => {
     const was = earlier.judged.find((entry) => entry.number === number);
     if (!was || was.head !== head || !passes(was.rule) || was.pending !== undefined) return false;

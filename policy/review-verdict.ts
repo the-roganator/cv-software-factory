@@ -19,7 +19,8 @@
  * as none), or its latest not yet completed, with no tag found that the level would not pass. Test integrity's
  * workflow runs on every push and its completion runs the gate again, so the reading it waits for comes. So does one
  * held only because the gate could not check its exact pin (GitHub, GHCR or Sigstore not answering), which is no
- * judgement of it, and which a later run of the gate settles. It is never
+ * judgement of it: any later run of the gate (a push, a review, a re-run) settles it, and nothing else runs one, so
+ * the line's bound is what ends that wait. It is never
  * set beside a passing rule, nor on any other hold: a tag the level does not pass, a removed risk label, a change under
  * `.github/`, a stacked base, a run that failed or was cancelled, a read of GitHub that failed. The gate marks it
  * conservatively; the line, which has a clock, bounds the wait. The field is optional, so a block without it, or a

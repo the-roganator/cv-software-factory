@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cutPending, found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
 import {
   atHead,
+  definite,
   judge,
   MARTIN,
   momentary,
@@ -628,6 +629,24 @@ describe('judging a pull request through the API', () => {
       expect(said.title).not.toContain('risk tags');
     });
 
+    it('holds it saying why when GitHub answers what a later try would not change, trying once', async () => {
+      let reads = 0;
+      github({
+        '/pulls/9/files': pinFiles,
+        '/contents/deploy/website/kustomization.yaml': 403,
+      });
+      const answer = globalThis.fetch;
+      vi.stubGlobal('fetch', async (url: string) => {
+        if (url.includes('/contents/deploy/')) reads++;
+        return answer(url);
+      });
+      const said = await judge(run, pinPr);
+      expect(reads).toBe(1);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toContain('Not an exact pin: the gate could not check it: GET /repos/');
+    });
+
     it('is a judgement when GHCR answers that the image is not there, said in the hold', async () => {
       github({
         '/pulls/9/files': pinFiles,
@@ -671,18 +690,46 @@ describe('trying a check that could not be made again', () => {
     };
   };
 
+  const limits = (backoff: number[], until = 1_000, tryMs = 0) => ({ backoff, until, tryMs });
+
   it('tries again after each wait, and stops at the first that answers', async () => {
     const c = clock();
-    expect(await retrying(failing(2), [5, 15, 30], 1_000, c)).toBe('checked');
+    expect(await retrying(failing(2), limits([5, 15, 30]), c)).toBe('checked');
     expect(c.waits).toEqual([5, 15]);
   });
 
-  it('gives the last error once the waits run out, or the next try would start too late', async () => {
+  it('gives the last error once the waits run out, or the next try would not end in time', async () => {
     const c = clock();
-    await expect(retrying(failing(9), [5, 15], 1_000, c)).rejects.toThrow('try 3');
-    const late = clock(990);
-    await expect(retrying(failing(9), [5, 15], 1_000, late)).rejects.toThrow('try 2');
+    await expect(retrying(failing(9), limits([5, 15]), c)).rejects.toThrow('try 3');
+    // A try takes up to 100: one at 905 would end past 1,000.
+    const late = clock(800);
+    await expect(retrying(failing(9), limits([5, 100], 1_000, 100), late)).rejects.toThrow('try 2');
     expect(late.waits).toEqual([5]);
+    // With no time for even one, none starts.
+    let tried = 0;
+    const none = retrying(
+      async () => {
+        tried++;
+        return 'checked';
+      },
+      limits([5], 1_000, 100),
+      clock(950),
+    );
+    await expect(none).rejects.toThrow('the job had no time left to check it');
+    expect(tried).toBe(0);
+  });
+
+  it('does not try again an answer a later try would not change', async () => {
+    const c = clock();
+    let tried = 0;
+    const bad = async () => {
+      tried++;
+      throw new SyntaxError('Unexpected token');
+    };
+    await expect(retrying(bad, limits([5, 15]), c)).rejects.toThrow('Unexpected token');
+    expect(tried).toBe(1);
+    expect(definite(new SyntaxError('x'))).toBe(true);
+    expect(definite(new Error('x'))).toBe(false);
   });
 
   it('tells a missing signature from a look that failed', () => {
@@ -695,6 +742,8 @@ describe('trying a check that could not be made again', () => {
     expect(unsigned('Error: no matching signatures: unexpected status code 503')).toBe(false);
     expect(unsigned('Error: getting signatures: GET https://ghcr.io/v2/x: unexpected EOF')).toBe(false);
     expect(unsigned('Error: fetching TUF root: connection refused')).toBe(false);
+    // Numbers and words in what it found are no failed look: a log index, a subject naming a connection.
+    expect(unsigned('Error: no matching signatures: log index 503 got subject https://x/connection')).toBe(true);
     expect([408, 429, 500, 502, 503].every(momentary)).toBe(true);
     expect([401, 403, 404].some(momentary)).toBe(false);
   });

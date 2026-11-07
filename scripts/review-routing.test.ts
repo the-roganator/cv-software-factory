@@ -769,6 +769,17 @@ images:
     // Not a pin at all: no mark, so the app's repository judges it by its tags.
     expect(await exactPin([file(`${moved}\n+# a comment`)], checks(), true)).not.toHaveProperty('digests');
     expect(await exactPin([file(moved)], checks(), false)).not.toHaveProperty('digests');
+    // A pin's file read, or its image unnamed, is never the reason for a change that is no pin at all.
+    let read = 0;
+    const counting = checks({
+      content: async () => {
+        read++;
+        return 'images: []';
+      },
+    });
+    const mixed = [file(moved), { filename: 'src/a.ts', status: 'modified', patch: '+const a = 1;' }];
+    expect(await exactPin(mixed, counting, true)).toEqual({ reason: 'src/a.ts is not a pin file under deploy/' });
+    expect(read).toBe(0);
     // A check that could not be made is no reason: the gate tries again, and says it could not check.
     const down = checks({
       signedAt: async () => {
@@ -830,6 +841,10 @@ describe('an earlier pass that stands', () => {
     expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(removed)])).toBe(false);
     const two = earlier([PIN_ENTRY, { ...PIN_ENTRY, number: 8 }]);
     expect(stands(two, QUEUE, [now(), now(route(facts({ unread: 'GET /files: 502' })), 8)])).toBe(false);
+    // Its base changed since it opened: the pins at its head were others then.
+    const moved = route(facts({ pin: { unchecked: 'x' }, retargeted: true }));
+    expect(moved).toMatchObject({ rule: 'held', retargeted: true });
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(moved)])).toBe(false);
     // Nothing held now: there is nothing to stand for.
     expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(route(facts({ pr: pr(MARTIN) })))])).toBe(false);
   });

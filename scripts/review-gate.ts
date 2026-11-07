@@ -245,9 +245,24 @@ async function request(method: string, path: string, token: string, accept: stri
   });
 }
 
+/**
+ * Whether an answer's status says the server could not answer just then, rather than what it has: a later try may
+ * succeed.
+ */
+export const momentary = (status: number) => status === 408 || status === 429 || status >= 500;
+
+/**
+ * An answer from GitHub or GHCR that a later try would not change (a 403 or a 404, say), or a fault of the gate's own,
+ * such as cosign missing: no reason to try again, unlike a check that could not be made.
+ */
+class Answered extends Error {}
+
+/** The error for an answer that was not ok: `Answered` unless a later try may succeed. */
+const failed = (status: number, said: string) => (momentary(status) ? new Error(said) : new Answered(said));
+
 async function api<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
   const response = await request(method, path, token, 'application/vnd.github+json', body);
-  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
+  if (!response.ok) throw failed(response.status, `${method} ${path}: ${response.status} ${await response.text()}`);
   return (await response.json()) as T;
 }
 
@@ -256,7 +271,7 @@ async function fileAt(repo: string, path: string, ref: string, token: string): P
   const where = `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`;
   const response = await request('GET', where, token, 'application/vnd.github.raw+json');
   if (response.status === 404) return undefined;
-  if (!response.ok) throw new Error(`GET ${where}: ${response.status} ${await response.text()}`);
+  if (!response.ok) throw failed(response.status, `GET ${where}: ${response.status} ${await response.text()}`);
   return response.text();
 }
 
@@ -306,15 +321,6 @@ const MANIFESTS = [
   'application/vnd.docker.distribution.manifest.v2+json',
 ].join(', ');
 
-/**
- * Whether an answer's status says the server could not answer just then, rather than what it has: a later try may
- * succeed.
- */
-export const momentary = (status: number) => status === 408 || status === 429 || status >= 500;
-
-/** An answer that says what GHCR has, or has not: a judgement of the pin, not a check that could not be made. */
-class Answered extends Error {}
-
 /** The commit an image says it was built from: its one `org.opencontainers.image.revision` label, on every platform. */
 async function revisionOf(image: string, digest: string): Promise<string | { reason: string }> {
   const name = image.replace(/^ghcr\.io\//, '');
@@ -328,8 +334,7 @@ async function revisionOf(image: string, digest: string): Promise<string | { rea
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
-      const said = `ghcr.io answered ${response.status} for ${path}`;
-      throw momentary(response.status) ? new Error(said) : new Answered(said);
+      throw failed(response.status, `ghcr.io answered ${response.status} for ${path}`);
     }
     return (await response.json()) as T;
   };
@@ -362,7 +367,7 @@ const run = promisify(execFile);
  * each signature it could not verify under "no matching signatures".
  */
 const LOOK_FAILED =
-  /time(d)? ?out|deadline exceeded|connection|EOF|TLS|i\/o|temporar|unavailable|too many requests|\b(408|429|5\d\d)\b/i;
+  /timed? ?out|deadline exceeded|connection (refused|reset)|unexpected EOF|TLS handshake|i\/o timeout|temporar(y|ily)|service unavailable|too many requests|status code:? (408|429|5\d\d)/i;
 export function unsigned(said: string): boolean {
   if (!/no matching signatures|no signatures found/i.test(said)) return false;
   return !LOOK_FAILED.test(said);
@@ -415,6 +420,8 @@ function signedAt(repo: string, image: string, digest: string): Promise<string |
           .find((l) => /error/i.test(l))
           ?.trim();
         const killed = typeof error === 'object' && error !== null && 'killed' in error && error.killed === true;
+        if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
+          throw new Answered('cosign is not installed where the gate runs');
         if (!killed && unsigned(said))
           return { reason: `cosign does not verify it as signed by build.yml on main${line ? ` (${line})` : ''}` };
         throw new Error(
@@ -433,43 +440,55 @@ function signedAt(repo: string, image: string, digest: string): Promise<string |
 const cause = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200) ?? '';
 
-/** How long one cosign verify may take: each try at a pin fits the job's five minutes with the tries after it. */
+/** How long one cosign verify may take. */
 const COSIGN_TIMEOUT_MS = 60_000;
 
 /**
- * How long, from the gate starting, it goes on trying an exact pin's check that could not be made: within the job's
- * five minutes, with room for a last try and the verdict.
+ * The most one try at an exact pin's check may take: cosign's limit, and GHCR's reads before it (15 seconds each, the
+ * token and the manifest's first, for each of the two digests at once).
  */
-export const PIN_TRIES_MS = 150_000;
+export const PIN_TRY_MS = COSIGN_TIMEOUT_MS + 15_000;
+
+/**
+ * How long after the gate starts every try at an exact pin's check has ended: no try starts unless it would end by
+ * then, so the job's five minutes hold the gate's start (a minute or so), the tries and the verdict. One window for
+ * the run, as the job's limit is one: in a stack, a pull request judged later gets what is left.
+ */
+export const PIN_TRIES_MS = 180_000;
 const STARTED = Date.now();
 
 /** The waits between tries of an exact pin's check that could not be made. */
 export const PIN_BACKOFF_MS = [5_000, 15_000, 30_000];
 
 /**
- * `attempt`, tried again after each wait in `backoff` while it throws and the next try would start before `until`:
- * the last error, if every try throws. A check that could not be made is often one that can, a moment later.
+ * `attempt`, tried again after each wait in `backoff` while it throws an error a later try may change, each try only
+ * if it would end, `tryMs` after it starts, by `until`: the last error if every try throws, and if there is no time
+ * for one, an error that says so. A check that could not be made is often one that can, a moment later.
  */
 export async function retrying<T>(
   attempt: () => Promise<T>,
-  backoff: readonly number[],
-  until: number,
+  limits: { backoff: readonly number[]; tryMs: number; until: number },
   clock: { now: () => number; sleep: (ms: number) => Promise<void> } = {
     now: Date.now,
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
   },
 ): Promise<T> {
+  const { backoff, tryMs, until } = limits;
+  if (clock.now() + tryMs > until) throw new Error('the job had no time left to check it');
   for (let tried = 0; ; tried++) {
     try {
       return await attempt();
     } catch (error) {
       const wait = backoff[tried];
-      if (wait === undefined || clock.now() + wait >= until) throw error;
+      if (definite(error) || wait === undefined || clock.now() + wait + tryMs > until) throw error;
       console.log(`::notice::Trying the exact pin's check again in ${wait / 1000}s: ${cause(error)}`);
       await clock.sleep(wait);
     }
   }
 }
+
+/** Whether an error is an answer a later try would not change, or not JSON where JSON was asked: no reason to retry. */
+export const definite = (error: unknown) => error instanceof Answered || error instanceof SyntaxError;
 
 /** Whether `to` descends from `from`, by the compare API. */
 async function ahead(repo: string, from: string, to: string, token: string): Promise<boolean> {
@@ -531,21 +550,27 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
                   ahead: (where, from, to) => ahead(where, from, to, read),
                   content: async (path) => {
                     const text = await fileAt(repo, path, head, read);
-                    if (text === undefined) throw new Error(`${path} is not at ${short(head)}`);
+                    if (text === undefined) throw new Answered(`${path} is not at ${short(head)}`);
                     return text;
                   },
                 },
                 complete,
               ),
-            PIN_BACKOFF_MS,
-            STARTED + PIN_TRIES_MS,
-          ).catch((error: unknown) => ({ unchecked: cause(error) }))
+            { backoff: PIN_BACKOFF_MS, tryMs: PIN_TRY_MS, until: STARTED + PIN_TRIES_MS },
+          ).catch((error: unknown) =>
+            // A definite answer is a hold that says why, as any read of GitHub that failed is; anything else, a wait.
+            // exactPin reads nothing until every line it changes is a digest, so it is a change of digests alone.
+            definite(error)
+              ? { reason: `the gate could not check it: ${cause(error)}`, digests: true as const }
+              : { unchecked: cause(error) },
+          )
         : undefined;
     return route({
       ...facts(),
       tags,
       testIntegrity,
       labelsRemoved: riskLabelsRemoved(events),
+      retargeted: events.some((e) => e.event === 'base_ref_changed'),
       ...(pin ? { pin } : {}),
     });
   } catch (error) {
@@ -768,7 +793,7 @@ async function main(): Promise<void> {
     const pr = await api<PullRequest>('GET', `/repos/${repo}/pulls/${number}`, read);
     const judged = await judgeEach(each, [pr]);
     const said = together(judged);
-    await post(each, pr.head.sha, said.pass, said.title, summaryOf(pr.head.sha, judged));
+    await settle(each, pr.head.sha, said, judged);
     // And what the rest of the rules say, as if Martin had had no say.
     const rest = await judge(each, pr, true);
     console.log(`Without Martin's say: ${rest.rule}: ${rest.title}.`);

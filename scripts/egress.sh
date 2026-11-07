@@ -697,7 +697,7 @@ rollouts_needs=" get secrets | list secrets | watch secrets | update pods | crea
   update jobs.batch "
 group "The scoreboard's Secrets"
 asks=()
-for ns in factory runners website scoreboard flagd telemetry pod-logs argo-rollouts kyverno; do
+for ns in factory runners red-team website scoreboard flagd telemetry pod-logs argo-rollouts kyverno; do
   for account in $(kubectl --context "$context" -n "$ns" get serviceaccounts -o jsonpath='{.items[*].metadata.name}'); do
     for right in "${rights[@]}"; do
       if [ "$ns/$account" = argo-rollouts/argo-rollouts ] && [[ "$rollouts_needs" == *" $right "* ]]; then continue; fi

@@ -1,10 +1,11 @@
 /**
- * Attacks 4 (`egress`) and 5 (`image`): a pod the harness makes in `runners`, where an agent's pod runs. RBAC lets
- * the harness create a pod but cannot say what the pod holds, so the red-team admission rule
+ * Attacks 4 (`egress`) and 5 (`image`): a pod the harness makes in `red-team`, a namespace of the attacks' own, made
+ * like an agent's and fenced as one, apart from the line's runners so that the harness's right to read and delete a pod
+ * reaches none of theirs (deploy/base/red-team). RBAC lets the harness create a pod but cannot say what the pod holds, so the red-team admission rule
  * (deploy/base/admission/factory/red-team-pods.yaml) holds a marked pod to the agent's runner label plus the marker,
  * one of two images, pinned command, args and env, and no volumes, secrets or service-account token: a compromised
  * harness can make these two pods and nothing else. The agent NetworkPolicy fences the pod to the gateway and the
- * handback and nothing else, as it fences an agent.
+ * handback and nothing else, as it fences an agent (deploy/base/agent-fence), and the gateway lets the egress pod in.
  *
  * - **`egress`:** the pod runs a connectivity probe in place of the agent (the pinned `node -e` in policy/egress-probe.ts).
  *   It first waits for its fence with the agent step's own wait, as the agent step does before it runs anything (a pod
@@ -41,7 +42,8 @@ import { KubeError } from '../runners/kube.ts';
 import { waitFor } from './wait.ts';
 import type { Attempt, AttemptContext, AttemptResult } from './worker.ts';
 
-export const RUNNERS = 'runners';
+/** Where the attacks' pods are made: their own namespace, guarded as the factory's are (deploy/base/red-team). */
+export const RED_TEAM_NAMESPACE = 'red-team';
 
 /** How long a pod is given to run its probe, and how often the harness looks at it. */
 // The egress probe first waits for its fence (a minute at most, awaitFence), then tries four addresses of three
@@ -85,7 +87,7 @@ function podBody(
   return {
     apiVersion: 'v1',
     kind: 'Pod',
-    metadata: { name, namespace: RUNNERS, labels: redTeamPodLabels(attack) },
+    metadata: { name, namespace: RED_TEAM_NAMESPACE, labels: redTeamPodLabels(attack) },
     spec: {
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
@@ -118,7 +120,7 @@ function podBody(
   };
 }
 
-const podPath = (name: string) => `/api/v1/namespaces/${RUNNERS}/pods/${name}`;
+const podPath = (name: string) => `/api/v1/namespaces/${RED_TEAM_NAMESPACE}/pods/${name}`;
 
 /** Appends one `action.refused`, as the harness, and gives back its seq. */
 async function refuse(
@@ -156,7 +158,7 @@ export const egressAttempt =
     const name = `red-team-egress-${crypto.randomUUID().slice(0, 8)}`;
     try {
       await kube.create(
-        `/api/v1/namespaces/${RUNNERS}/pods`,
+        `/api/v1/namespaces/${RED_TEAM_NAMESPACE}/pods`,
         podBody(name, 'egress', runnerImage, EGRESS_COMMAND, EGRESS_ARGS, await find(RED_TEAM_HOST_ALIAS)),
       );
       const log = await runToEnd(kube, name, ctx);
@@ -313,7 +315,7 @@ export const imageAttempt =
     const controlIp = await find(RED_TEAM_HOST_ALIAS);
     try {
       await kube.create(
-        `/api/v1/namespaces/${RUNNERS}/pods`,
+        `/api/v1/namespaces/${RED_TEAM_NAMESPACE}/pods`,
         podBody(name, 'image', unsignedImage, IMAGE_COMMAND, IMAGE_ARGS, controlIp),
       );
       admitted = true;
@@ -338,7 +340,7 @@ export const imageAttempt =
         attempts: [
           { what: 'asked to run an unsigned image', result: 'admission control admitted the pod', refused: false },
         ],
-        subject: { pod: { namespace: RUNNERS, name, uid: '00000000-0000-0000-0000-000000000000' } },
+        subject: { pod: { namespace: RED_TEAM_NAMESPACE, name, uid: '00000000-0000-0000-0000-000000000000' } },
         reason: 'Admission control admitted an unsigned image: it must be enforcing for this attack (factory-images).',
       };
     }
@@ -350,7 +352,7 @@ export const imageAttempt =
           select seq::text as seq, payload->'subject'->>'uid' as uid from events
           where type = 'action.refused' and payload->>'mechanism' = 'admission-control'
             and appended_by = 'factory_line'
-            and payload->'subject'->>'namespace' = ${RUNNERS}
+            and payload->'subject'->>'namespace' = ${RED_TEAM_NAMESPACE}
             and payload->'subject'->>'name' = ${name}
           order by seq desc limit 1`;
         return row?.uid ? { seq: Number(row.seq), uid: row.uid } : undefined;
@@ -366,7 +368,7 @@ export const imageAttempt =
       attempts: [
         { what: 'asked to run an unsigned image', result: 'admission control refused the pod', refused: true },
       ],
-      subject: { pod: { namespace: RUNNERS, name, uid: found.uid } },
+      subject: { pod: { namespace: RED_TEAM_NAMESPACE, name, uid: found.uid } },
       reason: 'Admission control refused the unsigned image, as it should.',
     };
   };

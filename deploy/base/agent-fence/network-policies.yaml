@@ -1,0 +1,47 @@
+# The agent's fence, in each namespace that kustomizes it in: `runners`, where the line's agent pods run, and
+# `red-team`, where the harness's egress and image attacks make a pod like one. Everything in the namespace is denied,
+# in and out, and then a pod labelled as an agent may reach the gateway and the line's handback, and nothing else: not
+# even DNS, where a query for a name of its choosing would be a way out. One file for both, so the egress attack meets
+# the fence an agent does, not a copy that could drift from it. What may come in is each destination's to say: the
+# gateway admits an agent from `runners` and the egress attack's pod from `red-team`, the line's handback an agent from
+# `runners` alone (../factory/network-policies.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  podSelector:
+    matchLabels:
+      factory.mrogan.dev/runner: agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: factory
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: factory
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: line
+      ports:
+        - { protocol: TCP, port: 8081 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EGRESS_CONTROL, EGRESS_TARGETS, RED_TEAM_HOST_ALIAS } from '../../../../policy/attacks.ts';
-import { egressAttempt, imageAttempt, RUNNERS } from '../../src/red-team/pods.ts';
+import { egressAttempt, imageAttempt, RED_TEAM_NAMESPACE } from '../../src/red-team/pods.ts';
 import type { AttemptContext } from '../../src/red-team/worker.ts';
 import { type Kube, KubeError } from '../../src/runners/kube.ts';
 import { fakeEvents, fakeSql, never, silent } from './fakes.ts';
@@ -37,11 +37,16 @@ const find = async (hostname: string) => {
 function egressKube(body: string) {
   const removed: string[] = [];
   const created: Record<string, unknown>[] = [];
+  const paths: string[] = [];
   return {
     removed,
     created,
+    paths,
     kube: {
-      create: async (_path: string, pod: Record<string, unknown>) => void created.push(pod),
+      create: async (path: string, pod: Record<string, unknown>) => {
+        paths.push(path);
+        created.push(pod);
+      },
       get: async () => ({ status: { phase: 'Succeeded' } }),
       text: async () => body,
       remove: async (path: string) => void removed.push(path),
@@ -50,6 +55,17 @@ function egressKube(body: string) {
 }
 
 describe('attack 4 (egress)', () => {
+  it('makes the pod in red-team, the attacks’ own namespace, never in runners, and takes it away there', async () => {
+    const { kube, created, paths, removed } = egressKube(
+      log([{ refused: true }, { refused: true }, { refused: true }], { reached: true }),
+    );
+    await egressAttempt({ kube, runnerImage: 'runner@sha256:abc', find })(ctx(fakeSql(() => [])));
+    expect(RED_TEAM_NAMESPACE).toBe('red-team');
+    expect(paths).toEqual(['/api/v1/namespaces/red-team/pods']);
+    expect(created[0]?.metadata).toMatchObject({ namespace: 'red-team' });
+    expect(removed).toEqual([expect.stringMatching(/^\/api\/v1\/namespaces\/red-team\/pods\/red-team-egress-/)]);
+  });
+
   it('makes the pod with an agent’s DNS: no resolver, and the gateway’s name aliased to the address it looked up', async () => {
     const { kube, created } = egressKube(
       log([{ refused: true }, { refused: true }, { refused: true }], { reached: true }),
@@ -146,12 +162,18 @@ describe('attack 5 (image)', () => {
       },
       remove: async (path: string) => void removed.push(path),
     };
-    const sql = fakeSql((query) => (query.includes('admission-control') ? [{ seq: '77', uid: UID }] : []));
+    const asked: unknown[][] = [];
+    const sql = fakeSql((query, values) => {
+      asked.push(values);
+      return query.includes('admission-control') ? [{ seq: '77', uid: UID }] : [];
+    });
     const result = await imageAttempt({ kube, unsignedImage: 'ghcr.io/x@sha256:unsigned', find })(ctx(sql));
     expect(result.outcome).toBe('refused');
+    // It waits for the line's record of the pod in red-team, where it asked for it.
+    expect(asked[0]?.[0]).toBe('red-team');
     expect(result.refusals).toEqual([77]);
     expect(result.subject?.pod).toEqual({
-      namespace: RUNNERS,
+      namespace: 'red-team',
       name: expect.stringMatching(/^red-team-image-/),
       uid: UID,
     });

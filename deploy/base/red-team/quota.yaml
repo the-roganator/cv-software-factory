@@ -1,0 +1,13 @@
+# What the attack pods may take of the node: an attack makes one pod at a time, so a few pods are room enough, each
+# with the small request and limit the harness gives it (apps/factory/src/red-team/pods.ts), and one that sets none is
+# refused. A harness that made pods in a loop stops here rather than filling the node.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: red-team
+spec:
+  hard:
+    pods: "4"
+    requests.cpu: 500m
+    requests.memory: 1Gi
+    limits.memory: 2Gi

@@ -1,4 +1,4 @@
-# Admission control refuses objects in the five guarded namespaces (ADR 0010), and records it as Events: a controller's
+# Admission control refuses objects in the six guarded namespaces (ADR 0010), and records it as Events: a controller's
 # `FailedCreate` in the namespace of a pod it could not make, and Kyverno's `PolicyViolation` in `default` for a request
 # it blocked. The line lists them and records each denial as `action.refused` (apps/factory/src/line/refusals.ts). So in
 # each of those namespaces, and in `default`, it may list Events, and nothing else: not get, watch or write them, nor
@@ -42,6 +42,30 @@ kind: RoleBinding
 metadata:
   name: line-reads-admission
   namespace: runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: line-reads-admission
+subjects:
+  - kind: ServiceAccount
+    name: line
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: line-reads-admission
+  namespace: red-team
+rules:
+  - apiGroups: ['']
+    resources: [events]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: line-reads-admission
+  namespace: red-team
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

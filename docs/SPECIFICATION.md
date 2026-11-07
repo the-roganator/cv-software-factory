@@ -277,7 +277,7 @@ Small judgements about untrusted text use TypeSafe's Jev model rather than a gen
 | `aws` | EKS, on demand | Interviews; always from seeded baseline |
 
 - **One CI pipeline** builds, tests, signs and pushes images to GHCR: signed keyless by the workflow on `main`, with an SBOM attested beside each. **One set of manifests**, with a Kustomize overlay per profile. Argo CD in each cluster pulls its overlay.
-- Admission control in each cluster runs, in the namespaces of the factory, its runners, the app and the scoreboard (`factory`, `runners`, `website`, `scoreboard`), only images that workflow signed and the few third-party images it names by digest, and fails closed (ADR 0010).
+- Admission control in each cluster runs, in the namespaces of the factory, its runners, its red-team attacks, the app, the scoreboard and its feature flags (`factory`, `runners`, `red-team`, `website`, `scoreboard`, `flagd`), only images that workflow signed and the few third-party images it names by digest, and fails closed (ADR 0010).
 - Each repository pins the images it builds by digest, per profile. A new image is deployed by merging the pull request that moves its pin, in the repository that built it (ADR 0005), and only a signed image is proposed. The app's then goes out as a canary (section 4.1); the factory's own images are not canaried.
 - Public profiles are reached through Cloudflare Tunnel: no load balancer and no open ports.
 - The local console is served over HTTPS, from a certificate authority `make up` creates, constrained to local names, which the Mac trusts, so it behaves as a public one: secure cookies and passkeys work in every browser.

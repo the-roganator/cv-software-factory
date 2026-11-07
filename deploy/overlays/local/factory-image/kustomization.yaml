@@ -1,5 +1,6 @@
 # The factory images CI built last, pinned by digest, and with them the workers that run them (deploy/base/factory), the
-# scoreboard (deploy/base/scoreboard) and the canary's analysis, whose journeys run on `factory-browser`
+# runners' and the red-team attacks' namespaces (deploy/base/runners, deploy/base/red-team), the scoreboard
+# (deploy/base/scoreboard) and the canary's analysis, whose journeys run on `factory-browser`
 # (deploy/base/analysis), and the line's read of admission's denials (deploy/base/line-reads-admission), so the cluster
 # never has any of them without an image to run. The factory's GitHub worker moves the three digests together, in a
 # pull request, when CI has built all three from a newer commit.
@@ -8,6 +9,7 @@ kind: Component
 resources:
 - ../../../base/factory
 - ../../../base/runners
+- ../../../base/red-team
 - ../../../base/analysis
 - ../../../base/scoreboard
 - ../../../base/line-reads-admission

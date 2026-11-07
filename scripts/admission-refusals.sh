@@ -109,7 +109,7 @@ EOF
 # Kept aside until every case has answered, so a script that stops leaves the record as it was.
 answers="$work/answers"
 {
-  for ns in factory runners website scoreboard flagd; do
+  for ns in factory runners red-team website scoreboard flagd; do
     case "$ns" in
       website) try "$ns" unsigned "$website_unsigned" ;;
       flagd) try "$ns" other-digest "$flagd" ;;

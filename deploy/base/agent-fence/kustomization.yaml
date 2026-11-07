@@ -1,0 +1,6 @@
+# The agent's fence (network-policies.yaml), with no namespace of its own: `runners` and `red-team` each bring it in
+# and set theirs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - network-policies.yaml

@@ -52,7 +52,7 @@ Everything is denied in and out, then each pod is allowed what it needs.
 |---|---|---|
 | Every pod | DNS | |
 | Every worker but the GitHub worker and the traffic generator | Postgres and the collector | |
-| Gateway | The internet | Triage, and the runners' agent pods |
+| Gateway | The internet | Triage, the runners' agent pods, and the egress attack's pod in `red-team` |
 | GitHub worker | The collector and the internet | The line, only |
 | Triage | The gateway; the probes' page reader; Prometheus, Loki and Tempo, through the read-only proxy | |
 | Intake | Prometheus and Loki, through the read-only proxy | Alertmanager |
@@ -61,6 +61,7 @@ Everything is denied in and out, then each pod is allowed what it needs.
 | Crawler | The app, the canary's pods included | Nothing |
 | Line | The GitHub worker, the Kubernetes API, the probes' verify port, and Prometheus, Loki and Tempo through the read-only proxy | The runners' agent pods, with their handbacks |
 | Traffic generator | Traefik and the collector, and nothing else but DNS | |
+| Red-team harness | Postgres, the collector, Traefik (the app's front door), the Kubernetes API, and the GitHub worker's attack door | Nothing |
 | Console | Postgres and the collector | Traefik, and the probes |
 | Admin service | Postgres, the collector and the Kubernetes API, for Martin's controls of the canary and his flags' stages; the app's pods on 8080, each at its own address, to ask which flags it holds | Traefik, only |
 | Migrations (the hook Job) | Postgres | Nothing |
@@ -89,6 +90,10 @@ Everything is denied, then:
 
 - the app's pods may reach flagd's sync port (8015), from which their in-process provider streams the flag set, and nothing else of it: not its management (8014), evaluation or OFREP ports, which listen in the pod. The kubelet checks flagd's health on its management port from the node, which needs no policy;
 - flagd may reach the Kubernetes API, for its watch of `flags`, DNS, and the collector's OTLP port ([feature flags](FEATURE-FLAGS.md)).
+
+## `red-team`
+
+The red-team harness's egress and image attacks' pods ([red-team harness](RED-TEAM-HARNESS.md#its-namespace-red-team)). Everything is denied both ways, then a pod labelled as an agent may reach the gateway and the line's handback, and nothing else: the runners' agent fence, from the same file (`deploy/base/agent-fence`). Of the factory's pods only the gateway lets one in, the egress attack's, for its control; the line's handback does not. `apps/factory/test/red-team-fences.test.ts` holds the fence to the runners' agent fence in each profile, and fails if any other policy lets a pod from `red-team` in.
 
 ## `pod-logs`
 

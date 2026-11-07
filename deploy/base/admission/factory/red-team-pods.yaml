@@ -1,4 +1,5 @@
-# The red-team harness creates the egress and image attacks' pods in `runners` (apps/factory/src/red-team/pods.ts).
+# The red-team harness creates the egress and image attacks' pods in `red-team` (apps/factory/src/red-team/pods.ts). The
+# rule guards `runners` too while the cluster may still run a factory image that makes them there.
 # RBAC lets it create a pod but cannot say what the pod holds, so this rule holds every pod the harness's account
 # creates, and every pod that carries the red-team marker (`factory.mrogan.dev/red-team`) whoever creates it, to a
 # shape the harness cannot stray from: the marker, the agent's runner label and the part-of label and nothing else,
@@ -11,7 +12,8 @@
 # Two images: the signed runner image (by digest, from that repository), which `factory-images` admits, and the one
 # unsigned image attack 5 ships, which this rule admits in shape but `factory-images` still refuses by its signature,
 # so admission control refuses the pod, which is the attack working. The marker's value is the attack's id; the agent
-# NetworkPolicy fences the pod to the gateway and the handback and nothing else, as it fences an agent.
+# NetworkPolicy fences the pod to the gateway and the handback and nothing else, as it fences an agent
+# (../../agent-fence).
 #
 # A Kyverno ValidatingPolicy, as `mark` and `routes` are (../website): it reads the pod's whole spec and fails closed.
 apiVersion: policies.kyverno.io/v1
@@ -33,7 +35,7 @@ spec:
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: In
-          values: [runners]
+          values: [runners, red-team]
     resourceRules:
       - apiGroups: [""]
         apiVersions: [v1]
@@ -41,7 +43,8 @@ spec:
         resources: [pods]
   # A pod the harness's account creates, marked or not, and any pod carrying the red-team marker. Every other pod in
   # `runners` (the line's runners, made by the Job controller) is left to the image policy and the Pod Security
-  # Standard, as before.
+  # Standard, as is one in `red-team` asked for by someone the harness is not, such as `make guardrails`' admission
+  # proof, so that what refuses it there is the image policy alone.
   matchConditions:
     - name: red-team
       expression: >-
@@ -67,7 +70,7 @@ spec:
         object.metadata.labels['factory.mrogan.dev/red-team'] in ['egress', 'image']
       message: a red-team pod carries the red-team marker, its value the egress or image attack
     # Exactly the agent's runner label, the part-of label and the marker: never `prepare` or another label a runners
-    # NetworkPolicy selects, which would give the pod a different fence.
+    # NetworkPolicy selects, which would give the pod a different fence there.
     - expression: >-
         variables.labels['factory.mrogan.dev/runner'] == 'agent' &&
         variables.labels['app.kubernetes.io/part-of'] == 'software-factory' &&

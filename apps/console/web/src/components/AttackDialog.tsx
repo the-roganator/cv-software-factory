@@ -26,7 +26,7 @@ const COST: Record<Attack, string> = {
   report: 'Jev’s calls, a fraction of a cent: they are the mechanism.',
   workflow: 'Nothing: no model is called, and nothing reaches the repository.',
   test: 'Nothing: no model is called. The pull request is real, and the GitHub worker closes it and deletes its branch afterwards.',
-  egress: 'Nothing: a pod in runners, gone when it ends.',
+  egress: 'Nothing: a pod of the attack’s own, gone when it ends.',
   image: 'Nothing: the pod is refused before it is made.',
 };
 

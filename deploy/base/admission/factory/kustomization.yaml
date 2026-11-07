@@ -1,7 +1,9 @@
 # `factory-images`: the factory's namespaces. `factory` runs the workers, the console, Postgres and the migrations;
-# `runners` the agents' steps, which the line starts from the runner image it is pinned to. The `try-the-line` skill
-# switches this copy, and only this one, to Audit for a run on images built on the Mac, and Argo CD puts it back.
-# `factory-refusal-key` holds the GitHub worker's public key to `make refusal-key`, and nothing switches it.
+# `runners` the agents' steps, which the line starts from the runner image it is pinned to; `red-team` the egress and
+# image attacks' pods, which the red-team harness makes (the image attack's is this policy's to refuse). The
+# `try-the-line` skill switches this copy, and only this one, to Audit for a run on images built on the Mac, and Argo CD
+# puts it back. `factory-refusal-key` holds the GitHub worker's public key to `make refusal-key`, and nothing switches
+# it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namePrefix: factory-
@@ -15,7 +17,7 @@ patches:
     patch: |
       - op: replace
         path: /spec/matchConstraints/namespaceSelector/matchExpressions/0/values
-        value: [factory, runners]
+        value: [factory, runners, red-team]
       # The two images here that are not ours, and why. Nothing else from another registry runs in these namespaces.
       #
       # - Postgres, the event store (deploy/base/postgres), from Docker's official image on Docker Hub:

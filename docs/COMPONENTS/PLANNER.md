@@ -58,7 +58,7 @@ A risk tagged `out-of-scope` means beyond what Martin asked. Every improvement's
 It rejects what it cannot make testable, or what only a protected path would fix, and asks Martin what only he can say. It rejects an improvement that needs a protected path, the app's flag context (`src/flags/`) among them, or that would keep anything on a visitor's device, such as a cookie or anything in the browser's storage: what may be kept there is decided in this repository, which the line cannot write. Both hold the work item ([holds](ORCHESTRATOR.md#holds-and-martins-answers)):
 
 - his answer to either reaches every later plan, with what he was asked;
-- rejecting closes the work item, and so does approving the planner's rejection.
+- rejecting closes the work item; where the planner rejected it, the hold's one Close agrees with it, and closes it.
 
 Once Martin approves its question with no answer, on any work item, the planner plans again told that none will come, and is offered no question until it writes a spec, and its schema takes none (`unanswered`, as the line reads it): it would only ask the same again. It decides from the evidence it has, and where the fix would turn on what only he can say, it rejects the ticket, saying what he would have to decide; an improvement takes the plainer reading of what he asked. A question handed back then does not fit the schema, and fails the step like any other. On a ticket a visitor's report opened (its first signal is a report), Martin's words reach it only where he shares them, as their author ([holds](ORCHESTRATOR.md#holds-and-martins-answers)), which is what lets it ask there: unshared, he approves its question or rejects it.
 

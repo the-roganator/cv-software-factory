@@ -367,8 +367,7 @@ function Kick({ need }: { need: Need }) {
 /**
  * Martin's card: his answers, the words field of the one he opens, and what the service said if it refused. One field
  * is open at a time, and what he has written stays as he moves it from one answer to the other. On a work item a
- * visitor's report opened, where words would go to an agent elsewhere, he may share his words first, which offers the
- * answers that take them, each with the passkey again.
+ * visitor's report opened, answering in words shares them, with the passkey again, and the field says so.
  */
 function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Placed) {
   const id = useId();
@@ -376,8 +375,6 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   const { busy } = writes;
   const [writing, setWriting] = useState<HoldAnswer | undefined>(undefined);
   const [words, setWords] = useState('');
-  const [sharing, setSharing] = useState(false);
-  const rows = (sharing && need.shared) || need.answers;
   const field = useRef<HTMLTextAreaElement>(null);
   // The field takes focus as it opens, so he can write at once.
   useEffect(() => {
@@ -385,7 +382,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   }, [writing]);
 
   const send = async (answer: Need['answers'][number]) => {
-    const shares = sharing && answer.words;
+    const shares = answer.share;
     const body = { hold: need.hold, ...(answer.words && { words: words.trim() }), ...(shares && { share: true }) };
     await writes.send(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, {
       passkey: answer.stepUp
@@ -415,29 +412,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
       <Evidence need={need} martin />
       <div className="answers">
         <WayForward way={need.way} martin />
-        {need.shared && (
-          <div className="answer">
-            <button
-              type="button"
-              className="btn small"
-              aria-pressed={sharing}
-              aria-disabled={busy || undefined}
-              onClick={() => {
-                if (busy) return;
-                setSharing(!sharing);
-                setWriting(undefined);
-              }}
-            >
-              Share your words
-            </button>
-            <p>
-              {sharing
-                ? 'These words may go to the agents and be public: you judge they do not repeat the visitor.'
-                : 'Lets your words go to the agents and be public, with your passkey again.'}
-            </p>
-          </div>
-        )}
-        {rows.map((row) => (
+        {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
             {row.words ? (
               <button
@@ -486,9 +461,11 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
                   onChange={setWords}
                   placeholder={ASKS[row.answer] ?? ''}
                   help={
-                    need.aboutReport && !sharing
-                      ? 'Your words stay yours: a visitor’s report opened this, so no visitor and no agent reads them.'
-                      : 'Visitors see your words, with anything shaped like a secret left out.'
+                    row.share
+                      ? 'Here your words go to the agents and are public, so make sure they do not repeat the visitor.'
+                      : need.aboutReport
+                        ? 'Your words stay yours: a visitor’s report opened this, so no visitor and no agent reads them.'
+                        : 'Visitors see your words, with anything shaped like a secret left out.'
                   }
                   field={field}
                 >

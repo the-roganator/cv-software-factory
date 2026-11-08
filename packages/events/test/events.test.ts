@@ -3,6 +3,7 @@ import { guardrailsFor } from '../../../policy/refusals.ts';
 import {
   ANSWERS,
   answersTo,
+  CLOSE_AGREES,
   inScope,
   knownInScope,
   measurementOf,
@@ -1861,13 +1862,34 @@ describe('the answers a hold takes', () => {
     expect(answersTo('gates', true)).toEqual(['approved', 'replanned', 'rejected']);
     expect(answersTo('tests-first', true)).toEqual(['approved', 'replanned', 'rejected']);
     // The planner rejected it, or asked: words would run it again with nothing new, so it would do the same again.
-    expect(answersTo('ticket-rejected', true)).toEqual(['approved', 'rejected']);
+    expect(answersTo('ticket-rejected', true)).toEqual(['rejected']);
     expect(answersTo('question', true)).toEqual(['approved', 'rejected']);
-    for (const cause of ['spec', 'scope', 'nothing-to-fix', 'failures', 'verify', 'spend', 'unknown'] as const) {
+    expect(answersTo('nothing-to-fix', true)).toEqual(['rejected']);
+    for (const cause of ['spec', 'scope', 'failures', 'verify', 'spend', 'unknown'] as const) {
       expect(answersTo(cause, true), cause).toEqual(['approved', 'rejected']);
     }
     expect(answersTo('merge', true)).toEqual(['rejected']);
     expect(answersTo('deploy', true)).toEqual(['rejected']);
+  });
+
+  it('are one answer where two that take no words do the same: Close, which records his rejection', () => {
+    for (const stay of [false, true]) {
+      for (const cause of HOLD_CAUSES) {
+        const offered = answersTo(cause, stay);
+        for (const [i, a] of offered.entries()) {
+          for (const b of offered.slice(i + 1)) {
+            if (!takesWords(cause, a, stay) && !takesWords(cause, b, stay)) {
+              expect(ANSWERS[cause][a], `${cause}: ${a}, ${b}`).not.toBe(ANSWERS[cause][b]);
+            }
+          }
+        }
+      }
+    }
+    expect(CLOSE_AGREES).toEqual(['ticket-rejected', 'nothing-to-fix']);
+    expect(answersTo('ticket-rejected')).toEqual(['answered', 'rejected']);
+    expect(answersTo('nothing-to-fix')).toEqual(['answered', 'rejected']);
+    // Words are never merged with an answer that takes none, though both carry on.
+    expect(answersTo('question')).toEqual(['approved', 'answered', 'rejected']);
   });
 
   it('send the work back to the planner only from a hold whose words would go to the coder', () => {

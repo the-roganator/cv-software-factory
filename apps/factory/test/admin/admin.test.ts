@@ -2842,6 +2842,16 @@ describe('Needs you', () => {
       status: 422,
       body: { refused: 'answer' },
     });
+    // Approving it would close it as Close does: one answer, his rejection, which says he agreed.
+    expect(await browser.post(`/admin/holds/${rejected.workItem}/approve`, { hold: rejected.hold })).toMatchObject({
+      status: 422,
+      body: { refused: 'answer' },
+    });
+    expect((await browser.post(`/admin/holds/${rejected.workItem}/reject`, { hold: rejected.hold })).status).toBe(200);
+    expect((await answers(rejected.workItem))[0]?.public).toMatchObject({
+      summary: `Martin closed #${rejected.workItem}, agreeing with the planner`,
+      payload: { decision: 'rejected' },
+    });
     // A question on any other work item still takes his words, and needs them.
     const elsewhere = await held('review', { stage: 'review' });
     expect(await browser.post(`/admin/holds/${elsewhere.workItem}/answer`, { hold: elsewhere.hold })).toMatchObject({

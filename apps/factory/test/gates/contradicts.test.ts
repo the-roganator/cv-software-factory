@@ -14,7 +14,7 @@ import {
   withContradicted,
 } from '../../src/gates/contradicts.ts';
 import { compare } from '../../src/gates/integrity.ts';
-import { CONTRADICTS_DOC, description, main, pullRequestNumber } from '../../src/gates/test-integrity.ts';
+import { CONTRADICTS_DOC, description, judgedOf, main, pullRequestNumber } from '../../src/gates/test-integrity.ts';
 import { testsIn } from '../../src/gates/tests.ts';
 
 const NAMED: Contradicted = { file: 'test/app.test.ts', test: 'files > keeps nothing of the other files' };
@@ -348,6 +348,18 @@ describe('the gate, reading the description', () => {
     expect(pullRequestNumber({ GITHUB_EVENT_NAME: 'push', PR_NUMBER: '155' })).toHaveProperty('error');
   });
 
+  it('says which pull request it judged, into which base, only on pull_request with both known', () => {
+    const pr = { GITHUB_EVENT_NAME: 'pull_request', PR_NUMBER: '155', PR_BASE_REF: 'main' };
+    expect(judgedOf(pr)).toEqual({ number: 155, base: 'main' });
+    for (const env of [
+      { ...pr, PR_BASE_REF: '' },
+      { ...pr, PR_BASE_REF: undefined },
+      { ...pr, PR_NUMBER: 'x' },
+      { ...pr, GITHUB_EVENT_NAME: 'merge_group' },
+    ])
+      expect(judgedOf(env)).toBeUndefined();
+  });
+
   it('reads the description through the API with the run’s token, asking again only when GitHub errs', async () => {
     const env = {
       GITHUB_EVENT_NAME: 'merge_group',
@@ -397,7 +409,7 @@ describe('the gate, reading the description', () => {
         "describe('files', () => { it('lets the other files be kept', () => { expect(cc('/site.css')).toMatch(/max-age/); }); });",
     });
     const events = {
-      pull_request: { PR_NUMBER: '155' },
+      pull_request: { PR_NUMBER: '155', PR_BASE_REF: 'main' },
       merge_group: { MERGE_GROUP_HEAD_REF: `refs/heads/gh-readonly-queue/main/pr-155-${SHA}` },
     };
     for (const [name, passed] of Object.entries(events)) {
@@ -412,6 +424,9 @@ describe('the gate, reading the description', () => {
       const named = await run([base, change], env, (async () =>
         answer(200, { number: 155, body: `Text.\n\n${SECTION}` })) as typeof fetch);
       expect(named.code).toBe(0);
+      // On pull_request, which pull request it judged, into which base, for the review gate.
+      if (name === 'pull_request') expect(named.output).toContain('::notice::Test integrity judged #155 into main');
+      else expect(named.output).not.toContain('::notice::');
       expect(named.output).toContain(
         '::warning file=test/app.test.ts::"files > keeps nothing of the other files" was deleted, as the spec it was changed for contradicts it',
       );

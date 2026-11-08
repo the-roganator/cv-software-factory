@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { judgedNote } from '../apps/factory/src/gates/test-integrity.ts';
 import { cutPending, found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
 import {
   atHead,
@@ -402,10 +403,8 @@ describe("the review gate's workflows", () => {
     expect(gate).toMatch(/- id: app\n {8}if: env\.HAS_KEY == 'true'\n/);
     expect(gate).toMatch(/^permissions: \{\}$/m);
     // Its job reads this repository, to check out the gate, and pull requests; it writes nothing with its own token.
-    // And test integrity's check run, which low-risk needs, and the workflow runs that say whose it is.
-    expect(gate).toMatch(
-      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {6}actions: read\n {4}env:/m,
-    );
+    // And test integrity's check run, which low-risk needs.
+    expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {4}env:/m);
     // The one checkout is this workflow's own commit, main's, and never the pull request's.
     expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(1);
     expect(gate).toMatch(/ref: \$\{\{ job\.workflow_sha \}\}\n/);
@@ -480,6 +479,12 @@ describe('judging a pull request through the API', () => {
     base: { ref: 'main', repo: { full_name: APP_REPO } },
     changed_files: 1,
   };
+  /** Test integrity's notice that its run judged that pull request, into that base. */
+  const judgedFor = (number: number, base = 'main') => ({
+    path: '.github',
+    annotation_level: 'notice',
+    message: judgedNote(number, base),
+  });
   /** GitHub, as the gate reads it: each path's answer, or a status it fails with. */
   const github = (over: Record<string, unknown> = {}) => {
     const answers: Record<string, unknown> = {
@@ -495,22 +500,11 @@ describe('judging a pull request through the API', () => {
             status: 'completed',
             conclusion: 'success',
             app: { slug: 'github-actions' },
-            check_suite: { id: 50 },
-            output: { annotations_count: 0 },
+            output: { annotations_count: 1 },
           },
         ],
       },
-      '/check-runs/5/annotations': [],
-      '/actions/runs?': {
-        workflow_runs: [
-          {
-            check_suite_id: 50,
-            event: 'pull_request',
-            head_branch: 'factory/9-fix',
-            head_repository: { full_name: APP_REPO },
-          },
-        ],
-      },
+      '/check-runs/5/annotations': [judgedFor(9)],
       '/contents/.github/CODEOWNERS': '/deploy/ @mrogan\n',
       ...over,
     };
@@ -545,7 +539,7 @@ describe('judging a pull request through the API', () => {
 
   it('holds it when the annotations GitHub gives are not as many as the run says, more or fewer', async () => {
     const warning = { path: 'test/a.test.ts', annotation_level: 'warning', message: 'x' };
-    for (const given of [[], [warning, warning]]) {
+    for (const given of [[judgedFor(9)], [judgedFor(9), warning, warning, warning]]) {
       github({
         '/check-runs?': {
           check_runs: [
@@ -556,8 +550,7 @@ describe('judging a pull request through the API', () => {
               status: 'completed',
               conclusion: 'success',
               app: { slug: 'github-actions' },
-              check_suite: { id: 50 },
-              output: { annotations_count: 1 },
+              output: { annotations_count: 2 },
             },
           ],
         },
@@ -567,7 +560,7 @@ describe('judging a pull request through the API', () => {
       expect(said).toMatchObject({ pass: false, rule: 'held' });
       // The warnings it did give are a tag, which the level does not pass, so the tag is what it is held for.
       expect(said.title).toContain(
-        given.length ? 'Held for its risk tags (test-loosening)' : 'GitHub gave 0 of its 1 annotations',
+        given.length > 1 ? 'Held for its risk tags (test-loosening)' : 'GitHub gave 1 of its 2 annotations',
       );
       // The run has completed, so no new reading is coming: a hold, not a wait.
       expect(said.pending).toBeUndefined();
@@ -586,7 +579,6 @@ describe('judging a pull request through the API', () => {
               status,
               conclusion: null,
               app: { slug: 'github-actions' },
-              check_suite: { id: 50 },
             },
           ],
         },
@@ -600,40 +592,46 @@ describe('judging a pull request through the API', () => {
     // Not run at all yet, the same.
     github({ '/check-runs?': { check_runs: [] } });
     expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' });
-    // Another pull request's run at the same head, from another branch, however it went and whichever pull requests
-    // GitHub matches to it by its commit, is not this one's reading.
-    github({
-      '/check-runs?': {
-        check_runs: [
-          {
-            id: 5,
-            name: 'gates / test integrity',
-            head_sha: HEAD,
-            status: 'completed',
-            conclusion: 'success',
-            app: { slug: 'github-actions' },
-            check_suite: { id: 51 },
-            pull_requests: [{ number: 9 }, { number: 10 }],
-            output: { annotations_count: 0 },
-          },
-        ],
-      },
-      '/actions/runs?': {
-        workflow_runs: [
-          {
-            check_suite_id: 51,
-            event: 'pull_request',
-            head_branch: 'factory/10-other',
-            head_repository: { full_name: APP_REPO },
-          },
-        ],
-      },
+  });
+
+  it('reads only a run that judged this pull request, into its base: never another’s at the same head', async () => {
+    const said = async (annotations: unknown[]) => {
+      github({ '/check-runs/5/annotations': annotations, '/check-runs?': runAt(annotations.length) });
+      return judge(run, theirs);
+    };
+    const runAt = (count: number) => ({
+      check_runs: [
+        {
+          id: 5,
+          name: 'gates / test integrity',
+          head_sha: HEAD,
+          status: 'completed',
+          conclusion: 'success',
+          app: { slug: 'github-actions' },
+          output: { annotations_count: count },
+        },
+      ],
     });
-    expect(await judge(run, theirs)).toMatchObject({
+    // Another pull request's, from another branch at the same commit, whichever it excused: a wait, as its own may
+    // yet run again, and none of its excuses are tags here.
+    const excused = { path: 'test/a.test.ts', annotation_level: 'warning', message: 'x' };
+    expect(await said([judgedFor(10), excused])).toMatchObject({
       pass: false,
       rule: 'held',
-      pending: "test integrity has not run for #9 at aaaaaaa: GitHub Actions' runs there are not its own",
+      tags: [],
+      pending: "test integrity's run at aaaaaaa judged #10, not #9",
     });
+    // Its own, judged into another base before it was retargeted, or a run that says nothing of what it judged: a hold.
+    for (const [annotations, words] of [
+      [[judgedFor(9, 'dev')], "test integrity's run at aaaaaaa judged #9 into dev, not main"],
+      [[], "test integrity's run at aaaaaaa does not say which pull request it judged"],
+    ] as const) {
+      const held = await said([...annotations]);
+      expect(held).toMatchObject({ pass: false, rule: 'held' });
+      expect(held.title).toContain(words);
+      expect(held.pending).toBeUndefined();
+    }
+    expect(await said([judgedFor(9)])).toMatchObject({ pass: true, rule: 'low-risk' });
   });
 
   describe('an exact pin it could not check', () => {

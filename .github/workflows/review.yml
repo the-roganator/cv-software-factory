@@ -45,8 +45,7 @@
 # `secrets: inherit`: GitHub's docs say a called job with `environment:` uses the caller's environment of that name, but
 # resolves a secret to empty unless the caller passes it, and a secret held only in the environment may be passed by
 # name. Unpassed, the gate says its verdict and posts nothing, as before the key exists. A caller grants the job
-# `checks: read` too, for test integrity's run, and `actions: read`, for the workflow runs that say which pull
-# request's event started it (a caller that moves its pin here grants it in the same change), and lists its gates' workflow beside review requested in its
+# `checks: read` too, for test integrity's run, and lists its gates' workflow beside review requested in its
 # `workflow_run`, so the gate judges again when they finish: low-risk waits for test integrity's run at the head.
 #
 # When the check is missing, the pull request waits, as it does for a failing one: the queue takes it only once every
@@ -100,7 +99,6 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
-      actions: read
     env:
       # Whether the App's key is here, from the environment or a caller: a step's condition cannot read a secret, only
       # this.

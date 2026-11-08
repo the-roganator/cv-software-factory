@@ -39,6 +39,20 @@ export const CONTRADICTS_DOC =
 export const excusedNote = (c: { test: string; change: string }) =>
   `"${c.test}" was ${c.change}, as the spec it was changed for contradicts it`;
 
+/**
+ * The notice on which pull request, into which base, a run on `pull_request` judged. Test integrity reads that pull
+ * request's description, so its excuses are that pull request's alone: the review gate reads a run only when its
+ * notice names the pull request it judges, into the base it has now (`scripts/review-routing.ts`, `JUDGED`).
+ */
+export const judgedNote = (number: number, base: string) => `Test integrity judged #${number} into ${base}`;
+
+/** The pull request a run on `pull_request` judged, and its base (`PR_BASE_REF`), when both are known. */
+export function judgedOf(env: Env): { number: number; base: string } | undefined {
+  if (env.GITHUB_EVENT_NAME !== 'pull_request' || !env.PR_BASE_REF) return undefined;
+  const number = pullRequestNumber(env);
+  return typeof number === 'number' ? { number, base: env.PR_BASE_REF } : undefined;
+}
+
 /** The queue's branch for a pull request: `gh-readonly-queue/<base>/pr-<number>-<head sha>`. */
 const QUEUE_BRANCH = /^(?:refs\/heads\/)?gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]{40}$/;
 
@@ -139,6 +153,8 @@ export async function main(
     console.error('Usage: test-integrity.ts <base checkout> <change checkout> [--description <file>]');
     return 2;
   }
+  const judged = judgedOf(env);
+  if (judged) annotate('notice', judgedNote(judged.number, judged.base));
   const before = await filesIn(base, TEST_FILE);
   const after = await filesIn(change, TEST_FILE);
   // The description matters only to a change that would fail without it: one that weakens no test passes without

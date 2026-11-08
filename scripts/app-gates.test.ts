@@ -32,14 +32,17 @@ describe("the app's gates (ADR 0014)", () => {
       /^ {2}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.event\.merge_group\.base_sha \}\}$/m,
     );
     // Nothing reads the pull request's event alone, which a merge group does not carry: test integrity is given both.
+    // Only its notice of what it judged, which the review gate reads on the pull request's run, takes the base's name
+    // from the pull request's event alone: in the merge queue it writes none.
     expect(workflow.match(/github\.event\.\w+/g)).toEqual([
       'github.event.pull_request',
       'github.event.merge_group',
       'github.event.pull_request',
       'github.event.merge_group',
+      'github.event.pull_request',
     ]);
     expect(jobs['test-integrity']).toMatch(
-      /^ {10}PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}\n {10}MERGE_GROUP_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \}\}$/m,
+      /^ {10}PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}\n {10}MERGE_GROUP_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \}\}\n(?: {10}#.*\n)* {10}PR_BASE_REF: \$\{\{ github\.event\.pull_request\.base\.ref \}\}$/m,
     );
   });
 

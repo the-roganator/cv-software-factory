@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { attacksUrl, consoleUrl, END, expect, ready, test, WIDTHS } from './support.ts';
+import { attacksUrl, consoleUrl, END, expect, fixtureUrl, MERGE_WAITING, ready, test, WIDTHS } from './support.ts';
 
 const renders = (page: Page) =>
   page.evaluate(() => (globalThis as { sfRenders?: { reel: number } }).sfRenders?.reel ?? -1);
@@ -226,6 +226,77 @@ test.describe('the sheet', () => {
     await expect(page.locator('.event.now')).toContainText('Ticket #1296');
   });
 });
+
+/** Where the sheet's head draws its words, line by line: a reason when any leaves its column or meets the buttons. */
+function headClash(head: HTMLElement): string {
+  const nav = head.querySelector('.sheet-nav')?.getBoundingClientRect();
+  const title = head.querySelector('.sheet-title');
+  const column = title?.getBoundingClientRect();
+  if (!nav || !column || !title) return 'no head';
+  const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    for (const box of range.getClientRects()) {
+      if (box.width === 0) continue;
+      if (box.right > column.right + 0.5) return `“${text.textContent}” runs out of its column`;
+      const apart = box.right <= nav.left || box.bottom <= nav.top || box.top >= nav.bottom;
+      if (!apart) return `“${text.textContent}” touches the buttons`;
+    }
+  }
+  return '';
+}
+
+/**
+ * The sheet's head keeps its words clear of its buttons: on a phone, and on the narrowest screen reflow allows, every
+ * line of every work item's kicker and title stays inside its column, a long state wrapping rather than running under
+ * the buttons. Every work item at the samples' end, and the longest states they show before then: #1310's merge
+ * waiting for a release, and #1314 waiting for its deploy while its build is not signed.
+ */
+for (const viewport of [WIDTHS.phone, { width: 320, height: 640 }]) {
+  test.describe(`${viewport.width}px, the sheet's head`, () => {
+    test.use({ viewport });
+
+    test('keeps every work item’s words clear of its buttons', async ({ page }) => {
+      await page.goto(consoleUrl({ item: '1310', sheet: true }));
+      const sheet = page.getByRole('dialog').first();
+      await sheet.waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      // Back to the first work item, then forward through every one.
+      const previous = sheet.getByRole('button', { name: 'Previous work item' });
+      while (await previous.isEnabled()) await previous.click();
+      const next = sheet.getByRole('button', { name: 'Next work item' });
+      for (;;) {
+        const title = (await page.locator('#sheet-title').textContent()) ?? '';
+        expect(await page.locator('.sheet-head').evaluate(headClash), title).toBe('');
+        if (!(await next.isEnabled())) break;
+        await next.click();
+      }
+    });
+
+    for (const [item, at, state] of [
+      ['1310', MERGE_WAITING, 'Merged · waiting for release'],
+      ['1314', Date.parse('2026-10-06T09:50:00Z'), 'Merged · waiting for its deploy'],
+    ] as const) {
+      test(`keeps #${item}'s state before its release clear of its buttons`, async ({ page }) => {
+        await page.goto(consoleUrl({ item, sheet: true, at }));
+        await page.getByRole('dialog').first().waitFor();
+        await page.evaluate(() => document.fonts.ready);
+        await expect(page.locator('.sheet-head .out')).toHaveText(state);
+        expect(await page.locator('.sheet-head').evaluate(headClash)).toBe('');
+      });
+    }
+
+    test('keeps a ticket’s summary, a commit’s whole hash and all, on the screen', async ({ page }) => {
+      await page.goto(fixtureUrl({ item: '1000', sheet: true }));
+      await page.getByRole('dialog').first().waitFor();
+      await page.evaluate(() => document.fonts.ready);
+      await expect(page.locator('.sheet .lead')).toContainText(/[0-9a-f]{40}/);
+      const scroller = page.locator('.sheet-scroll');
+      expect(await scroller.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+    });
+  });
+}
 
 test.describe('the line', () => {
   test('opens a stage panel that lists what is in the stage, each opening its sheet', async ({ page }) => {

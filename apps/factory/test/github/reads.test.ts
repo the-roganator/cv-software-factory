@@ -380,6 +380,26 @@ describe('reading what a release is made of', () => {
     expect(await reads.deployProposal(REPO, 'deploy/staging')).toBeNull();
     await expect(new LiveReads(github).deployProposal(REPO, 'deploy/local')).rejects.toThrow(/watches no deploys/);
   });
+
+  it('reads the newest build and whether it is signed, as the watch last found it', async () => {
+    const { github } = client([]);
+    const given = sources();
+    const reads = new LiveReads(github, given);
+    expect(await reads.deployBuild(REPO, 'deploy/local')).toBeNull();
+    const app = DEPLOYS.find((t) => t.repo === REPO) as (typeof DEPLOYS)[number];
+    const build = {
+      commit: SHA,
+      pinned: OTHER_SHA,
+      image: 'the-roganator/cv-worlds-worst-website',
+      digest: `sha256:${'1'.repeat(64)}`,
+      signature: 'unsigned' as const,
+      reason: 'no signature',
+      job: { run: 9, id: 10, name: 'sign and attest' },
+    };
+    given.proposals.setBuild(app, build);
+    expect(await reads.deployBuild(REPO, 'deploy/local')).toEqual(build);
+    await expect(new LiveReads(github).deployBuild(REPO, 'deploy/local')).rejects.toThrow(/watches no deploys/);
+  });
 });
 
 describe('the paths no patch may change', () => {
@@ -550,6 +570,7 @@ describe('the worker over HTTP, for the line', () => {
       worker.read('imageSigned', REPO, { image: 'mrogan/cv-worlds-worst-website', digest }),
     ).rejects.toMatchObject({ status: 422, kind: 'deploy-refused' });
     expect(await worker.read('deployProposal', REPO, { branch: 'deploy/local' })).toBeNull();
+    expect(await worker.read('deployBuild', REPO, { branch: 'deploy/local' })).toBeNull();
     await expect(
       worker.read('imageRevision', REPO, { image: 'the-roganator/cv-software-factory/factory', digest }),
     ).rejects.toMatchObject({ status: 422, kind: 'deploy-refused' });

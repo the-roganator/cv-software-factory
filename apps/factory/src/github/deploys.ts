@@ -51,6 +51,9 @@
  * repository that built it (`signatures.ts`), as admission will require. A build that does not is not proposed, and
  * the watch looks again each pass. The build workflow pushes its images, then signs them, so a build with no signature
  * yet is waited for; one still unsigned after `SIGNING_GRACE_MS`, or one signed by anyone else, is warned of, once.
+ * A deploy of one pin file, the app's, also keeps its newest build and how its signature stands (`DeployBuild`), with
+ * the build workflow's job that failed on that commit, from its check runs; the line reads it, and records
+ * a build not signed on each held work item it carries (`line/deploy.ts`), so the console says why it waits.
  *
  * Everything in one pass is read at one commit of main, the head it starts from, so a pin that moves on main while
  * it runs is not reverted.
@@ -61,6 +64,7 @@ import { z } from 'zod';
 import type { Actions } from './actions.ts';
 import type { GitHub } from './client.ts';
 import type { Watch } from './poller.ts';
+import { outcomeOf } from './reads.ts';
 import type { Registry } from './registry.ts';
 import { pipeline, type Signatures, UnsignedError } from './signatures.ts';
 
@@ -72,6 +76,12 @@ export interface Pin {
   file: string;
   /** Each image as kustomize names it, and where it is in GHCR. */
   images: { name: string; image: string }[];
+  /**
+   * The build workflow's jobs that build, push and sign its images, as GitHub's check runs on a commit name them: where
+   * the watch looks for the job that failed when a build of it is not signed (`DeployBuild`). Only a deploy of one pin
+   * file keeps that record.
+   */
+  jobs?: readonly string[];
 }
 
 /** A repository's deploy to one profile: its one branch, and the pin files its pull request moves. */
@@ -114,6 +124,7 @@ export const DEPLOYS: DeployTarget[] = [
         what: '',
         file: 'deploy/overlays/local/image/kustomization.yaml',
         images: [{ name: 'website', image: 'the-roganator/cv-worlds-worst-website' }],
+        jobs: ['build and push', 'sign and attest'],
       },
     ],
   },
@@ -219,6 +230,7 @@ export interface DeployProposal {
  */
 export class DeployProposals {
   readonly #open = new Map<string, DeployProposal>();
+  readonly #builds = new Map<string, DeployBuild>();
 
   set(target: DeployTarget, proposal: DeployProposal | undefined): void {
     const key = `${target.repo} ${target.branch}`;
@@ -229,6 +241,44 @@ export class DeployProposals {
   get(repo: string, branch: string): DeployProposal | null {
     return this.#open.get(`${repo} ${branch}`) ?? null;
   }
+
+  /**
+   * The newest build of a deploy of one pin file, and whether it is signed (`DeployBuild`), which the line reads to say
+   * why a work item no pull request carries yet waits; none when main has no build newer than the pin.
+   */
+  setBuild(target: DeployTarget, build: DeployBuild | undefined): void {
+    const key = `${target.repo} ${target.branch}`;
+    if (build) this.#builds.set(key, build);
+    else this.#builds.delete(key);
+  }
+
+  build(repo: string, branch: string): DeployBuild | null {
+    return this.#builds.get(`${repo} ${branch}`) ?? null;
+  }
+}
+
+/** The build workflow's job on a commit that did not succeed, by its run's and its own ids, as its check run gives them. */
+export interface FailedJob {
+  run: number;
+  id: number;
+  name: string;
+}
+
+/**
+ * The newest build main has of a deploy of one pin file, beyond the commit it pins, and whether its pipeline signed
+ * it, as the watch last found it: `signing` while a signature may yet come, `signed`, `unsigned` once it has waited
+ * `SIGNING_GRACE_MS` with none, or `refused` when it has signatures but none the check accepts as its pipeline's. For a build not signed, the image without its
+ * signature and what the check said, and the build's job that failed, once the watch has read the check runs.
+ */
+export interface DeployBuild {
+  commit: string;
+  pinned: string | null;
+  signature: 'signing' | 'signed' | 'unsigned' | 'refused';
+  /** The image the signature is checked on, and its digest: the first without one, or the first of a signed build. */
+  image: string;
+  digest: string;
+  reason?: string;
+  job?: FailedJob;
 }
 
 /** A work item a deploy carries: its ticket's number and title, its issue, and the pull request that merged its fix. */
@@ -583,6 +633,18 @@ const COMPARED = z.object({
     }),
   ),
 });
+const CHECK_RUNS = z.object({
+  check_runs: z.array(
+    z.object({
+      id: z.number().int(),
+      name: z.string(),
+      status: z.string(),
+      conclusion: z.string().nullable(),
+      app: z.object({ slug: z.string().optional() }).nullable().optional(),
+      html_url: z.string().nullable().optional(),
+    }),
+  ),
+});
 // GitHub works out whether a pull request merges cleanly after it is asked, and says null until it has.
 const MERGEABLE = z.object({ mergeable: z.boolean().nullable() });
 
@@ -713,6 +775,40 @@ export async function brings(
   };
 }
 
+/**
+ * The build workflow's latest job on a commit that did not succeed, from the check runs GitHub Actions posted there,
+ * among the pin's `jobs` by name, each by its latest run, judged failed as the gates judge a check (`outcomeOf`); undefined when none of them
+ * failed. Read with the App's Checks permission: it has no
+ * Actions permission, so it cannot list the workflow's runs, and a job's check run says which run it is of only in its
+ * address.
+ */
+export async function failedJob(
+  github: GitHub,
+  repo: string,
+  pin: Pin,
+  commit: string,
+): Promise<FailedJob | undefined> {
+  const names = new Set(pin.jobs ?? []);
+  if (!names.size) return undefined;
+  const { body } = await github.poll(repo, `/repos/${repo}/commits/${commit}/check-runs?per_page=100`, CHECK_RUNS);
+  const runs = `https://github.com/${repo}/actions/runs/`;
+  // Each job's latest run alone: a re-run still going, or passed, is not the failure before it.
+  const latest = new Map<string, (typeof body.check_runs)[number]>();
+  for (const run of body.check_runs) {
+    if (run.app?.slug !== 'github-actions' || !names.has(run.name)) continue;
+    if (run.id > (latest.get(run.name)?.id ?? -1)) latest.set(run.name, run);
+  }
+  const failed = [...latest.values()]
+    .filter((r) => r.status === 'completed' && outcomeOf(r.conclusion) === 'failure')
+    .sort((a, b) => b.id - a.id);
+  for (const run of failed) {
+    const url = run.html_url ?? '';
+    const ids = url.startsWith(runs) ? /^(\d{1,15})\/job\/(\d{1,15})$/.exec(url.slice(runs.length)) : null;
+    if (ids) return { run: Number(ids[1]), id: Number(ids[2]), name: run.name };
+  }
+  return undefined;
+}
+
 const runsOf = ({ pin, proposal }: Pick<Move, 'pin' | 'proposal'>): Runs => ({ pin, commit: proposal.commit });
 
 /**
@@ -732,11 +828,18 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
   const waiting = new Map<string, number>();
   const warned = new Set<string>();
 
+  // The build workflow's job that failed on the newest unsigned build's commit, as last read: its check runs are polled
+  // each pass (a conditional request), as a job may still be running, or be run again, while the build is not signed.
+  let lastJob: { commit: string; job: FailedJob | undefined } | undefined;
+
   /**
    * Whether every image of a build carries its pipeline's signature: `waiting` while one may yet, `refused` once it
-   * is signed by anyone else or has waited longer than signing takes, which is said once.
+   * is signed by anyone else or has waited longer than signing takes, which is said once; with the image checked last,
+   * and, for one not signed, what the check said.
    */
-  const signed = async (proposal: Proposal): Promise<'signed' | 'waiting' | 'refused'> => {
+  const signed = async (
+    proposal: Proposal,
+  ): Promise<{ state: 'signed' | 'waiting' | 'refused'; image: string; digest: string; error?: UnsignedError }> => {
     for (const { image, digest } of proposal.digests) {
       try {
         await signatures.verify(image, digest, pipeline(repo));
@@ -752,10 +855,36 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
           warned.add(digest);
           log.warn(about, 'did not propose a build its pipeline did not sign');
         }
-        return late ? 'refused' : 'waiting';
+        return { state: late ? 'refused' : 'waiting', image, digest, error };
       }
     }
-    return 'signed';
+    const [first] = proposal.digests;
+    return { state: 'signed', image: first?.image ?? '', digest: first?.digest ?? '' };
+  };
+
+  /**
+   * The newest build of a deploy of one pin file as the line reads it (`DeployBuild`), from its move and its check. The
+   * job that failed is read on each pass, by its latest run; a read that fails keeps what the last read of that commit
+   * found.
+   */
+  const buildOf = async (move: Move, check: Awaited<ReturnType<typeof signed>>): Promise<DeployBuild> => {
+    const { commit, pinned } = move.proposal;
+    const { image, digest, error } = check;
+    const base = { commit, pinned: pinned ?? null, image, digest };
+    if (check.state === 'signed') return { ...base, signature: 'signed' };
+    if (check.state === 'waiting') return { ...base, signature: 'signing' };
+    try {
+      lastJob = { commit, job: await failedJob(github, repo, move.pin, commit) };
+    } catch (read) {
+      log.warn({ repo, commit, err: read }, 'could not read which job of an unsigned build failed: asks again');
+    }
+    const job = lastJob?.commit === commit ? lastJob.job : undefined;
+    return {
+      ...base,
+      signature: error?.kind === 'refused' ? 'refused' : 'unsigned',
+      ...(error ? { reason: error.message } : {}),
+      ...(job ? { job } : {}),
+    };
   };
 
   /**
@@ -809,11 +938,19 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       )
     ).filter((m) => m !== undefined);
     // Nothing newer than any pin: whatever was proposed has merged.
-    if (!found.length) return proposals.set(target, undefined);
+    if (!found.length) {
+      proposals.setBuild(target, undefined);
+      return proposals.set(target, undefined);
+    }
     // A build still being signed is waited for, and the pull request for the builds before stays as it is: the others
     // are not proposed without it only to move a minute later. One its pipeline did not sign is left out.
-    const states: Awaited<ReturnType<typeof signed>>[] = [];
-    for (const move of found) states.push(await signed(move.proposal));
+    const checks: Awaited<ReturnType<typeof signed>>[] = [];
+    for (const move of found) checks.push(await signed(move.proposal));
+    const states = checks.map((c) => c.state);
+    // A deploy of one pin file says how its newest build stands, which the line reads for the work items it carries.
+    const [only] = found;
+    const [check] = checks;
+    if (target.pins.length === 1 && only && check) proposals.setBuild(target, await buildOf(only, check));
     if (states.includes('waiting')) return;
     const ready = found.filter((_, i) => states[i] === 'signed');
     const refused = found.filter((_, i) => states[i] === 'refused');

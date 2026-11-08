@@ -166,6 +166,12 @@ export interface ItemState {
    */
   deploy: (PayloadOf<'deploy.changed'> & { at: number; waitsSince?: number }) | undefined;
   /**
+   * While it is held for a deploy: the build that carries it, which its pipeline did not sign (`build.unsigned`), so no
+   * deploy pull request may carry it, as the line recorded it under that hold, and when; until a build that carries it
+   * is signed, or a deploy pull request that carries it opens or moves.
+   */
+  unsigned: (PayloadOf<'build.unsigned'> & { at: number }) | undefined;
+  /**
    * The release that carried its latest merge rolled back, or was stopped, by Martin, the line or an error, and none has
    * started since: Martin may retry it.
    */
@@ -390,6 +396,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
     waitingOn: undefined,
     cleared: undefined,
     deploy: undefined,
+    unsigned: undefined,
     releaseStopped: false,
     inQueue: undefined,
     attack: undefined,
@@ -631,8 +638,9 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         if (event.payload.cause === 'canary' && (event.payload.release !== release || !state.canary)) break;
         state.sentBack = undefined;
         state.cleared = undefined;
-        // A hold that starts again waits for a deploy pull request of its own.
+        // A hold that starts again waits for a deploy pull request of its own, and a build of its own.
         state.deploy = undefined;
+        state.unsigned = undefined;
         state.hold = {
           id: event.id,
           stage: event.payload.stage,
@@ -659,8 +667,16 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
           at: time,
           ...(his(event.payload) ? { waitsSince: still ? before.waitsSince : time } : {}),
         };
+        // A deploy pull request that carries it is the wait now; one recorded closed, an older build's, is not.
+        if (event.payload.state !== 'closed') state.unsigned = undefined;
         break;
       }
+      case 'build.unsigned':
+        state.unsigned = { ...event.payload, at: time };
+        break;
+      case 'build.signed':
+        state.unsigned = undefined;
+        break;
       case 'hold.answered':
         // A canary's hold is answered on the Canary panel and ends with its release, as the line reads it: an answer
         // of the holds' settles nothing.
@@ -675,6 +691,7 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         // a canary's hold of the last.
         if (state.hold?.cause === 'deploy' || state.hold?.cause === 'canary') state.hold = undefined;
         state.deploy = undefined;
+        state.unsigned = undefined;
         state.releaseStopped = false;
         release = event.payload.release;
         state.versions.from ??= event.payload.previous;
@@ -831,6 +848,19 @@ export function deployWaitsForMartin(item: Pick<ItemState, 'hold' | 'deploy' | '
   if (item.hold?.cause !== 'deploy') return false;
   return item.deploy?.state === 'passed' || item.deploy?.state === 'dequeued' || item.releaseStopped;
 }
+
+/**
+ * What a work item held for a deploy waits on, as the console says it (`deployWords`): its build, while the line's
+ * latest word is that its pipeline did not sign it; else the deploy pull request that carries it, as last recorded.
+ */
+export function deployRecord(
+  item: Pick<ItemState, 'deploy' | 'unsigned'>,
+): ItemState['deploy'] | UnsignedBuild | undefined {
+  return item.unsigned ? { ...item.unsigned, state: 'unsigned' } : item.deploy;
+}
+
+/** A build that carries a held work item, not signed by its pipeline, as the console says it. */
+export type UnsignedBuild = Pick<PayloadOf<'build.unsigned'>, 'commit' | 'signature' | 'job'> & { state: 'unsigned' };
 
 /** Ends a hold of a canary paused for Martin: its release has ended, however it ended, as the line's fold reads it. */
 function endCanaryHold(state: ItemState): void {

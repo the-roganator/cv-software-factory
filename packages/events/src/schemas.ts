@@ -858,6 +858,37 @@ export const PAYLOADS = {
   'pull-request.merged': z.strictObject({ number: pullRequest, commit, by: z.enum(['martin', 'factory']) }),
 
   /**
+   * The app's build that carries a merged work item held for a deploy is not proposed, as no image of it may run: the
+   * GitHub worker's deploy watch found it still unsigned by its pipeline (`build.yml` on main) after signing has had
+   * its time, or with signatures none of which its check accepts as its pipeline's. The line records it, once for each build, on every held work item that build
+   * carries and no open deploy pull request does, so the console can say why it waits, and link the build's job that
+   * failed. A later build that carries it being signed ends it (`build.signed`), as does a deploy pull request.
+   */
+  'build.unsigned': z.strictObject({
+    /** The app's commit the build is of. */
+    commit,
+    /** The image, as GHCR names it, and its digest, that has no signature of its pipeline's. */
+    image: text(200),
+    digest,
+    signature: z.enum(V.UNSIGNED_BUILDS),
+    /** What the signature check said. */
+    reason: text(300),
+    /**
+     * The build workflow's job on that commit that did not succeed, by its run and job ids and its name, as GitHub's
+     * check runs give them, when there is one: where Martin re-runs it.
+     */
+    job: z
+      .strictObject({ run: z.number().int().positive(), id: z.number().int().positive(), name: text(100) })
+      .optional(),
+  }),
+  /**
+   * A build of the app that carries a work item recorded as unsigned (`build.unsigned`) is signed by its pipeline: the
+   * same build, its signing job run again, or a later one. It waits, as before, for the deploy pull request that will
+   * carry it.
+   */
+  'build.signed': z.strictObject({ commit, digest }),
+
+  /**
    * The app's deploy pull request that carries a merged work item held for a deploy changed for it: it opened or
    * moved to a new head, and its required checks run there; they all passed, or some failed; the line added it to the
    * merge queue, or the queue took it out; it merged; or it was closed unmerged. The line reads it from GitHub and

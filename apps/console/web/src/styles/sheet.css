@@ -64,8 +64,20 @@ html[data-motion="off"] .scrim {
 .sheet-head .kind {
   font-size: 13px;
 }
+/* A long state wraps inside the title's column, where the reel's card keeps it to one line, its dot beside the first. */
+.sheet-head .out,
+.rel-head .out {
+  align-items: flex-start;
+  white-space: normal;
+  line-height: 1.4;
+}
+.sheet-head .out .dot,
+.rel-head .out .dot {
+  margin-top: calc((1lh - 8px) / 2);
+}
 .sheet-head h2 {
   margin: 8px 0 0;
+  overflow-wrap: break-word;
   font: 400 40px / 1.02 var(--font-display);
   letter-spacing: -0.4px;
 }
@@ -110,6 +122,8 @@ html[data-motion="off"] .scrim {
   font-size: 17px;
   line-height: 1.55;
   max-width: 760px;
+  /* A commit's whole hash breaks where it must, rather than running off a phone's screen. */
+  overflow-wrap: break-word;
 }
 .sample-note {
   margin: -24px 0 0;
@@ -412,10 +426,6 @@ details.rel:not([open]) {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 6px 12px;
-}
-.rel-head .out {
-  white-space: normal;
-  line-height: 1.4;
 }
 summary.rel-head {
   cursor: pointer;

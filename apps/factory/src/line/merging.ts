@@ -33,18 +33,19 @@
  * gate, as for any gate: nothing is held for a verdict about to come.
  *
  * Nor while the gate's verdict on the head is a hold it marked `pending` (`policy/review-verdict.ts`): one it made only
- * because test integrity's run had not finished at the head (as when a pull request opens), with no tag the level
- * would not pass. That is a wait, not a refusal: nothing is refused or held, and the change waits at Review for the
- * gate to judge again. The gate marks a hold pending conservatively, and the line, which has a clock, bounds the wait:
- * should the verdict still be pending `PENDING_LIMIT_MS` after the later of the line's own gates passing at the head
- * (by the store's time for that event) and the pending check's conclusion (so a re-run of test integrity, which has the
- * gate judge again, starts it again), the change is held for Martin as having no verdict (`no-verdict`), saying what
- * the gate waits for, with nothing refused. With no record of the gates passing at the head (read only with a hold in
- * force, as after Martin's push), it is timed from the check alone. Before its gates pass, a change is not at the
- * merge, and one whose gates never finish is the stuck alert's (`policy/stuck.ts`, Gates). No hold made while the
- * verdict is pending, a conflict or the queue's among them, carries its words, rule, tags or check, and a conflict's
- * or the queue's hold is not made again when the verdict resolves. A passing verdict is never stale: `low-risk`
- * already needs test integrity's completed, successful run, and Martin's approval and an exact pin do not depend on it.
+ * because test integrity's run had not finished at the head (as when a pull request opens), with no tag the level would
+ * not pass, or because it could not check an exact pin. That is a wait, not a refusal: nothing is refused or held, and
+ * the change waits at Review for the gate to judge again. The gate marks a hold pending conservatively, and the line,
+ * which has a clock, bounds the wait: should the verdict still be pending `PENDING_LIMIT_MS` after the later of the
+ * line's own gates passing at the head (by the store's time for that event) and the pending check's conclusion (so a
+ * re-run of test integrity, which has the gate judge again, starts it again), the change is held for Martin as having
+ * no verdict (`no-verdict`), saying what the gate waits for, with nothing refused. With no record of the gates passing
+ * at the head (read only with a hold in force, as after Martin's push), it is timed from the check alone. Before its
+ * gates pass, a change is not at the merge, and one whose gates never finish is the stuck alert's (`policy/stuck.ts`,
+ * Gates). No hold made while the verdict is pending, a conflict or the queue's among them, carries its words, rule,
+ * tags or check, and a conflict's or the queue's hold is not made again when the verdict resolves. A passing verdict is
+ * never stale: `low-risk` already needs test integrity's completed, successful run, and Martin's approval and an exact
+ * pin do not depend on it.
  */
 import type { Autonomy, GateRule, PayloadOf } from '@software-factory/events';
 import { cutTo, PATH_CHARS } from '@software-factory/events';
@@ -93,9 +94,9 @@ export interface MergeFacts {
 
 /**
  * How long the line waits, from the later of its own gates passing at the head and the gate's pending check
- * concluding, for the gate to judge again a head it held only to wait for test integrity (`pending`). Test integrity
- * runs among those gates, and the gate judges again a minute or two after their workflow ends, so a pull request
- * opened long before its gates finished still has the whole wait.
+ * concluding, for the gate to judge again a head it held only to wait (`pending`), for test integrity or for an exact
+ * pin's check. Test integrity runs among those gates, and the gate judges again a minute or two after their workflow
+ * ends, so a pull request opened long before its gates finished still has the whole wait.
  */
 export const PENDING_LIMIT_MS = 15 * 60_000;
 

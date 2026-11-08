@@ -3,17 +3,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cutPending, found, GIVEN_LIMIT, PENDING_LIMIT, readVerdict, TAGS } from '../policy/review-verdict.ts';
 import {
   atHead,
+  definite,
   judge,
   MARTIN,
+  momentary,
+  PIN_BACKOFF_MS,
   type PullRequest,
   QUEUE_BRANCH,
   type Review,
+  retrying,
   STACK_LIMIT,
   SUMMARY_LIMIT,
   stackOf,
   summaryOf,
   target as targetIn,
   together,
+  unsigned,
   verdict,
 } from './review-gate.ts';
 import { APP_REPO, FACTORY_APP } from './review-routing.ts';
@@ -580,5 +585,175 @@ describe('judging a pull request through the API', () => {
     // Not run at all yet, the same.
     github({ '/check-runs?': { check_runs: [] } });
     expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' });
+  });
+
+  describe('an exact pin it could not check', () => {
+    const pinPr: PullRequest = { ...theirs, head: { ...theirs.head, ref: 'factory/deploy' } };
+    const digest = (c: string) => `sha256:${c.repeat(64)}`;
+    const pinFiles = [
+      {
+        filename: 'deploy/website/kustomization.yaml',
+        status: 'modified',
+        patch: `@@ -1,3 +1,3 @@\n images:\n-- digest: ${digest('1')}\n+- digest: ${digest('2')}\n   newName: ghcr.io/the-roganator/cv-worlds-worst-website`,
+      },
+    ];
+    const kustomization = `images:\n- digest: ${digest('2')}\n  newName: ghcr.io/the-roganator/cv-worlds-worst-website\n`;
+    afterEach(() => vi.useRealTimers());
+
+    it('is tried again, and if it still cannot be made, a wait that names why: never a pass, nor its tags', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      let tokens = 0;
+      github({
+        '/pulls/9/files': pinFiles,
+        '/contents/deploy/website/kustomization.yaml': kustomization,
+      });
+      const answer = globalThis.fetch;
+      vi.stubGlobal('fetch', async (url: string) => {
+        if (url.startsWith('https://ghcr.io/token')) {
+          tokens++;
+          return new Response('down', { status: 503 });
+        }
+        return answer(url);
+      });
+      const judging = judge(run, pinPr);
+      await vi.runAllTimersAsync();
+      const said = await judging;
+      // Once, and once after each wait, for the digest it sets and the one it replaces: none is kept to answer the next.
+      expect(tokens).toBe(2 * (PIN_BACKOFF_MS.length + 1));
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.unchecked).toContain('ghcr.io answered 503');
+      expect(said.pending).toContain('the gate could not check its exact pin');
+      expect(said.title).toContain('Not judged yet: the gate could not check its exact pin');
+      // deploy/ is code-owned, and that tag is still found, but it is not what holds it.
+      expect(said.tags.map((t) => t.tag)).toEqual(['code-owned']);
+      expect(said.title).not.toContain('risk tags');
+    });
+
+    it('holds it saying why when GitHub answers what a later try would not change, trying once', async () => {
+      let reads = 0;
+      github({
+        '/pulls/9/files': pinFiles,
+        '/contents/deploy/website/kustomization.yaml': 403,
+      });
+      const answer = globalThis.fetch;
+      vi.stubGlobal('fetch', async (url: string) => {
+        if (url.includes('/contents/deploy/')) reads++;
+        return answer(url);
+      });
+      const said = await judge(run, pinPr);
+      expect(reads).toBe(1);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toContain('Not an exact pin: the gate could not check it: GET /repos/');
+    });
+
+    it('is a judgement when GHCR answers that the image is not there, said in the hold', async () => {
+      github({
+        '/pulls/9/files': pinFiles,
+        '/contents/deploy/website/kustomization.yaml': kustomization,
+      });
+      const answer = globalThis.fetch;
+      vi.stubGlobal('fetch', async (url: string) => {
+        if (url.startsWith('https://ghcr.io/token')) return Response.json({ token: 'x' });
+        if (url.startsWith('https://ghcr.io/v2/')) return new Response('none', { status: 404 });
+        return answer(url);
+      });
+      const said = await judge(run, pinPr);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.pending).toBeUndefined();
+      expect(said.title).toContain(
+        `Not an exact pin: ghcr.io/the-roganator/cv-worlds-worst-website@${'2'.repeat(7)}: ghcr.io answered 404`,
+      );
+    });
+  });
+});
+
+describe('trying a check that could not be made again', () => {
+  const clock = (start = 0) => {
+    let at = start;
+    const waits: number[] = [];
+    return {
+      waits,
+      now: () => at,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+        at += ms;
+      },
+    };
+  };
+  const failing = (times: number) => {
+    let tried = 0;
+    return async () => {
+      tried++;
+      if (tried <= times) throw new Error(`try ${tried}`);
+      return 'checked';
+    };
+  };
+
+  const limits = (backoff: number[], until = 1_000, tryMs = 0) => ({ backoff, until, tryMs });
+
+  it('tries again after each wait, and stops at the first that answers', async () => {
+    const c = clock();
+    expect(await retrying(failing(2), limits([5, 15, 30]), c)).toBe('checked');
+    expect(c.waits).toEqual([5, 15]);
+  });
+
+  it('gives the last error once the waits run out, or the next try would not end in time', async () => {
+    const c = clock();
+    await expect(retrying(failing(9), limits([5, 15]), c)).rejects.toThrow('try 3');
+    // A try takes up to 100: one at 905 would end past 1,000.
+    const late = clock(800);
+    await expect(retrying(failing(9), limits([5, 100], 1_000, 100), late)).rejects.toThrow('try 2');
+    expect(late.waits).toEqual([5]);
+    // With no time for even one, none starts.
+    let tried = 0;
+    const none = retrying(
+      async () => {
+        tried++;
+        return 'checked';
+      },
+      limits([5], 1_000, 100),
+      clock(950),
+    );
+    await expect(none).rejects.toThrow('the job had no time left to check it');
+    expect(tried).toBe(0);
+  });
+
+  it('ends a try at the deadline, whatever it waits on', async () => {
+    const hangs = () => new Promise<string>(() => {});
+    await expect(retrying(hangs, limits([5], Date.now() + 20, 0))).rejects.toThrow(
+      'a try ran out of the time the job leaves it',
+    );
+  });
+
+  it('does not try again an answer a later try would not change', async () => {
+    const c = clock();
+    let tried = 0;
+    const bad = async () => {
+      tried++;
+      throw new SyntaxError('Unexpected token');
+    };
+    await expect(retrying(bad, limits([5, 15]), c)).rejects.toThrow('Unexpected token');
+    expect(tried).toBe(1);
+    expect(definite(new SyntaxError('x'))).toBe(true);
+    expect(definite(new Error('x'))).toBe(false);
+  });
+
+  it('tells a missing signature from a look that failed', () => {
+    expect(unsigned('Error: no matching signatures: none of the expected identities matched')).toBe(true);
+    expect(unsigned('Error: no signatures found')).toBe(true);
+    // cosign gathers what it could not verify under "no matching signatures" too.
+    expect(unsigned('Error: no matching signatures: Get "https://rekor.sigstore.dev/api": dial tcp: i/o timeout')).toBe(
+      false,
+    );
+    expect(unsigned('Error: no matching signatures: unexpected status code 503')).toBe(false);
+    expect(unsigned('Error: getting signatures: GET https://ghcr.io/v2/x: unexpected EOF')).toBe(false);
+    expect(unsigned('Error: fetching TUF root: connection refused')).toBe(false);
+    expect(unsigned('Error: no matching signatures: dial tcp: lookup rekor.sigstore.dev: no such host')).toBe(false);
+    expect(unsigned('Error: no matching signatures: GET https://ghcr.io/v2/x: unexpected status code 401')).toBe(false);
+    // Numbers and words in what it found are no failed look: a log index, a subject naming a connection.
+    expect(unsigned('Error: no matching signatures: log index 503 got subject https://x/connection')).toBe(true);
+    expect([408, 429, 500, 502, 503].every(momentary)).toBe(true);
+    expect([401, 403, 404].some(momentary)).toBe(false);
   });
 });

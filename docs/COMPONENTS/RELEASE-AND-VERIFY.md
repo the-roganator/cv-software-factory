@@ -74,6 +74,16 @@ The App opens the deploy pull request once main has a newer signed build ([deplo
 - A dry run's deploy pull request, which GitHub never had (`DRY_RUN_NUMBERS_FROM` up), is never recorded, so a dry run never adds one to the queue either.
 - A read that fails leaves that work item to the next pass.
 
+### A build not signed
+
+The deploy watch proposes only a build its pipeline signed, so a build whose signing failed (Rekor refusing it, say) is never proposed, and without more the wait would look like any slow build. In the same pass, the line reads the watch's newest build of the app (`deployBuild`, [deploys](GITHUB-WORKER.md#deploys)), and, when it is unsigned once signing has had its half hour, or has signatures none of which the check accepts as `build.yml`'s on main (someone else's, or its own that did not verify), records `build.unsigned` on each work item held for a deploy that the build carries (`carried`, from the commit the app runs to the build's) and no deploy pull request does (the open proposal, or one recorded open for it, which a GitHub worker just started may not know yet): its commit, the image and digest, `signature` (`unsigned` or `refused`), what the check said, and the build workflow's job on that commit that did not succeed, by its run and job ids and its name, when there is one. It records it once for each build, digest, kind and job, under the hold in force, so a job found after the first record is said. The line works out what the build carries only when a record would change, so a build that stays unsigned for hours costs no reads after the first. A build still signing records nothing: it is the wait the hold already names.
+
+- A later look that finds a build that carries it signed, the same build with its job run again or a newer one, records `build.signed` on each work item last recorded as unsigned under that hold, and the wait is the deploy pull request's again. A deploy pull request that carries it, recorded open, ends the console's word on the build too.
+- The worker keeps how the newest build stands only while it runs: a worker started again waits out the grace once more before it says a build is unsigned, and says nothing in the meantime, so no work item is told its build is signed when it is not.
+- Re-running the failed job is Martin's: the worker has no Actions permission, and nothing re-runs it for him. The console links the job. The wait is not his in the line's count of holds, as a deploy is not until its pull request's checks pass, so it pages nobody; its card in Needs you says why it waits.
+- While what the open pull request carries cannot be worked out, nothing is recorded, so a work item it carries is never told its build is unsigned.
+- A `build.signed` says only that the build is signed: a deploy pull request for it that Martin closed unmerged is not proposed again, and the wait is the next build's, as after any close.
+
 ### The line adds it to the queue
 
 Once the app's deploy pull request's checks have passed, the line adds it to the merge queue itself (`enqueuePullRequest`, through the GitHub worker, at the head whose checks passed, so a newer build since is refused) when every one of these holds; otherwise it waits for Martin, and `waits` says why:

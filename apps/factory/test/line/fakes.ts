@@ -8,7 +8,7 @@ import type { Found, Rule } from '../../../../policy/review-verdict.ts';
 import type { Handback } from '../../../runner/src/step.ts';
 import type { Contradicted } from '../../src/gates/contradicts.ts';
 import { described } from '../../src/github/actions.ts';
-import type { DeployProposal } from '../../src/github/deploys.ts';
+import type { DeployBuild, DeployProposal } from '../../src/github/deploys.ts';
 import type { Annotation, CheckRun, Comparison, PullRequestState } from '../../src/github/reads.ts';
 import type {
   ActingFor,
@@ -135,6 +135,8 @@ export class FakeGitHub implements GitHubPort {
   readonly bodies = new Map<number, string>();
   /** The app's open deploy pull request, as the deploy watch has it, and the commits it runs since the pinned one. */
   deploy: DeployProposal | null = null;
+  /** The deploy watch's newest build, and whether it is signed. */
+  build: DeployBuild | null = null;
   deployCommits: string[] = [];
   /** Each of the app's images' commits, by digest, as its revision label names it. */
   readonly revisions = new Map<string, string>();
@@ -306,6 +308,8 @@ export class FakeGitHub implements GitHubPort {
         return answer({ commit: args.sha, commits: [] });
       case 'deployProposal':
         return answer(structuredClone(this.deploy));
+      case 'deployBuild':
+        return answer(structuredClone(this.build));
       case 'commits': {
         if (this.history) {
           const [from, to] = [this.history.indexOf(String(args.base)), this.history.indexOf(String(args.head))];

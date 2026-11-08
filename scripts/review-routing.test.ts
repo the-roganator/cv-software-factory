@@ -34,6 +34,7 @@ import {
   route,
   SECURITY_HEADER_NAMES,
   signerOf,
+  stands,
   TEST_INTEGRITY_CHECK,
   tagsOf,
   testIntegrityRun,
@@ -261,6 +262,48 @@ describe('approval routing: the rule, the first that holds', () => {
       expect(said.title).toContain('Someone other than Martin removed its test-loosening label');
       expect(route(facts({ autonomy, pin, labelsRemoved: ['out-of-scope'] })).rule).toBe('held');
     }
+  });
+
+  it('waits, never judging, when it could not check an exact pin: in either repository, never by its tags', () => {
+    const unchecked = { unchecked: 'cosign could not verify ghcr.io/x@1111111 (Error: 503)' };
+    for (const here of [
+      facts({ pin: unchecked }),
+      facts({ pin: unchecked, autonomy: 'lights-out', tags: [tag('dependency-change')] }),
+      facts({ pin: unchecked, tags: [tag('code-owned')], testIntegrity: { read: false, reason: 'skipped' } }),
+      facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), pin: unchecked }),
+    ]) {
+      const said = route(here);
+      // Untagged with test integrity read, it would otherwise be low-risk: an unchecked pin never passes.
+      expect(said).toMatchObject({ pass: false, rule: 'held', unchecked: unchecked.unchecked });
+      expect(said.title).toBe(
+        'Not judged yet: the gate could not check its exact pin: cosign could not verify ghcr.io/x@1111111 (Error: 503): waits for Martin to approve aaaaaaa',
+      );
+      // The line waits for the gate to judge it again, and holds nothing as a refusal.
+      expect(said.pending).toBe(
+        'the gate could not check its exact pin: cosign could not verify ghcr.io/x@1111111 (Error: 503)',
+      );
+      expect(said.tags).toEqual(here.tags);
+    }
+    // What it did read still holds it first, and is no wait.
+    const removed = route(facts({ pin: unchecked, labelsRemoved: ['test-loosening'] }));
+    expect(removed).toMatchObject({ rule: 'held' });
+    expect(removed.pending).toBeUndefined();
+    expect(route(facts({ pin: unchecked, reviews: [approved()] })).rule).toBe('martin-approved-head');
+  });
+
+  it('says why a change of digests alone is not an exact pin, in the app’s repository too', () => {
+    const reason = 'ghcr.io/the-roganator/cv-worlds-worst-website@1111111: cosign does not verify it';
+    const said = route(facts({ pin: { reason, digests: true } }));
+    // Untagged, it would otherwise pass as low-risk: an image whose signature does not verify never does.
+    expect(said).toMatchObject({ pass: false, rule: 'held' });
+    expect(said.title).toBe(
+      `Not an exact pin: ${reason}, and a change of digests alone passes only as one: waits for Martin to approve aaaaaaa`,
+    );
+    expect(said.pending).toBeUndefined();
+    // An ordinary change is no pin at all, and is judged by its tags as before.
+    const change = { reason: 'src/a.ts is not a pin file under deploy/' };
+    expect(route(facts({ pin: change }))).toMatchObject({ pass: true, rule: 'low-risk' });
+    expect(route(facts({ pin: change, tags: [tag('code-owned')] })).title).toContain('Held for its risk tags');
   });
 
   it('holds what it could not read, unless Martin has had his say', () => {
@@ -719,6 +762,33 @@ images:
     });
   });
 
+  it('marks a reason for a change of digests alone, and throws a check it could not make', async () => {
+    const unsigned = checks({ signedAt: async () => ({ reason: 'unsigned' }) });
+    expect(await exactPin([file(moved)], unsigned, true)).toMatchObject({ digests: true });
+    expect(await exactPin([file(moved)], checks({ ahead: async () => false }), true)).toMatchObject({ digests: true });
+    // Not a pin at all: no mark, so the app's repository judges it by its tags.
+    expect(await exactPin([file(`${moved}\n+# a comment`)], checks(), true)).not.toHaveProperty('digests');
+    expect(await exactPin([file(moved)], checks(), false)).not.toHaveProperty('digests');
+    // A pin's file read, or its image unnamed, is never the reason for a change that is no pin at all.
+    let read = 0;
+    const counting = checks({
+      content: async () => {
+        read++;
+        return 'images: []';
+      },
+    });
+    const mixed = [file(moved), { filename: 'src/a.ts', status: 'modified', patch: '+const a = 1;' }];
+    expect(await exactPin(mixed, counting, true)).toEqual({ reason: 'src/a.ts is not a pin file under deploy/' });
+    expect(read).toBe(0);
+    // A check that could not be made is no reason: the gate tries again, and says it could not check.
+    const down = checks({
+      signedAt: async () => {
+        throw new Error('ghcr.io answered 503');
+      },
+    });
+    await expect(exactPin([file(moved)], down, true)).rejects.toThrow('ghcr.io answered 503');
+  });
+
   it('is no pin with an unsigned image, a pin that goes backwards, or one line that is not a digest', async () => {
     const unsigned = await exactPin(
       [file(moved)],
@@ -740,6 +810,43 @@ images:
     expect(await exactPin([file(moved)], checks({ content: async () => other }), true)).toMatchObject({
       reason: expect.stringContaining("not an image the factory's or the app's build.yml signs"),
     });
+  });
+});
+
+describe('an earlier pass that stands', () => {
+  const PIN_ENTRY = { number: 7, head: HEAD, rule: 'exact-pin' as const, tags: [] };
+  const earlier = (judged: Verdict['judged'], commit = QUEUE): Verdict => ({ version: 1, commit, judged });
+  const unchecked = route(facts({ pin: { unchecked: 'cosign could not verify it' } }));
+  const now = (said = unchecked, number = 7, head = HEAD) => ({ number, head, said });
+
+  it('stands when this run could only fail it for a pin the earlier one checked at the same head', () => {
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now()])).toBe(true);
+    // A stack: one below that passes now, the one above unchecked now and an exact pin then.
+    const below = route(facts({ pr: pr(MARTIN) }));
+    const both = earlier([{ number: 6, head: EARLIER, rule: 'martin-opened', tags: [] }, PIN_ENTRY]);
+    expect(stands(both, QUEUE, [now(below, 6, EARLIER), now()])).toBe(true);
+  });
+
+  it('does not stand for anything else', () => {
+    // Another commit, another head, another pull request, or one more or fewer.
+    expect(stands(earlier([PIN_ENTRY], HEAD), QUEUE, [now()])).toBe(false);
+    expect(stands(earlier([{ ...PIN_ENTRY, head: EARLIER }]), QUEUE, [now()])).toBe(false);
+    expect(stands(earlier([{ ...PIN_ENTRY, number: 8 }]), QUEUE, [now()])).toBe(false);
+    expect(stands(earlier([PIN_ENTRY, { ...PIN_ENTRY, number: 8 }]), QUEUE, [now()])).toBe(false);
+    // Passed then by any rule but an exact pin: Martin's approval, since dismissed, says nothing of the pin.
+    for (const rule of ['martin-approved-head', 'low-risk', 'lights-out', 'held'] as const)
+      expect(stands(earlier([{ ...PIN_ENTRY, rule }]), QUEUE, [now()])).toBe(false);
+    // Held now for anything it read, beside the pin it could not check.
+    const removed = route(facts({ pin: { unchecked: 'x' }, labelsRemoved: ['test-loosening'] }));
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(removed)])).toBe(false);
+    const two = earlier([PIN_ENTRY, { ...PIN_ENTRY, number: 8 }]);
+    expect(stands(two, QUEUE, [now(), now(route(facts({ unread: 'GET /files: 502' })), 8)])).toBe(false);
+    // Its base changed since it opened: the pins at its head were others then.
+    const moved = route(facts({ pin: { unchecked: 'x' }, retargeted: true }));
+    expect(moved).toMatchObject({ rule: 'held', retargeted: true });
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(moved)])).toBe(false);
+    // Nothing held now: there is nothing to stand for.
+    expect(stands(earlier([PIN_ENTRY]), QUEUE, [now(route(facts({ pr: pr(MARTIN) })))])).toBe(false);
   });
 });
 

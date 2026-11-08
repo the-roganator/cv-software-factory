@@ -1,6 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 images:
-- digest: sha256:f760f065bcdd7b75ac6f6aca49f36d34545170cb469a4bb7074274ae5d18abe3
+- digest: sha256:3d999acfa23b4e69184206aa2b07fee860036c79e7835dc79e780b57c69e7228
   name: console
   newName: ghcr.io/the-roganator/cv-software-factory/console

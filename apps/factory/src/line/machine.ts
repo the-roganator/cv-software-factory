@@ -273,8 +273,7 @@ export interface WorkItemState {
   answers: Answer[];
   /**
    * Martin approved the planner's question with no answer, until it writes a spec or his words on another hold reach
-   * it: no answer will come, so the planner
-   * is told so and may not ask again, where it would only ask the same.
+   * it: no answer will come, so the planner is told so and may not ask again, where it would only ask the same.
    */
   unanswered: boolean;
   /**

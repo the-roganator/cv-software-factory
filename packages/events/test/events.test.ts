@@ -1829,7 +1829,7 @@ describe('the answers a hold takes', () => {
       expect(sharesWords(cause, true), cause).toBe(!WORDS_LEAVE_HELD.includes(cause));
       expect(sharesWords(cause, false), cause).toBe(false);
       for (const answer of HOLD_ANSWERS) {
-        expect(takesWords(cause, answer), `${cause}: ${answer}`).toBe(WORDED_ANSWERS.includes(answer));
+        expect(takesWords(answer), `${cause}: ${answer}`).toBe(WORDED_ANSWERS.includes(answer));
       }
     }
   });
@@ -1839,7 +1839,7 @@ describe('the answers a hold takes', () => {
       const offered = answersTo(cause);
       for (const [i, a] of offered.entries()) {
         for (const b of offered.slice(i + 1)) {
-          if (!takesWords(cause, a) && !takesWords(cause, b)) {
+          if (!takesWords(a) && !takesWords(b)) {
             expect(ANSWERS[cause][a], `${cause}: ${a}, ${b}`).not.toBe(ANSWERS[cause][b]);
           }
         }

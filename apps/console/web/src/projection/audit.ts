@@ -18,7 +18,6 @@ import {
   type PayloadOf,
   type PublicEvent,
   SENSES,
-  sharesWords,
   WORDED_ANSWERS,
 } from '@software-factory/events';
 import { stageWords } from '@software-factory/policy/flag-moves';
@@ -214,10 +213,8 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
       case 'hold.answered':
         if (event.payload.answer) parts.push(quoted(event.payload.answer));
         else if (event.payload.report) {
-          // Only an answer that took words and kept them his has any left out: triage's, where they wait for him.
-          const cause = event.payload.hold ? causes.get(event.payload.hold) : undefined;
-          const took = WORDED_ANSWERS.includes(event.payload.decision) && !(cause && sharesWords(cause, true));
-          withheld = took ? MARTIN_KEPT : MARTIN_ANY_KEPT;
+          // An answer in words with none in its view had them, unshared: they stay his.
+          withheld = WORDED_ANSWERS.includes(event.payload.decision) ? MARTIN_KEPT : MARTIN_ANY_KEPT;
         }
         break;
       case 'settings.changed':

@@ -536,6 +536,13 @@ describe('the planner’s prompt', () => {
     expect((await inputOf({ firstSense: 'probe', unanswered: true })).unanswered).toBe(true);
     // A visitor's report's ticket may ask: Martin may share his words to answer it.
     expect((await inputOf({ firstSense: 'report', unanswered: false })).unanswered).toBeUndefined();
+    expect((await inputOf({ firstSense: 'report' })).aboutReport).toBe(true);
+    expect((await inputOf({ firstSense: 'probe' })).aboutReport).toBeUndefined();
+    // There it asks only what the app should do, as Martin answers only in public words.
+    const asked = planner.prompt({ ...INPUT, aboutReport: true });
+    expect(asked).toContain('3. {"verdict":"question","question"}');
+    expect(asked).toContain('never what the visitor saw or wrote');
+    expect(planner.prompt(INPUT)).not.toContain('never what the visitor saw');
   });
 
   it('tells it why its last attempt failed', () => {

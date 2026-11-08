@@ -13,14 +13,14 @@
  *   appends meanwhile is the one answered next.
  * - **Only an answer that does something.** One the line would only wait after is refused (`answersTo`): approving a
  *   merge, which Martin does on GitHub, a deploy, which a release ends by itself, or a suggestion, which never starts
- *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is
- *   taken only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests
- *   first), with his words, which are his reason for it. An answer that takes words (`takesWords`) is refused without
- *   them, and one that takes none with them. On a work item a visitor's report opened, but on triage's holds, words
- *   are taken only shared (`sharesWords`), as no agent reads them otherwise, and would only hand back the same again:
- *   the service takes there exactly what the console offers. Two answers that take no words and do the same are one (`sameAs`): approving the planner's
- *   rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and its
- *   summary says he closed it, agreeing.
+ *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is taken
+ *   only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests first), with
+ *   his words, which are his reason for it. An answer that takes words is refused without them, and one that takes none
+ *   with them. On a work item a visitor's report opened, but on triage's holds, words are taken only shared
+ *   (`sharesWords`), as no agent reads them otherwise, and would only hand back the same again: the service takes there
+ *   exactly what the console offers. Two answers that take no words and do the same are one (`sameAs`): approving the
+ *   planner's rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and
+ *   its summary says he closed it, agreeing.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
@@ -314,7 +314,7 @@ export async function answerHold(
       if (!answersTo(open.cause).includes(decision)) {
         throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
       }
-      const takes = takesWords(open.cause, decision);
+      const takes = takesWords(decision);
       if (takes && given.words === undefined) throw new Refused('words', 422, 'That answer takes your words.');
       if (!takes && given.words !== undefined) throw new Refused('words', 422, 'That answer takes no words.');
       if (takes && shares && !shared) {

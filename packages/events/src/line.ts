@@ -119,7 +119,7 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
  * Whether an answer goes with Martin's words, in a field the console opens: in words, and back to the planner, whose
  * reason they are (`WORDED_ANSWERS`), on every hold that takes them.
  */
-export const takesWords = (_cause: HoldCause, answer: HoldAnswer): boolean => WORDED_ANSWERS.includes(answer);
+export const takesWords = (answer: HoldAnswer): boolean => WORDED_ANSWERS.includes(answer);
 
 /**
  * Whether Martin's words on a hold of this cause reach an agent only shared: on a work item a visitor's report opened
@@ -153,9 +153,9 @@ export const answersTo = (cause: HoldCause): HoldAnswer[] => {
  * words and resolve the same. The console shows the two as one, and the admin service takes only that one.
  */
 export const sameAs = (cause: HoldCause, answer: HoldAnswer, later: readonly HoldAnswer[]): HoldAnswer | undefined =>
-  takesWords(cause, answer)
+  takesWords(answer)
     ? undefined
-    : later.find((other) => !takesWords(cause, other) && ANSWERS[cause][other] === ANSWERS[cause][answer]);
+    : later.find((other) => !takesWords(other) && ANSWERS[cause][other] === ANSWERS[cause][answer]);
 
 /** The causes whose Close stands in for approving too: the line's agent closed it, and approving agrees. */
 export const CLOSE_AGREES: readonly HoldCause[] = (Object.keys(ANSWERS) as HoldCause[]).filter(

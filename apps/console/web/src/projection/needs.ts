@@ -582,7 +582,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       // them, with the passkey again. Triage's holds keep his words with them, for him alone.
       const shares = sharesWords(hold.cause, aboutReport);
       const rows: AnswerRow[] = answersOf(hold).map((answer) => {
-        const words = takesWords(hold.cause, answer);
+        const words = takesWords(answer);
         const share = shares && words;
         return {
           answer,
@@ -639,25 +639,15 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       if (at < from || at > t) continue;
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
-      // Sent back with no words where his would stay his, as the console offered before words there were shared:
-      // where it went says what it did.
-      const plain =
-        !answer && report && cause !== undefined && WORDED_ANSWERS.includes(decision) && sharesWords(cause, true);
       const closes = decision === 'rejected' && cause !== undefined && CLOSE_AGREES.includes(cause);
-      const how =
-        plain && cause
-          ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
-          : closes
-            ? 'Closed'
-            : HOW[decision];
+      const how = closes ? 'Closed' : HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words:
-          answer ??
-          (report && cause && WORDED_ANSWERS.includes(decision) && !sharesWords(cause, true) ? 'kept' : undefined),
-        did: plain || closes ? undefined : didOf(cause, decision),
+        // An answer in words with none in its view had them, unshared, about a visitor's report: they stay his.
+        words: answer ?? (report && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
+        did: closes ? undefined : didOf(cause, decision),
       });
     }
   }

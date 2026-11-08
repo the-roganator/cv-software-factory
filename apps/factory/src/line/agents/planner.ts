@@ -5,10 +5,10 @@
  * note. Or it rejects the ticket, or asks Martin a question, and the work item holds for him.
  *
  * Once Martin has approved its question with no answer (`unanswered`), it is told none will come, and offered no
- * question until it writes a spec or his words reach it, and its schema takes none: it would only ask the same again. It decides from the
- * evidence, a spec or a rejection; a question handed back anyway is a result that does not fit, and fails the step,
- * which is tried again told why, as any other. On a ticket a visitor's report opened, his words reach it only where he
- * shared them, as their author; with none shared, he approves its question or rejects it.
+ * question until it writes a spec or his words reach it, and its schema takes none: it would only ask the same again.
+ * It decides from the evidence, a spec or a rejection; a question handed back anyway is a result that does not fit, and
+ * fails the step, which is tried again told why, as any other. On a ticket a visitor's report opened, his words reach
+ * it only where he shared them, as their author; with none shared, he approves its question or rejects it.
  *
  * What it is told is the ticket's public view and what the senses saw, by their typed fields (`evidence.ts`): never
  * a visitor's words, and never a log message, which may carry them.
@@ -133,6 +133,11 @@ export interface PlannerInput {
    * told so, and offered no question.
    */
   unanswered?: boolean | undefined;
+  /**
+   * Whether a visitor's report opened the ticket: Martin answers a question there only by making his words public, so
+   * it asks only what the app should do, never what the visitor saw or wrote.
+   */
+  aboutReport?: boolean | undefined;
   /**
    * For an improvement, the flags other improvements Martin asked for have named, open or closed: a closed one's code
    * stays in the app behind its flag, off, so its name is never given to another change.
@@ -734,6 +739,11 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
     ...(asks
       ? [
           '3. {"verdict":"question","question"} when the fix turns on what the app should do, which only Martin can say: one question he can answer in a line, at most 300 characters.',
+          ...(input.aboutReport
+            ? [
+                '   A visitor’s report opened this ticket, and Martin can answer only by making his words public: ask what the app should do, never what the visitor saw or wrote.',
+              ]
+            : []),
         ]
       : []),
     `\`findings\`: at most ${MAX_PLANNER_FINDINGS}, each with \`page\`, a page of the app that shows it, as the path a visitor opens, without its query (\`/\` when it shows on none); \`route\`, the route that serves that page, as the app’s code names it, such as \`/products/:slug\`; and \`text\`, what is wrong or could be better, in a sentence or two of at most 300 characters, with the query if it shows only with one.`,
@@ -821,6 +831,8 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
     failure,
     // Martin approved its last question with no answer: none will come (`machine.ts`).
     ...(state.unanswered ? { unanswered: true } : {}),
+    // Martin's words there are public only shared, so a question asks nothing of the report (`machine.ts`).
+    ...(state.firstSense === 'report' ? { aboutReport: true } : {}),
     ...(state.request ? { flagsTaken: await flagsTaken() } : {}),
     ...(state.lastSpec ? { lastSpec: state.lastSpec } : {}),
     ...(state.replan ? { replan: state.replan } : {}),

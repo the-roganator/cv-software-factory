@@ -186,16 +186,31 @@ describe('Needs you', () => {
     ]);
   });
 
-  it('says where an answer sent the work on a visitor’s report, given with no words, and keeps none', () => {
+  it('keeps his words on a visitor’s report from Answered today where he did not share them, and shows them shared', () => {
     const day = Date.parse('2026-10-03T12:00:00');
     const review = work('2033', day)
       .open('visitor-report')
       .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
       .add(1, 'hold.started', 'factory', hold('review', { stage: 'review' }))
-      .add(30, 'hold.answered', 'martin', { decision: 'answered', report: true });
+      // Its public view, of words he gave before they could be shared there: they stay his.
+      .add(30, 'hold.answered', 'martin', { decision: 'answered', report: true })
+      .add(31, 'hold.started', 'factory', hold('review', { stage: 'review' }))
+      .add(40, 'hold.answered', 'martin', {
+        decision: 'answered',
+        answer: 'Keep the test',
+        report: true,
+        shared: true,
+      });
     const { answered } = needsView(foldItems(review.events), day + 3_600_000);
     expect(answered).toEqual([
-      { at: review.at(30), workItem: '2033', how: 'Sent back to the coder', words: undefined, did: undefined },
+      {
+        at: review.at(40),
+        workItem: '2033',
+        how: 'Answered in words',
+        words: 'Keep the test',
+        did: 'Sent back to the coder.',
+      },
+      { at: review.at(30), workItem: '2033', how: 'Answered in words', words: 'kept', did: 'Sent back to the coder.' },
     ]);
   });
 

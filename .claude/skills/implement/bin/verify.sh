@@ -7,7 +7,8 @@
 #                          the reader. Once Copilot has reviewed, a comment on the pull request from us, posted after
 #                          its review and beginning "Copilot's review summary:", answers the review's summary; until
 #                          Copilot has reviewed, or the hour window.sh gives it has passed, the pull request is not
-#                          ready. No code-scanning alert is open on it, and code scanning has analysed its head
+#                          ready, unless Copilot was never asked (no review_requested event on the timeline two
+#                          minutes after opening, as on Dependabot's), when there is nothing to answer. No code-scanning alert is open on it, and code scanning has analysed its head
 #                          (scanning.sh): until it has, the pull request is not ready. Shows checks, threads and alerts.
 #                          A pull request Martin has merged passes on what is left to check (its description, checks,
 #                          threads, alerts still open on main and summary): its worktree and branch may be gone.
@@ -118,7 +119,12 @@ code_scanning "$repo" "$pr" "$state" "$head"
 reviewed=$(gh api "repos/$repo/pulls/$pr/reviews" --paginate | jq -rs 'add // []
   | [.[] | select(.user.login | startswith("copilot-pull-request-reviewer")) | .submitted_at] | last // empty')
 if [[ -z $reviewed ]]; then
-  if (( $(date +%s) - opened < copilot_window )); then
+  # Whether Copilot was asked at all: a review_requested event on the timeline, written as the pull request opens.
+  asked=$(gh api "repos/$repo/issues/$pr/timeline" --paginate | jq -s 'add // []
+    | any(.[]; .event == "review_requested" and (.requested_reviewer.login // "" | startswith("Copilot")))')
+  if [[ $asked != true ]] && (( $(date +%s) - opened >= 120 )); then
+    say summary "Copilot was not asked to review, so there is nothing to answer"
+  elif (( $(date +%s) - opened < copilot_window )); then
     bad summary "Copilot has not reviewed yet: run copilot.sh $pr $key again"
   else
     say summary "Copilot did not review within $(( copilot_window / 60 )) minutes of the opening"

@@ -4,15 +4,16 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { inSbom, listed, missing, pnpmVersion } from '../../src/vulnerabilities/coverage.ts';
 import type { Item } from '../../src/vulnerabilities/inventory.ts';
+import { advisoriesFor, entries, nodeInConfig, nodeInSbom, satisfies } from '../../src/vulnerabilities/node.ts';
 import { PROOF } from '../../src/vulnerabilities/proof.ts';
 import { fingerprint, LIMITS, sarif } from '../../src/vulnerabilities/sarif.ts';
 import {
   DB_MAX_AGE_MS,
   databaseAge,
-  hasNode,
   imagesIn,
   itemKey,
   lockfileLine,
+  nodeFindingsOf,
   readOurs,
   report,
   scan,
@@ -27,6 +28,8 @@ import {
 const fixture = (name: string) =>
   JSON.parse(readFileSync(new URL(`./fixtures/trivy/${name}.json`, import.meta.url), 'utf-8')) as TrivyReport;
 const digest = (c: string) => `sha256:${c.repeat(64)}`;
+/** Four of Node's own core entries (fixtures/node-core.json, from nodejs/security-wg's vuln/core/index.json). */
+const DB = entries(readFileSync(new URL('./fixtures/node-core.json', import.meta.url), 'utf-8'));
 
 const made: string[] = [];
 afterAll(() => {
@@ -85,6 +88,8 @@ interface Fake {
   /** The SBOMs each image carries, one per platform, as Trivy reads them; none for an image with no attestation. */
   sboms?: Record<string, TrivyReport[]>;
   lockfile?: TrivyReport;
+  /** The Node version Syft's SBOM of each image names, as `pkg:generic/node`; none where it names no Node. */
+  node?: Record<string, string>;
 }
 
 /** The scan's tools, answering from Trivy's JSON, and what was asked of them. */
@@ -109,7 +114,12 @@ function tools(fake: Fake) {
     async attestations(image) {
       const sboms = fake.sboms?.[image];
       if (!sboms) throw new Error('no matching attestations');
-      return sboms.map((_, index) => ({ image, index }));
+      const node = fake.node?.[image];
+      // Syft's SPDX, as far as the scan reads it: its Node binary, a generic package Trivy does not read.
+      const packages = node
+        ? [{ name: 'node', versionInfo: node, externalRefs: [{ referenceLocator: `pkg:generic/node@${node}` }] }]
+        : [];
+      return sboms.map((_, index) => ({ image, index, packages }));
     },
     async render() {
       return '';
@@ -122,8 +132,12 @@ function tools(fake: Fake) {
   return { tools: t, asked };
 }
 
-/** Everything readable: the lockfile, ours from its two SBOMs and its image, Postgres, and the proof from its image. */
+/**
+ * Everything readable: the lockfile; ours from its two SBOMs, which give Node 24.22.2; Postgres; and the proof, whose
+ * SBOMs give no Node, from its image, which names Node 24.22.0.
+ */
 const everything = (): Fake => ({
+  node: { [OURS]: '24.22.2' },
   sboms: {
     [OURS]: [fixture('sbom-amd64'), fixture('sbom-arm64')],
     [PROOF.image]: [fixture('sbom-amd64'), fixture('sbom-arm64')],
@@ -139,7 +153,7 @@ describe('an item it cannot read', () => {
   it('fails the run, is named, and nothing is uploaded', async () => {
     const fake = everything();
     delete fake.images?.[POSTGRES];
-    const outcome = await scan(tools(fake).tools, checkout(), items(), []);
+    const outcome = await scan(tools(fake).tools, checkout(), items(), [], DB);
     expect(outcome.unreadable).toEqual([{ name: POSTGRES, why: `could not be pulled: MANIFEST_UNKNOWN: ${POSTGRES}` }]);
     const { lines, passes } = report(outcome, true);
     expect(passes).toBe(false);
@@ -157,7 +171,7 @@ describe('an item it cannot read', () => {
       reference: `alpine@${digest('9')}`,
       why: 'a FROM the list does not read',
     };
-    const outcome = await scan(tools(fake).tools, checkout(), items(), [pin]);
+    const outcome = await scan(tools(fake).tools, checkout(), items(), [pin], DB);
     expect(outcome.unreadable.map((entry) => entry.name)).toEqual([
       `alpine@${digest('9')} (Dockerfile:3)`,
       'pnpm-lock.yaml',
@@ -169,19 +183,18 @@ describe('an item it cannot read', () => {
   });
 
   it('passes when every item was read and the proof shows its advisory', async () => {
-    const outcome = await scan(tools(everything()).tools, checkout(), items(), []);
+    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB);
     expect(outcome.unreadable).toEqual([]);
-    expect(outcome.proof).toMatchObject({ found: true, source: 'image', unreadable: undefined });
-    expect(outcome.proof.seen).toEqual(['image: node 24.22.0 as nodejs, 1 advisories']);
+    expect(outcome.proof).toEqual({ found: true, source: 'image', unreadable: undefined, node: '24.22.0' });
     const { lines, passes } = report(outcome, true);
     expect(passes).toBe(true);
-    expect(lines[0]).toBe('Read 3 targets. Findings by severity: critical 1, high 2, medium 1, low 0, unknown 0.');
+    expect(lines[0]).toBe('Read 3 targets. Findings by severity: critical 1, high 1, medium 1, low 0, unknown 0.');
+    expect(lines).toContain(`The proof image shows ${PROOF.advisory} in its Node 24.22.0, read from its image.`);
     // The proof's own finding is not the repository's: nothing of it is in the file.
     const results = sarif(outcome.findings).runs[0]?.results ?? [];
     expect(results.map((result) => result.ruleId).sort()).toEqual([
       'CVE-2026-0101',
       'CVE-2026-0202',
-      'CVE-2026-111497',
       'GHSA-g3hv-75wg-m249',
     ]);
     expect(JSON.stringify(results)).not.toContain(PROOF.image);
@@ -190,10 +203,10 @@ describe('an item it cannot read', () => {
 
 describe('results over the limit', () => {
   it('fail the run, and nothing is uploaded', async () => {
-    const outcome = await scan(tools(everything()).tools, checkout(), items(), []);
-    const { lines, passes } = report(outcome, true, { ...LIMITS, results: 3 });
+    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB);
+    const { lines, passes } = report(outcome, true, { ...LIMITS, results: 2 });
     expect(passes).toBe(false);
-    expect(lines).toContain("The results are over code scanning's limits: 4 results, over 3.");
+    expect(lines).toContain("The results are over code scanning's limits: 3 results, over 2.");
     expect(lines.at(-1)).toBe('The run fails, and nothing is uploaded.');
   });
 });
@@ -207,47 +220,118 @@ describe('an SBOM with no Node', () => {
     signer: SIGNER,
   });
 
-  it('falls back to the image itself, whose Node Trivy reads', async () => {
+  it("takes Node's version from Syft's SBOM, and does not pull the image", async () => {
     const { tools: t, asked } = tools(everything());
-    expect(hasNode([fixture('sbom-amd64')])).toBe(false);
     const read = await readOurs(t, target(OURS));
-    expect(read.source).toBe('image');
+    expect(read).toMatchObject({ source: 'sbom', node: '24.22.2' });
+    expect(asked.map((args) => args[0])).toEqual(['sbom', 'sbom']);
+  });
+
+  it('falls back to the image itself, and its NODE_VERSION, when no SBOM gives Node', async () => {
+    const { tools: t, asked } = tools({ ...everything(), node: {} });
+    const read = await readOurs(t, target(OURS));
+    expect(read).toMatchObject({ source: 'image', node: '24.22.0' });
     expect(asked.map((args) => args[0])).toEqual(['sbom', 'sbom', 'image']);
     expect(asked[2]).toContain('linux/amd64');
-    expect(hasNode(read.reports)).toBe(true);
   });
 
-  it('does not when the SBOM gives Node', async () => {
-    const withNode = fixture('sbom-amd64');
-    withNode.Results?.push(fixture('image-node').Results?.[0] ?? {});
-    const { tools: t, asked } = tools({ sboms: { [OURS]: [withNode] } });
-    const read = await readOurs(t, target(OURS));
-    expect(read.source).toBe('sbom');
-    expect(asked.map((args) => args[0])).toEqual(['sbom']);
-  });
-
-  it('is an item it cannot read when the image cannot be pulled either', async () => {
-    const { tools: t } = tools({ sboms: { [OURS]: [fixture('sbom-amd64')] } });
-    const read = await readOurs(t, target(OURS));
-    expect(read.unreadable).toMatch(/^its SBOM gives no Node, and the image could not be pulled/);
+  it('is an item it cannot read when the image cannot be pulled, or gives no Node either', async () => {
+    const pulled = tools({ sboms: { [OURS]: [fixture('sbom-amd64')] } });
+    expect((await readOurs(pulled.tools, target(OURS))).unreadable).toMatch(
+      /^its SBOM gives no Node, and the image could not be pulled/,
+    );
+    const none = tools({ sboms: { [OURS]: [fixture('sbom-amd64')] }, images: { [OURS]: fixture('image-postgres') } });
+    expect((await readOurs(none.tools, target(OURS))).unreadable).toBe(
+      'its Node version is in neither its SBOM nor its image',
+    );
   });
 
   it('fails the run when the proof does not show its advisory', async () => {
-    const fake = everything();
-    if (fake.images) fake.images[PROOF.image] = fixture('image-postgres');
-    const outcome = await scan(tools(fake).tools, checkout(), items(), []);
-    expect(outcome.proof.found).toBe(false);
+    // The proof's SBOM names a Node with the fix: the scan cannot be seeing what it should.
+    const outcome = await scan(
+      tools({ ...everything(), node: { [PROOF.image]: '24.22.1' } }).tools,
+      checkout(),
+      items(),
+      [],
+      DB,
+    );
+    expect(outcome.proof).toMatchObject({ found: false, source: 'sbom', node: '24.22.1' });
     const { lines, passes } = report(outcome, true);
     expect(passes).toBe(false);
     expect(lines).toContain(
-      `The proof image does not show ${PROOF.advisory} in its Node: the scanner has stopped seeing Node.`,
+      `The proof image does not show ${PROOF.advisory} in its Node 24.22.1: the scan has stopped seeing Node.`,
     );
+  });
+});
+
+describe("Node's own advisories", () => {
+  it('reads the ranges the database writes', () => {
+    expect(satisfies('24.22.0', '22.x || 24.x || 26.x')).toBe(true);
+    expect(satisfies('25.0.0', '22.x || 24.x || 26.x')).toBe(false);
+    expect(satisfies('24.22.0', '^22.23.4 || ^24.22.1 || ^26.12.1')).toBe(false);
+    expect(satisfies('24.22.1', '^22.23.4 || ^24.22.1 || ^26.12.1')).toBe(true);
+    expect(satisfies('24.30.0', '^24.22.1')).toBe(true);
+    expect(satisfies('6.1.9', '>=6.0.0 <6.2.0')).toBe(true);
+    expect(satisfies('6.2.0', '>= 6.0.0 < 6.2.0')).toBe(false);
+    expect(satisfies('4.4.2', '^5.10.0 || 4.4.2')).toBe(true);
+    expect(satisfies('10.9.0', '<=10')).toBe(true);
+    expect(satisfies('11.0.0', '<=10')).toBe(false);
+    expect(satisfies('8.2.3', '8.2.x')).toBe(true);
+    expect(() => satisfies('8.2.3', '8.2.3-beta')).toThrow(/a range not read/);
+  });
+
+  it("gives each CVE of an entry the version is in and not patched in, at the publisher's severity", () => {
+    expect(advisoriesFor('24.22.0', DB).map((a) => [a.advisory, a.severity])).toEqual([['CVE-2026-111497', 'HIGH']]);
+    expect(advisoriesFor('24.22.1', DB)).toEqual([]);
+    // An entry with no CVE is named by its own id; one past its last release line is still a finding.
+    expect(advisoriesFor('5.9.0', DB).map((a) => a.advisory)).toEqual([
+      'CVE-2017-1000381',
+      'CVE-2016-1669',
+      'NSWG-CORE-26',
+    ]);
+  });
+
+  it("finds Node's version in Syft's SBOM and in an image's configuration", () => {
+    expect(
+      nodeInSbom({ packages: [{ name: 'node', externalRefs: [{ referenceLocator: 'pkg:generic/node@24.22.0' }] }] }),
+    ).toBe('24.22.0');
+    expect(
+      nodeInSbom({ packages: [{ name: 'undici', externalRefs: [{ referenceLocator: 'pkg:npm/undici@7.16.0' }] }] }),
+    ).toBeUndefined();
+    expect(nodeInConfig(fixture('image-node').Metadata?.ImageConfig)).toBe('24.22.0');
+    expect(nodeInConfig(fixture('image-postgres').Metadata?.ImageConfig)).toBeUndefined();
+  });
+
+  it("is a result per image and CVE, at the image's pin, and an image of another's with NODE_VERSION has them too", async () => {
+    const node = `node:24.22.0-alpine3.24@${digest('5')}`;
+    const fake = everything();
+    if (fake.images) fake.images[node] = fixture('image-node');
+    const all = [...items(), { kind: 'dockerfile' as const, name: node, file: 'Dockerfile', line: 3, image: node }];
+    const outcome = await scan(tools(fake).tools, checkout(), all, [], DB);
+    const results = sarif(outcome.findings).runs[0]?.results.filter((r) => r.ruleId === PROOF.advisory) ?? [];
+    expect(results).toHaveLength(1);
+    expect(results[0]?.locations[0]?.physicalLocation).toEqual({
+      artifactLocation: { uri: 'Dockerfile' },
+      region: { startLine: 3 },
+    });
+    expect(results[0]?.message.text).toBe(
+      `node 24.22.0 in ${node}: ${PROOF.advisory} (high), fixed in ^22.23.4 || ^24.22.1 || ^26.12.1.`,
+    );
+    const finding = nodeFindingsOf(
+      {
+        target: { item: all[3] as Item, key: itemKey(all[3] as Item), label: node, image: node },
+        reports: [],
+        node: '24.22.0',
+      },
+      DB,
+    )[0];
+    expect(finding && fingerprint(finding)).toBe(results[0]?.partialFingerprints['vulnerabilities/v1']);
   });
 });
 
 describe("two platforms' findings", () => {
   it('are one result, and an image’s copy of a package is never folded into a lockfile’s', async () => {
-    const outcome = await scan(tools(everything()).tools, checkout(), items(), []);
+    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB);
     const openssl = outcome.findings.filter((finding) => finding.advisory === 'CVE-2026-0101');
     expect(openssl).toHaveLength(2);
     const results = sarif(outcome.findings).runs[0]?.results ?? [];
@@ -267,7 +351,7 @@ describe("two platforms' findings", () => {
 
 describe('a moved pin', () => {
   it('keeps its fingerprint while the finding stays, and closes it once past the fix', async () => {
-    const before = await scan(tools(everything()).tools, checkout(), items(), []);
+    const before = await scan(tools(everything()).tools, checkout(), items(), [], DB);
     // Postgres moves to a new digest, on another line: the same finding is the same alert.
     const moved = `postgres:18.7-alpine3.24@${digest('3')}`;
     const fake = everything();
@@ -277,6 +361,7 @@ describe('a moved pin', () => {
       checkout(),
       items().map((item) => (item.image === POSTGRES ? { ...item, name: moved, image: moved, line: 30 } : item)),
       [],
+      DB,
     );
     const print = (outcome: typeof before) =>
       sarif(outcome.findings).runs[0]?.results.find((result) => result.ruleId === 'CVE-2026-0202');
@@ -286,7 +371,7 @@ describe('a moved pin', () => {
     const fixed = everything();
     if (fixed.images)
       fixed.images[POSTGRES] = { ...fixture('image-postgres'), Results: [{ Packages: [{ Name: 'libxml2' }] }] };
-    expect(print(await scan(tools(fixed).tools, checkout(), items(), []))).toBeUndefined();
+    expect(print(await scan(tools(fixed).tools, checkout(), items(), [], DB))).toBeUndefined();
   });
 
   it('is the item, the package and the advisory, never the version, the line or the digest', () => {

@@ -6,16 +6,19 @@
  *
  * - A lockfile is scanned on its own, from a directory holding only it, development dependencies included.
  * - An image of ours, from the SPDX SBOM of each platform `build.yml` attested, verified against its signer, and from
- *   the image itself when Trivy reads no Node from its SBOM.
+ *   the image itself when its SBOM gives no Node.
  * - Every other image by pulling it, from CI's copy where there is one, with retries; a chart's, from what `helm
  *   template` renders of it with the values it is installed with; k3s's, from the list its release publishes.
+ * - Node itself, which Trivy does not see: each image's Node version, from Syft's SBOM or the image's `NODE_VERSION`,
+ *   matched against Node's own core vulnerability database (node.ts), fetched each run and refused, as Trivy's is,
+ *   when it cannot be read. An image of ours whose Node version cannot be read is an item the scan cannot read.
  *
  * An item that cannot be read (a lockfile Trivy reads no packages from, an SBOM with no attestation, an image that
  * cannot be pulled, a chart that does not render, a pin the list does not read) is named in the log and fails the run,
  * and so does a database more than a day old: nothing is written for upload, so no alert closes because its item went
  * unread. The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
  * limits. Every run also scans PROOF, an image of ours that ran Node 24.22.0, as it scans ours, and fails unless
- * CVE-2026-111497 is found in its Node, so a scanner that has stopped seeing Node cannot pass; nothing is uploaded for
+ * CVE-2026-111497 is found in its Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for
  * it. The log gives counts by severity and the items not read, never a package or an advisory.
  *
  * The checkout is data: nothing in it runs. Trivy runs in its pinned image, which reads the registries' credentials
@@ -26,6 +29,7 @@ import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFile
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
+import { advisoriesFor, type CoreEntry, entries, NODE_DATABASE, nodeInConfig, nodeInSbom } from './node.ts';
 import { PROOF } from './proof.ts';
 import { type Finding, LIMITS, merge, overLimits, SEVERITIES, type Severity, sarif } from './sarif.ts';
 
@@ -62,7 +66,7 @@ export interface TrivyResult {
 export interface TrivyReport {
   SchemaVersion?: number;
   ArtifactName?: string;
-  Metadata?: { RepoDigests?: string[] | null };
+  Metadata?: { RepoDigests?: string[] | null; ImageConfig?: { config?: { Env?: string[] | null } } };
   Results?: TrivyResult[] | null;
 }
 
@@ -98,6 +102,8 @@ export interface Read {
   reports: TrivyReport[];
   /** For an image of ours: whether its findings came from its SBOMs alone, or from the image too. */
   source?: 'sbom' | 'image';
+  /** The Node version the image runs, where it gives one: Syft's in its SBOM, or `NODE_VERSION` in its configuration. */
+  node?: string | undefined;
   unreadable?: string;
 }
 
@@ -119,19 +125,6 @@ export function itemKey(item: Item, image?: string) {
   if (item.kind === 'chart') return `chart ${item.name} ${repository}`;
   if (item.kind === 'k3s-release') return `k3s ${repository}`;
   return `${item.file} ${repository}`;
-}
-
-const isNode = (name: string | undefined) => /^(node|nodejs|node\.js)$/i.test(name ?? '');
-
-/** Whether Trivy read Node itself, the runtime, from any of the reports. */
-export function hasNode(reports: TrivyReport[]) {
-  return reports.some((report) =>
-    (report.Results ?? []).some(
-      (result) =>
-        (result.Packages ?? []).some((pkg) => isNode(pkg.Name)) ||
-        (result.Vulnerabilities ?? []).some((v) => isNode(v.PkgName)),
-    ),
-  );
 }
 
 /** How many packages Trivy read, across the reports. */
@@ -208,6 +201,26 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
   );
 }
 
+/** The findings of Node's own advisories in an image whose Node version the read gave, at the image's pin. */
+export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Finding[] {
+  if (!read.node) return [];
+  return advisoriesFor(read.node, database).map((advisory) => ({
+    item: read.target.key,
+    label: read.target.label,
+    file: read.target.item.file,
+    line: read.target.item.line,
+    type: 'node',
+    package: 'node',
+    installed: read.node ?? '',
+    fixed: advisory.patched,
+    advisory: advisory.advisory,
+    severity: advisory.severity,
+    title: advisory.title,
+    description: advisory.description,
+    url: advisory.url,
+  }));
+}
+
 const IMAGE_ARGS = ['--scanners', 'vuln', '--list-all-pkgs', '--image-src', 'remote'];
 
 /** A lockfile, alone in a directory, with development dependencies. */
@@ -227,8 +240,9 @@ export async function readLockfile(tools: Tools, root: string, target: Target): 
 }
 
 /**
- * An image of ours: each platform's SBOM, verified against its signer; and the image itself when Trivy read no Node
- * from any of them, as Syft can list Node as a binary Trivy has no advisories for.
+ * An image of ours: each platform's SBOM, verified against its signer, and its Node version from Syft's
+ * `pkg:generic/node` there; and the image itself when no SBOM gives Node, for its findings and its `NODE_VERSION`. An
+ * image of ours whose Node cannot be read either way is an item the scan cannot read: every one of ours runs Node.
  */
 export async function readOurs(tools: Tools, target: Target): Promise<Read> {
   const image = target.image ?? '';
@@ -251,10 +265,14 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
     }
   }
   if (packagesRead(reports) === 0) return { target, reports: [], unreadable: 'Trivy read no packages from its SBOM' };
-  if (hasNode(reports)) return { target, reports, source: 'sbom' };
+  const node = predicates.map(nodeInSbom).find(Boolean);
+  if (node) return { target, reports, source: 'sbom', node };
   try {
     const own = await tools.retry(() => tools.trivy(['image', ...IMAGE_ARGS, '--platform', FALLBACK_PLATFORM, image]));
-    return { target, reports: [...reports, own], source: 'image' };
+    const configured = nodeInConfig(own.Metadata?.ImageConfig);
+    if (!configured)
+      return { target, reports: [], unreadable: 'its Node version is in neither its SBOM nor its image' };
+    return { target, reports: [...reports, own], source: 'image', node: configured };
   } catch (error) {
     return {
       target,
@@ -271,12 +289,14 @@ export async function readImage(tools: Tools, target: Target): Promise<Read> {
   try {
     if (target.ci) {
       try {
-        return { target, reports: [await scan(target.ci)] };
+        const report = await scan(target.ci);
+        return { target, reports: [report], node: nodeInConfig(report.Metadata?.ImageConfig) };
       } catch {
         // Not copied yet (mirror.yml copies the factory's pins, daily): from its own registry instead.
       }
     }
-    return { target, reports: [await tools.retry(() => scan(image))] };
+    const report = await tools.retry(() => scan(image));
+    return { target, reports: [report], node: nodeInConfig(report.Metadata?.ImageConfig) };
   } catch (error) {
     return { target, reports: [], unreadable: `could not be pulled: ${firstLine(error)}` };
   }
@@ -336,8 +356,8 @@ export interface Outcome {
     found: boolean;
     source?: 'sbom' | 'image' | undefined;
     unreadable?: string | undefined;
-    /** Each Node Trivy read in it, where, and how many advisories it gave: the proof's own, never the repository's. */
-    seen?: string[];
+    /** The Node version read from it. */
+    node?: string | undefined;
   };
 }
 
@@ -347,6 +367,7 @@ export async function scan(
   root: string,
   items: Item[],
   pins: { file: string; line: number; reference: string; why: string }[],
+  database: [string, CoreEntry][],
 ): Promise<Outcome> {
   const unreadable: Outcome['unreadable'] = pins.map((pin) => ({
     name: `${pin.reference} (${pin.file}:${pin.line})`,
@@ -387,7 +408,7 @@ export async function scan(
         continue;
       }
       read++;
-      findings.push(...findingsOf(result, lockfiles.get(item.file)));
+      findings.push(...findingsOf(result, lockfiles.get(item.file)), ...nodeFindingsOf(result, database));
     }
   }
   const proofItem: Item = {
@@ -405,23 +426,12 @@ export async function scan(
     image: PROOF.image,
     signer: PROOF.signer,
   });
-  const found = findingsOf(proofRead).some((f) => f.advisory === PROOF.advisory && isNode(f.package));
-  // What Trivy read of the proof image's Node, for the log: where it was, of what kind, and how many advisories.
-  const seen = proofRead.reports.flatMap((report, index) =>
-    (report.Results ?? []).flatMap((result) =>
-      (result.Packages ?? [])
-        .filter((pkg) => isNode(pkg.Name))
-        .map(
-          (pkg) =>
-            `${index < proofRead.reports.length - (proofRead.source === 'image' ? 1 : 0) ? 'SBOM' : 'image'}: ${pkg.Name} ${pkg.Version ?? '?'} as ${result.Type ?? result.Class ?? '?'}, ${(result.Vulnerabilities ?? []).filter((v) => isNode(v.PkgName)).length} advisories`,
-        ),
-    ),
-  );
+  const found = nodeFindingsOf(proofRead, database).some((finding) => finding.advisory === PROOF.advisory);
   return {
     findings,
     unreadable,
     read,
-    proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, seen },
+    proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, node: proofRead.node },
   };
 }
 
@@ -463,13 +473,9 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS) {
     proof.unreadable
       ? `The proof image could not be read: ${proof.unreadable}.`
       : proof.found
-        ? `The proof image shows ${PROOF.advisory} in its Node, from its ${proof.source === 'image' ? 'image (its SBOM gives no Node Trivy reads)' : 'SBOM'}.`
-        : `The proof image does not show ${PROOF.advisory} in its Node: the scanner has stopped seeing Node.`,
+        ? `The proof image shows ${PROOF.advisory} in its Node ${proof.node}, read from its ${proof.source === 'image' ? 'image' : 'SBOM'}.`
+        : `The proof image does not show ${PROOF.advisory} in its Node ${proof.node}: the scan has stopped seeing Node.`,
   );
-  if (!proof.found && !proof.unreadable)
-    lines.push(
-      `  Node, as Trivy read it there: ${proof.seen?.length ? proof.seen.join('; ') : 'none, in its SBOM or its image'}.`,
-    );
   const file = sarif(outcome.findings);
   const over = overLimits(file, limits);
   if (over.length) lines.push(`The results are over code scanning's limits: ${over.join('; ')}.`);
@@ -667,10 +673,22 @@ export async function main(args: string[]): Promise<number> {
     return 1;
   }
   console.log(`The advisory database was built ${(age / 3_600_000).toFixed(1)} hours ago.`);
+  let database: [string, CoreEntry][];
+  try {
+    database = entries(await tools.retry(() => tools.fetch(NODE_DATABASE)));
+    // Every range read now, so one the scan cannot read refuses the database rather than misreading a version.
+    advisoriesFor('0.0.0', database);
+  } catch (error) {
+    console.error(
+      `::error::Node's vulnerability database is refused: ${firstLine(error)}. The run fails, and nothing is uploaded.`,
+    );
+    return 1;
+  }
+  console.log(`Node's vulnerability database has ${database.length} entries.`);
 
   const checkout = resolve(root);
   const { items } = inventory(checkout);
-  const outcome = await scan(tools, checkout, items, unlisted(checkout));
+  const outcome = await scan(tools, checkout, items, unlisted(checkout), database);
   const { lines, passes } = report(outcome, upload);
   for (const line of lines) console.log(line);
   for (const entry of outcome.unreadable) console.log(`::error::Not read: ${entry.name}: ${entry.why}`);

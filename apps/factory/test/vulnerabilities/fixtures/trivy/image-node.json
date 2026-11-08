@@ -3,29 +3,35 @@
   "ArtifactName": "ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "ArtifactType": "container_image",
   "Metadata": {
-    "OS": { "Family": "debian", "Name": "13.1" },
+    "OS": {
+      "Family": "debian",
+      "Name": "13.1"
+    },
     "RepoDigests": [
       "ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    ]
+    ],
+    "ImageConfig": {
+      "architecture": "amd64",
+      "os": "linux",
+      "config": {
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "NODE_VERSION=24.22.0",
+          "NODE_ENV=production"
+        ]
+      }
+    }
   },
   "Results": [
     {
-      "Target": "usr/local/bin/node",
+      "Target": "Node.js",
       "Class": "lang-pkgs",
-      "Type": "nodejs",
-      "Packages": [{ "ID": "node@24.22.0", "Name": "node", "Version": "24.22.0" }],
-      "Vulnerabilities": [
+      "Type": "node-pkg",
+      "Packages": [
         {
-          "VulnerabilityID": "CVE-2026-111497",
-          "PkgID": "node@24.22.0",
-          "PkgName": "node",
-          "InstalledVersion": "24.22.0",
-          "FixedVersion": "24.22.1",
-          "Status": "fixed",
-          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2026-111497",
-          "Title": "nodejs: out-of-bounds write in the bundled Brotli decoder",
-          "Severity": "HIGH",
-          "CVSS": { "nvd": { "V3Score": 8.1 } }
+          "ID": "undici@7.16.0",
+          "Name": "undici",
+          "Version": "7.16.0"
         }
       ]
     }

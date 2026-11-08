@@ -1,0 +1,42 @@
+{
+  "1": {
+    "cve": ["CVE-2017-1000381"],
+    "ref": "https://nodejs.org/en/blog/vulnerability/july-2017-security-releases/",
+    "vulnerable": "8.x || 7.x || 4.x || 6.x || 5.x",
+    "patched": "^8.1.4 || ^7.10.1 || ^4.8.4 || ^6.11.1",
+    "description": "memory overread when parsing invalid NAPTR responses",
+    "overview": "The c-ares function ares_parse_naptr_reply(), which is used for parsing NAPTR\nresponses, could be triggered to read memory outside of the given input buffer\nif the passed in DNS response packet was crafted in a particular way.\n\n",
+    "affectedEnvironments": ["all"],
+    "severity": "high"
+  },
+  "24": {
+    "cve": ["CVE-2016-1669"],
+    "vulnerable": ">=6.0.0 <6.2.0 || 5.x || 4.x",
+    "patched": "^4.4.6 || ^5.12.0",
+    "ref": "https://nodejs.org/en/blog/vulnerability/june-2016-security-releases",
+    "description": "Buffer overflow in V8",
+    "overview": "Under certain conditions, V8 may improperly expand memory allocations in the\nZone::New function. This could potentially be used to cause a Denial of Service\nvia buffer overflow or as a trigger for a remote code execution.\n\nAlthough this bug is marked as high severity in the corresponding Chromium\nrelease (50.0.2661.102), our assessment is that this is low severity for\nNode.js users due to the level of difficulty in making use of this\nvulnerability. However, users are encouraged to upgrade their Node.js\ninstallation to ensure they are properly protected.\n\n",
+    "affectedEnvironments": ["all"],
+    "severity": "high"
+  },
+  "26": {
+    "cve": [],
+    "description": "security flaw in the use of npm authentication tokens in HTTP requests",
+    "vulnerable": "5.x || 4.x",
+    "patched": "^5.10.0 || 4.4.2",
+    "ref": "https://github.com/npm/node/pull/6",
+    "overview": "Upgrade npm to fixes a security flaw in the use of\nauthentication tokens in HTTP requests that would allow an attacker to set up a\nserver that could collect tokens from users of the command-line interface.\nAuthentication tokens have previously been sent with every request made by the\nCLI for logged-in users, regardless of the destination of the request. This\nupdate fixes this by only including those tokens for requests made against the\nregistry or registries used for the current install.\n\nThis is a flaw in the version of npm included with node.\n\nnpm is updated to 3.8.3 in node 5.10.1, and to 2.15.1 in node 4.4.2.\n\n",
+    "affectedEnvironments": ["all"],
+    "severity": "unknown"
+  },
+  "204": {
+    "cve": ["CVE-2026-111497"],
+    "vulnerable": "22.x || 24.x || 26.x",
+    "patched": "^22.23.4 || ^24.22.1 || ^26.12.1",
+    "ref": "https://nodejs.org/en/blog/vulnerability/october-2026-security-releases",
+    "description": "Node.js Brotli decoder out-of-bounds write permits remote code execution",
+    "overview": "A flaw in the Brotli decoder bundled with Node.js allows malformed compressed input to write past the end of an internal decoder buffer.\n\nAn invalid block switch was reported as a temporary need for more input instead of a permanent format error, so the streaming decoder kept appending input bytes to an eight-byte internal buffer. An attacker who can supply Brotli data that an application decompresses with `node:zlib` can corrupt process memory, which can lead to a crash, disclosure of process memory, or remote code execution.\n\nThis vulnerability affects Node.js **26.x**, **24.x**, and **22.x**.",
+    "affectedEnvironments": ["all"],
+    "severity": "high"
+  }
+}

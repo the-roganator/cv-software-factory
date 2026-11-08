@@ -178,11 +178,22 @@ export const closedBy = (cause: HoldCause): 'coder' | 'planner' => (cause === 'n
 export const PATH_CHARS = 200;
 
 /**
- * A page of the app, by its path alone: one slash and no second, and no query, fragment, scheme, backslash or space, so
- * it names a page of the app and nothing else, and a link made of it stays on the app's own origin (`//` would name
- * another host). The spec's pages are held to it, and the console holds a preview link to it again.
+ * A path of the app as segments, each of at least one character but a slash, a space, `?`, `#`, a backslash or those
+ * `refused`, and none `.` or `..` (or their `%2e` spellings), with a slash at its end or not. So no segment is empty
+ * (`//` would name another host at the start, and is no page within it), and none is one an address collapses: a path
+ * with them names another page than it says, which may be words typed to look like one.
  */
-export const PAGE_PATH = /^\/(?!\/)[^\s?#:\\]*$/;
+export function pathOf(refused = ''): RegExp {
+  const segment = String.raw`(?!(?:\.|%2e){1,2}(?:/|$))[^\s?#\\/${refused}]+`;
+  return new RegExp(`^/(?:${segment}/)*(?:${segment})?$`, 'i');
+}
+
+/**
+ * A page of the app, by its path alone (`pathOf`): no query, fragment, scheme, backslash, space, empty segment or dot
+ * segment, so it names a page of the app and nothing else, the page it says, and a link made of it stays on the app's
+ * own origin. The spec's pages are held to it, and the console holds a preview link to it again.
+ */
+export const PAGE_PATH = pathOf(':');
 
 /**
  * A scope entry as a pattern: a file (`src/money.ts`), a folder ending in `/` (`test/`), or a pattern with `*` (one

@@ -359,6 +359,10 @@ describe('validation', () => {
     for (const wrong of [
       { page: '/products/oak-stool', passage: 'A fine thing.', element: link },
       { page: '/products/oak-stool?ref=x' },
+      // A typed path that an address collapses to another page, or that names another host.
+      { page: '/[words](//elsewhere.test/x)/../../../..' },
+      { page: '/a//b' },
+      { page: '/a\\b' },
       { page: '/', element: { ...link, to: '/list?q=what+a+visitor+typed' } },
       { page: '/', element: { ...link, to: 'https://elsewhere.test/' } },
       { page: '/', element: { kind: 'field', label: 'Email', name: 'email', type: 'email', value: 'typed' } },

@@ -42,7 +42,7 @@ export const ELEMENT_PATH = 120;
  */
 export const POINTED_BY: Record<SymptomClass, 'passage' | readonly ElementKind[] | null> = {
   'wrong-result': 'passage',
-  // Faint text is text: a link's or a button's words are among the page's passages too.
+  // Faint text is text: a link's or a button's words in the page's main text are among its passages too.
   'low-contrast': 'passage',
   'broken-link': ['link'],
   'broken-image': ['image'],
@@ -101,8 +101,9 @@ const words = (value: unknown): string | null => {
   return folded ? cutAt(folded, ELEMENT_TEXT).trim() : null;
 };
 const path = (value: unknown) => (typeof value === 'string' ? appPath(value) : null);
-const NAME = /^[\w.:[\]-]{1,60}$/;
-const TYPE = /^[a-z-]{1,20}$/;
+/** A field's `name` and type as an element keeps them: the schemas hold an event to the same. */
+export const FIELD_NAME = /^[\w.:[\]-]{1,60}$/;
+export const FIELD_TYPE = /^[a-z-]{1,20}$/;
 
 function elementOf(raw: unknown): PageElement | null {
   if (typeof raw !== 'object' || raw === null) return null;
@@ -117,8 +118,8 @@ function elementOf(raw: unknown): PageElement | null {
       return {
         kind: 'field',
         label: words(r.label),
-        name: typeof r.name === 'string' && NAME.test(r.name) ? r.name : null,
-        type: typeof r.type === 'string' && TYPE.test(r.type) ? r.type : 'text',
+        name: typeof r.name === 'string' && FIELD_NAME.test(r.name) ? r.name : null,
+        type: typeof r.type === 'string' && FIELD_TYPE.test(r.type) ? r.type : 'text',
       };
     case 'button':
       return { kind: 'button', text: words(r.text) };

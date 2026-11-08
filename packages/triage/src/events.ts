@@ -562,6 +562,8 @@ export function reportEvents(
 
 /** What a report's ticket points at, as its story tells it. */
 function pointed(points: ReportDecision['points']): string {
+  // No points: the page did not answer as a page of the app, so the ticket names none.
+  if (!points) return ' The factory could not read its page, so it points at no page.';
   if (!pointsAtSomething(points)) return ' It points at nothing narrower than the page.';
   return ` It points at ${pointWords(points as Points)}, which Jev chose from the page as the factory read it.`;
 }

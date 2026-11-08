@@ -340,6 +340,12 @@ const VERIFY_LEASE_SECONDS = 2700;
 /** How long the line waits before trying a handback's effects again: doubling from 30 seconds, to 10 minutes. */
 const retryAfterMs = (tries: number) => Math.min(30_000 * 2 ** (tries - 1), 600_000);
 
+/**
+ * The app's own words as plain text in an issue's Markdown: a page's passage or a link's words may hold anything the
+ * app shows, and an `@name` there would notify that account, or a bracket make a link.
+ */
+const asText = (words: string) => words.replace(/[\\`*_[\]<>#|~@]/g, '\\$&');
+
 export class Line {
   readonly #o: Required<Omit<LineOptions, 'me'>>;
   readonly #queue: Queue;
@@ -1929,14 +1935,14 @@ export class Line {
     const where =
       'class' in ticket.fingerprint
         ? `\`${ticket.fingerprint.class}\` on \`${ticket.fingerprint.route}\``
-        : `the words “${ticket.fingerprint.text}” on \`${ticket.fingerprint.page}\``;
+        : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
     const body = [
       `The factory’s ticket #${workItem}: ${where}.`,
       '',
       `- Category: ${ticket.category}`,
       `- Severity: ${ticket.severity}`,
       ...(ticket.points && pointsAtSomething(ticket.points)
-        ? [`- A visitor reported ${pointWords(ticket.points)}, as the factory read the page`]
+        ? [`- A visitor reported ${asText(pointWords(ticket.points))}, as the factory read the page`]
         : []),
       ...(ticket.traces.length ? [`- Traces: ${ticket.traces.map((t) => `\`${t}\``).join(', ')}`] : []),
       '',

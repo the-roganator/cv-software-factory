@@ -173,4 +173,6 @@ spec:
         (has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels)
   validations:
     - expression: "false"
-      message: a red-team pod is made in red-team, and nothing of the red team's is made beside the line's runners
+      message: >-
+        no pod, Job or volume claim in runners carries the red-team marker or is the red-team harness's: its pods are
+        made in red-team

@@ -207,10 +207,10 @@ describe('the red-team harness’s Roles', () => {
     }
   });
   it('are in red-team alone, where the harness makes its pods: none beside the line’s runners', () => {
-    expect(roles.map((r) => r.metadata?.namespace)).toEqual(['red-team']);
+    expect(new Set(roles.map((r) => r.metadata?.namespace))).toEqual(new Set(['red-team']));
     for (const binding of bindings)
       expect(binding.subjects).toEqual([{ kind: 'ServiceAccount', name: 'red-team', namespace: 'factory' }]);
-    expect(bindings.map((b) => b.metadata?.namespace)).toEqual(['red-team']);
+    expect(new Set(bindings.map((b) => b.metadata?.namespace))).toEqual(new Set(['red-team']));
   });
   it('are the only rights the harness’s account has to anything in the cluster', () => {
     const bound = all
@@ -219,7 +219,11 @@ describe('the red-team harness’s Roles', () => {
         (m) =>
           (m.kind === 'RoleBinding' || m.kind === 'ClusterRoleBinding') &&
           (m.subjects ?? []).some(
-            (s) => s.kind === 'ServiceAccount' && s.name === 'red-team' && s.namespace === 'factory',
+            (s) =>
+              (s.kind === 'ServiceAccount' && s.name === 'red-team' && s.namespace === 'factory') ||
+              // A group the account is in: every service account's, the factory's, every signed-in user's.
+              (s.kind === 'Group' &&
+                ['system:serviceaccounts', 'system:serviceaccounts:factory', 'system:authenticated'].includes(s.name)),
           ),
       );
     expect(bound.map((b) => `${b.kind} ${b.metadata?.namespace}/${b.metadata?.name}`)).toEqual([
@@ -357,15 +361,26 @@ describe('the red-team pods’ admission rule', () => {
 });
 
 describe('the rule that keeps red-team pods out of runners', () => {
-  const policy = one<ValidatingPolicy>('ValidatingPolicy', 'factory-no-red-team-pods-in-runners');
+  const policy = one<ValidatingPolicy>('ValidatingPolicy', 'factory-no-red-team-in-runners');
   const shape = one<ValidatingPolicy>('ValidatingPolicy', 'factory-red-team-pods');
-  it('guards pods in runners alone', () => {
+  it('guards pods, Jobs and volume claims, in runners alone', () => {
+    const rules = (
+      policy.spec.matchConstraints as unknown as {
+        resourceRules: { apiGroups: string[]; resources: string[]; operations: string[] }[];
+      }
+    ).resourceRules;
+    expect(rules.flatMap((r) => r.apiGroups.flatMap((g) => r.resources.map((x) => `${g}/${x}`))).sort()).toEqual([
+      '/persistentvolumeclaims',
+      '/pods',
+      'batch/jobs',
+    ]);
+    for (const rule of rules) expect(rule.operations).toEqual(['CREATE', 'UPDATE']);
     const ns = (name: string) =>
       selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': name });
     expect(ns('runners')).toBe(true);
     for (const other of ['red-team', 'factory']) expect(ns(other), other).toBe(false);
   });
-  it('matches what the red-team pods’ rule matches: every pod the harness’s account creates, and any carrying the marker', () => {
+  it('matches as the red-team pods’ rule does: all the harness’s account creates, and anything carrying the marker', () => {
     expect(policy.spec.matchConditions).toEqual(shape.spec.matchConditions);
     expect(policy.spec.matchConditions.map((c) => c.expression).join('\n')).toContain(RED_TEAM_LABEL);
   });

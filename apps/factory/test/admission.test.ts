@@ -284,7 +284,7 @@ describe('admission control', () => {
     // `refusal-key` (refusal-fences.test.ts) and the red-team pods, in `red-team` and kept out of `runners` (red-team-fences.test.ts), which deny too. The `try-the-line` skill switches `factory-images` to
     // Audit on the cluster for a run, and Argo CD puts it back; no manifest here does.
     // Nothing switches `website-images`, `scoreboard-images`, `flagd-images`, `website-routes`, `website-mark`,
-    // `website-rollout-controls`, `website-share-key`, `factory-refusal-key`, `factory-red-team-pods`, `factory-no-red-team-pods-in-runners`, `flagd-flags` or `flagd-flag-stages`.
+    // `website-rollout-controls`, `website-share-key`, `factory-refusal-key`, `factory-red-team-pods`, `factory-no-red-team-in-runners`, `flagd-flags` or `flagd-flag-stages`.
     const policies = [
       join('base', 'admission', 'images', 'policy.yaml'),
       join('base', 'admission', 'website', 'routes.yaml'),

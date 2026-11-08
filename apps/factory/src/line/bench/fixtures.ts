@@ -1168,7 +1168,7 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
     },
     'report-elsewhere': {
       about:
-        'a visitor’s report of a wrong result on a product page, pointing at its stock line, which is right, beside a price seeded wrong: the price is not what was reported, so it goes in findings, never the spec',
+        'a visitor’s report of a wrong result on a product page, pointing at its stock line, which is right, beside a price seeded wrong: the price is not what was reported, so no spec is for it',
       commit: APP_MAIN,
       seed: PRICE_SEED,
       input: {

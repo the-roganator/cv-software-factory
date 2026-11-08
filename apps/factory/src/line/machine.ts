@@ -326,6 +326,11 @@ export interface WorkItemState {
    * is told it wrote last when the work comes back to it.
    */
   lastSpec: PayloadOf<'spec.written'> | undefined;
+  /**
+   * Whether the change built to the last spec merged into the app's main: a dry run's merge, which reaches no main,
+   * does not. Kept through a fresh pass, so a replan after it is told that spec as what shipped, met on main.
+   */
+  shipped: boolean;
   /** The work items it waits on after Plan, the files their specs share with its own, and whether the wait is over. */
   waiting: { on: string[]; files: string[]; ended: boolean } | undefined;
   /** The latest look again under the hold or wait in force, and the release it looked at. */
@@ -375,6 +380,7 @@ const initial = (): WorkItemState => ({
   firstSense: undefined,
   seenOn: [],
   lastSpec: undefined,
+  shipped: false,
   waiting: undefined,
   rechecked: undefined,
   cleared: undefined,
@@ -418,6 +424,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
       case 'spec.written':
         state.spec = event.payload;
         state.lastSpec = event.payload;
+        state.shipped = false;
         if (event.payload.risks.includes('out-of-scope')) state.outOfScope = true;
         state.replan = undefined;
         state.unanswered = false;
@@ -637,6 +644,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'pull-request.merged':
         state.merged = true;
+        state.shipped = event.payload.number < DRY_RUN_NUMBERS_FROM;
         // His merge answers whatever held the change before it: the change is in, and goes on to Release.
         state.hold = undefined;
         state.release = undefined;
@@ -689,7 +697,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         Object.assign(state, { hold: undefined, answer: undefined, closed: false });
         // A ticket a dry run verified comes back with nothing shipped: a first plan again, not a replan of the dry
         // run's spec, whose flag no one moved.
-        if (event.payload.dryRun) Object.assign(state, { lastSpec: undefined, replan: undefined });
+        if (event.payload.dryRun) Object.assign(state, { lastSpec: undefined, shipped: false, replan: undefined });
         else state.replan = { cause: 'reopened' };
         state.reopened.push(event.payload);
         state.persistedBefore = state.persisted.length;
@@ -716,13 +724,13 @@ function endCanaryHold(state: WorkItemState): void {
  * pull request, with its own gates, review, merge and release. Only the ticket or the request, the hold, Martin's
  * answers, the verifications that persisted and the reopenings carry over: the planner should not forget an answer,
  * nor a fix that did not work or did not last. So do the ticket's signals, the last spec, which still says what it is
- * about, and why the work came back.
+ * about, whether its change shipped, and why the work came back.
  */
 function startAgain(state: WorkItemState): void {
   const { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore, closed } = state;
-  const { firstSense, seenOn, lastSpec, replan, outOfScope } = state;
+  const { firstSense, seenOn, lastSpec, shipped, replan, outOfScope } = state;
   Object.assign(state, initial(), { ticket, request, hold, answer, answers, persisted, reopened, persistedBefore });
-  Object.assign(state, { closed, firstSense, seenOn, lastSpec, replan, outOfScope });
+  Object.assign(state, { closed, firstSense, seenOn, lastSpec, shipped, replan, outOfScope });
 }
 
 /**

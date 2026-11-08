@@ -1084,6 +1084,67 @@ describe('the planner planning again', () => {
     ).toBe(true);
   });
 
+  it('after its change merged, tells its last spec as what shipped, and holds the new one to none of its criteria', () => {
+    const shipped: PlannerInput = {
+      ...INPUT,
+      lastSpec: LAST_SPEC,
+      shipped: true,
+      replan: { cause: 'returned', from: 'verify', reason: 'The probe still saw it.' },
+    };
+    const text = planner.prompt(shipped);
+    expect(text).toContain(
+      'This is a replan: you planned this ticket before, the change built to your last spec was merged, and the work came back to you. That change is on main, and in your checkout. Your last spec, for what was built and shipped:',
+    );
+    expect(text).toContain(`\`\`\`json
+${JSON.stringify(LAST_SPEC, null, 2)}
+\`\`\``);
+    expect(text).toContain(
+      'Its criteria are met at this commit, so none of them is this spec’s: repeat none of them. Write only criteria that fail at this commit, for what the return asks that the shipped change did not do.',
+    );
+    // Keeping is for a replan before a merge.
+    expect(text).not.toContain('A criterion you keep');
+    expect(text).not.toContain('Keep what still holds');
+    const refused =
+      'this is criterion 1 of the spec that shipped, which main meets: write only criteria that fail at this commit';
+    const parsed = (spec: object) => planner.schema(shipped).safeParse({ verdict: 'spec', spec });
+    expect(parsed(LAST_SPEC).error?.issues.map((i) => i.message)).toEqual([refused]);
+    // In another case, or other spaces, or quoting something else, it is still the same criterion.
+    const [kept] = LAST_SPEC.criteria as [(typeof LAST_SPEC.criteria)[number]];
+    const recased = { ...kept, given: ` A price of  3500 pence`, quote: 'error pattern' };
+    expect(parsed({ ...LAST_SPEC, criteria: [recased] }).error?.issues.map((i) => i.message)).toEqual([refused]);
+    const fresh = { ...kept, given: 'a price of 705 pence', expect: 'it reads £7.05' };
+    expect(parsed({ ...LAST_SPEC, criteria: [fresh] }).success).toBe(true);
+    // Before a merge, the same spec keeps them.
+    expect(planner.schema({ ...shipped, shipped: false }).safeParse({ verdict: 'spec', spec: LAST_SPEC }).success).toBe(
+      true,
+    );
+  });
+
+  it('after an improvement’s change merged, lets its off criterion stand again, and keeps its flag', () => {
+    const again: PlannerInput = {
+      ...REQUEST,
+      lastSpec: IMPROVEMENT_SPEC,
+      shipped: true,
+      replan: { cause: 'verify', approved: false, answered: false, reason: 'Held for Martin' },
+    };
+    const text = planner.prompt(again);
+    expect(text).toContain(
+      'for what the return asks that the shipped change did not do, beside the `off` criterion that the pages are as they are now with the flag off. The flag stays `delivery-dates`.',
+    );
+    const [on, , off] = IMPROVEMENT_SPEC.criteria as [
+      (typeof IMPROVEMENT_SPEC.criteria)[number],
+      unknown,
+      (typeof IMPROVEMENT_SPEC.criteria)[number],
+    ];
+    const fresh = { ...on, expect: 'it names the day of the week it would arrive' };
+    const fits = (criteria: object[]) =>
+      planner.schema(again).safeParse({ verdict: 'spec', spec: { ...IMPROVEMENT_SPEC, criteria } });
+    expect(fits([fresh, off]).success).toBe(true);
+    expect(fits([on, off]).error?.issues.map((i) => i.message)).toEqual([
+      'this is criterion 1 of the spec that shipped, which main meets: write only criteria that fail at this commit',
+    ]);
+  });
+
   it('says nothing of a replan on a first plan', () => {
     expect(planner.prompt(INPUT)).not.toMatch(/replan|Why it came back|Pull request #/);
     expect(planner.prompt(REQUEST)).not.toMatch(/replan|Why it came back|Pull request #/);
@@ -1121,6 +1182,46 @@ describe('the bench’s replans', () => {
     expect(fits(input, { ...widened, flag: 'delivery-dates-2' }).error?.issues.map((i) => i.message)).toEqual([
       'the improvement’s flag is delivery-dates, as its last spec named it: keep it',
     ]);
+  });
+
+  it('plans a report again from Verify after its fix shipped, from Martin’s shared words that it mended the wrong defect', () => {
+    const { seed, input } = fixture('wrong-defect-shipped');
+    // Main holds the shipped fix of pounds: only the cards' price is left wrong.
+    expect(seed).not.toContain('src/money.ts');
+    expect(seed).toContain('src/pages/cards.ts');
+    expect(input).toMatchObject({ aboutReport: true, shipped: true, signals: [] });
+    expect(input.replan).toMatchObject({ cause: 'verify', approved: false, answered: true });
+    const words = input.answers.at(-1)?.answer ?? '';
+    expect(words).toContain('which is not what was reported');
+    const prompt = planner.prompt(input);
+    // What he was asked, a hold's reason with no full stop of its own, is told as a sentence before his words.
+    expect(prompt).toContain(`Martin judges whether the fix cleared it. He said: ${words}`);
+    expect(prompt).toContain('the change built to your last spec was merged');
+    expect(prompt).toContain('repeat none of them');
+    expect(prompt).not.toContain('A criterion you keep');
+    const last = input.lastSpec as PayloadOf<'spec.written'>;
+    // Carrying the shipped spec forward, as a replan before a merge would, is refused, criterion by criterion.
+    expect(fits(input, last).error?.issues.map((i) => i.path.join('.'))).toEqual([
+      'spec.criteria.0',
+      'spec.criteria.1',
+    ]);
+    // The spec the line wants: the list's cards alone, from his words.
+    const cards = {
+      outcome: 'Each card on the product list shows its price with two digits of pence.',
+      criteria: [
+        {
+          given: 'a product that costs 705 pence',
+          when: 'a visitor opens the product list',
+          expect: 'its card shows £7.05',
+          from: 'Martin’s answer',
+          quote: 'The cards on the product list still show a price with one digit of pence',
+        },
+      ],
+      scope: ['src/pages/cards.ts', 'test/pages-products.test.ts'],
+      risks: [],
+      rollout: 'Ships in the next release; the cards on the product list then show two digits of pence.',
+    };
+    expect(fits(input, cards).success).toBe(true);
   });
 
   it('plans a ticket again before any pull request, told what the scope fence refused', () => {

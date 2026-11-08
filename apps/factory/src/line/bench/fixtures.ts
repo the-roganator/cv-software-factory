@@ -628,10 +628,10 @@ const DELIVERY_SPEC: PayloadOf<'spec.written'> = {
  * What the line tells a planner sent back to Plan, folded from a work item's events as the line folds them: Martin's
  * answers, the last spec, and why the work came back. So a replan's fixture says what the line would, word for word.
  */
-function replanOf(events: readonly LineEvent[]): Pick<PlannerInput, 'answers' | 'lastSpec' | 'replan'> {
-  const { answers, lastSpec, replan } = fold(events);
+function replanOf(events: readonly LineEvent[]): Pick<PlannerInput, 'answers' | 'lastSpec' | 'shipped' | 'replan'> {
+  const { answers, lastSpec, shipped, replan } = fold(events);
   if (!lastSpec || !replan) throw new Error('These events send no work back to Plan.');
-  return { answers, lastSpec, replan };
+  return { answers, lastSpec, ...(shipped ? { shipped: true } : {}), replan };
 }
 
 /** Martin's approval of a hold, in no words of his. */
@@ -761,6 +761,98 @@ const CARDS_FENCE_RETURN: LineEvent[] = [
   CARDS_REFUSED,
   { type: 'hold.started', payload: fenceHold(LIMITS.fenceRefusals) },
   APPROVED,
+];
+
+/**
+ * The wrong price in the product cards alone: what is left of `CARDS_SEED` on main once a fix of `pounds` merged. The
+ * cards work out their own price, so mending `pounds` left them as they were.
+ */
+const CARDS_ONLY_SEED = CARDS_SEED.slice(PRICE_SEED.length);
+
+/** The ticket triage would open for a visitor's report of a wrong result on the product list. */
+const LIST_REPORT_TICKET: PayloadOf<'ticket.opened'> = {
+  title: reportedTitle({ route: '/products', class: 'wrong-result' }),
+  category: 'functional',
+  severity: 'broken',
+  fingerprint: { route: '/products', class: 'wrong-result' },
+  traces: [],
+};
+
+/**
+ * The spec that shipped for it: a fix of `pounds`, which the product's own page shows, from a ticket that named only a
+ * wrong result on the list. It quotes the ticket, which the line accepted, and mended a wrong price, though not the
+ * one on the list's cards.
+ */
+const POUNDS_SHIPPED_SPEC: PayloadOf<'spec.written'> = {
+  outcome: 'Every price pounds gives shows two digits of pence, so 3500 pence is £35.00.',
+  criteria: [
+    {
+      given: 'a price of 3500 pence',
+      when: 'pounds is called with it',
+      expect: 'it returns £35.00',
+      from: 'the ticket',
+      quote: 'a wrong result on /products',
+    },
+    {
+      given: 'a product that costs 705 pence',
+      when: 'a visitor opens its page',
+      expect: 'the price shows £7.05',
+      from: 'the ticket',
+      quote: 'a wrong result on /products',
+    },
+  ],
+  scope: ['src/money.ts', 'test/money.test.ts'],
+  risks: [],
+  rollout: 'Ships in the next release; a product’s own page then shows two digits of pence.',
+};
+
+/** The pull request that carried it, merged by the line. */
+const POUNDS_SHIPPED_PULL_REQUEST = 131;
+const POUNDS_SHIPPED_FILES = [
+  { path: 'src/money.ts', added: 1, removed: 1 },
+  { path: 'test/money.test.ts', added: 6, removed: 0 },
+];
+
+/** Martin's words at Verify, shared as their author: the shipped fix mended another wrong price, not the one reported. */
+const WRONG_DEFECT =
+  'That mended the price on each product’s own page, which is not what was reported. The cards on the product list still show a price with one digit of pence.';
+
+/**
+ * A report of the product list, planned, built, merged and released as a fix of `pounds`, and held at Verify, where
+ * only Martin can judge a report. He answered in words he shared, that it mended the wrong defect, which sends the
+ * work back to Plan with main holding the shipped fix.
+ */
+const LIST_VERIFY_RETURN: LineEvent[] = [
+  { type: 'ticket.opened', payload: LIST_REPORT_TICKET },
+  { type: 'spec.written', payload: POUNDS_SHIPPED_SPEC },
+  {
+    type: 'pull-request.pushed',
+    payload: {
+      number: POUNDS_SHIPPED_PULL_REQUEST,
+      title: 'fix(money): show two digits of pence',
+      branch: `factory/${FIXTURE_WORK_ITEM}-a-visitor-reports-a-wrong-result-on-products`,
+      attempt: 1,
+      testsFirst: true,
+      files: POUNDS_SHIPPED_FILES,
+      whole: POUNDS_SHIPPED_FILES,
+    },
+  },
+  {
+    type: 'pull-request.merged',
+    payload: { number: POUNDS_SHIPPED_PULL_REQUEST, commit: 'c'.repeat(40), by: 'factory' },
+  },
+  {
+    type: 'hold.started',
+    payload: {
+      stage: 'verify',
+      kind: 'approval',
+      cause: 'verify',
+      reason:
+        'Only a visitor’s report saw this defect, and no sense can look at it again: Martin judges whether the fix cleared it',
+    },
+  },
+  { type: 'hold.answered', payload: { decision: 'answered', answer: WRONG_DEFECT, report: true, shared: true } },
+  { type: 'work.returned', payload: { from: 'verify', to: 'plan', reason: `Martin sent it back: ${WRONG_DEFECT}` } },
 ];
 
 /** The whole pound's pull request, which the coder built twice before Martin sent the work back to the planner. */
@@ -1301,6 +1393,21 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         signals: [],
         protectedPaths: APP_PROTECTED,
         answers: [],
+      },
+    },
+    'wrong-defect-shipped': {
+      about:
+        'a report of the product list planned again from Verify, after a fix of the product page’s price merged and shipped: Martin’s shared words say it mended the wrong defect, so the new spec is for the list’s cards alone',
+      commit: APP_MAIN,
+      seed: CARDS_ONLY_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: LIST_REPORT_TICKET },
+        // A report's signal never reaches the planner.
+        signals: [],
+        protectedPaths: APP_PROTECTED,
+        aboutReport: true,
+        ...replanOf(LIST_VERIFY_RETURN),
       },
     },
     'test-name-kept': {

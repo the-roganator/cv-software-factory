@@ -8,6 +8,7 @@ import {
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
+import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import {
   acceptedFindings,
   atTake,
@@ -757,9 +758,17 @@ describe('after the merge', () => {
     // The planner is told its last spec, and why it is back: the reopening, as a persisting fix's return before it.
     expect(state).toMatchObject({ lastSpec: spec.payload, replan: { cause: 'reopened' } });
     expect(fold([...persisted, back]).replan).toEqual({ cause: 'returned', from: 'verify', reason: 'It persists' });
+    // And that its last spec's change merged, through the fresh pass, which the next spec ends: it is on main.
+    expect(state.shipped).toBe(true);
+    expect(fold([...persisted, back])).toMatchObject({ merged: false, shipped: true });
+    expect(fold([...persisted, back, spec]).shipped).toBe(false);
+    expect(fold(done.slice(0, -1)).shipped).toBe(false);
+    // A dry run's merge reaches no main.
+    const dryMerged: LineEvent = { ...merged, payload: { ...merged.payload, number: DRY_RUN_NUMBERS_FROM + 12 } };
+    expect(fold([...done.slice(0, -1), dryMerged])).toMatchObject({ merged: true, shipped: false });
     // One a dry run verified comes back to a first plan: nothing of its spec shipped.
     const dry: LineEvent = { ...reopened, payload: { ...reopened.payload, dryRun: true } };
-    expect(fold([...ended, dry])).toMatchObject({ lastSpec: undefined, replan: undefined });
+    expect(fold([...ended, dry])).toMatchObject({ lastSpec: undefined, shipped: false, replan: undefined });
     // A verification that persists in the new pass sends it back to Plan once more: the limit counts this ticket's
     // regression afresh.
     const live = [...again, ...done.slice(1), deployHold(done), release('8a6c0d9e7', 'v0.9.7')];

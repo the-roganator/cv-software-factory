@@ -376,17 +376,18 @@ start-the-line: node_modules ## Start the line, first on a new store or again; w
 # ONLY (a work item's number), NEXT (how many, from now) or EVERY=1. From Martin's command line, it needs no passkey.
 take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<how many> or EVERY=1
 	@[ -z "$(EVERY)" ] || [ "$(EVERY)" = 1 ] || { echo "EVERY takes 1: EVERY=1." >&2; exit 2; }; \
-	set -- $(if $(ONLY),one "$(ONLY)") $(if $(NEXT),next "$(NEXT)") $(if $(EVERY),every); \
+	set -- $(if $(ONLY),one '$(subst ','\'',$(value ONLY))') $(if $(NEXT),next '$(subst ','\'',$(value NEXT))') $(if $(EVERY),every); \
 	if [ "$$#" -eq 0 ] || { [ "$$1" = every ] && [ "$$#" -ne 1 ]; } || { [ "$$1" != every ] && [ "$$#" -ne 2 ]; }; then \
 		echo "Give one of ONLY=<work item>, NEXT=<how many> or EVERY=1." >&2; exit 2; fi; \
 	$(call as-operator,node apps/factory/src/cli.ts line take "$$@")
 
 # A work item the line has not taken, closed as Martin's, from his command line, with the same role: a try's invented
 # report, or one he is done with. A discard with his reason; refused if it is not open, or the line has it (its issue
-# goes with it only through the line: close that one in the console). A reason is quoted whole, `$` and all.
+# goes with it only through the line: close that one in the console). The values are quoted whole, `$`, quotes and all,
+# and the number checked, before they reach a shell that holds Martin's role.
 close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
-	@[ -n "$(ONLY)" ] || { echo "Give ONLY=<work item>." >&2; exit 2; }; \
-	$(call as-operator,node apps/factory/src/cli.ts line close "$(ONLY)" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
+	@only='$(subst ','\'',$(value ONLY))'; case "$$only" in ''|*[!0-9]*) echo "Give ONLY=<work item>, its number." >&2; exit 2;; esac; \
+	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

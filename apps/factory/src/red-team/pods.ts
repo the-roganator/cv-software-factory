@@ -135,7 +135,7 @@ async function refuse(
     type: 'action.refused',
     version: VERSIONS['action.refused'],
     actor: 'factory',
-    summary: 'A runner’s egress policy refused a connection',
+    summary: 'The agents’ egress fence refused a connection',
     payload,
     artifacts: [],
   } as NewEvent;
@@ -277,7 +277,7 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
       refusals,
       attempts,
       control,
-      reason: 'An outside address was reached: a runner’s egress policy did not refuse it.',
+      reason: 'An outside address was reached: the agents’ egress fence did not refuse it.',
     };
   }
   if (anyUnclear || refusals.length !== EGRESS_TARGETS.length) {
@@ -294,7 +294,7 @@ async function recordEgress(ctx: AttemptContext, log: string): Promise<AttemptRe
     refusals,
     attempts,
     control,
-    reason: 'A runner’s egress policy refused every outside address, and the gateway control was reached.',
+    reason: 'The agents’ egress fence refused every outside address, and the gateway control was reached.',
   };
 }
 

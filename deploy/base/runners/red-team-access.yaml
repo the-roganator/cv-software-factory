@@ -1,6 +1,5 @@
-# The red-team harness's right to make the egress and image attacks' pods in `runners`, kept while the cluster may still
-# run a factory image that makes them here: create, read, read the log of, and delete a pod. The harness makes them in
-# `red-team` (../red-team/access.yaml), and this Role goes in the deploy change after the image that does is pinned.
+# The red-team harness's right to make the egress and image attacks' pods in `runners`, for a factory image that makes
+# them here rather than in `red-team` (../red-team/access.yaml): create, read, read the log of, and delete a pod.
 # Pod names are made as each pod is, so `resourceNames` cannot hold it to its own: here it reaches every pod, the line's
 # runners included. A pod it makes is held to a shape it cannot stray from by the red-team admission rule
 # (../admission/factory/red-team-pods.yaml), since RBAC cannot limit what a pod holds.

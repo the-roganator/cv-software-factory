@@ -59,7 +59,7 @@ export const REFUSALS = {
     guardrails: { quarantined: [8] },
   },
   'egress-policy': {
-    for: "The runners' NetworkPolicy refusing a connection: the egress attack's own record of each attempt.",
+    for: "The agents' egress fence (a NetworkPolicy) refusing a connection: the egress attack's own record of each attempt.",
     appendedBy: ['factory_redteam'],
     guardrails: { egress: [5] },
   },

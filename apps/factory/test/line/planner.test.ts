@@ -1200,11 +1200,10 @@ describe('the bench’s replans', () => {
     expect(prompt).toContain('repeat none of them');
     expect(prompt).not.toContain('A criterion you keep');
     const last = input.lastSpec as PayloadOf<'spec.written'>;
-    // Carrying the shipped spec forward, as a replan before a merge would, is refused, criterion by criterion.
-    expect(fits(input, last).error?.issues.map((i) => i.path.join('.'))).toEqual([
-      'spec.criteria.0',
-      'spec.criteria.1',
-    ]);
+    // Carrying the shipped spec forward, as a replan before a merge would, is refused, criterion by criterion. Only
+    // these issues are counted: what else a quote rule makes of the shipped criteria is not this test's.
+    const repeats = fits(input, last).error?.issues.filter((i) => i.message.includes('of the spec that shipped'));
+    expect(repeats?.map((i) => i.path.join('.'))).toEqual(['spec.criteria.0', 'spec.criteria.1']);
     // The spec the line wants: the list's cards alone, from his words.
     const cards = {
       outcome: 'Each card on the product list shows its price with two digits of pence.',

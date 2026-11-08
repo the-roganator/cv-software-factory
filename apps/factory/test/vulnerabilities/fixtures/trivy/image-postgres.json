@@ -1,0 +1,28 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "postgres:18.6-alpine3.24@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "OS": { "Family": "alpine", "Name": "3.24.1" },
+    "RepoDigests": ["postgres@sha256:2222222222222222222222222222222222222222222222222222222222222222"]
+  },
+  "Results": [
+    {
+      "Target": "postgres:18.6-alpine3.24 (alpine 3.24.1)",
+      "Class": "os-pkgs",
+      "Type": "alpine",
+      "Packages": [{ "ID": "libxml2@2.13.8-r0", "Name": "libxml2", "Version": "2.13.8-r0" }],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-0202",
+          "PkgName": "libxml2",
+          "InstalledVersion": "2.13.8-r0",
+          "FixedVersion": "2.13.9-r0",
+          "Title": "libxml2: use after free in the reader",
+          "Severity": "CRITICAL",
+          "CVSS": { "nvd": { "V3Score": 9.8 } }
+        }
+      ]
+    }
+  ]
+}

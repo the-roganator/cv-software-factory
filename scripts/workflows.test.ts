@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -330,5 +331,78 @@ describe("Trivy's pin", () => {
       }
     }
     expect(readers).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The daily scan (vulnerabilities.yml): every job that writes refuses any event but a push to the default branch, the
+ * schedule or a run by hand there, and the proving run, which runs on a pull request, can write nothing at all.
+ */
+describe('vulnerabilities.yml', () => {
+  const workflow = read('vulnerabilities.yml');
+  const jobs = workflow.jobs;
+
+  /** A job's first step, its refusal, run as the runner would, with the event and ref given. */
+  function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
+    const step = jobs[job]?.steps?.[0];
+    expect(step?.name, job).toBe('Refuse a privileged context');
+    try {
+      execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, DEFAULT_BRANCH: defaultBranch },
+        stdio: 'pipe',
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  it('gives no job more than it needs, and the proving run no write of any kind', () => {
+    expect(workflow.permissions).toEqual({});
+    expect(jobs.coverage?.permissions).toEqual({ contents: 'read' });
+    expect(jobs.scan?.permissions).toEqual({ contents: 'read', packages: 'read', 'security-events': 'write' });
+    expect(jobs.prove?.permissions).toEqual({ contents: 'read', packages: 'read' });
+    expect(jobs.scan?.if).toBe(expression("github.event_name != 'pull_request'"));
+    expect(jobs.prove?.if).toBe(expression("github.event_name == 'pull_request'"));
+    // Only the scan uploads, and only from the default branch's push, the schedule or a run by hand.
+    const uploads = Object.entries(jobs).flatMap(([id, job]) =>
+      (job.steps ?? []).filter((step) => step.uses?.includes('upload-sarif')).map(() => id),
+    );
+    expect(uploads).toEqual(['scan']);
+    const steps = jobs.scan?.steps ?? [];
+    const upload = steps.findIndex((step) => step.uses?.includes('upload-sarif'));
+    expect(steps[upload - 1]?.name).toMatch(/^Refuse to upload/);
+  });
+
+  it('refuses, in each job that writes, any event but a push to the default branch, the schedule or a run by hand', () => {
+    expect(refuses('scan', 'schedule', 'refs/heads/main')).toBe(false);
+    expect(refuses('scan', 'push', 'refs/heads/main')).toBe(false);
+    expect(refuses('scan', 'workflow_dispatch', 'refs/heads/main')).toBe(false);
+    expect(refuses('scan', 'push', 'refs/heads/feat/x')).toBe(true);
+    expect(refuses('scan', 'workflow_dispatch', 'refs/heads/feat/x')).toBe(true);
+    expect(refuses('scan', 'push', 'refs/heads/main', '')).toBe(true);
+    for (const event of ['pull_request', 'pull_request_target', 'merge_group', 'workflow_run', 'issue_comment'])
+      expect(refuses('scan', event, 'refs/heads/main'), event).toBe(true);
+  });
+
+  it('runs the proving run on a pull request alone, and coverage, which writes nothing, on either', () => {
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
+    for (const event of ['push', 'schedule', 'workflow_dispatch', 'merge_group'])
+      expect(refuses('prove', event, 'refs/heads/main'), event).toBe(true);
+    for (const event of ['schedule', 'push', 'workflow_dispatch', 'pull_request'])
+      expect(refuses('coverage', event, 'refs/heads/main'), event).toBe(false);
+    for (const event of ['pull_request_target', 'merge_group', 'workflow_run'])
+      expect(refuses('coverage', event, 'refs/heads/main'), event).toBe(true);
+  });
+
+  it('proves itself only on a change to the scan, against the base, as data', () => {
+    const on = workflow.on as Record<string, { paths?: string[] } | null>;
+    expect(on.pull_request?.paths).toEqual([
+      '.github/workflows/vulnerabilities.yml',
+      'apps/factory/src/vulnerabilities/**',
+      '.github/images/trivy/**',
+    ]);
+    const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
+    expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
   });
 });

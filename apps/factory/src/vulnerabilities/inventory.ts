@@ -33,6 +33,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { PROOF } from './proof.ts';
 
 export type Kind =
   | 'lockfile'
@@ -524,6 +525,8 @@ export function unlisted(root: string): Unlisted[] {
       for (const reference of references(line)) {
         const digest = reference.slice(reference.indexOf('sha256:'));
         if (listed.has(identity(reference)) || pinned.get(`${file}:${index + 1}`)?.has(digest)) continue;
+        // The scan's proof image, which it reads and nothing runs.
+        if (file === PROOF.file && reference === PROOF.image) continue;
         found.push({ file, line: index + 1, reference, why: 'a reference by digest the list does not read' });
       }
     });

@@ -1,0 +1,35 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "/src/sbom.spdx.json",
+  "ArtifactType": "spdx",
+  "Metadata": { "OS": { "Family": "debian", "Name": "13.1" } },
+  "Results": [
+    {
+      "Target": "/src/sbom.spdx.json (debian 13.1)",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Packages": [{ "ID": "libssl3t64@3.5.1-1", "Name": "libssl3t64", "Version": "3.5.1-1", "Arch": "arm64" }],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-0101",
+          "PkgID": "libssl3t64@3.5.1-1",
+          "PkgName": "libssl3t64",
+          "InstalledVersion": "3.5.1-1",
+          "FixedVersion": "3.5.1-2",
+          "Status": "fixed",
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2026-0101",
+          "Title": "openssl: a crafted certificate crashes the verifier",
+          "Severity": "HIGH",
+          "CVSS": { "nvd": { "V3Score": 7.5 } }
+        }
+      ]
+    },
+    {
+      "Target": "Node.js",
+      "Class": "lang-pkgs",
+      "Type": "node-pkg",
+      "Packages": [{ "ID": "undici@7.16.0", "Name": "undici", "Version": "7.16.0" }]
+    }
+  ]
+}

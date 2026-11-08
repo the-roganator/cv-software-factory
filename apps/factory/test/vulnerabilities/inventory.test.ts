@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { pipeline } from '../../src/github/signatures.ts';
 import {
   ciCopy,
   type Item,
@@ -12,6 +13,7 @@ import {
   isFixture,
   signerOf,
   stages,
+  tagOf,
   unlisted,
 } from '../../src/vulnerabilities/inventory.ts';
 
@@ -127,10 +129,12 @@ describe('the list of a fixture repository', () => {
   });
 
   it('has each image the workflows start: named in a workflow, pinned under .github/images/, or in a script they run', () => {
-    expect(items.filter((item) => item.kind === 'workflow').map(where)).toEqual([
-      '.github/images/scanner/Dockerfile:1',
-      '.github/workflows/ci.yml:4',
-      'apps/console/zap/scan.ts:1',
+    expect(items.filter((item) => item.kind === 'workflow').map((item) => `${item.name} ${where(item)}`)).toEqual([
+      `ghcr.io/example/scanner:1.0.0@${digest('7')} .github/images/scanner/Dockerfile:1`,
+      `ghcr.io/example/tool:1.0@${digest('8')} .github/workflows/ci.yml:4`,
+      'example/cache:7 .github/workflows/ci.yml:17',
+      'ghcr.io/example/action:1 .github/workflows/ci.yml:19',
+      `ghcr.io/example/zap:2.0@${digest('9')} apps/console/zap/scan.ts:1`,
     ]);
   });
 
@@ -222,6 +226,68 @@ describe('--unlisted', () => {
   });
 });
 
+describe('the list, read closely', () => {
+  it('lists each chart of an Application that installs several, by the Application and the chart', () => {
+    const chart = read('deploy/base/chart.yaml').replace(
+      '    - repoURL: https://github.com/example/shop.git',
+      '    - repoURL: https://charts.example.com\n      chart: second-chart\n      targetRevision: 0.1.0\n    - repoURL: https://github.com/example/shop.git',
+    );
+    const { items } = inventory(checkout({ 'deploy/base/chart.yaml': chart }));
+    expect(items.filter((item) => item.kind === 'chart').map((item) => `${item.name} ${where(item)}`)).toEqual([
+      'telemetry/example-chart deploy/base/chart.yaml:14',
+      'telemetry/second-chart deploy/base/chart.yaml:21',
+      'argocd Makefile:1',
+    ]);
+  });
+
+  it("reads Argo CD's chart however its helm command is wrapped, and names the pin when no command installs it", () => {
+    const wrapped =
+      'ARGOCD_CHART := 9.0.0\n\nup:\n\thelm upgrade --install argocd argo-cd \\\n\t\t--repo=https://argoproj.github.io/argo-helm \\\n\t\t--version $(ARGOCD_CHART) --values=deploy/argocd/values.yaml\n';
+    expect(inventory(checkout({ Makefile: wrapped })).items.find((item) => item.name === 'argocd')?.chart).toEqual({
+      repo: 'https://argoproj.github.io/argo-helm',
+      chart: 'argo-cd',
+      version: '9.0.0',
+      release: 'argocd',
+      values: ['deploy/argocd/values.yaml'],
+    });
+    const none = checkout({ Makefile: 'ARGOCD_CHART := 9.0.0\n' });
+    expect(inventory(none).items.some((item) => item.name === 'argocd')).toBe(false);
+    expect(unlisted(none).map((entry) => `${entry.file} ${entry.reference}`)).toEqual(['Makefile ARGOCD_CHART']);
+  });
+
+  it("names k3s's release from its tag when the node image is pinned by digest too", () => {
+    const cluster = read('deploy/k3d/cluster.yaml').replace('v1.30.0-k3s1', `v1.30.0-k3s1@${digest('f')}`);
+    const { items } = inventory(checkout({ 'deploy/k3d/cluster.yaml': cluster }));
+    expect(items.find((item) => item.kind === 'k3s-release')?.name).toBe('k3s v1.30.0+k3s1');
+  });
+
+  it('places a third-party image at the image: line that writes it, not at a line that merely mentions it', () => {
+    const mention = `# The sidecar, quay.io/example/sidecar:1.2.3@${digest('2')}, is pinned in deployment.yaml.\n`;
+    const { items } = inventory(checkout({ 'deploy/base/a-note.yaml': mention }));
+    expect(items.find((item) => item.kind === 'third-party')).toMatchObject({
+      file: 'deploy/base/deployment.yaml',
+      line: 16,
+    });
+  });
+
+  it('follows no symbolic link, which could point outside the checkout', () => {
+    const dir = checkout();
+    symlinkSync('/etc/hosts', join(dir, 'Dockerfile.linked'));
+    execFileSync('git', ['add', 'Dockerfile.linked'], { cwd: dir });
+    expect(inventory(dir).items.some((item) => item.file === 'Dockerfile.linked')).toBe(false);
+  });
+
+  it('names a second reference on a line the list reads', () => {
+    const deployment = read('deploy/base/deployment.yaml').replace(
+      `image: quay.io/example/sidecar:1.2.3@${digest('2')}`,
+      `image: quay.io/example/sidecar:1.2.3@${digest('2')} # was ghcr.io/example/other@${digest('c')}`,
+    );
+    expect(unlisted(checkout({ 'deploy/base/deployment.yaml': deployment })).map((entry) => entry.reference)).toEqual([
+      `ghcr.io/example/other@${digest('c')}`,
+    ]);
+  });
+});
+
 describe('the list of this repository', () => {
   const { items } = inventory(ROOT);
   const kinds = new Set(items.map((item) => item.kind));
@@ -284,6 +350,20 @@ describe('reading a pin', () => {
       'https://github.com/the-roganator/cv-software-factory/.github/workflows/build.yml@refs/heads/main',
     );
     expect(signerOf('quay.io/example/sidecar')).toBeUndefined();
+    expect(signerOf('ghcr.io/the-roganator/cv-worlds-worst-website')).toBe(
+      pipeline('the-roganator/cv-worlds-worst-website').identity,
+    );
+  });
+
+  it("finds an image's tag past a registry's port and before its digest", () => {
+    expect(tagOf(`localhost:5000/k3s:v1.30.0-k3s1@${digest('e')}`)).toBe('v1.30.0-k3s1');
+    expect(tagOf(`localhost:5000/k3s@${digest('e')}`)).toBeUndefined();
+  });
+
+  it('reads a FROM across continuations, and none inside a heredoc', () => {
+    expect(stages(['RUN <<EOF', 'FROM inside/heredoc:1', 'EOF', 'FROM \\', '  a/b:1 AS base', 'FROM base'])).toEqual([
+      { image: 'a/b:1', line: 4 },
+    ]);
   });
 
   it('takes a stage that names an earlier one, or scratch, as no image', () => {

@@ -18,16 +18,17 @@
  * - the k3s node image `deploy/k3d/cluster.yaml` names, the release whose `k3s-images.txt` lists the images k3s runs,
  *   for the scan to fetch, and the load balancer and tools images k3d starts beside it, at the version mise.lock holds;
  * - each stage of each tracked Dockerfile that names an image rather than an earlier stage;
- * - each image the workflows start: those a workflow names by digest, those its Dockerfiles under `.github/images/`
- *   pin (Trivy's), and those the scripts it runs name (ZAP's). The Postgres service and the Playwright container come
- *   through `ci-images.sh` from pins already on the list.
+ * - each image the workflows start: those a workflow names by digest or as a job's `image:`, `container:` or
+ *   `docker://` action, those its Dockerfiles under `.github/images/` pin (Trivy's), and those the scripts it runs name
+ *   (ZAP's). The Postgres service and the Playwright container come through `ci-images.sh` from pins already listed.
  *
  * `--unlisted` names, and exits 1 for, every reference by digest in a tracked file outside prose and test fixtures,
  * every `image:` in the rendered overlay, every Application with a chart and every `FROM` that the list does not read,
  * so a new kind of pin is caught rather than left unscanned.
  *
- * The checkout is data: nothing in it runs. Node runs this with no dependencies, from a sparse checkout of this
- * repository, and reads YAML through `yq`; `kustomize` renders the overlay (both from this repository's mise.toml).
+ * The checkout is data: nothing in it runs, and a tracked symbolic link is not followed. Node runs this with no
+ * dependencies, from a sparse checkout of this repository, and reads YAML through `yq`; `kustomize` renders the overlay,
+ * with no plugins, Helm or exec functions (both from this repository's mise.toml).
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -63,9 +64,13 @@ export interface Item {
   line: number;
   /** An image's reference. */
   image?: string;
-  /** For an image of ours, the identity that signed it: `build.yml` on its repository's `main`. */
+  /** For an image of ours, the identity that signed it: `build.yml` on its repository's `main`, as signatures.ts has it. */
   signer?: string | undefined;
-  /** CI's copy of a third-party image, by digest, as `scripts/ci-images.sh` names it. */
+  /**
+   * CI's copy of a third-party image, by digest, as `scripts/ci-images.sh` names it: what the scan asks `ci-images.sh
+   * resolve` for, which falls back to the image's own registry when the copy is not there (mirror.yml copies the
+   * factory's pins alone).
+   */
   ci?: string | undefined;
   chart?: Chart;
   /** For the k3s release, the list of the images it runs, an asset of its GitHub release. */
@@ -111,6 +116,13 @@ export function identity(reference: string) {
   return `${colon > slash ? name.slice(0, colon) : name}${reference.slice(at)}`;
 }
 
+/** An image's tag, whatever its registry, port or digest, or undefined. */
+export function tagOf(reference: string) {
+  const name = reference.split('@')[0] ?? '';
+  const last = name.slice(name.lastIndexOf('/') + 1);
+  return last.includes(':') ? last.slice(last.indexOf(':') + 1) : undefined;
+}
+
 /** CI's copy of an image, where ci-images.sh keeps one: Docker's official images, and Playwright's. */
 export function ciCopy(reference: string) {
   const at = reference.indexOf('@');
@@ -122,7 +134,11 @@ export function ciCopy(reference: string) {
   return undefined;
 }
 
-/** The identity `build.yml` on main signs an image of ours with, from the GHCR repository the image is in. */
+/**
+ * The identity `build.yml` on main signs an image of ours with, from the GHCR repository the image is in: the pipeline
+ * apps/factory/src/github/signatures.ts verifies, which a test holds this to (that module needs dependencies; this
+ * runs with none).
+ */
 export function signerOf(image: string) {
   const [, owner, repository] = /^ghcr\.io\/([^/]+)\/([^/@:]+)/.exec(image) ?? [];
   if (!owner || !repository) return undefined;
@@ -144,6 +160,8 @@ export function isFixture(file: string) {
 const isDockerfile = (file: string) =>
   (/(^|\/)Dockerfile(\.[^/]+)?$/.test(file) && !file.endsWith('.dockerignore')) || /\.Dockerfile$/.test(file);
 
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /** A checkout, read: its tracked files, and the overlay as kustomize renders it. */
 class Checkout {
   readonly root: string;
@@ -152,9 +170,17 @@ class Checkout {
 
   constructor(root: string) {
     this.root = resolve(root);
-    this.files = execFileSync('git', ['-C', this.root, 'ls-files', '-z'], { encoding: 'utf-8' })
+    // Regular files alone: a symbolic link (120000) could point outside the checkout, and a submodule (160000) is
+    // another repository's.
+    this.files = execFileSync('git', ['-C', this.root, '-c', 'core.fsmonitor=false', 'ls-files', '-s', '-z'], {
+      encoding: 'utf-8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
       .split('\0')
-      .filter((file) => file && existsSync(join(this.root, file)));
+      .flatMap((entry) => {
+        const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
+        return file && (mode === '100644' || mode === '100755') && existsSync(join(this.root, file)) ? [file] : [];
+      });
   }
 
   lines(file: string) {
@@ -197,13 +223,33 @@ interface Manifest {
 }
 
 /** Every document of a YAML stream, through yq. */
-function yaml(text: string): Manifest[] {
+function yaml(text: string): (Manifest & Workflow)[] {
   const json = execFileSync('yq', ['eval-all', '--output-format=json', '--indent=0', '[.]', '-'], {
     input: text,
     encoding: 'utf-8',
     maxBuffer: 64 * 1024 * 1024,
   });
   return (JSON.parse(json) as (Manifest | null)[]).filter((doc): doc is Manifest => doc !== null && doc !== undefined);
+}
+
+/**
+ * Each chart the rendered overlay's Applications install, with the name the list gives it: the Application's, or with
+ * the chart's after it when one Application installs several.
+ */
+function chartSources(manifests: Manifest[]) {
+  return manifests
+    .filter((manifest) => manifest.kind === 'Application')
+    .flatMap((application) => {
+      const name = application.metadata?.name ?? '';
+      const sources = application.spec?.sources ?? (application.spec?.source ? [application.spec.source] : []);
+      const charts = sources.filter((source) => source.chart);
+      return charts.map((source) => ({
+        application: name,
+        name: charts.length > 1 ? `${name}/${source.chart}` : name,
+        source,
+        values: (source.helm?.valueFiles ?? []).map((file) => file.replace(/^\$values\//, '')),
+      }));
+    });
 }
 
 /** The list, and what it read along the way that `--unlisted` compares with it. */
@@ -213,11 +259,13 @@ export function inventory(root: string) {
   const seen = new Set<string>();
   const unplaced: Unlisted[] = [];
   const add = (item: Item) => {
-    const key = item.image ? identity(item.image) : `${item.kind} ${item.name}`;
+    const key = item.image ? identity(item.image) : `${item.kind} ${item.name} ${item.file}:${item.line}`;
     if (seen.has(key)) return;
     seen.add(key);
     items.push(item);
   };
+  const unread = (reference: string, why: string) =>
+    unplaced.push({ file: 'deploy/overlays/local', line: 0, reference, why });
   // Prose and test fixtures bring in nothing that runs.
   const tracked = checkout.files.filter((file) => !isFixture(file));
 
@@ -229,7 +277,7 @@ export function inventory(root: string) {
   for (const file of tracked.filter((file) =>
     /^deploy\/overlays\/local\/([a-z0-9-]+-)?image\/kustomization\.yaml$/.test(file),
   )) {
-    const [component] = yaml(readFileSync(join(checkout.root, file), 'utf-8'));
+    const [component] = yaml(checkout.lines(file).join('\n'));
     for (const image of component?.images ?? []) {
       if (!image.newName || !image.digest) continue;
       const reference = `${image.newName}@${image.digest}`;
@@ -238,58 +286,54 @@ export function inventory(root: string) {
     }
   }
 
-  // Third-party images and charts, from the rendered overlay.
+  // Third-party images and charts, from the rendered overlay: each image at the `image:` line in deploy/ that writes
+  // it, not in a chart's values, which the chart's own rendering reads.
   const { text, manifests } = checkout.rendered();
-  const deployFiles = tracked.filter((file) => file.startsWith('deploy/') && !isFixture(file));
+  const charts = chartSources(manifests);
+  const values = new Set(charts.flatMap((chart) => chart.values));
+  const deployFiles = tracked.filter((file) => file.startsWith('deploy/') && !values.has(file));
   for (const line of text.split('\n')) {
     const reference = IMAGE_LINE.exec(line)?.[1];
-    if (!reference) continue;
+    if (!reference || seen.has(identity(reference))) continue;
     let placed: { file: string; line: number } | undefined;
     for (const file of deployFiles) {
-      const at = checkout.lineOf(file, (text) => text.includes(reference));
+      const at = checkout.lineOf(file, (text) => IMAGE_LINE.exec(text)?.[1] === reference);
       if (at) {
         placed = { file, line: at };
         break;
       }
     }
+    if (placed) add({ kind: 'third-party', name: reference, ...placed, image: reference, ci: ciCopy(reference) });
+    else unread(reference, 'rendered, but pinned in no file');
+  }
+  for (const { application, name, source, values } of charts) {
+    const placed = placeApplication(checkout, deployFiles, application, source);
     if (!placed) {
-      if (!seen.has(identity(reference)))
-        unplaced.push({ file: 'deploy/overlays/local', line: 0, reference, why: 'rendered, but pinned in no file' });
+      unread(`Application ${name}`, 'its chart is pinned in no file');
       continue;
     }
-    add({ kind: 'third-party', name: reference, ...placed, image: reference, ci: ciCopy(reference) });
-  }
-  for (const application of manifests.filter((manifest) => manifest.kind === 'Application')) {
-    const name = application.metadata?.name ?? '';
-    const sources = application.spec?.sources ?? (application.spec?.source ? [application.spec.source] : []);
-    for (const source of sources) {
-      if (!source.chart) continue;
-      const placed = placeApplication(checkout, deployFiles, name, source);
-      if (!placed) {
-        unplaced.push({
-          file: 'deploy/overlays/local',
-          line: 0,
-          reference: `Application ${name}`,
-          why: 'its chart is pinned in no file',
-        });
-        continue;
-      }
-      add({
-        kind: 'chart',
-        name,
-        ...placed,
-        chart: {
-          repo: source.repoURL ?? '',
-          chart: source.chart,
-          version: source.targetRevision ?? '',
-          release: source.helm?.releaseName ?? name,
-          values: (source.helm?.valueFiles ?? []).map((file) => file.replace(/^\$values\//, '')),
-        },
-      });
-    }
+    add({
+      kind: 'chart',
+      name,
+      ...placed,
+      chart: {
+        repo: source.repoURL ?? '',
+        chart: source.chart ?? '',
+        version: source.targetRevision ?? '',
+        release: source.helm?.releaseName ?? application,
+        values,
+      },
+    });
   }
   const argocd = argoCD(checkout);
-  if (argocd) add(argocd);
+  if (argocd === 'unread')
+    unplaced.push({
+      file: 'Makefile',
+      line: 0,
+      reference: 'ARGOCD_CHART',
+      why: 'no helm command installs it as the list reads one',
+    });
+  else if (argocd) add(argocd);
 
   // The cluster k3d makes: its k3s node, the images k3s runs, and k3d's own beside it.
   if (tracked.includes('deploy/k3d/cluster.yaml')) {
@@ -298,7 +342,8 @@ export function inventory(root: string) {
     const node = IMAGE_LINE.exec(checkout.lines(file)[line - 1] ?? '')?.[1];
     if (node) {
       add({ kind: 'k3s', name: node, file, line, image: node });
-      const release = node.split(':')[1]?.replace(/-(k3s\d+)$/, '+$1');
+      // k3s tags its image v1.37.1-k3s1 for its release v1.37.1+k3s1, a tag Docker cannot write.
+      const release = tagOf(node)?.replace(/-(k3s\d+)$/, '+$1');
       if (release)
         add({
           kind: 'k3s-release',
@@ -330,26 +375,70 @@ export function inventory(root: string) {
 
   // What the workflows start by name: in the workflows themselves, and in the scripts they run.
   const workflows = tracked.filter((file) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(file));
-  for (const file of [...workflows, ...CI_SCRIPTS.filter((file) => tracked.includes(file))])
+  for (const file of [...workflows, ...CI_SCRIPTS.filter((file) => tracked.includes(file))]) {
+    const named = workflows.includes(file) ? workflowImages(yaml(checkout.lines(file).join('\n'))[0]) : [];
     checkout.lines(file).forEach((text, index) => {
-      for (const reference of references(text))
-        if (reference.includes('@'))
-          add({ kind: 'workflow', name: reference, file, line: index + 1, image: reference, ci: ciCopy(reference) });
+      const found = [
+        ...references(text).filter((reference) => reference.includes('@')),
+        ...named.filter(
+          (reference) =>
+            /(image|container):|docker:\/\//.test(text) && text.includes(reference) && !text.includes(`${reference}@`),
+        ),
+      ];
+      for (const reference of found)
+        add({ kind: 'workflow', name: reference, file, line: index + 1, image: reference, ci: ciCopy(reference) });
     });
+  }
 
-  return { items, checkout, text, manifests, unplaced };
+  return { items, checkout, text, unplaced, values };
 }
 
-/** The stages of a Dockerfile that name an image rather than an earlier stage, each with its line. */
+interface Workflow {
+  jobs?: Record<
+    string,
+    {
+      container?: string | { image?: string };
+      services?: Record<string, { image?: string }>;
+      steps?: { uses?: string }[];
+    }
+  >;
+}
+
+/** The images a workflow's jobs start by name: a container, a service, or a `docker://` action; not an expression. */
+function workflowImages(workflow: Workflow | undefined) {
+  return Object.values(workflow?.jobs ?? {})
+    .flatMap((job) => [
+      typeof job.container === 'string' ? job.container : job.container?.image,
+      ...Object.values(job.services ?? {}).map((service) => service.image),
+      ...(job.steps ?? []).map((step) => (step.uses?.startsWith('docker://') ? step.uses.slice(9) : undefined)),
+    ])
+    .filter((image): image is string => typeof image === 'string' && image !== '' && !image.includes('${{'));
+}
+
+/**
+ * The stages of a Dockerfile that name an image rather than an earlier stage, each with its line: instructions joined
+ * across `\` continuations, and a heredoc's body, which is not an instruction, passed over.
+ */
 export function stages(lines: string[]) {
   const named = new Set<string>();
   const found: { image: string; line: number }[] = [];
-  lines.forEach((text, index) => {
+  let heredoc: string | undefined;
+  for (let index = 0; index < lines.length; index++) {
+    const start = index;
+    let text = lines[index] ?? '';
+    if (heredoc !== undefined) {
+      if (text.trim() === heredoc) heredoc = undefined;
+      continue;
+    }
+    while (text.trimEnd().endsWith('\\') && index + 1 < lines.length) {
+      text = `${text.trimEnd().slice(0, -1)} ${lines[++index] ?? ''}`;
+    }
+    heredoc = /<<-?\s*['"]?(\w+)['"]?/.exec(text)?.[1];
     const [, image, as] = FROM.exec(text) ?? [];
-    if (!image) return;
-    if (!named.has(image.toLowerCase()) && image !== 'scratch') found.push({ image, line: index + 1 });
+    if (!image) continue;
+    if (!named.has(image.toLowerCase()) && image !== 'scratch') found.push({ image, line: start + 1 });
     if (as) named.add(as.toLowerCase());
-  });
+  }
   return found;
 }
 
@@ -360,7 +449,6 @@ function references(text: string) {
 
 /** An Application's chart pin, in the file that writes it: its `targetRevision`, nearest its `chart`. */
 function placeApplication(checkout: Checkout, files: string[], name: string, source: Source) {
-  const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const chart = new RegExp(`^\\s*-?\\s*chart:\\s*['"]?${literal(source.chart ?? '')}['"]?\\s*(?:#.*)?$`);
   const revision = new RegExp(
     `^\\s*-?\\s*targetRevision:\\s*['"]?${literal(source.targetRevision ?? '')}['"]?\\s*(?:#.*)?$`,
@@ -385,33 +473,44 @@ function placeApplication(checkout: Checkout, files: string[], name: string, sou
   return undefined;
 }
 
-/** Argo CD's own chart, which `make up` installs with Helm before Argo CD deploys the rest. */
-function argoCD(checkout: Checkout): Item | undefined {
+/**
+ * Argo CD's own chart, which `make up` installs with Helm before Argo CD deploys the rest: none when the Makefile has no
+ * ARGOCD_CHART, and `unread` when no helm command installs it with a repository, so the list never names a chart it
+ * cannot render.
+ */
+function argoCD(checkout: Checkout): Item | 'unread' | undefined {
   if (!checkout.files.includes('Makefile')) return undefined;
   const lines = checkout.lines('Makefile');
   const line = checkout.lineOf('Makefile', (text) => /^ARGOCD_CHART\s*:?=/.test(text));
   const version = /^ARGOCD_CHART\s*:?=\s*(\S+)/.exec(lines[line - 1] ?? '')?.[1];
   if (!version) return undefined;
-  const at = lines.findIndex((text) =>
-    /helm upgrade --install \S+ \S+ --repo \S+ --version \$\(ARGOCD_CHART\)/.test(text),
-  );
-  const [, release = 'argocd', chart = 'argo-cd', repo = ''] =
-    /helm upgrade --install (\S+) (\S+) --repo (\S+)/.exec(lines[at] ?? '') ?? [];
-  const command: string[] = [];
-  for (let i = at; i >= 0 && i < lines.length; i++) {
-    command.push(lines[i] ?? '');
-    if (!lines[i]?.trimEnd().endsWith('\\')) break;
+  // The helm command, joined across its continuations.
+  const commands: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    let text = lines[i] ?? '';
+    while (text.trimEnd().endsWith('\\') && i + 1 < lines.length) text = `${text.trimEnd().slice(0, -1)} ${lines[++i]}`;
+    commands.push(text);
   }
-  const values = [...command.join(' ').matchAll(/(?:--values|-f)\s+(\S+)/g)].map(([, file]) => file ?? '');
+  const command = commands.find((text) => /\bhelm upgrade\b/.test(text) && text.includes('$(ARGOCD_CHART)'));
+  const [, release, chart] = /helm upgrade (?:--install |-i )?([^\s-]\S*) ([^\s-]\S*)/.exec(command ?? '') ?? [];
+  const repo = /--repo[= ](\S+)/.exec(command ?? '')?.[1];
+  if (!release || !chart || !repo) return 'unread';
+  const values = [...(command ?? '').matchAll(/(?:--values|-f)[= ](\S+)/g)].map(([, file]) => file ?? '');
   return { kind: 'chart', name: release, file: 'Makefile', line, chart: { repo, chart, version, release, values } };
 }
 
 /** Every pin in the checkout that the list does not read. */
 export function unlisted(root: string): Unlisted[] {
-  const { items, checkout, text, manifests, unplaced } = inventory(root);
+  const { items, checkout, text, unplaced, values } = inventory(root);
   const listed = new Set(items.flatMap((item) => (item.image ? [identity(item.image)] : [])));
-  const at = new Set(items.map((item) => `${item.file}:${item.line}`));
-  const values = new Set(items.flatMap((item) => item.chart?.values ?? []));
+  // The digests each listed line pins, so a second reference on that line is still compared on its own.
+  const pinned = new Map<string, Set<string>>();
+  for (const item of items) {
+    const digest = item.image?.split('@')[1];
+    if (!digest) continue;
+    const at = `${item.file}:${item.line}`;
+    pinned.set(at, new Set([...(pinned.get(at) ?? []), digest]));
+  }
   const found: Unlisted[] = [...unplaced];
 
   for (const file of checkout.files) {
@@ -419,7 +518,8 @@ export function unlisted(root: string): Unlisted[] {
     const lines = checkout.lines(file);
     lines.forEach((line, index) => {
       for (const reference of references(line)) {
-        if (at.has(`${file}:${index + 1}`) || listed.has(identity(reference))) continue;
+        const digest = reference.slice(reference.indexOf('sha256:'));
+        if (listed.has(identity(reference)) || pinned.get(`${file}:${index + 1}`)?.has(digest)) continue;
         found.push({ file, line: index + 1, reference, why: 'a reference by digest the list does not read' });
       }
     });
@@ -433,22 +533,7 @@ export function unlisted(root: string): Unlisted[] {
     if (reference && !listed.has(identity(reference)) && !found.some((entry) => entry.reference === reference))
       found.push({ file: 'deploy/overlays/local', line: 0, reference, why: 'an image: the rendered overlay runs' });
   }
-  const charts = new Set(items.flatMap((item) => (item.kind === 'chart' ? [item.name] : [])));
-  for (const application of manifests.filter((manifest) => manifest.kind === 'Application')) {
-    const name = application.metadata?.name ?? '';
-    const sources = application.spec?.sources ?? (application.spec?.source ? [application.spec.source] : []);
-    if (sources.some((source) => source.chart) && !charts.has(name))
-      found.push({
-        file: 'deploy/overlays/local',
-        line: 0,
-        reference: `Application ${name}`,
-        why: 'a chart the list does not read',
-      });
-  }
-  return found.filter(
-    (entry, index) =>
-      found.findIndex((other) => other.reference === entry.reference && other.file === entry.file) === index,
-  );
+  return found;
 }
 
 function table(items: Item[]) {

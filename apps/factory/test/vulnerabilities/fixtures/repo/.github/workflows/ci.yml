@@ -6,7 +6,14 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - image: not-an-image
     container:
       image: ${{ vars.IMAGE }}
+    services:
+      cache:
+        image: example/cache:7
     steps:
-      - run: echo
+      - uses: docker://ghcr.io/example/action:1

@@ -37,6 +37,8 @@
  * One worker decides at a time (it holds an advisory lock), so two signals with the same new fingerprint cannot
  * open two tickets. It takes nothing while the line is stopped, and no report while the gateway waits on a spend cap.
  */
+
+import { setTimeout as pause } from 'node:timers/promises';
 import type {
   Environment,
   InboxSignal,
@@ -54,7 +56,7 @@ import {
   lineStopped,
   nextWorkItem,
 } from '@software-factory/store';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { BURST, ENVIRONMENT, INBOX, REPORT_TEXT, SYMPTOMS } from '../../../policy/triage.ts';
 import {
   type AskedAgain,
@@ -106,7 +108,35 @@ export interface TriageOptions {
   look?: ((at: Date) => Promise<Environment>) | undefined;
   /** Told of each signal triaged, with how long it waited in the inbox. */
   onTriaged?: (outcome: Outcome, signal: InboxSignal, waitedSeconds: number, ticketOpened: boolean) => void;
+  /** How `run` waits out a store it cannot reach: `OUTAGE`, unless a test shortens it. */
+  outage?: Outage;
+  /** How often a copy waiting for triage's lock asks for it again: `LOCK_ASKED_MS`, unless a test shortens it. */
+  lockAskedMs?: number;
 }
+
+/**
+ * A second copy asks for the lock every few seconds, rather than waiting on it in a query: a query cancelled when the
+ * copy is stopped could be granted the lock just before, and the cancel then land on the unlock, which would leave the
+ * lock held on a connection back in the pool.
+ */
+export const LOCK_ASKED_MS = 2000;
+
+/** How `run` waits out an event store it cannot reach. */
+export interface Outage {
+  /** The first wait after a failure, in milliseconds; each failure in a row doubles it. */
+  firstMs: number;
+  /** The longest wait. */
+  mostMs: number;
+  /** Failures in a row, with no pass between them, after which `run` gives up and throws the last. */
+  tries: number;
+}
+
+/**
+ * A restart of Postgres or a short outage is waited out, 1 s, 2 s, 4 s and so on up to 30 s apart: a 45 s outage costs
+ * at most 30 s more. Twelve failures in a row are three and a half minutes with nothing triaged, which is no blip: `run` throws,
+ * the process exits, and the pod's restarts say so (`WorkerCrashLooping`).
+ */
+export const OUTAGE: Outage = { firstMs: 1000, mostMs: 30_000, tries: 12 };
 
 interface Taken {
   id: string;
@@ -133,6 +163,13 @@ interface Made {
 
 export class Triage {
   readonly #o: Required<Omit<TriageOptions, 'onTriaged' | 'look'>> & Pick<TriageOptions, 'onTriaged' | 'look'>;
+  /**
+   * The connection that holds triage's advisory lock while `run` does. The lock is the connection's, so it is asked
+   * before each pass and each append: one that no longer answers has lost the lock, which another copy may hold now.
+   */
+  #lock: { sql: Awaited<ReturnType<Sql['reserve']>>; pid: number } | undefined;
+  /** The writer, but each append is refused unless the lock still holds, while `run` holds it. */
+  readonly #events: Pick<EventWriter, 'append'>;
   /** Until when reports wait: the gateway cannot answer before then. The senses' signals need no model. */
   #reportsWaitUntil = 0;
   /** Whether an event has been appended since the held findings were last settled: only an answer can settle one. */
@@ -146,8 +183,50 @@ export class Triage {
   readonly #ignored: IgnoredCommands;
 
   constructor(options: TriageOptions) {
-    this.#o = { now: () => new Date(), ...options };
+    this.#o = { now: () => new Date(), outage: OUTAGE, lockAskedMs: LOCK_ASKED_MS, ...options };
     this.#ignored = new IgnoredCommands(this.#o.sql, this.#o.log);
+    this.#events = { append: (events) => this.#append(events) };
+  }
+
+  /**
+   * Appends, while `run` holds the lock, on the lock's own connection, in one transaction: it commits only while that
+   * connection is the one that took the lock, so a copy that has lost it appends nothing (`LockLost`).
+   */
+  async #append(events: Parameters<EventWriter['append']>[0]) {
+    const lock = this.#lock;
+    if (!lock) return this.#o.events.append(events);
+    await this.#holding();
+    // A reserved connection has no `begin` of its own: it is the transaction, between this begin and its commit.
+    const tx = lock.sql as unknown as TransactionSql;
+    try {
+      await lock.sql`begin`;
+      const stored = await this.#o.events.appendWithin(tx, events);
+      await lock.sql`commit`;
+      return stored;
+    } catch (error) {
+      await lock.sql`rollback`.catch(() => {});
+      // A refused append is refused; one that failed because the connection went is the lock lost. If the commit was
+      // the one that failed, the events may be stored: their ids are the signal's, so taking it again stores none twice.
+      await this.#holding();
+      throw error;
+    }
+  }
+
+  /**
+   * Throws `LockLost` unless the connection that holds the lock still answers, as the backend that took it, while `run`
+   * holds it. A reserved connection that dropped refuses every query; the backend's pid is asked too, so no client that
+   * reconnected one in its place could pass for it.
+   */
+  async #holding(): Promise<void> {
+    const lock = this.#lock;
+    if (!lock) return;
+    let pid: number | undefined;
+    try {
+      [{ pid } = { pid: undefined }] = await lock.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    } catch (error) {
+      throw new LockLost(error);
+    }
+    if (pid !== lock.pid) throw new LockLost(new Error(`the lock's connection is backend ${pid}, not ${lock.pid}`));
   }
 
   /** Takes one signal, if the line is running and one is waiting, and triages it. */
@@ -167,6 +246,15 @@ export class Triage {
       this.#o.onTriaged?.(outcome, taken.signal, waited, ticketOpened);
       return outcome;
     } catch (error) {
+      if (error instanceof LockLost) {
+        // Not the signal's fault either: it keeps its attempt, and the copy that holds the lock may take it at once.
+        // Only its own claim: one whose lease ran out may be another copy's by now.
+        await this.#o.sql`update inbox set attempts = attempts - 1, not_before = clock_timestamp()
+                          where id = ${taken.id} and attempts = ${taken.attempts} and triaged_at is null`.catch(
+          () => {},
+        );
+        throw error;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       if (error instanceof JudgeWaiting) {
         // Not the signal's fault: it keeps its attempt, and no report is taken until the gateway can answer. The
@@ -187,24 +275,87 @@ export class Triage {
 
   /**
    * Triages until aborted: woken by a new signal or a new event (the line starting again), and every half a minute
-   * for signals waiting to be tried again. Only one worker runs at a time.
+   * for signals waiting to be tried again. Only one worker runs at a time: it holds triage's advisory lock.
+   *
+   * A store it cannot reach is waited out (`OUTAGE`). The lock is held on a connection of its own, and goes when that
+   * connection drops, so after any failure the worker lets go of the lock and takes it again, on a new connection,
+   * before another pass: a copy waiting for the lock may take it meanwhile, and this one then waits instead. A signal in
+   * hand when the store went is taken again once its lease is up, as after a restart.
    */
   async run(abort: AbortSignal): Promise<void> {
-    const { sql } = this.#o;
-    const lock = await sql.reserve();
-    try {
-      await lock`select pg_advisory_lock(hashtext('triage'))`;
-      let wake = Promise.withResolvers<void>();
-      const nudge = () => wake.resolve();
-      const listening = await Promise.all([
-        sql.listen('inbox', nudge),
-        sql.listen('events', () => {
-          this.#settleDue = true;
-          nudge();
-        }),
+    const { sql, log, outage } = this.#o;
+    const wake = new Wake();
+    abort.addEventListener('abort', wake.nudge);
+    const heard = () => {
+      this.#settleDue = true;
+      wake.nudge();
+    };
+    // Each listen is made again after its connection drops, with nothing heard meanwhile: so when it is, triage looks,
+    // and finds out at once whether it still holds its lock. They are made in the loop, so a store out of reach as
+    // triage starts is waited out too.
+    const listening: { unlisten(): Promise<void> }[] = [];
+    const listen = async () => {
+      if (listening.length) return;
+      const made = await Promise.allSettled([
+        sql.listen('inbox', wake.nudge, heard),
+        sql.listen('events', heard, heard),
       ]);
-      abort.addEventListener('abort', nudge);
+      for (const m of made) if (m.status === 'fulfilled') listening.push(m.value);
+      const failed = made.find((m) => m.status === 'rejected');
+      if (failed) {
+        await Promise.all(listening.splice(0).map((l) => l.unlisten())).catch(() => {});
+        throw failed.reason;
+      }
+    };
+    let failures = 0;
+    try {
       while (!abort.aborted) {
+        try {
+          await listen();
+          await this.#whileLocked(abort, wake, () => {
+            failures = 0;
+          });
+        } catch (error) {
+          if (abort.aborted) break;
+          failures += 1;
+          if (failures >= outage.tries) throw error;
+          const waitMs = Math.min(outage.firstMs * 2 ** (failures - 1), outage.mostMs);
+          log.warn(
+            { err: error, failures, waitMs },
+            'triage could not reach the store, and takes its lock again first',
+          );
+          // A timer alone, which only stopping cuts short: a signal heard meanwhile would bring the next try forward.
+          await pause(waitMs, undefined, { signal: abort }).catch(() => {});
+        }
+      }
+    } finally {
+      abort.removeEventListener('abort', wake.nudge);
+      await Promise.all(listening.map((l) => l.unlisten())).catch(() => {});
+    }
+  }
+
+  /**
+   * Takes triage's lock on a connection of its own, then triages while it holds, until aborted or until anything fails,
+   * which it throws. `going` is told each time the store answered as it should: a pass went through, or another copy
+   * holds the lock, which this one then waits for, as no failure. Waking for a signal or an event, it asks for the lock
+   * then too.
+   */
+  async #whileLocked(abort: AbortSignal, wake: Wake, going: () => void): Promise<void> {
+    const lock = await this.#o.sql.reserve();
+    try {
+      // Another copy may hold it: this one waits, asking again, until it has it or is stopped.
+      while (!(await lock<{ taken: boolean }[]>`select pg_try_advisory_lock(hashtext('triage')) as taken`)[0]?.taken) {
+        going();
+        await wake.after(this.#o.lockAskedMs);
+        if (abort.aborted) return;
+      }
+      const [{ pid } = { pid: 0 }] = await lock<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      this.#lock = { sql: lock, pid };
+      // An event appended while the store was out of reach was heard by no one, and a pass that failed may have been
+      // settling.
+      this.#settleDue = true;
+      while (!abort.aborted) {
+        await this.#holding();
         // Martin's answers arrive as events, so the held findings are looked at only after one is appended. The flag is
         // cleared before looking, so an event appended meanwhile sets it again; one settled may leave more.
         let settled = false;
@@ -214,16 +365,14 @@ export class Triage {
           if (settled) this.#settleDue = true;
         }
         const took = await this.takeOne();
+        going();
         if (!settled && (took === 'idle' || took === 'stopped' || took === 'waiting')) {
           const pause = took === 'waiting' ? Math.max(1000, this.#reportsWaitUntil - Date.now()) : 30_000;
-          const timer = setTimeout(nudge, Math.min(pause, 30_000));
-          await wake.promise;
-          clearTimeout(timer);
-          wake = Promise.withResolvers<void>();
+          await wake.after(Math.min(pause, 30_000));
         }
       }
-      await Promise.all(listening.map((l) => l.unlisten()));
     } finally {
+      this.#lock = undefined;
       await lock`select pg_advisory_unlock(hashtext('triage'))`.catch(() => {});
       lock.release();
     }
@@ -238,7 +387,8 @@ export class Triage {
    * waiting for an answer that has read it.
    */
   async settleOne(): Promise<boolean> {
-    const { sql, events, log } = this.#o;
+    const { sql, log } = this.#o;
+    const events = this.#events;
     const now = this.#o.now();
     await this.#ignored.check();
     if (await lineStopped(sql)) return false;
@@ -283,7 +433,8 @@ export class Triage {
    * closes the hold, naming the tickets. Rejecting closes it, with none.
    */
   async #settleHeld(): Promise<boolean> {
-    const { sql, events, log } = this.#o;
+    const { sql, log } = this.#o;
+    const events = this.#events;
     const now = this.#o.now();
     const answered = (await heldSignals(sql)).find((held) => held.decision !== null);
     if (!answered?.decision) return false;
@@ -336,7 +487,8 @@ export class Triage {
    * improvements do (Needs you does not offer it), and his words leave it waiting.
    */
   async #settleSuggestion(): Promise<boolean> {
-    const { sql, events, log } = this.#o;
+    const { sql, log } = this.#o;
+    const events = this.#events;
     const rejected = (await heldSuggestions(sql)).find((held) => held.decision === 'rejected');
     if (!rejected) return false;
     try {
@@ -361,7 +513,10 @@ export class Triage {
     decision: 'approved' | 'rejected',
     error: unknown,
   ): Promise<void> {
-    const { events, log } = this.#o;
+    const { log } = this.#o;
+    const events = this.#events;
+    // Not the answer's fault: tried again once the lock is held again.
+    if (error instanceof LockLost) throw error;
     const { workItem, answered } = hold;
     const key = settleKey(hold);
     const tries = (this.#settleFailures.get(key) ?? 0) + 1;
@@ -374,6 +529,7 @@ export class Triage {
       this.#settleFailures.delete(key);
       log.warn({ workItem, cause: held.cause, decision }, 'left an answer it could not act on, and asked Martin again');
     } catch (failure) {
+      if (failure instanceof LockLost) throw failure;
       this.#settleFailures.set(key, tries - 1);
       log.warn({ workItem, cause: held.cause, err: failure }, 'could not ask Martin again');
     }
@@ -433,7 +589,8 @@ export class Triage {
   }
 
   async #triage(taken: Taken): Promise<{ outcome: Outcome; workItem: string; ticketOpened: boolean }> {
-    const { sql, events } = this.#o;
+    const { sql } = this.#o;
+    const events = this.#events;
     const now = this.#o.now();
     const signal = taken.signal;
 
@@ -971,3 +1128,24 @@ const candidateOf = (ticket: Ticket): Candidate => ({
   category: ticket.category,
   symptom: 'class' in ticket.fingerprint ? ticket.fingerprint.class : undefined,
 });
+
+/** What `run` waits on: a nudge (a signal, an event, the abort), or the time it was given, whichever is first. */
+class Wake {
+  #woken = Promise.withResolvers<void>();
+  readonly nudge = () => this.#woken.resolve();
+
+  async after(ms: number): Promise<void> {
+    const timer = setTimeout(this.nudge, ms);
+    await this.#woken.promise;
+    clearTimeout(timer);
+    this.#woken = Promise.withResolvers<void>();
+  }
+}
+
+/** Triage's lock is no longer held by the connection that took it: another copy may hold it now. */
+class LockLost extends Error {
+  constructor(cause: unknown) {
+    super('triage lost its lock on the store', { cause });
+    this.name = 'LockLost';
+  }
+}

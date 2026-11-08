@@ -238,11 +238,6 @@ export interface WorkItemState {
   /** Whether the spec was written again after the latest push, which the coder has not yet been sent back to meet. */
   respecified: boolean;
   /**
-   * The spec in force at the latest push: what the pull request's branch was built to. A spec written again since may
-   * have dropped criteria of it, whose work is still on the branch for the coder to take out.
-   */
-  builtTo: PayloadOf<'spec.written'> | undefined;
-  /**
    * Every review of any push, in order: the thread the describer reads. Its length is what `LIMITS.reviews` bounds,
    * and its last is the review a later reviewer checks first.
    */
@@ -331,6 +326,8 @@ export interface WorkItemState {
    * is told it wrote last when the work comes back to it.
    */
   lastSpec: PayloadOf<'spec.written'> | undefined;
+  /** The spec in force when the pull request was last pushed: what a merge of it ships. */
+  builtTo: PayloadOf<'spec.written'> | undefined;
   /** The work items it waits on after Plan, the files their specs share with its own, and whether the wait is over. */
   waiting: { on: string[]; files: string[]; ended: boolean } | undefined;
   /** The latest look again under the hold or wait in force, and the release it looked at. */
@@ -357,7 +354,6 @@ const initial = (): WorkItemState => ({
   suggestionsAnswered: undefined,
   specApproved: false,
   respecified: false,
-  builtTo: undefined,
   reviews: [],
   returns: [],
   accepted: undefined,
@@ -381,6 +377,7 @@ const initial = (): WorkItemState => ({
   firstSense: undefined,
   seenOn: [],
   lastSpec: undefined,
+  builtTo: undefined,
   waiting: undefined,
   rechecked: undefined,
   cleared: undefined,

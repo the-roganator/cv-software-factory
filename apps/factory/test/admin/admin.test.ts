@@ -2855,6 +2855,33 @@ describe('Needs you', () => {
       summary: `Martin closed #${rejected.workItem}, agreeing with the planner`,
       payload: { decision: 'rejected' },
     });
+    // A report's ticket that names only its page takes his words, shared, or his rejection: approving it would give
+    // the planner nothing, and is refused.
+    const undescribed = await held('report-undescribed', { report: true, stage: 'plan' });
+    const asking = { hold: undescribed.hold };
+    for (const [route, body, refused] of [
+      ['approve', asking, 'answer'],
+      ['replan', { ...asking, words: 'The total', share: true }, 'answer'],
+      ['answer', { ...asking, words: 'The total' }, 'share'],
+      ['answer', asking, 'words'],
+    ] as const) {
+      expect(await browser.post(`/admin/holds/${undescribed.workItem}/${route}`, body), route).toMatchObject({
+        status: 422,
+        body: { refused },
+      });
+    }
+    expect(
+      (
+        await browser.post(`/admin/holds/${undescribed.workItem}/answer`, {
+          ...asking,
+          words: 'The total',
+          share: true,
+        })
+      ).status,
+    ).toBe(200);
+    expect((await answers(undescribed.workItem)).map((answer) => answer.payload)).toEqual([
+      { decision: 'answered', answer: 'The total', hold: undescribed.hold, report: true, shared: true },
+    ]);
     // On any other work item his words are taken as ever, and needed.
     const elsewhere = await held('review', { stage: 'review' });
     expect(await browser.post(`/admin/holds/${elsewhere.workItem}/answer`, { hold: elsewhere.hold })).toMatchObject({

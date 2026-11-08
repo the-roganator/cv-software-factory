@@ -69,6 +69,27 @@ export function pointsLines(ticket: PayloadOf<'ticket.opened'>): string[] {
 }
 
 /**
+ * What a visitor's report's ticket points at, as a quote is looked for in it: the passage, the content fingerprint's
+ * or the points', or the element in the words the prompt gives it. Never the title, the kind of problem or the page,
+ * which any defect of that kind there would fit; empty when the ticket points at nothing narrower than its page.
+ */
+export function reportedWords(ticket: PayloadOf<'ticket.opened'>): string[] {
+  return reported(ticket).map((r) => r.words);
+}
+
+/** What a report's ticket points at: each passage or element's words, and how a prompt names it. */
+export function reported({ points, fingerprint }: PayloadOf<'ticket.opened'>): { words: string; told: string }[] {
+  const passages = new Set([
+    ...('text' in fingerprint ? [fingerprint.text] : []),
+    ...(points?.passage ? [points.passage] : []),
+  ]);
+  return [
+    ...[...passages].map((words) => ({ words, told: `the passage “${words}”` })),
+    ...(points?.element ? [{ words: elementWords(points.element), told: elementWords(points.element) }] : []),
+  ];
+}
+
+/**
  * Where the ticket is, as triage fingerprinted it, and how it was classed, with its traces if it has any, and what a
  * visitor's report points at (`pointsLines`). A ticket on
  * `*` is on every page the senses checked, but the canary's: triage gives a canary's `*` a ticket of its own, and it

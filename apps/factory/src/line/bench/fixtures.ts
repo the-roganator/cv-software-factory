@@ -563,6 +563,32 @@ const WIDENED_SPEC: PayloadOf<'spec.written'> = {
   ],
 };
 
+/**
+ * The ticket triage would open for a visitor's report of a wrong result on the camera's page, pointing at a passage
+ * of it as the factory read the page with the wrong price seeded: the price itself, or the product's name above it,
+ * which is right. Its title and class fit the wrong price either way; only what it points at says which was reported.
+ */
+const reportTicket = (passage: string): PayloadOf<'ticket.opened'> => ({
+  title: reportedTitle({ route: '/products/:slug', class: 'wrong-result' }),
+  category: 'functional',
+  severity: 'broken',
+  fingerprint: { route: '/products/:slug', class: 'wrong-result' },
+  traces: [],
+  points: { page: '/products/camera', passage },
+});
+
+/** The camera's price as its page shows it with the wrong price seeded: 3500 pence. */
+const REPORTED_PRICE = '£35.0';
+
+/**
+ * The widened spec, on a report's ticket that points at the price: each criterion quotes the price it points at, as
+ * the line requires there, the thousands separators too, which no visitor reported.
+ */
+const REPORT_WIDENED_SPEC: PayloadOf<'spec.written'> = {
+  ...WIDENED_SPEC,
+  criteria: WIDENED_SPEC.criteria.map((c) => ({ ...c, from: 'the ticket', quote: REPORTED_PRICE })),
+};
+
 /** The coder's fix for the widened spec: two digits of pence, and the thousands separators no ticket asked for. */
 const WIDENED_FIX = `diff --git a/src/money.ts b/src/money.ts
 --- a/src/money.ts
@@ -1267,6 +1293,35 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         answers: [],
       },
     },
+    'report-price': {
+      about:
+        'a visitor’s report of a wrong result on a product page, pointing at its price, seeded wrong: the spec is for that price, quoting what the ticket points at',
+      commit: APP_MAIN,
+      seed: PRICE_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: reportTicket(REPORTED_PRICE) },
+        // A report's signal never reaches the planner.
+        signals: [],
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+        aboutReport: true,
+      },
+    },
+    'report-elsewhere': {
+      about:
+        'a visitor’s report of a wrong result on a product page, pointing at its name, which is right, above a price seeded wrong: the price is not what was reported, so no spec is for it',
+      commit: APP_MAIN,
+      seed: PRICE_SEED,
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: reportTicket('Camera') },
+        signals: [],
+        protectedPaths: APP_PROTECTED,
+        answers: [],
+        aboutReport: true,
+      },
+    },
     'whole-pounds': {
       about: 'a defect a test pins, seeded: a whole pound shows no pence (£6), so the fix contradicts that test',
       commit: APP_MAIN,
@@ -1754,6 +1809,31 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         answers: [],
         spec: WIDENED_SPEC,
         pullRequest: 104,
+        title: 'fix(money): show two digits of pence, and separate thousands',
+        round: 1,
+      },
+    },
+    'report-widens': {
+      about:
+        'the wrong price on a visitor’s report’s ticket that points at it, with a spec that quotes the price for a criterion about thousands separators, which no visitor reported: the line’s quote check passes it, so one to escalate',
+      commit: APP_MAIN,
+      seed: PRICE_SEED,
+      change: {
+        patch: WIDENED_FIX,
+        message: [
+          'fix(money): show two digits of pence, and separate thousands',
+          '',
+          'pounds() printed the pence remainder without padding, so 3500 pence showed as £35.0. It now pads the pence to two digits and puts a comma between thousands of pounds, as the spec asks. Tests in test/money.test.ts cover 600, 705, 10 and 1234567 pence, and test/pages-product.test.ts checks a whole-pound price on its page.',
+        ].join('\n'),
+      },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: reportTicket(REPORTED_PRICE) },
+        signals: [],
+        answers: [],
+        aboutReport: true,
+        spec: REPORT_WIDENED_SPEC,
+        pullRequest: 106,
         title: 'fix(money): show two digits of pence, and separate thousands',
         round: 1,
       },

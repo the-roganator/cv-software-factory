@@ -48,7 +48,7 @@ export const VERSIONS = {
   'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,
-  'hold.started': 11,
+  'hold.started': 12,
   'hold.answered': 4,
   'action.refused': 3,
   'model.called': 2,

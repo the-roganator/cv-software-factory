@@ -31,7 +31,7 @@ flowchart TD
 - **Only reports and the planner's findings go to Jev** (`triage/v2`), with routing as plain code.
 - It quarantines injection attempts, and parks suggestions for Martin, which close when he [rejects them](#a-suggestion). A quarantine is recorded as typed judgement refusing the report (`action.refused`, mechanism `typed-judgement`, guardrail 8), on the quarantined work item before it closes, appended as triage's role, the only role that may append a refusal by typed judgement (`policy/refusals.ts`). Its output is Jev's typed answers verbatim, with their probabilities, one line an answer; never the report's words, nor the questions, which are the factory's.
 - **A report's ticket points at what was reported** ([below](#what-a-reports-ticket-points-at)), from the page as the factory read it, never the visitor's words.
-- **One fingerprint, one ticket.**
+- **One fingerprint, one ticket**, except that a report joins an open ticket only when both point at the [same thing](#a-report-on-a-ticket-it-repeats).
 - **More new problems than a handful from one sense at once** wait for Martin as one [burst](#a-burst), before any has a ticket. An open ticket's problem seen again where no release explains it counts as new.
 - **A new problem seen while what its sense reads was not healthy** waits for Martin too, its cause [the environment](#what-a-sense-reads).
 
@@ -51,7 +51,13 @@ A report's ticket says what was reported, in the factory's words, so that every 
 | `rejects-valid-input` | A form field or a button | `element/v1` |
 | Any other symptom: one of the whole page, such as an error, slowness, a header or the logs | Nothing narrower than the page | Nothing more |
 
+A ticket that points at nothing narrower than the page, whatever the reason (the symptom, Jev's none, or a page that could not be read), waits at Plan for Martin to describe what is wrong before any planner starts ([a report that names only its page](ORCHESTRATOR.md#a-report-that-names-only-its-page)).
+
 Faint text is text: a link's or a button's words in the page's main text (`<main>`, or the whole page when it has none) are among the passages too. An element is the page's own markup: a link by its words and its path on the app, an image by its description and its path, a field by its label, its `name` and its type, a button by its words. An address off the app is named as such, a query or a fragment is cut, and a field's value is never read. Jev's answer is a label from the options it was offered, so nothing it writes reaches the ticket. A content ticket's fingerprint is its passage too; every other ticket keeps its route and symptom as its fingerprint, which the scoreboard matches. A planner's finding, which opens no ticket, is never asked what it points at, only a content one's passage, which its hold's fingerprint holds.
+
+### A report on a ticket it repeats
+
+A report joins an open ticket, as a repeat, only when the two point at the same thing: the same passage, or the same element, of the same page, or neither at anything narrower than its page (`samePoints`). A ticket a sense opened points at nothing. Otherwise the report opens a ticket of its own, with its own points, though its fingerprint is the open one's: a second report about another link on the page would otherwise be counted on the first link's ticket, and no ticket would point at what it reported. This holds for an open ticket Jev chose as the one the report repeats, so a repeat is asked what it points at too, as the ticket it would open alone, and for one with its fingerprint. Of two open tickets with one fingerprint, a sense's signal adds its evidence to the newer.
 
 ## One copy at a time
 

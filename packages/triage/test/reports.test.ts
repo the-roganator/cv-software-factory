@@ -124,6 +124,19 @@ describe('judging a report', () => {
     expect(decision.judgements[0]?.state.candidates?.[0]).toMatchObject({ key: 't1', workItem: '1004' });
   });
 
+  it('asks a repeat what it points at too, with the ticket it would open alone, so triage can compare the two', async () => {
+    const { judge, asked } = fakeJev({
+      ...triage('functional', 0.01, { repeat: choice('t1', 0.8) }),
+      'passage/v1': { passage: choice('p2', 0.8) },
+    });
+    const tickets = [{ workItem: '1004', title: 'A wrong result on /about', category: 'functional' as const }];
+    const decision = await judgeReport(REPORT, tickets, judge, read);
+    expect(asked.map((r) => r.questionSet)).toEqual(['triage/v2', 'passage/v1']);
+    expect(decision.routed).toEqual({ route: 'repeat', joined: '1004' });
+    expect(decision.alone).toMatchObject({ route: 'ticket', category: 'functional', symptom: 'wrong-result' });
+    expect(decision.points).toEqual({ page: '/about', passage: 'Open every day but Thursday.' });
+  });
+
   it('offers passages an event can keep: folded, none empty or repeated, none too long', () => {
     const long = 'word '.repeat(60);
     const passages = passagesOf(['  Founded  in\n1887. ', '', '   ', 'Founded in 1887.', long]);

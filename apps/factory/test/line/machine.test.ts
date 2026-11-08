@@ -5,8 +5,12 @@ import {
   HOLD_CAUSES,
   type HoldCause,
   type PayloadOf,
+  POINTED_BY,
+  pointsAtSomething,
+  SYMPTOM_CLASSES,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
+import { type Answer, type Judge, judgeReport, type PageView, reportEvents } from '@software-factory/triage';
 import { describe, expect, it } from 'vitest';
 import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import {
@@ -20,7 +24,9 @@ import {
   LIMITS,
   type LineEvent,
   needsHold,
+  UNDESCRIBED_ASKS,
   unchangedHold,
+  undescribed,
 } from '../../src/line/machine.ts';
 
 const SHA = 'a'.repeat(40);
@@ -1772,6 +1778,209 @@ const look = (
   },
 });
 const holdOf = (cause: HoldCause, stage: PayloadOf<'hold.started'>['stage'] = 'build') => held(cause, stage);
+
+/** A visitor's report on /search, and tickets of it pointing at a passage, at the page alone, or from before points. */
+const reported: LineEvent = {
+  type: 'signal.received',
+  payload: { sense: 'report', check: 'a visitor’s report', route: '/search', version: 'c'.repeat(7) },
+};
+const reportTicket = (points?: PayloadOf<'ticket.opened'>['points']): LineEvent => ({
+  type: 'ticket.opened',
+  payload: {
+    title: 'A visitor reports a wrong result on /search',
+    category: 'functional',
+    severity: 'broken',
+    fingerprint: { route: '/search', class: 'wrong-result' },
+    traces: [],
+    ...(points ? { points } : {}),
+  },
+});
+const pointedTicket = reportTicket({ page: '/search', passage: 'Showing 3 of 2 results' });
+
+describe('a visitor’s report whose ticket names only its page', () => {
+  const pageOnly = reportTicket({ page: '/search' });
+  const fresh = { ...facts, issue: null };
+  const describedAs = (words: string, shared = true): LineEvent => ({
+    type: 'hold.answered',
+    payload: { decision: 'answered', answer: words, report: true, ...(shared ? { shared: true } : {}) },
+  });
+  const theHold = {
+    stage: 'held',
+    next: {
+      do: 'hold',
+      hold: {
+        stage: 'plan',
+        kind: 'question',
+        cause: 'report-undescribed',
+        reason:
+          'A visitor reported a problem on /search, and triage could point at nothing narrower than the page: no agent reads a report, so the planner would have only the route and the kind of problem to go on',
+        question: UNDESCRIBED_ASKS,
+      },
+    },
+  };
+
+  it('waits for Martin before its issue opens, and before the planner on one already past it', () => {
+    expect(decide([pageOnly, reported], fresh)).toEqual(theHold);
+    expect(decide([pageOnly, reported], facts)).toEqual(theHold);
+    // A ticket from before triage could point names no page, and waits all the same.
+    const before = decide([reportTicket(), reported], facts);
+    expect(before.next).toMatchObject({ do: 'hold', hold: { cause: 'report-undescribed' } });
+    expect(before.next.do === 'hold' && before.next.hold.reason).toMatch(/^A visitor reported a problem, and triage/);
+  });
+
+  it('goes on to Plan when the ticket points at a passage or an element, or the work is not a report’s', () => {
+    expect(decide([pointedTicket, reported], fresh).next).toEqual({ do: 'open-issue' });
+    const element = reportTicket({ page: '/search', element: { kind: 'button', text: 'Search' } });
+    expect(decide([element, reported], facts).next).toMatchObject({ do: 'step', agent: 'planner' });
+    expect(decide([reportTicket({ page: '/search' }), signal()], facts).next).toMatchObject({ do: 'step' });
+    // A content ticket names its passage in its fingerprint, recorded points or none, and every agent is told it.
+    const content = (points?: PayloadOf<'ticket.opened'>['points']): LineEvent => ({
+      type: 'ticket.opened',
+      payload: {
+        title: 'A visitor reports wrong words on /about',
+        category: 'content',
+        severity: 'broken',
+        fingerprint: { page: '/about', text: 'Open every day but Tuesday.' },
+        traces: [],
+        ...(points ? { points } : {}),
+      },
+    });
+    expect(decide([content(), reported], fresh).next).toEqual({ do: 'open-issue' });
+    expect(decide([content({ page: '/about' }), reported], facts).next).toMatchObject({ do: 'step', agent: 'planner' });
+  });
+
+  it('takes his words, shared, or his rejection, and nothing else', () => {
+    expect(answersTo('report-undescribed')).toEqual(['answered', 'rejected']);
+    const waiting = [pageOnly, reported, { type: 'hold.started', payload: theHold.next.hold } as LineEvent];
+    const described = [...waiting, describedAs('The total under the list counts one result too many')];
+    expect(fold(described).answers).toEqual([
+      { asked: UNDESCRIBED_ASKS, answer: 'The total under the list counts one result too many' },
+    ]);
+    expect(decide(described, fresh).next).toEqual({ do: 'open-issue' });
+    expect(decide(described, facts).next).toMatchObject({ do: 'step', agent: 'planner' });
+    expect(decide([...waiting, answer('rejected')], facts).next).toEqual({
+      do: 'close',
+      reason: 'Martin rejected it',
+      merged: false,
+    });
+    // Words he kept reach no agent, so the planner would still have nothing: it holds again.
+    expect(decide([...waiting, describedAs('Kept', false)], facts).next).toMatchObject({
+      do: 'hold',
+      hold: { cause: 'report-undescribed' },
+    });
+  });
+
+  it('holds before a later plan too, until his shared words reach the planner on any hold', () => {
+    const backFromVerify: LineEvent = {
+      type: 'work.returned',
+      payload: { from: 'verify', to: 'plan', reason: 'Martin sent it back' },
+    };
+    const replanned = [reportTicket(), reported, spec, backFromVerify];
+    expect(undescribed(fold(replanned))).toBe(true);
+    expect(decide(replanned, facts).next).toMatchObject({ do: 'hold', hold: { cause: 'report-undescribed' } });
+    // His words shared on the planner's rejection before reached it: it plans from them, and is not held again.
+    const rejected = [
+      reportTicket(),
+      reported,
+      held('ticket-rejected', 'plan'),
+      describedAs('The total is one too many'),
+    ];
+    expect(decide([...rejected, spec, backFromVerify], facts).next).toMatchObject({ do: 'step', agent: 'planner' });
+  });
+});
+describe('a report’s ticket, from triage to the line', () => {
+  // A page with a passage and an element of every kind, as the factory reads it.
+  const view: PageView = {
+    status: 200,
+    screenshot: {
+      kind: 'screenshot',
+      hash: 'a'.repeat(64),
+      type: 'image/png',
+      size: 1000,
+      route: '/visit',
+      version: 'c02efd8',
+      width: 1280,
+      height: 800,
+      boxes: [],
+    },
+    passages: ['The garden opens at nine on weekdays.'],
+    elements: [
+      { kind: 'link', text: 'Directions', to: '/directions' },
+      { kind: 'image', alt: 'The garden gate', src: '/gate.png' },
+      { kind: 'field', label: 'Your email', name: 'email', type: 'email' },
+      { kind: 'button', text: 'Book a visit' },
+    ],
+  };
+  const choice = (label: string): Answer => ({
+    type: 'choice',
+    choice: label,
+    confidence: 0.9,
+    probabilities: { [label]: 0.9 },
+  });
+  const jev =
+    (category: string, symptom: string, pick: boolean): Judge =>
+    async (request) => ({
+      model: request.model,
+      answers:
+        request.questionSet === 'triage/v2'
+          ? {
+              category: choice(category),
+              symptom: choice(symptom),
+              severity: { type: 'score', score: 2.5, confidence: 0.8, probabilities: { 2: 0.5, 3: 0.5 } },
+              injection: { type: 'noul', noul: 0.01 },
+            }
+          : request.questionSet === 'passage/v1'
+            ? { passage: choice(pick ? 'p1' : 'none') }
+            : { element: choice(pick ? 'e1' : 'none') },
+      costUsd: 0.00002,
+      durationMs: 90,
+      cassette: 'c'.repeat(64),
+    });
+  const reportOn = {
+    sense: 'report' as const,
+    check: 'report widget',
+    route: '/visit',
+    version: 'c02efd8',
+    report: { page: '/visit', text: 'Something on this page is wrong' },
+    observedAt: '2026-11-08T09:00:00.000Z',
+    artifacts: [],
+  };
+  const cases = SYMPTOM_CLASSES.flatMap((symptom) =>
+    (['content', 'functional'] as const).flatMap((category) =>
+      [true, false].flatMap((pick) => [true, false].map((readable) => ({ symptom, category, pick, readable }))),
+    ),
+  );
+
+  it.each(cases)(
+    'points narrower than its page, or waits for Martin before the planner: $category $symptom, chosen $pick, read $readable',
+    async ({ symptom, category, pick, readable }) => {
+      const decision = await judgeReport(
+        { page: '/visit', text: reportOn.report.text, route: '/visit' },
+        [],
+        jev(category, symptom, pick),
+        async () => (readable ? view : null),
+      );
+      const made = reportEvents(reportOn, 'signal-1', '1001', decision, new Date('2026-11-08T09:00:01.000Z'));
+      const opened = made.find((event) => event.type === 'ticket.opened');
+      const received = made.find((event) => event.type === 'signal.received');
+      if (!opened || !received) throw new Error('a defect’s report opens a ticket');
+      const line = [opened, received] as unknown as LineEvent[];
+      const next = decide(line, facts).next;
+      const points = (opened.payload as PayloadOf<'ticket.opened'>).points;
+      if (pointsAtSomething(points)) {
+        expect(next).toMatchObject({ do: 'step', agent: 'planner' });
+        // What it points at is the factory's reading of the page, never the visitor's words.
+        expect(points?.page).toBe('/visit');
+      } else {
+        expect(next).toMatchObject({ do: 'hold', hold: { cause: 'report-undescribed' } });
+      }
+      // A symptom of part of the page, chosen from a page the factory read, always points at that part.
+      const narrow = category === 'content' || POINTED_BY[symptom] !== null;
+      expect(pointsAtSomething(points)).toBe(narrow && pick && readable);
+    },
+  );
+});
+
 const stable = { release: 'r2', version: 'd728dbe', due: true };
 
 describe('an open ticket looked at again as the line takes it', () => {
@@ -1790,7 +1999,7 @@ describe('an open ticket looked at again as the line takes it', () => {
       type: 'signal.received',
       payload: { sense: 'report', check: 'search answers', route: '/search', version: 'c'.repeat(7) },
     };
-    expect(decide([ticket, report], { ...fresh, stable }).next).toEqual({ do: 'open-issue' });
+    expect(decide([pointedTicket, report], { ...fresh, stable }).next).toEqual({ do: 'open-issue' });
   });
 
   it('closes as verified, with no issue opened, when its signal cleared', () => {

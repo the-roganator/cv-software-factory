@@ -7,6 +7,11 @@
  *                                            ▲                      │          │
  *                                            └──── work returned ───┴──────────┘
  *
+ * A visitor's report's ticket that points at nothing narrower than its page waits at Plan for Martin to describe what is
+ * wrong, before its issue opens and before every plan of it (`undescribed`): no agent reads a report, so the planner
+ * would have only the route and the kind of problem. His words, shared, carry it on to the planner, which may quote
+ * them; his rejection closes it.
+ *
  * The coder's patch passes the scope fence before it reaches GitHub. One the fence refuses goes back to the coder
  * once, with the fence's output, and stays in Build; a second refusal holds the work item for Martin. A scope the
  * coder keeps straying from is the planner's to fix, so his answer sends the work item back to Plan, and the planner
@@ -121,11 +126,13 @@ import {
   type HoldCause,
   LIMITS,
   type PayloadOf,
+  pointsAtSomething,
   type Resolution,
   type SignalSource,
   STAGES,
   type Stage,
   sameVersion,
+  ticketPoints,
   touches,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
@@ -1019,6 +1026,9 @@ export function decide(events: readonly LineEvent[], facts: Facts): Decision {
       if (s.cleared) return { stage: 'plan', next: { do: 'verified', verification: undefined, rechecked: s.cleared } };
       if (lookDue(s, facts.stable)) return { stage: 'plan', next: { do: 'recheck', for: 'take' } };
     }
+    // A report's ticket that names only its page waits for Martin's words before its issue opens, so a public issue
+    // never carries a guess, and before every plan of it, a first or a later one.
+    if (undescribed(s)) return { stage: 'held', next: { do: 'hold', hold: undescribedHold(s) } };
     if (facts.issue === null) return { stage: 'plan', next: { do: 'open-issue' } };
     return step('planner');
   }
@@ -1171,6 +1181,42 @@ export function closesWhenCleared(state: WorkItemState): boolean {
   if (cause === 'review') return state.reviews.at(-1)?.verdict === 'changes-requested';
   return cause === 'scope' || cause === 'gates' || cause === 'failures' || cause === 'spend';
 }
+
+/**
+ * Whether a visitor's report's work item waits for Martin to describe what is wrong before any planner step: its ticket
+ * points at nothing narrower than its page (a symptom of the whole page, none of the page's passages or elements
+ * chosen, a page that could not be read, or a ticket from before triage could point), and none of his answers the
+ * planner reads has his words, which on such a work item reach it only shared. No agent reads a report, so a planner
+ * given only the route and the kind of problem could find and fix another defect of that kind there, and the reviewer
+ * would pass it. Once his shared words reach the planner, on this hold or any other, it plans from them, and this never
+ * holds again.
+ */
+export const undescribed = (state: WorkItemState): boolean =>
+  state.firstSense === 'report' &&
+  state.ticket !== undefined &&
+  !state.request &&
+  !pointsAtSomething(ticketPoints(state.ticket)) &&
+  !state.answers.some((answer) => answer.answer !== undefined);
+
+/**
+ * The hold for a report's ticket that names only its page (`undescribed`): it asks Martin to describe what is wrong,
+ * in words that go to the agents and are public, which he shares with his passkey again (`sharesWords`).
+ */
+export function undescribedHold(state: WorkItemState): PayloadOf<'hold.started'> {
+  const page = state.ticket?.points?.page;
+  const reason = `A visitor reported a problem${page ? ` on ${page}` : ''}, and triage could point at nothing narrower than the page: no agent reads a report, so the planner would have only the route and the kind of problem to go on`;
+  return {
+    stage: 'plan',
+    kind: 'question',
+    cause: 'report-undescribed',
+    reason: cutTo(reason, 300),
+    question: UNDESCRIBED_ASKS,
+  };
+}
+
+/** What a report's ticket that names only its page asks Martin, which the planner is told beside his answer. */
+export const UNDESCRIBED_ASKS =
+  'What is wrong on the page, for the planner to fix? Your words go to the agents and are public: describe it in your own words, never the visitor’s.';
 
 /**
  * Whether a ticket is where the line looks again at its signal as it takes it: never planned, never sent back to Plan

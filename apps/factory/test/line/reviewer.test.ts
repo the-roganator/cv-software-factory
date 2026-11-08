@@ -144,6 +144,54 @@ describe('the reviewer', () => {
     expect(prompt).toContain('The line checked only that each quote is there, not that it asks for its criterion');
   });
 
+  it('holds a report’s spec to what the ticket points at, or Martin’s own words, whatever its title fits', () => {
+    if (input.asked.kind !== 'ticket') throw new Error('The cards-claimed fixture is not a ticket.');
+    const ticket = input.asked.ticket;
+    const rule = 'A visitor’s report opened this ticket, and what was reported is';
+    const beyond =
+      'A criterion about anything else is beyond the ticket, a blocking finding with `"ticket":true`, however well the ticket’s title, its kind of problem or its page fit it';
+    const pointed = reviewer.prompt({
+      ...input,
+      aboutReport: true,
+      asked: { kind: 'ticket', ticket: { ...ticket, points: { page: '/products', passage: 'From £2 each' } } },
+    });
+    expect(pointed).toContain(
+      `${rule} what the ticket points at, the passage “From £2 each”, or what Martin’s answer describes in his own words.`,
+    );
+    expect(pointed).toContain(beyond);
+    // It is part of holding the spec to the ticket, before the diff is read.
+    expect(pointed.indexOf(beyond)).toBeGreaterThan(pointed.indexOf('2. Hold the spec to the ticket.'));
+    expect(pointed.indexOf(beyond)).toBeLessThan(pointed.indexOf('3. Read the whole diff.'));
+    const pageOnly = reviewer.prompt({
+      ...input,
+      aboutReport: true,
+      asked: { kind: 'ticket', ticket: { ...ticket, points: { page: '/products' } } },
+    });
+    expect(pageOnly).toContain(
+      `${rule} what Martin’s answer describes in his own words, since the ticket points at nothing narrower than its page.`,
+    );
+    expect(reviewer.prompt(input)).not.toContain(rule);
+  });
+
+  it('knows a report’s ticket from the work item’s first sense', async () => {
+    const inputOf = (firstSense: string) =>
+      reviewer.input({
+        workItem: FIXTURE_WORK_ITEM,
+        round: 1,
+        state: {
+          answers: [],
+          firstSense,
+          spec: input.spec,
+          pullRequest: { number: 102, title: input.title },
+          reviews: [],
+        },
+        ticket: async () => (input.asked.kind === 'ticket' ? input.asked.ticket : undefined),
+        signals: async () => [],
+      } as unknown as Parameters<typeof reviewer.input>[0]);
+    expect((await inputOf('report')).aboutReport).toBe(true);
+    expect((await inputOf('probe')).aboutReport).toBeUndefined();
+  });
+
   it('sends a criterion beyond the ticket to Martin, and a change beyond a sound spec back to the coder', () => {
     const fits = (result: unknown) => reviewer.schema(input).safeParse(result).success;
     const beyond = { ...unmet, criterion: 5, ticket: true as const, comment: 'No evidence asks for the cards.' };

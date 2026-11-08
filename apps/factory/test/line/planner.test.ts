@@ -545,6 +545,130 @@ describe('the planner’s prompt', () => {
     expect(planner.prompt(INPUT)).not.toContain('never what the visitor saw');
   });
 
+  it('tells it, on a report’s ticket that names only its page, that what was reported is what Martin described', () => {
+    const described = 'What was reported is what Martin described in his answers above';
+    const ticket = (points?: (typeof TICKET)['points']) => ({ kind: 'ticket' as const, ticket: { ...TICKET, points } });
+    expect(planner.prompt({ ...INPUT, aboutReport: true, asked: ticket() })).toContain(described);
+    expect(planner.prompt({ ...INPUT, aboutReport: true, asked: ticket({ page: '/search' }) })).toContain(described);
+    const passage = ticket({ page: '/search', passage: 'No results for your search' });
+    expect(planner.prompt({ ...INPUT, aboutReport: true, asked: passage })).not.toContain(described);
+    expect(planner.prompt(INPUT)).not.toContain(described);
+  });
+
+  describe('on a visitor’s report’s ticket', () => {
+    const report = (ticket: Partial<PayloadOf<'ticket.opened'>>): PlannerInput => ({
+      ...INPUT,
+      aboutReport: true,
+      asked: {
+        kind: 'ticket',
+        ticket: {
+          ...TICKET,
+          title: 'A visitor reports a wrong result on /search',
+          category: 'functional',
+          fingerprint: { route: '/search', class: 'wrong-result' },
+          ...ticket,
+        },
+      },
+    });
+    const passage = report({ points: { page: '/search', passage: 'Showing 3 of 2 results' } });
+    const link = report({
+      title: 'A visitor reports a broken link on /search',
+      fingerprint: { route: '/search', class: 'broken-link' },
+      points: { page: '/search', element: { kind: 'link', text: 'Next page', to: '/search/2' } },
+    });
+    const pageOnly = report({ points: { page: '/search' } });
+    const said = [
+      { asked: 'What is wrong on the page, for the planner to fix?', answer: 'The count of results is wrong.' },
+    ];
+
+    it('takes a quote only from what it points at, never its title, its class, its page or a signal', () => {
+      const sources = sourcesOf(passage);
+      expect(quoteProblem('the ticket', '3 of 2 results', sources)).toBeUndefined();
+      // The title and the class would fit any wrong result on the page.
+      expect(quoteProblem('the ticket', 'a wrong result on /search', sources)).toContain(
+        'on a report’s ticket, copy the words from what the ticket points at',
+      );
+      expect(quoteProblem('the ticket', 'wrong-result on /search', sources)).toBeDefined();
+      // A passage of one word, a price alone on its line, is quoted whole; a word of a longer one is not.
+      const price = sourcesOf(report({ points: { page: '/products/lamp', passage: '£35.0' } }));
+      expect(quoteProblem('the ticket', '“£35.0”', price)).toBeUndefined();
+      expect(quoteProblem('the ticket', 'Showing', sources)).toBe(
+        'a quote is the words that ask for the criterion: two or more of them',
+      );
+      // A sense's signal on the route may be another defect of its kind.
+      expect(quoteProblem('signal 1', 'new error pattern', sources)).toContain('a signal may be another defect');
+      // The same ticket, opened by a sense, quotes its title and its signals as ever.
+      const sensed = sourcesOf({ ...passage, aboutReport: false });
+      expect(quoteProblem('the ticket', 'a wrong result on /search', sensed)).toBeUndefined();
+      expect(quoteProblem('signal 1', 'new error pattern', sensed)).toBeUndefined();
+    });
+
+    it('quotes an element in the words it is told it, and a content fingerprint’s passage', () => {
+      expect(quoteProblem('the ticket', 'the link “Next page”, to /search/2', sourcesOf(link))).toBeUndefined();
+      expect(quoteProblem('the ticket', 'a broken link on /search', sourcesOf(link))).toBeDefined();
+      const content = report({
+        title: 'A visitor reports wrong words on /about',
+        category: 'content',
+        fingerprint: { page: '/about', text: 'Open every day but Tuesday.' },
+        points: { page: '/about', passage: 'Open every day but Tuesday.' },
+      });
+      expect(quoteProblem('the ticket', 'every day but Tuesday', sourcesOf(content))).toBeUndefined();
+      expect(quoteProblem('the ticket', 'wrong words on /about', sourcesOf(content))).toBeDefined();
+    });
+
+    it('takes a quote from Martin’s own words alone, never what he was asked', () => {
+      const sources = sourcesOf({ ...pageOnly, answers: said });
+      expect(quoteProblem('Martin’s answer', 'the count of results is wrong', sources)).toBeUndefined();
+      // The hold that asked him is the line's words, and would fit any problem on the page.
+      expect(quoteProblem('Martin’s answer', 'what is wrong on the page', sources)).toBeDefined();
+      // Pointing at nothing narrower than the page, the ticket gives no quote at all.
+      expect(quoteProblem('the ticket', 'a wrong result on /search', sources)).toBe(
+        'a visitor’s report opened the ticket, and it points at nothing narrower than its page: quote Martin’s answer',
+      );
+      // Named beside his answer, the ticket or a signal is held to his words alone, never refused outright.
+      expect(quoteProblem('the ticket and Martin’s answer', 'the count of results is wrong', sources)).toBeUndefined();
+      expect(quoteProblem('signal 1 and Martin’s answer', 'the count of results is wrong', sources)).toBeUndefined();
+      expect(quoteProblem('signal 1 and Martin’s answer', 'new error pattern', sources)).toBeDefined();
+      // A one-word passage is quoted whole only from the ticket that points at it, never as his answer's words.
+      const price = sourcesOf({
+        ...report({ points: { page: '/products/lamp', passage: '£35.0' } }),
+        answers: [{ asked: said[0]?.asked ?? '', answer: 'It shows £35.0 for the lamp.' }],
+      });
+      expect(quoteProblem('Martin’s answer', '£35.0', price)).toBe(
+        'a quote is the words that ask for the criterion: two or more of them',
+      );
+      // Words that stay his reach no quote.
+      const unshared = sourcesOf({ ...pageOnly, answers: [{ asked: said[0]?.asked ?? '', line: 'He answered.' }] });
+      expect(quoteProblem('Martin’s answer', 'what is wrong on the page', unshared)).toBe(
+        'Martin has answered nothing yet',
+      );
+    });
+
+    it('refuses a whole spec that quotes the title, as the schema reads every criterion', () => {
+      const criterion = { given: 'a search with two results', when: 'it is shown', expect: 'it says 2 of 2' };
+      const spec = (quote: string) => ({
+        verdict: 'spec',
+        spec: { ...SPEC, criteria: [{ ...criterion, from: 'the ticket', quote }] },
+      });
+      const result = plannerResult(PROTECTED, sourcesOf(passage));
+      expect(result.safeParse(spec('Showing 3 of 2 results')).success).toBe(true);
+      expect(result.safeParse(spec('a wrong result on /search')).success).toBe(false);
+    });
+
+    it('is told what it may quote: what the ticket points at, or Martin’s own words', () => {
+      const never = 'Never quote the ticket’s title, its kind of problem or its page, nor a signal';
+      expect(planner.prompt(passage)).toContain(
+        'what was reported is what it points at, the passage “Showing 3 of 2 results”: every criterion is about that, or about what Martin’s answer describes.',
+      );
+      expect(planner.prompt(passage)).toContain(never);
+      expect(planner.prompt(link)).toContain('what it points at, the link “Next page”, to /search/2:');
+      expect(planner.prompt({ ...pageOnly, answers: said })).toContain(
+        'it points at nothing narrower than its page: every criterion is about what Martin’s answer describes',
+      );
+      expect(planner.prompt(INPUT)).not.toContain(never);
+    });
+  });
+
   it('tells it why its last attempt failed', () => {
     const failure =
       "The planner's result does not fit its schema (spec.scope.0: deploy names a path no patch may change)";

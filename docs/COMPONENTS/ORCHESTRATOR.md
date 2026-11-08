@@ -197,6 +197,7 @@ Each hold names its cause, and Martin's answer does what `ANSWERS` says for that
 
 | Cause | Held when | Approving | Answering |
 |---|---|---|---|
+| `report-undescribed` | A visitor's report's ticket points at nothing narrower than its page, and none of Martin's shared words has reached the planner: before its issue opens, and before every later plan ([below](#a-report-that-names-only-its-page)) | Not offered: it would give the planner nothing | Carries on to the planner with his words, shared, which a criterion may quote; his answer reaches every later plan |
 | `question` | The planner asks what only Martin can say | Carries on | Carries on; his answer reaches every later plan |
 | `ticket-rejected` | The planner rejects the ticket | Agrees, and closes the work item | Carries on; his answer reaches every later plan |
 | `spec` | A spec is tagged `out-of-scope` | Carries on to Build | Sends it back to the planner |
@@ -222,11 +223,15 @@ Work sent back to the planner is planned again, not from nothing ([planned again
 A held work item's defect can go with another change: a duplicate's fix, Martin's own commit, a dependency update. After each real release is promoted, and once as a hold starts, the sense that saw it looks again at the version the stable Service runs ([Verify](RELEASE-AND-VERIFY.md#held-and-waiting-work-items)). What a look that cleared does depends on the cause (`closesWhenCleared` in `line/machine.ts`):
 
 - **The line's own holds close as verified**: `scope`, `gates`, `failures`, `spend`, and `review` when the reviewer asked for changes once too often. The line closes the issue as completed and the pull request unmerged, each saying which release cleared it.
-- **Holds that wait on Martin's judgement stay**: `spec`, `question`, `ticket-rejected`, `beyond-ticket`, `nothing-to-fix`, `merge`, `deploy`, `verify`, `tests-first`, `unknown`, and `review` when the reviewer escalated. The look is recorded, and the hold says the signal cleared on that version. While it stands, his closing the work item's pull request in GitHub closes it as verified.
+- **Holds that wait on Martin's judgement stay**: `report-undescribed`, `spec`, `question`, `ticket-rejected`, `beyond-ticket`, `nothing-to-fix`, `merge`, `deploy`, `verify`, `tests-first`, `unknown`, and `review` when the reviewer escalated. The look is recorded, and the hold says the signal cleared on that version. While it stands, his closing the work item's pull request in GitHub closes it as verified.
 
 A signal seen since on that version or a later one, or a later look that finds it, ends the clearance. Triage's holds are never looked at: they come before a ticket reaches the line.
 
 Triage's own holds, `finding`, `suggestion`, `burst` and `environment`, are on [its page](TRIAGE.md). An answer in words to one of them settles nothing, so the hold stands and Needs you still lists it (`WORDS_LEAVE_HELD` in the events package, which the line and the console both read).
+
+### A report that names only its page
+
+No agent reads a visitor's report, so on a work item one opened, what an agent is given of what was reported is what the ticket points at ([what a report's ticket points at](TRIAGE.md#what-a-reports-ticket-points-at)). A ticket that points at nothing narrower than its page (a symptom of the whole page, none of its passages or elements chosen, a page that could not be read, or a ticket from before triage could point) gives the planner only the route and the kind of problem, and any fault of that kind there would fit it: the planner could spec another, and the reviewer pass it. So the line holds such a work item at Plan, as `report-undescribed`, before any planner step (`undescribed` in `line/machine.ts`): before its issue opens, so a public issue never carries a guess, and before every later plan, after a return from Verify or a reopening too, so a work item already past its issue when this came in is held before its next plan. The hold asks Martin to describe what is wrong, in words that go to the agents and are public. He answers in words, shared with his passkey again as on any hold of such a work item, and the planner plans from them, as one of his answers, which a criterion may quote, told that what was reported is what he described; or he rejects it, and it closes. Approving is not offered: it would give the planner nothing. Once his shared words have reached the planner, on this hold or any other at Plan or sent back to it, it has them for every later plan, and the line does not hold again.
 
 ## Settings
 

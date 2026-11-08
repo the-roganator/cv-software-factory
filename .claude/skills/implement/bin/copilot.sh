@@ -4,7 +4,8 @@
 # and it refuses to run in another repository's checkout, where a bare number would name the wrong pull request.
 # Copilot may review up to an hour after the pull request opens (window.sh), longer than one command may run, so each
 # run waits at most eight minutes. Exit 0 once Copilot has reviewed; 5 if it has not yet, so run it again; 4 if the hour
-# is over without a review. The threads are listed either way, one block each: thread id, path:line, author, url, the
+# is over without a review; 3 if Copilot was never asked (a Dependabot pull request, or one it is not assigned to), which
+# the timeline says within a minute of opening, so there is nothing to wait for. The threads are listed either way, one block each: thread id, path:line, author, url, the
 # first comment. A thread someone other than Copilot started is marked NOT COPILOT: it is theirs to resolve, not the
 # worker's. Then Copilot's review summary, as written, with only its HTML tags taken out (by name, so `Result<T>`
 # stays): it can name findings that have no thread, and its shape changes, so it is printed for the worker to read
@@ -23,8 +24,16 @@ window_ends=$(( opened + copilot_window )) run_ends=$(( $(date +%s) + 8 * 60 ))
 # Every page of reviews, read as one list: --paginate runs a -q filter on each page alone.
 reviews() { gh api "repos/$repo/pulls/$pr/reviews" --paginate | jq -s 'add // []
   | [.[] | select(.user.login | startswith("copilot-pull-request-reviewer"))]'; }
+# Whether Copilot was asked at all: a review_requested event on the timeline, written as the pull request opens. Without
+# one there is no review to wait for; a pull request younger than two minutes is given that long for the event to land.
+asked() { gh api "repos/$repo/issues/$pr/timeline" --paginate | jq -s 'add // []
+  | any(.[]; .event == "review_requested" and (.requested_reviewer.login // "" | startswith("Copilot")))'; }
 status=0
 until (( $(reviews | jq length) > 0 )); do
+  if [[ $(asked) != true ]]; then
+    if (( $(date +%s) < opened + 120 )); then sleep $(( opened + 120 - $(date +%s) )); continue; fi
+    echo "copilot: no review was asked for, so none is coming"; status=3; break
+  fi
   now=$(date +%s)
   if (( now >= window_ends )); then echo "copilot: no review within $(( copilot_window / 60 )) minutes of opening"; status=4; break; fi
   if (( now >= run_ends )); then echo "copilot: not reviewed yet; run copilot.sh $pr${2:+ $2} again"; status=5; break; fi

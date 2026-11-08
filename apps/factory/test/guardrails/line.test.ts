@@ -7,8 +7,9 @@ import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { RED_TEAM_LABEL } from '../../../../policy/attacks.ts';
 import { proved } from '../../src/guardrails/command.ts';
-import { abortedByStop, age, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
+import { abortedByStop, age, type Drill, rollback, runnerPodsOf, stopTheLine } from '../../src/guardrails/line.ts';
 
 let database: Database;
 beforeEach(async () => {
@@ -112,6 +113,28 @@ describe('the last canary a stop aborted', () => {
   });
 });
 
+describe('the runner pods the drill waits on', () => {
+  it('are the line’s, with their part, and never a pod the red-team harness made, which Stop the line does not end', () => {
+    expect(
+      runnerPodsOf([
+        { metadata: { name: 'coder-1-1-1-agent', labels: { 'factory.mrogan.dev/runner': 'agent' } } },
+        { metadata: { name: 'coder-1-1-1-prepare', labels: { 'factory.mrogan.dev/runner': 'prepare' } } },
+        { metadata: { name: 'unlabelled' } },
+        {
+          metadata: {
+            name: 'red-team-egress-1a2b3c4d',
+            labels: { 'factory.mrogan.dev/runner': 'agent', [RED_TEAM_LABEL]: 'egress' },
+          },
+        },
+      ]),
+    ).toEqual([
+      { name: 'coder-1-1-1-agent', part: 'agent' },
+      { name: 'coder-1-1-1-prepare', part: 'prepare' },
+      { name: 'unlabelled' },
+    ]);
+  });
+});
+
 describe('the stop-the-line drill', () => {
   // A running line, as Martin left it: only that is drilled.
   beforeEach(() => append(database.operator, 'line.started', {}));
@@ -148,11 +171,13 @@ describe('the stop-the-line drill', () => {
     const { d, made, said } = drill({});
     const taken = await stopTheLine(d);
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
-    expect(said[0]).toMatch(/1 agent pod\(s\) and 0 other pod\(s\) are running in runners now\./);
+    expect(said[0]).toMatch(/1 agent pod\(s\) and 0 other pod\(s\) of the line’s are running in runners now\./);
     expect(taken).toMatchObject({ held: true });
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✓ The line stopped at .+, recorded by factory_operator\./);
-    expect(output).toMatch(/✓ No pod is left in runners \(1 were running at the prompt or the stop\)\./);
+    expect(output).toMatch(
+      /✓ None of the line’s pods is left in runners \(1 were running at the prompt or the stop\)\./,
+    );
     expect(output).toMatch(/✓ No work item was taken/);
     expect(output).toMatch(/✓ The line started again\./);
     expect(output).toMatch(/✓ Release r-2: the canary of version 1\.3\.0 aborted by Stop the line/);
@@ -229,7 +254,7 @@ describe('the stop-the-line drill', () => {
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
     expect(taken).toMatchObject({ held: false });
     const output = 'output' in taken ? taken.output : '';
-    expect(output).toMatch(/✗ pods still in runners: w-agent/);
+    expect(output).toMatch(/✗ the line’s pods still in runners: w-agent/);
     expect(output).toMatch(/✗ work items taken while the line was stopped: 1001/);
     expect(output).toMatch(/✗ No canary in flight has been aborted by Stop the line/);
   });
@@ -239,7 +264,7 @@ describe('the stop-the-line drill', () => {
     const { d } = drill({ pods: [[], [{ name: 'late-agent', part: 'agent' }]] });
     const taken = await stopTheLine(d);
     const output = 'output' in taken ? taken.output : '';
-    expect(output).toMatch(/✗ pods still in runners: late-agent/);
+    expect(output).toMatch(/✗ the line’s pods still in runners: late-agent/);
   });
 
   it('does not hold when a pod starts in runners while the line is stopped, after the others went', async () => {
@@ -252,7 +277,7 @@ describe('the stop-the-line drill', () => {
     const taken = await stopTheLine(d);
     expect(taken).toMatchObject({ held: false });
     expect('output' in taken && taken.output).toMatch(
-      /✗ pods started in runners while the line was stopped: new-agent/,
+      /✗ the line’s pods started in runners while the line was stopped: new-agent/,
     );
   });
 
@@ -260,10 +285,10 @@ describe('the stop-the-line drill', () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
     const { d, said } = drill({ pods: [[]] });
     const taken = await stopTheLine(d);
-    expect(said[0]).toMatch(/0 agent pod\(s\) and 0 other pod\(s\) are running in runners now\.$/);
+    expect(said[0]).toMatch(/0 agent pod\(s\) and 0 other pod\(s\) of the line’s are running in runners now\.$/);
     expect(taken).toMatchObject({ held: true });
     expect('output' in taken && taken.output).toMatch(
-      /✓ No pod is in runners: none was running at the prompt or the stop/,
+      /✓ None of the line’s pods is in runners: none was running at the prompt or the stop/,
     );
     expect('output' in taken && taken.output).not.toMatch(/gateway/);
   });

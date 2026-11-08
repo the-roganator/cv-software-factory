@@ -62,6 +62,18 @@ metadata:
   labels:
     pod-security.kubernetes.io/enforce: restricted
 ---
+# The red-team harness's egress and image attacks: each a pod made like an agent's, apart from the line's runners so
+# that the harness's right to read and delete a pod here reaches none of them. Nothing is deployed here but their fences
+# and the harness's Role (deploy/base/red-team), which a profile brings in with the factory's workers.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: red-team
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
 # The scoreboard: the only reader of the answer key, alone in its namespace so that its Secret is no one else's. Like
 # the runners, nothing is deployed here but with the factory's image (deploy/base/scoreboard).
 apiVersion: v1

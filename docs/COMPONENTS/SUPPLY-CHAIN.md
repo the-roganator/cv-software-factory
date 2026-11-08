@@ -37,4 +37,4 @@ The signature names the workflow, the repository and the ref. Only `build.yml` o
 |---|---|
 | The deploy watch ([GitHub worker](GITHUB-WORKER.md#signatures)) | Proposes only a signed build |
 | A deploy pull request's `image builds` check | Verifies the signature and the SBOM of each image it moves to, with `cosign` |
-| [Admission control](ADMISSION-CONTROL.md) | Admits nothing else, but the third-party images it names by digest, in `factory`, `runners`, `website` and `scoreboard` |
+| [Admission control](ADMISSION-CONTROL.md) | Admits nothing else, but the third-party images it names by digest, in `factory`, `runners`, `red-team`, `website`, `scoreboard` and `flagd` |

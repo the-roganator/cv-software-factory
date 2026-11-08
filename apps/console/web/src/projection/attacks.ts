@@ -173,7 +173,7 @@ export const WHO: Record<RefusalMechanism, string> = {
   'github-guard': 'The GitHub worker’s guard',
   'token-permission': 'GitHub, to the App’s token',
   'review-gate': 'The review gate, a required check',
-  'egress-policy': 'The egress policy, from an agent’s pod in runners',
+  'egress-policy': 'The egress policy, from a pod fenced as an agent’s',
   'admission-control': 'Admission control, Kyverno',
   'typed-judgement': 'Jev’s typed questions, in triage',
   'scope-fence': 'The coder’s scope fence',

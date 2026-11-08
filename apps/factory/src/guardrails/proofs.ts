@@ -44,7 +44,10 @@ export interface Context {
   sql: Sql;
   /** The cluster's kubeconfig context, which the drill's `make` targets are given as `CONTEXT`. */
   kubeContext: string;
-  /** The drill's needs of the cluster and of Martin. */
+  /**
+   * The drill's needs of the cluster and of Martin. `runnerPods` is the line's runner pods in `runners` alone, never one
+   * the red-team harness made (`runnerPodsOf` in ./line.ts), which Stop the line does not end.
+   */
   runnerPods(): Promise<{ name: string; part?: string }[]>;
   ask(question: string): Promise<boolean>;
   now(): Date;

@@ -10,7 +10,7 @@ One `ImageValidatingPolicy` (`deploy/base/admission/images`), in four copies, ea
 
 | Copy | Namespaces | Admits |
 |---|---|---|
-| `factory-images` | `factory`, `runners` | The factory's images, Postgres and its exporter |
+| `factory-images` | `factory`, `runners`, `red-team` | The factory's images, Postgres and its exporter |
 | `website-images` | `website` | The app's image, and the factory's browser for the canary's analysis |
 | `scoreboard-images` | `scoreboard` | The factory's own image, which the [scoreboard](SCOREBOARD.md) runs |
 | `flagd-images` | `flagd` | [flagd](FEATURE-FLAGS.md)'s image, by digest, and none of ours |

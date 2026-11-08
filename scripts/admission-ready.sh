@@ -90,8 +90,8 @@ check() { # namespace policy allowed factory-repositories website-repositories i
 
 notready="" # the policies with an image refused in their namespaces
 refusing() { if [[ " $notready " != *" $1 "* ]]; then notready="$notready $1"; fi; }
-for pair in factory:factory-images runners:factory-images website:website-images scoreboard:scoreboard-images \
-  flagd:flagd-images; do
+for pair in factory:factory-images runners:factory-images red-team:factory-images website:website-images \
+  scoreboard:scoreboard-images flagd:flagd-images; do
   ns=${pair%%:*} policy=${pair#*:} before=$failed failed=0
   # Read first, so a cluster that cannot answer fails the script rather than checking nothing.
   allowed=$(listed "$policy" allowed)
@@ -124,7 +124,7 @@ for policy in factory-images website-images scoreboard-images flagd-images; do
 done
 reports=$("${kubectl[@]}" get policyreports -A -o json | jq -r --arg auditing "$auditing" '
   ($auditing | split("\n")) as $audits |
-  .items[] | select(.metadata.namespace | IN("factory", "runners", "website", "scoreboard", "flagd")) | . as $report | .results[]? |
+  .items[] | select(.metadata.namespace | IN("factory", "runners", "red-team", "website", "scoreboard", "flagd")) | . as $report | .results[]? |
   select((.result == "fail" or .result == "error") and (.policy | IN($audits[]))) |
   "  refused  \($report.metadata.namespace)  pod \($report.scope.name): \(.policy): \(.message)"')
 if [ -n "$reports" ]; then

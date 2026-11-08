@@ -262,10 +262,11 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
 ---
-# The gateway is called by triage and by runners' agent pods, on one port: judgements take triage's token, and agents'
-# calls a job token (docs/COMPONENTS/LLM-GATEWAY.md). It may leave the cluster for its providers: TypeSafe and Anthropic,
-# over TLS. Addresses inside the cluster, on the local network and of the host are excepted, so this opens the internet
-# and nothing else; the local profile adds LM Studio on the host (deploy/overlays/local/local-models.yaml).
+# The gateway is called by triage, by runners' agent pods and by the egress attack's pod, on one port: judgements take
+# triage's token, and agents' calls a job token (docs/COMPONENTS/LLM-GATEWAY.md). It may leave the cluster for its
+# providers: TypeSafe and Anthropic, over TLS. Addresses inside the cluster, on the local network and of the host are
+# excepted, so this opens the internet and nothing else; the local profile adds LM Studio on the host
+# (deploy/overlays/local/local-models.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -289,6 +290,15 @@ spec:
           podSelector:
             matchLabels:
               factory.mrogan.dev/runner: agent
+        # The egress attack's pod, made like an agent's, whose control is reaching the gateway: its health, as it holds
+        # no job token (../red-team, policy/attacks.ts).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: red-team
+          podSelector:
+            matchLabels:
+              factory.mrogan.dev/runner: agent
+              factory.mrogan.dev/red-team: egress
       ports:
         - { protocol: TCP, port: 8080 }
   egress:

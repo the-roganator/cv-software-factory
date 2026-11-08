@@ -13,9 +13,10 @@ import { type LabelSelector, type Manifest, rendered, selects } from './deploy.t
 
 /**
  * The red-team harness's fences (milestone 7 task 22). RBAC lets it create the egress and image attacks' pods in
- * `runners` but cannot say what those pods hold, so an admission rule holds them; its own NetworkPolicy and Role grant
- * exactly what the attacks need and nothing else. These check the manifests each profile renders; `make egress` shows
- * the pods' own fences on the cluster.
+ * `red-team`, a namespace of their own apart from the line's runners, but cannot say what those pods hold, so an
+ * admission rule holds them; its own NetworkPolicy and Role grant exactly what the attacks need and nothing else, and
+ * the pods meet an agent's fence. These check the manifests each profile renders; the egress attack shows the pods'
+ * fence on the cluster.
  */
 type Labels = Record<string, string>;
 interface Peer {
@@ -146,6 +147,7 @@ describe('the store’s NetworkPolicy', () => {
   const postgres = one<Policy>('NetworkPolicy', 'postgres');
   const factory = { 'kubernetes.io/metadata.name': 'factory' };
   const runners = { 'kubernetes.io/metadata.name': 'runners' };
+  const redTeam = { 'kubernetes.io/metadata.name': 'red-team' };
   // A peer with no namespace selector picks pods in the policy's own namespace, `factory`, alone.
   const admits = (pod: Labels, ns: Labels) =>
     (postgres.spec.ingress ?? []).some(
@@ -161,9 +163,11 @@ describe('the store’s NetworkPolicy', () => {
       true,
     );
   });
-  it('admits none of the attack pods the harness makes in runners', () => {
-    expect(admits(AGENT_POD, runners)).toBe(false);
-    expect(admits({ ...AGENT_POD, 'app.kubernetes.io/name': 'red-team' }, runners)).toBe(false);
+  it('admits none of the attack pods the harness makes, in red-team or in runners', () => {
+    for (const ns of [redTeam, runners]) {
+      expect(admits(AGENT_POD, ns)).toBe(false);
+      expect(admits({ ...AGENT_POD, 'app.kubernetes.io/name': 'red-team' }, ns)).toBe(false);
+    }
   });
 });
 
@@ -185,33 +189,121 @@ describe('the GitHub worker’s attack door', () => {
   });
 });
 
-describe('the red-team harness’s Role in runners', () => {
-  const role = one<Role>('Role', 'red-team');
-  it('may create, read, delete a pod and read its log, and nothing else', () => {
-    expect(role, 'a red-team Role is rendered').toBeTruthy();
-    const pods = role.rules.find((r) => r.resources.includes('pods') && !r.resources.includes('pods/log'));
-    expect(pods?.verbs.sort()).toEqual(['create', 'delete', 'get']);
-    const log = role.rules.find((r) => r.resources.includes('pods/log'));
-    expect(log?.verbs).toEqual(['get']);
-    for (const rule of role.rules)
-      for (const resource of rule.resources) expect(['pods', 'pods/log']).toContain(resource);
+describe('the red-team harness’s Roles', () => {
+  const roles = byKind<Role>('Role', 'red-team');
+  const bindings = byKind<Manifest & { subjects: { kind: string; name: string; namespace?: string }[] }>(
+    'RoleBinding',
+    'red-team',
+  );
+  it('may create, read, delete a pod and read its log, and nothing else, wherever they are', () => {
+    expect(roles.length, 'a red-team Role is rendered').toBeGreaterThan(0);
+    for (const role of roles) {
+      const pods = role.rules.find((r) => r.resources.includes('pods') && !r.resources.includes('pods/log'));
+      expect(pods?.verbs.sort()).toEqual(['create', 'delete', 'get']);
+      const log = role.rules.find((r) => r.resources.includes('pods/log'));
+      expect(log?.verbs).toEqual(['get']);
+      for (const rule of role.rules)
+        for (const resource of rule.resources) expect(['pods', 'pods/log']).toContain(resource);
+    }
+  });
+  it('are in red-team, where the harness makes its pods, and in runners only until the image that makes them in red-team is pinned', () => {
+    // The Role in runners goes in the deploy change after that pin: until then the image the cluster runs makes its
+    // pods there. No other namespace has one.
+    expect(new Set(roles.map((r) => r.metadata?.namespace))).toEqual(new Set(['red-team', 'runners']));
+    for (const binding of bindings)
+      expect(binding.subjects).toEqual([{ kind: 'ServiceAccount', name: 'red-team', namespace: 'factory' }]);
+    expect(new Set(bindings.map((b) => b.metadata?.namespace))).toEqual(new Set(['red-team', 'runners']));
+  });
+  it('are the only rights any account of the factory’s has to pods in red-team: nothing of the line’s is there', () => {
+    const inRedTeam = all
+      .map((m) => m.manifest)
+      .filter((m) => m.kind === 'Role' && m.metadata?.namespace === 'red-team') as Role[];
+    expect(inRedTeam.map((r) => r.metadata?.name).sort()).toEqual(['line-reads-admission', 'red-team']);
+    const line = inRedTeam.find((r) => r.metadata?.name === 'line-reads-admission');
+    expect(line?.rules).toEqual([{ apiGroups: [''], resources: ['events'], verbs: ['list'] }]);
+  });
+});
+
+describe('the red-team namespace', () => {
+  type Namespace = Manifest & { metadata: { labels?: Labels } };
+  const ns = one<Namespace>('Namespace', 'red-team');
+  const redTeam = { 'kubernetes.io/metadata.name': 'red-team' };
+  const policies = all.map((m) => m.manifest).filter((m): m is Policy => m.kind === 'NetworkPolicy');
+  const here = policies.filter((p) => p.metadata?.namespace === 'red-team');
+  const inRunners = policies.filter((p) => p.metadata?.namespace === 'runners');
+  const egressOf = (from: Policy[], pod: Labels) =>
+    from.filter((p) => selects(p.spec.podSelector, pod)).flatMap((p) => p.spec.egress ?? []);
+
+  it('enforces the restricted Pod Security Standard', () => {
+    expect(ns.metadata.labels?.['pod-security.kubernetes.io/enforce']).toBe('restricted');
+  });
+  it('holds the attack pods to a few, with small requests, so a harness making pods in a loop stops there', () => {
+    type Quota = Manifest & { spec: { hard: Record<string, string> } };
+    const quotas = all.map((m) => m.manifest).filter((m): m is Quota => m.kind === 'ResourceQuota');
+    expect(quotas.filter((q) => q.metadata?.namespace === 'red-team').map((q) => q.spec.hard)).toEqual([
+      { pods: '4', 'requests.cpu': '500m', 'requests.memory': '1Gi', 'limits.memory': '2Gi' },
+    ]);
+    // The pod the harness makes sets each (apps/factory/src/red-team/pods.ts), so the quota admits it.
+    const source = readFileSync(new URL('../src/red-team/pods.ts', import.meta.url), 'utf8');
+    expect(source).toContain("resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { memory: '256Mi' } }");
+  });
+  it('denies everything, in and out, and lets nothing in', () => {
+    const denyAll = here.filter(
+      (p) => Object.keys(p.spec.podSelector).length === 0 && !p.spec.ingress?.length && !p.spec.egress?.length,
+    );
+    expect(denyAll.map((p) => p.spec.policyTypes.sort())).toEqual([['Egress', 'Ingress']]);
+    expect(here.filter((p) => p.spec.ingress?.length)).toEqual([]);
+  });
+  it('fences an attack pod exactly as the line’s agent pods are fenced in runners', () => {
+    expect(egressOf(here, AGENT_POD).length).toBeGreaterThan(0);
+    expect(egressOf(here, AGENT_POD)).toEqual(egressOf(inRunners, { 'factory.mrogan.dev/runner': 'agent' }));
+  });
+  it('is let into the gateway by the egress attack’s pod alone, and into nothing else of the factory’s', () => {
+    const admitted = policies.flatMap((p) =>
+      (p.spec.ingress ?? []).flatMap((rule) =>
+        (rule.from ?? [])
+          .filter((peer) => peer.namespaceSelector && selects(peer.namespaceSelector, redTeam))
+          .map((peer) => ({ to: `${p.metadata?.namespace}/${p.metadata?.name}`, peer, ports: rule.ports })),
+      ),
+    );
+    expect(admitted).toEqual([
+      {
+        to: 'factory/gateway',
+        peer: {
+          namespaceSelector: { matchLabels: redTeam },
+          podSelector: { matchLabels: { 'factory.mrogan.dev/runner': 'agent', [RED_TEAM_LABEL]: 'egress' } },
+        },
+        ports: [{ protocol: 'TCP', port: 8080 }],
+      },
+    ]);
+    // An agent-labelled pod there without the egress attack's marker is not let in.
+    expect(selects(admitted[0]?.peer.podSelector, { 'factory.mrogan.dev/runner': 'agent' })).toBe(false);
+    expect(selects(admitted[0]?.peer.podSelector, { ...AGENT_POD, [RED_TEAM_LABEL]: 'image' })).toBe(false);
+  });
+  it('is guarded by the factory’s image policy', () => {
+    const images = one<Manifest & { spec: { matchConstraints: { namespaceSelector: LabelSelector } } }>(
+      'ImageValidatingPolicy',
+      'factory-images',
+    );
+    expect(selects(images.spec.matchConstraints.namespaceSelector, redTeam)).toBe(true);
   });
 });
 
 describe('the red-team pods’ admission rule', () => {
   const policy = one<ValidatingPolicy>('ValidatingPolicy', 'factory-red-team-pods');
   const text = () => policy.spec.validations.map((v) => v.expression).join('\n');
-  it('guards pods in runners: every pod the harness’s account creates, and any pod carrying the marker', () => {
+  it('guards pods in red-team and runners: every pod the harness’s account creates, and any carrying the marker', () => {
     expect(policy, 'the admission policy is rendered').toBeTruthy();
-    expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': 'runners' })).toBe(
-      true,
-    );
+    for (const ns of ['red-team', 'runners'])
+      expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': ns }), ns).toBe(
+        true,
+      );
     expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': 'factory' })).toBe(
       false,
     );
     const match = policy.spec.matchConditions.map((c) => c.expression).join('\n');
     expect(match).toContain(RED_TEAM_LABEL);
-    // RBAC lets the account create any pod in runners: one without the marker must meet this rule too, and fail it.
+    // RBAC lets the account create any pod there: one without the marker must meet this rule too, and fail it.
     expect(match).toContain("request.userInfo.username == 'system:serviceaccount:factory:red-team'");
     expect(text()).toContain(`'${RED_TEAM_LABEL}' in object.metadata.labels`);
   });

@@ -135,6 +135,7 @@ describe('the line’s relay of the GitHub worker’s refusals', () => {
 });
 
 const T = '2026-10-31T12:00:00Z';
+const UID = '0b6e8f3a-9d2c-4c71-8a5e-3f1d2b7c6a90';
 
 /** Kyverno's record of a request it blocked: on the policy, in `default`, the refused object related. */
 const blocked = (overrides: Partial<KubeEvent> = {}): KubeEvent => ({
@@ -186,6 +187,19 @@ describe('the denials an Event records', () => {
         }),
       ),
     ).toMatchObject({ cause: 'production', subject: { namespace: 'website', kind: 'IngressRoute' } });
+  });
+
+  it('reads Kyverno’s record of the image attack’s pod in red-team, the attacks’ namespace, as guardrail 3’s', () => {
+    const attack = blocked({
+      related: { kind: 'Pod', namespace: 'red-team', name: 'red-team-image-1a2b3c4d', uid: UID },
+    });
+    expect(denialOf(attack)).toEqual({
+      workItem: null,
+      cause: 'image',
+      action: 'Admit Pod red-team/red-team-image-1a2b3c4d, refused by factory-images',
+      output: attack.message,
+      subject: { namespace: 'red-team', kind: 'Pod', name: 'red-team-image-1a2b3c4d', uid: UID },
+    });
   });
 
   it('reads a controller’s record of a pod admission refused, on the work item whose runner it was', () => {
@@ -258,6 +272,7 @@ describe('the admission reader', () => {
     expect(asked).toEqual([
       '/api/v1/namespaces/factory/events?fieldSelector=reason%3DFailedCreate',
       '/api/v1/namespaces/runners/events?fieldSelector=reason%3DFailedCreate',
+      '/api/v1/namespaces/red-team/events?fieldSelector=reason%3DFailedCreate',
       '/api/v1/namespaces/website/events?fieldSelector=reason%3DFailedCreate',
       '/api/v1/namespaces/scoreboard/events?fieldSelector=reason%3DFailedCreate',
       '/api/v1/namespaces/flagd/events?fieldSelector=reason%3DFailedCreate',

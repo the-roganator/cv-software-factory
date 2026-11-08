@@ -252,7 +252,7 @@ describe('an attack', () => {
   });
 
   it('is not confirmed by a refusal recorded after its end', () => {
-    const pod = { namespace: 'runners', name: 'red-team-2019', uid: '00000000-0000-4000-8000-000000002019' };
+    const pod = { namespace: 'red-team', name: 'red-team-2019', uid: '00000000-0000-4000-8000-000000002019' };
     const { events } = launched('2019', 'image');
     const end = finished('2019', 'image', 'refused', [0], 1, { subject: { pod } });
     const kyverno = by(
@@ -300,7 +300,7 @@ describe('an attack', () => {
   });
 
   it('is refused by admission control only about the pod it asked for', () => {
-    const pod = { namespace: 'runners', name: 'red-team-2008', uid: '00000000-0000-4000-8000-000000002008' };
+    const pod = { namespace: 'red-team', name: 'red-team-2008', uid: '00000000-0000-4000-8000-000000002008' };
     const { events } = launched('2008', 'image');
     const kyverno = by(
       'factory_line',

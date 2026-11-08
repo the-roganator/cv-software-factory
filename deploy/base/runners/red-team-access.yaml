@@ -1,8 +1,8 @@
-# The red-team harness's right to make the egress and image attacks' pods in `runners` (apps/factory/src/red-team/pods.ts):
-# create, read, read the log of, and delete a pod, and nothing else. It cannot make a Job, read a Secret, or exec into
-# a pod. A pod it makes is held to a shape it cannot stray from by the red-team admission rule
-# (../admission/factory/red-team-pods.yaml), since RBAC cannot limit what a pod holds. The Role is in `runners`; the
-# harness's account is in `factory`.
+# The red-team harness's right to make the egress and image attacks' pods in `runners`, for a factory image that makes
+# them here rather than in `red-team` (../red-team/access.yaml): create, read, read the log of, and delete a pod.
+# Pod names are made as each pod is, so `resourceNames` cannot hold it to its own: here it reaches every pod, the line's
+# runners included. A pod it makes is held to a shape it cannot stray from by the red-team admission rule
+# (../admission/factory/red-team-pods.yaml), since RBAC cannot limit what a pod holds.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -13,6 +13,8 @@ import { type NewEvent, VERSIONS } from '@software-factory/events';
 import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
 import { guardrailsProvedBy, PROOFS, type ProofId } from '../../../../policy/guardrails.ts';
 import { type Resource, render } from '../../../../scripts/policy-hash.ts';
+import { NOT_RED_TEAM } from '../runners/jobs.ts';
+import { type ListedPod, runnerPodsOf } from './line.ts';
 import { type Context, ORDER, type Ran, TAKERS, type Taken, text } from './proofs.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
@@ -147,14 +149,10 @@ export async function run(args: string[]): Promise<number> {
     sql,
     kubeContext: context_,
     runnerPods: async () => {
-      const { stdout } = await exec('kubectl', ['--context', context_, '-n', 'runners', 'get', 'pods', '-o', 'json']);
-      const { items } = JSON.parse(stdout) as {
-        items: { metadata: { name: string; labels?: Record<string, string> } }[];
-      };
-      return items.map(({ metadata }) => ({
-        name: metadata.name,
-        ...(metadata.labels?.['factory.mrogan.dev/runner'] && { part: metadata.labels['factory.mrogan.dev/runner'] }),
-      }));
+      // The line's own runners: the selector leaves out the red-team harness's pods, and runnerPodsOf reads the labels too.
+      const kubectl = ['--context', context_, '-n', 'runners', 'get', 'pods', '-l', NOT_RED_TEAM, '-o', 'json'];
+      const { stdout } = await exec('kubectl', kubectl);
+      return runnerPodsOf((JSON.parse(stdout) as { items: ListedPod[] }).items);
     },
     ask: async (question) => {
       if (!process.stdin.isTTY) {

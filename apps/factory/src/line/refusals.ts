@@ -41,8 +41,11 @@ import { NAMESPACE as RUNNERS } from '../runners/jobs.ts';
 import type { Kube } from '../runners/kube.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 
-/** The namespaces admission control guards (ADR 0010): the line reads the Events in each. */
-export const GUARDED_NAMESPACES = ['factory', 'runners', 'website', 'scoreboard', 'flagd'] as const;
+/**
+ * The namespaces admission control guards (ADR 0010): the line reads the Events in each. `red-team` holds the
+ * red-team harness's attack pods, whose image attack waits for the line's record of its refusal (`../red-team/pods.ts`).
+ */
+export const GUARDED_NAMESPACES = ['factory', 'runners', 'red-team', 'website', 'scoreboard', 'flagd'] as const;
 
 /** Where Kyverno keeps its record of a request it blocked: on the policy, which is cluster-wide, so in `default`. */
 export const KYVERNO_EVENTS = 'default';

@@ -2,12 +2,12 @@
 # launches from the console, against the real mechanism, and records how it ended. It connects to the store as its own
 # role, `factory_redteam`, which alone may read his launches and append an attack's end. It is no member of the
 # workers' role: its NetworkPolicy and its Role grant exactly what the attacks need and nothing else
-# (network-policies.yaml, ../runners/red-team-access.yaml).
+# (network-policies.yaml, ../red-team/access.yaml).
 #
-# It creates the egress and image attacks' pods in `runners`, so it holds a service-account token; the red-team
-# admission rule (../admission/factory/red-team-pods.yaml) holds those pods to a shape it cannot stray from, since RBAC
-# cannot limit what a pod it creates holds. Attacks 2 and 3 it makes through the GitHub worker's attack door, on a port
-# of its own (GITHUB_ATTACK_URL): it holds no GitHub credential.
+# It creates the egress and image attacks' pods in `red-team`, a namespace of their own (../red-team), so it holds a
+# service-account token; the red-team admission rule (../admission/factory/red-team-pods.yaml) holds those pods to a
+# shape it cannot stray from, since RBAC cannot limit what a pod it creates holds. Attacks 2 and 3 it makes through the
+# GitHub worker's attack door, on a port of its own (GITHUB_ATTACK_URL): it holds no GitHub credential.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

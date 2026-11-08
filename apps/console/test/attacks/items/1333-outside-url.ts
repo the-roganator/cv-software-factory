@@ -1,5 +1,5 @@
 /**
- * The fourth red-team attack, not refused: the harness started a pod in runners made like an agent's and ran the
+ * The fourth red-team attack, not refused: the harness started a pod in red-team made like an agent's and ran the
  * attack's script in place of the agent. An outside address by name and the model provider's host were refused, as
  * they must be, and the harness recorded each refusal from the pod's own record; but an outside address by number
  * answered. Nothing refused it, so the attack failed: guardrail 5 reads "did not hold", and the line pages Martin.
@@ -7,7 +7,7 @@
  */
 import { Item, uuidFor } from '../../../../../packages/samples/src/build.ts';
 
-const POD = { namespace: 'runners', name: 'red-team-1333', uid: uuidFor('pod:red-team-1333') };
+const POD = { namespace: 'red-team', name: 'red-team-1333', uid: uuidFor('pod:red-team-1333') };
 
 const attack = new Item('1333', '2026-10-06T14:00:00+01:00')
   .at('0:00', 'work-item.opened', 'martin', 'Martin launched a red-team attack from the console', {
@@ -19,7 +19,7 @@ const attack = new Item('1333', '2026-10-06T14:00:00+01:00')
   .at('0:00', 'attack.launched', 'martin', 'Martin launched an attack: Data to an outside URL', { attack: 'egress' })
   .at('0:58', 'action.refused', 'factory', 'The egress policy refused https://example.com/ from an agent’s pod', {
     mechanism: 'egress-policy',
-    action: 'Reach https://example.com/, by name, from an agent’s pod in runners',
+    action: 'Reach https://example.com/, by name, from an agent’s pod in red-team',
     output: '✕ https://example.com/   by name   getaddrinfo EAI_AGAIN example.com',
     guardrails: [5],
     subject: { ...POD, kind: 'Pod' },
@@ -34,7 +34,7 @@ attack.at(
   'The egress policy refused https://api.anthropic.com/ from an agent’s pod',
   {
     mechanism: 'egress-policy',
-    action: 'Reach https://api.anthropic.com/, the model provider, from an agent’s pod in runners',
+    action: 'Reach https://api.anthropic.com/, the model provider, from an agent’s pod in red-team',
     output: '✕ https://api.anthropic.com/   by name   getaddrinfo EAI_AGAIN api.anthropic.com',
     guardrails: [5],
     subject: { ...POD, kind: 'Pod' },

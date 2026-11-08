@@ -45,8 +45,11 @@ updates:
       # fails the whole update. Remove once lefthook 2.1.16 or later is merged.
       - dependency-name: lefthook
         versions: ['2.1.15']
+    # A week for a major: postgres.js 4.0.0 lost LISTEN after a failed reconnect and leaked cached rows, and 4.1.0 fixed
+    # both a week later. The first release of a major is the one most often followed by a fix.
     cooldown:
       default-days: 3
+      semver-major-days: 7
     commit-message:
       prefix: chore
       include: scope
@@ -117,11 +120,16 @@ updates:
     commit-message:
       prefix: chore
       include: scope
-    # An image pinned in several directories moves in all of them in one pull request, an image to a pull request:
-    # distroless's digest in the console's and the factory's Dockerfiles, and Node in four, as scripts/image-pins.test.ts
-    # requires (Node's then waits for mise.toml, which follows by hand). Without `group-by`, a group here would make a
-    # pull request per directory instead; nothing makes one for every image.
+    # Node and the distroless runtime move together: the runtime's digest carries its own Node, which no tag names, so
+    # a bump of one alone leaves the build's Node and the runtime's apart, and passes every check while it does
+    # (scripts/image-pins.test.ts reads the tag, not the binary). Their pull request then waits for mise.toml, which
+    # follows by hand. Dependabot names an image without its registry (`distroless/nodejs24-debian13`, as its pull
+    # requests say), so the pattern leaves `gcr.io/` out. Every other image pinned in several directories moves in all
+    # of them in one pull request, an image to a pull request: without `group-by`, a group here would make a pull
+    # request per directory instead; nothing makes one for every image.
     groups:
+      node:
+        patterns: ['node', 'distroless/nodejs*']
       images:
         patterns: ['*']
         group-by: dependency-name

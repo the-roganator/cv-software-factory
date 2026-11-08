@@ -143,5 +143,6 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
 - The toolchain moves only when someone upgrades it: `mise upgrade`, which writes `mise.lock`, and both files in a `chore(toolchain)` pull request ([`CONTRIBUTING.md`](CONTRIBUTING.md#working-on-it) says how far each tool may move). Dependabot does not read mise.
 - pnpm installs no release younger than a day, runs no dependency's install script unless `pnpm-workspace.yaml` allows it, and refuses a provenance downgrade. When it refuses, find out why; an exception goes in that file with its reason.
 - Refresh a Dependabot pull request with `@dependabot rebase` or `@dependabot recreate`. Don't close it: that tells Dependabot to skip the version.
+- A bump of `@anthropic-ai/claude-agent-sdk` merges only after a bench run on Claude (`factory line bench`, as above) on the bumped package: the SDK is the agent loop every step runs in, and the tests replay cassettes, so a change in it shows only on a live step.
 - A follow-up with no home yet is a [GitHub issue](https://github.com/the-roganator/cv-software-factory/issues) (`/issue` drafts one to the standard), on the milestone it waits for if it has one; never a code comment.
 - Working notes that must never be committed (handovers, soak logs, drafts) go in `scratch/`. Git ignores it; `.ignore` keeps it searchable.

@@ -162,6 +162,9 @@ export const CLOSE_AGREES: readonly HoldCause[] = (Object.keys(ANSWERS) as HoldC
   (cause) => ANSWERS[cause].approved === 'close',
 );
 
+/** The agent whose closing a Close agrees with: the coder that found nothing to fix, or the planner that rejected it. */
+export const closedBy = (cause: HoldCause): 'coder' | 'planner' => (cause === 'nothing-to-fix' ? 'coder' : 'planner');
+
 /**
  * The longest path an event records, in characters: a file a patch changes, a scope entry, a review finding's file. A
  * patch that names a longer path is refused (`plainPath`), so a path the events could not record never reaches the

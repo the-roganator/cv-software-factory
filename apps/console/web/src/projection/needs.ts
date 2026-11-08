@@ -19,6 +19,7 @@ import {
   ANSWERS,
   answersTo,
   CLOSE_AGREES,
+  closedBy,
   type GateTag,
   type HoldAnswer,
   type HoldCause,
@@ -269,7 +270,7 @@ function doesOf(
   }
   // One Close, where approving would close it as well: it agrees with the agent that closed it.
   if (answer === 'rejected' && CLOSE_AGREES.includes(cause)) {
-    return `Agrees with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}, and closes #${workItem}. Nothing is built.`;
+    return `Agrees with the ${closedBy(cause)}, and closes #${workItem}. Nothing is built.`;
   }
   if (answer === 'rejected') {
     if (cause === 'deploy')
@@ -649,10 +650,11 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       // where it went says what it did.
       const plain =
         !answer && report && cause !== undefined && WORDED_ANSWERS.includes(decision) && sharesWords(cause, true);
+      const closes = decision === 'rejected' && cause !== undefined && CLOSE_AGREES.includes(cause);
       const how =
         plain && cause
           ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
-          : decision === 'rejected' && cause && CLOSE_AGREES.includes(cause)
+          : closes
             ? 'Closed'
             : HOW[decision];
       answered.push({
@@ -662,7 +664,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
         words:
           answer ??
           (report && cause && WORDED_ANSWERS.includes(decision) && !sharesWords(cause, true) ? 'kept' : undefined),
-        did: plain || how === 'Closed' ? undefined : didOf(cause, decision),
+        did: plain || closes ? undefined : didOf(cause, decision),
       });
     }
   }

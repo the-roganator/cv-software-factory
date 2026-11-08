@@ -113,6 +113,8 @@
 import {
   ALWAYS_HELD,
   ANSWERS,
+  CLOSE_AGREES,
+  closedBy,
   cutTo,
   type GateRule,
   type HoldAnswer,
@@ -1340,8 +1342,9 @@ function afterAnswer(answer: NonNullable<WorkItemState['answer']>, merged: boole
       };
     case 'close': {
       // Approving closes only a rejection, the planner's or the coder's finding nothing to fix: he agrees with it.
-      const agent = answer.cause === 'nothing-to-fix' ? 'coder' : 'planner';
-      const why = answer.decision === 'approved' ? `Martin agreed with the ${agent}` : 'Martin rejected it';
+      // Close stands in for approving there, so it agrees as approving does (`CLOSE_AGREES`).
+      const agrees = answer.decision === 'approved' || CLOSE_AGREES.includes(answer.cause);
+      const why = agrees ? `Martin agreed with the ${closedBy(answer.cause)}` : 'Martin rejected it';
       return { stage: 'held', next: { do: 'close', reason: cutTo(`${why}${said}`, 200), merged } };
     }
     case 'wait':

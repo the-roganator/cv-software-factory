@@ -1,6 +1,7 @@
 import {
   ANSWERS,
   answersTo,
+  CLOSE_AGREES,
   HOLD_CAUSES,
   type HoldCause,
   type PayloadOf,
@@ -1096,7 +1097,14 @@ describe('Martin’s answer to a hold', () => {
     for (const cause of HOLD_CAUSES.filter((c) => c !== 'canary')) {
       expect(decide([ticket, spec, held(cause, 'build'), answer('rejected', 'Not worth it')], facts)).toEqual({
         stage: 'held',
-        next: { do: 'close', reason: 'Martin rejected it: Not worth it', merged: false },
+        next: {
+          do: 'close',
+          // Close agrees with the agent that closed it, where approving would close it too.
+          reason: CLOSE_AGREES.includes(cause)
+            ? `Martin agreed with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}: Not worth it`
+            : 'Martin rejected it: Not worth it',
+          merged: false,
+        },
       });
     }
   });
@@ -1116,10 +1124,10 @@ describe('Martin’s answer to a hold', () => {
     });
   });
 
-  it('closes the work item when he agrees with the planner’s rejection, or rejects the ticket himself', () => {
+  it('closes the work item agreeing with the planner’s rejection, whether he approved it or closed it', () => {
     for (const [decision, reason] of [
       ['approved', 'Martin agreed with the planner'],
-      ['rejected', 'Martin rejected it'],
+      ['rejected', 'Martin agreed with the planner'],
     ] as const) {
       expect(decide([ticket, held('ticket-rejected', 'plan'), answer(decision)], facts)).toEqual({
         stage: 'held',

@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto';
 import {
   answersTo,
   CLOSE_AGREES,
+  closedBy,
   HOLD_ANSWERS,
   type HoldAnswer,
   type HoldCause,
@@ -250,7 +251,7 @@ function answerEvent(
     actor: 'martin',
     summary:
       decision === 'rejected' && CLOSE_AGREES.includes(cause)
-        ? `Martin closed #${workItem}, agreeing with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}`
+        ? `Martin closed #${workItem}, agreeing with the ${closedBy(cause)}`
         : `Martin ${DID[decision](workItem)}`,
     payload: {
       decision,
@@ -295,6 +296,10 @@ export async function answerHold(
         );
       }
       const report = await openedByReport(tx, workItem);
+      // Approving where Close does the same: one answer, his rejection, which agrees as approving would.
+      if (decision === 'approved' && CLOSE_AGREES.includes(open.cause)) {
+        throw new Refused('answer', 422, 'Close does what approving would here: it agrees, and closes it. Send that.');
+      }
       // Where words reach an agent only shared, they are taken only shared; anywhere else, never.
       const shares = sharesWords(open.cause, report);
       if (shared && !shares) {

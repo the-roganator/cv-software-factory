@@ -2437,7 +2437,8 @@ describe('Needs you', () => {
     expect((await browser.post(`/admin/holds/${none}/reject`, { hold: other.hold })).status).toBe(409);
     expect((await browser.post('/admin/holds/1a/reject', { hold: other.hold })).status).toBe(400);
     expect((await browser.post(`/admin/holds/${other.workItem}/reject`, { hold: 'not-a-hold' })).status).toBe(400);
-    expect((await browser.post(`/admin/holds/${other.workItem}/answer`, { hold: other.hold })).status).toBe(400);
+    // An answer in words with none takes none, and appends nothing.
+    expect((await browser.post(`/admin/holds/${other.workItem}/answer`, { hold: other.hold })).status).toBe(422);
     expect(
       (
         await browser.post(`/admin/holds/${other.workItem}/answer`, {
@@ -2453,12 +2454,14 @@ describe('Needs you', () => {
     const words = 'The spec contradicts files > keeps nothing of the other files in test/app.test.ts';
     const { workItem, hold } = await held('review', { stage: 'review' });
     // Words are his reason for it: none, or only spaces, is refused, having changed nothing.
-    for (const body of [{ hold }, { hold, words: '   ' }]) {
-      expect(await browser.post(`/admin/holds/${workItem}/replan`, body)).toMatchObject({
-        status: 400,
-        body: { refused: 'body', message: 'Send the hold, and your words.' },
-      });
-    }
+    expect(await browser.post(`/admin/holds/${workItem}/replan`, { hold })).toMatchObject({
+      status: 422,
+      body: { refused: 'words', message: 'That answer takes your words.' },
+    });
+    expect(await browser.post(`/admin/holds/${workItem}/replan`, { hold, words: '   ' })).toMatchObject({
+      status: 400,
+      body: { refused: 'body', message: 'Send the hold, and your words if it takes them.' },
+    });
     expect(await answers(workItem)).toEqual([]);
     const sent = await browser.post(`/admin/holds/${workItem}/replan`, { hold, words: `  ${words}  ` });
     expect(sent, JSON.stringify(sent.body)).toMatchObject({
@@ -2762,7 +2765,7 @@ describe('Needs you', () => {
     ]);
   });
 
-  it('refuses words on a work item a visitor’s report opened where no agent could read them, a question among them', async () => {
+  it('takes no words on a work item a visitor’s report opened, where no agent could read them', async () => {
     const { browser } = await signedIn();
     const report = await held('question', { report: true, stage: 'plan' });
     expect(
@@ -2779,7 +2782,42 @@ describe('Needs you', () => {
     expect(
       await browser.post(`/admin/holds/${gates.workItem}/answer`, { hold: gates.hold, words: 'Keep them' }),
     ).toMatchObject({ status: 422, body: { refused: 'answer' } });
-    // A question on any other work item still takes his words.
+    // Back to the planner from a gate's hold still tells it why the change was held, so it is taken, without words.
+    expect(
+      await browser.post(`/admin/holds/${gates.workItem}/replan`, { hold: gates.hold, words: 'Keep them' }),
+    ).toMatchObject({ status: 422, body: { refused: 'words' } });
+    expect((await browser.post(`/admin/holds/${gates.workItem}/replan`, { hold: gates.hold })).status).toBe(200);
+    // A review's sends it back to the coder with the review's findings: taken plain, and said so.
+    const review = await held('review', { report: true, stage: 'review' });
+    expect(
+      await browser.post(`/admin/holds/${review.workItem}/answer`, { hold: review.hold, words: 'Keep them' }),
+    ).toMatchObject({ status: 422, body: { refused: 'words' } });
+    expect((await browser.post(`/admin/holds/${review.workItem}/answer`, { hold: review.hold })).status).toBe(200);
+    const [back] = await answers(review.workItem);
+    expect(back?.payload).toEqual({ decision: 'answered', hold: review.hold, report: true });
+    expect(back?.public).toMatchObject({ summary: `Martin sent the hold on #${review.workItem} back to the coder` });
+    // A ticket the planner rejected takes no words there: the planner, run again, could not read them.
+    const rejected = await held('ticket-rejected', { report: true, stage: 'plan' });
+    expect(await browser.post(`/admin/holds/${rejected.workItem}/answer`, { hold: rejected.hold })).toMatchObject({
+      status: 422,
+      body: { refused: 'answer' },
+    });
+    // Approving it would close it as Close does: one answer, his rejection, which says he agreed.
+    expect(await browser.post(`/admin/holds/${rejected.workItem}/approve`, { hold: rejected.hold })).toMatchObject({
+      status: 422,
+      body: { refused: 'answer' },
+    });
+    expect((await browser.post(`/admin/holds/${rejected.workItem}/reject`, { hold: rejected.hold })).status).toBe(200);
+    expect((await answers(rejected.workItem))[0]?.public).toMatchObject({
+      summary: `Martin closed #${rejected.workItem}, agreeing with the planner`,
+      payload: { decision: 'rejected' },
+    });
+    // A question on any other work item still takes his words, and needs them.
+    const elsewhere = await held('review', { stage: 'review' });
+    expect(await browser.post(`/admin/holds/${elsewhere.workItem}/answer`, { hold: elsewhere.hold })).toMatchObject({
+      status: 422,
+      body: { refused: 'words' },
+    });
     const plain = await held('question', { stage: 'plan' });
     expect(
       (await browser.post(`/admin/holds/${plain.workItem}/answer`, { hold: plain.hold, words: 'Keep them' })).status,
@@ -2788,7 +2826,7 @@ describe('Needs you', () => {
 
   it('keeps his words from the public view on a work item a visitor’s report opened, at any stage', async () => {
     const { browser } = await signedIn();
-    for (const cause of ['suggestion', 'spec'] as const) {
+    for (const cause of ['suggestion', 'finding'] as const) {
       const { workItem, hold } = await held(cause, { report: true, stage: 'plan' });
       const said = await browser.post(`/admin/holds/${workItem}/answer`, { hold, words: 'Search should keep them' });
       expect(said.body).toMatchObject({ report: true });

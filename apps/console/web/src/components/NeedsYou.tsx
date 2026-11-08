@@ -21,7 +21,7 @@
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
-import { type HoldAnswer, MARTIN_ANSWER_CHARS, WORDED_ANSWERS } from '@software-factory/events';
+import { type HoldAnswer, MARTIN_ANSWER_CHARS } from '@software-factory/events';
 import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
@@ -381,7 +381,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
   }, [writing]);
 
   const send = async (answer: Need['answers'][number]) => {
-    const body = { hold: need.hold, ...(WORDED_ANSWERS.includes(answer.answer) && { words: words.trim() }) };
+    const body = { hold: need.hold, ...(answer.words && { words: words.trim() }) };
     await writes.send(`/admin/holds/${need.workItem}/${ROUTE[answer.answer]}`, body, {
       passkey: answer.stepUp
         ? {
@@ -411,7 +411,7 @@ function MartinsCard({ need, token, onOpen }: { need: Need; token: string } & Pl
         <WayForward way={need.way} martin />
         {need.answers.map((row) => (
           <div className="answer" key={row.answer}>
-            {WORDED_ANSWERS.includes(row.answer) ? (
+            {row.words ? (
               <button
                 type="button"
                 className="btn small"

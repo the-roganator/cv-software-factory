@@ -15,9 +15,13 @@
  *   merge, which Martin does on GitHub, a deploy, which a release ends by itself, or a suggestion, which never starts
  *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is
  *   taken only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests
- *   first), and only with his words, which are his reason for it. Words on a question on a work item a visitor's
- *   report opened are refused too (`WORDS_UNREAD_ON_REPORT`): they stay his, so the agent that asked could never read
- *   them, and would only ask again.
+ *   first), with his words, which are his reason for it. On a work item a visitor's report opened, no answer takes
+ *   words but on triage's holds, which wait for him (`takesWords`): his words there stay his, so no agent could read
+ *   them, and would only hand back the same again. Words sent there are refused, as is an answer that goes with words
+ *   elsewhere, unless it still sends the work back with something the line tells the agent, and then it takes none
+ *   (`PLAIN_ON_REPORT`). Two answers that take no words and do the same are one (`sameAs`): approving the planner's
+ *   rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and its
+ *   summary says he closed it, agreeing.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
@@ -29,13 +33,18 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
+  ANSWERS,
   answersTo,
+  CLOSE_AGREES,
+  closedBy,
   HOLD_ANSWERS,
   type HoldAnswer,
   type HoldCause,
   MARTIN_ANSWER_CHARS,
   type NewEvent,
   type RawEvent,
+  type Resolution,
+  takesWords,
   upcast,
   VERSIONS,
   WORDED_ANSWERS,
@@ -51,9 +60,12 @@ import { type AdminStore, Refused, type Session, steppedUpNow } from './store.ts
 export const WORK_ITEM = /^[1-9][0-9]{0,8}$/;
 
 const hold = z.strictObject({ hold: z.uuid() });
-const withWords = hold.extend({ words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS) });
+const withWords = hold.extend({ words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS).optional() });
 
-/** What an answer sends: the hold the card showed, and for those that go with words (`WORDED_ANSWERS`), the words. */
+/**
+ * What an answer sends: the hold the card showed, and for those that go with words (`WORDED_ANSWERS`), the words,
+ * which the hold's cause and work item say whether it takes (`takesWords`), as the answer is taken.
+ */
 export const ANSWER = Object.fromEntries(
   HOLD_ANSWERS.map((answer) => [answer, WORDED_ANSWERS.includes(answer) ? withWords : hold]),
 ) as Record<HoldAnswer, typeof hold | typeof withWords>;
@@ -214,8 +226,19 @@ const DID: Record<HoldAnswer, (workItem: string) => string> = {
   replanned: (workItem) => `sent the hold on #${workItem} back to the planner`,
 };
 
+/** Where an answer in words given without them sent the work, by what it does for the hold's cause. */
+const BACK: Partial<Record<Resolution, string>> = { return: 'the coder', replan: 'the planner' };
+
 /** Martin's answer, as he gave it. */
-function answerEvent(workItem: string, decision: HoldAnswer, hold: string, report: boolean, words?: string): NewEvent {
+function answerEvent(
+  workItem: string,
+  cause: HoldCause,
+  decision: HoldAnswer,
+  hold: string,
+  report: boolean,
+  words?: string,
+): NewEvent {
+  const back = decision === 'answered' && words === undefined ? BACK[ANSWERS[cause][decision]] : undefined;
   return {
     id: randomUUID(),
     ts: new Date().toISOString(),
@@ -223,7 +246,11 @@ function answerEvent(workItem: string, decision: HoldAnswer, hold: string, repor
     type: 'hold.answered',
     version: VERSIONS['hold.answered'],
     actor: 'martin',
-    summary: `Martin ${DID[decision](workItem)}`,
+    summary: back
+      ? `Martin sent the hold on #${workItem} back to ${back}`
+      : decision === 'rejected' && CLOSE_AGREES.includes(cause)
+        ? `Martin closed #${workItem}, agreeing with the ${closedBy(cause)}`
+        : `Martin ${DID[decision](workItem)}`,
     payload: { decision, ...(words !== undefined && { answer: words }), hold, ...(report && { report: true }) },
     artifacts: [],
   } as NewEvent;
@@ -260,8 +287,23 @@ export async function answerHold(
         );
       }
       const report = await openedByReport(tx, workItem);
+      // Approving where Close does the same: one answer, his rejection, which agrees as approving would.
+      if (decision === 'approved' && CLOSE_AGREES.includes(open.cause)) {
+        throw new Refused('answer', 422, 'Close does what approving would here: it agrees, and closes it. Send that.');
+      }
       if (!answersTo(open.cause, report).includes(decision)) {
         throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
+      }
+      const takes = takesWords(open.cause, decision, report);
+      if (takes && given.words === undefined) throw new Refused('words', 422, 'That answer takes your words.');
+      if (!takes && given.words !== undefined) {
+        throw new Refused(
+          'words',
+          422,
+          report
+            ? 'A visitor’s report opened this, so your words would stay yours, and no agent would read them: send it without them.'
+            : 'That answer takes no words.',
+        );
       }
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(open.cause);
       const asks =
@@ -274,9 +316,9 @@ export async function answerHold(
         // Asked again as the answer is taken, after the lock: the passkey given may have gone stale while it waited.
         if (!(await steppedUpNow(tx, session))) throw new Refused('step-up', 403, 'This needs your passkey again.');
       }
-      return { report };
+      return { report, cause: open.cause };
     },
-    ({ report }) => [answerEvent(workItem, decision, given.hold, report, given.words)],
+    ({ report, cause }) => [answerEvent(workItem, cause, decision, given.hold, report, given.words)],
   );
   return { workItem, hold: given.hold, decision, report };
 }

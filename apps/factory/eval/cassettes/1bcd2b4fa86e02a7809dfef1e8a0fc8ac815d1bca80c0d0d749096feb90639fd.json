@@ -1,0 +1,30 @@
+{
+  "key": "1bcd2b4fa86e02a7809dfef1e8a0fc8ac815d1bca80c0d0d749096feb90639fd",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T16:19:00.326Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/search",
+      "report": "I searched for rope and it says \"3 results\", then lists five ropes underneath."
+    },
+    "questions": {
+      "passage": {
+        "type": "choice",
+        "instructions": "Which passage of the page is the report about?",
+        "criteria": {
+          "p1": "Search the catalogue",
+          "p2": "3 results",
+          "p3": "Sisal rope",
+          "p4": "Jute rope",
+          "p5": "Nylon rope",
+          "p6": "Hemp rope",
+          "p7": "Cotton rope",
+          "none": "None of these passages"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"passage\":{\"type\":\"choice\",\"choice\":\"p2\",\"confidence\":0.99,\"probabilities\":{\"p1\":0.01,\"p2\":0.99,\"p3\":0.0,\"p4\":0.0,\"p5\":0.0,\"p6\":0.0,\"p7\":0.0,\"none\":0.0}}},\"usage\":{\"input_tokens\":437,\"output_tokens\":82}}"
+}

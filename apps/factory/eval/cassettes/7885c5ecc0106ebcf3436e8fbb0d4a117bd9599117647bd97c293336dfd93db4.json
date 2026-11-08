@@ -1,13 +1,13 @@
 {
-  "key": "737d134be540530cdbd26535f0bc4480c6c52ee46aa4455c830f9e09a29d6e4b",
+  "key": "7885c5ecc0106ebcf3436e8fbb0d4a117bd9599117647bd97c293336dfd93db4",
   "provider": "typesafe",
   "model": "jev-1.13.0",
-  "recordedAt": "2026-10-16T06:34:01.005Z",
+  "recordedAt": "2026-11-08T16:18:46.921Z",
   "request": {
     "model": "jev-1.13.0",
     "state": {
-      "page": "/products/watering-can",
-      "report": "It says \"only 2 left\" on the product page and \"out of stock\" on the list, at the same time."
+      "page": "/products",
+      "report": "Sale items and full-price items are marked only by a green or red dot. I am colour blind and cannot tell them apart."
     },
     "questions": {
       "category": {
@@ -68,5 +68,5 @@
       }
     }
   },
-  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"category\":{\"type\":\"choice\",\"choice\":\"functional\",\"confidence\":0.97,\"probabilities\":{\"content\":0.03,\"navigation\":0.0,\"functional\":0.97,\"errors\":0.0,\"performance\":0.0,\"accessibility\":0.0,\"security\":0.0,\"observability\":0.0,\"suggestion\":0.0,\"not-a-defect\":0.0}},\"symptom\":{\"type\":\"choice\",\"choice\":\"wrong-result\",\"confidence\":1.0,\"probabilities\":{\"broken-link\":0.0,\"broken-image\":0.0,\"redirect-loop\":0.0,\"wrong-result\":1.0,\"rejects-valid-input\":0.0,\"server-error\":0.0,\"browser-error\":0.0,\"slow-response\":0.0,\"not-cached\":0.0,\"missing-alt\":0.0,\"low-contrast\":0.0,\"unlabelled-field\":0.0,\"missing-header\":0.0,\"leaks-detail\":0.0,\"missing-log\":0.0,\"wrong-metric\":0.0}},\"severity\":{\"type\":\"score\",\"score\":2.16,\"confidence\":0.66,\"legend\":{\"0\":\"No harm: nothing is wrong, or nothing that affects a visitor\",\"1\":\"Cosmetic: a visitor may notice, and can still do what they came to do\",\"2\":\"Degraded: it works, but worse than it should\",\"3\":\"Broken: a visitor cannot do what they came to do\"},\"probabilities\":{\"0\":0.0,\"1\":0.09,\"2\":0.66,\"3\":0.25}},\"injection\":{\"type\":\"noul\",\"noul\":0.02}},\"usage\":{\"input_tokens\":1311,\"output_tokens\":286}}"
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"category\":{\"type\":\"choice\",\"choice\":\"accessibility\",\"confidence\":1.0,\"probabilities\":{\"content\":0.0,\"navigation\":0.0,\"functional\":0.0,\"errors\":0.0,\"performance\":0.0,\"accessibility\":1.0,\"security\":0.0,\"observability\":0.0,\"suggestion\":0.0,\"not-a-defect\":0.0}},\"symptom\":{\"type\":\"choice\",\"choice\":\"missing-alt\",\"confidence\":0.34,\"probabilities\":{\"broken-link\":0.0,\"broken-image\":0.0,\"redirect-loop\":0.0,\"wrong-result\":0.27,\"rejects-valid-input\":0.0,\"server-error\":0.0,\"browser-error\":0.0,\"slow-response\":0.0,\"not-cached\":0.0,\"missing-alt\":0.38,\"low-contrast\":0.32,\"unlabelled-field\":0.03,\"missing-header\":0.0,\"leaks-detail\":0.0,\"missing-log\":0.0,\"wrong-metric\":0.0}},\"severity\":{\"type\":\"score\",\"score\":2.58,\"confidence\":0.58,\"legend\":{\"0\":\"No harm: nothing is wrong, or nothing that affects a visitor\",\"1\":\"Cosmetic: a visitor may notice, and can still do what they came to do\",\"2\":\"Degraded: it works, but worse than it should\",\"3\":\"Broken: a visitor cannot do what they came to do\"},\"probabilities\":{\"0\":0.0,\"1\":0.01,\"2\":0.4,\"3\":0.59}},\"injection\":{\"type\":\"noul\",\"noul\":0.02}},\"usage\":{\"input_tokens\":1306,\"output_tokens\":289}}"
 }

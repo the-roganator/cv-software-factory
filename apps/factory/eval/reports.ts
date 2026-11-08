@@ -186,16 +186,24 @@ export const REPORTS: EvalReport[] = [
     why: 'A unit price that disagrees with the pack price: a wrong sum, or a wrong label. Either category is fair.',
   },
   {
-    id: 'functional-stock',
-    page: '/products/watering-can',
-    route: '/products/:slug',
-    text: 'It says "only 2 left" on the product page and "out of stock" on the list, at the same time.',
-    passages: ['Watering can, two gallons', '£18.00', 'Galvanised steel, with a brass rose.', 'Only 2 left'],
-    elements: [
-      { kind: 'field', label: 'Quantity', name: 'quantity', type: 'number' },
-      { kind: 'button', text: 'Add to basket' },
+    id: 'functional-result-count',
+    page: '/search',
+    route: '/search',
+    text: 'I searched for rope and it says "3 results", then lists five ropes underneath.',
+    passages: [
+      'Search the catalogue',
+      '3 results',
+      'Sisal rope',
+      'Jute rope',
+      'Nylon rope',
+      'Hemp rope',
+      'Cotton rope',
     ],
-    expect: { ...ticket('ticket', 'functional'), point: 'Only 2 left' },
+    elements: [
+      { kind: 'field', label: 'Search', name: 'q', type: 'search' },
+      { kind: 'button', text: 'Search' },
+    ],
+    expect: { ...ticket('ticket', 'functional'), point: '3 results' },
   },
 
   // Errors.
@@ -236,7 +244,7 @@ export const REPORTS: EvalReport[] = [
     id: 'accessibility-colour-only',
     page: '/products',
     route: '/products',
-    text: 'In stock and out of stock are shown only by a green or red dot. I am colour blind and cannot tell them apart.',
+    text: 'Sale items and full-price items are marked only by a green or red dot. I am colour blind and cannot tell them apart.',
     expect: ticket('ticket', 'accessibility'),
   },
   {

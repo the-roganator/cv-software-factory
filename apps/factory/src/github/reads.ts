@@ -21,7 +21,7 @@
 import { z } from 'zod';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import { type GitHub, GitHubError } from './client.ts';
-import { type DeployProposal, type DeployProposals, deployedImage } from './deploys.ts';
+import { type DeployBuild, type DeployProposal, type DeployProposals, deployedImage } from './deploys.ts';
 import {
   conflictsOf,
   heldFor,
@@ -161,6 +161,8 @@ export interface Reads {
   imageSigned(repo: string, image: string, digest: string): Promise<Signed>;
   /** The open deploy pull request from a deploy branch, as the deploy watch last saw or made it; null when none. */
   deployProposal(repo: string, branch: string): Promise<DeployProposal | null>;
+  /** The newest build of a deploy of one pin file, and whether it is signed, as the deploy watch last found it. */
+  deployBuild(repo: string, branch: string): Promise<DeployBuild | null>;
   /** The review gate's verdict on a pull request's current head, from the review App's `review` check alone. */
   reviewVerdict(repo: string, number: number): Promise<ReviewVerdict>;
   /** A pull request's place in the merge queue, the last time it left it and why, and the queue's checks. */
@@ -644,6 +646,10 @@ export class LiveReads implements Reads {
 
   async deployProposal(repo: string, branch: string): Promise<DeployProposal | null> {
     return this.#release().proposals.get(repo, branch);
+  }
+
+  async deployBuild(repo: string, branch: string): Promise<DeployBuild | null> {
+    return this.#release().proposals.build(repo, branch);
   }
 
   #release(): ReleaseSources {

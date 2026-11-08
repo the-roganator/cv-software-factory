@@ -61,6 +61,7 @@ function live(asked: string[] = []): Reads {
     imageRevision: async () => SHA,
     imageSigned: async () => ({ signed: true, reason: null }),
     deployProposal: async () => ({ number: 30, commit: SHA, pinned: null, digests: [] }),
+    deployBuild: async () => null,
     reviewVerdict: async (_repo, number) => {
       asked.push(`reviewVerdict ${number}`);
       const head = 'c'.repeat(40);

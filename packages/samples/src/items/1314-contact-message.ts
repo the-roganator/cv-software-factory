@@ -4,7 +4,7 @@
  * errors and latency each minute, and the line records each look a pass later: the first before the canary has had
  * the 100 requests that judge them, and the journeys, a Job of their own, once, on their own.
  */
-import { commitFor, Item, type LookFigures, started, stepped } from '../build.ts';
+import { commitFor, digestFor, Item, type LookFigures, started, stepped } from '../build.ts';
 
 /**
  * Each version's figures over the three minutes to a look, at five requests a second, 900 in all: the canary has a
@@ -93,8 +93,32 @@ export default new Item('1314', '2026-10-06T09:00:00+01:00')
     cause: 'deploy',
     reason: 'The fix in pull request #1316 is merged, and waits for a deploy pull request to carry it to the shop',
   })
-  .deploy('1:20:00', 1330, 1, 'checking')
-  .deploy('1:24:30', 1330, 1, 'passed')
+  // Its build's signing failed, and the deploy watch proposes no build its pipeline did not sign: once signing has had
+  // its half hour, the line says so on the work item, naming the job. Martin runs the job again, and the build is
+  // signed; the App opens the deploy pull request that carries it.
+  .at(
+    '1:46:00',
+    'build.unsigned',
+    'factory',
+    `The build of ${commitFor('1314/merge').slice(0, 7)} that carries it was never signed: sign and attest did not succeed, so no deploy pull request carries it`,
+    {
+      commit: commitFor('1314/merge'),
+      image: 'the-roganator/cv-worlds-worst-website',
+      digest: digestFor('1314/merge'),
+      signature: 'unsigned',
+      reason: `the-roganator/cv-worlds-worst-website@${digestFor('1314/merge')} has no signature`,
+      job: { run: 18_812_345_678, id: 53_412_345_678, name: 'sign and attest' },
+    },
+  )
+  .at(
+    '2:03:00',
+    'build.signed',
+    'factory',
+    `A build that carries it, of ${commitFor('1314/merge').slice(0, 7)}, is signed by its pipeline`,
+    { commit: commitFor('1314/merge'), digest: digestFor('1314/merge') },
+  )
+  .deploy('2:05:00', 1330, 1, 'checking')
+  .deploy('2:09:30', 1330, 1, 'passed')
   .deploy('6:16:00', 1330, 1, 'merged')
   .at(
     '6:18:00',

@@ -191,3 +191,6 @@ export const AGENT_NAME: Record<string, string> = {
 
 /** The app's repository, where the factory's pull requests are. */
 export const APP_REPO = 'https://github.com/the-roganator/cv-worlds-worst-website';
+
+/** A job of the app's workflows on GitHub, by its run's and its own ids. */
+export const jobUrl = (job: { run: number; id: number }) => `${APP_REPO}/actions/runs/${job.run}/job/${job.id}`;

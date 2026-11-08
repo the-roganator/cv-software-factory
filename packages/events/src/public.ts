@@ -103,6 +103,8 @@ export const PUBLIC_VIEWS = {
   'pull-request.enqueued': redacted,
   'pull-request.dequeued': redacted,
   'pull-request.merged': redacted,
+  'build.unsigned': redacted,
+  'build.signed': redacted,
   'deploy.changed': redacted,
   'release.started': redacted,
   'canary.stepped': redacted,

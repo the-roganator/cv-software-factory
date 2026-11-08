@@ -390,8 +390,13 @@ test.describe('a sheet’s releases', () => {
   });
 
   test('says a wait for Martin’s deploy, and a return from Verify, in the design’s words', async ({ page }) => {
-    // #1314's deploy pull request passed its checks, and waited for Martin, before he merged it.
-    await page.goto(consoleUrl({ item: '1314', sheet: true, at: Date.parse('2026-10-06T09:30:00Z') }));
+    // Before #1314's deploy pull request opened, its build was not signed: the sheet says so, and names the build.
+    await page.goto(consoleUrl({ item: '1314', sheet: true, at: Date.parse('2026-10-06T09:50:00Z') }));
+    await expect(page.getByRole('dialog').locator('.deploy-wait')).toContainText('Merged · its build not signed');
+    await expect(page.locator('.facts-dl')).toContainText('not signed');
+    await expect(page.locator('.facts-dl').getByRole('link', { name: /on GitHub$/ })).toHaveCount(0);
+    // Its deploy pull request then passed its checks, and waited for Martin, before he merged it.
+    await page.goto(consoleUrl({ item: '1314', sheet: true, at: Date.parse('2026-10-06T10:30:00Z') }));
     await expect(page.getByRole('dialog').locator('.deploy-wait')).toContainText(
       'Merged · waiting for Martin’s deploy',
     );

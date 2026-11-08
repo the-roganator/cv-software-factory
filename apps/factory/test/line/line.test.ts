@@ -8,6 +8,7 @@ import { DiskArtifacts, EventWriter, flagsTaken, nextWorkItem } from '@software-
 import { listenLocal } from '@software-factory/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { DryRunActions } from '../../src/github/actions.ts';
+import type { DeployBuild } from '../../src/github/deploys.ts';
 import { DryRunReads } from '../../src/github/dry-run-reads.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import type { Reads } from '../../src/github/reads.ts';
@@ -1687,6 +1688,7 @@ describe('the line', () => {
       imageRevision: no('such image'),
       imageSigned: no('such image'),
       deployProposal: async () => null,
+      deployBuild: async () => null,
       reviewVerdict: no('such pull request'),
       mergeQueue: no('such pull request'),
       mergeability: no('such pull request'),
@@ -2339,6 +2341,7 @@ describe('the line', () => {
         imageRevision: no('such image'),
         imageSigned: no('such image'),
         deployProposal: async () => null,
+        deployBuild: async () => null,
         reviewVerdict: no('such pull request'),
         mergeQueue: no('such pull request'),
         mergeability: no('such pull request'),
@@ -2768,6 +2771,105 @@ describe('the deploy pull request that carries a held work item', () => {
       'Deploy pull request #30, which carries it, merged: its release starts once Argo CD syncs',
     ]);
     expect(await stage(workItem)).toBe('held');
+  });
+
+  /** The deploy watch's newest build, of `commit` over `1`, and how its signature stands. */
+  const built = (
+    commit: string,
+    signature: DeployBuild['signature'],
+    more: Partial<DeployBuild> = {},
+  ): DeployBuild => ({
+    commit,
+    pinned: sha('1'),
+    image: 'the-roganator/cv-worlds-worst-website',
+    digest: `sha256:${commit.slice(0, 1).repeat(64)}`,
+    signature,
+    ...more,
+  });
+
+  it('records a build that carries it as unsigned, once, with the job that failed, and then that one is signed', async () => {
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
+    github.deployCommits = [sha('2'), sha('3')];
+    // Still signing: the hold's own reason says what it waits for.
+    github.build = built(sha('3'), 'signing');
+    await pass();
+    expect(await payloads(workItem, 'build.unsigned')).toEqual([]);
+    const job = { run: 900, id: 2, name: 'sign and attest' };
+    github.build = built(sha('3'), 'unsigned', { reason: 'no signature', job });
+    await pass();
+    await pass();
+    expect(await payloads(workItem, 'build.unsigned')).toEqual([
+      {
+        commit: sha('3'),
+        image: 'the-roganator/cv-worlds-worst-website',
+        digest: `sha256:${'3'.repeat(64)}`,
+        signature: 'unsigned',
+        reason: 'no signature',
+        job,
+      },
+    ]);
+    expect(await summaries(workItem, 'build.unsigned')).toEqual([
+      'The build of 3333333 that carries it was never signed: sign and attest did not succeed, so no deploy pull request carries it',
+    ]);
+    // Its signing job run again, the same build is signed: said once, and the deploy pull request is waited for.
+    github.build = built(sha('3'), 'signed');
+    await pass();
+    await pass();
+    expect(await payloads(workItem, 'build.signed')).toEqual([
+      { commit: sha('3'), digest: `sha256:${'3'.repeat(64)}` },
+    ]);
+    // A newer build whose signatures are refused is a build of its own.
+    github.deployCommits = [sha('2'), sha('3'), sha('4')];
+    github.build = built(sha('4'), 'refused', { reason: 'signed by them' });
+    await pass();
+    expect((await payloads(workItem, 'build.unsigned')).map((p) => [p.commit, p.signature, p.job])).toEqual([
+      [sha('3'), 'unsigned', job],
+      [sha('4'), 'refused', undefined],
+    ]);
+    expect(await stage(workItem)).toBe('held');
+  });
+
+  it('says the build again once the job that failed on it is found', async () => {
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
+    github.deployCommits = [sha('2'), sha('3')];
+    github.build = built(sha('3'), 'unsigned', { reason: 'no signature' });
+    await pass();
+    github.build = built(sha('3'), 'unsigned', {
+      reason: 'no signature',
+      job: { run: 9, id: 10, name: 'sign and attest' },
+    });
+    await pass();
+    await pass();
+    expect((await payloads(workItem, 'build.unsigned')).map((p) => p.job?.id)).toEqual([undefined, 10]);
+  });
+
+  it('records no build as unsigned on a work item whose deploy pull request is recorded open, though the watch knows none', async () => {
+    const workItem = await heldForDeploy(sha('2'));
+    const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
+    propose(github, sha('d'));
+    await pass();
+    // The GitHub worker started again, and its newest build is refused: it knows no proposal yet.
+    github.deploy = null;
+    github.deployCommits = [sha('2'), sha('3'), sha('4')];
+    github.build = built(sha('4'), 'refused', { reason: 'signed by them' });
+    await pass();
+    expect(await payloads(workItem, 'build.unsigned')).toEqual([]);
+  });
+
+  it('records no build as unsigned on a work item the open deploy pull request carries', async () => {
+    const carried = await heldForDeploy(sha('2'));
+    const after = await heldForDeploy(sha('4'), '/cart');
+    const { pass, github } = line(AGENTS, events, { deployEveryMs: 0 });
+    github.history = ['1', '2', '3', '4'].map(sha);
+    // The pull request runs 3, carrying the first; the newest build, of 4, carries both, and is not signed.
+    propose(github, sha('d'));
+    github.build = built(sha('4'), 'unsigned', { reason: 'no signature' });
+    await pass();
+    expect(await payloads(carried, 'build.unsigned')).toEqual([]);
+    expect((await payloads(after, 'build.unsigned')).map((p) => p.commit)).toEqual([sha('4')]);
+    expect(await changes(carried)).toEqual([{ pullRequest: DEPLOY, head: 'd', state: 'checking' }]);
   });
 
   it('reads a recorded pull request by its number once the watch knows none, and takes no empty proposal for a close', async () => {

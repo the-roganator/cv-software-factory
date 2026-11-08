@@ -125,6 +125,8 @@ function github(
     openedBy?: number;
     /** Whether GitHub fails to compare two commits, until told otherwise. */
     failCompare?: boolean;
+    /** The check runs on each commit, by its SHA: none, unless a test says otherwise; a status fails the read. */
+    checkRuns?: (sha: string) => unknown[] | number;
   } = {},
 ) {
   const { repo } = target;
@@ -147,6 +149,16 @@ function github(
   };
   const routes: Route[] = [
     { method: 'GET', path: `/repos/${repo}/git/ref/heads/main`, answer: () => ({ body: { object: { sha: main } } }) },
+    {
+      method: 'GET',
+      path: new RegExp(`^/repos/${repo}/commits/[0-9a-f]{40}/check-runs\\?per_page=100$`),
+      answer: ({ path }) => {
+        const runs = options.checkRuns?.(/commits\/([0-9a-f]{40})\//.exec(path)?.[1] ?? '') ?? [];
+        return typeof runs === 'number'
+          ? { status: runs, body: { message: 'Server Error' } }
+          : { body: { check_runs: runs } };
+      },
+    },
     {
       method: 'GET',
       path: /\/contents\/.+\?ref=/,
@@ -1125,6 +1137,153 @@ describe('the deploy watch and signatures', () => {
     };
     await expect(watch(gh, FACTORY, ghcr(), undefined, { check: unreachable })()).rejects.toBeInstanceOf(RegistryError);
     expect(writes(gh.sent)).toEqual([]);
+  });
+});
+
+describe('the newest build, as the line reads it', () => {
+  const APP_REPO = APP.repo;
+  const APP_PINS = { [APP_PIN.file]: APP_PIN_FILE };
+  const WEBSITE = 'the-roganator/cv-worlds-worst-website';
+  /** A check run GitHub Actions posted for one of the app's build jobs. */
+  const job = (id: number, name: string, conclusion: string | null, run = 900) => ({
+    id,
+    name,
+    status: conclusion === null ? 'in_progress' : 'completed',
+    conclusion,
+    app: { slug: 'github-actions' },
+    html_url: `https://github.com/${APP_REPO}/actions/runs/${run}/job/${id}`,
+  });
+
+  it('says the newest build is signing, then signed, with the image it checked', async () => {
+    const proposals = new DeployProposals();
+    const signed = signatures([digest('7')]);
+    const pass = watch(github(APP, { pins: APP_PINS }), APP, ghcr(), undefined, signed, quiet, () => 0, proposals);
+    await pass();
+    const base = { commit: commit('b'), pinned: commit('a'), image: WEBSITE, digest: digest('7') };
+    expect(proposals.build(APP_REPO, APP.branch)).toEqual({ ...base, signature: 'signing' });
+    signed.unsigned.length = 0;
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)).toEqual({ ...base, signature: 'signed' });
+  });
+
+  it('says a build unsigned past the grace is, with the build job that failed on its commit', async () => {
+    let clock = 0;
+    const proposals = new DeployProposals();
+    const gh = github(APP, {
+      pins: APP_PINS,
+      checkRuns: (sha) =>
+        sha === commit('b')
+          ? [
+              job(1, 'build and push', 'success'),
+              job(2, 'sign and attest', 'failure'),
+              // Another workflow's job, and another app's check, are not the build's.
+              job(3, 'analyse', 'failure'),
+              { ...job(4, 'sign and attest', 'failure'), app: { slug: 'someone-else' } },
+            ]
+          : [],
+    });
+    const pass = watch(gh, APP, ghcr(), undefined, signatures([digest('7')]), quiet, () => clock, proposals);
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.signature).toBe('signing');
+    // Nothing is read of the check runs while signing still has its time.
+    expect(calls(gh.sent).filter((c) => c.path.includes('/check-runs'))).toEqual([]);
+    clock = SIGNING_GRACE_MS;
+    await pass();
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)).toEqual({
+      commit: commit('b'),
+      pinned: commit('a'),
+      image: WEBSITE,
+      digest: digest('7'),
+      signature: 'unsigned',
+      reason: `${WEBSITE}@${digest('7')} has no signature`,
+      job: { run: 900, id: 2, name: 'sign and attest' },
+    });
+    // Read each pass the build is not signed, and only then.
+    expect(calls(gh.sent).filter((c) => c.path.includes('/check-runs'))).toHaveLength(2);
+    expect(writes(gh.sent)).toEqual([]);
+  });
+
+  it('says a build whose signatures are refused is, with no job when none of the build’s failed', async () => {
+    const proposals = new DeployProposals();
+    const gh = github(APP, { pins: APP_PINS, checkRuns: () => [job(1, 'build and push', 'success')] });
+    await watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals)();
+    expect(proposals.build(APP_REPO, APP.branch)).toEqual({
+      commit: commit('b'),
+      pinned: commit('a'),
+      image: WEBSITE,
+      digest: digest('7'),
+      signature: 'refused',
+      reason: `${WEBSITE}@${digest('7')} has no signature by them`,
+    });
+  });
+
+  it('says an unsigned build without its job while the check runs cannot be read, and reads them again', async () => {
+    let fail = true;
+    const proposals = new DeployProposals();
+    const gh = github(APP, {
+      pins: APP_PINS,
+      checkRuns: () => (fail ? 502 : [job(2, 'sign and attest', 'cancelled', 901)]),
+    });
+    const pass = watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals);
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)).toMatchObject({ signature: 'refused' });
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
+    fail = false;
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toEqual({ run: 901, id: 2, name: 'sign and attest' });
+  });
+
+  it('looks again for the job that failed while the build’s jobs are still running, and takes each job’s latest run', async () => {
+    let running = true;
+    let rerun = false;
+    const proposals = new DeployProposals();
+    const gh = github(APP, {
+      pins: APP_PINS,
+      checkRuns: () => [
+        job(2, 'sign and attest', running ? null : 'failure'),
+        ...(rerun ? [job(5, 'sign and attest', null, 902)] : []),
+      ],
+    });
+    const pass = watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals);
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
+    running = false;
+    await pass();
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toEqual({ run: 900, id: 2, name: 'sign and attest' });
+    // Martin runs it again: while the re-run goes, the failure before it is not the job to link.
+    rerun = true;
+    await pass();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
+  });
+
+  it('links no job whose address is not one of the repository’s runs', async () => {
+    const proposals = new DeployProposals();
+    const elsewhere = { ...job(2, 'sign and attest', 'failure'), html_url: 'https://example.com/actions/runs/1/job/2' };
+    const gh = github(APP, { pins: APP_PINS, checkRuns: () => [elsewhere] });
+    await watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals)();
+    expect(proposals.build(APP_REPO, APP.branch)?.job).toBeUndefined();
+  });
+
+  it('forgets the build once the pin is the newest, and keeps none for a deploy of several pin files', async () => {
+    const proposals = new DeployProposals();
+    const gh = github(APP, { pins: APP_PINS });
+    await watch(gh, APP, ghcr(), undefined, signatures([], [digest('7')]), quiet, Date.now, proposals)();
+    expect(proposals.build(APP_REPO, APP.branch)).not.toBeNull();
+    await watch(gh, APP, ghcr(commit('b')), undefined, signatures(), quiet, Date.now, proposals)();
+    expect(proposals.build(APP_REPO, APP.branch)).toBeNull();
+    await watch(
+      github(FACTORY),
+      FACTORY,
+      ghcr(),
+      undefined,
+      signatures([], [digest('7')]),
+      quiet,
+      Date.now,
+      proposals,
+    )();
+    expect(proposals.build(FACTORY.repo, FACTORY.branch)).toBeNull();
   });
 });
 

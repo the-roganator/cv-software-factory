@@ -37,13 +37,23 @@
  * pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
  * GitHub worker that restarted) is read by its number, and only what GitHub says of it is recorded: an empty proposal
  * is never taken for a merge or a close. A dry run's deploy pull request, which GitHub never had, is never recorded.
+ *
+ * Before there is a pull request to carry it, a held work item waits for its build to be signed. The watch proposes
+ * only a build its pipeline signed, so one still unsigned once signing has had its time, or whose signatures its check
+ * refuses,
+ * is never proposed, and the wait would look like any slow build. So the line also reads the watch's newest build
+ * (`deployBuild`), and records it as not signed (`build.unsigned`, `recordBuilds`) on each held work item it carries
+ * and no deploy pull request does (the open proposal, or one recorded open for it), once for each build, and again
+ * when the job that failed on that commit is found or the kind of refusal changes; and,
+ * once a later look finds a build that carries it signed, that it is (`build.signed`), so the console says why it
+ * waits until it no longer does.
  */
 import type { PayloadOf } from '@software-factory/events';
-import { cutAt, cutTo } from '@software-factory/events';
+import { cutAt, cutTo, unsignedBuildWords } from '@software-factory/events';
 import type { Logger } from 'pino';
 import { type Controls, enqueues } from '../../../../policy/line.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
-import type { DeployProposal } from '../github/deploys.ts';
+import type { DeployBuild, DeployProposal } from '../github/deploys.ts';
 import type { ReviewVerdict } from '../github/merging.ts';
 import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { GitHubWorkerError } from '../github/worker-client.ts';
@@ -190,10 +200,122 @@ export function deployLine(change: DeployChange): string {
   }
 }
 
-/** A work item held for a deploy, and its record under that hold. */
+/** The line's latest word on whether the build that carries a held work item is signed. */
+export type BuildRecord =
+  | { type: 'build.unsigned'; payload: PayloadOf<'build.unsigned'> }
+  | { type: 'build.signed'; payload: PayloadOf<'build.signed'> };
+
+/**
+ * The latest `build.unsigned` or `build.signed` of a work item under the hold in force (`hold`, the payload the line's
+ * `fold` took), as `latestDeploy` reads its deploy pull request: a hold that starts again starts with none.
+ */
+export function latestBuild(
+  events: readonly { type: string; payload: unknown }[],
+  hold: unknown,
+): BuildRecord | undefined {
+  let latest: BuildRecord | undefined;
+  for (const event of events) {
+    if (event.type === 'hold.started' && event.payload === hold) latest = undefined;
+    if (event.type === 'build.unsigned' || event.type === 'build.signed') latest = event as BuildRecord;
+  }
+  return latest;
+}
+
+/** A work item held for a deploy, and its records under that hold. */
 export interface HeldForDeploy {
   workItem: string;
   recorded: DeployChange | undefined;
+  /** Whether the build that carries it is signed, as the line last recorded it under that hold. */
+  build?: BuildRecord | undefined;
+}
+
+/** A build not signed, as its event's summary says it. */
+export const unsignedLine = (payload: PayloadOf<'build.unsigned'>): string =>
+  `${unsignedBuildWords(payload)}, so no deploy pull request carries it`;
+
+/**
+ * Whether the line's record of a work item's build says the same as the watch's newest build: the same build, digest
+ * and kind of refusal, and the same job that failed, so that a job found later, or a refusal of another kind, is said.
+ */
+const saysSame = (recorded: BuildRecord | undefined, build: DeployBuild) =>
+  recorded?.type === 'build.unsigned' &&
+  recorded.payload.commit === build.commit &&
+  recorded.payload.digest === build.digest &&
+  recorded.payload.signature === build.signature &&
+  recorded.payload.job?.id === build.job?.id;
+
+/**
+ * Whether `recordBuilds` would record anything for these held work items, before what the build carries is worked
+ * out: a signed build only on one last recorded as not, and one not signed only where it is not already said. Each
+ * pass of a build that stays unsigned for hours then reads nothing more.
+ */
+export function buildsToRecord(
+  build: DeployBuild | null,
+  held: readonly HeldForDeploy[],
+  byProposal: ReadonlySet<string>,
+): boolean {
+  if (!build || build.signature === 'signing') return false;
+  if (build.signature === 'signed') return held.some((h) => h.build?.type === 'build.unsigned');
+  // One a deploy pull request carries is never recorded, so it asks nothing.
+  const open = (h: HeldForDeploy) => byProposal.has(h.workItem) || (h.recorded !== undefined && !settled(h.recorded));
+  return held.some((h) => !open(h) && !saysSame(h.build, build));
+}
+
+/**
+ * Records, on each work item held for a deploy, whether the newest build that carries it is signed, from the deploy
+ * watch's `build` (`deployBuild`): not signed (`build.unsigned`), on each the build carries (`byBuild`) and no deploy
+ * pull request does (the open proposal's, `byProposal`, or one recorded open for it), whose pull request says where
+ * it stands; once for each build, digest, kind of refusal and job that failed (`saysSame`);
+ * and signed (`build.signed`) on each it carries that was last recorded as not. A build still signing records nothing:
+ * it is the wait the hold's reason already names. A work item whose append fails is tried again on the next pass.
+ */
+export async function recordBuilds(
+  o: Pick<DeployContext, 'append' | 'log'>,
+  build: DeployBuild | null,
+  byBuild: ReadonlySet<string>,
+  byProposal: ReadonlySet<string>,
+  held: readonly HeldForDeploy[],
+): Promise<void> {
+  if (!build || build.signature === 'signing') return;
+  for (const { workItem, build: recorded, recorded: deploy } of held) {
+    if (!byBuild.has(workItem)) continue;
+    let draft: Draft | undefined;
+    if (build.signature === 'signed') {
+      if (recorded?.type !== 'build.unsigned') continue;
+      draft = {
+        type: 'build.signed',
+        actor: 'factory',
+        summary: `A build that carries it, of ${build.commit.slice(0, 7)}, is signed by its pipeline`,
+        payload: { commit: build.commit, digest: build.digest },
+      };
+    } else {
+      // A deploy pull request carries it: the open proposal, or the one last recorded for it while still open, which a
+      // GitHub worker just started may not know yet.
+      if (byProposal.has(workItem) || (deploy && !settled(deploy))) continue;
+      if (saysSame(recorded, build)) continue;
+      const payload: PayloadOf<'build.unsigned'> = {
+        commit: build.commit,
+        image: cutAt(build.image, 200),
+        digest: build.digest,
+        signature: build.signature,
+        reason: cutTo(build.reason?.trim() || 'no signature of its pipeline’s', 300),
+        ...(build.job ? { job: { ...build.job, name: cutAt(build.job.name, 100) } } : {}),
+      };
+      draft = { type: 'build.unsigned', actor: 'factory', summary: unsignedLine(payload), payload };
+    }
+    try {
+      await o.append(workItem, [draft]);
+      o.log.info(
+        { workItem, commit: build.commit, signature: build.signature },
+        'recorded whether its build is signed',
+      );
+    } catch (error) {
+      o.log.warn(
+        { workItem, err: error },
+        'could not record whether the build that carries a held work item is signed',
+      );
+    }
+  }
 }
 
 export interface DeployContext {

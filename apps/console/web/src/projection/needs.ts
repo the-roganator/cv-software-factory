@@ -668,7 +668,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
         plain && cause
           ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
           : closes
-            ? 'Closed'
+            ? `Closed, agreeing with the ${closedBy(cause as HoldCause)}`
             : HOW[decision];
       answered.push({
         at,

@@ -189,7 +189,7 @@ describe('Needs you', () => {
       .add(1, 'hold.started', 'coder', hold('nothing-to-fix'))
       .add(30, 'hold.answered', 'martin', { decision: 'rejected' });
     expect(needsView(foldItems(item.events), day + 3_600_000).answered).toEqual([
-      { at: item.at(30), workItem: '2034', how: 'Closed', words: undefined, did: undefined },
+      { at: item.at(30), workItem: '2034', how: 'Closed, agreeing with the coder', words: undefined, did: undefined },
     ]);
   });
 

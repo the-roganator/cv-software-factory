@@ -68,6 +68,37 @@ const modelCall: PayloadOf<'model.called'> = {
 };
 
 describe('the rows', () => {
+  it('say his words stay his on a report’s answer that took them, and only that any did on one given plain', () => {
+    const report = (cause: PayloadOf<'hold.started'>['cause'], item: string) =>
+      event(0, 'hold.started', 'factory', { stage: 'review', kind: 'held', cause, reason: 'Held' }, 'Held', item);
+    const review = report('review', '1500');
+    const spec = report('spec', '1501');
+    // Back to the coder, given plain: no words, as with an approval there.
+    const plain = event(
+      1,
+      'hold.answered',
+      'martin',
+      { decision: 'answered', hold: review.id, report: true },
+      'Sent',
+      '1500',
+    );
+    // In words, on a hold that takes none there now, from before: its view left them out.
+    const worded = event(
+      2,
+      'hold.answered',
+      'martin',
+      { decision: 'answered', hold: spec.id, report: true },
+      'Said',
+      '1501',
+    );
+    expect(only([review, spec, plain]).withheld).toBe(
+      'Any words of his stay his: the hold was about a visitor’s report.',
+    );
+    expect(only([review, spec, plain, worded]).withheld).toBe(
+      'His words stay his: the hold was about a visitor’s report.',
+    );
+  });
+
   it('are every event up to t, newest first, under a row for each day where the viewer is', () => {
     const all = rows(SAMPLES, END);
     expect(all).toHaveLength(SAMPLES.length);

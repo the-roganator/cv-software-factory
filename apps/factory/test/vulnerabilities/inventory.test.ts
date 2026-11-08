@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { signerOf as routedSigner } from '../../../../scripts/review-routing.ts';
 import { pipeline } from '../../src/github/signatures.ts';
 import {
   ciCopy,
@@ -61,14 +62,14 @@ describe('the list of a fixture repository', () => {
     ]);
   });
 
-  it('has each image of ours the local overlay pins, at its digest, with the identity that signed it', () => {
+  it('has each image of ours the local overlay pins, at its digest, and no signer for a repository not trusted', () => {
     const shop = find(`ghcr.io/example/shop@${digest('1')}`);
     expect(shop).toMatchObject({
       kind: 'ours',
       file: 'deploy/overlays/local/image/kustomization.yaml',
       line: 6,
-      signer: 'https://github.com/example/shop/.github/workflows/build.yml@refs/heads/main',
     });
+    expect(shop?.signer).toBeUndefined();
   });
 
   it('has each third-party image the rendered overlay runs, at the line in deploy/ that pins it', () => {
@@ -255,6 +256,11 @@ describe('the list, read closely', () => {
     expect(unlisted(none).map((entry) => `${entry.file} ${entry.reference}`)).toEqual(['Makefile ARGOCD_CHART']);
   });
 
+  it("reads Argo CD's values as its chart's, so a digest there is not named", () => {
+    const dir = checkout({ 'deploy/argocd/values.yaml': `image:\n  tag: v3.5.0@${digest('a')}\n` });
+    expect(unlisted(dir)).toEqual([]);
+  });
+
   it("names k3s's release from its tag when the node image is pinned by digest too", () => {
     const cluster = read('deploy/k3d/cluster.yaml').replace('v1.30.0-k3s1', `v1.30.0-k3s1@${digest('f')}`);
     const { items } = inventory(checkout({ 'deploy/k3d/cluster.yaml': cluster }));
@@ -345,14 +351,18 @@ describe('reading a pin', () => {
     expect(ciCopy('node:24')).toBeUndefined();
   });
 
-  it("signs an image of ours as build.yml on its repository's main", () => {
-    expect(signerOf('ghcr.io/the-roganator/cv-software-factory/console')).toBe(
-      'https://github.com/the-roganator/cv-software-factory/.github/workflows/build.yml@refs/heads/main',
-    );
-    expect(signerOf('quay.io/example/sidecar')).toBeUndefined();
-    expect(signerOf('ghcr.io/the-roganator/cv-worlds-worst-website')).toBe(
-      pipeline('the-roganator/cv-worlds-worst-website').identity,
-    );
+  it("signs an image of ours as build.yml on its repository's main, for the repositories review routing trusts alone", () => {
+    for (const image of [
+      'ghcr.io/the-roganator/cv-software-factory/console',
+      'ghcr.io/the-roganator/cv-worlds-worst-website',
+      'ghcr.io/the-roganator/other-repository',
+      'ghcr.io/someone-else/cv-software-factory/console',
+      'quay.io/example/sidecar',
+    ]) {
+      const repository = routedSigner(image);
+      expect(signerOf(image), image).toBe(repository ? pipeline(repository).identity : undefined);
+    }
+    expect(signerOf('ghcr.io/the-roganator/cv-worlds-worst-website')).toBeDefined();
   });
 
   it("finds an image's tag past a registry's port and before its digest", () => {

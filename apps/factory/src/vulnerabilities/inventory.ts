@@ -135,14 +135,15 @@ export function ciCopy(reference: string) {
 }
 
 /**
- * The identity `build.yml` on main signs an image of ours with, from the GHCR repository the image is in: the pipeline
- * apps/factory/src/github/signatures.ts verifies, which a test holds this to (that module needs dependencies; this
- * runs with none).
+ * The identity `build.yml` on main signs an image of ours with, for the factory's and the app's images in GHCR alone:
+ * the pipeline apps/factory/src/github/signatures.ts verifies, for the repositories scripts/review-routing.ts trusts,
+ * which a test holds this to (those modules need what the scan's sparse checkout does not have). Any other image has
+ * no signer the scan can verify, and none is named.
  */
 export function signerOf(image: string) {
-  const [, owner, repository] = /^ghcr\.io\/([^/]+)\/([^/@:]+)/.exec(image) ?? [];
-  if (!owner || !repository) return undefined;
-  return `https://github.com/${owner}/${repository}/.github/workflows/build.yml@refs/heads/main`;
+  const repository = /^ghcr\.io\/the-roganator\/([\w.-]+)(?:\/[\w.-]+)?$/.exec(image)?.[1];
+  if (repository !== 'cv-software-factory' && repository !== 'cv-worlds-worst-website') return undefined;
+  return `https://github.com/the-roganator/${repository}/.github/workflows/build.yml@refs/heads/main`;
 }
 
 /** Whether a tracked file is prose or a test's fixture, whose references pin nothing that runs. */
@@ -333,7 +334,10 @@ export function inventory(root: string) {
       reference: 'ARGOCD_CHART',
       why: 'no helm command installs it as the list reads one',
     });
-  else if (argocd) add(argocd);
+  else if (argocd) {
+    add(argocd);
+    for (const file of argocd.chart?.values ?? []) values.add(file);
+  }
 
   // The cluster k3d makes: its k3s node, the images k3s runs, and k3d's own beside it.
   if (tracked.includes('deploy/k3d/cluster.yaml')) {

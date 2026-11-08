@@ -365,7 +365,7 @@ export async function soakFacts({
   let runners: SoakFacts['runners'];
   try {
     const client = kube();
-    // What the red-team harness makes in runners is its own, and no runner the line left behind.
+    // Anything in runners marked as the red-team harness's is not the line's, and no runner it left behind.
     const list = async (kind: Runner['kind'], path: string) =>
       ((await client.get(`${path}?labelSelector=${encodeURIComponent(NOT_RED_TEAM)}`, LIST))?.items ?? [])
         .filter((item) => !isRedTeam(item.metadata.labels))

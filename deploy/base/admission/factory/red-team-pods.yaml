@@ -1,5 +1,5 @@
-# The red-team harness creates the egress and image attacks' pods in `red-team` (apps/factory/src/red-team/pods.ts). The
-# rule guards `runners` too while the cluster may still run a factory image that makes them there.
+# The red-team harness creates the egress and image attacks' pods in `red-team` (apps/factory/src/red-team/pods.ts), and
+# has no right to make a pod anywhere else (deploy/base/red-team/access.yaml).
 # RBAC lets it create a pod but cannot say what the pod holds, so this rule holds every pod the harness's account
 # creates, and every pod that carries the red-team marker (`factory.mrogan.dev/red-team`) whoever creates it, to a
 # shape the harness cannot stray from: the marker, the agent's runner label and the part-of label and nothing else,
@@ -35,16 +35,15 @@ spec:
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: In
-          values: [runners, red-team]
+          values: [red-team]
     resourceRules:
       - apiGroups: [""]
         apiVersions: [v1]
         operations: [CREATE, UPDATE]
         resources: [pods]
-  # A pod the harness's account creates, marked or not, and any pod carrying the red-team marker. Every other pod in
-  # `runners` (the line's runners, made by the Job controller) is left to the image policy and the Pod Security
-  # Standard, as is one in `red-team` asked for by someone the harness is not, such as `make guardrails`' admission
-  # proof, so that what refuses it there is the image policy alone.
+  # A pod the harness's account creates, marked or not, and any pod carrying the red-team marker. A pod in `red-team`
+  # asked for by someone the harness is not, such as `make guardrails`' admission proof, is left to the image policy
+  # and the Pod Security Standard, so that what refuses it there is the image policy alone.
   matchConditions:
     - name: red-team
       expression: >-
@@ -69,8 +68,8 @@ spec:
         has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels &&
         object.metadata.labels['factory.mrogan.dev/red-team'] in ['egress', 'image']
       message: a red-team pod carries the red-team marker, its value the egress or image attack
-    # Exactly the agent's runner label, the part-of label and the marker: never `prepare` or another label a runners
-    # NetworkPolicy selects, which would give the pod a different fence there.
+    # Exactly the agent's runner label, the part-of label and the marker: never `prepare` or another label a
+    # NetworkPolicy selects, which would give the pod a different fence.
     - expression: >-
         variables.labels['factory.mrogan.dev/runner'] == 'agent' &&
         variables.labels['app.kubernetes.io/part-of'] == 'software-factory' &&
@@ -131,3 +130,42 @@ spec:
     - expression: >-
         has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false
       message: a red-team pod mounts no service-account token (automountServiceAccountToken must be false)
+---
+# No red-team pod beside the line's runners: in `runners`, a pod the harness's account creates and any pod carrying the
+# red-team marker is refused, whoever asks for it. The harness has no right to make a pod there, and this holds if one
+# were granted; and the line passes over a marked pod, Job or volume there (`RED_TEAM_LABEL` in policy/attacks.ts), so
+# a marked runner, were one admitted, would be hidden from the stop drill and `line soak-check`. Every other pod there
+# (the line's runners, made by the Job controller) is left to the image policy and the Pod Security Standard.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: no-red-team-pods-in-runners
+  annotations:
+    # After Kyverno, whose CRDs it needs (wave -3), before anything it guards.
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [runners]
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchConditions:
+    - name: red-team
+      expression: >-
+        request.userInfo.username == 'system:serviceaccount:factory:red-team' ||
+        (has(object.metadata.labels) && 'factory.mrogan.dev/red-team' in object.metadata.labels)
+  validations:
+    - expression: "false"
+      message: a red-team pod is made in red-team, never beside the line's runners

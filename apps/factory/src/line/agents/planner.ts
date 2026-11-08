@@ -17,10 +17,13 @@
  * (`from`), and quotes the words there that ask for it (`quote`). The schema refuses a spec whose quote is not in
  * what its criterion names, as the planner was told it, so a criterion the planner widened cannot claim words the
  * evidence never had; whether the words it quotes do ask for the criterion is the reviewer's to judge, with the
- * words in front of it. One nothing asks for does not belong in the spec. Anything else the planner notices on the way goes in
- * its `findings`, which the line leaves in triage's inbox as signals from the planner (`findingSignal`). Triage judges
- * them as it judges a visitor's report, and trusts them no more: a visitor can read the app's public code and try to
- * persuade an agent that a line of it holds a bug, so the planner's word alone never opens a ticket.
+ * words in front of it. On a ticket a visitor's report opened, what was reported is what the ticket points at, or what
+ * Martin's shared words describe, so those are the only words a criterion may quote there (`sourcesOf`): the ticket's
+ * title, class and page, and a sense's signal on the route, fit any defect of that kind there, and a spec that quoted
+ * them could fix another. One nothing asks for does not belong in the spec. Anything else the planner notices on the
+ * way goes in its `findings`, which the line leaves in triage's inbox as signals from the planner (`findingSignal`).
+ * Triage judges them as it judges a visitor's report, and trusts them no more: a visitor can read the app's public
+ * code and try to persuade an agent that a line of it holds a bug, so the planner's word alone never opens a ticket.
  *
  * It stops at a diagnosis: the code at fault, and why. Reproducing the defect (a server, requests, a script) is the
  * coder's, whose first step is a failing test. On Qwen, planners that reproduced it found the cause in a few minutes
@@ -99,6 +102,8 @@ import {
   askedTitle,
   numbered,
   type Request,
+  reported,
+  reportedWords,
   routeOf,
   type Signal,
   seen,
@@ -177,7 +182,12 @@ function scopeProblem(entry: string, protectedPaths: readonly string[]): string 
 export interface Sources {
   /** Which the work item has: a ticket, or Martin's request. A criterion may name only the one it has. */
   kind: Asked['kind'];
-  /** The ticket, or Martin's request, as the prompt tells it. */
+  /**
+   * Whether a visitor's report opened the ticket: then `asked` is only what the ticket points at, and no signal is
+   * quoted (`sourcesOf`).
+   */
+  report?: true;
+  /** The ticket, or Martin's request, as the prompt tells it; on a report's ticket, what it points at. */
   asked: string;
   signals: string[];
   answers: string;
@@ -212,17 +222,35 @@ function answerLines(answers: readonly Answer[]): string[] {
   ];
 }
 
-/** The sources of a plan's input, as its prompt tells them. */
+/**
+ * The sources of a plan's input, as its prompt tells them. On a visitor's report's ticket (`aboutReport`) a quote is
+ * looked for only in what the ticket points at (`reportedWords`) and in Martin's own words in his answers, which reach
+ * the planner there only shared: the ticket's title and class fit any defect of that kind on the route, a sense's
+ * signal on the route may be another of them, and what he was asked is the planner's or the line's words, the hold
+ * that asks him to describe the problem among them, so a spec that quoted any of those could fix something other than
+ * what was reported.
+ */
 export const sourcesOf = ({
   asked,
   signals,
   answers,
-}: Pick<PlannerInput, 'asked' | 'signals' | 'answers'>): Sources => ({
-  kind: asked.kind,
-  asked: [askedTitle(asked), ...askedLines(asked, signals)].join('\n'),
-  signals: signals.map((signal) => seen(signal).join('\n')),
-  answers: answers.map(answered).filter(Boolean).join('\n'),
-});
+  aboutReport,
+}: Pick<PlannerInput, 'asked' | 'signals' | 'answers' | 'aboutReport'>): Sources => {
+  if (aboutReport && asked.kind === 'ticket')
+    return {
+      kind: 'ticket',
+      report: true,
+      asked: reportedWords(asked.ticket).join('\n'),
+      signals: [],
+      answers: answers.flatMap((a) => (a.answer ? [a.answer] : [])).join('\n'),
+    };
+  return {
+    kind: asked.kind,
+    asked: [askedTitle(asked), ...askedLines(asked, signals)].join('\n'),
+    signals: signals.map((signal) => seen(signal).join('\n')),
+    answers: answers.map(answered).filter(Boolean).join('\n'),
+  };
+};
 
 /** No sources at all: every quote is refused. */
 const NOTHING: Sources = { kind: 'ticket', asked: '', signals: [], answers: '' };
@@ -251,9 +279,15 @@ const within = (words: string, source: string) => {
 export function quoteProblem(from: string, quote: string, sources: Sources): string | undefined {
   const named: string[] = [];
   // A ticket's criterion names the ticket, and an improvement's the request: never the one the work item has not.
-  if ((sources.kind === 'ticket' ? /\bticket\b/i : /\brequest\b/i).test(from)) named.push(sources.asked);
+  if ((sources.kind === 'ticket' ? /\bticket\b/i : /\brequest\b/i).test(from)) {
+    if (sources.report && !sources.asked)
+      return 'a visitor’s report opened the ticket, and it points at nothing narrower than its page: quote Martin’s answer';
+    named.push(sources.asked);
+  }
   // `signal 2`, `signals 1 and 2`, `signals 1, 3`, `signal #2`
   for (const [, list = ''] of from.matchAll(/\bsignals?\s*((?:#?\d+(?:\s*(?:,|and|&|\+|-|–)\s*)?)+)/gi)) {
+    if (sources.report)
+      return 'a visitor’s report opened the ticket, and a signal may be another defect of its kind: quote what the ticket points at, or Martin’s answer';
     for (const [n] of list.matchAll(/\d+/g)) {
       const signal = sources.signals[Number(n) - 1];
       if (signal === undefined) return `there is no signal ${n}`;
@@ -270,9 +304,14 @@ export function quoteProblem(from: string, quote: string, sources: Sources): str
       : 'from names the request, or Martin’s answer';
   }
   const words = unquoted(quote);
-  if (words.split(' ').length < 2) return 'a quote is the words that ask for the criterion: two or more of them';
+  // A passage of one word, as a price alone on its line is, is quoted whole: what the report points at is all of it.
+  const whole = sources.report && sources.asked.split('\n').some((line) => unquoted(line) === words);
+  if (words.split(' ').length < 2 && !whole)
+    return 'a quote is the words that ask for the criterion: two or more of them';
   if (!named.some((source) => within(words, source)))
-    return `the quote is not in ${from}: copy the words that ask for the criterion from there, word for word`;
+    return sources.report
+      ? `the quote is not in ${from}: on a report’s ticket, copy the words from what the ticket points at, or from Martin’s answer, word for word`
+      : `the quote is not in ${from}: copy the words that ask for the criterion from there, word for word`;
   return undefined;
 }
 
@@ -699,6 +738,20 @@ const REPORT_DESCRIBED = [
   'The ticket names only the page and the kind of problem. What was reported is what Martin described in his answers above: plan the fix for that, and for no other problem of its kind on the page.',
 ];
 
+/**
+ * What a criterion of a visitor's report's ticket may quote, as the prompt tells the planner beside the spec's
+ * template: what the ticket points at and Martin's answers alone (`sourcesOf`), and why.
+ */
+function reportQuotes(ticket: PayloadOf<'ticket.opened'>): string[] {
+  const points = reported(ticket);
+  return [
+    points.length
+      ? `   A visitor’s report opened this ticket, and what was reported is what it points at, ${points.map((r) => r.told).join(' and ')}: every criterion is about that, or about what Martin’s answer describes. A criterion from \`the ticket\` quotes only those words; one from \`Martin’s answer\`, only his own words, after “He said:”, never what he was asked.`
+      : '   A visitor’s report opened this ticket, and it points at nothing narrower than its page: every criterion is about what Martin’s answer describes, from `Martin’s answer`, quoting his own words, after “He said:”, never what he was asked.',
+    '   Never quote the ticket’s title, its kind of problem or its page, nor a signal: any defect of that kind on the page would fit them, and the line refuses a spec that quotes them. Another defect of its kind on the page goes in `findings`.',
+  ];
+}
+
 /** A fix's plan: the ticket, what the senses saw and what came of fixes before, to a diagnosis and a spec. */
 function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): string {
   const { workItem, signals, protectedPaths, answers, persisted = [], reopened = [], failure } = input;
@@ -745,6 +798,7 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
     `Then write the result, one of ${asks ? 'three' : 'two'}, each with its \`findings\`:`,
     '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to:',
     ...SPEC_TEMPLATE.map((line) => `   ${line}`),
+    ...(input.aboutReport ? reportQuotes(ticket) : []),
     `2. {"verdict":"reject","reason"} when you cannot make it testable: the cause is not in this repository, or you cannot find the defect the evidence shows, or no test could tell the fix from the defect. Reject it too when the fix needs a path no scope may name: ${protectedWords(protectedPaths).join(', ')}. The reason is one or two short sentences for Martin, at most 300 characters, naming the file or what is missing.`,
     ...(asks
       ? [

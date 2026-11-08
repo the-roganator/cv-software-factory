@@ -1257,7 +1257,10 @@ describe('the line', () => {
         'logs',
       ),
     ]);
-    const { pass, steps, github } = line();
+    // On a report's ticket a criterion quotes what it points at or Martin's words, never the title's.
+    const criterion = { ...SPEC.criteria[0], from: 'Martin’s answer', quote: 'Searching with a quote fails' };
+    const planner = () => handback({ verdict: 'spec', spec: { ...SPEC, criteria: [criterion] } });
+    const { pass, steps, github } = line({ ...AGENTS, planner });
     // Its ticket names only the route: it waits for Martin to describe it, before any planner.
     await pass();
     expect(steps.requests).toEqual([]);
@@ -1275,6 +1278,7 @@ describe('the line', () => {
     expect(prompt).toContain('Plan the fix for ticket');
     expect(prompt).toContain('He said: Searching with a quote fails');
     expect(prompt).toContain('What was reported is what Martin described in his answers above');
+    expect(prompt).toContain('Never quote the ticket’s title, its kind of problem or its page, nor a signal');
     expect(prompt).toContain('The log watcher\'s check "new error pattern" on /search');
     expect(prompt).toContain('1 request to /search logged 1 line at error');
     expect(prompt).not.toMatch(/ignore|instructions|every.price|Ignore your/);
@@ -1289,6 +1293,9 @@ describe('the line', () => {
     const reviewing = String(steps.requests.at(-1)?.prompt);
     expect(steps.requests.at(-1)?.agent).toBe('reviewer');
     expect(reviewing).toContain('The ticket: Server errors on /search.');
+    expect(reviewing).toContain(
+      'A visitor’s report opened this ticket, and what was reported is what Martin’s answer describes in his own words',
+    );
     expect(reviewing).toContain('1. The log watcher\'s check "new error pattern" on /search');
     expect(reviewing).not.toMatch(/ignore|instructions|every.price|Ignore your/);
     await pass(); // the describer

@@ -11,6 +11,9 @@
  * - A criterion they do not ask for is a blocking finding that cites that criterion and the ticket, and the review is
  *   escalated: the coder cannot put a spec right, so it goes to Martin, in every autonomy mode. The schema holds the
  *   verdict to it, whatever the model chose.
+ * - On a ticket a visitor's report opened, what was reported is what the ticket points at, or what Martin's shared
+ *   words describe (`reportRule`): a criterion about anything else is beyond the ticket, however well its title or
+ *   kind of problem fits it, since another defect of that kind on the page is not what was reported.
  * - A change that goes beyond the spec, when the spec is sound, is an ordinary blocking finding, citing the spec or a
  *   rule: the coder can take it out, so the work goes back to it.
  * - The change is held to the spec alone: the coder reads the spec and never Martin's answers. So what his answer
@@ -55,7 +58,7 @@ import {
 } from '../review.ts';
 import { askedOf, defineAgent, FLAG_NAMES_FILE, heAnswered, need, words } from './agent.ts';
 import { contradictedList, flagLine, side } from './coder.ts';
-import { type Asked, askedLines, askedName, askedTitle, numbered, type Signal } from './evidence.ts';
+import { type Asked, askedLines, askedName, askedTitle, numbered, reported, type Signal } from './evidence.ts';
 
 export interface ReviewerInput {
   workItem: string;
@@ -68,6 +71,11 @@ export interface ReviewerInput {
    * reads into one is told as the line's, never as his words.
    */
   answers: Pick<Answer, 'asked' | 'answer' | 'line'>[];
+  /**
+   * Whether a visitor's report opened the ticket: what was reported is what the ticket points at, or what Martin's
+   * shared words describe, never whatever else its title or kind of problem would fit.
+   */
+  aboutReport?: boolean | undefined;
   spec: PayloadOf<'spec.written'>;
   pullRequest: number;
   /** The pull request's title, as the coder wrote it. */
@@ -198,6 +206,19 @@ const HOW_TO_REVIEW = [
 ];
 
 /**
+ * What rule 2 adds on a visitor's report's ticket: no agent reads the report, and the ticket's title and kind of
+ * problem fit any defect of that kind on the page, so what was reported is what the ticket points at, or what
+ * Martin's own words describe, and a criterion about anything else is beyond the ticket however well the title fits it.
+ */
+function reportRule(ticket: PayloadOf<'ticket.opened'>): string {
+  const points = reported(ticket).map((r) => r.told);
+  const what = points.length
+    ? `what the ticket points at, ${points.join(' and ')}, or what Martin’s answer describes in his own words`
+    : 'what Martin’s answer describes in his own words, since the ticket points at nothing narrower than its page';
+  return `   A visitor’s report opened this ticket, and what was reported is ${what}. A criterion about anything else is beyond the ticket, a blocking finding with \`"ticket":true\`, however well the ticket’s title, its kind of problem or its page fit it: another defect of that kind on the page is not what was reported.`;
+}
+
+/**
  * How an improvement is reviewed: as a fix is, with the spec held to Martin's request, and the change to its flag. It
  * ships off, so anything a visitor could see change with the flag off blocks; and each criterion's test runs the flag
  * as its side says.
@@ -231,6 +252,7 @@ function prompt({
   asked,
   signals,
   answers,
+  aboutReport,
   spec,
   pullRequest,
   title,
@@ -289,7 +311,11 @@ function prompt({
         ]
       : []),
     '',
-    ...(improvement ? howToReviewAnImprovement(spec.flag ?? 'its-flag') : HOW_TO_REVIEW),
+    ...(improvement
+      ? howToReviewAnImprovement(spec.flag ?? 'its-flag')
+      : aboutReport && asked.kind === 'ticket'
+        ? [...HOW_TO_REVIEW.slice(0, 3), reportRule(asked.ticket), ...HOW_TO_REVIEW.slice(3)]
+        : HOW_TO_REVIEW),
     'The gates have passed: the tests, types and lint are green, so do not run them again, and do not start the app or send it requests. Read a test to see what it shows.',
     '',
     `Anchor each finding to a line the diff shows in the change’s version of a file it changes, and give at most ${MAX_FINDINGS}. A finding blocks only if the change is wrong without it: a criterion not met, a rule broken, a test that does not show what it claims. Taste is a suggestion. Say in each comment, in at most 300 characters, what is wrong and what would put it right.`,
@@ -373,6 +399,8 @@ export const reviewer = defineAgent<ReviewerInput, ReviewerResult>({
       asked: await askedOf({ state, ticket, request }),
       signals: await signals(),
       answers: state.answers,
+      // What was reported is what the ticket points at, or Martin's shared words (`reportRule`).
+      ...(state.firstSense === 'report' ? { aboutReport: true } : {}),
       spec: need(state.spec, 'a spec'),
       pullRequest: pushed.number,
       title: pushed.title,

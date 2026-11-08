@@ -40,6 +40,15 @@
  * Martin's approval sends the files to the planner, which may widen the scope to them, but never to a path no scope
  * may name. A file the scope already takes in is not one it needs.
  *
+ * A spec written again once there is a pull request can drop criteria the branch was built to, whose tests and code are
+ * still on it. The line knows both specs from the events (`builtTo`, the spec in force at the latest push), so the
+ * coder is told each criterion the new spec no longer has (`dropped`), and to take out the work that serves only them:
+ * what serves only them is its judgment, and the reviewer, who holds work beyond the spec, is the check. Such a round
+ * has work to do: in place of finding the cause it takes that work out, then checks the change still meets each
+ * criterion. Its first attempt may not change nothing (`pressed`), and the step fails, to be tried again, told why. An
+ * attempt after a failure, his words or a review may, saying why, and holds for Martin as any unchanged round does. Work in a file
+ * the new scope leaves out is named in `needs`, never changed, since the fence holds the round to the new scope.
+ *
  * It is told the test integrity rule before its first round: add tests, but delete, rename or skip none, and change
  * or take out none of an existing test's assertions. The tests the spec names as ones its criteria contradict are the
  * exception, which it may delete, rename or rewrite to match the criteria (`contradictedLines`). The line writes them
@@ -74,6 +83,7 @@ import {
   defineAgent,
   type EffectsContext,
   FLAG_NAMES_FILE,
+  failedAttemptLines,
   holdDraft,
   need,
   StepFailed,
@@ -105,7 +115,67 @@ export interface CoderInput {
   fenced?: string | undefined;
   /** Martin's answer to the hold before this step, if he wrote one. */
   answer?: string | undefined;
+  /**
+   * The criteria of the spec the pull request's branch was built to that the spec in force no longer has, after the
+   * planner wrote it again: their work on the branch is to come out.
+   */
+  dropped?: Criterion[] | undefined;
+  /** Why the step's last attempt failed, if it did: a result its schema refused, say, which it is not to hand back again. */
+  failure?: string | null | undefined;
 }
+
+type Criterion = PayloadOf<'spec.written'>['criteria'][number];
+
+/**
+ * Words as two criteria are compared by: their case, spacing, quote marks and a closing full stop aside, which a
+ * planner keeping a criterion might change without meaning another.
+ */
+const plainWords = (words: string) =>
+  words
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s*\.+$/, '');
+
+/** A criterion as the line compares two specs' by: its given, when, expect and side of the flag. */
+const criterionKey = ({ given, when, expect, withFlag }: Criterion) =>
+  JSON.stringify([...[given, when, expect].map(plainWords), withFlag ?? null]);
+
+/**
+ * The criteria of the spec a branch was built to that the spec in force does not have: none when it is the same spec,
+ * or none was pushed. A criterion the planner kept keeps its words (its prompt asks it to), so one reworded reads as
+ * dropped, and the coder keeps what the new spec still asks for.
+ */
+export function droppedCriteria(
+  builtTo: PayloadOf<'spec.written'> | undefined,
+  spec: PayloadOf<'spec.written'> | undefined,
+): Criterion[] | undefined {
+  if (!builtTo || !spec || builtTo === spec) return undefined;
+  const kept = new Set(spec.criteria.map(criterionKey));
+  const dropped = builtTo.criteria.filter((criterion) => !kept.has(criterionKey(criterion)));
+  return dropped.length ? dropped : undefined;
+}
+
+/** Whether the round meets a spec that dropped criteria the branch was built to. */
+const narrowed = (input: CoderInput) => Boolean(input.dropped?.length);
+
+/** Why a narrowed round that changed nothing failed, as its failure says it, which the attempt after it is told. */
+export const NARROWED_REFUSAL = 'the spec no longer has criteria the branch was built to, whose work is still on it';
+
+/**
+ * Whether the round must change something: a narrowed round's first attempt, before anyone has looked at the branch
+ * since the spec was written again. An attempt after one that failed, for this or anything else, may change nothing
+ * after all, saying why, which holds for Martin (`unchangedHold`): what serves only the dropped criteria is the
+ * coder's judgment, and with two failures allowed, a refusal of the second would hold the work item for its failures
+ * instead, and again after each of his answers. Nor is a round pressed once he has answered in words, which he gave
+ * after the narrowing, or once a review has (a spec written again sets the last aside): its findings and suggestions
+ * are then what the round answers, and the reviewer has seen what is on the branch.
+ */
+const pressed = (input: CoderInput) =>
+  narrowed(input) && !input.failure && !input.answer && !input.findings?.length && !input.suggestions?.length;
 
 /** The most a coder may say of why it changed nothing: it is the hold's reason, after the line's own words. */
 export const UNCHANGED_MAX = 200;
@@ -131,9 +201,20 @@ const needed = z
 
 /**
  * The result, for a round given `suggestions` suggestions: a declined one must be one of them. A round sent back for
- * suggestions alone (`alone`) may change nothing by declining every one.
+ * suggestions alone (`alone`) may change nothing by declining every one. A round whose spec dropped criteria the branch
+ * was built to (`narrowed`, on its first attempt) has their work to take out, so it may not change nothing.
  */
-export function coderResult(suggestions = 0, alone = false, title: z.ZodType<string> = commitTitle) {
+export function coderResult({
+  suggestions = 0,
+  alone = false,
+  title = commitTitle,
+  narrowed = false,
+}: {
+  suggestions?: number;
+  alone?: boolean;
+  title?: z.ZodType<string>;
+  narrowed?: boolean;
+} = {}) {
   return z
     .union([
       z.strictObject({
@@ -159,6 +240,11 @@ export function coderResult(suggestions = 0, alone = false, title: z.ZodType<str
       z.strictObject({ needs: needed.min(1) }),
     ])
     .superRefine((result, ctx) => {
+      // The branch still holds the work of criteria the spec no longer has: a round that leaves it there is not done.
+      if (narrowed && !('title' in result) && !('needs' in result && result.needs?.length)) {
+        const message = `${NARROWED_REFUSAL}: take their work out, or name the files outside the scope it is in`;
+        ctx.addIssue({ code: 'custom', path: ['unchanged' in result ? 'unchanged' : 'declined'], message });
+      }
       // The change is approved: the round is for its suggestions, and declining every one is how it changes nothing.
       if (alone && 'unchanged' in result) {
         const message = 'a round for suggestions alone changes nothing by declining every one';
@@ -217,20 +303,25 @@ export const coderInputAfterRefusal = (input: CoderInput, output: string, sessio
   session,
 });
 
+/** A fix's result: its title, and a note on what was wrong and what changed. */
 const RESULT = [
   'Then write the result, {"title","note"}:',
   '- `title`: the pull request’s title as a Conventional Commit, at most 80 characters, such as "fix(cart): count the last item".',
   '- `note`: the commit’s body, at most 1000 characters, in plain sentences for the reviewer: what was wrong, which test shows it, and what you changed. Add anything else you noticed and left alone.',
-  `If the code already does what every criterion asks, so there is nothing to fix, change nothing and write {"unchanged"} instead: at most ${UNCHANGED_MAX} characters, in plain sentences for Martin, on what you found. He decides what happens next.`,
 ];
+
+/** When a fix's first step may change nothing, and how it says so. */
+const NOTHING_TO_FIX = `If the code already does what every criterion asks, so there is nothing to fix, change nothing and write {"unchanged"} instead: at most ${UNCHANGED_MAX} characters, in plain sentences for Martin, on what you found. He decides what happens next.`;
 
 /** An improvement's result: a feature's title, and a note on what it adds behind which flag. */
 const IMPROVEMENT_RESULT = [
   'Then write the result, {"title","note"}:',
   '- `title`: the pull request’s title as a Conventional Commit of type feat, at most 80 characters, such as "feat(products): sort the list by price".',
   '- `note`: the commit’s body, at most 1000 characters, in plain sentences for the reviewer: what the change adds, behind which flag, which tests show it with the flag on and which with it off, and what you changed. Add anything else you noticed and left alone.',
-  `If the code already does what every criterion asks with the flag on, so there is nothing to build, change nothing and write {"unchanged"} instead: at most ${UNCHANGED_MAX} characters, in plain sentences for Martin, on what you found. He decides what happens next.`,
 ];
+
+/** When an improvement's first step may change nothing, and how it says so. */
+const NOTHING_TO_BUILD = `If the code already does what every criterion asks with the flag on, so there is nothing to build, change nothing and write {"unchanged"} instead: at most ${UNCHANGED_MAX} characters, in plain sentences for Martin, on what you found. He decides what happens next.`;
 
 /**
  * When the criteria need a file outside the scope, and how the coder says so: never by changing it, and never for a
@@ -327,16 +418,42 @@ export function gateFailureLines(failures: readonly GateFailure[]): string[] {
   ];
 }
 
+/** Why the step's last attempt failed, after everything else, quoted as data (`failedAttemptLines`). */
+const failedLines = ({ failure }: CoderInput) => (failure ? ['', ...failedAttemptLines(failure, 'step')] : []);
+
 /** What a later round runs again before it hands back. */
 const CHECKS_AGAIN =
   'If you change anything, run the checks again before you hand back: lint and formatting, the type check and the tests.';
+
+/**
+ * The criteria a spec written again dropped, and what the round does about the branch's work for them: takes out what
+ * serves only them, keeps what the new spec still asks for, and changes no file outside the new scope to do it. The
+ * tests it takes out are its own, added by the pull request, which the test integrity gate does not count: it compares
+ * the change with main.
+ */
+/** A criterion as a prompt says it, with an improvement's side of the flag. */
+const criterionLine = (c: Criterion, request: boolean) =>
+  `Given ${c.given}, when ${c.when}, then ${c.expect}.${request ? side(c) : ''}`;
+
+function droppedLines(input: CoderInput): string[] {
+  const { dropped, asked } = input;
+  if (!dropped?.length) return [];
+  return [
+    'The planner wrote the spec again since your last push, and the spec below no longer has these criteria, which the branch was built to:',
+    ...dropped.map((c) => `- ${criterionLine(c, asked.kind === 'request')}`),
+    'Take out of the branch the work that serves only them: the tests written for them, and any code only they needed. Keep everything a criterion below still asks for, and change nothing else. A test this pull request added is yours to take out: the test integrity gate compares the change with main, so it counts none of them. Never delete, rename or skip a test main has, unless the spec names it below. If work to take out is in a file outside the scope below, leave that file as it is and name it in `needs`, with why.',
+    pressed(input)
+      ? 'There is work to take out, so this round changes something: a result that changes nothing is refused.'
+      : `Only if nothing on the branch serves only them, change nothing: leave the checkout as it is and write {"unchanged"} instead, at most ${UNCHANGED_MAX} characters, in plain sentences for Martin, on why. He decides what happens next.`,
+  ];
+}
 
 function specLines({ spec, asked }: CoderInput): string[] {
   if (asked.kind === 'request') return improvementSpecLines(spec);
   return [
     `Outcome: ${spec.outcome}`,
     'Acceptance criteria:',
-    ...spec.criteria.map((c, i) => `${i + 1}. Given ${c.given}, when ${c.when}, then ${c.expect}.`),
+    ...spec.criteria.map((c, i) => `${i + 1}. ${criterionLine(c, false)}`),
     `Scope, the only files you may change: ${spec.scope.join(', ')}. A folder ending in / takes in every file under it; * stands for any name within one folder, and ** for any depth of folders.`,
     ...(spec.risks.length ? [`The planner tagged its risks: ${spec.risks.join(', ')}.`] : []),
   ];
@@ -356,7 +473,7 @@ function improvementSpecLines(spec: PayloadOf<'spec.written'>): string[] {
     `Outcome: ${spec.outcome}`,
     flagLine(spec),
     'Acceptance criteria, each with the side of the flag it holds on:',
-    ...spec.criteria.map((c, i) => `${i + 1}. Given ${c.given}, when ${c.when}, then ${c.expect}.${side(c)}`),
+    ...spec.criteria.map((c, i) => `${i + 1}. ${criterionLine(c, true)}`),
     `Scope, the only files you may change: ${spec.scope.join(', ')}. A folder ending in / takes in every file under it; * stands for any name within one folder, and ** for any depth of folders.`,
     ...(spec.risks.length ? [`The planner tagged its risks: ${spec.risks.join(', ')}.`] : []),
   ];
@@ -376,15 +493,30 @@ function briefing(input: CoderInput): string[] {
   ];
 }
 
+/**
+ * What a round that meets a spec written again narrower does, in place of finding the cause: the change is on the
+ * branch, so it takes out the dropped criteria's work, then checks the change still meets each criterion, with a test
+ * of its own, as a first round would.
+ */
+const NARROWED_STEPS = [
+  '1. Find the branch’s work for the criteria the spec no longer has, named above, and take out what serves only them.',
+  '2. Check that each criterion of the spec has a test that shows it, in a test file the scope allows: write one for any that has none, and run it.',
+  '3. Put right the code for any criterion a test shows unmet, and run the tests again until they pass and none that passed before fails.',
+];
+
 function first(input: CoderInput): string[] {
   if (input.asked.kind === 'request') return firstImprovement(input);
   return [
     ...briefing(input),
     '',
     'Read AGENTS.md first: its rules hold for every change here. Then:',
-    '1. Find the cause. Start from the code the criteria name, and its tests.',
-    '2. Write the test first: a test for each criterion, in a test file the scope allows, beside the tests that are there. Run it and see it fail because of the defect.',
-    '3. Fix the code, and run the tests again until yours pass and none that passed before fails.',
+    ...(narrowed(input)
+      ? NARROWED_STEPS
+      : [
+          '1. Find the cause. Start from the code the criteria name, and its tests.',
+          '2. Write the test first: a test for each criterion, in a test file the scope allows, beside the tests that are there. Run it and see it fail because of the defect.',
+          '3. Fix the code, and run the tests again until yours pass and none that passed before fails.',
+        ]),
     `4. ${CHECKS}`,
     '',
     'Change only what the criteria need. The app is bad on purpose, so you may see other things wrong: leave them, even in a file the scope allows, and mention them in your note. The line refuses a patch that changes any file outside the scope, whole. Leave your changes in the checkout: the line takes them from there.',
@@ -392,6 +524,7 @@ function first(input: CoderInput): string[] {
     ...contradictedLines(input.spec),
     '',
     ...RESULT,
+    ...(pressed(input) || input.round > 1 ? [] : [NOTHING_TO_FIX]),
     needsLine(input),
   ];
 }
@@ -413,9 +546,13 @@ function firstImprovement(input: CoderInput): string[] {
     ...briefing(input),
     '',
     'Read AGENTS.md first: its rules hold for every change here. Then:',
-    '1. Find where the change goes. Start from the code the criteria name, and its tests.',
-    `2. Write the tests first: a test for each criterion, in a test file the scope allows, beside the tests that are there, with the flag on or off as the criterion says. Stub the request’s \`flag\` as the app’s own tests do: \`flag: async () => false\` for off, and \`flag: async (name) => name === '${flag}'\` for on. Run them: each test with the flag on fails, since nothing is built yet, and each with it off passes, and goes on passing.`,
-    '3. Build the change, and run the tests again until yours pass and none that passed before fails.',
+    ...(narrowed(input)
+      ? NARROWED_STEPS
+      : [
+          '1. Find where the change goes. Start from the code the criteria name, and its tests.',
+          `2. Write the tests first: a test for each criterion, in a test file the scope allows, beside the tests that are there, with the flag on or off as the criterion says. Stub the request’s \`flag\` as the app’s own tests do: \`flag: async () => false\` for off, and \`flag: async (name) => name === '${flag}'\` for on. Run them: each test with the flag on fails, since nothing is built yet, and each with it off passes, and goes on passing.`,
+          '3. Build the change, and run the tests again until yours pass and none that passed before fails.',
+        ]),
     `4. ${CHECKS}`,
     '',
     ...behindTheFlag(flag),
@@ -425,6 +562,7 @@ function firstImprovement(input: CoderInput): string[] {
     ...contradictedLines(input.spec),
     '',
     ...IMPROVEMENT_RESULT,
+    ...(pressed(input) || input.round > 1 ? [] : [NOTHING_TO_BUILD]),
     needsLine(input),
   ];
 }
@@ -435,7 +573,10 @@ function again(input: CoderInput): string[] {
   const back =
     round > 1
       ? [
-          `Your change for ${askedName(asked, workItem)} came back from ${returned?.from ?? 'review'}, for round ${round}: ${returned?.reason ?? 'it needs another look'}.`,
+          // A spec written again sends the work back with no review of the change to answer: it came back for the spec.
+          narrowed(input) && !findings?.length && !suggestions?.length
+            ? `Your change for ${askedName(asked, workItem)} came back for round ${round}, held to a spec written again: ${returned?.reason ?? 'the planner wrote the spec again'}.`
+            : `Your change for ${askedName(asked, workItem)} came back from ${returned?.from ?? 'review'}, for round ${round}: ${returned?.reason ?? 'it needs another look'}.`,
           ...gateFailureLines(returned?.failures ?? []),
           ...(findings?.length
             ? [
@@ -474,10 +615,11 @@ function again(input: CoderInput): string[] {
           'Put it right inside the same scope.',
           ...recheck,
           ...needing,
-          ...(round > 1 ? [UNCHANGED] : []),
-          ...(round > 1 && suggestions?.length ? [UNCHANGED_DECLINES] : []),
+          // A narrowed round is told when it may change nothing with its dropped criteria, and nothing else.
+          ...(round > 1 && !narrowed(input) ? [UNCHANGED] : []),
+          ...(round > 1 && suggestions?.length && !pressed(input) ? [UNCHANGED_DECLINES] : []),
         ];
-  const why = [...back, ...refused];
+  const why = [...back, ...droppedLines(input), ...refused];
   const declining = suggestions?.length ? [DECLINING] : [];
   // Without its session, a round for suggestions alone is told the work, and that the fix is in and approved.
   if (!resumed(input) && suggestionsAlone(input)) {
@@ -518,7 +660,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
   agent: 'coder',
   maxTurns: 50,
   deadlineSeconds: 30 * 60,
-  input: async ({ workItem, state, round, commit, session, ticket, request, signals, read }) => ({
+  input: async ({ workItem, state, round, commit, session, failure, ticket, request, signals, read }) => ({
     workItem,
     asked: await askedOf({ state, ticket, request }),
     signals: await signals(),
@@ -531,10 +673,18 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     suggestions: suggestionsFor(state),
     fenced: state.fenced,
     answer: answerOf(state),
+    dropped: droppedCriteria(state.builtTo, state.spec),
+    failure,
   }),
   resume: resumed,
-  schema: (input) => coderResult(input.suggestions?.length ?? 0, suggestionsAlone(input), titleFor(input.asked)),
-  prompt: (input) => (later(input) ? again(input) : first(input)).join('\n'),
+  schema: (input) =>
+    coderResult({
+      suggestions: input.suggestions?.length ?? 0,
+      alone: suggestionsAlone(input),
+      title: titleFor(input.asked),
+      narrowed: pressed(input),
+    }),
+  prompt: (input) => [...(later(input) ? again(input) : first(input)), ...failedLines(input)].join('\n'),
   apply: async (result, handback, input, context) => {
     const { spec, round, suggestions = [] } = input;
     const { workItem, issue, state, commit } = context;
@@ -587,7 +737,11 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       return [answeredDraft(pullRequest, suggestions, declined)];
     }
     const { title, note, declined = [] } = result;
-    if (!patch) throw new StepFailed('The coder handed back no change, and did not say why');
+    if (!patch) {
+      // A narrowed round's change that changes nothing is refused as its result would be, so the next attempt is told why.
+      if (pressed(input)) throw new StepFailed(`The coder handed back no change, but ${NARROWED_REFUSAL}`);
+      throw new StepFailed('The coder handed back no change, and did not say why');
+    }
     const fenced = refusing(() => fenceFor(patch, input));
     if (!fenced.ok) {
       // Nothing reaches GitHub. The session is kept, so the step the refusal sends the work back to resumes it.
@@ -783,7 +937,7 @@ function pullRequestBody(
     '',
     '**Acceptance criteria**',
     '',
-    ...spec.criteria.map((c) => `- Given ${c.given}, when ${c.when}, then ${c.expect}.${side(c)}`),
+    ...spec.criteria.map((c) => `- ${criterionLine(c, true)}`),
     '',
     `**Scope.** ${spec.scope.map((path) => `\`${path}\``).join(', ')}`,
     '',

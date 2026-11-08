@@ -1226,6 +1226,27 @@ describe('Martin’s answer to a hold', () => {
     expect(decide([...rewritten, returned('review')], facts).next).toEqual({ do: 'step', agent: 'coder', round: 2 });
   });
 
+  it('keeps the spec the latest push was built to, which a spec written again since leaves as it was', () => {
+    const wider: LineEvent = {
+      type: 'spec.written',
+      payload: {
+        ...(spec.payload as PayloadOf<'spec.written'>),
+        criteria: [
+          ...(spec.payload as PayloadOf<'spec.written'>).criteria,
+          { given: 'an empty query', when: 'it is searched', expect: 'the page asks for words', from: 'the ticket' },
+        ],
+      },
+    };
+    expect(fold([ticket, wider]).builtTo).toBeUndefined();
+    const built = [ticket, wider, pushed()];
+    expect(fold(built).builtTo).toEqual(wider.payload);
+    // Written again, and again, before the coder meets it: the branch is still built to the spec of its push.
+    const rewritten = [...built, review('escalated'), spec, spec];
+    expect(fold(rewritten)).toMatchObject({ builtTo: wider.payload, spec: spec.payload, respecified: true });
+    // The round that meets it is built to it.
+    expect(fold([...rewritten, returned('review'), pushed(2)]).builtTo).toEqual(spec.payload);
+  });
+
   it('reviews the change again against a spec written again, even when he approves a coder that changed nothing', () => {
     const rewritten = [ticket, spec, pushed(), started(), finished('passed'), review('escalated'), spec];
     expect(fold(rewritten).review).toBeUndefined();

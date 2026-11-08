@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { findingEvents, reportEvents, senseEvidence, senseTicket, ticketTitle, typedAnswers } from '../src/events.ts';
 import type { Answer, Judge, JudgeRequest } from '../src/judge.ts';
 import { triageQuestions } from '../src/questions.ts';
-import { judgeReport, type PageView, passagesOf } from '../src/reports.ts';
+import { judgeReport, type PageReader, type PageView, passagesOf } from '../src/reports.ts';
 
 const SCREENSHOT: PageView['screenshot'] = {
   kind: 'screenshot',
@@ -293,6 +293,18 @@ describe('the events triage writes', () => {
     expect(events.find((e) => e.type === 'judgement.made' && e.payload.questionSet === 'element/v1')?.summary).toBe(
       'Triage: element chosen (0.90)',
     );
+  });
+
+  it('tell, when the ticket names no page, whether its page was read at all', async () => {
+    const story = async (view: PageReader) => {
+      const decision = await judgeReport(REPORT, [], fakeJev(triage('functional')).judge, view);
+      const events = reportEvents(signal, '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b', '1000', decision, NOW);
+      return JSON.stringify(events.find((e) => e.type === 'work-item.summarised')?.payload);
+    };
+    expect(await story(async () => ({ ...PAGE, status: null }))).toContain(
+      'Its page did not answer as a page of the app at that path, so it points at no page.',
+    );
+    expect(await story(async () => null)).toContain('The factory could not read its page, so it points at no page.');
   });
 
   it('title a report’s ticket as the visitor’s, in the factory’s words', async () => {

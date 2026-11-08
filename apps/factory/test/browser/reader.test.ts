@@ -135,6 +135,9 @@ describe('the page reader', () => {
       // A page that ends at another path is not the one asked for, whatever that one answered.
       const moved = (await (await post(JSON.stringify({ path: '/moved' }))).json()) as { status: number | null };
       expect(moved.status).toBeNull();
+      // Nor is one that ends off the app, at the same path on another origin.
+      const away = (await (await post(JSON.stringify({ path: '/away' }))).json()) as { status: number | null };
+      expect(away.status).toBeNull();
       // A path an address would collapse to another page is not read at all.
       expect((await post(JSON.stringify({ path: '/[typed](//elsewhere.test/x)/../../../..' }))).status).toBe(400);
     });

@@ -640,7 +640,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
       const closes = decision === 'rejected' && cause !== undefined && CLOSE_AGREES.includes(cause);
-      const how = closes ? 'Closed' : HOW[decision];
+      const how = closes ? `Closed, agreeing with the ${closedBy(cause as HoldCause)}` : HOW[decision];
       answered.push({
         at,
         workItem: item.number,

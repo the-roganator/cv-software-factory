@@ -68,6 +68,38 @@ const modelCall: PayloadOf<'model.called'> = {
 };
 
 describe('the rows', () => {
+  it('say his words stay his on a report’s answer in words with none in its view, and show them shared', () => {
+    const held = event(
+      0,
+      'hold.started',
+      'factory',
+      { stage: 'review', kind: 'held', cause: 'review', reason: 'Held' },
+      'Held',
+      '1500',
+    );
+    // In words, unshared: its view left them out.
+    const kept = event(
+      1,
+      'hold.answered',
+      'martin',
+      { decision: 'answered', hold: held.id, report: true },
+      'Said',
+      '1500',
+    );
+    expect(only([held, kept]).withheld).toBe('His words stay his: the hold was about a visitor’s report.');
+    const shared = event(
+      2,
+      'hold.answered',
+      'martin',
+      { decision: 'answered', answer: 'Sizes first', hold: held.id, report: true, shared: true },
+      'Said',
+      '1500',
+    );
+    const row = only([held, kept, shared]);
+    expect(row.withheld).toBeUndefined();
+    expect(row.detail).toContain('“Sizes first”');
+  });
+
   it('are every event up to t, newest first, under a row for each day where the viewer is', () => {
     const all = rows(SAMPLES, END);
     expect(all).toHaveLength(SAMPLES.length);

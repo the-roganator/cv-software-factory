@@ -273,3 +273,62 @@ describe('reading a workflow', () => {
     expect(triggers({ on: ['push', 'pull_request_target'], jobs: {} })).toContain('pull_request_target');
   });
 });
+
+/**
+ * Trivy is one image everywhere, pinned by version and digest in one file, which Dependabot moves: every job that runs
+ * it reads that file from this repository at the workflow's own commit, never from a change's checkout or the app's,
+ * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart.
+ */
+const TRIVY_PIN = '.github/images/trivy/Dockerfile';
+
+/** The Trivy image a Dockerfile pins, if it pins exactly one, by version and digest, and nothing else. */
+function trivyPin(dockerfile: string) {
+  const froms = dockerfile.split('\n').filter((line) => /^\s*FROM\s/i.test(line));
+  if (froms.length !== 1) return undefined;
+  return /^FROM (ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64})$/.exec(froms[0] ?? '')?.[1];
+}
+
+describe("Trivy's pin", () => {
+  it('is one image, by version and digest, in its own file', () => {
+    expect(trivyPin(readFileSync(TRIVY_PIN, 'utf-8'))).toMatch(/^ghcr\.io\/aquasecurity\/trivy:/);
+  });
+
+  it('refuses a FROM without a version, without a digest, of another image, or beside another', () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+    expect(trivyPin(`FROM ghcr.io/aquasecurity/trivy:0.74.0@${digest}\n`)).toBeDefined();
+    expect(trivyPin(`FROM ghcr.io/aquasecurity/trivy@${digest}\n`)).toBeUndefined();
+    expect(trivyPin('FROM ghcr.io/aquasecurity/trivy:0.74.0\n')).toBeUndefined();
+    expect(trivyPin(`FROM docker.io/aquasec/trivy:0.74.0@${digest}\n`)).toBeUndefined();
+    expect(trivyPin(`FROM ghcr.io/aquasecurity/trivy:0.74.0@${digest} AS scanner\n`)).toBeUndefined();
+    expect(
+      trivyPin(`FROM ghcr.io/aquasecurity/trivy:0.74.0@${digest}\nFROM ghcr.io/aquasecurity/trivy:0.73.0@${digest}\n`),
+    ).toBeUndefined();
+  });
+
+  it('is the only Trivy any workflow names, and each job that runs it reads it from its own commit', () => {
+    let readers = 0;
+    for (const { file, workflow } of workflows) {
+      const text = readFileSync(`${DIR}/${file}`, 'utf-8');
+      expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
+      for (const [name, job] of Object.entries(workflow.jobs)) {
+        const steps = job.steps ?? [];
+        const runs = steps.map((step) => step.run ?? '').join('\n');
+        if (!/trivy/i.test(runs) && !JSON.stringify(job.env ?? {}).match(/trivy/i)) continue;
+        readers++;
+        // The pin, read from a checkout of this repository at the workflow's own commit, by its path there.
+        const own = steps.find(
+          (step) =>
+            step.uses?.startsWith('actions/checkout@') &&
+            step.with?.repository === expression('job.workflow_repository') &&
+            step.with?.ref === expression('job.workflow_sha') &&
+            String(step.with?.['sparse-checkout'] ?? '')
+              .split('\n')
+              .includes(TRIVY_PIN),
+        );
+        expect(own, `${file} ${name}`).toBeDefined();
+        expect(runs, `${file} ${name}`).toContain(`${String(own?.with?.path)}/${TRIVY_PIN}`);
+      }
+    }
+    expect(readers).toBeGreaterThan(0);
+  });
+});

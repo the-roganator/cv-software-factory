@@ -36,8 +36,6 @@ env:
   # The commit the change is compared with: the pull request's base, or in the merge queue the group's, which is main
   # with the pull requests ahead of it in the queue, so each is judged on its own change.
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-  # The vulnerability scanner, by digest: 0.74.0.
-  TRIVY: ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
 
 jobs:
   journeys:
@@ -268,10 +266,12 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: factory
+          # The scanner, by version and digest, from its one pin (.github/images/trivy/Dockerfile).
           sparse-checkout: |
             mise.toml
             mise.lock
             apps/factory/src/gates/
+            .github/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
@@ -295,9 +295,11 @@ jobs:
           cache-from: type=gha
       - name: Scan both
         run: |
+          trivy=$(sed -nE 's/^FROM (\S+)$/\1/p' factory/.github/images/trivy/Dockerfile)
+          [ -n "$trivy" ] || { echo "::error::No Trivy pin in .github/images/trivy/Dockerfile"; exit 1; }
           mkdir -p "$RUNNER_TEMP/scan" && chmod 777 "$RUNNER_TEMP/scan"
           for image in base change; do
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_TEMP/scan:/out" "$TRIVY" \
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_TEMP/scan:/out" "$trivy" \
               image --quiet --scanners vuln --format json --output "/out/$image.json" "app:$image"
           done
       - run: node factory/apps/factory/src/gates/image-scan.ts "$RUNNER_TEMP/scan/base.json" "$RUNNER_TEMP/scan/change.json"

@@ -124,10 +124,10 @@ jobs:
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
-          # kustomize, step and promtool for the tests that render the manifests, make a local certificate authority
-          # and run the alerts on the flags (scripts/image-pins.test.ts, scripts/local-ca.test.ts,
-          # apps/factory/test/flag-alerts.test.ts).
-          install_args: node pnpm kustomize step promtool
+          # kustomize, step, promtool and yq for the tests that render the manifests, make a local certificate
+          # authority, run the alerts on the flags and work out the vulnerability scan's list (scripts/image-pins.test.ts,
+          # scripts/local-ca.test.ts, apps/factory/test/flag-alerts.test.ts, apps/factory/test/vulnerabilities).
+          install_args: node pnpm kustomize step promtool yq
       - run: pnpm install --frozen-lockfile
       - run: make check-tests SHARD="$SHARD"
         env:

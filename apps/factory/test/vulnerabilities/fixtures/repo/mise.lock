@@ -1,0 +1,8 @@
+[[tools.helm]]
+version = "4.0.0"
+backend = "aqua:helm/helm"
+
+[[tools.k3d]]
+version = "5.8.3"
+backend = "aqua:k3d-io/k3d"
+specifiers = ["5"]

@@ -1,0 +1,6 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: example
+servers: 1
+image: rancher/k3s:v1.30.0-k3s1

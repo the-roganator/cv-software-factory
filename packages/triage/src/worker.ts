@@ -647,6 +647,7 @@ export class Triage {
         this.#o.judge,
         this.#o.read,
         finding ? routeFinding : routeReport,
+        !finding,
       );
       // One fingerprint, one ticket: a new ticket that matches an open one joins it instead, as does a defect the
       // planner noticed that an open ticket already has.

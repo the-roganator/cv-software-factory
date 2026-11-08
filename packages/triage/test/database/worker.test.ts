@@ -648,7 +648,12 @@ describe('triage', () => {
         boxes: [],
       };
       const passage = 'Founded in 1066, the shop has sold doorstops for a century.';
-      const read = async () => ({ screenshot: shot, passages: ['Doorstops and more.', passage] });
+      const read = async () => ({
+        status: 200,
+        screenshot: shot,
+        passages: ['Doorstops and more.', passage],
+        elements: [],
+      });
       // Jev reads both as wrong words, and picks the same passage of the page.
       const words: Judge = async (request) => {
         if (request.questionSet === 'passage/v1') {
@@ -975,7 +980,7 @@ describe('triage', () => {
         {
           ...closed(other),
           type: 'ticket.opened',
-          version: 1,
+          version: 2,
           payload: {
             title: 'A wrong result on /gift-wrap',
             category: 'functional',

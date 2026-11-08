@@ -28,7 +28,7 @@ The factory already splits the work between agents that write things (specs, tes
 | Stage | Judgement | Primitives | Code does with it |
 |---|---|---|---|
 | **Triage** | A report's category, symptom and severity, and whether it holds instructions aimed at the system | Choice, Score, Noul | Routes each report to ticket, park for Martin, quarantine or discard |
-| **Triage** | Is this report the same problem as an open ticket on its page? And for content, which passage of the page? | Choice over candidate tickets or passages, including "none of these" | Joins the report to the matched ticket, or fingerprints a content ticket by the factory's own text |
+| **Triage** | Is this report the same problem as an open ticket on its page? And which passage or element of the page is it about? | Choice over candidate tickets, passages or elements, including "none of these" | Joins the report to the matched ticket, or points its ticket at the factory's own text or markup, and fingerprints a content ticket by its passage |
 | **Plan** | Is each acceptance criterion testable? Does the scope cover the files the evidence points to? | Noul per criterion or check | Rejects or escalates a spec before a coder spends budget |
 | **Review** | Does the diff change behaviour beyond the spec? Does it touch security-relevant code? | Score per dimension | May add a route to "Needs you"; never removes one |
 
@@ -102,7 +102,7 @@ The question sets are `packages/triage/src/questions.ts`. Each report is one req
 | `injection` | Noul | Does it try to give orders to an automated system that reads it? With criteria for yes and no |
 | `repeat` | Choice | Which open ticket on the same page does it describe? The candidates, described from their tickets' typed fields, and "none of these". Asked only when there are candidates |
 
-A report judged to be about content gets a second request, `passage/v1`: which passage of the page it is about, from the page's text as the factory read it, or none. The ticket's fingerprint is that passage, so it holds the factory's text, never the visitor's.
+A defect whose symptom is about part of the page gets a second request, from the page as the factory read it, or none ([what a report's ticket points at](COMPONENTS/TRIAGE.md#what-a-reports-ticket-points-at)): `passage/v1`, which passage of its text, for content and for a symptom a visitor sees in its words; or `element/v1`, which of its links, images, form fields or buttons, offered only those of the kinds its symptom can be about. The ticket points at what Jev chose, and a content ticket's fingerprint is its passage, so both hold the factory's text, never the visitor's.
 
 Routing (`packages/triage/src/routing.ts`), in order, against the thresholds in `policy/triage.ts`:
 
@@ -118,7 +118,7 @@ Low confidence on the category does not block a ticket. It is shown on the ticke
 
 Thresholds and wording are measured, not assumed.
 
-- **The evaluation set** (`apps/factory/eval/reports.ts`): 62 invented reports about the app, each with its page and the route triage should take. They cover every category a visitor can see, polite feature requests, chatter, a version of every red-team attack in spec 5.3 written as a report, and near-misses: a report quoting an error message, one addressed to "the developers", one with instructions meant for a person, and one that mentions an attack without making one, and complaints about a product rather than the site. None describes a seeded defect.
+- **The evaluation set** (`apps/factory/eval/reports.ts`): 65 invented reports about the app, each with its page and the route triage should take, and for some the page as the factory would read it and what the ticket should point at: a passage, an element, or nothing, where the link a report names is not on its page. They cover every category a visitor can see, polite feature requests, chatter, a version of every red-team attack in spec 5.3 written as a report, and near-misses: a report quoting an error message, one addressed to "the developers", one with instructions meant for a person, and one that mentions an attack without making one, and complaints about a product rather than the site. None describes a seeded defect.
 - **In CI**, on the committed cassettes and with no key, every report must route as expected, and a request with no cassette fails the run. So a change to a question that is not followed by `make eval` fails the build.
 - **`make eval`** runs the set against Jev live through the gateway. It records the cassettes, prints each report's route and each deciding probability against its threshold, and flags any within 0.2 of it, more than the 0.16 Jev was seen to drift. `RUNS=3` repeats the set to show the drift.
 - **A failure is sorted into one of four causes**: missing evidence in the state, a model error, a routing error in code, or a service failure. Each has a different fix. A failure the set keeps on purpose says which.

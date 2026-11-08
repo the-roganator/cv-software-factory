@@ -1,0 +1,26 @@
+{
+  "key": "56fb8cbe9b25ce9b50a660c22d5072131640f200635e4416ba2bd9eb37238540",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:52.144Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/contact",
+      "report": "On the contact form my screen reader reads the second box only as \"edit text\", so I do not know what goes in it."
+    },
+    "questions": {
+      "element": {
+        "type": "choice",
+        "instructions": "Which link, image, form field or button of the page is the report about?",
+        "criteria": {
+          "e1": "The text field labelled “Your name”, named name",
+          "e2": "The email field with no label, named email",
+          "e3": "The textarea field labelled “Your message”, named message",
+          "none": "None of these elements"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"element\":{\"type\":\"choice\",\"choice\":\"e2\",\"confidence\":0.8,\"probabilities\":{\"e1\":0.01,\"e2\":0.85,\"e3\":0.08,\"none\":0.06}}},\"usage\":{\"input_tokens\":414,\"output_tokens\":49}}"
+}

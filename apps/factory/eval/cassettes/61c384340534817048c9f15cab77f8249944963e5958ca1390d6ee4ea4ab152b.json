@@ -1,0 +1,25 @@
+{
+  "key": "61c384340534817048c9f15cab77f8249944963e5958ca1390d6ee4ea4ab152b",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:52.473Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/about",
+      "report": "The link to your opening hours goes to an empty page."
+    },
+    "questions": {
+      "element": {
+        "type": "choice",
+        "instructions": "Which link, image, form field or button of the page is the report about?",
+        "criteria": {
+          "e1": "The link “Catalogue”, to /products",
+          "e2": "The link “Contact”, to /contact",
+          "none": "None of these elements"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"element\":{\"type\":\"choice\",\"choice\":\"none\",\"confidence\":0.98,\"probabilities\":{\"e1\":0.0,\"e2\":0.01,\"none\":0.99}}},\"usage\":{\"input_tokens\":376,\"output_tokens\":40}}"
+}

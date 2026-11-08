@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { PAGE_PATH, PATH_CHARS } from './line.ts';
+import { ELEMENT_PATH, ELEMENT_TEXT, FIELD_NAME, FIELD_TYPE } from './points.ts';
 import { REQUEST_WORDS } from './request.ts';
 import { type EventType, LINE_TYPES, RELEASE_TYPES, VERSIONS } from './versions.ts';
 import * as V from './vocabulary.ts';
@@ -376,8 +377,28 @@ const candidate = z.strictObject({
   symptom: z.enum(V.SYMPTOM_CLASSES).optional(),
 });
 
-/** A passage of a page's text, as the factory read the page itself, offered as the one a content report is about. */
+/** A passage of a page's text, as the factory read the page itself, offered as the one a report is about. */
 const passage = z.strictObject({ key: slug, text: text(200) });
+
+/** An address an element names on the app, by its path alone, or null when it is off the app. */
+const elementPath = z.string().regex(PAGE_PATH, 'a path of the app, with no query').max(ELEMENT_PATH).nullable();
+const elementText = text(ELEMENT_TEXT).nullable();
+
+/** An element of a page, as the factory read the page itself: its own markup, never a value anyone typed (`points.ts`). */
+const pageElement = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('link'), text: elementText, to: elementPath }),
+  z.strictObject({ kind: z.literal('image'), alt: z.string().trim().max(ELEMENT_TEXT).nullable(), src: elementPath }),
+  z.strictObject({
+    kind: z.literal('field'),
+    label: elementText,
+    name: z.string().regex(FIELD_NAME).nullable(),
+    type: z.string().regex(FIELD_TYPE),
+  }),
+  z.strictObject({ kind: z.literal('button'), text: elementText }),
+]);
+
+/** An element offered to Jev as the one a report is about, under its key. */
+const offeredElement = z.strictObject({ key: slug, element: pageElement });
 
 /**
  * What identifies a defect from outside: a route and a symptom class, or, for content, the page and the passage of its
@@ -591,7 +612,8 @@ export const PAYLOADS = {
   }),
   /**
    * One request to Jev about a report: what it was asked and answered. The request that routes the report records
-   * where it went; one that only chooses a content report's passage from its page has no route.
+   * where it went; one that only chooses the passage or the element of its page a report points at has no route. A
+   * version 1 judgement never offered elements.
    */
   'judgement.made': z
     .strictObject({
@@ -602,6 +624,8 @@ export const PAYLOADS = {
         /** The open tickets on the same page it was offered, besides "none of these". */
         candidates: z.array(candidate).max(10).optional(),
         passages: z.array(passage).max(40).optional(),
+        /** The elements of the page it was offered, besides "none of these", for a report about one of them. */
+        elements: z.array(offeredElement).max(80).optional(),
       }),
       answers: z.array(answer).min(1).max(20),
       route: z.enum(V.TRIAGE_ROUTES).optional(),
@@ -612,12 +636,22 @@ export const PAYLOADS = {
       cassette: sha256,
     })
     .refine((j) => (j.route === 'repeat') === (j.joined !== undefined), 'a repeat names the ticket it joined'),
+  /**
+   * A ticket. A visitor's report's names what it `points` at, from the page as the factory read it, never the
+   * visitor's words: the page it was sent from, and the passage or the element of it Jev chose, or neither when the
+   * report is about the whole page, Jev chose none or the page could not be read. A version 1 ticket never said, and
+   * no other ticket does.
+   */
   'ticket.opened': z.strictObject({
     title: text(120),
     category: z.enum(V.DEFECT_CATEGORIES),
     severity: z.enum(V.SEVERITIES),
     fingerprint,
     traces: z.array(traceId).max(10),
+    points: z
+      .strictObject({ page, passage: text(200).optional(), element: pageElement.optional() })
+      .refine((p) => !(p.passage && p.element), 'a ticket points at a passage or an element, not both')
+      .optional(),
   }),
 
   /**

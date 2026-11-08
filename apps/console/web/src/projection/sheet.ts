@@ -15,7 +15,7 @@ import type {
   Sense,
   SymptomClass,
 } from '@software-factory/events';
-import { clearedOnWords, knownInScope, LIMITS, SENSES } from '@software-factory/events';
+import { clearedOnWords, knownInScope, LIMITS, pointWords, SENSES } from '@software-factory/events';
 import { attackLimitMs } from '@software-factory/policy/attacks';
 import { FLAG_STEP_UP } from '../access.ts';
 import { clock, listed, plural, shortVersion } from '../format.ts';
@@ -229,8 +229,11 @@ export interface Sheet {
      * blocks waits for Martin, and which pass that is once there is more than one.
      */
     reviews: { done: number; of: number; pass: number | undefined } | undefined;
-    /** A ticket's category and severity, and its fingerprint in words. */
-    ticket: { category: string; severity: string; fingerprint: string } | undefined;
+    /**
+     * A ticket's category and severity, its fingerprint in words, and on a report's ticket what it points at: a
+     * passage or an element of its page, or the page alone.
+     */
+    ticket: { category: string; severity: string; fingerprint: string; reported: string | undefined } | undefined;
     /** An improvement's flag and its stage, "delivery-dates · preview", or "price-sort · not built yet". */
     flag: string | undefined;
   };
@@ -1150,6 +1153,7 @@ export function sheet(
           'class' in item.ticket.fingerprint
             ? `${where(item.ticket.fingerprint.route)} · ${item.ticket.fingerprint.class}`
             : `${item.ticket.fingerprint.page} · “${item.ticket.fingerprint.text}”`,
+        reported: item.ticket.points && pointWords(item.ticket.points),
       },
       flag: flagFact(item),
     },

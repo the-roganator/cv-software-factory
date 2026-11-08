@@ -15,6 +15,9 @@ import {
   type InboxSignal,
   type NewEvent,
   type PayloadOf,
+  type Points,
+  pointsAtSomething,
+  pointWords,
   SECURITY_HEADERS,
   type Sense,
   type SignalSource,
@@ -546,14 +549,26 @@ export function reportEvents(
         severity: routed.severity,
         fingerprint,
         traces: [],
+        ...(decision.points && { points: decision.points }),
       });
       return summarise(writer, {
         title,
         description: `A visitor reported it. Jev judged it ${routed.category} and ${routed.severity}; triage opened a ticket.`,
-        story: `A visitor sent a report from ${page}. It went to Jev as data, and Jev judged it a ${routed.category} problem, ${routed.severity} for a visitor, with no instructions for the system in it. Triage opened ticket #${workItem} with a screenshot of the page, taken by the factory. The ticket holds Jev’s typed answers and the factory’s own evidence, never the visitor’s words.`,
+        story: `A visitor sent a report from ${page}. It went to Jev as data, and Jev judged it a ${routed.category} problem, ${routed.severity} for a visitor, with no instructions for the system in it. Triage opened ticket #${workItem} with a screenshot of the page, taken by the factory. The ticket holds Jev’s typed answers and the factory’s own evidence, never the visitor’s words.${pointed(decision)}`,
       });
     }
   }
+}
+
+/** What a report's ticket points at, as its story tells it. */
+function pointed({ points, screenshot }: Pick<ReportDecision, 'points' | 'screenshot'>): string {
+  // No points: the page could not be read, or did not answer as a page of the app at its path, so the ticket names none.
+  if (!points)
+    return screenshot
+      ? ' Its page did not answer as a page of the app at that path, so it points at no page.'
+      : ' The factory could not read its page, so it points at no page.';
+  if (!pointsAtSomething(points)) return ' It points at nothing narrower than the page.';
+  return ` It points at ${pointWords(points as Points)}, which Jev chose from the page as the factory read it.`;
 }
 
 /**
@@ -763,6 +778,14 @@ export function judgementLine(judgement: Judgement): string {
   }
   const passage = by.get('passage');
   if (passage?.type === 'choice') parts.push(`passage chosen (${p(passage.probabilities[passage.answer])})`);
+  const element = by.get('element');
+  if (element?.type === 'choice') {
+    parts.push(
+      element.answer === 'none'
+        ? `no element chosen (${p(element.probabilities.none)})`
+        : `element chosen (${p(element.probabilities[element.answer])})`,
+    );
+  }
   return `Triage: ${parts.join(', ')}`;
 }
 

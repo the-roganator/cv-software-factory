@@ -1204,6 +1204,7 @@ const PAGE_TICKET: PayloadOf<'ticket.opened'> = {
   severity: 'cosmetic',
   fingerprint: { page: '/about', text: PLANTED_PASSAGE },
   traces: [],
+  points: { page: '/about', passage: PLANTED_PASSAGE },
 };
 
 /** A spec for taking the paragraph off the page, and nothing it asks for. */

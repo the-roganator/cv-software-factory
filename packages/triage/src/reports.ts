@@ -1,12 +1,18 @@
 /**
  * Judging a visitor's report: the one thing triage asks a model about. Jev answers `triage/v2` about the report
- * (scrubbed), routing code decides where it goes, and a content report gets a second request, `passage/v1`, which
- * chooses the passage of the page it is about from the page as the factory read it itself. The ticket then holds
- * the factory's own text, never the visitor's.
+ * (scrubbed), routing code decides where it goes, and a defect gets a second request where its symptom is about part
+ * of the page (`POINTED_BY`): `passage/v1`, which chooses the passage of the page it is about, or `element/v1`, the
+ * link, image, field or button, each from the page as the factory read it itself. The ticket then points at the
+ * factory's own text and markup, never the visitor's words; a content report's fingerprint is its passage too.
  */
 import {
   cutTo,
+  elementsOf,
+  PAGE_PATH,
+  type PageElement,
   type PayloadOf,
+  POINTED_BY,
+  type Points,
   REPORT_CATEGORIES,
   type ReportCategory,
   type Screenshot,
@@ -17,6 +23,9 @@ import type { Answer, Judge, JudgeResult, Question } from './judge.ts';
 import {
   type Candidate,
   candidateKey,
+  ELEMENT,
+  elementKey,
+  elementQuestions,
   MODEL,
   NONE,
   PASSAGE,
@@ -30,10 +39,15 @@ import {
 import { type Routed, type Router, routeReport } from './routing.ts';
 import { privatePath, scrub } from './scrub.ts';
 
-/** The page a report names, as the factory sees it: a screenshot at its path, and its text in passages. */
+/**
+ * The page a report names, as the factory sees it: the status it answered with, a screenshot at its path, its text
+ * in passages, and its links, images, fields and buttons.
+ */
 export interface PageView {
+  status: number | null;
   screenshot: Screenshot;
   passages: string[];
+  elements: PageElement[];
 }
 
 /** Reads a page of the app at a path, with no query: that is the visitor's. Null when it cannot be read. */
@@ -51,6 +65,11 @@ export interface ReportDecision {
    * factory's text from the page.
    */
   fingerprint?: Fingerprint;
+  /**
+   * For a ticket on a page the factory read, what it points at: the page, and the passage or element Jev chose, if
+   * any. Absent when the page could not be read or did not answer, so a path no page has never reaches an agent.
+   */
+  points?: Points;
   screenshot?: Screenshot;
   /** The scrubbed text, as Jev read it. The only form of the report triage keeps. */
   text: string;
@@ -73,6 +92,8 @@ export async function judgeReport(
   judge: Judge,
   read: PageReader,
   route: Router = routeReport,
+  /** Whether a ticket may come of it, and so whether to ask what it points at: never for a planner's finding. */
+  pointed = true,
 ): Promise<ReportDecision> {
   const path = privatePath(report.page);
   const state: ReportState = { page: path, report: scrub(report.text) };
@@ -114,8 +135,15 @@ export async function judgeReport(
   if (!defect) return decision;
 
   decision.fingerprint = { route: privatePath(report.route), class: defect.symptom };
-  const passages = passagesOf(view?.passages ?? []);
-  if (defect.category === 'content' && passages.length) {
+  const content = defect.category === 'content';
+  // A page that answered, at a path an event may name: only then is the page the app's, and not a path typed.
+  const found =
+    pointed && view !== null && view.status !== null && view.status >= 200 && view.status < 300 && PAGE_PATH.test(path);
+  if (found) decision.points = { page: path };
+  const pointing = content ? 'passage' : POINTED_BY[defect.symptom];
+  if (pointing === 'passage' && (found || content)) {
+    const passages = passagesOf(view?.passages ?? []);
+    if (!passages.length) return decision;
     const asked = passageQuestions(passages);
     const chosen = await judge({
       agent: 'triage',
@@ -131,7 +159,28 @@ export async function judgeReport(
     });
     const pick = answer(chosen, 'passage', 'choice').choice;
     const passage = passages.find((_, i) => passageKey(i) === pick);
-    if (pick !== NONE && passage) decision.fingerprint = { page: path, text: passage };
+    if (pick === NONE || !passage) return decision;
+    if (content) decision.fingerprint = { page: path, text: passage };
+    if (decision.points) decision.points.passage = passage;
+  } else if (Array.isArray(pointing) && found) {
+    const elements = elementsOf(view.elements).filter((e) => pointing.includes(e.kind));
+    if (!elements.length) return decision;
+    const asked = elementQuestions(elements);
+    const chosen = await judge({
+      agent: 'triage',
+      workItem: null,
+      questionSet: ELEMENT,
+      model: MODEL,
+      state,
+      questions: asked,
+    });
+    judgements.push({
+      ...recorded(chosen, ELEMENT, state, asked),
+      state: { ...stateOf(state), elements: elements.map((element, i) => ({ key: elementKey(i), element })) },
+    });
+    const pick = answer(chosen, 'element', 'choice').choice;
+    const element = elements.find((_, i) => elementKey(i) === pick);
+    if (pick !== NONE && element && decision.points) decision.points.element = element;
   }
   return decision;
 }

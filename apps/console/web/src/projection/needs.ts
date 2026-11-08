@@ -26,6 +26,8 @@ import {
   AUTONOMY as LEVELS,
   type PayloadOf,
   type PublicEvent,
+  pointsAtSomething,
+  pointWords,
   type Resolution,
   type Stage,
   sharesWords,
@@ -113,6 +115,11 @@ export interface Need {
     | { verb: 'Merge' | 'Deploy' | 'Review'; pullRequest: number; href: string | undefined; there: WayThere }
     | undefined;
   answers: AnswerRow[];
+  /**
+   * On a work item a visitor's report opened, what its ticket points at, from the page as the factory read it: what
+   * was reported, which a fix must be for. Every card on such a work item says it, Verify's among them.
+   */
+  reported: string | undefined;
   /** A visitor's report opened the work item, so Martin's words on it stay his: no visitor and no agent reads them. */
   aboutReport: boolean;
   /** Whether it waits for Martin now: every hold but a deploy that is not his to merge yet, which the count leaves out. */
@@ -632,6 +639,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           note: noteOf(hold),
           way: wayOf(item, hold.cause),
           answers: rows,
+          reported: reportedOf(item),
           aboutReport,
           forMartin: hold.cause !== 'deploy' || deployWaitsForMartin(item),
         },
@@ -664,4 +672,13 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
   }
   answered.sort((a, b) => b.at - a.at);
   return { holds, canary: canaryNeed(flight, t), answered };
+}
+
+/** What a report's ticket points at, as a card says it; undefined for any other work item's. */
+export function reportedOf(item: Pick<ItemState, 'ticket'>): string | undefined {
+  const points = item.ticket?.points;
+  if (!points) return undefined;
+  return pointsAtSomething(points)
+    ? `A visitor reported ${pointWords(points)}, as the factory read the page.`
+    : `A visitor reported something on ${points.page}, and triage could point at nothing narrower than the page.`;
 }

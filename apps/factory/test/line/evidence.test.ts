@@ -3,10 +3,10 @@
  * span name or span note reaches any agent's prompt (`evidence.ts`); and the bench's fixtures that plant instructions,
  * in log lines or in a page, are what they say they are.
  */
-import type { Evidence } from '@software-factory/events';
+import type { Evidence, PayloadOf } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
-import type { Signal } from '../../src/line/agents/evidence.ts';
+import { askedLines, type Signal, ticketLines } from '../../src/line/agents/evidence.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
 import { followed } from '../../src/line/bench/bench.ts';
 import { FIXTURES, type Fixture, type InputOf } from '../../src/line/bench/fixtures.ts';
@@ -176,5 +176,57 @@ describe('the fixtures that plant instructions', () => {
     const spec = 'spec' in f.input ? f.input.spec : undefined;
     expect(followed(asks, { result: { spec } })).toEqual([]);
     expect(followed(asks, { patch: f.change?.patch })).toEqual([]);
+  });
+});
+
+describe('a report’s ticket, as every agent is told it', () => {
+  const ticket = (points?: PayloadOf<'ticket.opened'>['points']): PayloadOf<'ticket.opened'> => ({
+    title: 'A visitor reports a link to a missing page on /products/:slug',
+    category: 'navigation',
+    severity: 'degraded',
+    fingerprint: { route: '/products/:slug', class: 'broken-link' },
+    traces: [],
+    ...(points && { points }),
+  });
+
+  it('says what it points at, from the page as the factory read it', () => {
+    expect(
+      ticketLines(
+        ticket({ page: '/products/oak-stool', element: { kind: 'link', text: 'All stools', to: '/stools' } }),
+      ),
+    ).toEqual([
+      'It is a broken-link on /products/:slug. Category navigation, severity degraded.',
+      'A visitor reported it on /products/oak-stool, about the link “All stools”, to /stools there, as the factory read the page.',
+    ]);
+    expect(ticketLines(ticket({ page: '/products/oak-stool', passage: 'Only 3 left.' }))[1]).toBe(
+      'A visitor reported it on /products/oak-stool, about the passage "Only 3 left." there, as the factory read the page.',
+    );
+    expect(ticketLines(ticket({ page: '/products/oak-stool' }))[1]).toBe(
+      'A visitor reported it on /products/oak-stool. Triage could point at nothing narrower than the page.',
+    );
+  });
+
+  it('says nothing more of a sense’s ticket, or of a content ticket whose fingerprint holds its passage', () => {
+    expect(ticketLines(ticket())).toHaveLength(1);
+    const content: PayloadOf<'ticket.opened'> = {
+      ...ticket({ page: '/about', passage: 'Founded in 1887.' }),
+      category: 'content',
+      fingerprint: { page: '/about', text: 'Founded in 1887.' },
+    };
+    expect(ticketLines(content)).toHaveLength(1);
+  });
+
+  it('reaches the planner, the coder, the reviewer and the describer alike', () => {
+    const pointed = ticket({ page: '/', element: { kind: 'image', alt: null, src: '/images/hen.jpg' } });
+    const line = 'about the image /images/hen.jpg, with no description there';
+    expect(askedLines({ kind: 'ticket', ticket: pointed }).join('\n')).toContain(line);
+    for (const agent of ['planner', 'coder', 'reviewer', 'describer'] as const) {
+      const [name, found] = Object.entries(FIXTURES[agent]).find(
+        ([, f]) => 'asked' in f.input && (f.input as { asked: { kind: string } }).asked.kind === 'ticket',
+      ) ?? [undefined, undefined];
+      if (!name || !found) throw new Error(`The bench has no ticket fixture for the ${agent}.`);
+      const input = { ...found.input, asked: { kind: 'ticket', ticket: pointed } } as InputOf<typeof agent>;
+      expect(promptOf(agent, input), `${agent} (${name})`).toContain(line);
+    }
   });
 });

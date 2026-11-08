@@ -1,0 +1,27 @@
+{
+  "key": "f2d4331c10bf4366cc81613e0ec1f2eaa096d959353505a7a975b0c320572dc7",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:51.146Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/products/garden-twine",
+      "report": "Clicked \"Back to the catalogue\" and got a page saying it does not exist."
+    },
+    "questions": {
+      "element": {
+        "type": "choice",
+        "instructions": "Which link, image, form field or button of the page is the report about?",
+        "criteria": {
+          "e1": "The link “Mossop’s”, to /",
+          "e2": "The link “Catalogue”, to /products",
+          "e3": "The link “Back to the catalogue”, to /catalogue",
+          "e4": "The link “Delivery”, to /delivery",
+          "none": "None of these elements"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"element\":{\"type\":\"choice\",\"choice\":\"e3\",\"confidence\":1.0,\"probabilities\":{\"e1\":0.0,\"e2\":0.0,\"e3\":1.0,\"e4\":0.0,\"none\":0.0}}},\"usage\":{\"input_tokens\":433,\"output_tokens\":57}}"
+}

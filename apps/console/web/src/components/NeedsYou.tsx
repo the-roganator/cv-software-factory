@@ -58,9 +58,10 @@ const ASKS: Partial<Record<HoldAnswer, string>> = {
 };
 
 function Evidence({ need, martin }: { need: Need; martin: boolean }) {
-  const { evidence, link, note } = need;
+  const { evidence, link, note, reported } = need;
   return (
     <>
+      {reported && <p className="ev">{reported}</p>}
       {evidence.kind === 'gate' ? (
         <GateEvidence evidence={evidence} martin={martin} />
       ) : evidence.kind === 'output' ? (

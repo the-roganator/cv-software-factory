@@ -1,13 +1,19 @@
 /**
- * The page reader, for triage: it is given the path of a page of the app, and says what the page looks like and
- * what it says. A screenshot goes in the artifact store; the visible text comes back as passages for Jev to choose
- * from. The text of a page is never logged, and its requests carry `UNMEASURED`, as the senses' do.
+ * The page reader, for triage: it is given the path of a page of the app, and says what the page looks like, what it
+ * says and what it holds. A screenshot goes in the artifact store; the visible text comes back as passages, and the
+ * page's links, images, form fields and buttons as elements, for Jev to choose from; the status says whether the page
+ * was there, and is none when it ended at another path. The text of a page is never logged, and its requests carry `UNMEASURED`, as the senses' do.
  *
- *     POST /v1/pages   { "path": "/about" }  ->  { "screenshot": <Screenshot>, "passages": ["…"] }
+ *     POST /v1/pages   { "path": "/about" }
+ *       ->  { "status": 200, "screenshot": <Screenshot>, "passages": ["…"], "elements": [<PageElement>, …] }
  *     GET  /health
+ *
+ * The page is loaded fresh, at its path alone, so nothing on it is what a visitor typed. An element is the app's own
+ * markup: a link or an image by its path on the app, with no query or fragment, and a field by its label, its name and
+ * its type, never its value.
  */
 import { createServer, type Server } from 'node:http';
-import { cutAt } from '@software-factory/events';
+import { appPath, cutAt, elementsOf, type PageElement, pathOf } from '@software-factory/events';
 import type { ArtifactStore } from '@software-factory/store';
 import { capture } from '../capture.ts';
 import type { BrowserSense } from '../senses/browser.ts';
@@ -32,10 +38,72 @@ export function passagesOf(text: string): string[] {
   return passages;
 }
 
-/** A path of the app, and nothing else: no host, no query, no fragment. Null if it is anything more. */
+/** An element as the browser saw it, with absolute addresses: any field may be anything. */
+export interface RawElement {
+  kind?: unknown;
+  text?: unknown;
+  href?: unknown;
+  alt?: unknown;
+  src?: unknown;
+  label?: unknown;
+  name?: unknown;
+  type?: unknown;
+}
+
+/** An absolute address on the app as its path alone, cut at its query; null when it is off the app, or no address. */
+function onApp(value: unknown, app: URL): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const url = new URL(value, app);
+    return url.origin === app.origin ? appPath(url.pathname) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The elements a page is read with, from what the browser saw: each address on the app by its path alone. */
+export function pageElements(raw: readonly RawElement[], app: string): PageElement[] {
+  const base = new URL(app);
+  return elementsOf(raw.map(({ href, src, ...rest }) => ({ ...rest, to: onApp(href, base), src: onApp(src, base) })));
+}
+
+/**
+ * Runs in the page: its links, images, form fields and buttons, in its order, as the markup has them. A field's value
+ * is never read; a button's words are its text, or for an input its `value` attribute, which is the markup's.
+ */
+const READ_ELEMENTS = `(() => {
+  const text = (el) => el.innerText || el.getAttribute('aria-label') || el.getAttribute('title');
+  const out = [];
+  for (const el of document.body.querySelectorAll('a[href], img, input, select, textarea, button')) {
+    const tag = el.tagName.toLowerCase();
+    // An address the markup leaves empty is none, not the page itself.
+    if (tag === 'a') out.push({ kind: 'link', text: text(el), href: el.getAttribute('href') ? el.href : null });
+    else if (tag === 'img') out.push({ kind: 'image', alt: el.getAttribute('alt'), src: el.getAttribute('src') ? el.src : null });
+    else if (tag === 'button') out.push({ kind: 'button', text: text(el) });
+    else {
+      const type = tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : tag;
+      if (type === 'hidden') continue;
+      if (['submit', 'button', 'reset', 'image'].includes(type)) {
+        out.push({ kind: 'button', text: el.getAttribute('value') || el.getAttribute('aria-label') });
+        continue;
+      }
+      const label = (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label');
+      out.push({ kind: 'field', label, name: el.getAttribute('name'), type });
+    }
+  }
+  return out;
+})()`;
+
+/** A path the reader loads: the segments a page's path has (`pathOf`), so the browser ends at the page it names. */
+const READ_PATH = pathOf();
+
+/**
+ * A path of the app, and nothing else: no host, query, fragment, backslash, empty segment or dot segment. Null if it
+ * is anything more.
+ */
 export function pathOnly(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 200) return null;
-  if (!/^\/(?!\/)[^\s?#\\]*$/.test(value)) return null;
+  if (!READ_PATH.test(value)) return null;
   return value;
 }
 
@@ -76,14 +144,25 @@ export function readerServer({ app, sense, store, version, log }: ReaderOptions)
         const response = await page.goto(new URL(path, app).href, { waitUntil: 'load' });
         const main = page.locator('main').first();
         const text = await ((await main.count()) ? main : page.locator('body')).innerText();
+        // A page that ended at another path than the one asked, or off the app, by a redirect, is not the page at that
+        // path, which may be words a visitor typed: its status is none. (A path with segments an address collapses is
+        // refused above.)
+        const ended = new URL(page.url());
+        const there = ended.origin === new URL(app).origin && ended.pathname === path;
         return {
-          status: response?.status() ?? null,
+          status: there ? (response?.status() ?? null) : null,
           text,
+          elements: (await page.evaluate(READ_ELEMENTS)) as RawElement[],
           screenshot: await capture(page, store, { route: path, version: current }),
         };
       }, UNMEASURED);
       log.info({ path, status: page.status, ms: Date.now() - started }, 'a page was read');
-      return reply(200, { screenshot: page.screenshot, passages: passagesOf(page.text) });
+      return reply(200, {
+        status: page.status,
+        screenshot: page.screenshot,
+        passages: passagesOf(page.text),
+        elements: pageElements(page.elements, app),
+      });
     } catch (error) {
       log.warn(
         { err: error instanceof Error ? error.message.split('\n')[0] : String(error) },

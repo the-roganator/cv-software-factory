@@ -30,9 +30,28 @@ flowchart TD
 - **A sense's signal** takes its category and severity from `policy/triage.ts`, and repeats by fingerprint. Its ticket's title says what was seen and where, and names what failed where the evidence does: "Content-Security-Policy and X-Frame-Options are missing on every page", or how many headers when their names would not fit.
 - **Only reports and the planner's findings go to Jev** (`triage/v2`), with routing as plain code.
 - It quarantines injection attempts, and parks suggestions for Martin, which close when he [rejects them](#a-suggestion). A quarantine is recorded as typed judgement refusing the report (`action.refused`, mechanism `typed-judgement`, guardrail 8), on the quarantined work item before it closes, appended as triage's role, the only role that may append a refusal by typed judgement (`policy/refusals.ts`). Its output is Jev's typed answers verbatim, with their probabilities, one line an answer; never the report's words, nor the questions, which are the factory's.
+- **A report's ticket points at what was reported** ([below](#what-a-reports-ticket-points-at)), from the page as the factory read it, never the visitor's words.
 - **One fingerprint, one ticket.**
 - **More new problems than a handful from one sense at once** wait for Martin as one [burst](#a-burst), before any has a ticket. An open ticket's problem seen again where no release explains it counts as new.
 - **A new problem seen while what its sense reads was not healthy** waits for Martin too, its cause [the environment](#what-a-sense-reads).
+
+## What a report's ticket points at
+
+A report's ticket says what was reported, in the factory's words, so that every agent, the issue and the console are told it (`points` on `ticket.opened`, `packages/events/src/points.ts`). Its title only names the symptom and the route, which any fault of that kind there would fit.
+
+- **The page** the visitor sent it from, as a path with no query and nothing private in it, and only when the [page reader](PROBES-AND-CRAWLER.md#the-page-reader) read it and it answered 2xx there, not at the end of a redirect: a path no page has may be words a visitor typed, so it never reaches an agent.
+- **A passage or an element of it**, which Jev chooses from the page as the factory read it, or none, by what the report describes (`POINTED_BY`):
+
+| Jev judged it | It points at | Asked |
+|---|---|---|
+| Content, whatever its symptom; or `wrong-result`, `low-contrast` | A passage of the page's text | `passage/v1` |
+| `broken-link` | A link | `element/v1` |
+| `broken-image`, `missing-alt` | An image | `element/v1` |
+| `unlabelled-field` | A form field | `element/v1` |
+| `rejects-valid-input` | A form field or a button | `element/v1` |
+| Any other symptom: one of the whole page, such as an error, slowness, a header or the logs | Nothing narrower than the page | Nothing more |
+
+Faint text is text: a link's or a button's words in the page's main text (`<main>`, or the whole page when it has none) are among the passages too. An element is the page's own markup: a link by its words and its path on the app, an image by its description and its path, a field by its label, its `name` and its type, a button by its words. An address off the app is named as such, a query or a fragment is cut, and a field's value is never read. Jev's answer is a label from the options it was offered, so nothing it writes reaches the ticket. A content ticket's fingerprint is its passage too; every other ticket keeps its route and symptom as its fingerprint, which the scoreboard matches. A planner's finding, which opens no ticket, is never asked what it points at, only a content one's passage, which its hold's fingerprint holds.
 
 ## One copy at a time
 

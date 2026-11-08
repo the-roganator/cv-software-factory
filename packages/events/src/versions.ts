@@ -17,8 +17,8 @@ export const VERSIONS = {
   'attack.finished': 1,
   // Sense and triage
   'signal.received': 5,
-  'judgement.made': 1,
-  'ticket.opened': 1,
+  'judgement.made': 2,
+  'ticket.opened': 2,
   // Plan and build
   'spec.written': 5,
   'pull-request.pushed': 3,

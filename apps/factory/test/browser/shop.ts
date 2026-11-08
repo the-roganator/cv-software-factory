@@ -186,6 +186,18 @@ export async function startShop(...faults: Fault[]): Promise<Shop> {
         ),
       );
     }
+    // A page that has moved, which nothing links: the page reader asked for it ends at the about page.
+    if (path === '/moved') {
+      res.writeHead(302, { location: '/about' });
+      return res.end();
+    }
+    // A page that has moved off the shop, to another origin at the same path: localhost is not 127.0.0.1's origin.
+    if (path === '/away' && url.searchParams.has('there'))
+      return send(res, 200, page('Elsewhere', '<p>Not the shop.</p>'));
+    if (path === '/away') {
+      res.writeHead(302, { location: `http://localhost:${req.socket.localPort}/away?there=1` });
+      return res.end();
+    }
     if (path === '/loop') {
       res.writeHead(302, { location: '/loop' });
       return res.end();

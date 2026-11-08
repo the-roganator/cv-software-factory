@@ -86,6 +86,10 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.
   // Version 4 says when Martin shared his words on a visitor's report's work item; a version 3 answer never did.
   'hold.answered': { 1: (payload) => payload, 2: (payload) => payload, 3: (payload) => payload },
+  // Version 2 of a judgement may offer a page's elements; a version 1 judgement offered passages at most.
+  'judgement.made': { 1: (payload) => payload },
+  // Version 2 of a ticket names what a visitor's report points at; a version 1 ticket never did.
+  'ticket.opened': { 1: (payload) => payload },
   // Version 2 adds Martin's reason, and the console's start names no autonomy level; a version 1 start named one, and
   // gave no reason.
   'line.started': { 1: (payload) => payload },

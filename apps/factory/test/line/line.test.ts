@@ -293,6 +293,40 @@ describe('the line', () => {
     expect((await payloads(waiting, 'hold.started')).at(-1)).toMatchObject({ cause: 'spec' });
   });
 
+  it('names what a report’s ticket points at in its issue, and tells the planner it', async () => {
+    const workItem = await nextWorkItem(database.as.triage);
+    const element = { kind: 'link', text: 'Delivery @someone [here]', to: '/delivery' } as const;
+    await events.append([
+      event(
+        workItem,
+        'work-item.opened',
+        { kind: 'visitor-report', title: 'A report from /', sample: false },
+        'triage',
+      ),
+      event(
+        workItem,
+        'ticket.opened',
+        {
+          title: 'A visitor reports a link to a missing page on /',
+          category: 'navigation',
+          severity: 'degraded',
+          fingerprint: { route: '/', class: 'broken-link' },
+          traces: [],
+          points: { page: '/', element },
+        },
+        'triage',
+      ),
+    ]);
+    const { pass, steps, github } = line(AGENTS, events);
+    await pass();
+    expect(String(github.acts[0]?.args.body)).toContain(
+      '- A visitor reported the link “Delivery \\@someone \\[here\\]”, to /delivery, on /, as the factory read the page',
+    );
+    expect(steps.requests[0]?.prompt).toContain(
+      'A visitor reported it on /, about the link “Delivery @someone [here]”, to /delivery there, as the factory read the page.',
+    );
+  });
+
   it('carries a ticket through plan, build, gates, review and description to Martin’s merge', async () => {
     const workItem = await ticket();
     const probes = new FakeProbes({ outcome: 'cleared', version: 'v0.9.4', runs: ['passed', 'passed'] });

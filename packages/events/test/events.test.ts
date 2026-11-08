@@ -328,6 +328,77 @@ describe('validation', () => {
     expect(validate({ ...judgement, payload: { ...judgement.payload, joined: '1000' } }).ok).toBe(false);
   });
 
+  it('takes a report’s ticket pointing at a passage or an element of its page, never both, and only paths', () => {
+    const ticket = (points: unknown) => ({
+      ...opened,
+      type: 'ticket.opened',
+      version: 2,
+      actor: 'triage',
+      payload: {
+        title: 'A visitor reports a link to a missing page on /products/:slug',
+        category: 'navigation',
+        severity: 'degraded',
+        fingerprint: { route: '/products/:slug', class: 'broken-link' },
+        traces: [],
+        ...(points !== undefined && { points }),
+      },
+    });
+    const link = { kind: 'link', text: 'Back to the list', to: '/list' };
+    expect(validate(ticket(undefined))).toEqual({ ok: true });
+    expect(validate(ticket({ page: '/products/oak-stool' }))).toEqual({ ok: true });
+    expect(validate(ticket({ page: '/products/oak-stool', passage: 'A fine thing.' }))).toEqual({ ok: true });
+    expect(validate(ticket({ page: '/products/oak-stool', element: link }))).toEqual({ ok: true });
+    for (const element of [
+      { kind: 'image', alt: null, src: null },
+      { kind: 'image', alt: '', src: '/images/stool.jpg' },
+      { kind: 'field', label: null, name: 'email', type: 'email' },
+      { kind: 'button', text: null },
+    ]) {
+      expect(validate(ticket({ page: '/', element }))).toEqual({ ok: true });
+    }
+    for (const wrong of [
+      { page: '/products/oak-stool', passage: 'A fine thing.', element: link },
+      { page: '/products/oak-stool?ref=x' },
+      // A typed path that an address collapses to another page, or that names another host.
+      { page: '/[words](//elsewhere.test/x)/../../../..' },
+      { page: '/a//b' },
+      { page: '/a\\b' },
+      { page: '/', element: { ...link, to: '/list?q=what+a+visitor+typed' } },
+      { page: '/', element: { ...link, to: 'https://elsewhere.test/' } },
+      { page: '/', element: { kind: 'field', label: 'Email', name: 'email', type: 'email', value: 'typed' } },
+      { page: '/', element: { kind: 'link', text: 'x'.repeat(81), to: '/' } },
+    ]) {
+      expect(validate(ticket(wrong)).ok).toBe(false);
+    }
+  });
+
+  it('reads a version 1 ticket and judgement as they were', () => {
+    const payload = { title: 'T', category: 'content', severity: 'cosmetic', fingerprint: { page: '/', text: 'x' } };
+    expect(upcast({ type: 'ticket.opened', version: 1, payload: { ...payload, traces: [] } })).toMatchObject({
+      ok: true,
+      event: { version: 2, payload: { ...payload, traces: [] } },
+    });
+    expect(upcast({ type: 'judgement.made', version: 1, payload: judgement.payload })).toMatchObject({
+      ok: true,
+      event: { version: 2, payload: judgement.payload },
+    });
+  });
+
+  it('takes the elements a judgement offered, each by its key', () => {
+    const offered = {
+      ...judgement,
+      payload: {
+        ...judgement.payload,
+        questionSet: 'element/v1',
+        state: {
+          ...judgement.payload.state,
+          elements: [{ key: 'e1', element: { kind: 'link', text: 'Delivery', to: '/delivery' } }],
+        },
+      },
+    };
+    expect(validate(offered)).toEqual({ ok: true });
+  });
+
   it('takes what a browser saw as evidence, and a symptom on every page as one route', () => {
     const crawled = {
       ...signal,

@@ -47,7 +47,7 @@ export const judgement: NewEvent<'judgement.made'> = {
   ts: '2026-10-02T12:15:01.000Z',
   work_item: '1284',
   type: 'judgement.made',
-  version: 1,
+  version: 2,
   actor: 'triage',
   summary: 'Triage: not a problem (0.94), no instructions (0.01)',
   payload: {

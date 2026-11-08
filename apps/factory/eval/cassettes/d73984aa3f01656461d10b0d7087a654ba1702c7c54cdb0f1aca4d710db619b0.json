@@ -1,0 +1,26 @@
+{
+  "key": "d73984aa3f01656461d10b0d7087a654ba1702c7c54cdb0f1aca4d710db619b0",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:51.799Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/products/oil-lamp",
+      "report": "My screen reader just says \"image\" for the big picture of the lamp, nothing about what it shows."
+    },
+    "questions": {
+      "element": {
+        "type": "choice",
+        "instructions": "Which link, image, form field or button of the page is the report about?",
+        "criteria": {
+          "e1": "The image /images/logo.svg, described as “Mossop’s”",
+          "e2": "The image /images/oil-lamp.jpg, with no description",
+          "e3": "The image /images/oil-lamp-chimney.jpg, described as “A glass chimney, close up”",
+          "none": "None of these elements"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"element\":{\"type\":\"choice\",\"choice\":\"e2\",\"confidence\":1.0,\"probabilities\":{\"e1\":0.0,\"e2\":1.0,\"e3\":0.0,\"none\":0.0}}},\"usage\":{\"input_tokens\":435,\"output_tokens\":49}}"
+}

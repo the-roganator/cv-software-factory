@@ -1,13 +1,13 @@
 {
-  "key": "4c8693910411ab2d9e47206d00e0ef21395c7ab3fe04a23705b70e88fd7313f8",
+  "key": "c10462d647a73e73216c53014f473cdf3e6aa92f86fdf3abb6abd08a5a631053",
   "provider": "typesafe",
   "model": "jev-1.13.0",
-  "recordedAt": "2026-10-16T06:34:02.009Z",
+  "recordedAt": "2026-11-08T15:29:52.316Z",
   "request": {
     "model": "jev-1.13.0",
     "state": {
-      "page": "/products",
-      "report": "In stock and out of stock are shown only by a green or red dot. I am colour blind and cannot tell them apart."
+      "page": "/about",
+      "report": "The link to your opening hours goes to an empty page."
     },
     "questions": {
       "category": {
@@ -68,5 +68,5 @@
       }
     }
   },
-  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"category\":{\"type\":\"choice\",\"choice\":\"accessibility\",\"confidence\":1.0,\"probabilities\":{\"content\":0.0,\"navigation\":0.0,\"functional\":0.0,\"errors\":0.0,\"performance\":0.0,\"accessibility\":1.0,\"security\":0.0,\"observability\":0.0,\"suggestion\":0.0,\"not-a-defect\":0.0}},\"symptom\":{\"type\":\"choice\",\"choice\":\"missing-alt\",\"confidence\":0.33,\"probabilities\":{\"broken-link\":0.0,\"broken-image\":0.0,\"redirect-loop\":0.0,\"wrong-result\":0.28,\"rejects-valid-input\":0.0,\"server-error\":0.0,\"browser-error\":0.0,\"slow-response\":0.0,\"not-cached\":0.0,\"missing-alt\":0.37,\"low-contrast\":0.28,\"unlabelled-field\":0.07,\"missing-header\":0.0,\"leaks-detail\":0.0,\"missing-log\":0.0,\"wrong-metric\":0.0}},\"severity\":{\"type\":\"score\",\"score\":2.68,\"confidence\":0.68,\"legend\":{\"0\":\"No harm: nothing is wrong, or nothing that affects a visitor\",\"1\":\"Cosmetic: a visitor may notice, and can still do what they came to do\",\"2\":\"Degraded: it works, but worse than it should\",\"3\":\"Broken: a visitor cannot do what they came to do\"},\"probabilities\":{\"0\":0.0,\"1\":0.01,\"2\":0.3,\"3\":0.69}},\"injection\":{\"type\":\"noul\",\"noul\":0.02}},\"usage\":{\"input_tokens\":1306,\"output_tokens\":289}}"
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"category\":{\"type\":\"choice\",\"choice\":\"navigation\",\"confidence\":1.0,\"probabilities\":{\"content\":0.0,\"navigation\":1.0,\"functional\":0.0,\"errors\":0.0,\"performance\":0.0,\"accessibility\":0.0,\"security\":0.0,\"observability\":0.0,\"suggestion\":0.0,\"not-a-defect\":0.0}},\"symptom\":{\"type\":\"choice\",\"choice\":\"broken-link\",\"confidence\":0.96,\"probabilities\":{\"broken-link\":0.96,\"broken-image\":0.0,\"redirect-loop\":0.0,\"wrong-result\":0.04,\"rejects-valid-input\":0.0,\"server-error\":0.0,\"browser-error\":0.0,\"slow-response\":0.0,\"not-cached\":0.0,\"missing-alt\":0.0,\"low-contrast\":0.0,\"unlabelled-field\":0.0,\"missing-header\":0.0,\"leaks-detail\":0.0,\"missing-log\":0.0,\"wrong-metric\":0.0}},\"severity\":{\"type\":\"score\",\"score\":2.9,\"confidence\":0.89,\"legend\":{\"0\":\"No harm: nothing is wrong, or nothing that affects a visitor\",\"1\":\"Cosmetic: a visitor may notice, and can still do what they came to do\",\"2\":\"Degraded: it works, but worse than it should\",\"3\":\"Broken: a visitor cannot do what they came to do\"},\"probabilities\":{\"0\":0.0,\"1\":0.03,\"2\":0.05,\"3\":0.92}},\"injection\":{\"type\":\"noul\",\"noul\":0.02}},\"usage\":{\"input_tokens\":1292,\"output_tokens\":286}}"
 }

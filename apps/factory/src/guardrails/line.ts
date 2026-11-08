@@ -145,7 +145,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
   const before = await drill.runnerPods();
   const agents = before.filter((p) => p.part === 'agent');
   drill.say(
-    `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) are running in runners now.`,
+    `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) of the line’s are running in runners now.`,
   );
   if (!(await drill.ask('Stop the line now, and start it again after the checks?'))) {
     return { declined: 'Martin did not say yes: the drill was not taken, and nothing is recorded for it.' };
@@ -206,11 +206,14 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       await drill.sleep(POLL_MS);
       left = await drill.runnerPods();
     }
-    if (left.length) fail(`pods still in runners: ${left.map((p) => p.name).join(', ')}`);
+    if (left.length) fail(`the line’s pods still in runners: ${left.map((p) => p.name).join(', ')}`);
     else if (seen.size)
-      lines.push(`✓ No pod is left in runners (${seen.size} were running at the prompt or the stop).`);
+      lines.push(`✓ None of the line’s pods is left in runners (${seen.size} were running at the prompt or the stop).`);
     // Held, as the line's tests show it ends a step (ci:stopped-line), but this drill did not show a pod ended.
-    else lines.push('✓ No pod is in runners: none was running at the prompt or the stop, so no step was there to end.');
+    else
+      lines.push(
+        '✓ None of the line’s pods is in runners: none was running at the prompt or the stop, so no step was there to end.',
+      );
 
     const waited = since(await storeNow());
     if (waited < STOPPED_MS) await drill.sleep(STOPPED_MS - waited);
@@ -223,7 +226,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     if (!left.length) {
       const late = await drill.runnerPods();
       if (late.length)
-        fail(`pods started in runners while the line was stopped: ${late.map((p) => p.name).join(', ')}`);
+        fail(`the line’s pods started in runners while the line was stopped: ${late.map((p) => p.name).join(', ')}`);
     }
   } finally {
     process.off('SIGINT', interrupted);

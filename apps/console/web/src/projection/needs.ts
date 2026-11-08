@@ -19,11 +19,13 @@ import {
   ANSWERS,
   answersTo,
   CLOSE_AGREES,
+  closedBy,
   type GateTag,
   type HoldAnswer,
   type HoldCause,
   AUTONOMY as LEVELS,
   type PayloadOf,
+  PLAIN_ON_REPORT,
   type PublicEvent,
   type Resolution,
   type Stage,
@@ -271,7 +273,7 @@ function doesOf(
   }
   // One Close, where approving would close it as well: it agrees with the agent that closed it.
   if (answer === 'rejected' && CLOSE_AGREES.includes(cause)) {
-    return `Agrees with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}, and closes #${workItem}. Nothing is built.`;
+    return `Agrees with the ${closedBy(cause)}, and closes #${workItem}. Nothing is built.`;
   }
   if (answer === 'rejected') {
     if (cause === 'deploy')
@@ -658,21 +660,22 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       if (at < from || at > t) continue;
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
-      // Sent back with no words, where his stay his: where it went says what it did.
-      const plain =
-        !answer && cause !== undefined && WORDED_ANSWERS.includes(decision) && !takesWords(cause, decision, report);
+      // Sent back with no words, where his stay his: where it went says what it did. Only an answer that could be
+      // plain there is: one with none, from before, had words, which stay his.
+      const plain = !answer && report === true && cause !== undefined && PLAIN_ON_REPORT[cause].includes(decision);
+      const closes = decision === 'rejected' && cause !== undefined && CLOSE_AGREES.includes(cause);
       const how =
         plain && cause
           ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
-          : decision === 'rejected' && cause && CLOSE_AGREES.includes(cause)
+          : closes
             ? 'Closed'
             : HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words: answer ?? (report && cause && takesWords(cause, decision, true) ? 'kept' : undefined),
-        did: plain || how === 'Closed' ? undefined : didOf(cause, decision),
+        words: answer ?? (report && !plain && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
+        did: plain || closes ? undefined : didOf(cause, decision),
       });
     }
   }

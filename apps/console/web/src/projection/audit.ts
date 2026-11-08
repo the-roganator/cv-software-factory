@@ -16,9 +16,9 @@ import {
   AGENTS,
   type HoldCause,
   type PayloadOf,
+  PLAIN_ON_REPORT,
   type PublicEvent,
   SENSES,
-  takesWords,
   WORDED_ANSWERS,
 } from '@software-factory/events';
 import { stageWords } from '@software-factory/policy/flag-moves';
@@ -213,11 +213,11 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
       case 'hold.answered':
         if (event.payload.answer) parts.push(quoted(event.payload.answer));
         else if (event.payload.report) {
-          // Only an answer that took words there has any to leave out: triage's, where they wait for him.
+          // An answer that goes with words had them, but one that could be given plain there, which may have none.
           const cause = event.payload.hold ? causes.get(event.payload.hold) : undefined;
-          const took = cause
-            ? takesWords(cause, event.payload.decision, true)
-            : WORDED_ANSWERS.includes(event.payload.decision);
+          const took =
+            WORDED_ANSWERS.includes(event.payload.decision) &&
+            !(cause && PLAIN_ON_REPORT[cause].includes(event.payload.decision));
           withheld = took ? MARTIN_KEPT : MARTIN_ANY_KEPT;
         }
         break;

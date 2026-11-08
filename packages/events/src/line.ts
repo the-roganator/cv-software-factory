@@ -68,7 +68,7 @@ export type Resolution =
  * to fix, approving agrees with it and closes the work item; answering sends the spec back to the planner, told what
  * the coder said and what Martin did.
  *
- * Sending the work back to the planner (`replanned`, always with his words) is for the holds before a merge where the
+ * Sending the work back to the planner (`replanned`, with his words, but plain where they stay his: `PLAIN_ON_REPORT`) is for the holds before a merge where the
  * change's own words go to the coder, but the spec may be what is wrong: a gate the change cannot pass under its spec,
  * as when the spec contradicts a test the app has and names none, a review it cannot satisfy, a change he will not
  * merge as it stands, or tests that cannot fail. The planner writes the spec again from his words, and the coder
@@ -211,6 +211,9 @@ export const sameAs = (
 export const CLOSE_AGREES: readonly HoldCause[] = (Object.keys(ANSWERS) as HoldCause[]).filter(
   (cause) => ANSWERS[cause].approved === 'close',
 );
+
+/** The agent whose closing a Close agrees with: the coder that found nothing to fix, or the planner that rejected it. */
+export const closedBy = (cause: HoldCause): 'coder' | 'planner' => (cause === 'nothing-to-fix' ? 'coder' : 'planner');
 
 /**
  * The longest path an event records, in characters: a file a patch changes, a scope entry, a review finding's file. A

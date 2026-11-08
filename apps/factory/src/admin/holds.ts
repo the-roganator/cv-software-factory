@@ -36,6 +36,7 @@ import {
   ANSWERS,
   answersTo,
   CLOSE_AGREES,
+  closedBy,
   HOLD_ANSWERS,
   type HoldAnswer,
   type HoldCause,
@@ -248,7 +249,7 @@ function answerEvent(
     summary: back
       ? `Martin sent the hold on #${workItem} back to ${back}`
       : decision === 'rejected' && CLOSE_AGREES.includes(cause)
-        ? `Martin closed #${workItem}, agreeing with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}`
+        ? `Martin closed #${workItem}, agreeing with the ${closedBy(cause)}`
         : `Martin ${DID[decision](workItem)}`,
     payload: { decision, ...(words !== undefined && { answer: words }), hold, ...(report && { report: true }) },
     artifacts: [],
@@ -286,6 +287,10 @@ export async function answerHold(
         );
       }
       const report = await openedByReport(tx, workItem);
+      // Approving where Close does the same: one answer, his rejection, which agrees as approving would.
+      if (decision === 'approved' && CLOSE_AGREES.includes(open.cause)) {
+        throw new Refused('answer', 422, 'Close does what approving would here: it agrees, and closes it. Send that.');
+      }
       if (!answersTo(open.cause, report).includes(decision)) {
         throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
       }

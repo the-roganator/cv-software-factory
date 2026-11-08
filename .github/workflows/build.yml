@@ -218,7 +218,8 @@ jobs:
     needs: console
     if: needs.console.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Room for GHCR's tries: its index takes two calls, each with up to 105 seconds of waiting between tries.
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -247,7 +248,9 @@ jobs:
     needs: factory
     if: needs.factory.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Room for GHCR's tries: each of its three indexes takes two calls, each with up to 105 seconds of waiting between
+    # tries.
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
@@ -275,14 +278,16 @@ jobs:
 
   # Signs each image the jobs above pushed, by digest, and attests an SBOM of each of its platforms, made by Syft. Jobs
   # of their own, so that only they can ask for the workflow's OIDC token, and nothing an image's build runs ever can:
-  # one for each image, side by side. If one fails, its image is in GHCR unsigned, and the deploy watch will not propose
-  # it until it is run again.
+  # one for each image, side by side. A brief failure of Sigstore's or GHCR's is tried again within the job; if one
+  # still fails, its image is in GHCR unsigned, and the deploy watch will not propose it until it is run again.
   sign:
     name: sign
     needs: [push-console, push-factory]
     if: ${{ !cancelled() && (needs.push-console.result == 'success' || needs.push-factory.result == 'success') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Room for every try: the two scans' four tries each, three cosign calls of four one-minute tries each, and up to
+    # 105 seconds of waiting between each call's tries.
+    timeout-minutes: 30
     permissions:
       packages: write # cosign keeps the signatures and attestations beside the images
       id-token: write # the workflow's identity, which Fulcio certifies
@@ -327,10 +332,27 @@ jobs:
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$NAME has no digest: $DIGEST"; exit 1; }
           ref="ghcr.io/$GITHUB_REPOSITORY/$NAME@$DIGEST"
+          # Fulcio, Rekor and GHCR fail now and then (a 500, a dropped connection) and answer again soon after. Each call
+          # to them gets four tries, 15, 30 and 60 seconds apart, and no more: an outage that lasts longer, or a failure
+          # that is not theirs, still fails the job, once it has been tried four times. Cosign's errors are not stable
+          # enough to tell one kind from the other, so every failure is tried again. Each cosign try is cut off after a
+          # minute, so a service that hangs rather than failing is tried again too. Its notes go to stderr, as check.yml
+          # sends its copy's output nowhere. scripts/build-signing.test.ts runs it.
+          retry() {
+            local try
+            for try in 1 2 3 4; do
+              "$@" && return 0
+              [ "$try" -lt 4 ] || break
+              echo "::warning::${1##*/} $2 failed (try $try of 4); trying again in $((15 << (try - 1)))s" >&2
+              sleep $((15 << (try - 1)))
+            done
+            echo "::error::${1##*/} $2 failed four times" >&2
+            return 1
+          }
           # One SBOM for each platform, made side by side: Syft pulls each platform's layers, which is most of the time.
           scans=()
           for arch in amd64 arm64; do
-            "$SYFT" scan --quiet --platform "linux/$arch" "registry:$ref" --output "spdx-json=sbom-$arch.spdx.json" &
+            retry "$SYFT" scan --quiet --platform "linux/$arch" "registry:$ref" --output "spdx-json=sbom-$arch.spdx.json" &
             scans+=("$!")
           done
           # Every scan is waited for, so a failure of each is reported, and nothing is attested unless both finished.
@@ -338,9 +360,11 @@ jobs:
           for scan in "${scans[@]}"; do wait "$scan" || failed=1; done
           [ "$failed" = 0 ] || exit 1
           # Each attested on the image index that the cluster pins. The signature comes last, so an image that carries
-          # one has its SBOMs too: the deploy watch looks for the signature alone.
+          # one has its SBOMs too: the deploy watch looks for the signature alone. A try again after one that failed
+          # late can leave a second signature or SBOM by the same identity, and everything that verifies one accepts
+          # any one that verifies.
           for arch in amd64 arm64; do
-            cosign attest --yes --type spdxjson --predicate "sbom-$arch.spdx.json" "$ref"
+            retry cosign attest --yes --timeout 1m --type spdxjson --predicate "sbom-$arch.spdx.json" "$ref"
           done
-          cosign sign --yes "$ref"
+          retry cosign sign --yes --timeout 1m "$ref"
           echo "$ref: signed, with an SBOM of each platform attested"

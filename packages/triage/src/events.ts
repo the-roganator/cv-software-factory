@@ -554,16 +554,19 @@ export function reportEvents(
       return summarise(writer, {
         title,
         description: `A visitor reported it. Jev judged it ${routed.category} and ${routed.severity}; triage opened a ticket.`,
-        story: `A visitor sent a report from ${page}. It went to Jev as data, and Jev judged it a ${routed.category} problem, ${routed.severity} for a visitor, with no instructions for the system in it. Triage opened ticket #${workItem} with a screenshot of the page, taken by the factory. The ticket holds Jev’s typed answers and the factory’s own evidence, never the visitor’s words.${pointed(decision.points)}`,
+        story: `A visitor sent a report from ${page}. It went to Jev as data, and Jev judged it a ${routed.category} problem, ${routed.severity} for a visitor, with no instructions for the system in it. Triage opened ticket #${workItem} with a screenshot of the page, taken by the factory. The ticket holds Jev’s typed answers and the factory’s own evidence, never the visitor’s words.${pointed(decision)}`,
       });
     }
   }
 }
 
 /** What a report's ticket points at, as its story tells it. */
-function pointed(points: ReportDecision['points']): string {
-  // No points: the page did not answer as a page of the app, so the ticket names none.
-  if (!points) return ' The factory could not read its page, so it points at no page.';
+function pointed({ points, screenshot }: Pick<ReportDecision, 'points' | 'screenshot'>): string {
+  // No points: the page could not be read, or did not answer as a page of the app at its path, so the ticket names none.
+  if (!points)
+    return screenshot
+      ? ' Its page did not answer as a page of the app at that path, so it points at no page.'
+      : ' The factory could not read its page, so it points at no page.';
   if (!pointsAtSomething(points)) return ' It points at nothing narrower than the page.';
   return ` It points at ${pointWords(points as Points)}, which Jev chose from the page as the factory read it.`;
 }

@@ -144,9 +144,11 @@ export function readerServer({ app, sense, store, version, log }: ReaderOptions)
         const response = await page.goto(new URL(path, app).href, { waitUntil: 'load' });
         const main = page.locator('main').first();
         const text = await ((await main.count()) ? main : page.locator('body')).innerText();
-        // A page that ended at another path than the one asked, by a redirect, is not the page at that path, which may be
-        // words a visitor typed: its status is none. (A path with segments an address collapses is refused above.)
-        const there = new URL(page.url()).pathname === path;
+        // A page that ended at another path than the one asked, or off the app, by a redirect, is not the page at that
+        // path, which may be words a visitor typed: its status is none. (A path with segments an address collapses is
+        // refused above.)
+        const ended = new URL(page.url());
+        const there = ended.origin === new URL(app).origin && ended.pathname === path;
         return {
           status: there ? (response?.status() ?? null) : null,
           text,

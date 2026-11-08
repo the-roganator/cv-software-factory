@@ -29,7 +29,16 @@ import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFile
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
-import { advisoriesFor, type CoreEntry, entries, NODE_DATABASE, nodeInConfig, nodeInSbom, readable } from './node.ts';
+import {
+  advisoriesFor,
+  type CoreEntry,
+  entries,
+  NODE_DATABASE,
+  nodeInConfig,
+  nodeInPackages,
+  nodeInSbom,
+  readable,
+} from './node.ts';
 import { PROOF } from './proof.ts';
 import { type Finding, LIMITS, merge, overLimits, SEVERITIES, type Severity, sarif } from './sarif.ts';
 
@@ -254,7 +263,8 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
   if (!target.signer) return { target, reports: [], unreadable: 'no signer the scan can verify it against' };
   let predicates: unknown[];
   try {
-    predicates = await tools.retry(() => tools.attestations(image, target.signer ?? ''));
+    // Once: a signature that does not verify is an answer, not a pull to try again.
+    predicates = await tools.attestations(image, target.signer ?? '');
   } catch (error) {
     return { target, reports: [], unreadable: `no SBOM attestation verified: ${firstLine(error)}` };
   }
@@ -273,10 +283,8 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
   const node = predicates.map(nodeInSbom).find(Boolean);
   if (node) return { target, reports, source: 'sbom', node };
   try {
-    const own = await tools.retry(() =>
-      tools.trivy(['image', ...IMAGE_ARGS, '--platform', FALLBACK_PLATFORM, '--', image]),
-    );
-    const configured = nodeInConfig(own.Metadata?.ImageConfig);
+    const own = await tools.retry(() => analysed(tools, ['--platform', FALLBACK_PLATFORM, '--', image]));
+    const configured = nodeOf(own);
     if (!configured)
       return { target, reports: [], unreadable: 'its Node version is in neither its SBOM nor its image' };
     return { target, reports: [...reports, own], source: 'image', node: configured };
@@ -289,27 +297,34 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
   }
 }
 
+/**
+ * Trivy's report of an image, which must name the image it analysed: one that does not is no read, and its alerts would
+ * close with nothing behind them. An image with no packages at all (k3s's pause, a static busybox) is read.
+ */
+async function analysed(tools: Tools, args: string[]) {
+  const report = await tools.trivy(['image', ...IMAGE_ARGS, ...args]);
+  if (!report.Metadata?.ImageID) throw new Error('Trivy gave no image it analysed');
+  return report;
+}
+
+/** An image's Node version, from its configuration's `NODE_VERSION` or an operating system's `nodejs` package. */
+const nodeOf = (report: TrivyReport) => nodeInConfig(report.Metadata?.ImageConfig) ?? nodeInPackages(report.Results);
+
 /** Any other image: CI's copy where there is one, then its own registry, with retries. */
 export async function readImage(tools: Tools, target: Target): Promise<Read> {
   const image = target.image ?? '';
-  const scan = async (reference: string) => {
-    const report = await tools.trivy(['image', ...IMAGE_ARGS, '--', reference]);
-    // A report that names no image Trivy analysed is not a read: its alerts would close with nothing behind them. An
-    // image with no packages at all (k3s's pause, a static busybox) is read, and has no findings.
-    if (!report.Metadata?.ImageID) throw new Error('Trivy gave no image it analysed');
-    return report;
-  };
+  const scan = (reference: string) => analysed(tools, ['--', reference]);
   try {
     if (target.ci) {
       try {
         const report = await scan(target.ci);
-        return { target, reports: [report], node: nodeInConfig(report.Metadata?.ImageConfig) };
+        return { target, reports: [report], node: nodeOf(report) };
       } catch {
         // Not copied yet (mirror.yml copies the factory's pins, daily): from its own registry instead.
       }
     }
     const report = await tools.retry(() => scan(image));
-    return { target, reports: [report], node: nodeInConfig(report.Metadata?.ImageConfig) };
+    return { target, reports: [report], node: nodeOf(report) };
   } catch (error) {
     return { target, reports: [], unreadable: `could not be pulled: ${firstLine(error)}` };
   }

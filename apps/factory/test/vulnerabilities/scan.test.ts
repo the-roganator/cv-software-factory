@@ -8,6 +8,7 @@ import {
   advisoriesFor,
   entries,
   nodeInConfig,
+  nodeInPackages,
   nodeInSbom,
   readable,
   satisfies,
@@ -341,6 +342,10 @@ describe("Node's own advisories", () => {
     expect(satisfies('24.23.0', '^24.22')).toBe(true);
     expect(satisfies('25.0.0', '^24.22')).toBe(false);
     expect(satisfies('24.21.9', '^24.22.x')).toBe(false);
+    expect(satisfies('0.0.3', '^0.0.3')).toBe(true);
+    expect(satisfies('0.0.4', '^0.0.3')).toBe(false);
+    expect(satisfies('0.2.9', '^0.2.3')).toBe(true);
+    expect(satisfies('0.3.0', '^0.2.3')).toBe(false);
     // The whole database is read when it is fetched, so a range it cannot read refuses it then.
     expect(() => readable(DB)).not.toThrow();
     expect(() => readable([['9', { vulnerable: '24.x', patched: '>=24.22.1-rc.1' }]])).toThrow(
@@ -368,6 +373,13 @@ describe("Node's own advisories", () => {
     ).toBeUndefined();
     expect(nodeInConfig(fixture('image-node').Metadata?.ImageConfig)).toBe('24.22.0');
     expect(nodeInConfig(fixture('image-postgres').Metadata?.ImageConfig)).toBeUndefined();
+    // NodeSource's package, as Playwright's image installs Node; an npm package of that name is not Node.
+    expect(
+      nodeInPackages([
+        { Class: 'lang-pkgs', Packages: [{ Name: 'nodejs', Version: '1.0.0' }] },
+        { Class: 'os-pkgs', Packages: [{ Name: 'nodejs', Version: '24.22.0-1nodesource1' }] },
+      ]),
+    ).toBe('24.22.0');
   });
 
   it("is a result per image and CVE, at the image's pin, and an image of another's with NODE_VERSION has them too", async () => {

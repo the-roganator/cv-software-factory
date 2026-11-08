@@ -94,7 +94,12 @@ function meets(version: Version, comparator: string): boolean {
     case '<':
       return order < 0;
     case '^':
-      return order >= 0 && version[0] === bound[0] && (bound[0] !== 0 || version[1] === bound[1]);
+      // The leftmost part that is not zero is kept: ^1.2.3 to 2.0.0, ^0.2.3 to 0.3.0, ^0.0.3 to 0.0.4.
+      return (
+        order >= 0 &&
+        version[0] === bound[0] &&
+        (bound[0] !== 0 || (version[1] === bound[1] && (bound[1] !== 0 || version[2] === bound[2])))
+      );
     case '~':
       return order >= 0 && version[0] === bound[0] && version[1] === bound[1];
     default:
@@ -181,6 +186,23 @@ export function nodeInSbom(predicate: unknown): string | undefined {
   for (const pkg of packages) {
     for (const ref of pkg.externalRefs ?? []) {
       const version = /^pkg:generic\/node@(\d+\.\d+\.\d+)(?:[?#].*)?$/.exec(ref.referenceLocator ?? '')?.[1];
+      if (version) return version;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The Node version an operating system's package gives, where an image installs Node that way (Playwright's, from
+ * NodeSource's `nodejs`): the release its version begins with.
+ */
+export function nodeInPackages(
+  results: { Class?: string; Packages?: { Name?: string; Version?: string }[] | null }[] | null | undefined,
+): string | undefined {
+  for (const result of results ?? []) {
+    if (result.Class !== 'os-pkgs') continue;
+    for (const pkg of result.Packages ?? []) {
+      const version = pkg.Name === 'nodejs' ? /^(?:\d+:)?(\d+\.\d+\.\d+)/.exec(pkg.Version ?? '')?.[1] : undefined;
       if (version) return version;
     }
   }

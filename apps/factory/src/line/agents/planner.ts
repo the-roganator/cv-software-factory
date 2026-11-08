@@ -77,7 +77,7 @@
  * (`coder.ts`), and the GitHub worker refuses every protected file a patch changes, as the last word.
  */
 import type { InboxSignal, PayloadOf } from '@software-factory/events';
-import { inScope, PATH_CHARS, pointsAtSomething, RISKS, touches } from '@software-factory/events';
+import { inScope, PATH_CHARS, pointsAtSomething, RISKS, ticketPoints, touches } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { z } from 'zod';
 import { type Contradicted, entryProblem, MOST_CONTRADICTED } from '../../gates/contradicts.ts';
@@ -278,16 +278,23 @@ const within = (words: string, source: string) => {
  */
 export function quoteProblem(from: string, quote: string, sources: Sources): string | undefined {
   const named: string[] = [];
+  // What a report's ticket refused, said only when `from` names nothing else: one naming Martin's answer as well is
+  // held to his words alone.
+  let refused: string | undefined;
   // A ticket's criterion names the ticket, and an improvement's the request: never the one the work item has not.
   if ((sources.kind === 'ticket' ? /\bticket\b/i : /\brequest\b/i).test(from)) {
     if (sources.report && !sources.asked)
-      return 'a visitor’s report opened the ticket, and it points at nothing narrower than its page: quote Martin’s answer';
-    named.push(sources.asked);
+      refused =
+        'a visitor’s report opened the ticket, and it points at nothing narrower than its page: quote Martin’s answer';
+    else named.push(sources.asked);
   }
   // `signal 2`, `signals 1 and 2`, `signals 1, 3`, `signal #2`
   for (const [, list = ''] of from.matchAll(/\bsignals?\s*((?:#?\d+(?:\s*(?:,|and|&|\+|-|–)\s*)?)+)/gi)) {
-    if (sources.report)
-      return 'a visitor’s report opened the ticket, and a signal may be another defect of its kind: quote what the ticket points at, or Martin’s answer';
+    if (sources.report) {
+      refused ??=
+        'a visitor’s report opened the ticket, and a signal may be another defect of its kind: quote what the ticket points at, or Martin’s answer';
+      continue;
+    }
     for (const [n] of list.matchAll(/\d+/g)) {
       const signal = sources.signals[Number(n) - 1];
       if (signal === undefined) return `there is no signal ${n}`;
@@ -295,17 +302,21 @@ export function quoteProblem(from: string, quote: string, sources: Sources): str
     }
   }
   if (/\banswer/i.test(from)) {
-    if (!sources.answers) return 'Martin has answered nothing yet';
+    if (!sources.answers) return refused ?? 'Martin has answered nothing yet';
     named.push(sources.answers);
   }
   if (!named.length) {
+    if (refused) return refused;
     return sources.kind === 'ticket'
       ? 'from names the ticket, a signal by its number, or Martin’s answer'
       : 'from names the request, or Martin’s answer';
   }
   const words = unquoted(quote);
   // A passage of one word, as a price alone on its line is, is quoted whole: what the report points at is all of it.
-  const whole = sources.report && sources.asked.split('\n').some((line) => unquoted(line) === words);
+  const whole =
+    sources.report &&
+    named.includes(sources.asked) &&
+    sources.asked.split('\n').some((line) => unquoted(line) === words);
   if (words.split(' ').length < 2 && !whole)
     return 'a quote is the words that ask for the criterion: two or more of them';
   if (!named.some((source) => within(words, source)))
@@ -761,7 +772,7 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
     ...ticketLines(ticket, signals),
     ...(signals.length ? ['', 'What the senses saw, by number:', ...numbered(signals)] : []),
     ...answerLines(answers),
-    ...(input.aboutReport && !pointsAtSomething(ticket.points) ? REPORT_DESCRIBED : []),
+    ...(input.aboutReport && !pointsAtSomething(ticketPoints(ticket)) ? REPORT_DESCRIBED : []),
     ...(persisted.length
       ? [
           '',

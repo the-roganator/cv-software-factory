@@ -47,7 +47,7 @@ import type {
   SignalSource,
   SymptomClass,
 } from '@software-factory/events';
-import { samePoints } from '@software-factory/events';
+import { samePoints, ticketPoints } from '@software-factory/events';
 import {
   type EventWriter,
   fingerprintOf,
@@ -146,6 +146,10 @@ interface Taken {
   attempts: number;
   received_at: Date;
 }
+
+/** What a ticket, or a report's decision, points at, a content fingerprint's passage among it (`ticketPoints`). */
+const pointsOf = (of: (Pick<Ticket, 'points'> & { fingerprint?: Ticket['fingerprint'] | undefined }) | undefined) =>
+  of?.fingerprint ? ticketPoints({ fingerprint: of.fingerprint, points: of.points }) : of?.points;
 
 type Ticket = { workItem: string } & Pick<
   PayloadOf<'ticket.opened'>,
@@ -656,7 +660,7 @@ export class Triage {
       // A report's ticket carries what was reported: a report Jev judged a repeat of a ticket that points at
       // something else opens the ticket it would have opened alone, with its own points.
       const repeated = decision.routed.route === 'repeat' ? decision.routed.joined : undefined;
-      if (decision.alone && !samePoints(others.find((t) => t.workItem === repeated)?.points, decision.points)) {
+      if (decision.alone && !samePoints(pointsOf(others.find((t) => t.workItem === repeated)), pointsOf(decision))) {
         decision.routed = decision.alone;
         const first = decision.judgements[0];
         if (first) {
@@ -674,7 +678,7 @@ export class Triage {
         others.find(
           (ticket) =>
             sameFingerprint(ticket.fingerprint, fingerprint, { open: ticket.sense, found: signal.sense }) &&
-            (finding || samePoints(ticket.points, decision.points)),
+            (finding || samePoints(pointsOf(ticket), pointsOf(decision))),
         );
       // One fingerprint, one hold: a defect the planner noticed that one held already has is counted into that hold,
       // its words kept beside the first's, so Martin answers it once. One he has answered already takes it too: an

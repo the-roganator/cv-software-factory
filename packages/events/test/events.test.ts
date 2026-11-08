@@ -18,7 +18,7 @@ import {
   WORDS_LEAVE_HELD,
 } from '../src/line.ts';
 import { formatLog, parseLog } from '../src/log-format.ts';
-import { samePoints } from '../src/points.ts';
+import { samePoints, ticketPoints } from '../src/points.ts';
 import { PUBLIC_VIEWS, publicView, redactSecrets } from '../src/public.ts';
 import { REQUEST_TITLE, requestTitle } from '../src/request.ts';
 import { PAYLOADS, validate, validateSignal } from '../src/schemas.ts';
@@ -2245,5 +2245,19 @@ describe('the same thing reported', () => {
     expect(samePoints({ page: '/visit', element: link }, { page: '/visit', passage: 'Directions' })).toBe(false);
     expect(samePoints({ page: '/visit' }, { page: '/visit', passage: 'Opens at nine.' })).toBe(false);
     expect(samePoints(undefined, { page: '/visit', element: link })).toBe(false);
+  });
+
+  it('counts a content fingerprint’s passage as what its ticket points at, recorded points or none', () => {
+    const fingerprint = { page: '/visit', text: 'Opens at nine.' };
+    expect(ticketPoints({ fingerprint })).toEqual({ page: '/visit', passage: 'Opens at nine.' });
+    expect(ticketPoints({ fingerprint, points: { page: '/visit' } })).toEqual({
+      page: '/visit',
+      passage: 'Opens at nine.',
+    });
+    expect(ticketPoints({ fingerprint: { route: '/visit', class: 'slow' }, points: { page: '/visit' } })).toEqual({
+      page: '/visit',
+    });
+    expect(ticketPoints({ fingerprint: { route: '/visit', class: 'slow' } })).toBeUndefined();
+    expect(samePoints(ticketPoints({ fingerprint }), { page: '/visit', passage: 'Opens at nine.' })).toBe(true);
   });
 });

@@ -625,6 +625,18 @@ describe('the planner’s prompt', () => {
       expect(quoteProblem('the ticket', 'a wrong result on /search', sources)).toBe(
         'a visitor’s report opened the ticket, and it points at nothing narrower than its page: quote Martin’s answer',
       );
+      // Named beside his answer, the ticket or a signal is held to his words alone, never refused outright.
+      expect(quoteProblem('the ticket and Martin’s answer', 'the count of results is wrong', sources)).toBeUndefined();
+      expect(quoteProblem('signal 1 and Martin’s answer', 'the count of results is wrong', sources)).toBeUndefined();
+      expect(quoteProblem('signal 1 and Martin’s answer', 'new error pattern', sources)).toBeDefined();
+      // A one-word passage is quoted whole only from the ticket that points at it, never as his answer's words.
+      const price = sourcesOf({
+        ...report({ points: { page: '/products/lamp', passage: '£35.0' } }),
+        answers: [{ asked: said[0]?.asked ?? '', answer: 'It shows £35.0 for the lamp.' }],
+      });
+      expect(quoteProblem('Martin’s answer', '£35.0', price)).toBe(
+        'a quote is the words that ask for the criterion: two or more of them',
+      );
       // Words that stay his reach no quote.
       const unshared = sourcesOf({ ...pageOnly, answers: [{ asked: said[0]?.asked ?? '', line: 'He answered.' }] });
       expect(quoteProblem('Martin’s answer', 'what is wrong on the page', unshared)).toBe(

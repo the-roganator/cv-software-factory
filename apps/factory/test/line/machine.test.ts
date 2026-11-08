@@ -1800,6 +1800,20 @@ describe('a visitor’s report whose ticket names only its page', () => {
     const element = reportTicket({ page: '/search', element: { kind: 'button', text: 'Search' } });
     expect(decide([element, reported], facts).next).toMatchObject({ do: 'step', agent: 'planner' });
     expect(decide([reportTicket({ page: '/search' }), signal()], facts).next).toMatchObject({ do: 'step' });
+    // A content ticket names its passage in its fingerprint, recorded points or none, and every agent is told it.
+    const content = (points?: PayloadOf<'ticket.opened'>['points']): LineEvent => ({
+      type: 'ticket.opened',
+      payload: {
+        title: 'A visitor reports wrong words on /about',
+        category: 'content',
+        severity: 'broken',
+        fingerprint: { page: '/about', text: 'Open every day but Tuesday.' },
+        traces: [],
+        ...(points ? { points } : {}),
+      },
+    });
+    expect(decide([content(), reported], fresh).next).toEqual({ do: 'open-issue' });
+    expect(decide([content({ page: '/about' }), reported], facts).next).toMatchObject({ do: 'step', agent: 'planner' });
   });
 
   it('takes his words, shared, or his rejection, and nothing else', () => {

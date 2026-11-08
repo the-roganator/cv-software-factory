@@ -132,6 +132,7 @@ import {
   STAGES,
   type Stage,
   sameVersion,
+  ticketPoints,
   touches,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
@@ -1179,7 +1180,7 @@ export const undescribed = (state: WorkItemState): boolean =>
   state.firstSense === 'report' &&
   state.ticket !== undefined &&
   !state.request &&
-  !pointsAtSomething(state.ticket.points) &&
+  !pointsAtSomething(ticketPoints(state.ticket)) &&
   !state.answers.some((answer) => answer.answer !== undefined);
 
 /**

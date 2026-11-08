@@ -87,6 +87,22 @@ export function pointWords(points: Points): string {
 export const pointsAtSomething = (points: Points | undefined) => Boolean(points?.passage || points?.element);
 
 /**
+ * What a ticket points at, its content fingerprint's passage among it: a content ticket names its passage in its
+ * fingerprint even where triage recorded no points (a page that did not answer at its path, or a ticket from before
+ * points), and every agent is told it (`reported` in the line's evidence).
+ */
+export function ticketPoints({
+  fingerprint,
+  points,
+}: {
+  fingerprint: { page: string; text: string } | { route: string; class: string };
+  points?: Points | undefined;
+}): Points | undefined {
+  if (!('text' in fingerprint) || points?.passage || points?.element) return points;
+  return { ...points, page: points?.page ?? fingerprint.page, passage: fingerprint.text };
+}
+
+/**
  * Whether two tickets' points are the same thing reported: the same passage, or the same element, of the same page;
  * or neither points at anything narrower than a page. A ticket a sense opened points at nothing. A report joins an open ticket only on the same points, so a
  * ticket never stands for something reported that it does not point at.

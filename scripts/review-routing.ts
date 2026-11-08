@@ -207,12 +207,29 @@ export interface CheckRun {
   app: { slug: string } | null;
   started_at?: string | null;
   output?: { annotations_count?: number };
+  /** The check suite it belongs to, which is a workflow run's. */
+  check_suite?: { id: number };
   /**
-   * The open pull requests whose head is the run's commit on the branch it ran for, as GitHub lists them now: a run on
-   * a pull request's event names it here, and one another pull request's event started at the same commit, from
-   * another branch, does not.
+   * The open pull requests GitHub matches to it now, by its commit or its branch: not only the one whose event started
+   * it, so never which one that was. Only another of them on the same branch says the run may have been either's.
    */
-  pull_requests?: readonly { number: number }[];
+  pull_requests?: readonly { number: number; head?: { ref: string } }[];
+}
+
+/** A workflow run, as the Actions API lists them for a commit: what started it, and on which branch of which repository. */
+export interface WorkflowRun {
+  check_suite_id: number;
+  event: string;
+  head_branch: string | null;
+  head_repository: { full_name: string } | null;
+}
+
+/** The pull request whose run is wanted: its number, its head's branch and repository, and the workflow runs at its head. */
+export interface Judged {
+  number: number;
+  branch: string;
+  repo: string | undefined;
+  workflowRuns: readonly WorkflowRun[];
 }
 
 export interface Annotation {
@@ -223,30 +240,45 @@ export interface Annotation {
 
 /**
  * Test integrity's run for a pull request's head, or why there is none to trust. Only GitHub Actions' run counts: the
- * factory's App can post check runs too. Only a run that names the judged pull request among its `pull_requests`
- * counts, since test integrity reads the description of the pull request whose event started it: a second pull
- * request at the same head, from another branch, has a run of its own, reading its own description's excuses, which
- * never stands for this one's. A run that also names another pull request, on the same branch into another base, may
- * have read either's description, so it is no reading. It fails closed: a missing, pending, skipped, cancelled or failed run, or one
- * only another app posted, is no reading. GitHub Actions runs it from the workflow on the pull request's own branch, so
- * a pull request that changes anything under `.github/` is not read from it (and is code-owned, and held, anyway).
- * Only GitHub Actions' latest attempt for the head counts, the one with the highest id (a re-run queued has no
- * `started_at` yet, but its id is the newest): an older attempt left queued or unclosed neither keeps it waiting nor
- * gives the reading once a newer one has completed. `pending` marks a reading that may yet come: no run of GitHub
- * Actions' for the head naming the pull request, or its latest not yet completed. Runs another app posted, and
- * another pull request's, are ignored for that, and never read: one of that name posted by the factory's App cannot
- * turn a wait for the real run into a hold. Every other reason is a reading that will not come.
+ * factory's App can post check runs too. Only a run of the pull request's own counts, since test integrity reads the
+ * description of the pull request whose event started it: a run whose workflow run a `pull_request` event started on
+ * the judged pull request's head branch, in its head repository. Another pull request's at the same commit, from
+ * another branch or a fork, read its own description's excuses, and never stands for this one's. Its check run's
+ * `pull_requests` cannot say whose it was, as GitHub matches pull requests to it by commit too. Two open pull requests
+ * from one branch, into different bases, each have a run there that either could be, so with another open pull
+ * request on the branch, the run is no reading. It fails closed: a missing, pending, skipped, cancelled or failed run,
+ * or one only another app posted, is no reading. GitHub Actions runs it from the workflow on the pull request's own
+ * branch, so a pull request that changes anything under `.github/` is not read from it (and is code-owned, and held,
+ * anyway). Only the latest of its own attempts for the head counts, the one with the highest id (a re-run queued has
+ * no `started_at` yet, but its id is the newest): an older attempt left queued or unclosed neither keeps it waiting
+ * nor gives the reading once a newer one has completed. `pending` marks a reading that may yet come: no run of its own
+ * for the head, or its latest not yet completed. Runs another app posted, and another pull request's, are ignored for
+ * that, and never read: one of that name posted by the factory's App cannot turn a wait for the real run into a hold.
+ * Every other reason is a reading that will not come.
  */
 export function testIntegrityRun(
   runs: readonly CheckRun[],
   head: string,
   files: readonly FileChange[],
   base: string,
-  number: number,
+  judged: Judged,
 ): { run: CheckRun } | { reason: string; pending?: true } {
   const named = runs.filter((run) => run.name === TEST_INTEGRITY_CHECK && run.head_sha === head);
   const actions = named.filter((run) => run.app?.slug === ACTIONS_SLUG);
-  const ours = actions.filter((run) => run.pull_requests?.some((p) => p.number === number)).sort((a, b) => b.id - a.id);
+  const own = new Set(
+    judged.workflowRuns
+      .filter(
+        (w) =>
+          w.event === 'pull_request' &&
+          w.head_branch === judged.branch &&
+          judged.repo !== undefined &&
+          w.head_repository?.full_name === judged.repo,
+      )
+      .map((w) => w.check_suite_id),
+  );
+  const ours = actions
+    .filter((run) => run.check_suite !== undefined && own.has(run.check_suite.id))
+    .sort((a, b) => b.id - a.id);
   const workflow = files.find((f) => [f.filename, f.previous_filename].some((p) => p?.startsWith('.github/')));
   if (workflow)
     return { reason: `it changes ${workflow.filename}, so test integrity's run is not the workflow on main's` };
@@ -259,18 +291,19 @@ export function testIntegrityRun(
     const foreign = named[0]?.app?.slug ?? 'an unknown app';
     return {
       reason: actions.length
-        ? `test integrity has not run for #${number} at ${short(head)}: GitHub Actions' runs there do not name it`
+        ? `test integrity has not run for #${judged.number} at ${short(head)}: GitHub Actions' runs there are not its own`
         : named.length
           ? `test integrity has not run at ${short(head)}: only ${foreign} posted a run of that name, not GitHub Actions`
           : `test integrity has not run at ${short(head)}`,
       pending: true,
     };
   }
-  // Two open pull requests from one branch, into different bases: each one's run names both.
-  const others = latest.pull_requests?.filter((p) => p.number !== number) ?? [];
+  const others = (latest.pull_requests ?? []).filter(
+    (p) => p.number !== judged.number && p.head?.ref === judged.branch,
+  );
   if (others.length)
     return {
-      reason: `test integrity's run at ${short(head)} also names ${others.map((p) => `#${p.number}`).join(', ')}, so whose description it read is not known`,
+      reason: `${others.map((p) => `#${p.number}`).join(', ')} is open from ${judged.branch} too, so whose description test integrity's run at ${short(head)} read is not known`,
     };
   if (latest.conclusion !== 'success')
     return { reason: `test integrity's run at ${short(head)} is ${latest.conclusion ?? 'unfinished'}, not a success` };

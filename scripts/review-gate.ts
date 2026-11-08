@@ -64,6 +64,7 @@ import {
   testIntegrityRun,
   type Verdict,
   verdict,
+  type WorkflowRun,
   words,
 } from './review-routing.ts';
 
@@ -518,7 +519,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
   const facts = () => ({ repo, pr: judged, reviews, autonomy: each.autonomy });
   try {
     if (!withoutMartin) reviews = await paged<Review>(`/repos/${repo}/pulls/${pr.number}/reviews`, read);
-    const [files, events, runs, rules] = await Promise.all([
+    const [files, events, runs, workflowRuns, rules] = await Promise.all([
       paged<FileChange>(`/repos/${repo}/pulls/${pr.number}/files`, read),
       paged<IssueEvent>(`/repos/${repo}/issues/${pr.number}/events`, read),
       paged<CheckRun>(
@@ -526,9 +527,16 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
         read,
         'check_runs',
       ),
+      // Which pull request's event started each run: test integrity's check run cannot say.
+      paged<WorkflowRun>(`/repos/${repo}/actions/runs?head_sha=${head}&event=pull_request`, read, 'workflow_runs'),
       owners(each),
     ]);
-    const integrity = testIntegrityRun(runs, head, files, pr.base.ref, pr.number);
+    const integrity = testIntegrityRun(runs, head, files, pr.base.ref, {
+      number: pr.number,
+      branch: pr.head.ref,
+      repo: pr.head.repo?.full_name,
+      workflowRuns,
+    });
     let testIntegrity: Facts['testIntegrity'] = { read: true };
     let excused: string[] = [];
     if ('run' in integrity) {

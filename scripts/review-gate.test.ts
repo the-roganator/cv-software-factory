@@ -402,8 +402,10 @@ describe("the review gate's workflows", () => {
     expect(gate).toMatch(/- id: app\n {8}if: env\.HAS_KEY == 'true'\n/);
     expect(gate).toMatch(/^permissions: \{\}$/m);
     // Its job reads this repository, to check out the gate, and pull requests; it writes nothing with its own token.
-    // And test integrity's check run, which low-risk needs.
-    expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {4}env:/m);
+    // And test integrity's check run, which low-risk needs, and the workflow runs that say whose it is.
+    expect(gate).toMatch(
+      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {6}actions: read\n {4}env:/m,
+    );
     // The one checkout is this workflow's own commit, main's, and never the pull request's.
     expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(1);
     expect(gate).toMatch(/ref: \$\{\{ job\.workflow_sha \}\}\n/);
@@ -493,12 +495,22 @@ describe('judging a pull request through the API', () => {
             status: 'completed',
             conclusion: 'success',
             app: { slug: 'github-actions' },
-            pull_requests: [{ number: 9 }],
+            check_suite: { id: 50 },
             output: { annotations_count: 0 },
           },
         ],
       },
       '/check-runs/5/annotations': [],
+      '/actions/runs?': {
+        workflow_runs: [
+          {
+            check_suite_id: 50,
+            event: 'pull_request',
+            head_branch: 'factory/9-fix',
+            head_repository: { full_name: APP_REPO },
+          },
+        ],
+      },
       '/contents/.github/CODEOWNERS': '/deploy/ @mrogan\n',
       ...over,
     };
@@ -544,7 +556,7 @@ describe('judging a pull request through the API', () => {
               status: 'completed',
               conclusion: 'success',
               app: { slug: 'github-actions' },
-              pull_requests: [{ number: 9 }],
+              check_suite: { id: 50 },
               output: { annotations_count: 1 },
             },
           ],
@@ -574,7 +586,7 @@ describe('judging a pull request through the API', () => {
               status,
               conclusion: null,
               app: { slug: 'github-actions' },
-              pull_requests: [{ number: 9 }],
+              check_suite: { id: 50 },
             },
           ],
         },
@@ -587,7 +599,9 @@ describe('judging a pull request through the API', () => {
     }
     // Not run at all yet, the same.
     github({ '/check-runs?': { check_runs: [] } });
-    expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' }); // Another pull request's run at the same head, however it went, is not this one's reading.
+    expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' });
+    // Another pull request's run at the same head, from another branch, however it went and whichever pull requests
+    // GitHub matches to it by its commit, is not this one's reading.
     github({
       '/check-runs?': {
         check_runs: [
@@ -598,8 +612,19 @@ describe('judging a pull request through the API', () => {
             status: 'completed',
             conclusion: 'success',
             app: { slug: 'github-actions' },
-            pull_requests: [{ number: 10 }],
+            check_suite: { id: 51 },
+            pull_requests: [{ number: 9 }, { number: 10 }],
             output: { annotations_count: 0 },
+          },
+        ],
+      },
+      '/actions/runs?': {
+        workflow_runs: [
+          {
+            check_suite_id: 51,
+            event: 'pull_request',
+            head_branch: 'factory/10-other',
+            head_repository: { full_name: APP_REPO },
           },
         ],
       },
@@ -607,7 +632,7 @@ describe('judging a pull request through the API', () => {
     expect(await judge(run, theirs)).toMatchObject({
       pass: false,
       rule: 'held',
-      pending: "test integrity has not run for #9 at aaaaaaa: GitHub Actions' runs there do not name it",
+      pending: "test integrity has not run for #9 at aaaaaaa: GitHub Actions' runs there are not its own",
     });
   });
 

@@ -2,10 +2,10 @@ import { GATE_ANNOTATION_CHARS } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { protectedWords } from '../../src/github/paths.ts';
 import { LiveReads } from '../../src/github/reads.ts';
-import { type CoderInput, coder, coderInputAfterRefusal } from '../../src/line/agents/coder.ts';
+import { type CoderInput, coder, coderInputAfterRefusal, droppedCriteria } from '../../src/line/agents/coder.ts';
 import { FIXTURES } from '../../src/line/bench/fixtures.ts';
 import { gateEvents, gateRecord } from '../../src/line/gates.ts';
-import { fold, type LineEvent } from '../../src/line/machine.ts';
+import { fold, type LineEvent, type WorkItemState } from '../../src/line/machine.ts';
 import { client, REPO, SHA } from '../github/fake.ts';
 
 const input: CoderInput =
@@ -26,6 +26,37 @@ const CODED = {
   title: 'fix(money): show two digits of pence',
   note: 'pounds wrote the pence without padding. A test for 705 pence shows it; it pads them now.',
 };
+
+/** A push of the fix, as the line records it. */
+const PUSHED = {
+  number: 12,
+  title: 'fix(money): show two digits of pence',
+  branch: 'factory/999999999-a-wrong-result',
+  attempt: 1,
+  testsFirst: true,
+  files: [{ path: 'src/money.ts', added: 1, removed: 1 }],
+  whole: [{ path: 'src/money.ts', added: 1, removed: 1 }],
+};
+
+/** What the line gives the coder's step to read its input from, for a work item in `state`. */
+const stepContext = (state: WorkItemState) =>
+  ({
+    workItem: '999999999',
+    issue: null,
+    round: state.round,
+    state,
+    commit: 'c'.repeat(40),
+    base: 'c'.repeat(40),
+    session: null,
+    failure: null,
+    ticket: async () => input.asked.kind === 'ticket' && input.asked.ticket,
+    request: async () => {
+      throw new Error('No request.');
+    },
+    signals: async () => [],
+    flagsTaken: async () => [],
+    read: async () => [],
+  }) as unknown as Parameters<typeof coder.input>[0];
 
 const FENCED = 'scope: src/money.ts, test/money.test.ts\nallowed src/money.ts +1 −1\nrefused src/pages/cards.ts +3 −1';
 
@@ -443,6 +474,95 @@ describe('the coder', () => {
     expect(coder.prompt({ ...blocking, session: 's' })).toContain('write {"unchanged","declined"}');
     // With no suggestions, there is nothing to decline.
     expect(fits({ title, note, declined: no(1) }, input)).toBe(false);
+  });
+
+  describe('after a spec written again that dropped criteria the branch was built to', () => {
+    const narrowed =
+      FIXTURES.coder['price-narrowed']?.input ??
+      (() => {
+        throw new Error('The coder has no price-narrowed fixture.');
+      })();
+    const page = 'Given a product that costs a whole number of pounds, when a visitor opens its page, then the price';
+
+    it('knows the dropped criteria from the two specs, by their words, and none from the same spec', () => {
+      const [kept, ...rest] = input.spec.criteria;
+      if (!kept) throw new Error('The wrong-price spec has no criteria.');
+      expect(narrowed.dropped).toEqual([input.spec.criteria[3]]);
+      expect(droppedCriteria(input.spec, input.spec)).toBeUndefined();
+      expect(droppedCriteria(undefined, input.spec)).toBeUndefined();
+      // The same words, spaced otherwise, are the same criterion; another side of the flag is another.
+      const respaced = { ...input.spec, criteria: [{ ...kept, given: ` a price of  600 pence` }, ...rest] };
+      expect(droppedCriteria(input.spec, respaced)).toBeUndefined();
+      const flipped = { ...input.spec, criteria: [{ ...kept, withFlag: 'on' as const }, ...rest] };
+      expect(droppedCriteria(input.spec, flipped)).toEqual([kept]);
+    });
+
+    it('is told each dropped criterion, to take out the work that serves only them, and that its own tests may go', () => {
+      for (const step of [narrowed, { ...narrowed, session: 's' }]) {
+        const prompt = coder.prompt(step);
+        expect(prompt).toContain('the spec below no longer has these criteria, which the branch was built to:');
+        expect(prompt).toContain(`- ${page} shows two zeros of pence, such as £2.00.`);
+        expect(prompt).toContain('Take out of the branch the work that serves only them');
+        expect(prompt).toContain('A test this pull request added is yours to take out');
+        expect(prompt).toContain('name it in `needs`');
+        // The spec it is held to is below, without the criterion, and it is never invited to change nothing.
+        expect(prompt.indexOf('no longer has these criteria')).toBeLessThan(
+          prompt.indexOf('The spec you are held to:'),
+        );
+        expect(prompt.slice(prompt.indexOf('The spec you are held to:'))).not.toContain(page);
+        expect(prompt).not.toContain('{"unchanged"}');
+      }
+      // A round with nothing dropped is told nothing of it.
+      expect(coder.prompt({ ...narrowed, dropped: undefined })).not.toContain('no longer has these criteria');
+    });
+
+    it('may not change nothing: a result without a change is refused, so the step fails and is tried again', () => {
+      const fits = (result: unknown, given: CoderInput = narrowed) => coder.schema(given).safeParse(result).success;
+      expect(fits({ unchanged: 'The branch already meets every criterion.' })).toBe(false);
+      expect(fits(CODED)).toBe(true);
+      // Work to take out in a file outside the scope is named, which holds the work item for Martin.
+      const needs = [{ path: 'src/pages/product.ts', reason: 'The dropped criterion’s code is there.' }];
+      expect(fits({ needs })).toBe(true);
+      expect(fits({ unchanged: 'All of it is outside the scope.', needs })).toBe(true);
+      // The same round with nothing dropped may change nothing, as ever.
+      expect(
+        fits({ unchanged: 'The branch already meets every criterion.' }, { ...narrowed, dropped: undefined }),
+      ).toBe(true);
+    });
+
+    it('takes the dropped criteria from the work item’s events, as the line folds them', async () => {
+      const { spec } = input;
+      const narrower = { ...spec, criteria: spec.criteria.slice(0, 3) };
+      const state = fold([
+        { type: 'spec.written', payload: spec },
+        { type: 'pull-request.pushed', payload: PUSHED },
+        { type: 'spec.written', payload: narrower },
+        { type: 'work.returned', payload: { from: 'review', to: 'build', reason: 'The planner wrote it again' } },
+      ]);
+      const started = await coder.input(stepContext(state));
+      expect(started.dropped).toEqual([spec.criteria[3]]);
+      // Once a round is pushed to the new spec, nothing is dropped.
+      const met = fold([
+        { type: 'spec.written', payload: spec },
+        { type: 'pull-request.pushed', payload: PUSHED },
+        { type: 'spec.written', payload: narrower },
+        { type: 'pull-request.pushed', payload: { ...PUSHED, attempt: 2 } },
+      ]);
+      expect((await coder.input(stepContext(met))).dropped).toBeUndefined();
+    });
+  });
+
+  it('is told why its last attempt failed, so it does not hand back the same again', () => {
+    const failure = "The coder's result does not fit its schema (unchanged: take their work out)";
+    for (const step of [
+      input,
+      { ...input, round: 2, returned: { from: 'gates' as const, reason: 'x' }, session: 's' },
+    ]) {
+      expect(coder.prompt({ ...step, failure }).trimEnd()).toMatch(
+        /Your last attempt at this step failed: The coder's result does not fit its schema \(unchanged: take their work out\)\. Do not hand back the same again\.$/,
+      );
+      expect(coder.prompt(step)).not.toContain('last attempt');
+    }
   });
 
   it('starts a first step afresh, whatever session it has', () => {

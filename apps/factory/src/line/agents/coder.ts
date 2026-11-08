@@ -40,6 +40,13 @@
  * Martin's approval sends the files to the planner, which may widen the scope to them, but never to a path no scope
  * may name. A file the scope already takes in is not one it needs.
  *
+ * A spec written again once there is a pull request can drop criteria the branch was built to, whose tests and code are
+ * still on it. The line knows both specs from the events (`builtTo`, the spec in force at the latest push), so the
+ * coder is told each criterion the new spec no longer has (`dropped`), and to take out the work that serves only them:
+ * what serves only them is its judgment, and the reviewer, who holds work beyond the spec, is the check. Such a round
+ * has work to do, so changing nothing is refused (`coderResult`), and the step fails, to be tried again; work in a
+ * file the new scope leaves out is named in `needs`, never changed, since the fence holds the round to the new scope.
+ *
  * It is told the test integrity rule before its first round: add tests, but delete, rename or skip none, and change
  * or take out none of an existing test's assertions. The tests the spec names as ones its criteria contradict are the
  * exception, which it may delete, rename or rewrite to match the criteria (`contradictedLines`). The line writes them
@@ -105,7 +112,38 @@ export interface CoderInput {
   fenced?: string | undefined;
   /** Martin's answer to the hold before this step, if he wrote one. */
   answer?: string | undefined;
+  /**
+   * The criteria of the spec the pull request's branch was built to that the spec in force no longer has, after the
+   * planner wrote it again: their work on the branch is to come out.
+   */
+  dropped?: Criterion[] | undefined;
+  /** Why the step's last attempt failed, if it did: a result its schema refused, say, which it is not to hand back again. */
+  failure?: string | null | undefined;
 }
+
+type Criterion = PayloadOf<'spec.written'>['criteria'][number];
+
+/** A criterion as the line compares two specs' by: its given, when, expect and side of the flag, spaced alike. */
+const criterionKey = ({ given, when, expect, withFlag }: Criterion) =>
+  JSON.stringify([...[given, when, expect].map((part) => part.replace(/\s+/g, ' ').trim()), withFlag ?? null]);
+
+/**
+ * The criteria of the spec a branch was built to that the spec in force does not have: none when it is the same spec,
+ * or none was pushed. A criterion the planner kept keeps its words (its prompt asks it to), so one reworded reads as
+ * dropped, and the coder keeps what the new spec still asks for.
+ */
+export function droppedCriteria(
+  builtTo: PayloadOf<'spec.written'> | undefined,
+  spec: PayloadOf<'spec.written'> | undefined,
+): Criterion[] | undefined {
+  if (!builtTo || !spec || builtTo === spec) return undefined;
+  const kept = new Set(spec.criteria.map(criterionKey));
+  const dropped = builtTo.criteria.filter((criterion) => !kept.has(criterionKey(criterion)));
+  return dropped.length ? dropped : undefined;
+}
+
+/** Whether the round meets a spec that dropped criteria the branch was built to. */
+const narrowed = (input: CoderInput) => Boolean(input.dropped?.length);
 
 /** The most a coder may say of why it changed nothing: it is the hold's reason, after the line's own words. */
 export const UNCHANGED_MAX = 200;
@@ -131,9 +169,10 @@ const needed = z
 
 /**
  * The result, for a round given `suggestions` suggestions: a declined one must be one of them. A round sent back for
- * suggestions alone (`alone`) may change nothing by declining every one.
+ * suggestions alone (`alone`) may change nothing by declining every one. A round whose spec dropped criteria the branch
+ * was built to (`narrowed`) has their work to take out, so it may not change nothing.
  */
-export function coderResult(suggestions = 0, alone = false, title: z.ZodType<string> = commitTitle) {
+export function coderResult(suggestions = 0, alone = false, title: z.ZodType<string> = commitTitle, narrowed = false) {
   return z
     .union([
       z.strictObject({
@@ -159,6 +198,12 @@ export function coderResult(suggestions = 0, alone = false, title: z.ZodType<str
       z.strictObject({ needs: needed.min(1) }),
     ])
     .superRefine((result, ctx) => {
+      // The branch still holds the work of criteria the spec no longer has: a round that leaves it there is not done.
+      if (narrowed && !('title' in result) && !('needs' in result && result.needs?.length)) {
+        const message =
+          'the spec no longer has criteria the branch was built to: take their work out, or name the files outside the scope it is in';
+        ctx.addIssue({ code: 'custom', path: ['unchanged' in result ? 'unchanged' : 'declined'], message });
+      }
       // The change is approved: the round is for its suggestions, and declining every one is how it changes nothing.
       if (alone && 'unchanged' in result) {
         const message = 'a round for suggestions alone changes nothing by declining every one';
@@ -327,9 +372,36 @@ export function gateFailureLines(failures: readonly GateFailure[]): string[] {
   ];
 }
 
+/**
+ * Why the step's last attempt failed, the line's own words, which may quote GitHub's or the schema's: on a line of its
+ * own, redacted and cut, after everything else, so the attempt that follows does not hand back the same again.
+ */
+const failedLines = ({ failure }: CoderInput) =>
+  failure
+    ? ['', `Your last attempt at this step failed: ${oneLine(failure, 500)}. Do not hand back the same again.`]
+    : [];
+
 /** What a later round runs again before it hands back. */
 const CHECKS_AGAIN =
   'If you change anything, run the checks again before you hand back: lint and formatting, the type check and the tests.';
+
+/**
+ * The criteria a spec written again dropped, and what the round does about the branch's work for them: takes out what
+ * serves only them, keeps what the new spec still asks for, and changes no file outside the new scope to do it. The
+ * tests it takes out are its own, added by the pull request, which the test integrity gate does not count: it compares
+ * the change with main.
+ */
+function droppedLines({ dropped, asked }: CoderInput): string[] {
+  if (!dropped?.length) return [];
+  return [
+    'The planner wrote the spec again since your last push, and the spec below no longer has these criteria, which the branch was built to:',
+    ...dropped.map(
+      (c) => `- Given ${c.given}, when ${c.when}, then ${c.expect}.${asked.kind === 'request' ? side(c) : ''}`,
+    ),
+    'Take out of the branch the work that serves only them: the tests written for them, and any code only they needed. Keep everything a criterion below still asks for, and change nothing else. A test this pull request added is yours to take out: the test integrity gate compares the change with main, so it counts none of them. Never delete, rename or skip a test main has, unless the spec names it below. If work to take out is in a file outside the scope below, leave that file as it is and name it in `needs`, with why.',
+    'There is work to take out, so this round changes something: a result that changes nothing is refused.',
+  ];
+}
 
 function specLines({ spec, asked }: CoderInput): string[] {
   if (asked.kind === 'request') return improvementSpecLines(spec);
@@ -391,7 +463,7 @@ function first(input: CoderInput): string[] {
     TEST_INTEGRITY,
     ...contradictedLines(input.spec),
     '',
-    ...RESULT,
+    ...(narrowed(input) ? RESULT.slice(0, 3) : RESULT),
     needsLine(input),
   ];
 }
@@ -424,7 +496,7 @@ function firstImprovement(input: CoderInput): string[] {
     TEST_INTEGRITY,
     ...contradictedLines(input.spec),
     '',
-    ...IMPROVEMENT_RESULT,
+    ...(narrowed(input) ? IMPROVEMENT_RESULT.slice(0, 3) : IMPROVEMENT_RESULT),
     needsLine(input),
   ];
 }
@@ -474,10 +546,10 @@ function again(input: CoderInput): string[] {
           'Put it right inside the same scope.',
           ...recheck,
           ...needing,
-          ...(round > 1 ? [UNCHANGED] : []),
-          ...(round > 1 && suggestions?.length ? [UNCHANGED_DECLINES] : []),
+          ...(round > 1 && !narrowed(input) ? [UNCHANGED] : []),
+          ...(round > 1 && suggestions?.length && !narrowed(input) ? [UNCHANGED_DECLINES] : []),
         ];
-  const why = [...back, ...refused];
+  const why = [...back, ...droppedLines(input), ...refused];
   const declining = suggestions?.length ? [DECLINING] : [];
   // Without its session, a round for suggestions alone is told the work, and that the fix is in and approved.
   if (!resumed(input) && suggestionsAlone(input)) {
@@ -518,7 +590,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
   agent: 'coder',
   maxTurns: 50,
   deadlineSeconds: 30 * 60,
-  input: async ({ workItem, state, round, commit, session, ticket, request, signals, read }) => ({
+  input: async ({ workItem, state, round, commit, session, failure, ticket, request, signals, read }) => ({
     workItem,
     asked: await askedOf({ state, ticket, request }),
     signals: await signals(),
@@ -531,10 +603,13 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     suggestions: suggestionsFor(state),
     fenced: state.fenced,
     answer: answerOf(state),
+    dropped: droppedCriteria(state.builtTo, state.spec),
+    failure,
   }),
   resume: resumed,
-  schema: (input) => coderResult(input.suggestions?.length ?? 0, suggestionsAlone(input), titleFor(input.asked)),
-  prompt: (input) => (later(input) ? again(input) : first(input)).join('\n'),
+  schema: (input) =>
+    coderResult(input.suggestions?.length ?? 0, suggestionsAlone(input), titleFor(input.asked), narrowed(input)),
+  prompt: (input) => [...(later(input) ? again(input) : first(input)), ...failedLines(input)].join('\n'),
   apply: async (result, handback, input, context) => {
     const { spec, round, suggestions = [] } = input;
     const { workItem, issue, state, commit } = context;

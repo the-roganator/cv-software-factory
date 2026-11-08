@@ -238,6 +238,11 @@ export interface WorkItemState {
   /** Whether the spec was written again after the latest push, which the coder has not yet been sent back to meet. */
   respecified: boolean;
   /**
+   * The spec in force at the latest push: what the pull request's branch was built to. A spec written again since may
+   * have dropped criteria of it, whose work is still on the branch for the coder to take out.
+   */
+  builtTo: PayloadOf<'spec.written'> | undefined;
+  /**
    * Every review of any push, in order: the thread the describer reads. Its length is what `LIMITS.reviews` bounds,
    * and its last is the review a later reviewer checks first.
    */
@@ -352,6 +357,7 @@ const initial = (): WorkItemState => ({
   suggestionsAnswered: undefined,
   specApproved: false,
   respecified: false,
+  builtTo: undefined,
   reviews: [],
   returns: [],
   accepted: undefined,
@@ -436,6 +442,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'pull-request.pushed':
         state.pullRequest = event.payload;
+        state.builtTo = state.spec;
         state.respecified = false;
         state.rebuild = undefined;
         state.fenced = undefined;

@@ -19,6 +19,7 @@ import { protectedFrom } from '../../github/paths.ts';
 import { fence } from '../../runners/scope.ts';
 import { SMOKE_SCOPE, SMOKE_SEED } from '../../runners/smoke.ts';
 import type { AgentDefinition } from '../agents/agent.ts';
+import { droppedCriteria } from '../agents/coder.ts';
 import type { Request, Signal } from '../agents/evidence.ts';
 import type { AGENTS } from '../agents/index.ts';
 import type { PlannerInput } from '../agents/planner.ts';
@@ -439,6 +440,55 @@ const PRICE_SPEC: PayloadOf<'spec.written'> = {
   risks: [],
   rollout: 'Ships in the next release; product pages, cards and the API then show two digits of pence.',
 };
+
+/**
+ * The spec for the wrong price written again before its pull request merged, narrower: `pounds` alone, without the
+ * product page's criterion, whose test the branch built to `PRICE_SPEC` still has. Its other criteria are kept word
+ * for word, as the planner keeps them.
+ */
+const PRICE_NARROWED_SPEC: PayloadOf<'spec.written'> = {
+  ...PRICE_SPEC,
+  outcome:
+    '`pounds` writes every price with exactly two digits of pence, so 600 pence is £6.00 and 705 pence is £7.05.',
+  criteria: PRICE_SPEC.criteria.slice(0, 3),
+};
+
+/** The pull request of the fix for the wrong price, built to `PRICE_SPEC`. */
+const PRICE_PULL_REQUEST: PayloadOf<'pull-request.pushed'> = {
+  number: 1,
+  title: 'fix(money): always show two digits of pence',
+  branch: 'factory/999999999-a-wrong-result-on-products-slug',
+  attempt: 1,
+  testsFirst: true,
+  files: [
+    { path: 'src/money.ts', added: 1, removed: 1 },
+    { path: 'test/money.test.ts', added: 3, removed: 0 },
+    { path: 'test/pages-product.test.ts', added: 4, removed: 0 },
+  ],
+  whole: [
+    { path: 'src/money.ts', added: 1, removed: 1 },
+    { path: 'test/money.test.ts', added: 3, removed: 0 },
+    { path: 'test/pages-product.test.ts', added: 4, removed: 0 },
+  ],
+};
+
+/**
+ * Its work item as the line folds it once the spec is written again: pushed to the first spec, the spec written
+ * again, and the work sent back to the coder to meet it.
+ */
+const PRICE_NARROWED = fold([
+  { type: 'spec.written', payload: PRICE_SPEC },
+  { type: 'pull-request.pushed', payload: PRICE_PULL_REQUEST },
+  { type: 'spec.written', payload: PRICE_NARROWED_SPEC },
+  {
+    type: 'work.returned',
+    payload: {
+      from: 'review',
+      to: 'build',
+      reason: 'The planner wrote the spec again: the change is held to the new one',
+    },
+  },
+]);
 
 /** What the probe saw of a whole pound's price, which shows no pence. */
 const WHOLE_POUNDS_SIGNALS: Signal[] = [
@@ -1410,6 +1460,23 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
         spec: PRICE_SPEC,
         round: 2,
         returned: fold(TEST_DELETED_RETURN).rebuild,
+        protectedPaths: APP_PROTECTED,
+      },
+    },
+    'price-narrowed': {
+      about:
+        'the fix for the wrong price, its spec written again without the product page’s criterion: the page’s test the branch added comes out, and the rest stays',
+      commit: APP_MAIN,
+      seed: PRICE_SEED,
+      change: { patch: PRICE_FIX, message: PRICE_FIX_MESSAGE },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PRICE_TICKET },
+        signals: PRICE_SIGNALS,
+        spec: PRICE_NARROWED_SPEC,
+        round: PRICE_NARROWED.round,
+        returned: PRICE_NARROWED.rebuild,
+        dropped: droppedCriteria(PRICE_NARROWED.builtTo, PRICE_NARROWED.spec),
         protectedPaths: APP_PROTECTED,
       },
     },

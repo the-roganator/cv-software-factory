@@ -1189,7 +1189,13 @@ export const undescribed = (state: WorkItemState): boolean =>
 export function undescribedHold(state: WorkItemState): PayloadOf<'hold.started'> {
   const page = state.ticket?.points?.page;
   const reason = `A visitor reported a problem${page ? ` on ${page}` : ''}, and triage could point at nothing narrower than the page: no agent reads a report, so the planner would have only the route and the kind of problem to go on`;
-  return { stage: 'plan', kind: 'question', cause: 'report-undescribed', reason, question: UNDESCRIBED_ASKS };
+  return {
+    stage: 'plan',
+    kind: 'question',
+    cause: 'report-undescribed',
+    reason: cutTo(reason, 300),
+    question: UNDESCRIBED_ASKS,
+  };
 }
 
 /** What a report's ticket that names only its page asks Martin, which the planner is told beside his answer. */

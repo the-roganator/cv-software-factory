@@ -331,6 +331,8 @@ export interface WorkItemState {
    * does not. Kept through a fresh pass, so a replan after it is told that spec as what shipped, met on main.
    */
   shipped: boolean;
+  /** The spec in force when the pull request was last pushed: what a merge of it ships. */
+  builtTo: PayloadOf<'spec.written'> | undefined;
   /** The work items it waits on after Plan, the files their specs share with its own, and whether the wait is over. */
   waiting: { on: string[]; files: string[]; ended: boolean } | undefined;
   /** The latest look again under the hold or wait in force, and the release it looked at. */
@@ -381,6 +383,7 @@ const initial = (): WorkItemState => ({
   seenOn: [],
   lastSpec: undefined,
   shipped: false,
+  builtTo: undefined,
   waiting: undefined,
   rechecked: undefined,
   cleared: undefined,
@@ -443,6 +446,7 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'pull-request.pushed':
         state.pullRequest = event.payload;
+        state.builtTo = state.spec;
         state.respecified = false;
         state.rebuild = undefined;
         state.fenced = undefined;
@@ -644,7 +648,10 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         break;
       case 'pull-request.merged':
         state.merged = true;
-        state.shipped = event.payload.number < DRY_RUN_NUMBERS_FROM;
+        // What shipped is the last spec only if the change merged was built to it: Martin may merge a change he sent
+        // back to the planner after it wrote another, which nothing has built yet.
+        state.shipped =
+          event.payload.number < DRY_RUN_NUMBERS_FROM && !!state.lastSpec && state.builtTo === state.lastSpec;
         // His merge answers whatever held the change before it: the change is in, and goes on to Release.
         state.hold = undefined;
         state.release = undefined;

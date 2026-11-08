@@ -766,6 +766,9 @@ describe('after the merge', () => {
     // A dry run's merge reaches no main.
     const dryMerged: LineEvent = { ...merged, payload: { ...merged.payload, number: DRY_RUN_NUMBERS_FROM + 12 } };
     expect(fold([...done.slice(0, -1), dryMerged])).toMatchObject({ merged: true, shipped: false });
+    // Nor does a merge of a change built to an earlier spec than the planner's last: the new one is not built yet.
+    const respec: LineEvent = { ...spec, payload: { ...spec.payload, outcome: 'Another outcome' } };
+    expect(fold([...done.slice(0, -1), respec, merged])).toMatchObject({ merged: true, shipped: false });
     // One a dry run verified comes back to a first plan: nothing of its spec shipped.
     const dry: LineEvent = { ...reopened, payload: { ...reopened.payload, dryRun: true } };
     expect(fold([...ended, dry])).toMatchObject({ lastSpec: undefined, shipped: false, replan: undefined });

@@ -107,6 +107,7 @@ Martin is alerted to each of his security events, at its kind's level, counted f
 | `flag-widened`, `flag-narrowed`, `flag-off` | `flag.staged` that widens a feature flag (to Checks too, and turning one back on for everyone), narrows it, or turns it off | Notify, Inform, Inform |
 | `improvement-requested` | every `improvement.requested`, from the console's "+" | Notify |
 | `improvement-approved` | `hold.answered` approving a `spec` hold, read from the hold it answers, on a work item opened as an improvement | Notify |
+| `words-shared` | `hold.answered` sharing Martin's words on a work item a visitor's report opened (`shared`), which the passkey given again allows | Notify |
 | `guardrail-not-held` | `guardrail.proved` that did not hold, appended by `factory_proofs` (`make guardrails`); one that held, like a refusal, is the guardrail working, and alerts no one | Page |
 | `attack-not-refused` | `attack.finished`, appended by `factory_redteam` on a work item one of Martin's roles launched the attack on, that says it was not refused, or records an attempt that got through (`refused: false`) whatever it says | Page |
 | `attack-wrong-mechanism` | `attack.finished`, as above, that says refused where the line, reading the refusals it cites again, cannot agree ([how the line judges an attack](RED-TEAM-HARNESS.md#how-the-line-judges-an-attack)) | Page |

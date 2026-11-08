@@ -5,9 +5,9 @@
  *
  * What each answer does is the line's own table, `ANSWERS` in the events package, so the two cannot drift; only the
  * words are the console's. An answer that would do nothing is left off (`answersTo`): a fix waiting for Martin's
- * deploy takes only his rejection. On a work item a visitor's report opened no hold takes words but triage's, as no
- * agent would read them: an answer that still sends the work back with something the line tells the agent is offered
- * plain, and the card says why there are no words.
+ * deploy takes only his rejection, and two that take no words and do the same are one, named for what it does. On a
+ * work item a visitor's report opened, answering in words shares them, with the passkey again, as no agent reads them
+ * otherwise; on triage's holds there his words stay his.
  *
  * A canary paused for Martin (auto-rollback off, judged bad) has one card of its own, drawn from the release's events
  * (`release.ts`'s `judgedBad`), whether or not it carries a work item: Martin's drill releases a change that carries
@@ -25,16 +25,16 @@ import {
   type HoldCause,
   AUTONOMY as LEVELS,
   type PayloadOf,
-  PLAIN_ON_REPORT,
   type PublicEvent,
   type Resolution,
   type Stage,
+  sharesWords,
   takesWords,
   WORDED_ANSWERS,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { ENQUEUES } from '@software-factory/policy/line';
-import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP } from '../access.ts';
+import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP, SHARE_STEP_UP } from '../access.ts';
 import { APP_REPO, AUTONOMY, clock, duration, jobUrl, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployRecord, deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
@@ -68,8 +68,13 @@ interface AnswerRow {
   label: string;
   /** What it does, in a sentence. */
   does: string;
-  /** Whether it goes with his words, in a field the card opens: not where they stay his, but on triage's holds. */
+  /** Whether it goes with his words, in a field the card opens. */
   words: boolean;
+  /**
+   * Whether those words are shared: on a work item a visitor's report opened, but for triage's holds, his words reach
+   * an agent only shared, so answering in words there shares them, with the passkey again (`hold.share-words`).
+   */
+  share: boolean;
   /** Whether it asks for the passkey again: approving a guardrail's hold, or an improvement's spec. */
   stepUp: boolean;
 }
@@ -259,16 +264,8 @@ function doesOf(
   workItem: string,
   improvement: boolean,
   pullRequest: number | undefined,
-  plain: boolean,
 ): string {
   const resolution: Resolution = ANSWERS[cause][answer];
-  // Sent back with no words, where his stay his: what the agent is told instead.
-  if (plain) {
-    if (resolution === 'return') return 'Sends it back to the coder for another round, with the reviewer’s findings.';
-    if (cause === 'beyond-ticket')
-      return 'The planner writes the spec again, told what the reviewer found beyond the ticket.';
-    return 'The planner writes the spec again for why it was held, and the coder rebuilds the change on it.';
-  }
   if (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause)) {
     return cause === 'suggestion'
       ? 'Kept with the hold. It stays held until you reject it.'
@@ -338,15 +335,9 @@ const LABEL: Record<HoldAnswer, string> = {
   rejected: 'Reject',
 };
 
-/** Its button: Close where it stands in for approving too, and where an answer given plain sends the work. */
-const labelOf = (cause: HoldCause, answer: HoldAnswer, plain: boolean, workItem: string) =>
-  answer === 'rejected' && CLOSE_AGREES.includes(cause)
-    ? `Close #${workItem}`
-    : !plain
-      ? LABEL[answer]
-      : ANSWERS[cause][answer] === 'return'
-        ? 'Back to the coder'
-        : 'Back to the planner';
+/** Its button: Close where it stands in for approving too, as it agrees with the agent that closed it. */
+const labelOf = (cause: HoldCause, answer: HoldAnswer, workItem: string) =>
+  answer === 'rejected' && CLOSE_AGREES.includes(cause) ? `Close #${workItem}` : LABEL[answer];
 
 /** How Martin answered, for Answered today. */
 const HOW: Record<HoldAnswer, string> = {
@@ -533,29 +524,13 @@ function wayOf(item: ItemState, cause: HoldCause): Need['way'] {
  * The answers a hold takes, as the admin service takes them (`answersTo`): a merge the gate held for its risk tags is
  * approved on GitHub, so it takes words, which send it back to the coder, and Reject.
  */
-const answersOf = (hold: Hold, aboutReport: boolean): HoldAnswer[] => {
-  const offered = answersTo(hold.cause, aboutReport);
+const answersOf = (hold: Hold): HoldAnswer[] => {
+  const offered = answersTo(hold.cause);
   return hold.merge?.why === 'held' ? offered.filter((answer) => answer !== 'replanned') : offered;
 };
 
-/** Why a hold on a work item a visitor's report opened takes no words. */
-export const NO_WORDS_ON_REPORT = 'No answer in words: a visitor’s report opened this, so no agent reads them.';
-
-/** What Martin may do himself where the planner rejected a visitor's report's ticket: ask for the change. */
-export const ASK_YOURSELF =
-  'Where it needs what only you can decide, ask for that yourself, as an improvement, with the “+”.';
-
-/** Whether a hold takes words anywhere but on a work item a visitor's report opened. */
-const wordsOnlyElsewhere = (cause: HoldCause) =>
-  answersTo(cause).some((answer) => takesWords(cause, answer)) &&
-  !answersTo(cause, true).some((answer) => takesWords(cause, answer, true));
-
 /** The one sentence after a hold's evidence, if it has one: the first that says what its rows do not. */
-const noteOf = (hold: Hold, aboutReport: boolean) =>
-  (hold.cause === 'merge' && mergeNote(hold.merge)) ||
-  (aboutReport && hold.cause === 'ticket-rejected' && ASK_YOURSELF) ||
-  (aboutReport && wordsOnlyElsewhere(hold.cause) && NO_WORDS_ON_REPORT) ||
-  undefined;
+const noteOf = (hold: Hold) => (hold.cause === 'merge' && mergeNote(hold.merge)) || undefined;
 
 /**
  * The settings, for a spend cap; and the build's job that did not succeed, on GitHub, for a deploy whose build its
@@ -614,6 +589,31 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       // or the queue took it out), as the line's gauge counts it.
       const since =
         hold.cause === 'deploy' && item.deploy?.waitsSince !== undefined ? item.deploy.waitsSince : hold.since;
+      // On a work item a visitor's report opened, words go to an agent only shared: answering in words there shares
+      // them, with the passkey again. Triage's holds keep his words with them, for him alone.
+      const shares = sharesWords(hold.cause, aboutReport);
+      const rows: AnswerRow[] = answersOf(hold).map((answer) => {
+        const words = takesWords(answer);
+        const share = shares && words;
+        return {
+          answer,
+          label: labelOf(hold.cause, answer, item.number),
+          words,
+          share,
+          does:
+            answer === 'approved' && hold.needs?.some((n) => n.barred)
+              ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
+              : doesOf(
+                  hold.cause,
+                  answer,
+                  item.number,
+                  improvement,
+                  // A sample's pull request never existed, so nothing stays open.
+                  item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                ),
+          stepUp: (answer === 'approved' && keyed) || (share && SHARE_STEP_UP['hold.share-words']),
+        };
+      });
       return [
         {
           workItem: item.number,
@@ -629,30 +629,9 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
           link: linkOf(item, hold.cause),
-          note: noteOf(hold, aboutReport),
+          note: noteOf(hold),
           way: wayOf(item, hold.cause),
-          answers: answersOf(hold, aboutReport).map((answer) => {
-            const words = takesWords(hold.cause, answer, aboutReport);
-            const plain = WORDED_ANSWERS.includes(answer) && !words;
-            return {
-              answer,
-              label: labelOf(hold.cause, answer, plain, item.number),
-              words,
-              does:
-                answer === 'approved' && hold.needs?.some((n) => n.barred)
-                  ? 'The planner writes the spec again, told to take in the files a scope may name, or reject it.'
-                  : doesOf(
-                      hold.cause,
-                      answer,
-                      item.number,
-                      improvement,
-                      // A sample's pull request never existed, so nothing stays open.
-                      item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
-                      plain,
-                    ),
-              stepUp: answer === 'approved' && keyed,
-            };
-          }),
+          answers: rows,
           aboutReport,
           forMartin: hold.cause !== 'deploy' || deployWaitsForMartin(item),
         },
@@ -671,22 +650,15 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       if (at < from || at > t) continue;
       const { decision, answer, report } = event.payload;
       const kept = decision === 'answered' && cause !== undefined && WORDS_LEAVE_HELD.includes(cause);
-      // Sent back with no words, where his stay his: where it went says what it did. Only an answer that could be
-      // plain there is: one with none, from before, had words, which stay his.
-      const plain = !answer && report === true && cause !== undefined && PLAIN_ON_REPORT[cause].includes(decision);
       const closes = decision === 'rejected' && cause !== undefined && CLOSE_AGREES.includes(cause);
-      const how =
-        plain && cause
-          ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
-          : closes
-            ? `Closed, agreeing with the ${closedBy(cause as HoldCause)}`
-            : HOW[decision];
+      const how = closes ? `Closed, agreeing with the ${closedBy(cause as HoldCause)}` : HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
-        words: answer ?? (report && !plain && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
-        did: plain || closes ? undefined : didOf(cause, decision),
+        // An answer in words with none in its view had them, unshared, about a visitor's report: they stay his.
+        words: answer ?? (report && WORDED_ANSWERS.includes(decision) ? 'kept' : undefined),
+        did: closes ? undefined : didOf(cause, decision),
       });
     }
   }

@@ -68,35 +68,36 @@ const modelCall: PayloadOf<'model.called'> = {
 };
 
 describe('the rows', () => {
-  it('say his words stay his on a report’s answer that took them, and only that any did on one given plain', () => {
-    const report = (cause: PayloadOf<'hold.started'>['cause'], item: string) =>
-      event(0, 'hold.started', 'factory', { stage: 'review', kind: 'held', cause, reason: 'Held' }, 'Held', item);
-    const review = report('review', '1500');
-    const spec = report('spec', '1501');
-    // Back to the coder, given plain: no words, as with an approval there.
-    const plain = event(
+  it('say his words stay his on a report’s answer in words with none in its view, and show them shared', () => {
+    const held = event(
+      0,
+      'hold.started',
+      'factory',
+      { stage: 'review', kind: 'held', cause: 'review', reason: 'Held' },
+      'Held',
+      '1500',
+    );
+    // In words, unshared: its view left them out.
+    const kept = event(
       1,
       'hold.answered',
       'martin',
-      { decision: 'answered', hold: review.id, report: true },
-      'Sent',
+      { decision: 'answered', hold: held.id, report: true },
+      'Said',
       '1500',
     );
-    // In words, on a hold that takes none there now, from before: its view left them out.
-    const worded = event(
+    expect(only([held, kept]).withheld).toBe('His words stay his: the hold was about a visitor’s report.');
+    const shared = event(
       2,
       'hold.answered',
       'martin',
-      { decision: 'answered', hold: spec.id, report: true },
+      { decision: 'answered', answer: 'Sizes first', hold: held.id, report: true, shared: true },
       'Said',
-      '1501',
+      '1500',
     );
-    expect(only([review, spec, plain]).withheld).toBe(
-      'Any words of his stay his: the hold was about a visitor’s report.',
-    );
-    expect(only([review, spec, plain, worded]).withheld).toBe(
-      'His words stay his: the hold was about a visitor’s report.',
-    );
+    const row = only([held, kept, shared]);
+    expect(row.withheld).toBeUndefined();
+    expect(row.detail).toContain('“Sizes first”');
   });
 
   it('are every event up to t, newest first, under a row for each day where the viewer is', () => {
@@ -424,6 +425,16 @@ describe('the detail under a row', () => {
         event(2, 'improvement.requested', 'martin', { words: 'Dates.', steppedUp: true }, 'Asked', '1400'),
       ],
       'hold.approve-improvement-spec': [opened('improvement'), specHeld, approvedSpec],
+      'hold.share-words': [
+        held,
+        event(2, 'hold.answered', 'martin', {
+          decision: 'answered',
+          answer: 'Sizes first',
+          hold: held.id,
+          report: true,
+          shared: true,
+        }),
+      ],
       'phone.off': [event(2, 'alerts.switched', 'martin', { phone: false })],
     };
     const marked = Object.entries(ACCESS as Record<string, { stepUp: boolean }>)

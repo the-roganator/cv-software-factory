@@ -4,21 +4,14 @@
  * a hold about a visitor's report; and the samples' own holds. And the console's copy of the guardrails' holds, held to
  * the access table.
  */
-import {
-  answersTo,
-  HOLD_CAUSES,
-  type HoldCause,
-  type PayloadOf,
-  WORDED_ANSWERS,
-  WORDS_LEAVE_HELD,
-} from '@software-factory/events';
+import { answersTo, HOLD_CAUSES, type HoldCause, type PayloadOf, WORDS_LEAVE_HELD } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { GUARDRAIL_HOLDS as TABLE } from '../../../../policy/access.ts';
 import { GUARDRAIL_HOLDS } from '../../web/src/access.ts';
 import { clock } from '../../web/src/format.ts';
 import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
-import { ASK_YOURSELF, NO_WORDS_ON_REPORT, needsView } from '../../web/src/projection/needs.ts';
+import { needsView } from '../../web/src/projection/needs.ts';
 import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, payloads, SAMPLES, work } from './support.ts';
 
@@ -193,16 +186,31 @@ describe('Needs you', () => {
     ]);
   });
 
-  it('says where an answer sent the work on a visitor’s report, given with no words, and keeps none', () => {
+  it('keeps his words on a visitor’s report from Answered today where he did not share them, and shows them shared', () => {
     const day = Date.parse('2026-10-03T12:00:00');
     const review = work('2033', day)
       .open('visitor-report')
       .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
       .add(1, 'hold.started', 'factory', hold('review', { stage: 'review' }))
-      .add(30, 'hold.answered', 'martin', { decision: 'answered', report: true });
+      // Its public view, of words he gave before they could be shared there: they stay his.
+      .add(30, 'hold.answered', 'martin', { decision: 'answered', report: true })
+      .add(31, 'hold.started', 'factory', hold('review', { stage: 'review' }))
+      .add(40, 'hold.answered', 'martin', {
+        decision: 'answered',
+        answer: 'Keep the test',
+        report: true,
+        shared: true,
+      });
     const { answered } = needsView(foldItems(review.events), day + 3_600_000);
     expect(answered).toEqual([
-      { at: review.at(30), workItem: '2033', how: 'Sent back to the coder', words: undefined, did: undefined },
+      {
+        at: review.at(40),
+        workItem: '2033',
+        how: 'Answered in words',
+        words: 'Keep the test',
+        did: 'Sent back to the coder.',
+      },
+      { at: review.at(30), workItem: '2033', how: 'Answered in words', words: 'kept', did: 'Sent back to the coder.' },
     ]);
   });
 
@@ -524,73 +532,48 @@ describe('Needs you', () => {
     ]);
   });
 
-  it('offers no words on a question on a work item a visitor’s report opened, and says why', () => {
-    const question = hold('question', { stage: 'plan', kind: 'question', question: 'Which?' });
-    const report = work('2052', START)
-      .open('visitor-report')
-      .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
-      .add(1, 'hold.started', 'planner', question);
-    const plain = work('2053', START).open().add(2, 'hold.started', 'planner', question);
-    const [onReport, other] = needsView(foldItems([...report.events, ...plain.events]), START + 3_600_000).holds;
-    expect(onReport?.answers.map((a) => [a.answer, a.does])).toEqual([
-      ['approved', 'The planner plans again, with no answer.'],
-      ['rejected', 'Closes #2052. Nothing is built.'],
-    ]);
-    expect(onReport?.answers.map((a) => a.answer)).toEqual(answersTo('question', true));
-    expect(onReport?.note).toBe(NO_WORDS_ON_REPORT);
-    expect(other?.answers.map((a) => a.answer)).toEqual(['approved', 'answered', 'rejected']);
-    expect(other?.note).toBeUndefined();
-  });
-
-  it('offers words on a visitor’s report’s holds only on triage’s, and plain answers where they still tell an agent', () => {
-    for (const cause of HOLD_CAUSES.filter((c) => c !== 'canary')) {
-      const item = work('2054', START)
-        .open('visitor-report')
-        .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
-        .add(1, 'hold.started', 'factory', hold(cause));
-      const [need] = needsView(foldItems(item.events), START + 3_600_000).holds;
-      expect(
-        need?.answers.map((a) => a.answer),
-        cause,
-      ).toEqual(answersTo(cause, true));
-      // No field opens but on triage's holds, whose words wait for Martin.
-      for (const row of need?.answers ?? []) {
-        expect(row.words, `${cause}: ${row.answer}`).toBe(
-          WORDS_LEAVE_HELD.includes(cause) && WORDED_ANSWERS.includes(row.answer),
-        );
-      }
-      const elsewhere = answersTo(cause).some((a) => WORDED_ANSWERS.includes(a));
-      // One sentence: a merge's own note, or what Martin may ask for himself, comes first where it has one.
-      if (cause === 'merge' || cause === 'ticket-rejected') continue;
-      if (elsewhere && !WORDS_LEAVE_HELD.includes(cause)) expect(need?.note, cause).toBe(NO_WORDS_ON_REPORT);
-      else expect(need?.note ?? '', cause).not.toContain(NO_WORDS_ON_REPORT);
-    }
-  });
-
-  it('sends a review back plain on a visitor’s report, saying where, and has a rejected ticket say what Martin may do', () => {
-    const opened = (number: string, payload: PayloadOf<'hold.started'>) =>
+  it('shares his words on a visitor’s report when he answers in them, with the passkey, and keeps triage’s his', () => {
+    const report = (number: string, payload: PayloadOf<'hold.started'>) =>
       work(number, START)
         .open('visitor-report')
         .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/search' } })
         .add(1, 'hold.started', 'factory', payload);
-    const review = opened('2055', hold('review', { stage: 'review' }));
-    const rejected = opened('2056', hold('ticket-rejected', { stage: 'plan', reason: 'Only Martin can say which' }));
-    const [one, two] = needsView(foldItems([...review.events, ...rejected.events]), START + 3_600_000).holds;
-    expect(one?.answers.map((a) => [a.label, a.words, a.does])).toEqual([
-      ['Approve', false, 'Stands in for the reviewer’s approval: it goes on to its write-up and your merge.'],
-      ['Back to the coder', false, 'Sends it back to the coder for another round, with the reviewer’s findings.'],
-      [
-        'Back to the planner',
-        false,
-        'The planner writes the spec again for why it was held, and the coder rebuilds the change on it.',
-      ],
-      ['Reject', false, 'Closes #2055, unmerged.'],
+    for (const cause of HOLD_CAUSES.filter((c) => c !== 'canary')) {
+      const [need] = needsView(foldItems(report('2054', hold(cause)).events), START + 3_600_000).holds;
+      const kept = WORDS_LEAVE_HELD.includes(cause);
+      // The same answers as on any other work item: one row per outcome, named the same.
+      expect(
+        need?.answers.map((a) => a.answer),
+        cause,
+      ).toEqual(answersTo(cause));
+      for (const row of need?.answers ?? []) {
+        expect(row.share, `${cause}: ${row.answer}`).toBe(row.words && !kept);
+        if (row.share) expect(row.stepUp, `${cause}: ${row.answer}`).toBe(true);
+      }
+    }
+    const question = report('2052', hold('question', { stage: 'plan', kind: 'question', question: 'Which?' }));
+    const [asked] = needsView(foldItems(question.events), START + 3_600_000).holds;
+    expect(asked?.answers.map((a) => [a.label, a.words, a.share, a.stepUp])).toEqual([
+      ['Approve', false, false, false],
+      ['Answer in words', true, true, true],
+      ['Reject', false, false, false],
     ]);
-    // Approving the planner's rejection would close it as Close does: one button, named for what it does.
-    expect(two?.answers.map((a) => [a.answer, a.label, a.does])).toEqual([
-      ['rejected', 'Close #2056', 'Agrees with the planner, and closes #2056. Nothing is built.'],
+    expect(asked?.note).toBeUndefined();
+    // A ticket the planner rejected: words, shared, and one Close.
+    const rejected = report('2056', hold('ticket-rejected', { stage: 'plan', reason: 'Only Martin can say which' }));
+    const [two] = needsView(foldItems(rejected.events), START + 3_600_000).holds;
+    expect(two?.answers.map((a) => [a.label, a.share, a.does])).toEqual([
+      ['Answer in words', true, 'The line carries on from where it was held, with your words.'],
+      ['Close #2056', false, 'Agrees with the planner, and closes #2056. Nothing is built.'],
     ]);
-    expect(two?.note).toBe(ASK_YOURSELF);
+    // The words row answers the planner: no sentence sends Martin elsewhere.
+    expect(two?.note).toBeUndefined();
+    // On any other work item his words are public anyway: nothing is shared.
+    const plain = work('2059', START)
+      .open()
+      .add(1, 'hold.started', 'factory', hold('review', { stage: 'review' }));
+    const [other] = needsView(foldItems(plain.events), START + 3_600_000).holds;
+    expect(other?.answers.some((a) => a.share)).toBe(false);
   });
 
   describe('a merge the line holds for Martin, by why it does not add it to the merge queue itself', () => {

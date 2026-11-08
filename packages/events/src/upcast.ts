@@ -84,7 +84,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   },
   // Version 2 names the hold it answers, and says when its words stay Martin's; a version 1 answer said neither.
   // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.
-  'hold.answered': { 1: (payload) => payload, 2: (payload) => payload },
+  // Version 4 says when Martin shared his words on a visitor's report's work item; a version 3 answer never did.
+  'hold.answered': { 1: (payload) => payload, 2: (payload) => payload, 3: (payload) => payload },
   // Version 2 adds Martin's reason, and the console's start names no autonomy level; a version 1 start named one, and
   // gave no reason.
   'line.started': { 1: (payload) => payload },

@@ -16,7 +16,6 @@ import {
   AGENTS,
   type HoldCause,
   type PayloadOf,
-  PLAIN_ON_REPORT,
   type PublicEvent,
   SENSES,
   WORDED_ANSWERS,
@@ -32,6 +31,7 @@ import {
   IMPROVEMENT_STEP_UP,
   PHONE_STEP_UP,
   SETTINGS_STEP_UP,
+  SHARE_STEP_UP,
   STEP_UP,
 } from '../access.ts';
 import { changeWords, clock, count, dayLabel, modelTitle, money, plural, startOfDay, tokens } from '../format.ts';
@@ -213,12 +213,8 @@ export function auditRows(events: readonly PublicEvent[], t: number, profile: Pr
       case 'hold.answered':
         if (event.payload.answer) parts.push(quoted(event.payload.answer));
         else if (event.payload.report) {
-          // An answer that goes with words had them, but one that could be given plain there, which may have none.
-          const cause = event.payload.hold ? causes.get(event.payload.hold) : undefined;
-          const took =
-            WORDED_ANSWERS.includes(event.payload.decision) &&
-            !(cause && PLAIN_ON_REPORT[cause].includes(event.payload.decision));
-          withheld = took ? MARTIN_KEPT : MARTIN_ANY_KEPT;
+          // An answer in words with none in its view had them, unshared: they stay his.
+          withheld = WORDED_ANSWERS.includes(event.payload.decision) ? MARTIN_KEPT : MARTIN_ANY_KEPT;
         }
         break;
       case 'settings.changed':
@@ -298,7 +294,8 @@ function askedForPasskey(
     case 'improvement.requested':
       return IMPROVEMENT_STEP_UP['improvement.request'];
     case 'hold.answered': {
-      // A guardrail's hold, or an improvement's spec (`IMPROVEMENT_STEP_UP`).
+      // His words shared on a visitor's report (`SHARE_STEP_UP`), a guardrail's hold, or an improvement's spec.
+      if (event.payload.shared) return SHARE_STEP_UP['hold.share-words'];
       const cause = event.payload.hold ? causes.get(event.payload.hold) : undefined;
       return (
         event.payload.decision === 'approved' &&

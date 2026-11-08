@@ -13,27 +13,29 @@
  *   appends meanwhile is the one answered next.
  * - **Only an answer that does something.** One the line would only wait after is refused (`answersTo`): approving a
  *   merge, which Martin does on GitHub, a deploy, which a release ends by itself, or a suggestion, which never starts
- *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is
- *   taken only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests
- *   first), with his words, which are his reason for it. On a work item a visitor's report opened, no answer takes
- *   words but on triage's holds, which wait for him (`takesWords`): his words there stay his, so no agent could read
- *   them, and would only hand back the same again. Words sent there are refused, as is an answer that goes with words
- *   elsewhere, unless it still sends the work back with something the line tells the agent, and then it takes none
- *   (`PLAIN_ON_REPORT`). Two answers that take no words and do the same are one (`sameAs`): approving the planner's
- *   rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and its
- *   summary says he closed it, agreeing.
+ *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is taken
+ *   only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests first), with
+ *   his words, which are his reason for it. An answer that takes words is refused without them, and one that takes none
+ *   with them. On a work item a visitor's report opened, but on triage's holds, words are taken only shared
+ *   (`sharesWords`), as no agent reads them otherwise, and would only hand back the same again: the service takes there
+ *   exactly what the console offers. Two answers that take no words and do the same are one (`sameAs`): approving the
+ *   planner's rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and
+ *   its summary says he closed it, agreeing.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
  *   it sets the line building something new. That is a `spec` hold on a work item whose opening says it is an
- *   improvement, both read from the store, whoever opened it. Rejecting, words, and approving any other hold never ask.
- * - **Words about a visitor's report stay Martin's.** On a work item a visitor's report opened (its first signal is a
- *   report), the answer is marked `report`, and its public view leaves his words out, at any stage: a paraphrase of a
- *   report would pass any redactor.
+ *   improvement, both read from the store, whoever opened it. Sharing his words on a work item a visitor's report
+ *   opened is `hold.share-words`, which needs it too: it loosens what such a work item carries. Rejecting, unshared
+ *   words, and approving any other hold never ask.
+ * - **Words about a visitor's report stay Martin's, unless he shares them.** On a work item a visitor's report opened
+ *   (its first signal is a report), the answer is marked `report`, and its public view leaves his words out, at any
+ *   stage: a paraphrase of a report would pass any redactor. Martin, their author, shares them (`share`), judging they
+ *   do not repeat the visitor: the answer is marked `shared` too, and his words are then read and shown as on any other
+ *   work item. Triage's holds there keep his words his, unshared. Sharing words anywhere else is refused.
  */
 import { randomUUID } from 'node:crypto';
 import {
-  ANSWERS,
   answersTo,
   CLOSE_AGREES,
   closedBy,
@@ -43,7 +45,7 @@ import {
   MARTIN_ANSWER_CHARS,
   type NewEvent,
   type RawEvent,
-  type Resolution,
+  sharesWords,
   takesWords,
   upcast,
   VERSIONS,
@@ -60,7 +62,10 @@ import { type AdminStore, Refused, type Session, steppedUpNow } from './store.ts
 export const WORK_ITEM = /^[1-9][0-9]{0,8}$/;
 
 const hold = z.strictObject({ hold: z.uuid() });
-const withWords = hold.extend({ words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS).optional() });
+const withWords = hold.extend({
+  words: z.string().trim().min(1).max(MARTIN_ANSWER_CHARS).optional(),
+  share: z.literal(true).optional(),
+});
 
 /**
  * What an answer sends: the hold the card showed, and for those that go with words (`WORDED_ANSWERS`), the words,
@@ -70,12 +75,13 @@ export const ANSWER = Object.fromEntries(
   HOLD_ANSWERS.map((answer) => [answer, WORDED_ANSWERS.includes(answer) ? withWords : hold]),
 ) as Record<HoldAnswer, typeof hold | typeof withWords>;
 
-/** What an answer did: the work item, the hold, the answer, and whether Martin's words stay his. */
+/** What an answer did: the work item, the hold, the answer, whether Martin's words stay his, and whether he shared them. */
 export interface Answered {
   workItem: string;
   hold: string;
   decision: HoldAnswer;
   report: boolean;
+  shared: boolean;
 }
 
 /** A work item's open hold: its event's id, and its cause. */
@@ -226,9 +232,6 @@ const DID: Record<HoldAnswer, (workItem: string) => string> = {
   replanned: (workItem) => `sent the hold on #${workItem} back to the planner`,
 };
 
-/** Where an answer in words given without them sent the work, by what it does for the hold's cause. */
-const BACK: Partial<Record<Resolution, string>> = { return: 'the coder', replan: 'the planner' };
-
 /** Martin's answer, as he gave it. */
 function answerEvent(
   workItem: string,
@@ -237,8 +240,8 @@ function answerEvent(
   hold: string,
   report: boolean,
   words?: string,
+  shared = false,
 ): NewEvent {
-  const back = decision === 'answered' && words === undefined ? BACK[ANSWERS[cause][decision]] : undefined;
   return {
     id: randomUUID(),
     ts: new Date().toISOString(),
@@ -246,12 +249,17 @@ function answerEvent(
     type: 'hold.answered',
     version: VERSIONS['hold.answered'],
     actor: 'martin',
-    summary: back
-      ? `Martin sent the hold on #${workItem} back to ${back}`
-      : decision === 'rejected' && CLOSE_AGREES.includes(cause)
+    summary:
+      decision === 'rejected' && CLOSE_AGREES.includes(cause)
         ? `Martin closed #${workItem}, agreeing with the ${closedBy(cause)}`
         : `Martin ${DID[decision](workItem)}`,
-    payload: { decision, ...(words !== undefined && { answer: words }), hold, ...(report && { report: true }) },
+    payload: {
+      decision,
+      ...(words !== undefined && { answer: words }),
+      hold,
+      ...(report && { report: true }),
+      ...(shared && { shared: true }),
+    },
     artifacts: [],
   } as NewEvent;
 }
@@ -262,8 +270,9 @@ export async function answerHold(
   session: Session,
   workItem: string,
   decision: HoldAnswer,
-  given: { hold: string; words?: string },
+  given: { hold: string; words?: string; share?: true },
 ): Promise<Answered> {
+  const shared = given.share === true;
   const { report } = await store.record(
     async (tx) => {
       // One answer at a time, and none between a hold the line or triage appends and the next.
@@ -291,34 +300,45 @@ export async function answerHold(
       if (decision === 'approved' && CLOSE_AGREES.includes(open.cause)) {
         throw new Refused('answer', 422, 'Close does what approving would here: it agrees, and closes it. Send that.');
       }
-      if (!answersTo(open.cause, report).includes(decision)) {
-        throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
-      }
-      const takes = takesWords(open.cause, decision, report);
-      if (takes && given.words === undefined) throw new Refused('words', 422, 'That answer takes your words.');
-      if (!takes && given.words !== undefined) {
+      // Where words reach an agent only shared, they are taken only shared; anywhere else, never.
+      const shares = sharesWords(open.cause, report);
+      if (shared && !shares) {
         throw new Refused(
-          'words',
+          'share',
           422,
           report
-            ? 'A visitor’s report opened this, so your words would stay yours, and no agent would read them: send it without them.'
-            : 'That answer takes no words.',
+            ? 'Your words on this hold stay yours: send them without sharing.'
+            : 'Your words here are public anyway: send them without sharing.',
+        );
+      }
+      if (!answersTo(open.cause).includes(decision)) {
+        throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
+      }
+      const takes = takesWords(decision);
+      if (takes && given.words === undefined) throw new Refused('words', 422, 'That answer takes your words.');
+      if (!takes && given.words !== undefined) throw new Refused('words', 422, 'That answer takes no words.');
+      if (takes && shares && !shared) {
+        throw new Refused(
+          'share',
+          422,
+          'A visitor’s report opened this, so your words reach an agent only shared: share them, or answer another way.',
         );
       }
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(open.cause);
       const asks =
-        decision === 'approved' &&
-        ((guardrail && ACCESS['hold.approve-guardrail'].stepUp) ||
-          (open.cause === 'spec' &&
-            ACCESS['hold.approve-improvement-spec'].stepUp &&
-            (await isImprovement(tx, workItem))));
+        (shared && ACCESS['hold.share-words'].stepUp) ||
+        (decision === 'approved' &&
+          ((guardrail && ACCESS['hold.approve-guardrail'].stepUp) ||
+            (open.cause === 'spec' &&
+              ACCESS['hold.approve-improvement-spec'].stepUp &&
+              (await isImprovement(tx, workItem)))));
       if (asks) {
         // Asked again as the answer is taken, after the lock: the passkey given may have gone stale while it waited.
         if (!(await steppedUpNow(tx, session))) throw new Refused('step-up', 403, 'This needs your passkey again.');
       }
       return { report, cause: open.cause };
     },
-    ({ report, cause }) => [answerEvent(workItem, cause, decision, given.hold, report, given.words)],
+    ({ report, cause }) => [answerEvent(workItem, cause, decision, given.hold, report, given.words, shared)],
   );
-  return { workItem, hold: given.hold, decision, report };
+  return { workItem, hold: given.hold, decision, report, shared };
 }

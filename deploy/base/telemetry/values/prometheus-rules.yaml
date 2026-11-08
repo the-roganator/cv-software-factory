@@ -238,6 +238,15 @@ serverFiles:
               summary: "An improvement's spec was approved"
               description: "An improvement's spec was approved in the console: the line will build it."
           - alert: SecurityEvent
+            expr: "max(increase(line_security_events_total{kind=\"words-shared\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "words-shared"
+            annotations:
+              summary: "Your words on a visitor's report were shared"
+              description: "Your answer to a hold on a work item a visitor's report opened was shared in the console, with the passkey given again: the agents read it, and it is public."
+          - alert: SecurityEvent
             expr: "max(increase(line_security_events_total{kind=\"phone-on\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
             for: 0s
             labels:

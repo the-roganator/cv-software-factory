@@ -1071,6 +1071,29 @@ describe('Martin’s answer to a hold', () => {
     expect(replanned.replan).toMatchObject({ cause: 'review', answered: false, reason: 'Held for Martin' });
   });
 
+  it('reads the words he shared on a visitor’s report as on any other work item', () => {
+    const shared: LineEvent = {
+      type: 'hold.answered',
+      payload: { decision: 'answered', answer: 'Sizes first', report: true, shared: true },
+    };
+    const planned = [ticket, held('question', 'plan'), shared];
+    expect(fold(planned).answers).toEqual([{ asked: 'Held for Martin', answer: 'Sizes first' }]);
+    const waiting = [...approvedAndDescribed, held('merge', 'review'), shared];
+    expect(decide(waiting, facts).next).toMatchObject({ do: 'return', reason: 'Martin sent it back: Sizes first' });
+  });
+
+  it('has the planner plan again told no answer will come, once he approves its question with none', () => {
+    const asked = [ticket, held('question', 'plan')];
+    expect(fold([...asked, answer('approved')]).unanswered).toBe(true);
+    expect(fold([...asked, answer('answered', 'Sizes first')]).unanswered).toBe(false);
+    // Until it writes a spec: a question after that is a new one.
+    expect(fold([...asked, answer('approved'), spec]).unanswered).toBe(false);
+    // Or until his words reach it on any other hold, as on its rejection of the ticket.
+    const rejected = [...asked, answer('approved'), held('ticket-rejected', 'plan')];
+    expect(fold(rejected).unanswered).toBe(true);
+    expect(fold([...rejected, answer('answered', 'Sizes first')]).unanswered).toBe(false);
+  });
+
   it('closes the work item when he rejects it, whatever the cause, but a canary paused for him', () => {
     // A canary paused for Martin is answered from the Canary panel, never by a hold's answer: the admin service takes
     // none (`answersTo`), and the line would wait after one.

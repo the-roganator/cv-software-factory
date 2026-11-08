@@ -120,8 +120,9 @@ export const PUBLIC_VIEWS = {
   // Martin's answer, through the redactor, but for his words on a hold about a visitor's report, which stay his: the
   // summary of one that had words says only how he answered.
   'hold.answered': (event) => {
-    // One with no words has none to leave out, and its summary is the admin service's, which says what it did.
-    if (!event.payload.report || event.payload.answer === undefined) return redacted(event);
+    // One with no words has none to leave out, and its summary is the admin service's, which says what it did; words
+    // Martin shared are public, as on any other work item.
+    if (!event.payload.report || event.payload.shared || event.payload.answer === undefined) return redacted(event);
     const { answer: _words, ...payload } = event.payload;
     return redacted({ ...event, summary: ANSWERED[payload.decision], payload });
   },

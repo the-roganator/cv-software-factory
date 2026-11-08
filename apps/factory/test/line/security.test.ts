@@ -129,6 +129,14 @@ describe('the count of Martin’s security events', () => {
     await append(admin, 'alerts.switched', { phone: false });
     await append(admin, 'alerts.switched', { phone: true });
     await append(database.as.line, 'model.called', {});
+    // His words shared on a visitor's report's work item, and none unshared.
+    await append(
+      admin,
+      'hold.answered',
+      { decision: 'answered', answer: 'Sizes', report: true, shared: true },
+      'WI-11',
+    );
+    await append(admin, 'hold.answered', { decision: 'answered', answer: 'Sizes', report: true }, 'WI-11');
     // Each proof that did not hold, and none that did.
     await append(database.proofs, 'guardrail.proved', { proof: 'egress', held: false });
     await append(database.proofs, 'guardrail.proved', { proof: 'egress', held: true });
@@ -159,6 +167,7 @@ describe('the count of Martin’s security events', () => {
       'flag-off': 1,
       'improvement-requested': 1,
       'improvement-approved': 0,
+      'words-shared': 1,
       'phone-on': 2,
       'phone-off': 1,
       'guardrail-not-held': 2,
@@ -404,6 +413,7 @@ describe('what counts as a security event', () => {
       'flag.back-on': 'flag-widened',
       'improvement.request': 'improvement-requested',
       'hold.approve-improvement-spec': 'improvement-approved',
+      'hold.share-words': 'words-shared',
       'phone.off': 'phone-off',
     };
     const marked = Object.entries(ACCESS as Record<string, { stepUp: boolean }>)

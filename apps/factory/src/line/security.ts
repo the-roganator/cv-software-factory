@@ -17,7 +17,8 @@
  *   cause is a guardrail, read from the hold it answers: the latest on its work item before it, which is the hold the
  *   line takes it to answer, so an approval counts as what it does), `improvement-requested` (every
  *   `improvement.requested`), `improvement-approved` (a `hold.answered` approving a `spec` hold, read as above, on a
- *   work item opened as an improvement, whoever opened it), and `line-started`. Giving the passkey again
+ *   work item opened as an improvement, whoever opened it), `words-shared` (a `hold.answered` that shares Martin's
+ *   words on a work item a visitor's report opened, `shared` as stored), and `line-started`. Giving the passkey again
  *   (`admin.stepped-up`) is not counted: each action it lets the session take is, and the audit log keeps the event;
  *   nor is ending it early (`admin.step-up-ended`), which only tightens;
  * - `line-stopped`: every `line.stopped`, which tightens and so needs no passkey again, but which Martin is still told of;
@@ -103,6 +104,7 @@ export const SECURITY_KINDS = [
   'flag-off',
   'improvement-requested',
   'improvement-approved',
+  'words-shared',
   'phone-on',
   'phone-off',
   'guardrail-not-held',
@@ -152,6 +154,8 @@ export interface Stored {
   staged?: unknown;
   /** For an answer, whether its work item was opened as an improvement. */
   improvement?: boolean | null;
+  /** For an answer, whether it shares his words on a visitor's report's work item, as stored. */
+  shared?: unknown;
   /** A switch of alerts to the phone: whether they reach it now. */
   phone?: unknown;
   /** A change of the line's controls: whether auto-rollback is on after it, as stored. */
@@ -282,6 +286,7 @@ export function countAs(event: Stored): { kind: SecurityKind } | { hold: HoldCau
       return kind ? { kind } : null;
     }
     case 'hold.answered':
+      if (event.shared === true) return { kind: 'words-shared' };
       if (event.decision !== 'approved') return null;
       if ((GUARDRAIL_HOLDS as readonly string[]).includes(event.cause ?? '')) return { kind: 'guardrail-approved' };
       return event.cause === 'spec' && event.improvement ? { kind: 'improvement-approved' } : null;
@@ -340,6 +345,7 @@ export async function readOn(
       change: unknown;
       staged: unknown;
       improvement: boolean | null;
+      shared: unknown;
       phone: unknown;
       auto_rollback: unknown;
       held: unknown;
@@ -354,7 +360,7 @@ export async function readOn(
            case when e.type = 'attack.finished' then e.payload end as finished,
            e.type, e.payload->>'action' as action, e.payload->>'decision' as decision,
            e.payload->'change' as change, e.payload->'phone' as phone, e.payload->'autoRollback' as auto_rollback,
-           e.payload->'held' as held, e.appended_by,
+           e.payload->'held' as held, e.payload->'shared' as shared, e.appended_by,
            e.type = 'controls.changed' and ${fromMartin(sql, 'e')} as in_force,
            case when e.type = 'flag.staged' then jsonb_build_object('from', e.payload->'from', 'to', e.payload->'to')
            end as staged,
@@ -406,6 +412,7 @@ export async function readOn(
       change: row.change,
       staged: row.staged,
       improvement: row.improvement,
+      shared: row.shared,
       phone: row.phone,
       autoRollback: row.auto_rollback,
       held: row.held,

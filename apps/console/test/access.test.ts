@@ -24,6 +24,7 @@ import {
   LINE_STEP_UP,
   PHONE_STEP_UP,
   SESSION_MINUTES,
+  SHARE_STEP_UP,
 } from '../web/src/access.ts';
 
 const entries = Object.entries(ACCESS) as [Name, Access][];
@@ -43,6 +44,7 @@ const SPEC_STEP_UP: Record<string, Name[]> = {
   'promoting a canary or retrying a stopped release': ['release.promote', 'release.retry'],
   "widening a flag's stage": ['flag.widen', 'flag.back-on'],
   'requesting an improvement or approving its spec': ['improvement.request', 'hold.approve-improvement-spec'],
+  "sharing his words on a work item a visitor's report opened": ['hold.share-words'],
   'approving a hold whose cause is a guardrail': ['hold.approve-guardrail'],
   'revoking a passkey': ['passkey.revoke'],
 };
@@ -74,7 +76,14 @@ describe('the access table', () => {
   });
 
   it('is copied into the console where it marks the line’s controls with the key', () => {
-    const copies = { ...LINE_STEP_UP, ...CONTROL_STEP_UP, ...PHONE_STEP_UP, ...FLAG_STEP_UP, ...IMPROVEMENT_STEP_UP };
+    const copies = {
+      ...LINE_STEP_UP,
+      ...CONTROL_STEP_UP,
+      ...PHONE_STEP_UP,
+      ...FLAG_STEP_UP,
+      ...IMPROVEMENT_STEP_UP,
+      ...SHARE_STEP_UP,
+    };
     for (const [name, asks] of Object.entries(copies)) {
       expect(ACCESS[name as Name]?.stepUp, name).toBe(asks);
     }

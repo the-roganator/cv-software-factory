@@ -8,12 +8,12 @@ import {
   knownInScope,
   measurementOf,
   PATH_CHARS,
-  PLAIN_ON_REPORT,
   recordedPath,
   returnWords,
   sameVersion,
   scopesOverlap,
   sharedPath,
+  sharesWords,
   takesWords,
   WORDS_LEAVE_HELD,
 } from '../src/line.ts';
@@ -1823,64 +1823,24 @@ describe('the answers a hold takes', () => {
     expect(answersTo('finding')).toEqual(['approved', 'answered', 'rejected']);
   });
 
-  it('take no words where his words stay his, but on triage’s holds, which wait for him', () => {
-    // The rule, for every cause, so a new one cannot offer words no agent reads.
+  it('take words shared on a visitor’s report, on every hold but triage’s, whose words stay his', () => {
+    // The rule, for every cause, so a new one cannot take words no agent reads.
     for (const cause of HOLD_CAUSES) {
-      for (const answer of answersTo(cause, true)) {
-        expect(takesWords(cause, answer, true), `${cause}: ${answer}`).toBe(
-          WORDED_ANSWERS.includes(answer) && WORDS_LEAVE_HELD.includes(cause),
-        );
-      }
-    }
-    expect(answersTo('suggestion', true)).toEqual(answersTo('suggestion'));
-    expect(answersTo('finding', true)).toEqual(answersTo('finding'));
-    for (const cause of HOLD_CAUSES) {
-      for (const answer of HOLD_ANSWERS)
+      expect(sharesWords(cause, true), cause).toBe(!WORDS_LEAVE_HELD.includes(cause));
+      expect(sharesWords(cause, false), cause).toBe(false);
+      for (const answer of HOLD_ANSWERS) {
         expect(takesWords(cause, answer), `${cause}: ${answer}`).toBe(WORDED_ANSWERS.includes(answer));
-    }
-  });
-
-  it('send the work back plain where his words stay his only where it still tells an agent something', () => {
-    for (const cause of HOLD_CAUSES) {
-      const plain = answersTo(cause, true).filter(
-        (answer) => WORDED_ANSWERS.includes(answer) && !takesWords(cause, answer, true),
-      );
-      expect(plain, cause).toEqual(PLAIN_ON_REPORT[cause]);
-      // Each is one the hold takes anyway, and moves the work somewhere approving does not.
-      for (const answer of plain) {
-        expect(answersTo(cause), `${cause}: ${answer}`).toContain(answer);
-        expect(ANSWERS[cause][answer], `${cause}: ${answer}`).not.toBe(ANSWERS[cause].approved);
       }
-      // Approving and rejecting stay as they are.
-      expect(
-        answersTo(cause, true).filter((a) => !WORDED_ANSWERS.includes(a)),
-        cause,
-      ).toEqual(answersTo(cause).filter((a) => !WORDED_ANSWERS.includes(a)));
     }
-    expect(answersTo('review', true)).toEqual(['approved', 'answered', 'replanned', 'rejected']);
-    expect(answersTo('beyond-ticket', true)).toEqual(['approved', 'answered', 'rejected']);
-    expect(answersTo('gates', true)).toEqual(['approved', 'replanned', 'rejected']);
-    expect(answersTo('tests-first', true)).toEqual(['approved', 'replanned', 'rejected']);
-    // The planner rejected it, or asked: words would run it again with nothing new, so it would do the same again.
-    expect(answersTo('ticket-rejected', true)).toEqual(['rejected']);
-    expect(answersTo('question', true)).toEqual(['approved', 'rejected']);
-    expect(answersTo('nothing-to-fix', true)).toEqual(['rejected']);
-    for (const cause of ['spec', 'scope', 'failures', 'verify', 'spend', 'unknown'] as const) {
-      expect(answersTo(cause, true), cause).toEqual(['approved', 'rejected']);
-    }
-    expect(answersTo('merge', true)).toEqual(['rejected']);
-    expect(answersTo('deploy', true)).toEqual(['rejected']);
   });
 
   it('are one answer where two that take no words do the same: Close, which records his rejection', () => {
-    for (const stay of [false, true]) {
-      for (const cause of HOLD_CAUSES) {
-        const offered = answersTo(cause, stay);
-        for (const [i, a] of offered.entries()) {
-          for (const b of offered.slice(i + 1)) {
-            if (!takesWords(cause, a, stay) && !takesWords(cause, b, stay)) {
-              expect(ANSWERS[cause][a], `${cause}: ${a}, ${b}`).not.toBe(ANSWERS[cause][b]);
-            }
+    for (const cause of HOLD_CAUSES) {
+      const offered = answersTo(cause);
+      for (const [i, a] of offered.entries()) {
+        for (const b of offered.slice(i + 1)) {
+          if (!takesWords(cause, a) && !takesWords(cause, b)) {
+            expect(ANSWERS[cause][a], `${cause}: ${a}, ${b}`).not.toBe(ANSWERS[cause][b]);
           }
         }
       }

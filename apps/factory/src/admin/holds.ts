@@ -15,11 +15,10 @@
  *   merge, which Martin does on GitHub, a deploy, which a release ends by itself, or a suggestion, which never starts
  *   work: Martin asks for an improvement himself with the console's "+". Sending the work back to the planner is
  *   taken only on the holds before a merge where the spec may be what is wrong (a gate, a review, a merge, tests
- *   first), with his words, which are his reason for it. On a work item a visitor's report opened, no answer takes
- *   words but on triage's holds, which wait for him (`takesWords`): his words there stay his, so no agent could read
- *   them, and would only hand back the same again. Words sent there are refused, as is an answer that goes with words
- *   elsewhere, unless it still sends the work back with something the line tells the agent, and then it takes none
- *   (`PLAIN_ON_REPORT`). Two answers that take no words and do the same are one (`sameAs`): approving the planner's
+ *   first), with his words, which are his reason for it. An answer that takes words (`takesWords`) is refused without
+ *   them, and one that takes none with them. On a work item a visitor's report opened, but on triage's holds, words
+ *   are taken only shared (`sharesWords`), as no agent reads them otherwise, and would only hand back the same again:
+ *   the service takes there exactly what the console offers. Two answers that take no words and do the same are one (`sameAs`): approving the planner's
  *   rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and its
  *   summary says he closed it, agreeing.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
@@ -29,15 +28,14 @@
  *   improvement, both read from the store, whoever opened it. Sharing his words on a work item a visitor's report
  *   opened is `hold.share-words`, which needs it too: it loosens what such a work item carries. Rejecting, unshared
  *   words, and approving any other hold never ask.
- * - **Words about a visitor's report stay Martin's.** On a work item a visitor's report opened (its first signal is a
- *   report), the answer is marked `report`, and its public view leaves his words out, at any stage: a paraphrase of a
- *   report would pass any redactor. Martin, their author, may share them (`share`), judging they do not repeat the
- *   visitor: the answer is marked `shared` too, and his words are then read and shown as on any other work item, and
- *   take every answer they take there. Sharing words on any other work item, where they are public anyway, is refused.
+ * - **Words about a visitor's report stay Martin's, unless he shares them.** On a work item a visitor's report opened
+ *   (its first signal is a report), the answer is marked `report`, and its public view leaves his words out, at any
+ *   stage: a paraphrase of a report would pass any redactor. Martin, their author, shares them (`share`), judging they
+ *   do not repeat the visitor: the answer is marked `shared` too, and his words are then read and shown as on any other
+ *   work item. Triage's holds there keep his words his, unshared. Sharing words anywhere else is refused.
  */
 import { randomUUID } from 'node:crypto';
 import {
-  ANSWERS,
   answersTo,
   CLOSE_AGREES,
   HOLD_ANSWERS,
@@ -46,7 +44,7 @@ import {
   MARTIN_ANSWER_CHARS,
   type NewEvent,
   type RawEvent,
-  type Resolution,
+  sharesWords,
   takesWords,
   upcast,
   VERSIONS,
@@ -233,9 +231,6 @@ const DID: Record<HoldAnswer, (workItem: string) => string> = {
   replanned: (workItem) => `sent the hold on #${workItem} back to the planner`,
 };
 
-/** Where an answer in words given without them sent the work, by what it does for the hold's cause. */
-const BACK: Partial<Record<Resolution, string>> = { return: 'the coder', replan: 'the planner' };
-
 /** Martin's answer, as he gave it. */
 function answerEvent(
   workItem: string,
@@ -246,7 +241,6 @@ function answerEvent(
   words?: string,
   shared = false,
 ): NewEvent {
-  const back = decision === 'answered' && words === undefined ? BACK[ANSWERS[cause][decision]] : undefined;
   return {
     id: randomUUID(),
     ts: new Date().toISOString(),
@@ -254,9 +248,8 @@ function answerEvent(
     type: 'hold.answered',
     version: VERSIONS['hold.answered'],
     actor: 'martin',
-    summary: back
-      ? `Martin sent the hold on #${workItem} back to ${back}`
-      : decision === 'rejected' && CLOSE_AGREES.includes(cause)
+    summary:
+      decision === 'rejected' && CLOSE_AGREES.includes(cause)
         ? `Martin closed #${workItem}, agreeing with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}`
         : `Martin ${DID[decision](workItem)}`,
     payload: {
@@ -302,23 +295,28 @@ export async function answerHold(
         );
       }
       const report = await openedByReport(tx, workItem);
-      if (shared && !report) {
-        throw new Refused('share', 422, 'Your words here are public anyway: send them without sharing.');
+      // Where words reach an agent only shared, they are taken only shared; anywhere else, never.
+      const shares = sharesWords(open.cause, report);
+      if (shared && !shares) {
+        throw new Refused(
+          'share',
+          422,
+          report
+            ? 'Your words on this hold stay yours: send them without sharing.'
+            : 'Your words here are public anyway: send them without sharing.',
+        );
       }
-      // Words he shares are taken as on any other work item.
-      const stay = report && !shared;
-      if (!answersTo(open.cause, stay).includes(decision)) {
+      if (!answersTo(open.cause).includes(decision)) {
         throw new Refused('answer', 422, 'That answer does nothing for this hold, so it takes another.');
       }
-      const takes = takesWords(open.cause, decision, stay);
+      const takes = takesWords(open.cause, decision);
       if (takes && given.words === undefined) throw new Refused('words', 422, 'That answer takes your words.');
-      if (!takes && given.words !== undefined) {
+      if (!takes && given.words !== undefined) throw new Refused('words', 422, 'That answer takes no words.');
+      if (takes && shares && !shared) {
         throw new Refused(
-          'words',
+          'share',
           422,
-          stay
-            ? 'A visitor’s report opened this, so your words would stay yours, and no agent would read them: send it without them, or share them.'
-            : 'That answer takes no words.',
+          'A visitor’s report opened this, so your words reach an agent only shared: share them, or answer another way.',
         );
       }
       const guardrail = (GUARDRAIL_HOLDS as readonly HoldCause[]).includes(open.cause);

@@ -2805,44 +2805,47 @@ describe('Needs you', () => {
     ]);
   });
 
-  it('takes no words on a work item a visitor’s report opened, where no agent could read them', async () => {
-    const { browser } = await signedIn();
+  it('takes words on a visitor’s report only shared, exactly as the console offers them, and one Close', async () => {
+    const { browser, passkey } = await signedIn();
+    expect((await stepUp(browser, passkey)).status).toBe(200);
+    // Unshared words would reach no agent, and none at all would run it again with nothing new: both refused.
+    for (const [cause, stage, route] of [
+      ['question', 'plan', 'answer'],
+      ['gates', 'gates', 'replan'],
+      ['review', 'review', 'answer'],
+      ['beyond-ticket', 'review', 'answer'],
+    ] as const) {
+      const { workItem, hold } = await held(cause, { report: true, stage });
+      expect(
+        await browser.post(`/admin/holds/${workItem}/${route}`, { hold, words: 'Keep them' }),
+        cause,
+      ).toMatchObject({ status: 422, body: { refused: 'share' } });
+      expect(await browser.post(`/admin/holds/${workItem}/${route}`, { hold }), cause).toMatchObject({
+        status: 422,
+        body: { refused: 'words' },
+      });
+      expect(await answers(workItem)).toEqual([]);
+      // Shared, as the console sends them, they are taken.
+      const sent = await browser.post(`/admin/holds/${workItem}/${route}`, { hold, words: 'Keep them', share: true });
+      expect(sent.status, cause).toBe(200);
+    }
+    // Approving a question there carries on, as anywhere: the planner plans again told no answer will come.
     const report = await held('question', { report: true, stage: 'plan' });
-    expect(
-      await browser.post(`/admin/holds/${report.workItem}/answer`, { hold: report.hold, words: 'Keep them' }),
-    ).toMatchObject({ status: 422, body: { refused: 'answer' } });
-    expect(await answers(report.workItem)).toEqual([]);
-    // Approving it carries on, as anywhere: the planner plans again with no answer.
     expect((await browser.post(`/admin/holds/${report.workItem}/approve`, { hold: report.hold })).status).toBe(200);
     expect((await answers(report.workItem)).map((answer) => answer.payload)).toEqual([
       { decision: 'approved', hold: report.hold, report: true },
     ]);
-    // So with every hold whose words would do no more there, a gate's among them, which approving sends back as well.
-    const gates = await held('gates', { report: true, stage: 'gates' });
+    // Triage's holds there keep his words his, unshared: sharing them is refused.
+    const suggestion = await held('suggestion', { report: true });
     expect(
-      await browser.post(`/admin/holds/${gates.workItem}/answer`, { hold: gates.hold, words: 'Keep them' }),
-    ).toMatchObject({ status: 422, body: { refused: 'answer' } });
-    // Back to the planner from a gate's hold still tells it why the change was held, so it is taken, without words.
-    expect(
-      await browser.post(`/admin/holds/${gates.workItem}/replan`, { hold: gates.hold, words: 'Keep them' }),
-    ).toMatchObject({ status: 422, body: { refused: 'words' } });
-    expect((await browser.post(`/admin/holds/${gates.workItem}/replan`, { hold: gates.hold })).status).toBe(200);
-    // A review's sends it back to the coder with the review's findings: taken plain, and said so.
-    const review = await held('review', { report: true, stage: 'review' });
-    expect(
-      await browser.post(`/admin/holds/${review.workItem}/answer`, { hold: review.hold, words: 'Keep them' }),
-    ).toMatchObject({ status: 422, body: { refused: 'words' } });
-    expect((await browser.post(`/admin/holds/${review.workItem}/answer`, { hold: review.hold })).status).toBe(200);
-    const [back] = await answers(review.workItem);
-    expect(back?.payload).toEqual({ decision: 'answered', hold: review.hold, report: true });
-    expect(back?.public).toMatchObject({ summary: `Martin sent the hold on #${review.workItem} back to the coder` });
-    // A ticket the planner rejected takes no words there: the planner, run again, could not read them.
+      await browser.post(`/admin/holds/${suggestion.workItem}/answer`, {
+        hold: suggestion.hold,
+        words: 'Keep them',
+        share: true,
+      }),
+    ).toMatchObject({ status: 422, body: { refused: 'share' } });
+    // Approving the planner's rejection would close it as Close does: one answer, his rejection, which says he agreed.
     const rejected = await held('ticket-rejected', { report: true, stage: 'plan' });
-    expect(await browser.post(`/admin/holds/${rejected.workItem}/answer`, { hold: rejected.hold })).toMatchObject({
-      status: 422,
-      body: { refused: 'answer' },
-    });
-    // Approving it would close it as Close does: one answer, his rejection, which says he agreed.
     expect(await browser.post(`/admin/holds/${rejected.workItem}/approve`, { hold: rejected.hold })).toMatchObject({
       status: 422,
       body: { refused: 'answer' },
@@ -2852,7 +2855,7 @@ describe('Needs you', () => {
       summary: `Martin closed #${rejected.workItem}, agreeing with the planner`,
       payload: { decision: 'rejected' },
     });
-    // A question on any other work item still takes his words, and needs them.
+    // On any other work item his words are taken as ever, and needed.
     const elsewhere = await held('review', { stage: 'review' });
     expect(await browser.post(`/admin/holds/${elsewhere.workItem}/answer`, { hold: elsewhere.hold })).toMatchObject({
       status: 422,

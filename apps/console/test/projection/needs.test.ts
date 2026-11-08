@@ -474,7 +474,7 @@ describe('Needs you', () => {
       expect(
         need?.answers.map((a) => a.answer),
         cause,
-      ).toEqual(answersTo(cause, kept));
+      ).toEqual(answersTo(cause));
       for (const row of need?.answers ?? []) {
         expect(row.share, `${cause}: ${row.answer}`).toBe(row.words && !kept);
         if (row.share) expect(row.stepUp, `${cause}: ${row.answer}`).toBe(true);

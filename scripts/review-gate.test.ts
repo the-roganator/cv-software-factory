@@ -631,6 +631,9 @@ describe('judging a pull request through the API', () => {
       expect(held.title).toContain(words);
       expect(held.pending).toBeUndefined();
     }
+    // Its own run into another base, or one that says nothing, still tags the tests it excused: a tag only holds.
+    const kept = await said([judgedFor(9, 'dev'), excused]);
+    expect(kept.tags.map((t) => t.tag)).toEqual(['test-loosening']);
     expect(await said([judgedFor(9)])).toMatchObject({ pass: true, rule: 'low-risk' });
   });
 

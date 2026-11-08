@@ -71,6 +71,13 @@ describe('the page reader', () => {
       '//elsewhere.test/',
       'http://elsewhere.test/',
       '/a b',
+      // A path the browser would collapse or read as another host's, so it would end at another page than it names.
+      '/a/../b',
+      '/a/./b',
+      '/%2e%2e/b',
+      '/a//b',
+      '/\\elsewhere.test',
+      '/a\\b',
       '',
       7,
       null,
@@ -128,12 +135,8 @@ describe('the page reader', () => {
       // A page that ends at another path is not the one asked for, whatever that one answered.
       const moved = (await (await post(JSON.stringify({ path: '/moved' }))).json()) as { status: number | null };
       expect(moved.status).toBeNull();
-      const collapsed = (await (
-        await post(JSON.stringify({ path: '/[typed](//elsewhere.test/x)/../../../..' }))
-      ).json()) as {
-        status: number | null;
-      };
-      expect(collapsed.status).toBeNull();
+      // A path an address would collapse to another page is not read at all.
+      expect((await post(JSON.stringify({ path: '/[typed](//elsewhere.test/x)/../../../..' }))).status).toBe(400);
     });
   }, 30_000);
 

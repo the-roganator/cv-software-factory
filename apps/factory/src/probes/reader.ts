@@ -13,7 +13,7 @@
  * its type, never its value.
  */
 import { createServer, type Server } from 'node:http';
-import { appPath, cutAt, elementsOf, type PageElement } from '@software-factory/events';
+import { appPath, cutAt, elementsOf, type PageElement, pathOf } from '@software-factory/events';
 import type { ArtifactStore } from '@software-factory/store';
 import { capture } from '../capture.ts';
 import type { BrowserSense } from '../senses/browser.ts';
@@ -94,10 +94,16 @@ const READ_ELEMENTS = `(() => {
   return out;
 })()`;
 
-/** A path of the app, and nothing else: no host, no query, no fragment. Null if it is anything more. */
+/** A path the reader loads: the segments a page's path has (`pathOf`), so the browser ends at the page it names. */
+const READ_PATH = pathOf();
+
+/**
+ * A path of the app, and nothing else: no host, query, fragment, backslash, empty segment or dot segment. Null if it
+ * is anything more.
+ */
 export function pathOnly(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 200) return null;
-  if (!/^\/(?!\/)[^\s?#\\]*$/.test(value)) return null;
+  if (!READ_PATH.test(value)) return null;
   return value;
 }
 
@@ -138,8 +144,8 @@ export function readerServer({ app, sense, store, version, log }: ReaderOptions)
         const response = await page.goto(new URL(path, app).href, { waitUntil: 'load' });
         const main = page.locator('main').first();
         const text = await ((await main.count()) ? main : page.locator('body')).innerText();
-        // A page that ended at another path than the one asked, by a redirect or by dot segments the address collapsed,
-        // is not the page at that path, which may be words a visitor typed: its status is none.
+        // A page that ended at another path than the one asked, by a redirect, is not the page at that path, which may be
+        // words a visitor typed: its status is none. (A path with segments an address collapses is refused above.)
         const there = new URL(page.url()).pathname === path;
         return {
           status: there ? (response?.status() ?? null) : null,

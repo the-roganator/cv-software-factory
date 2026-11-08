@@ -66,7 +66,6 @@ import {
   type PayloadOf,
   recordedPath,
 } from '@software-factory/events';
-import { redactSecrets } from '@software-factory/events/public';
 import { z } from 'zod';
 import { guardrailsFor } from '../../../../../policy/refusals.ts';
 import { filesIn, PatchRefused } from '../../github/patches.ts';
@@ -80,12 +79,14 @@ import {
   answerOf,
   askedOf,
   commitTitle,
+  criterionClaim,
   defineAgent,
   type EffectsContext,
   FLAG_NAMES_FILE,
   failedAttemptLines,
   holdDraft,
   need,
+  oneLine,
   StepFailed,
   StepStale,
   titleFor,
@@ -127,35 +128,18 @@ export interface CoderInput {
 type Criterion = PayloadOf<'spec.written'>['criteria'][number];
 
 /**
- * Words as two criteria are compared by: their case, spacing, quote marks and a closing full stop aside, which a
- * planner keeping a criterion might change without meaning another.
- */
-const plainWords = (words: string) =>
-  words
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\s*\.+$/, '');
-
-/** A criterion as the line compares two specs' by: its given, when, expect and side of the flag. */
-const criterionKey = ({ given, when, expect, withFlag }: Criterion) =>
-  JSON.stringify([...[given, when, expect].map(plainWords), withFlag ?? null]);
-
-/**
  * The criteria of the spec a branch was built to that the spec in force does not have: none when it is the same spec,
- * or none was pushed. A criterion the planner kept keeps its words (its prompt asks it to), so one reworded reads as
- * dropped, and the coder keeps what the new spec still asks for.
+ * or none was pushed. Compared as the planner's repeats of a shipped spec are (`criterionClaim`). A criterion the planner
+ * kept keeps its words (its prompt asks it to), so one reworded reads as dropped, and the coder keeps what the new spec
+ * still asks for.
  */
 export function droppedCriteria(
   builtTo: PayloadOf<'spec.written'> | undefined,
   spec: PayloadOf<'spec.written'> | undefined,
 ): Criterion[] | undefined {
   if (!builtTo || !spec || builtTo === spec) return undefined;
-  const kept = new Set(spec.criteria.map(criterionKey));
-  const dropped = builtTo.criteria.filter((criterion) => !kept.has(criterionKey(criterion)));
+  const kept = new Set(spec.criteria.map(criterionClaim));
+  const dropped = builtTo.criteria.filter((criterion) => !kept.has(criterionClaim(criterion)));
   return dropped.length ? dropped : undefined;
 }
 
@@ -356,12 +340,6 @@ const UNCHANGED = `Change nothing only if what sent the work back is not your ch
 const CHECKS =
   'Before you hand back, run what CI requires of a change. AGENTS.md names it `make check`: lint and formatting, the type check and the tests. There is no `make` here, so run the commands of the Makefile’s `check` target yourself, one at a time, and leave out any whose tool is not installed; say in your note which you left out. Put right what they report that your change caused, and nothing else. A file of yours the formatter refuses is put right by the formatter alone, writing that file and no other: not by a lint fix, which changes more.';
 
-/**
- * Text from outside the factory as one line of a prompt: anything secret-shaped redacted, as a public view redacts it,
- * since a prompt is kept in a cassette; its whitespace one space; and cut to fit.
- */
-const oneLine = (text: string, max: number) => cutTo(redactSecrets(text.replace(/\s+/g, ' ').trim()), max);
-
 /** The rule the test integrity gate holds every change to, told before the first round so it does not cost one. */
 const TEST_INTEGRITY =
   'Add tests as you need, but never delete, rename or skip an existing test, or change or take out an assertion it makes: the test integrity gate fails all four, unless the pull request’s description names the test as one the spec contradicts.';
@@ -425,16 +403,16 @@ const failedLines = ({ failure }: CoderInput) => (failure ? ['', ...failedAttemp
 const CHECKS_AGAIN =
   'If you change anything, run the checks again before you hand back: lint and formatting, the type check and the tests.';
 
+/** A criterion as a prompt says it, with an improvement's side of the flag. */
+const criterionLine = (c: Criterion, request: boolean) =>
+  `Given ${c.given}, when ${c.when}, then ${c.expect}.${request ? side(c) : ''}`;
+
 /**
  * The criteria a spec written again dropped, and what the round does about the branch's work for them: takes out what
  * serves only them, keeps what the new spec still asks for, and changes no file outside the new scope to do it. The
  * tests it takes out are its own, added by the pull request, which the test integrity gate does not count: it compares
  * the change with main.
  */
-/** A criterion as a prompt says it, with an improvement's side of the flag. */
-const criterionLine = (c: Criterion, request: boolean) =>
-  `Given ${c.given}, when ${c.when}, then ${c.expect}.${request ? side(c) : ''}`;
-
 function droppedLines(input: CoderInput): string[] {
   const { dropped, asked } = input;
   if (!dropped?.length) return [];
@@ -504,6 +482,13 @@ const NARROWED_STEPS = [
   '3. Put right the code for any criterion a test shows unmet, and run the tests again until they pass and none that passed before fails.',
 ];
 
+/**
+ * Whether a first step's words, told to a later round without its session, leave out when it may change nothing,
+ * since the round's own words above say so: a narrowed round's (`droppedLines`), and any other later round's
+ * (`UNCHANGED`), but one the fence refused, which is told only to make the change again.
+ */
+const mayChangeNothingAbove = (input: CoderInput) => narrowed(input) || (input.round > 1 && !input.fenced);
+
 function first(input: CoderInput): string[] {
   if (input.asked.kind === 'request') return firstImprovement(input);
   return [
@@ -524,7 +509,7 @@ function first(input: CoderInput): string[] {
     ...contradictedLines(input.spec),
     '',
     ...RESULT,
-    ...(pressed(input) || input.round > 1 ? [] : [NOTHING_TO_FIX]),
+    ...(mayChangeNothingAbove(input) ? [] : [NOTHING_TO_FIX]),
     needsLine(input),
   ];
 }
@@ -562,7 +547,7 @@ function firstImprovement(input: CoderInput): string[] {
     ...contradictedLines(input.spec),
     '',
     ...IMPROVEMENT_RESULT,
-    ...(pressed(input) || input.round > 1 ? [] : [NOTHING_TO_BUILD]),
+    ...(mayChangeNothingAbove(input) ? [] : [NOTHING_TO_BUILD]),
     needsLine(input),
   ];
 }
@@ -575,7 +560,7 @@ function again(input: CoderInput): string[] {
       ? [
           // A spec written again sends the work back with no review of the change to answer: it came back for the spec.
           narrowed(input) && !findings?.length && !suggestions?.length
-            ? `Your change for ${askedName(asked, workItem)} came back for round ${round}, held to a spec written again: ${returned?.reason ?? 'the planner wrote the spec again'}.`
+            ? `Your change for ${askedName(asked, workItem)} came back for round ${round}, held to a spec the planner wrote again since your last push.${returned?.from === 'gates' ? ` Before that, it came back from the gates: ${returned.reason}.` : ''}`
             : `Your change for ${askedName(asked, workItem)} came back from ${returned?.from ?? 'review'}, for round ${round}: ${returned?.reason ?? 'it needs another look'}.`,
           ...gateFailureLines(returned?.failures ?? []),
           ...(findings?.length

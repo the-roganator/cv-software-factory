@@ -237,6 +237,20 @@ describe('the coder', () => {
     expect(coder.prompt(fresh)).toContain('Read AGENTS.md first');
   });
 
+  it('is told once when a later round may change nothing, the fence’s refusal of it too, without its session', () => {
+    const returned = { from: 'review' as const, reason: 'Changes requested' };
+    const later = { ...input, round: 2, returned, session: null };
+    const nothingToFix = 'If the code already does what every criterion asks';
+    const unchanged = 'Change nothing only if what sent the work back';
+    const count = (prompt: string, words: string) => prompt.split(words).length - 1;
+    expect(count(coder.prompt(later), unchanged)).toBe(1);
+    expect(count(coder.prompt(later), nothingToFix)).toBe(0);
+    // The fence's words say only to make the change again, so the first step's words say when it may change nothing.
+    const refused = coder.prompt(coderInputAfterRefusal(later, FENCED, null));
+    expect(count(refused, unchanged)).toBe(0);
+    expect(count(refused, nothingToFix)).toBe(1);
+  });
+
   it('is told the test integrity rule before its first round', () => {
     const delivery =
       FIXTURES.coder['delivery-dates']?.input ??
@@ -568,7 +582,7 @@ describe('the coder', () => {
     it('is told it came back for the spec, and to take the dropped work out before it checks the criteria', () => {
       const prompt = coder.prompt(narrowed);
       expect(prompt).toContain(
-        'Your change for ticket #999999999 came back for round 2, held to a spec written again: The planner wrote the spec again',
+        'Your change for ticket #999999999 came back for round 2, held to a spec the planner wrote again since your last push.',
       );
       expect(prompt).not.toContain('came back from review');
       expect(prompt).toContain('1. Find the branch’s work for the criteria the spec no longer has');
@@ -577,6 +591,13 @@ describe('the coder', () => {
       // A first round is told nothing of it, and may still find nothing to fix.
       expect(coder.prompt(input)).toContain('1. Find the cause.');
       expect(coder.prompt(input)).toContain('If the code already does what every criterion asks');
+    });
+
+    it('names the gates’ return it had before the spec was written again', () => {
+      const returned = { from: 'gates' as const, reason: 'The gates failed: tests' };
+      expect(coder.prompt({ ...narrowed, returned })).toContain(
+        'held to a spec the planner wrote again since your last push. Before that, it came back from the gates: The gates failed: tests.',
+      );
     });
 
     it('may not change nothing: a result without a change is refused, so the step fails and is tried again', () => {

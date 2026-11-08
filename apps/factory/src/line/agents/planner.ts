@@ -90,13 +90,16 @@ import { type Answer, LIMITS, type Replan, timesOf } from '../machine.ts';
 import {
   askedOf,
   count,
+  criterionClaim,
   defineAgent,
   type EffectsContext,
   FLAG_NAMES_FILE,
   failedAttemptLines,
   heAnswered,
   holdDraft,
+  plainWords as plain,
   StepFailed,
+  unquotedWords as unquoted,
   words,
 } from './agent.ts';
 import {
@@ -247,17 +250,6 @@ export const sourcesOf = ({
 /** No sources at all: every quote is refused. */
 const NOTHING: Sources = { kind: 'ticket', asked: '', signals: [], answers: '' };
 
-/**
- * Words as a quote is matched: in one case, with one kind of apostrophe and quotation mark, and one space between
- * words. A quote may come in quotation marks, and end in a full stop or other mark the evidence does not have there.
- */
-const plain = (words: string) =>
-  words.normalize('NFKC').toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
-const unquoted = (quote: string) =>
-  plain(quote)
-    .replace(/^["'([{]+|["'.,;:!?)\]}…]+$/g, '')
-    .trim();
-
 /** Whether words are in a source as whole words: never the inside of a word, which would let a few letters pass. */
 const within = (words: string, source: string) => {
   const escaped = words.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -332,22 +324,15 @@ const specWithin = (
   );
 
 /**
- * A criterion as a repeat of another is looked for: what it is given, when, and what it expects, in plain words, and
- * the side of an improvement's flag it holds on, as the same words with the flag on and off are two claims.
- */
-const claimOf = (c: PayloadOf<'spec.written'>['criteria'][number]) =>
-  [c.withFlag ?? '', ...[c.given, c.when, c.expect].map((part) => unquoted(part))].join('\n');
-
-/**
  * Refuses each criterion of a spec written after its last spec's change merged that repeats one of that spec's: those
  * are met on main, which the planner's checkout is, so a test of one passes before the fix and shows nothing. An
  * improvement's `off` criterion, which says the pages are as they are now, holds at both commits, and may repeat.
  */
 function repeatsShipped(spec: PayloadOf<'spec.written'>, shipped: PayloadOf<'spec.written'>, ctx: z.RefinementCtx) {
-  const met = shipped.criteria.map(claimOf);
+  const met = shipped.criteria.map(criterionClaim);
   spec.criteria.forEach((criterion, i) => {
     if (criterion.withFlag === 'off') return;
-    const n = met.indexOf(claimOf(criterion));
+    const n = met.indexOf(criterionClaim(criterion));
     if (n < 0) return;
     const message = `this is criterion ${n + 1} of the spec that shipped, which main meets: write only criteria that fail at this commit`;
     ctx.addIssue({ code: 'custom', path: ['criteria', i], message });

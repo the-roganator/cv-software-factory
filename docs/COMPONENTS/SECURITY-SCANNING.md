@@ -2,7 +2,7 @@
 
 Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** CodeQL, Dependabot, GitHub secret scanning, and two gates on the app's pull requests.
+- **v1:** CodeQL, Dependabot, GitHub secret scanning, the daily scan of everything either repository runs or pins, and two gates on the app's pull requests.
 - **Later:** Semgrep, licence checks.
 
 ## CodeQL
@@ -13,3 +13,15 @@ Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#git
 
 - **Dependency review** (GitHub's) fails a dependency with a known vulnerability the change brings in.
 - **Trivy** (pinned by digest) scans the base's image and the change's, and fails on a high or critical vulnerability only the change's has.
+
+## The daily scan
+
+`vulnerabilities.yml` scans everything a repository runs or pins, every day (04:17 UTC), on each push to `main` and by hand, and the app's repository calls it at a pinned commit. Each finding is an alert in the code scanning of the repository that owns it, category `vulnerabilities`, at the line that pins it.
+
+- **What is scanned** is the repository's list (`apps/factory/src/vulnerabilities/inventory.ts`): each lockfile, on its own, development dependencies included; each image of ours, from the SPDX SBOM of each platform `build.yml` attested, verified with `cosign verify-attestation` against its signer, and from the image itself when Trivy reads no Node from its SBOM; every other image by pulling it, from CI's copy where there is one; each chart's images, from what `helm template` renders of it with the values it is installed with; and the images k3s's release lists. A pin the list does not read (`--unlisted`) is an item the scan cannot read.
+- **With what:** Trivy, by its digest, from its one pin (`.github/images/trivy/Dockerfile`), and an advisory database pulled from GHCR, with retries, and refused when it was built more than a day ago. The scripts, and the pins of the tools they run (`kustomize`, `yq`, `helm`, `cosign`, from `mise.lock`), come from this repository at the workflow's own commit; the scanned checkout is data.
+- **Coverage first.** The `coverage` job installs each lockfile with the pnpm the scanned repository's `mise.lock` names, installed by this repository's mise, `--frozen-lockfile --ignore-scripts --ignore-pnpmfile` and no `.npmrc` of the checkout's, and fails when `pnpm list --recursive --depth Infinity` names a package Trivy's SBOM of the lockfile alone does not, so the scan reads every package `pnpm list` gives. The scan needs it to pass.
+- **Where results go:** one SARIF file (`sarif.ts`), a rule for each advisory and a result for each package and advisory in each item. An image's copy of a package is its own result, never a lockfile's, and an image's two platforms are one result. A result's fingerprint is its item, its package and its advisory, so moving a pin that leaves the finding keeps its alert, and moving it past the fix closes it.
+- **A run that cannot read an item fails and uploads nothing:** a lockfile Trivy reads no packages from, an SBOM with no verified attestation, an image that cannot be pulled, a chart that does not render, or results past code scanning's limits for one upload. No alert closes because its item went unread. The log names each such item, and gives the findings by severity, never a package or an advisory. Until exceptions and deadlines arrive, the run fails only on what it could not read.
+- **It proves it can see.** Each run also scans an image of ours from before Node 24.22.1 (`proof.ts`), as it scans ours, uploads nothing for it, and fails unless CVE-2026-111497 is found in its Node.
+- **A change to the scan proves itself** on its own pull request: the same scan of the base's checkout, in a job with no permission to write, that fails as the real one would and uploads nothing. Every job that writes refuses any event but a push to the default branch, the schedule or a run by hand there.

@@ -46,8 +46,9 @@ export function listed(projects: (Listed & { name?: string })[]) {
     for (const [alias, entry] of Object.entries(dependencies ?? {})) {
       const name = entry.from ?? alias;
       const version = (entry.version ?? '').replace(/\(.*$/, '');
-      if (own.has(name) || OWN.test(version)) continue;
-      found.add(`${name}@${version}`);
+      // A workspace package is not named, but what it depends on is: pnpm lists a package's tree in full at its first
+      // place alone, and marks it `deduped` elsewhere, so that first place may be under a workspace link.
+      if (!own.has(name) && !OWN.test(version)) found.add(`${name}@${version}`);
       walk(entry.dependencies);
       walk(entry.optionalDependencies);
     }

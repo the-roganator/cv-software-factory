@@ -349,16 +349,27 @@ describe('coverage', () => {
         name: 'software-factory',
         devDependencies: {
           vitest: { from: 'vitest', version: '5.1.0', dependencies: { tinypool: { version: '2.0.0' } } },
-          '@software-factory/testing': { version: 'link:packages/testing' },
+          // pnpm lists a tree in full at its first place alone, here under a workspace link, and `deduped` after.
+          '@software-factory/testing': {
+            version: 'link:packages/testing',
+            dependencies: { 'json-logic-engine': { version: '5.0.7' } },
+          },
+          'json-logic-engine': { version: '5.0.7', deduped: true } as never,
           'string-width-cjs': { from: 'string-width', version: '4.2.3' },
         },
       },
     ]);
-    expect([...fromPnpm].sort()).toEqual(['string-width@4.2.3', 'tinypool@2.0.0', 'vitest@5.1.0']);
+    expect([...fromPnpm].sort()).toEqual([
+      'json-logic-engine@5.0.7',
+      'string-width@4.2.3',
+      'tinypool@2.0.0',
+      'vitest@5.1.0',
+    ]);
     const fromTrivy = inSbom({
       components: [
         { purl: 'pkg:npm/vitest@5.1.0' },
         { purl: 'pkg:npm/string-width@4.2.3' },
+        { purl: 'pkg:npm/json-logic-engine@5.0.7' },
         { purl: 'pkg:npm/%40esbuild/linux-arm64@0.25.0' },
       ],
     });

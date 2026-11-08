@@ -18,8 +18,8 @@
  * `REPORT_TEXT.keepDays` (`forgetReports`).
  */
 import type { Counter } from '@opentelemetry/api';
-import { type Screenshot, SIGNAL_SOURCES } from '@software-factory/events';
-import { type Judge, type Outcome, type PageReader, Triage } from '@software-factory/triage';
+import { elementsOf, SIGNAL_SOURCES } from '@software-factory/events';
+import { type Judge, type Outcome, type PageReader, type PageView, Triage } from '@software-factory/triage';
 import { INBOX, REPORT_TEXT } from '../../../../policy/triage.ts';
 import { judgementsToken } from '../gateway/config.ts';
 
@@ -102,7 +102,15 @@ export async function run(args: string[]): Promise<number> {
         signal: AbortSignal.timeout(60_000),
       });
       if (!response.ok) throw new Error(`the page reader answered ${response.status}`);
-      return (await response.json()) as { screenshot: Screenshot; passages: string[] };
+      const page = (await response.json()) as Partial<PageView>;
+      if (!page.screenshot) throw new Error('the page reader answered with no screenshot');
+      // The reader is the factory's own, and still bounded here: triage asks Jev with what it keeps.
+      return {
+        status: typeof page.status === 'number' ? page.status : null,
+        screenshot: page.screenshot,
+        passages: Array.isArray(page.passages) ? page.passages.filter((p) => typeof p === 'string') : [],
+        elements: Array.isArray(page.elements) ? elementsOf(page.elements) : [],
+      };
     } catch (error) {
       // A report is still judged without its page: it just has no screenshot, and no passage to point to.
       log.warn({ path, err: error }, 'could not read the page');

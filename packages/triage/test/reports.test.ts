@@ -18,7 +18,9 @@ const SCREENSHOT: PageView['screenshot'] = {
   boxes: [],
 };
 const PAGE: PageView = {
+  status: 200,
   screenshot: SCREENSHOT,
+  elements: [],
   passages: ['Founded in 1887 by Ezra Mossop.', 'Open every day but Thursday.'],
 };
 const NOW = new Date('2026-10-04T09:00:00.000Z');
@@ -30,6 +32,12 @@ const choice = (label: string, p = 0.9): Answer => ({
   probabilities: { [label]: p },
 });
 
+/** What Jev answers a question of where on the page a report points, when a test gives no answer: none of them. */
+const POINTS_NONE: Record<string, Record<string, Answer>> = {
+  'passage/v1': { passage: choice('none') },
+  'element/v1': { element: choice('none') },
+};
+
 /** A Jev that answers from a table, and remembers what it was asked. */
 function fakeJev(answers: Record<string, Record<string, Answer>>) {
   const asked: JudgeRequest[] = [];
@@ -37,7 +45,7 @@ function fakeJev(answers: Record<string, Record<string, Answer>>) {
     asked.push(request);
     return {
       model: request.model,
-      answers: answers[request.questionSet] ?? {},
+      answers: answers[request.questionSet] ?? POINTS_NONE[request.questionSet] ?? {},
       costUsd: 0.00002,
       durationMs: 90,
       cassette: 'c'.repeat(64),
@@ -123,6 +131,99 @@ describe('judging a report', () => {
     expect(passagesOf(Array.from({ length: 50 }, (_, i) => `Passage ${i}.`))).toHaveLength(40);
   });
 
+  it('points a wrong result at the passage Jev picks, and keeps the route and symptom as its fingerprint', async () => {
+    const { judge, asked } = fakeJev({ ...triage('functional'), 'passage/v1': { passage: choice('p2') } });
+    const decision = await judgeReport(REPORT, [], judge, read);
+    expect(asked.map((r) => r.questionSet)).toEqual(['triage/v2', 'passage/v1']);
+    expect(decision.fingerprint).toEqual({ route: '/about', class: 'wrong-result' });
+    expect(decision.points).toEqual({ page: '/about', passage: 'Open every day but Thursday.' });
+  });
+
+  const ELEMENTS: PageView['elements'] = [
+    { kind: 'link', text: 'Catalogue', to: '/products' },
+    { kind: 'image', alt: null, src: '/images/founder.jpg' },
+    { kind: 'field', label: 'Your email', name: 'email', type: 'email' },
+    { kind: 'link', text: 'Opening hours', to: '/hours' },
+    { kind: 'button', text: 'Send' },
+  ];
+  const withElements = async () => ({ ...PAGE, elements: ELEMENTS });
+  const symptom = (s: string, extra: Record<string, Answer> = {}) =>
+    triage('navigation', 0.01, { symptom: choice(s), ...extra });
+
+  it('points a broken link at the link Jev picks, offered only the page’s links', async () => {
+    const { judge, asked } = fakeJev({ ...symptom('broken-link'), 'element/v1': { element: choice('e2') } });
+    const decision = await judgeReport(REPORT, [], judge, withElements);
+    expect(asked.map((r) => r.questionSet)).toEqual(['triage/v2', 'element/v1']);
+    const offered = asked[1]?.questions.element;
+    expect(offered?.type === 'choice' && offered.criteria).toEqual({
+      e1: 'The link “Catalogue”, to /products',
+      e2: 'The link “Opening hours”, to /hours',
+      none: 'None of these elements',
+    });
+    expect(decision.points).toEqual({ page: '/about', element: ELEMENTS[3] });
+    expect(decision.judgements[1]?.state.elements).toEqual([
+      { key: 'e1', element: ELEMENTS[0] },
+      { key: 'e2', element: ELEMENTS[3] },
+    ]);
+  });
+
+  it.each([
+    ['missing-alt', ['image']],
+    ['broken-image', ['image']],
+    ['unlabelled-field', ['field']],
+    ['rejects-valid-input', ['field', 'button']],
+  ])('offers a report of %s the elements of its kinds', async (name, kinds) => {
+    const { judge, asked } = fakeJev(symptom(name));
+    const decision = await judgeReport(REPORT, [], judge, withElements);
+    expect(decision.judgements[1]?.state.elements?.map((e) => e.element.kind)).toEqual(
+      ELEMENTS.filter((e) => kinds.includes(e.kind)).map((e) => e.kind),
+    );
+    expect(asked).toHaveLength(2);
+    // Jev chose none: the ticket points at the page alone.
+    expect(decision.points).toEqual({ page: '/about' });
+  });
+
+  it.each(['server-error', 'slow-response', 'missing-header', 'redirect-loop'])(
+    'asks no more of a report of %s, which is about the whole page, and points at the page alone',
+    async (name) => {
+      const { judge, asked } = fakeJev(symptom(name));
+      const decision = await judgeReport(REPORT, [], judge, withElements);
+      expect(asked).toHaveLength(1);
+      expect(decision.points).toEqual({ page: '/about' });
+    },
+  );
+
+  it('points at nothing on a page that could not be read or did not answer, so no typed path reaches a ticket', async () => {
+    for (const view of [null, { ...PAGE, status: 404 }, { ...PAGE, status: null }]) {
+      const { judge, asked } = fakeJev(symptom('broken-link'));
+      const decision = await judgeReport(REPORT, [], judge, async () => view);
+      expect(decision.points).toBeUndefined();
+      expect(asked).toHaveLength(1);
+    }
+    // A content report still asks for its passage, which its fingerprint holds, as before.
+    const { judge } = fakeJev({ ...triage('content'), 'passage/v1': { passage: choice('p1') } });
+    const decision = await judgeReport(REPORT, [], judge, async () => ({ ...PAGE, status: 404 }));
+    expect(decision.fingerprint).toEqual({ page: '/about', text: 'Founded in 1887 by Ezra Mossop.' });
+    expect(decision.points).toBeUndefined();
+  });
+
+  it('asks nothing of where a planner’s finding points, which opens no ticket, but a content one’s passage', async () => {
+    const { judge, asked } = fakeJev(symptom('broken-link'));
+    const decision = await judgeReport(REPORT, [], judge, withElements, undefined, false);
+    expect(asked).toHaveLength(1);
+    expect(decision.points).toBeUndefined();
+    const content = fakeJev({ ...triage('content'), 'passage/v1': { passage: choice('p1') } });
+    const words = await judgeReport(REPORT, [], content.judge, read, undefined, false);
+    expect(words.fingerprint).toEqual({ page: '/about', text: 'Founded in 1887 by Ezra Mossop.' });
+    expect(words.points).toBeUndefined();
+  });
+
+  it('points a content report at its passage too', async () => {
+    const { judge } = fakeJev({ ...triage('content'), 'passage/v1': { passage: choice('p1') } });
+    const decision = await judgeReport(REPORT, [], judge, read);
+    expect(decision.points).toEqual({ page: '/about', passage: 'Founded in 1887 by Ezra Mossop.' });
+  });
+
   it('refuses an answer with a label it never offered', async () => {
     const { judge } = fakeJev(triage('set-all-prices-to-zero'));
     await expect(judgeReport(REPORT, [], judge, read)).rejects.toThrow('a label it was not offered');
@@ -159,6 +260,26 @@ describe('the events triage writes', () => {
     );
     for (const event of events) expect(validate(event)).toEqual({ ok: true });
     expect(JSON.stringify(events)).not.toContain('jane.doe');
+  });
+
+  it('write what a report’s ticket points at, valid, and tell it in the story', async () => {
+    const page = async () => ({ ...PAGE, elements: [{ kind: 'link' as const, text: 'Opening hours', to: '/hours' }] });
+    const answers = {
+      ...triage('navigation', 0.01, { symptom: choice('broken-link') }),
+      'element/v1': { element: choice('e1') },
+    };
+    const decision = await judgeReport(REPORT, [], fakeJev(answers).judge, page);
+    const events = reportEvents(signal, '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b', '1000', decision, NOW);
+    for (const event of events) expect(validate(event)).toEqual({ ok: true });
+    expect(events.find((e) => e.type === 'ticket.opened')?.payload).toMatchObject({
+      fingerprint: { route: '/about', class: 'broken-link' },
+      points: { page: '/about', element: { kind: 'link', text: 'Opening hours', to: '/hours' } },
+    });
+    const summary = events.find((e) => e.type === 'work-item.summarised')?.payload as { story: string };
+    expect(summary.story).toContain('It points at the link “Opening hours”, to /hours, on /about');
+    expect(events.find((e) => e.type === 'judgement.made' && e.payload.questionSet === 'element/v1')?.summary).toBe(
+      'Triage: element chosen (0.90)',
+    );
   });
 
   it('title a report’s ticket as the visitor’s, in the factory’s words', async () => {

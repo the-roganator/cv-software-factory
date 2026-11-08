@@ -11,7 +11,7 @@
  * by its id and timings. Every route an agent is told is cut at its query. Everything else the senses keep is the
  * app's answer to a request the sense made itself.
  */
-import { GIVEAWAY_WORDS, type PayloadOf, SECURITY_HEADER_ASKS } from '@software-factory/events';
+import { elementWords, GIVEAWAY_WORDS, type PayloadOf, SECURITY_HEADER_ASKS } from '@software-factory/events';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
 import { count } from './agent.ts';
 
@@ -47,7 +47,30 @@ export function askedLines(asked: Asked, signals: readonly Signal[] = []): strin
 }
 
 /**
- * Where the ticket is, as triage fingerprinted it, and how it was classed, with its traces if it has any. A ticket on
+ * What a visitor's report's ticket points at, as a line of a prompt: the passage or the element of the page Jev chose
+ * from the page as the factory read it, which is what was reported. None when the ticket is not a report's, or its
+ * fingerprint already holds the passage.
+ */
+export function pointsLines(ticket: PayloadOf<'ticket.opened'>): string[] {
+  const { points, fingerprint } = ticket;
+  if (!points) return [];
+  const page = routeOf(points.page);
+  if (points.passage) {
+    if ('text' in fingerprint && fingerprint.text === points.passage) return [];
+    return [
+      `A visitor reported it on ${page}, about the passage "${points.passage}" there, as the factory read the page.`,
+    ];
+  }
+  if (points.element)
+    return [
+      `A visitor reported it on ${page}, about ${elementWords(points.element)} there, as the factory read the page.`,
+    ];
+  return [`A visitor reported it on ${page}. Triage could point at nothing narrower than the page.`];
+}
+
+/**
+ * Where the ticket is, as triage fingerprinted it, and how it was classed, with its traces if it has any, and what a
+ * visitor's report points at (`pointsLines`). A ticket on
  * `*` is on every page the senses checked, but the canary's: triage gives a canary's `*` a ticket of its own, and it
  * says the analysis found the canary worse on routes it could not narrow to one, which its evidence names if it can.
  */
@@ -62,6 +85,7 @@ export function ticketLines(ticket: PayloadOf<'ticket.opened'>, signals: readonl
       : `It is about the words "${fingerprint.text}" on ${routeOf(fingerprint.page)}, as the factory read the page.`;
   return [
     `${where} Category ${ticket.category}, severity ${ticket.severity}.`,
+    ...pointsLines(ticket),
     ...(ticket.traces.length ? [`Its traces: ${ticket.traces.join(', ')}.`] : []),
   ];
 }

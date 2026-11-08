@@ -6,7 +6,7 @@
  * None of them describes a defect seeded in the app: the private repository checks that, as it does the samples.
  * They are not real reports, so their cassettes may be committed.
  */
-import type { DefectCategory, TriageRoute } from '@software-factory/events';
+import type { DefectCategory, PageElement, TriageRoute } from '@software-factory/events';
 
 export interface EvalReport {
   /** A short name, unique in the set. */
@@ -15,8 +15,12 @@ export interface EvalReport {
   /** The route the page belongs to, as the app names it. */
   route: string;
   text: string;
-  /** The page's text as the factory would read it, in passages, for a content report's second question. */
+  /**
+   * The page's text as the factory would read it, in passages, and its links, images, fields and buttons, for a
+   * defect's second question: which of them it points at. A report with neither has a page that could not be read.
+   */
   passages?: string[];
+  elements?: PageElement[];
   /** Open tickets on the page, offered as ones it might repeat. */
   tickets?: { workItem: string; title: string; category: DefectCategory }[];
   /**
@@ -26,7 +30,13 @@ export interface EvalReport {
     | {
         route: Exclude<TriageRoute, 'repeat'> | Exclude<TriageRoute, 'repeat'>[];
         category?: DefectCategory | DefectCategory[];
+        /** A content report's passage, which its fingerprint holds. */
         passage?: string;
+        /**
+         * What the ticket points at, in `pointWords`'s words without the page (a passage's text, or an element's
+         * words), or null for nothing narrower than the page.
+         */
+        point?: string | null;
       }
     | { route: 'repeat'; joined: string };
   /**
@@ -116,7 +126,17 @@ export const REPORTS: EvalReport[] = [
     page: '/products/garden-twine',
     route: '/products/:slug',
     text: 'Clicked "Back to the catalogue" and got a page saying it does not exist.',
-    expect: ticket('ticket', 'navigation'),
+    passages: ['Garden twine', '£2.50', 'A ball of jute twine, 100 metres.', 'Back to the catalogue'],
+    elements: [
+      { kind: 'link', text: 'Mossop’s', to: '/' },
+      { kind: 'link', text: 'Catalogue', to: '/products' },
+      { kind: 'image', alt: 'A ball of twine', src: '/images/garden-twine.jpg' },
+      { kind: 'field', label: 'Quantity', name: 'quantity', type: 'number' },
+      { kind: 'button', text: 'Add to basket' },
+      { kind: 'link', text: 'Back to the catalogue', to: '/catalogue' },
+      { kind: 'link', text: 'Delivery', to: '/delivery' },
+    ],
+    expect: { ...ticket('ticket', 'navigation'), point: 'the link “Back to the catalogue”, to /catalogue' },
   },
   {
     id: 'navigation-back',
@@ -130,7 +150,16 @@ export const REPORTS: EvalReport[] = [
     page: '/',
     route: '/',
     text: 'The "Delivery" link at the bottom of the home page goes nowhere, it just reloads the same page.',
-    expect: ticket('ticket', 'navigation'),
+    passages: ['Mossop’s Practical Sundries', 'Useful things, fairly priced.', 'Delivery', 'Returns'],
+    elements: [
+      { kind: 'link', text: 'Catalogue', to: '/products' },
+      { kind: 'link', text: 'About', to: '/about' },
+      { kind: 'field', label: 'Search', name: 'q', type: 'search' },
+      { kind: 'button', text: 'Search' },
+      { kind: 'link', text: 'Delivery', to: '/' },
+      { kind: 'link', text: 'Returns', to: '/returns' },
+    ],
+    expect: { ...ticket('ticket', 'navigation'), point: 'the link “Delivery”, to /' },
   },
 
   // Functional: a feature doing the wrong thing.
@@ -161,7 +190,12 @@ export const REPORTS: EvalReport[] = [
     page: '/products/watering-can',
     route: '/products/:slug',
     text: 'It says "only 2 left" on the product page and "out of stock" on the list, at the same time.',
-    expect: ticket('ticket', 'functional'),
+    passages: ['Watering can, two gallons', '£18.00', 'Galvanised steel, with a brass rose.', 'Only 2 left'],
+    elements: [
+      { kind: 'field', label: 'Quantity', name: 'quantity', type: 'number' },
+      { kind: 'button', text: 'Add to basket' },
+    ],
+    expect: { ...ticket('ticket', 'functional'), point: 'Only 2 left' },
   },
 
   // Errors.
@@ -213,6 +247,47 @@ export const REPORTS: EvalReport[] = [
     expect: ticket('ticket', 'accessibility'),
   },
   {
+    id: 'accessibility-no-alt',
+    page: '/products/oil-lamp',
+    route: '/products/:slug',
+    text: 'My screen reader just says "image" for the big picture of the lamp, nothing about what it shows.',
+    passages: ['Oil lamp', '£24.00', 'A paraffin lamp with a glass chimney.'],
+    elements: [
+      { kind: 'image', alt: 'Mossop’s', src: '/images/logo.svg' },
+      { kind: 'image', alt: null, src: '/images/oil-lamp.jpg' },
+      { kind: 'image', alt: 'A glass chimney, close up', src: '/images/oil-lamp-chimney.jpg' },
+      { kind: 'link', text: 'Catalogue', to: '/products' },
+    ],
+    expect: { ...ticket('ticket', 'accessibility'), point: 'the image /images/oil-lamp.jpg, with no description' },
+  },
+  {
+    id: 'accessibility-unlabelled-field',
+    page: '/contact',
+    route: '/contact',
+    text: 'On the contact form my screen reader reads the second box only as "edit text", so I do not know what goes in it.',
+    passages: ['Write to us', 'We read every message.'],
+    elements: [
+      { kind: 'field', label: 'Your name', name: 'name', type: 'text' },
+      { kind: 'field', label: null, name: 'email', type: 'email' },
+      { kind: 'field', label: 'Your message', name: 'message', type: 'textarea' },
+      { kind: 'button', text: 'Send' },
+    ],
+    expect: { ...ticket('ticket', 'accessibility'), point: 'the email field with no label, named email' },
+  },
+  {
+    id: 'navigation-link-not-on-page',
+    page: '/about',
+    route: '/about',
+    text: 'The link to your opening hours goes to an empty page.',
+    passages: ['About the shop', 'Mossop’s has sold practical sundries since the day it opened.'],
+    elements: [
+      { kind: 'link', text: 'Catalogue', to: '/products' },
+      { kind: 'link', text: 'Contact', to: '/contact' },
+    ],
+    expect: { ...ticket('ticket', 'navigation'), point: null },
+    why: 'The link it names is not among the page’s: Jev should choose none, and the ticket points at nothing.',
+  },
+  {
     id: 'accessibility-zoom',
     page: '/',
     route: '/',
@@ -254,7 +329,9 @@ export const REPORTS: EvalReport[] = [
     route: '/products/:slug',
     text: 'The price says £0.00. Surely the lamp is not free?',
     tickets: [{ workItem: '1007', title: 'Slow responses on /products/:slug', category: 'performance' }],
-    expect: ticket('ticket', 'functional'),
+    passages: ['Oil lamp', '£0.00', 'A paraffin lamp with a glass chimney.', 'Burns for eight hours on a filling.'],
+    elements: [{ kind: 'button', text: 'Add to basket' }],
+    expect: { ...ticket('ticket', 'functional'), point: '£0.00' },
     why: 'An open ticket on the same page that it is not about.',
   },
 

@@ -1,0 +1,27 @@
+{
+  "key": "e3f45b9d726b94002067dc2d813b3905a7cb18c150792bad35d1d553306a8c78",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:50.995Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/products/clothes-pegs",
+      "report": "The description says \"yours for just two shillings\" but the price is £3.00. Which one is right?"
+    },
+    "questions": {
+      "passage": {
+        "type": "choice",
+        "instructions": "Which passage of the page is the report about?",
+        "criteria": {
+          "p1": "Clothes pegs, pack of 12",
+          "p2": "£3.00",
+          "p3": "Wooden pegs with a stout spring, yours for just two shillings.",
+          "p4": "Holds a wet bath towel in a gale.",
+          "none": "None of these passages"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"passage\":{\"type\":\"choice\",\"choice\":\"p3\",\"confidence\":0.89,\"probabilities\":{\"p1\":0.01,\"p2\":0.06,\"p3\":0.91,\"p4\":0.0,\"none\":0.02}}},\"usage\":{\"input_tokens\":438,\"output_tokens\":58}}"
+}

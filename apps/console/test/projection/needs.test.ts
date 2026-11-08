@@ -532,6 +532,35 @@ describe('Needs you', () => {
     ]);
   });
 
+  it('says on every card of a report’s work item what its ticket points at, Verify’s too, and on no other', () => {
+    const ticket = (points?: PayloadOf<'ticket.opened'>['points']): PayloadOf<'ticket.opened'> => ({
+      title: 'A visitor reports a link to a missing page on /',
+      category: 'navigation',
+      severity: 'degraded',
+      fingerprint: { route: '/', class: 'broken-link' },
+      traces: [],
+      ...(points && { points }),
+    });
+    const report = (number: string, points?: PayloadOf<'ticket.opened'>['points']) =>
+      work(number, START)
+        .open('visitor-report')
+        .add(0, 'signal.received', 'widget', { ...payloads.signal, sense: 'report', report: { page: '/' } })
+        .add(0, 'ticket.opened', 'triage', ticket(points))
+        .add(1, 'hold.started', 'factory', hold('verify', { stage: 'verify', kind: 'approval' }));
+    const link = report('2060', { page: '/', element: { kind: 'link', text: 'Delivery', to: '/delivery' } });
+    const page = report('2061', { page: '/' });
+    const sense = work('2062', START)
+      .open()
+      .add(0, 'ticket.opened', 'triage', ticket())
+      .add(1, 'hold.started', 'factory', hold('verify', { stage: 'verify', kind: 'approval' }));
+    const holds = needsView(foldItems([...link.events, ...page.events, ...sense.events]), START + 3_600_000).holds;
+    expect(holds.map((need) => [need.workItem, need.reported])).toEqual([
+      ['2060', 'A visitor reported the link “Delivery”, to /delivery, on /, as the factory read the page.'],
+      ['2061', 'A visitor reported something on /, and triage could point at nothing narrower than the page.'],
+      ['2062', undefined],
+    ]);
+  });
+
   it('shares his words on a visitor’s report when he answers in them, with the passkey, and keeps triage’s his', () => {
     const report = (number: string, payload: PayloadOf<'hold.started'>) =>
       work(number, START)

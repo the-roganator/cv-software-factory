@@ -1,0 +1,27 @@
+{
+  "key": "d16b5024c04be112d737eac4838fd4987ce89347759a575ccaddb48534a82655",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:51.484Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/products/watering-can",
+      "report": "It says \"only 2 left\" on the product page and \"out of stock\" on the list, at the same time."
+    },
+    "questions": {
+      "passage": {
+        "type": "choice",
+        "instructions": "Which passage of the page is the report about?",
+        "criteria": {
+          "p1": "Watering can, two gallons",
+          "p2": "£18.00",
+          "p3": "Galvanised steel, with a brass rose.",
+          "p4": "Only 2 left",
+          "none": "None of these passages"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"passage\":{\"type\":\"choice\",\"choice\":\"p4\",\"confidence\":0.96,\"probabilities\":{\"p1\":0.0,\"p2\":0.0,\"p3\":0.0,\"p4\":0.97,\"none\":0.03}}},\"usage\":{\"input_tokens\":421,\"output_tokens\":58}}"
+}

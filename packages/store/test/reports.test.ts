@@ -54,7 +54,7 @@ function judged(workItem: string, sense: 'report' | 'planner', text: string, ts 
       ...base,
       id: crypto.randomUUID(),
       type: 'judgement.made',
-      version: 1,
+      version: 2,
       actor: 'triage',
       summary: 'Jev judged it',
       payload: {

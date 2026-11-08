@@ -474,6 +474,7 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                       {sheet.facts.ticket.category} · {sheet.facts.ticket.severity}
                     </Fact>
                     <Fact name="Fingerprint">{sheet.facts.ticket.fingerprint}</Fact>
+                    {sheet.facts.ticket.reported && <Fact name="Reported">{sheet.facts.ticket.reported}</Fact>}
                   </>
                 )}
                 {!sheet.seenBy && (

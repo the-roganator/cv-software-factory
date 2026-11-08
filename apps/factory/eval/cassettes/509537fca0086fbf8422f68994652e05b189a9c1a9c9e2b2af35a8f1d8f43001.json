@@ -1,0 +1,27 @@
+{
+  "key": "509537fca0086fbf8422f68994652e05b189a9c1a9c9e2b2af35a8f1d8f43001",
+  "provider": "typesafe",
+  "model": "jev-1.13.0",
+  "recordedAt": "2026-11-08T15:29:51.325Z",
+  "request": {
+    "model": "jev-1.13.0",
+    "state": {
+      "page": "/",
+      "report": "The \"Delivery\" link at the bottom of the home page goes nowhere, it just reloads the same page."
+    },
+    "questions": {
+      "element": {
+        "type": "choice",
+        "instructions": "Which link, image, form field or button of the page is the report about?",
+        "criteria": {
+          "e1": "The link “Catalogue”, to /products",
+          "e2": "The link “About”, to /about",
+          "e3": "The link “Delivery”, to /",
+          "e4": "The link “Returns”, to /returns",
+          "none": "None of these elements"
+        }
+      }
+    }
+  },
+  "response": "{\"model\":\"jev-1.13.0\",\"answers\":{\"element\":{\"type\":\"choice\",\"choice\":\"e3\",\"confidence\":1.0,\"probabilities\":{\"e1\":0.0,\"e2\":0.0,\"e3\":1.0,\"e4\":0.0,\"none\":0.0}}},\"usage\":{\"input_tokens\":426,\"output_tokens\":57}}"
+}

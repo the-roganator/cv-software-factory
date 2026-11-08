@@ -3,7 +3,7 @@
  * replaying committed cassettes in CI, or calling Jev live in `make eval`. For each report it says what triage
  * did, whether that was expected, and how far each deciding probability sat from its threshold.
  */
-import type { Screenshot } from '@software-factory/events';
+import { elementWords, type Points, type Screenshot } from '@software-factory/events';
 import { type Judge, judgeReport, type ReportDecision } from '@software-factory/triage';
 import { REPORTS as POLICY } from '../../../policy/triage.ts';
 import { type EvalReport, REPORTS } from './reports.ts';
@@ -26,7 +26,7 @@ const SCREENSHOT: Screenshot = {
 
 export interface Outcome {
   report: EvalReport;
-  got: { route: string; category?: string; joined?: string; passage?: string };
+  got: { route: string; category?: string; joined?: string; passage?: string; point?: string | null };
   pass: boolean;
   /** Each deciding probability, and its distance from the threshold it is compared with (positive is above). */
   deciding: { name: string; p: number; threshold: number; margin: number }[];
@@ -38,9 +38,11 @@ export async function evaluate(judge: Judge, reports: readonly EvalReport[] = RE
   const outcomes: Outcome[] = [];
   for (const report of reports) {
     const candidates = (report.tickets ?? []).map((t) => ({ ...t, symptom: undefined }));
-    const passages = report.passages;
+    const { passages, elements } = report;
     const decision = await judgeReport(report, candidates, judge, async () =>
-      passages ? { screenshot: SCREENSHOT, passages } : null,
+      passages || elements
+        ? { status: 200, screenshot: SCREENSHOT, passages: passages ?? [], elements: elements ?? [] }
+        : null,
     );
     outcomes.push(outcomeOf(report, decision));
   }
@@ -55,6 +57,7 @@ function outcomeOf(report: EvalReport, decision: ReportDecision): Outcome {
     ...(routed.route === 'ticket' && { category: routed.category }),
     ...(routed.route === 'repeat' && { joined: routed.joined }),
     ...(fingerprint && 'text' in fingerprint && { passage: fingerprint.text }),
+    ...(decision.points && { point: pointOf(decision.points) }),
   };
   const expected = report.expect;
   const either = <T>(want: T | T[] | undefined, value: T | undefined) =>
@@ -64,7 +67,8 @@ function outcomeOf(report: EvalReport, decision: ReportDecision): Outcome {
       ? got.route === 'repeat' && got.joined === expected.joined
       : either(expected.route, got.route as typeof expected.route & string) &&
         (got.route !== 'ticket' || either(expected.category, got.category as never)) &&
-        (got.category !== 'content' || either(expected.passage, got.passage));
+        (got.category !== 'content' || either(expected.passage, got.passage)) &&
+        (expected.point === undefined || got.point === expected.point);
 
   const answers = new Map(decision.judgements[0]?.answers.map((a) => [a.key, a]));
   const deciding: Outcome['deciding'] = [];
@@ -87,6 +91,9 @@ function outcomeOf(report: EvalReport, decision: ReportDecision): Outcome {
     }),
   };
 }
+
+/** What a ticket points at, as the set expects it: a passage's text, an element in words, or null for neither. */
+const pointOf = (points: Points) => points.passage ?? (points.element ? elementWords(points.element) : null);
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
 const decided = (name: string, p: number, threshold: number) => ({

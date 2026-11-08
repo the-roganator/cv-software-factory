@@ -103,6 +103,8 @@ import type {
 import {
   cutAt,
   cutTo,
+  pointsAtSomething,
+  pointWords,
   returnWords,
   SENSES,
   scopesOverlap,
@@ -1933,6 +1935,9 @@ export class Line {
       '',
       `- Category: ${ticket.category}`,
       `- Severity: ${ticket.severity}`,
+      ...(ticket.points && pointsAtSomething(ticket.points)
+        ? [`- A visitor reported ${pointWords(ticket.points)}, as the factory read the page`]
+        : []),
       ...(ticket.traces.length ? [`- Traces: ${ticket.traces.map((t) => `\`${t}\``).join(', ')}`] : []),
       '',
       'The factory is working on it: its fix will come as a pull request that refers here. The issue closes when the fix is verified in production.',

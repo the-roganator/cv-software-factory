@@ -1,17 +1,25 @@
 /**
- * The page reader, against the small shop made for the tests: it takes only a path of the app, and answers with a
- * screenshot in the artifact store and the page's text in passages.
+ * The page reader, against the small shop made for the tests: it takes only a path of the app, and answers with the
+ * status, a screenshot in the artifact store, the page's text in passages and its elements.
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MAX_ELEMENTS } from '@software-factory/events';
 import { DiskArtifacts } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BROWSER_LAUNCH } from '../../src/capture.ts';
 import { PROBES } from '../../src/probes/index.ts';
-import { MAX_PASSAGE_LENGTH, MAX_PASSAGES, passagesOf, pathOnly, readerServer } from '../../src/probes/reader.ts';
+import {
+  MAX_PASSAGE_LENGTH,
+  MAX_PASSAGES,
+  pageElements,
+  passagesOf,
+  pathOnly,
+  readerServer,
+} from '../../src/probes/reader.ts';
 import { Shop } from '../../src/probes/site.ts';
 import { BrowserSense } from '../../src/senses/browser.ts';
 import { startShop } from './shop.ts';
@@ -93,6 +101,58 @@ describe('the page reader', () => {
       expect(passages).toEqual(['Oak stool', '£45.00', 'A fine thing.']);
     });
   }, 30_000);
+
+  it('answers with the page’s status and its elements, a link by its path and a field never by its value', async () => {
+    await withReader(async (post) => {
+      const product = (await (await post(JSON.stringify({ path: '/products/oak-stool' }))).json()) as {
+        status: number;
+        elements: unknown[];
+      };
+      expect(product.status).toBe(200);
+      expect(product.elements).toEqual(
+        expect.arrayContaining([
+          { kind: 'link', text: 'Products', to: '/products' },
+          { kind: 'image', alt: 'Oak stool', src: '/assets/item.svg' },
+        ]),
+      );
+      const contact = (await (await post(JSON.stringify({ path: '/contact' }))).json()) as { elements: unknown[] };
+      expect(contact.elements).toEqual(
+        expect.arrayContaining([
+          { kind: 'field', label: 'Name', name: 'name', type: 'text' },
+          { kind: 'field', label: 'Email', name: 'email', type: 'email' },
+          { kind: 'button', text: 'Send' },
+        ]),
+      );
+      const missing = (await (await post(JSON.stringify({ path: '/no-such-page' }))).json()) as { status: number };
+      expect(missing.status).toBe(404);
+    });
+  }, 30_000);
+
+  it('bounds the elements it answers with: paths on the app alone, no values, no repeats, so many of each kind', () => {
+    const app = 'http://shop.test';
+    const elements = pageElements(
+      [
+        { kind: 'link', text: '  Lost\n property ', href: 'http://shop.test/lost?q=typed#top' },
+        { kind: 'link', text: 'Elsewhere', href: 'https://elsewhere.test/page' },
+        { kind: 'link', text: 'Lost property', href: 'http://shop.test/lost' },
+        { kind: 'image', alt: null, src: 'data:image/png;base64,AAAA' },
+        { kind: 'field', label: 'Email', name: 'email', type: 'email', value: 'someone@example.com' } as never,
+        { kind: 'button', text: 'x'.repeat(200) },
+        { kind: 'script', text: 'not an element' },
+        ...Array.from({ length: 50 }, (_, i) => ({ kind: 'link', text: `Page ${i}`, href: `/page/${i}` })),
+      ],
+      app,
+    );
+    expect(elements.slice(0, 5)).toEqual([
+      { kind: 'link', text: 'Lost property', to: '/lost' },
+      { kind: 'link', text: 'Elsewhere', to: null },
+      { kind: 'image', alt: null, src: null },
+      { kind: 'field', label: 'Email', name: 'email', type: 'email' },
+      { kind: 'button', text: 'x'.repeat(80) },
+    ]);
+    expect(elements.filter((e) => e.kind === 'link')).toHaveLength(MAX_ELEMENTS);
+    expect(JSON.stringify(elements)).not.toContain('someone@example.com');
+  });
 
   it('splits a long page into passages, capped in number and length, with no repeats', async () => {
     await withReader(async (post) => {

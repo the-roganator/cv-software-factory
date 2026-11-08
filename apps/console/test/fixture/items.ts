@@ -361,7 +361,12 @@ async function report(sent: Report): Promise<NewEvent[]> {
     durationMs: request.questionSet === 'passage/v1' ? 640 : 910,
     cassette: createHash('sha256').update(`fixture-cassette:${sent.item}:${request.questionSet}`).digest('hex'),
   });
-  const page: PageView = { screenshot: shot(sent.shot), passages: sent.page === '/about' ? ABOUT : [] };
+  const page: PageView = {
+    status: 200,
+    screenshot: shot(sent.shot),
+    passages: sent.page === '/about' ? ABOUT : [],
+    elements: [],
+  };
   const decision = await judgeReport(
     { page: sent.page, text: sent.text, route: page.screenshot.route },
     [],

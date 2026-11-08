@@ -217,8 +217,6 @@ jobs:
           TOKEN: ${{ github.token }}
         run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
       - name: Scan, uploading nothing
-        env:
-          PROOF_TYPES: 'true'
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/.github/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan"

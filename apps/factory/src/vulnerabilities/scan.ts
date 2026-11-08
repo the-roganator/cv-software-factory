@@ -253,17 +253,7 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
   if (packagesRead(reports) === 0) return { target, reports: [], unreadable: 'Trivy read no packages from its SBOM' };
   if (hasNode(reports)) return { target, reports, source: 'sbom' };
   try {
-    const own = await tools.retry(() =>
-      tools.trivy([
-        'image',
-        ...IMAGE_ARGS,
-        '--detection-priority',
-        'comprehensive',
-        '--platform',
-        FALLBACK_PLATFORM,
-        image,
-      ]),
-    );
+    const own = await tools.retry(() => tools.trivy(['image', ...IMAGE_ARGS, '--platform', FALLBACK_PLATFORM, image]));
     return { target, reports: [...reports, own], source: 'image' };
   } catch (error) {
     return {
@@ -348,7 +338,6 @@ export interface Outcome {
     unreadable?: string | undefined;
     /** Each Node Trivy read in it, where, and how many advisories it gave: the proof's own, never the repository's. */
     seen?: string[];
-    types?: string[];
   };
 }
 
@@ -432,15 +421,7 @@ export async function scan(
     findings,
     unreadable,
     read,
-    proof: {
-      found,
-      source: proofRead.source,
-      unreadable: proofRead.unreadable,
-      seen,
-      types: proofRead.reports.flatMap((r) =>
-        (r.Results ?? []).map((x) => `${x.Type}:${x.Target}:${(x.Packages ?? []).length}`),
-      ),
-    },
+    proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, seen },
   };
 }
 
@@ -485,8 +466,6 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS) {
         ? `The proof image shows ${PROOF.advisory} in its Node, from its ${proof.source === 'image' ? 'image (its SBOM gives no Node Trivy reads)' : 'SBOM'}.`
         : `The proof image does not show ${PROOF.advisory} in its Node: the scanner has stopped seeing Node.`,
   );
-  if (!proof.found && !proof.unreadable && process.env.PROOF_TYPES)
-    lines.push(`  Results there: ${proof.types?.join('; ')}.`);
   if (!proof.found && !proof.unreadable)
     lines.push(
       `  Node, as Trivy read it there: ${proof.seen?.length ? proof.seen.join('; ') : 'none, in its SBOM or its image'}.`,

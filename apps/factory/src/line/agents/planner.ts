@@ -193,8 +193,14 @@ export interface Sources {
   answers: string;
 }
 
-/** What he was asked, as a sentence: a hold's reason has no full stop of its own, and his words are told after it. */
-const stopped = (asked: string) => (/[.?!…]$/.test(asked) ? asked : `${asked}.`);
+/**
+ * What he was asked, as a sentence: a hold's reason has no full stop of its own, and his words are told after it. One
+ * that ends a sentence already, a closing quote or bracket after it, keeps its own.
+ */
+const stopped = (asked: string) => {
+  const trimmed = asked.trimEnd();
+  return /[.?!…]['"’”)\]]*$/.test(trimmed) ? trimmed : `${trimmed}.`;
+};
 
 /**
  * One of Martin's answers, with what he was asked, as a quote is looked for in it: his own words, never an agent's
@@ -324,9 +330,12 @@ const specWithin = (
     }),
   );
 
-/** A criterion as a repeat of another is looked for: what it is given, when, and what it expects, in plain words. */
+/**
+ * A criterion as a repeat of another is looked for: what it is given, when, and what it expects, in plain words, and
+ * the side of an improvement's flag it holds on, as the same words with the flag on and off are two claims.
+ */
 const claimOf = (c: PayloadOf<'spec.written'>['criteria'][number]) =>
-  [c.given, c.when, c.expect].map((part) => unquoted(part)).join('\n');
+  [c.withFlag ?? '', ...[c.given, c.when, c.expect].map((part) => unquoted(part))].join('\n');
 
 /**
  * Refuses each criterion of a spec written after its last spec's change merged that repeats one of that spec's: those
@@ -632,9 +641,10 @@ const HELD_AT = {
 /**
  * Why the work came back to Plan, in plain words, by its cause, and what to change for it. A lack of what his answer
  * asks is told only where the planner can read any words of his (`hisWords`): on a work item a visitor's report
- * opened, unless he shared them, they stay his, so none can be lacked.
+ * opened, unless he shared them, they stay his, so none can be lacked. Held after the coder's work and sent back, then
+ * merged by Martin all the same (`shipped`), nothing of the spec is kept: the change it built is on main.
  */
-function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): string[] {
+function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean, shipped: boolean): string[] {
   const it = asked === 'ticket' ? 'the ticket' : 'what Martin asked';
   switch (replan.cause) {
     case 'returned':
@@ -698,7 +708,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
       return [
         `Why it came back: the change was held for Martin ${HELD_AT[replan.cause]}: ${replan.reason.replace(/[.\s]+$/, '')}.`,
         heDid(replan, 'He sent it to you rather than to the coder: the spec is what he judges must change.'),
-        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
+        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}${shipped ? '' : ', and keep the rest of it as it is'}. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
       ];
     default:
       return [`Why it came back: it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`, heDid(replan)];
@@ -727,6 +737,7 @@ function replanLines({ asked, lastSpec, shipped, replan, change, answers }: Plan
           replan,
           asked.kind,
           answers.some((a) => a.answer),
+          shipped === true,
         )
       : []),
     ...(change

@@ -1143,6 +1143,32 @@ ${JSON.stringify(LAST_SPEC, null, 2)}
     expect(fits([on, off]).error?.issues.map((i) => i.message)).toEqual([
       'this is criterion 1 of the spec that shipped, which main meets: write only criteria that fail at this commit',
     ]);
+    // The off criterion's words with the flag on are another claim, which main need not meet.
+    expect(fits([fresh, { ...off, withFlag: 'on' }, off]).success).toBe(true);
+  });
+
+  it('after Martin sent a held change back to the planner and merged it all the same, keeps nothing of its spec', () => {
+    const merged: PlannerInput = {
+      ...INPUT,
+      lastSpec: LAST_SPEC,
+      shipped: true,
+      answers: [{ asked: 'Merge it?', answer: 'Mend the rounding too.' }],
+      replan: { cause: 'merge', approved: false, answered: true, reason: 'Held for his merge' },
+    };
+    const text = planner.prompt(merged);
+    expect(text).toContain('So change the spec as his answer asks. Where a criterion means');
+    expect(text).not.toContain('keep the rest');
+    expect(planner.prompt({ ...merged, shipped: false })).toContain(
+      'So change the spec as his answer asks, and keep the rest of it as it is.',
+    );
+  });
+
+  it('tells what Martin was asked as a sentence, keeping one that ends in its own', () => {
+    const asked = (question: string) => planner.prompt({ ...INPUT, answers: [{ asked: question, answer: 'Yes.' }] });
+    expect(asked('Is it the cards')).toContain('Is it the cards. He said: Yes.');
+    expect(asked('Held as it is (see the canary.)')).toContain('(see the canary.) He said: Yes.');
+    expect(asked('Martin judges it. ')).toContain('Martin judges it. He said: Yes.');
+    expect(asked('It said “stop.”')).toContain('It said “stop.” He said: Yes.');
   });
 
   it('says nothing of a replan on a first plan', () => {

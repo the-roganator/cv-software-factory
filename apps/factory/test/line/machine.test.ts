@@ -8,6 +8,7 @@ import {
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
+import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import {
   acceptedFindings,
   atTake,
@@ -757,9 +758,20 @@ describe('after the merge', () => {
     // The planner is told its last spec, and why it is back: the reopening, as a persisting fix's return before it.
     expect(state).toMatchObject({ lastSpec: spec.payload, replan: { cause: 'reopened' } });
     expect(fold([...persisted, back]).replan).toEqual({ cause: 'returned', from: 'verify', reason: 'It persists' });
+    // And that its last spec's change merged, through the fresh pass, which the next spec ends: it is on main.
+    expect(state.shipped).toBe(true);
+    expect(fold([...persisted, back])).toMatchObject({ merged: false, shipped: true });
+    expect(fold([...persisted, back, spec]).shipped).toBe(false);
+    expect(fold(done.slice(0, -1)).shipped).toBe(false);
+    // A dry run's merge reaches no main.
+    const dryMerged: LineEvent = { ...merged, payload: { ...merged.payload, number: DRY_RUN_NUMBERS_FROM + 12 } };
+    expect(fold([...done.slice(0, -1), dryMerged])).toMatchObject({ merged: true, shipped: false });
+    // Nor does a merge of a change built to an earlier spec than the planner's last: the new one is not built yet.
+    const respec: LineEvent = { ...spec, payload: { ...spec.payload, outcome: 'Another outcome' } };
+    expect(fold([...done.slice(0, -1), respec, merged])).toMatchObject({ merged: true, shipped: false });
     // One a dry run verified comes back to a first plan: nothing of its spec shipped.
     const dry: LineEvent = { ...reopened, payload: { ...reopened.payload, dryRun: true } };
-    expect(fold([...ended, dry])).toMatchObject({ lastSpec: undefined, replan: undefined });
+    expect(fold([...ended, dry])).toMatchObject({ lastSpec: undefined, shipped: false, replan: undefined });
     // A verification that persists in the new pass sends it back to Plan once more: the limit counts this ticket's
     // regression afresh.
     const live = [...again, ...done.slice(1), deployHold(done), release('8a6c0d9e7', 'v0.9.7')];
@@ -1212,6 +1224,27 @@ describe('Martin’s answer to a hold', () => {
       reason: 'The planner wrote the spec again: the change is held to the new one',
     });
     expect(decide([...rewritten, returned('review')], facts).next).toEqual({ do: 'step', agent: 'coder', round: 2 });
+  });
+
+  it('keeps the spec the latest push was built to, which a spec written again since leaves as it was', () => {
+    const wider: LineEvent = {
+      type: 'spec.written',
+      payload: {
+        ...(spec.payload as PayloadOf<'spec.written'>),
+        criteria: [
+          ...(spec.payload as PayloadOf<'spec.written'>).criteria,
+          { given: 'an empty query', when: 'it is searched', expect: 'the page asks for words', from: 'the ticket' },
+        ],
+      },
+    };
+    expect(fold([ticket, wider]).builtTo).toBeUndefined();
+    const built = [ticket, wider, pushed()];
+    expect(fold(built).builtTo).toEqual(wider.payload);
+    // Written again, and again, before the coder meets it: the branch is still built to the spec of its push.
+    const rewritten = [...built, review('escalated'), spec, spec];
+    expect(fold(rewritten)).toMatchObject({ builtTo: wider.payload, spec: spec.payload, respecified: true });
+    // The round that meets it is built to it.
+    expect(fold([...rewritten, returned('review'), pushed(2)]).builtTo).toEqual(spec.payload);
   });
 
   it('reviews the change again against a spec written again, even when he approves a coder that changed nothing', () => {

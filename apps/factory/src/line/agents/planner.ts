@@ -47,7 +47,12 @@
  * fence kept refusing its patch, the reviewer found the spec beyond the ticket, the coder found nothing to fix, or he
  * answered the spec or a verification in words), a fix's signal persists after its release, or the ticket reopens.
  * The planner is then told it is planning again: its last spec as it wrote it, and why it came back, in plain words
- * (`replanLines`), and to keep what still holds. Once the work item has a pull request, the planner's checkout is
+ * (`replanLines`), and to keep what still holds, each criterion it keeps with its `from` and `quote` word for word.
+ * After the change built to that spec merged, nothing of it is to keep: it is on main, the planner's checkout, and
+ * its criteria are met there. The planner is told the last spec as what shipped, for what was tried, and to write only
+ * criteria that fail at this commit, for what the return asks that the shipped change did not do; the schema refuses
+ * a criterion that repeats one of the shipped spec's (`repeatsShipped`), an improvement's `off` side aside, which
+ * holds at both. Once the work item has a pull request, the planner's checkout is
  * where that pull request's branch left main (`plansFromBase`), which the change's tests are judged against, not the
  * pull request's head: it is told the pull request holds the work so far, and which files it changes, so it does not
  * take that work for another change's. An improvement planned again keeps its flag, which the schema holds it to:
@@ -85,12 +90,16 @@ import { type Answer, LIMITS, type Replan, timesOf } from '../machine.ts';
 import {
   askedOf,
   count,
+  criterionClaim,
   defineAgent,
   type EffectsContext,
   FLAG_NAMES_FILE,
+  failedAttemptLines,
   heAnswered,
   holdDraft,
+  plainWords as plain,
   StepFailed,
+  unquotedWords as unquoted,
   words,
 } from './agent.ts';
 import {
@@ -145,6 +154,11 @@ export interface PlannerInput {
   flagsTaken?: readonly string[] | undefined;
   /** The spec the planner wrote last, when the work has come back to Plan for another. */
   lastSpec?: PayloadOf<'spec.written'> | undefined;
+  /**
+   * Whether the change built to the last spec merged into main, which the checkout has: its criteria are met there,
+   * so the new spec repeats none of them.
+   */
+  shipped?: boolean | undefined;
   /** Why the work came back to Plan, when it has. */
   replan?: Replan | undefined;
   /**
@@ -184,13 +198,22 @@ export interface Sources {
 }
 
 /**
+ * What he was asked, as a sentence: a hold's reason has no full stop of its own, and his words are told after it. One
+ * that ends a sentence already, a closing quote or bracket after it, keeps its own.
+ */
+const stopped = (asked: string) => {
+  const trimmed = asked.trimEnd();
+  return /[.?!…]['"’”)\]]*$/.test(trimmed) ? trimmed : `${trimmed}.`;
+};
+
+/**
  * One of Martin's answers, with what he was asked, as a quote is looked for in it: his own words, never an agent's
  * nor the line's. An approval in no words of his gives a quote nothing.
  */
-const answered = (a: Answer) => (a.answer ? `${a.asked} He said: ${a.answer}` : '');
+const answered = (a: Answer) => (a.answer ? `${stopped(a.asked)} He said: ${a.answer}` : '');
 
 /** One of Martin's answers as the prompt tells it: with what an agent said that he read with it, and the line's reading. */
-const told = (a: Answer) => [a.asked, a.said, heAnswered(a)].filter(Boolean).join(' ');
+const told = (a: Answer) => [stopped(a.asked), a.said, heAnswered(a)].filter(Boolean).join(' ');
 
 /**
  * Martin's answers as the prompt tells them; that everything they ask for goes into the spec, since the coder reads
@@ -226,17 +249,6 @@ export const sourcesOf = ({
 
 /** No sources at all: every quote is refused. */
 const NOTHING: Sources = { kind: 'ticket', asked: '', signals: [], answers: '' };
-
-/**
- * Words as a quote is matched: in one case, with one kind of apostrophe and quotation mark, and one space between
- * words. A quote may come in quotation marks, and end in a full stop or other mark the evidence does not have there.
- */
-const plain = (words: string) =>
-  words.normalize('NFKC').toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
-const unquoted = (quote: string) =>
-  plain(quote)
-    .replace(/^["'([{]+|["'.,;:!?)\]}…]+$/g, '')
-    .trim();
 
 /** Whether words are in a source as whole words: never the inside of a word, which would let a few letters pass. */
 const within = (words: string, source: string) => {
@@ -280,11 +292,17 @@ export function quoteProblem(from: string, quote: string, sources: Sources): str
  * The spec, with a scope of plain paths that keeps out of the protected paths, and every criterion naming what in the
  * ticket's evidence it comes from, and quoting the words there that ask for it.
  */
-const specWithin = (protectedPaths: readonly string[], sources: Sources, improvement: Improvement | undefined) =>
+const specWithin = (
+  protectedPaths: readonly string[],
+  sources: Sources,
+  improvement: Improvement | undefined,
+  shipped: PayloadOf<'spec.written'> | undefined,
+) =>
   z.preprocess(
     noneContradicted,
     PAYLOADS['spec.written'].superRefine((spec, ctx) => {
       if (improvement) improvementProblems(spec, improvement, ctx);
+      if (shipped) repeatsShipped(spec, shipped, ctx);
       spec.scope.forEach((entry, i) => {
         const problem = scopeProblem(entry, protectedPaths);
         if (problem) ctx.addIssue({ code: 'custom', path: ['scope', i], message: problem });
@@ -304,6 +322,22 @@ const specWithin = (protectedPaths: readonly string[], sources: Sources, improve
       });
     }),
   );
+
+/**
+ * Refuses each criterion of a spec written after its last spec's change merged that repeats one of that spec's: those
+ * are met on main, which the planner's checkout is, so a test of one passes before the fix and shows nothing. An
+ * improvement's `off` criterion, which says the pages are as they are now, holds at both commits, and may repeat.
+ */
+function repeatsShipped(spec: PayloadOf<'spec.written'>, shipped: PayloadOf<'spec.written'>, ctx: z.RefinementCtx) {
+  const met = shipped.criteria.map(criterionClaim);
+  spec.criteria.forEach((criterion, i) => {
+    if (criterion.withFlag === 'off') return;
+    const n = met.indexOf(criterionClaim(criterion));
+    if (n < 0) return;
+    const message = `this is criterion ${n + 1} of the spec that shipped, which main meets: write only criteria that fail at this commit`;
+    ctx.addIssue({ code: 'custom', path: ['criteria', i], message });
+  });
+}
 
 /** A spec that contradicts no test says so by leaving `contradicts` out: an empty list is read the same. */
 function noneContradicted(spec: unknown): unknown {
@@ -492,17 +526,22 @@ const withFindings = <T extends { findings: Sorted }>(result: T): WithFindings<T
  * The planner's result, with its scope held to the protected paths given; with none, to the rules of the line that
  * hold whatever the repository's CODEOWNERS says. Its criteria quote the sources given (`sourcesOf`); with none, no
  * spec fits. A question fits only while Martin has not approved its last one with no answer (`asks`, from
- * `unanswered`).
+ * `unanswered`). After its last spec's change merged (`shipped`), no criterion repeats one of that spec's.
  */
 export const plannerResult = (
   protectedPaths: readonly string[] = NEVER,
   sources: Sources = NOTHING,
   improvement?: Improvement,
   asks = true,
+  shipped?: PayloadOf<'spec.written'>,
 ) =>
   z
     .discriminatedUnion('verdict', [
-      z.strictObject({ verdict: z.literal('spec'), spec: specWithin(protectedPaths, sources, improvement), findings }),
+      z.strictObject({
+        verdict: z.literal('spec'),
+        spec: specWithin(protectedPaths, sources, improvement, shipped),
+        findings,
+      }),
       /**
        * The ticket cannot be made testable, is not a defect in the app, or needs a fix the line may not make; or the
        * improvement needs a change the line may not make.
@@ -588,9 +627,10 @@ const HELD_AT = {
 /**
  * Why the work came back to Plan, in plain words, by its cause, and what to change for it. A lack of what his answer
  * asks is told only where the planner can read any words of his (`hisWords`): on a work item a visitor's report
- * opened, unless he shared them, they stay his, so none can be lacked.
+ * opened, unless he shared them, they stay his, so none can be lacked. Held after the coder's work and sent back, then
+ * merged by Martin all the same (`shipped`), nothing of the spec is kept: the change it built is on main.
  */
-function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): string[] {
+function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean, shipped: boolean): string[] {
   const it = asked === 'ticket' ? 'the ticket' : 'what Martin asked';
   switch (replan.cause) {
     case 'returned':
@@ -654,7 +694,7 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
       return [
         `Why it came back: the change was held for Martin ${HELD_AT[replan.cause]}: ${replan.reason.replace(/[.\s]+$/, '')}.`,
         heDid(replan, 'He sent it to you rather than to the coder: the spec is what he judges must change.'),
-        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}, and keep the rest of it as it is. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
+        `So change the spec ${replan.answered ? 'as his answer asks' : 'for why it was held'}${shipped ? '' : ', and keep the rest of it as it is'}. Where a criterion means an existing test must change, name that test in \`contradicts\`.`,
       ];
     default:
       return [`Why it came back: it was held for Martin: ${replan.reason.replace(/[.\s]+$/, '')}.`, heDid(replan)];
@@ -663,14 +703,18 @@ function whyBack(replan: Replan, asked: Asked['kind'], hisWords: boolean): strin
 
 /**
  * What the planner is told when the work has come back to it: its last spec, as it wrote it, why the work came back,
- * the pull request that holds the work so far, and to keep what still holds. Nothing on a first plan.
+ * the pull request that holds the work so far, and to keep what still holds. After that spec's change merged, the
+ * spec is what shipped, met on main, and none of it is kept. Nothing on a first plan.
  */
-function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput): string[] {
+function replanLines({ asked, lastSpec, shipped, replan, change, answers }: PlannerInput): string[] {
   if (!lastSpec) return [];
   const kind = asked.kind === 'ticket' ? 'ticket' : 'improvement';
+  const flag = asked.kind === 'request' && lastSpec.flag ? ` The flag stays \`${lastSpec.flag}\`.` : '';
   return [
     '',
-    `This is a replan: you planned this ${kind} before, and the work came back to you. Your last spec, as you wrote it:`,
+    shipped
+      ? `This is a replan: you planned this ${kind} before, the change built to your last spec was merged, and the work came back to you. That change is on main, and in your checkout. Your last spec, for what was built and shipped:`
+      : `This is a replan: you planned this ${kind} before, and the work came back to you. Your last spec, as you wrote it:`,
     '```json',
     JSON.stringify(lastSpec, null, 2),
     '```',
@@ -679,6 +723,7 @@ function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput)
           replan,
           asked.kind,
           answers.some((a) => a.answer),
+          shipped === true,
         )
       : []),
     ...(change
@@ -686,7 +731,9 @@ function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput)
           `Pull request #${change.pullRequest} holds the work so far, which is this ${kind}’s own: no other change’s. It changes ${change.files.length ? change.files.join(', ') : 'no file yet'}. Your checkout is not that work: it is ${change.commit}, where the pull request’s branch left main, which the coder’s tests are judged against, as your first plan was. Plan against this commit: what the pull request adds is not in it.`,
         ]
       : []),
-    `Keep what still holds, and change only what the return asks for. A criterion you keep keeps its \`from\` and its \`quote\`, word for word.${asked.kind === 'request' && lastSpec.flag ? ` The flag stays \`${lastSpec.flag}\`.` : ''}`,
+    shipped
+      ? `Its criteria are met at this commit, so none of them is this spec’s: repeat none of them. Write only criteria that fail at this commit, for what the return asks that the shipped change did not do${asked.kind === 'request' ? ', beside the `off` criterion that the pages are as they are now with the flag off' : ''}.${flag}`
+      : `Keep what still holds, and change only what the return asks for. A criterion you keep keeps its \`from\` and its \`quote\`, word for word.${flag}`,
   ];
 }
 
@@ -718,7 +765,7 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
         ]
       : []),
     ...replanLines(input),
-    ...(failure ? ['', `Your last attempt at this plan failed: ${failure}. Do not hand back the same again.`] : []),
+    ...(failure ? ['', ...failedAttemptLines(failure, 'plan')] : []),
     '',
     'Find the cause in the repository: start from the route, and read the code that serves it and its tests. Stop as soon as you can name the code at fault and say why it does what the evidence shows: that diagnosis is all the plan needs, and most plans need a dozen tool calls or fewer.',
     'Do not reproduce the defect: start no server, send no requests, write no scripts, and run no tests. The coder’s first step is a failing test that reproduces it, and your criteria say what that test shows. You plan; the coder fixes. Change nothing: no change of yours leaves this checkout.',
@@ -792,7 +839,7 @@ function requestPrompt(input: PlannerInput, request: Request): string {
     `Martin asked for it in his own words: “${request.words}”`,
     ...answerLines(answers),
     ...replanLines(input),
-    ...(failure ? ['', `Your last attempt at this plan failed: ${failure}. Do not hand back the same again.`] : []),
+    ...(failure ? ['', ...failedAttemptLines(failure, 'plan')] : []),
     '',
     'Nothing is broken: this is a change Martin wants. Find where it goes in the repository: start from the pages it shows on, and read the code that serves them and its tests. Stop as soon as you can say which code changes and what a visitor will see: that is all the plan needs, and most plans need a dozen tool calls or fewer.',
     'Do not build it or try it: start no server, send no requests, write no scripts, and run no tests. The coder builds it, test first, and your criteria say what those tests show. You plan; the coder builds. Change nothing: no change of yours leaves this checkout.',
@@ -834,7 +881,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
     // Martin's words there are public only shared, so a question asks nothing of the report (`machine.ts`).
     ...(state.firstSense === 'report' ? { aboutReport: true } : {}),
     ...(state.request ? { flagsTaken: await flagsTaken() } : {}),
-    ...(state.lastSpec ? { lastSpec: state.lastSpec } : {}),
+    ...(state.lastSpec ? { lastSpec: state.lastSpec, ...(state.shipped ? { shipped: true } : {}) } : {}),
     ...(state.replan ? { replan: state.replan } : {}),
     ...(change ? { change: { ...change, commit } } : {}),
   }),
@@ -844,6 +891,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       sourcesOf(input),
       input.asked.kind === 'request' ? { flagsTaken: input.flagsTaken ?? [], keeps: input.lastSpec?.flag } : undefined,
       asksMartin(input),
+      input.shipped ? input.lastSpec : undefined,
     ),
   prompt: (input) =>
     input.asked.kind === 'ticket' ? ticketPrompt(input, input.asked.ticket) : requestPrompt(input, input.asked.request),

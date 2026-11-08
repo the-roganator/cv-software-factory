@@ -137,7 +137,7 @@ export const RED_TEAM_UNSIGNED_IMAGE =
 export const RED_TEAM_RUNNER_REPOSITORY = 'ghcr.io/the-roganator/cv-software-factory/factory-runner';
 
 /**
- * Attack 4 (`egress`): the addresses the pod tries, each one a runner's egress policy refuses, so a reach is the fence
+ * Attack 4 (`egress`): the addresses the pod tries, each one the agents' egress fence refuses, so a reach is the fence
  * failing. A name (the agent pod has no DNS, so it does not resolve), a number (a public address the policy blocks),
  * and the model provider's host (which only the gateway may reach). The gateway is the control, below: a pod that
  * reaches nothing at all would refuse these for the wrong reason, so the attack is unfinished unless the control is

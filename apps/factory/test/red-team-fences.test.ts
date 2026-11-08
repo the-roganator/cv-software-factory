@@ -237,6 +237,16 @@ describe('the red-team namespace', () => {
   it('enforces the restricted Pod Security Standard', () => {
     expect(ns.metadata.labels?.['pod-security.kubernetes.io/enforce']).toBe('restricted');
   });
+  it('holds the attack pods to a few, with small requests, so a harness making pods in a loop stops there', () => {
+    type Quota = Manifest & { spec: { hard: Record<string, string> } };
+    const quotas = all.map((m) => m.manifest).filter((m): m is Quota => m.kind === 'ResourceQuota');
+    expect(quotas.filter((q) => q.metadata?.namespace === 'red-team').map((q) => q.spec.hard)).toEqual([
+      { pods: '4', 'requests.cpu': '500m', 'requests.memory': '1Gi', 'limits.memory': '2Gi' },
+    ]);
+    // The pod the harness makes sets each (apps/factory/src/red-team/pods.ts), so the quota admits it.
+    const source = readFileSync(new URL('../src/red-team/pods.ts', import.meta.url), 'utf8');
+    expect(source).toContain("resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { memory: '256Mi' } }");
+  });
   it('denies everything, in and out, and lets nothing in', () => {
     const denyAll = here.filter(
       (p) => Object.keys(p.spec.podSelector).length === 0 && !p.spec.ingress?.length && !p.spec.egress?.length,

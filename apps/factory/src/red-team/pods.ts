@@ -10,7 +10,7 @@
  * - **`egress`:** the pod runs a connectivity probe in place of the agent (the pinned `node -e` in policy/egress-probe.ts).
  *   It first waits for its fence with the agent step's own wait, as the agent step does before it runs anything (a pod
  *   starts a moment before its network policy reaches it), and says how the wait ended. Then it tries an outside
- *   address by name and by number and the model provider's host, each of which a runner's egress policy refuses, and
+ *   address by name and by number and the model provider's host, each of which the agents' egress fence refuses, and
  *   the gateway as the control, which it may reach; any answer from outside, a redirect too, is a reach. The harness reads the pod's own record of each
  *   from its log and appends an `egress-policy` refusal for each one refused (guardrail 5), which its role alone may.
  *   A control that is not reached means the pod reached nothing for some other reason, so the attack is unfinished,

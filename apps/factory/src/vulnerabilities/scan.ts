@@ -332,7 +332,13 @@ export interface Outcome {
   findings: Finding[];
   unreadable: { name: string; why: string }[];
   read: number;
-  proof: { found: boolean; source?: 'sbom' | 'image' | undefined; unreadable?: string | undefined };
+  proof: {
+    found: boolean;
+    source?: 'sbom' | 'image' | undefined;
+    unreadable?: string | undefined;
+    /** Each Node Trivy read in it, where, and how many advisories it gave: the proof's own, never the repository's. */
+    seen?: string[];
+  };
 }
 
 /** Every item on a checkout's list, and the proof, read. */
@@ -400,11 +406,22 @@ export async function scan(
     signer: PROOF.signer,
   });
   const found = findingsOf(proofRead).some((f) => f.advisory === PROOF.advisory && isNode(f.package));
+  // What Trivy read of the proof image's Node, for the log: where it was, of what kind, and how many advisories.
+  const seen = proofRead.reports.flatMap((report, index) =>
+    (report.Results ?? []).flatMap((result) =>
+      (result.Packages ?? [])
+        .filter((pkg) => isNode(pkg.Name))
+        .map(
+          (pkg) =>
+            `${index < proofRead.reports.length - (proofRead.source === 'image' ? 1 : 0) ? 'SBOM' : 'image'}: ${pkg.Name} ${pkg.Version ?? '?'} as ${result.Type ?? result.Class ?? '?'}, ${(result.Vulnerabilities ?? []).filter((v) => isNode(v.PkgName)).length} advisories`,
+        ),
+    ),
+  );
   return {
     findings,
     unreadable,
     read,
-    proof: { found, source: proofRead.source, unreadable: proofRead.unreadable },
+    proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, seen },
   };
 }
 
@@ -449,6 +466,10 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS) {
         ? `The proof image shows ${PROOF.advisory} in its Node, from its ${proof.source === 'image' ? 'image (its SBOM gives no Node Trivy reads)' : 'SBOM'}.`
         : `The proof image does not show ${PROOF.advisory} in its Node: the scanner has stopped seeing Node.`,
   );
+  if (!proof.found && !proof.unreadable)
+    lines.push(
+      `  Node, as Trivy read it there: ${proof.seen?.length ? proof.seen.join('; ') : 'none, in its SBOM or its image'}.`,
+    );
   const file = sarif(outcome.findings);
   const over = overLimits(file, limits);
   if (over.length) lines.push(`The results are over code scanning's limits: ${over.join('; ')}.`);

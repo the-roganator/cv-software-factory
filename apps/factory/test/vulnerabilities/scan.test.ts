@@ -71,7 +71,7 @@ const items = (): Item[] => [
   {
     kind: 'ours',
     name: OURS,
-    file: 'deploy/overlays/local/factory-image/kustomization.yaml',
+    file: 'deploy/ours/kustomization.yaml',
     line: 23,
     image: OURS,
     signer: SIGNER,
@@ -171,7 +171,8 @@ describe('an item it cannot read', () => {
   it('passes when every item was read and the proof shows its advisory', async () => {
     const outcome = await scan(tools(everything()).tools, checkout(), items(), []);
     expect(outcome.unreadable).toEqual([]);
-    expect(outcome.proof).toEqual({ found: true, source: 'image', unreadable: undefined });
+    expect(outcome.proof).toMatchObject({ found: true, source: 'image', unreadable: undefined });
+    expect(outcome.proof.seen).toEqual(['image: node 24.22.0 as nodejs, 1 advisories']);
     const { lines, passes } = report(outcome, true);
     expect(passes).toBe(true);
     expect(lines[0]).toBe('Read 3 targets. Findings by severity: critical 1, high 2, medium 1, low 0, unknown 0.');
@@ -253,7 +254,7 @@ describe("two platforms' findings", () => {
     const one = results.filter((result) => result.ruleId === 'CVE-2026-0101');
     expect(one).toHaveLength(1);
     expect(one[0]?.locations[0]?.physicalLocation).toEqual({
-      artifactLocation: { uri: 'deploy/overlays/local/factory-image/kustomization.yaml' },
+      artifactLocation: { uri: 'deploy/ours/kustomization.yaml' },
       region: { startLine: 23 },
     });
     expect(one[0]?.message.text).toBe(`libssl3t64 3.5.1-1 in ${OURS}: CVE-2026-0101 (high), fixed in 3.5.1-2.`);

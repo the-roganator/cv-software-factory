@@ -250,7 +250,8 @@ function headClash(head: HTMLElement): string {
 /**
  * The sheet's head keeps its words clear of its buttons: on a phone, and on the narrowest screen reflow allows, every
  * line of every work item's kicker and title stays inside its column, a long state wrapping rather than running under
- * the buttons. Every work item at the samples' end, and #1310 as its merge waits for a release, the longest state they show.
+ * the buttons. Every work item at the samples' end, and the longest states they show before then: #1310's merge
+ * waiting for a release, and #1314 waiting for its deploy while its build is not signed.
  */
 for (const viewport of [WIDTHS.phone, { width: 320, height: 640 }]) {
   test.describe(`${viewport.width}px, the sheet's head`, () => {
@@ -273,13 +274,18 @@ for (const viewport of [WIDTHS.phone, { width: 320, height: 640 }]) {
       }
     });
 
-    test('keeps a merge waiting for a release clear of its buttons', async ({ page }) => {
-      await page.goto(consoleUrl({ item: '1310', sheet: true, at: MERGE_WAITING }));
-      await page.getByRole('dialog').first().waitFor();
-      await page.evaluate(() => document.fonts.ready);
-      await expect(page.locator('.sheet-head .out')).toHaveText(/waiting for release/i);
-      expect(await page.locator('.sheet-head').evaluate(headClash)).toBe('');
-    });
+    for (const [item, at, state] of [
+      ['1310', MERGE_WAITING, 'Merged · waiting for release'],
+      ['1314', Date.parse('2026-10-06T09:50:00Z'), 'Merged · waiting for its deploy'],
+    ] as const) {
+      test(`keeps #${item}'s state before its release clear of its buttons`, async ({ page }) => {
+        await page.goto(consoleUrl({ item, sheet: true, at }));
+        await page.getByRole('dialog').first().waitFor();
+        await page.evaluate(() => document.fonts.ready);
+        await expect(page.locator('.sheet-head .out')).toHaveText(state);
+        expect(await page.locator('.sheet-head').evaluate(headClash)).toBe('');
+      });
+    }
 
     test('keeps a ticket’s summary, a commit’s whole hash and all, on the screen', async ({ page }) => {
       await page.goto(fixtureUrl({ item: '1000', sheet: true }));

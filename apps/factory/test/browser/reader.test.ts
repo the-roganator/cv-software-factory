@@ -125,6 +125,15 @@ describe('the page reader', () => {
       );
       const missing = (await (await post(JSON.stringify({ path: '/no-such-page' }))).json()) as { status: number };
       expect(missing.status).toBe(404);
+      // A page that ends at another path is not the one asked for, whatever that one answered.
+      const moved = (await (await post(JSON.stringify({ path: '/moved' }))).json()) as { status: number | null };
+      expect(moved.status).toBeNull();
+      const collapsed = (await (
+        await post(JSON.stringify({ path: '/[typed](//elsewhere.test/x)/../../../..' }))
+      ).json()) as {
+        status: number | null;
+      };
+      expect(collapsed.status).toBeNull();
     });
   }, 30_000);
 
@@ -136,6 +145,7 @@ describe('the page reader', () => {
         { kind: 'link', text: 'Elsewhere', href: 'https://elsewhere.test/page' },
         { kind: 'link', text: 'Lost property', href: 'http://shop.test/lost' },
         { kind: 'image', alt: null, src: 'data:image/png;base64,AAAA' },
+        { kind: 'image', alt: 'Waiting', src: '' },
         { kind: 'field', label: 'Email', name: 'email', type: 'email', value: 'someone@example.com' } as never,
         { kind: 'button', text: 'x'.repeat(200) },
         { kind: 'script', text: 'not an element' },
@@ -143,10 +153,12 @@ describe('the page reader', () => {
       ],
       app,
     );
-    expect(elements.slice(0, 5)).toEqual([
+    expect(elements.slice(0, 6)).toEqual([
       { kind: 'link', text: 'Lost property', to: '/lost' },
       { kind: 'link', text: 'Elsewhere', to: null },
       { kind: 'image', alt: null, src: null },
+      // An empty address is none, not the app's front page.
+      { kind: 'image', alt: 'Waiting', src: null },
       { kind: 'field', label: 'Email', name: 'email', type: 'email' },
       { kind: 'button', text: 'x'.repeat(80) },
     ]);

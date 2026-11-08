@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { PAGE_PATH, PATH_CHARS } from './line.ts';
-import { ELEMENT_PATH, ELEMENT_TEXT } from './points.ts';
+import { ELEMENT_PATH, ELEMENT_TEXT, FIELD_NAME, FIELD_TYPE } from './points.ts';
 import { REQUEST_WORDS } from './request.ts';
 import { type EventType, LINE_TYPES, RELEASE_TYPES, VERSIONS } from './versions.ts';
 import * as V from './vocabulary.ts';
@@ -391,11 +391,8 @@ const pageElement = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('field'),
     label: elementText,
-    name: z
-      .string()
-      .regex(/^[\w.:[\]-]{1,60}$/)
-      .nullable(),
-    type: z.string().regex(/^[a-z-]{1,20}$/),
+    name: z.string().regex(FIELD_NAME).nullable(),
+    type: z.string().regex(FIELD_TYPE),
   }),
   z.strictObject({ kind: z.literal('button'), text: elementText }),
 ]);

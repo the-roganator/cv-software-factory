@@ -2,7 +2,7 @@
  * The page reader, for triage: it is given the path of a page of the app, and says what the page looks like, what it
  * says and what it holds. A screenshot goes in the artifact store; the visible text comes back as passages, and the
  * page's links, images, form fields and buttons as elements, for Jev to choose from; the status says whether the page
- * was there. The text of a page is never logged, and its requests carry `UNMEASURED`, as the senses' do.
+ * was there, and is none when it ended at another path. The text of a page is never logged, and its requests carry `UNMEASURED`, as the senses' do.
  *
  *     POST /v1/pages   { "path": "/about" }
  *       ->  { "status": 200, "screenshot": <Screenshot>, "passages": ["…"], "elements": [<PageElement>, …] }
@@ -52,7 +52,7 @@ export interface RawElement {
 
 /** An absolute address on the app as its path alone, cut at its query; null when it is off the app, or no address. */
 function onApp(value: unknown, app: URL): string | null {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== 'string' || !value) return null;
   try {
     const url = new URL(value, app);
     return url.origin === app.origin ? appPath(url.pathname) : null;
@@ -76,8 +76,9 @@ const READ_ELEMENTS = `(() => {
   const out = [];
   for (const el of document.body.querySelectorAll('a[href], img, input, select, textarea, button')) {
     const tag = el.tagName.toLowerCase();
-    if (tag === 'a') out.push({ kind: 'link', text: text(el), href: el.href });
-    else if (tag === 'img') out.push({ kind: 'image', alt: el.getAttribute('alt'), src: el.src });
+    // An address the markup leaves empty is none, not the page itself.
+    if (tag === 'a') out.push({ kind: 'link', text: text(el), href: el.getAttribute('href') ? el.href : null });
+    else if (tag === 'img') out.push({ kind: 'image', alt: el.getAttribute('alt'), src: el.getAttribute('src') ? el.src : null });
     else if (tag === 'button') out.push({ kind: 'button', text: text(el) });
     else {
       const type = tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : tag;
@@ -137,8 +138,11 @@ export function readerServer({ app, sense, store, version, log }: ReaderOptions)
         const response = await page.goto(new URL(path, app).href, { waitUntil: 'load' });
         const main = page.locator('main').first();
         const text = await ((await main.count()) ? main : page.locator('body')).innerText();
+        // A page that ended at another path than the one asked, by a redirect or by dot segments the address collapsed,
+        // is not the page at that path, which may be words a visitor typed: its status is none.
+        const there = new URL(page.url()).pathname === path;
         return {
-          status: response?.status() ?? null,
+          status: there ? (response?.status() ?? null) : null,
           text,
           elements: (await page.evaluate(READ_ELEMENTS)) as RawElement[],
           screenshot: await capture(page, store, { route: path, version: current }),

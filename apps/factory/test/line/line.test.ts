@@ -295,7 +295,7 @@ describe('the line', () => {
 
   it('names what a report’s ticket points at in its issue, and tells the planner it', async () => {
     const workItem = await nextWorkItem(database.as.triage);
-    const element = { kind: 'link', text: 'Delivery', to: '/delivery' } as const;
+    const element = { kind: 'link', text: 'Delivery @someone [here]', to: '/delivery' } as const;
     await events.append([
       event(
         workItem,
@@ -320,10 +320,10 @@ describe('the line', () => {
     const { pass, steps, github } = line(AGENTS, events);
     await pass();
     expect(String(github.acts[0]?.args.body)).toContain(
-      '- A visitor reported the link “Delivery”, to /delivery, on /, as the factory read the page',
+      '- A visitor reported the link “Delivery \\@someone \\[here\\]”, to /delivery, on /, as the factory read the page',
     );
     expect(steps.requests[0]?.prompt).toContain(
-      'A visitor reported it on /, about the link “Delivery”, to /delivery there, as the factory read the page.',
+      'A visitor reported it on /, about the link “Delivery @someone [here]”, to /delivery there, as the factory read the page.',
     );
   });
 

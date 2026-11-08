@@ -39,7 +39,7 @@ flowchart TD
 
 A report's ticket says what was reported, in the factory's words, so that every agent, the issue and the console are told it (`points` on `ticket.opened`, `packages/events/src/points.ts`). Its title only names the symptom and the route, which any fault of that kind there would fit.
 
-- **The page** the visitor sent it from, as a path with no query and nothing private in it, and only when the [page reader](PROBES-AND-CRAWLER.md#the-page-reader) read it and it answered 2xx: a path no page has may be words a visitor typed, so it never reaches an agent.
+- **The page** the visitor sent it from, as a path with no query and nothing private in it, and only when the [page reader](PROBES-AND-CRAWLER.md#the-page-reader) read it and it answered 2xx there, not at the end of a redirect: a path no page has may be words a visitor typed, so it never reaches an agent.
 - **A passage or an element of it**, which Jev chooses from the page as the factory read it, or none, by what the report describes (`POINTED_BY`):
 
 | Jev judged it | It points at | Asked |
@@ -51,7 +51,7 @@ A report's ticket says what was reported, in the factory's words, so that every 
 | `rejects-valid-input` | A form field or a button | `element/v1` |
 | Any other symptom: one of the whole page, such as an error, slowness, a header or the logs | Nothing narrower than the page | Nothing more |
 
-Faint text is text: a link's or a button's words are among the passages too. An element is the page's own markup: a link by its words and its path on the app, an image by its description and its path, a field by its label, its `name` and its type, a button by its words. An address off the app is named as such, a query or a fragment is cut, and a field's value is never read. Jev's answer is a label from the options it was offered, so nothing it writes reaches the ticket. A content ticket's fingerprint is its passage too, as before; every other ticket keeps its route and symptom as its fingerprint, which the scoreboard matches. A planner's finding, which opens no ticket, is never asked what it points at, only a content one's passage, which its hold's fingerprint holds.
+Faint text is text: a link's or a button's words in the page's main text (`<main>`, or the whole page when it has none) are among the passages too. An element is the page's own markup: a link by its words and its path on the app, an image by its description and its path, a field by its label, its `name` and its type, a button by its words. An address off the app is named as such, a query or a fragment is cut, and a field's value is never read. Jev's answer is a label from the options it was offered, so nothing it writes reaches the ticket. A content ticket's fingerprint is its passage too; every other ticket keeps its route and symptom as its fingerprint, which the scoreboard matches. A planner's finding, which opens no ticket, is never asked what it points at, only a content one's passage, which its hold's fingerprint holds.
 
 ## One copy at a time
 

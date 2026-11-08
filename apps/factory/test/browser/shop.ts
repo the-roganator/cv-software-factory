@@ -186,6 +186,11 @@ export async function startShop(...faults: Fault[]): Promise<Shop> {
         ),
       );
     }
+    // A page that has moved, which nothing links: the page reader asked for it ends at the about page.
+    if (path === '/moved') {
+      res.writeHead(302, { location: '/about' });
+      return res.end();
+    }
     if (path === '/loop') {
       res.writeHead(302, { location: '/loop' });
       return res.end();

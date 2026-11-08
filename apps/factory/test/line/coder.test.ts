@@ -528,7 +528,7 @@ describe('the coder', () => {
       expect(coder.prompt({ ...narrowed, dropped: undefined })).not.toContain('no longer has these criteria');
     });
 
-    it('may change nothing only once a first attempt that did was refused, and then holds for Martin', async () => {
+    it('may change nothing only after a first attempt, his words or a review, and then holds for Martin', async () => {
       const fits = (result: unknown, given: CoderInput) => coder.schema(given).safeParse(result).success;
       const why = 'Nothing on the branch serves only that criterion.';
       // A change that changes nothing is refused as its result would be, so the next attempt is told why.
@@ -537,19 +537,46 @@ describe('the coder', () => {
       await expect(
         coder.apply(CODED, handback as never, narrowed, context as unknown as Parameters<typeof coder.apply>[3]),
       ).rejects.toThrow(`The coder handed back no change, but ${NARROWED_REFUSAL}`);
-      for (const failure of [
-        `The coder's result does not fit its schema (unchanged: ${NARROWED_REFUSAL}: take their work out)`,
-        `The coder handed back no change, but ${NARROWED_REFUSAL}`,
+      // After any failure (this refusal, or another, which the second of two allowed must not spend), after Martin's
+      // words, and after a review, the round may change nothing, and says why.
+      for (const after of [
+        { failure: `The coder's result does not fit its schema (unchanged: ${NARROWED_REFUSAL}: take their work out)` },
+        { failure: 'The coder ran out of turns' },
+        { answer: 'Keep the page’s test.' },
+        { findings: [{ ...unmetFinding }] },
       ]) {
-        const again = { ...narrowed, failure };
+        const again = { ...narrowed, ...after };
         expect(fits({ unchanged: why }, again)).toBe(true);
         const prompt = coder.prompt(again);
-        expect(prompt).toContain('Your last attempt changed nothing, and was refused for it. Look again');
-        expect(prompt).toContain('{"unchanged"}');
+        expect(prompt).toContain('Only if nothing on the branch serves only them, change nothing');
         expect(prompt).not.toContain('a result that changes nothing is refused');
+        // Told once when it may change nothing, in the dropped criteria's words alone.
+        expect(prompt).not.toContain('Change nothing only if what sent the work back');
+        expect(prompt).not.toContain('If the code already does what every criterion asks');
       }
-      // A failure for anything else leaves the round pressed.
-      expect(fits({ unchanged: why }, { ...narrowed, failure: 'The coder ran out of turns' })).toBe(false);
+      // Its change, with no patch, is then a failure as any other is.
+      await expect(
+        coder.apply(
+          CODED,
+          handback as never,
+          { ...narrowed, failure: 'x' },
+          context as unknown as Parameters<typeof coder.apply>[3],
+        ),
+      ).rejects.toThrow('The coder handed back no change, and did not say why');
+    });
+
+    it('is told it came back for the spec, and to take the dropped work out before it checks the criteria', () => {
+      const prompt = coder.prompt(narrowed);
+      expect(prompt).toContain(
+        'Your change for ticket #999999999 came back for round 2, held to a spec written again: The planner wrote the spec again',
+      );
+      expect(prompt).not.toContain('came back from review');
+      expect(prompt).toContain('1. Find the branch’s work for the criteria the spec no longer has');
+      expect(prompt).not.toContain('Write the test first');
+      expect(prompt).not.toContain('1. Find the cause.');
+      // A first round is told nothing of it, and may still find nothing to fix.
+      expect(coder.prompt(input)).toContain('1. Find the cause.');
+      expect(coder.prompt(input)).toContain('If the code already does what every criterion asks');
     });
 
     it('may not change nothing: a result without a change is refused, so the step fails and is tried again', () => {

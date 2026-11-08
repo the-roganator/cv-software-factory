@@ -515,7 +515,7 @@ const WIDENED_SPEC: PayloadOf<'spec.written'> = {
 
 /**
  * The ticket triage would open for a visitor's report of a wrong result on the camera's page, pointing at a passage
- * of it as the factory read the page with the wrong price seeded: the price itself, or the stock line beside it,
+ * of it as the factory read the page with the wrong price seeded: the price itself, or the product's name above it,
  * which is right. Its title and class fit the wrong price either way; only what it points at says which was reported.
  */
 const reportTicket = (passage: string): PayloadOf<'ticket.opened'> => ({
@@ -1168,12 +1168,12 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
     },
     'report-elsewhere': {
       about:
-        'a visitor’s report of a wrong result on a product page, pointing at its stock line, which is right, beside a price seeded wrong: the price is not what was reported, so no spec is for it',
+        'a visitor’s report of a wrong result on a product page, pointing at its name, which is right, above a price seeded wrong: the price is not what was reported, so no spec is for it',
       commit: APP_MAIN,
       seed: PRICE_SEED,
       input: {
         workItem: FIXTURE_WORK_ITEM,
-        asked: { kind: 'ticket', ticket: reportTicket('Sorry, none in stock') },
+        asked: { kind: 'ticket', ticket: reportTicket('Camera') },
         signals: [],
         protectedPaths: APP_PROTECTED,
         answers: [],

@@ -493,6 +493,7 @@ describe('judging a pull request through the API', () => {
             status: 'completed',
             conclusion: 'success',
             app: { slug: 'github-actions' },
+            pull_requests: [{ number: 9 }],
             output: { annotations_count: 0 },
           },
         ],
@@ -543,6 +544,7 @@ describe('judging a pull request through the API', () => {
               status: 'completed',
               conclusion: 'success',
               app: { slug: 'github-actions' },
+              pull_requests: [{ number: 9 }],
               output: { annotations_count: 1 },
             },
           ],
@@ -572,6 +574,7 @@ describe('judging a pull request through the API', () => {
               status,
               conclusion: null,
               app: { slug: 'github-actions' },
+              pull_requests: [{ number: 9 }],
             },
           ],
         },
@@ -584,7 +587,28 @@ describe('judging a pull request through the API', () => {
     }
     // Not run at all yet, the same.
     github({ '/check-runs?': { check_runs: [] } });
-    expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' });
+    expect(await judge(run, theirs)).toMatchObject({ rule: 'held', pending: 'test integrity has not run at aaaaaaa' }); // Another pull request's run at the same head, however it went, is not this one's reading.
+    github({
+      '/check-runs?': {
+        check_runs: [
+          {
+            id: 5,
+            name: 'gates / test integrity',
+            head_sha: HEAD,
+            status: 'completed',
+            conclusion: 'success',
+            app: { slug: 'github-actions' },
+            pull_requests: [{ number: 10 }],
+            output: { annotations_count: 0 },
+          },
+        ],
+      },
+    });
+    expect(await judge(run, theirs)).toMatchObject({
+      pass: false,
+      rule: 'held',
+      pending: "test integrity has not run for #9 at aaaaaaa: GitHub Actions' runs there do not name it",
+    });
   });
 
   describe('an exact pin it could not check', () => {

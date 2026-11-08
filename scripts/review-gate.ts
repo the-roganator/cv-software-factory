@@ -528,7 +528,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       ),
       owners(each),
     ]);
-    const integrity = testIntegrityRun(runs, head, files, pr.base.ref);
+    const integrity = testIntegrityRun(runs, head, files, pr.base.ref, pr.number);
     let testIntegrity: Facts['testIntegrity'] = { read: true };
     let excused: string[] = [];
     if ('run' in integrity) {

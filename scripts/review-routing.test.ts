@@ -353,15 +353,16 @@ describe('test integrity’s reading', () => {
     conclusion: 'success',
     app: { slug: 'github-actions' },
     started_at: '2026-11-04T10:00:00Z',
+    pull_requests: [{ number: 7 }],
     ...over,
   });
   const files: FileChange[] = [{ filename: 'src/x.ts', status: 'modified', patch: '+a' }];
 
   it('reads the completed, successful run GitHub Actions posted for the head', () => {
-    expect(testIntegrityRun([run()], HEAD, files, 'main')).toEqual({ run: run() });
+    expect(testIntegrityRun([run()], HEAD, files, 'main', 7)).toEqual({ run: run() });
     // The latest of several, a re-run's.
     const again = run({ id: 2, started_at: '2026-11-04T11:00:00Z', conclusion: 'failure' });
-    expect(testIntegrityRun([run(), again], HEAD, files, 'main')).toMatchObject({
+    expect(testIntegrityRun([run(), again], HEAD, files, 'main', 7)).toMatchObject({
       reason: expect.stringContaining('failure'),
     });
   });
@@ -369,25 +370,25 @@ describe('test integrity’s reading', () => {
   it('waits while the latest run of GitHub Actions for the head is unfinished, a queued re-run with no start included', () => {
     const rerun = run({ id: 2, status: 'queued', conclusion: null, started_at: null });
     for (const done of [run(), run({ conclusion: 'failure' })])
-      expect(testIntegrityRun([done, rerun], HEAD, files, 'main')).toEqual({
+      expect(testIntegrityRun([done, rerun], HEAD, files, 'main', 7)).toEqual({
         reason: 'test integrity is still running at aaaaaaa',
         pending: true,
       });
     // Only the latest attempt counts: an older one left queued or unclosed is no wait once a newer one has completed.
     for (const status of ['queued', 'in_progress']) {
       const stale = run({ status, conclusion: null, started_at: '2026-11-04T12:00:00Z' });
-      expect(testIntegrityRun([stale, run({ id: 2 })], HEAD, files, 'main')).toEqual({ run: run({ id: 2 }) });
-      expect(testIntegrityRun([run({ id: 2, conclusion: 'failure' }), stale], HEAD, files, 'main')).toEqual({
+      expect(testIntegrityRun([stale, run({ id: 2 })], HEAD, files, 'main', 7)).toEqual({ run: run({ id: 2 }) });
+      expect(testIntegrityRun([run({ id: 2, conclusion: 'failure' }), stale], HEAD, files, 'main', 7)).toEqual({
         reason: "test integrity's run at aaaaaaa is failure, not a success",
       });
     }
     // Once the latest has completed, it is the reading, by its id whatever the starts say.
     const later = run({ id: 3, started_at: '2026-11-04T12:00:00Z', conclusion: 'failure' });
-    expect(testIntegrityRun([later, run()], HEAD, files, 'main')).toMatchObject({
+    expect(testIntegrityRun([later, run()], HEAD, files, 'main', 7)).toMatchObject({
       reason: expect.stringContaining('failure'),
     });
     const sameStart = run({ id: 4, conclusion: 'cancelled' });
-    expect(testIntegrityRun([run(), sameStart], HEAD, files, 'main')).toMatchObject({
+    expect(testIntegrityRun([run(), sameStart], HEAD, files, 'main', 7)).toMatchObject({
       reason: expect.stringContaining('cancelled'),
     });
   });
@@ -395,29 +396,29 @@ describe('test integrity’s reading', () => {
   it('is no reading when the run is pending, skipped, cancelled, failed, missing or foreign', () => {
     // Queued, in progress or not yet run, it may yet be read: a wait.
     for (const status of ['queued', 'in_progress']) {
-      expect(testIntegrityRun([run({ status, conclusion: null })], HEAD, files, 'main')).toEqual({
+      expect(testIntegrityRun([run({ status, conclusion: null })], HEAD, files, 'main', 7)).toEqual({
         reason: 'test integrity is still running at aaaaaaa',
         pending: true,
       });
     }
     for (const conclusion of ['skipped', 'cancelled', 'failure', 'neutral']) {
-      expect(testIntegrityRun([run({ conclusion })], HEAD, files, 'main')).toEqual({
+      expect(testIntegrityRun([run({ conclusion })], HEAD, files, 'main', 7)).toEqual({
         reason: `test integrity's run at aaaaaaa is ${conclusion}, not a success`,
       });
     }
-    expect(testIntegrityRun([], HEAD, files, 'main')).toEqual({
+    expect(testIntegrityRun([], HEAD, files, 'main', 7)).toEqual({
       reason: 'test integrity has not run at aaaaaaa',
       pending: true,
     });
     // Posted by another app, the factory's included, which can post check runs of any name: never read, and no reason
     // to stop waiting for GitHub Actions' own.
     const foreign = run({ app: { slug: 'mrogan-software-factory' } });
-    expect(testIntegrityRun([foreign], HEAD, files, 'main')).toEqual({
+    expect(testIntegrityRun([foreign], HEAD, files, 'main', 7)).toEqual({
       reason:
         'test integrity has not run at aaaaaaa: only mrogan-software-factory posted a run of that name, not GitHub Actions',
       pending: true,
     });
-    expect(testIntegrityRun([{ ...foreign, conclusion: 'failure' }], HEAD, files, 'main')).toMatchObject({
+    expect(testIntegrityRun([{ ...foreign, conclusion: 'failure' }], HEAD, files, 'main', 7)).toMatchObject({
       pending: true,
     });
     // Nor does one still running hold up GitHub Actions' completed run.
@@ -428,20 +429,42 @@ describe('test integrity’s reading', () => {
       conclusion: null,
       started_at: '2026-11-04T12:00:00Z',
     };
-    expect(testIntegrityRun([run(), unfinished], HEAD, files, 'main')).toEqual({ run: run() });
+    expect(testIntegrityRun([run(), unfinished], HEAD, files, 'main', 7)).toEqual({ run: run() });
     // Another check's name.
-    expect(testIntegrityRun([run({ name: 'test integrity' })], HEAD, files, 'main')).toMatchObject({
+    expect(testIntegrityRun([run({ name: 'test integrity' })], HEAD, files, 'main', 7)).toMatchObject({
       reason: expect.any(String),
     });
   });
 
   it('never reads a run for another commit: in the merge queue, not the queue’s commit’s for the pull request’s head', () => {
-    expect(testIntegrityRun([run({ head_sha: QUEUE })], HEAD, files, 'main')).toEqual({
+    expect(testIntegrityRun([run({ head_sha: QUEUE })], HEAD, files, 'main', 7)).toEqual({
       reason: 'test integrity has not run at aaaaaaa',
       pending: true,
     });
-    expect(testIntegrityRun([run({ head_sha: EARLIER })], HEAD, files, 'main')).toMatchObject({
+    expect(testIntegrityRun([run({ head_sha: EARLIER })], HEAD, files, 'main', 7)).toMatchObject({
       reason: expect.any(String),
+    });
+  });
+
+  it('reads only the judged pull request’s own run, never another’s at the same head', () => {
+    // A second pull request, from another branch at the same commit: its run reads its own description's excuses.
+    const another = run({ id: 2, pull_requests: [{ number: 8 }], conclusion: 'success' });
+    const own = run({ conclusion: 'failure' });
+    expect(testIntegrityRun([own, another], HEAD, files, 'main', 7)).toEqual({
+      reason: "test integrity's run at aaaaaaa is failure, not a success",
+    });
+    expect(testIntegrityRun([own, another], HEAD, files, 'main', 8)).toEqual({ run: another });
+    // With none of its own, it waits, as with no run at all: its run may yet come.
+    const { pull_requests: _, ...unnamed } = run();
+    for (const none of [run({ pull_requests: [{ number: 8 }] }), run({ pull_requests: [] }), unnamed])
+      expect(testIntegrityRun([none], HEAD, files, 'main', 7)).toEqual({
+        reason: "test integrity has not run for #7 at aaaaaaa: GitHub Actions' runs there do not name it",
+        pending: true,
+      });
+    // A run that names another pull request too, from the same branch into another base, may have read either's
+    // description: no reading.
+    expect(testIntegrityRun([run({ pull_requests: [{ number: 7 }, { number: 8 }] })], HEAD, files, 'main', 7)).toEqual({
+      reason: "test integrity's run at aaaaaaa also names #8, so whose description it read is not known",
     });
   });
 
@@ -452,6 +475,7 @@ describe('test integrity’s reading', () => {
         HEAD,
         [...files, { filename: '.github/workflows/gates.yml', status: 'modified' }],
         'main',
+        7,
       ),
     ).toEqual({
       reason: "it changes .github/workflows/gates.yml, so test integrity's run is not the workflow on main's",
@@ -459,7 +483,7 @@ describe('test integrity’s reading', () => {
   });
 
   it('is no reading for a pull request into another branch, whose run is that branch’s workflow', () => {
-    expect(testIntegrityRun([run()], HEAD, files, 'factory/1-fix')).toEqual({
+    expect(testIntegrityRun([run()], HEAD, files, 'factory/1-fix', 7)).toEqual({
       reason: "it is into factory/1-fix, so test integrity's run is not the workflow on main's",
     });
   });

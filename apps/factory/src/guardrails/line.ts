@@ -100,8 +100,8 @@ export interface ListedPod {
 /**
  * The line's runner pods among those listed in `runners`, by name, with the runner part each is: never one the red-team
  * harness made (`RED_TEAM_LABEL`), which Stop the line does not end and which may start while the line is stopped, so
- * the drill passes over it as the line does. The harness makes its pods in `red-team`, apart from the runners, but an
- * image that makes them in `runners` may still be running.
+ * the drill passes over it as the line does. The harness makes its pods in `red-team`, apart from the runners, and
+ * admission refuses a marked pod in `runners`.
  */
 export const runnerPodsOf = (items: ListedPod[]): { name: string; part?: string }[] =>
   items

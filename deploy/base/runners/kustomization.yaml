@@ -7,5 +7,4 @@ resources:
   - ../agent-fence
   - network-policies.yaml
   - line-access.yaml
-  - red-team-access.yaml
   - quota.yaml

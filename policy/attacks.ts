@@ -85,11 +85,11 @@ export const ATTACK_RULES = {
 
 /**
  * The label that marks a pod the red-team harness makes (the egress and image attacks), its value the attack's id. The
- * harness makes them in `red-team`, a namespace of their own, but the cluster may still run a factory image that makes
- * them in `runners`, so the line passes over any pod, Job or volume there that carries it: it never takes an attack's
- * pod for one of its own runners, keeps its log as a step's, or counts it as a runner left behind. The admission rule
- * (`deploy/base/admission/factory/red-team-pods.yaml`) holds every pod the harness's account makes, and any pod that
- * carries this label, to the label beside the agent's runner label and the shape below.
+ * harness makes them in `red-team`, a namespace of their own. Admission (`deploy/base/admission/factory/red-team-pods.yaml`)
+ * holds every pod the harness's account makes there, and any pod that carries this label, to the label beside the
+ * agent's runner label and the shape below, and refuses in `runners` any pod, Job or volume claim that carries it. The
+ * line passes over anything in `runners` that carries it all the same: it never takes an attack's pod for one of its
+ * own runners, keeps its log as a step's, or counts it as a runner left behind.
  */
 export const RED_TEAM_LABEL = 'factory.mrogan.dev/red-team';
 

@@ -163,7 +163,7 @@ describe('the store’s NetworkPolicy', () => {
       true,
     );
   });
-  it('admits none of the attack pods the harness makes, in red-team or in runners', () => {
+  it('admits no attack pod in red-team, nor a pod labelled as one in runners', () => {
     for (const ns of [redTeam, runners]) {
       expect(admits(AGENT_POD, ns)).toBe(false);
       expect(admits({ ...AGENT_POD, 'app.kubernetes.io/name': 'red-team' }, ns)).toBe(false);
@@ -206,13 +206,29 @@ describe('the red-team harness’s Roles', () => {
         for (const resource of rule.resources) expect(['pods', 'pods/log']).toContain(resource);
     }
   });
-  it('are in red-team, where the harness makes its pods, and in runners only until the image that makes them in red-team is pinned', () => {
-    // The Role in runners goes in the deploy change after that pin: until then the image the cluster runs makes its
-    // pods there. No other namespace has one.
-    expect(new Set(roles.map((r) => r.metadata?.namespace))).toEqual(new Set(['red-team', 'runners']));
+  it('are in red-team alone, where the harness makes its pods: none beside the line’s runners', () => {
+    expect(new Set(roles.map((r) => r.metadata?.namespace))).toEqual(new Set(['red-team']));
     for (const binding of bindings)
       expect(binding.subjects).toEqual([{ kind: 'ServiceAccount', name: 'red-team', namespace: 'factory' }]);
-    expect(new Set(bindings.map((b) => b.metadata?.namespace))).toEqual(new Set(['red-team', 'runners']));
+    expect(new Set(bindings.map((b) => b.metadata?.namespace))).toEqual(new Set(['red-team']));
+  });
+  it('are the only rights the harness’s account has to anything in the cluster', () => {
+    const bound = all
+      .map((m) => m.manifest as Manifest & { subjects?: { kind: string; name: string; namespace?: string }[] })
+      .filter(
+        (m) =>
+          (m.kind === 'RoleBinding' || m.kind === 'ClusterRoleBinding') &&
+          (m.subjects ?? []).some(
+            (s) =>
+              (s.kind === 'ServiceAccount' && s.name === 'red-team' && s.namespace === 'factory') ||
+              // A group the account is in: every service account's, the factory's, every signed-in user's.
+              (s.kind === 'Group' &&
+                ['system:serviceaccounts', 'system:serviceaccounts:factory', 'system:authenticated'].includes(s.name)),
+          ),
+      );
+    expect(bound.map((b) => `${b.kind} ${b.metadata?.namespace}/${b.metadata?.name}`)).toEqual([
+      'RoleBinding red-team/red-team',
+    ]);
   });
   it('are the only rights any account of the factory’s has to pods in red-team: nothing of the line’s is there', () => {
     const inRedTeam = all
@@ -292,15 +308,15 @@ describe('the red-team namespace', () => {
 describe('the red-team pods’ admission rule', () => {
   const policy = one<ValidatingPolicy>('ValidatingPolicy', 'factory-red-team-pods');
   const text = () => policy.spec.validations.map((v) => v.expression).join('\n');
-  it('guards pods in red-team and runners: every pod the harness’s account creates, and any carrying the marker', () => {
+  it('guards pods in red-team: every pod the harness’s account creates, and any carrying the marker', () => {
     expect(policy, 'the admission policy is rendered').toBeTruthy();
-    for (const ns of ['red-team', 'runners'])
-      expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': ns }), ns).toBe(
-        true,
-      );
-    expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': 'factory' })).toBe(
-      false,
+    expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': 'red-team' })).toBe(
+      true,
     );
+    for (const ns of ['runners', 'factory'])
+      expect(selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': ns }), ns).toBe(
+        false,
+      );
     const match = policy.spec.matchConditions.map((c) => c.expression).join('\n');
     expect(match).toContain(RED_TEAM_LABEL);
     // RBAC lets the account create any pod there: one without the marker must meet this rule too, and fail it.
@@ -341,6 +357,37 @@ describe('the red-team pods’ admission rule', () => {
   it('admits only the agent label (never prepare) besides the marker', () => {
     expect(selects({ matchLabels: AGENT_POD }, AGENT_POD)).toBe(true);
     expect(text()).not.toContain("'prepare'");
+  });
+});
+
+describe('the rule that keeps red-team pods out of runners', () => {
+  const policy = one<ValidatingPolicy>('ValidatingPolicy', 'factory-no-red-team-in-runners');
+  const shape = one<ValidatingPolicy>('ValidatingPolicy', 'factory-red-team-pods');
+  it('guards pods, Jobs and volume claims, in runners alone', () => {
+    const rules = (
+      policy.spec.matchConstraints as unknown as {
+        resourceRules: { apiGroups: string[]; resources: string[]; operations: string[] }[];
+      }
+    ).resourceRules;
+    expect(rules.flatMap((r) => r.apiGroups.flatMap((g) => r.resources.map((x) => `${g}/${x}`))).sort()).toEqual([
+      '/persistentvolumeclaims',
+      '/pods',
+      'batch/jobs',
+    ]);
+    for (const rule of rules) expect(rule.operations).toEqual(['CREATE', 'UPDATE']);
+    const ns = (name: string) =>
+      selects(policy.spec.matchConstraints.namespaceSelector, { 'kubernetes.io/metadata.name': name });
+    expect(ns('runners')).toBe(true);
+    for (const other of ['red-team', 'factory']) expect(ns(other), other).toBe(false);
+  });
+  it('matches as the red-team pods’ rule does: all the harness’s account creates, and anything carrying the marker', () => {
+    expect(policy.spec.matchConditions).toEqual(shape.spec.matchConditions);
+    expect(policy.spec.matchConditions.map((c) => c.expression).join('\n')).toContain(RED_TEAM_LABEL);
+  });
+  it('refuses each one, and fails closed', () => {
+    expect(policy.spec.validations.map((v) => v.expression)).toEqual(['false']);
+    expect(policy.spec.validationActions).toEqual(['Deny']);
+    expect(policy.spec.failurePolicy).toBe('Fail');
   });
 });
 

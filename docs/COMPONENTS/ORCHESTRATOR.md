@@ -67,6 +67,8 @@ What it takes is Martin's to set in the console's Controls ([admin service](ADMI
 
 `make take-the-line` takes one of `ONLY=<work item>`, `NEXT=<how many>` or `EVERY=1`. It makes the change the console's Controls would, through the same check (`decideChange` in `admin/line.ts`), keeps every other control as it stands, and records it as his, appended by his command line's role (`factory_operator`); like `make start-the-line`, it needs no passkey. A take Martin sets applies from the line's next pass, which his change wakes.
 
+`make close-work-item ONLY=<work item>` (`REASON="…"`, at most 180 characters) closes a work item the line has not taken, by the same role: a discard with his reason (`work-item.closed`), for a ticket a try's invented report opened, or one he is done with before the line takes it. It is refused for a work item that is not open, and for one the line has, which any event of the line's on it since it was last opened or reopened says: that one has an issue, and perhaps a pull request, which only the line's own close closes, so it is closed in the console, with Close on its card, or by letting its step end. It answers no hold. If the take in force is Just one and names the work item closed, the command says so: the line would take nothing until the take changes.
+
 ### Agents take new work
 
 Martin's switch in Controls (`newWork`, on by default). Off, the line takes no new ticket and starts no agent's step; a step in hand finishes, and the rest goes on: triage, the senses, Release and Verify, the looks again, and a kept handback's effects, of a step already run. Unlike stopping the line, it aborts no canary, and turning it on again needs no passkey.

@@ -243,6 +243,13 @@ export const HOLD_CAUSES = [
    * when it saw it: the problem may be the factory's environment, which no agent can mend, so it waits for Martin.
    */
   'environment',
+  /**
+   * A visitor's report's ticket points at nothing narrower than its page (a symptom of the whole page, none of the
+   * page's passages or elements chosen, a page that could not be read, or a ticket from before it could point), so it
+   * waits at Plan, before any planner step, until Martin describes what is wrong in words he shares: no agent reads a
+   * report, and the planner would otherwise plan from the route and the kind of problem alone.
+   */
+  'report-undescribed',
   /** A spec waits for Martin's approval before anything is built: an improvement's, or one tagged `out-of-scope`. */
   'spec',
   /** An agent asks Martin something only he can say. */

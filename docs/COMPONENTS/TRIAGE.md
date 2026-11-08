@@ -51,6 +51,8 @@ A report's ticket says what was reported, in the factory's words, so that every 
 | `rejects-valid-input` | A form field or a button | `element/v1` |
 | Any other symptom: one of the whole page, such as an error, slowness, a header or the logs | Nothing narrower than the page | Nothing more |
 
+A ticket that points at nothing narrower than the page, whatever the reason (the symptom, Jev's none, or a page that could not be read), waits at Plan for Martin to describe what is wrong before any planner starts ([a report that names only its page](ORCHESTRATOR.md#a-report-that-names-only-its-page)).
+
 Faint text is text: a link's or a button's words are among the passages too. An element is the page's own markup: a link by its words and its path on the app, an image by its description and its path, a field by its label, its `name` and its type, a button by its words. An address off the app is named as such, a query or a fragment is cut, and a field's value is never read. Jev's answer is a label from the options it was offered, so nothing it writes reaches the ticket. A content ticket's fingerprint is its passage too, as before; every other ticket keeps its route and symptom as its fingerprint, which the scoreboard matches. A planner's finding, which opens no ticket, is never asked what it points at, only a content one's passage, which its hold's fingerprint holds.
 
 ## One copy at a time

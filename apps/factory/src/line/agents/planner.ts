@@ -74,7 +74,7 @@
  * (`coder.ts`), and the GitHub worker refuses every protected file a patch changes, as the last word.
  */
 import type { InboxSignal, PayloadOf } from '@software-factory/events';
-import { inScope, PATH_CHARS, RISKS, touches } from '@software-factory/events';
+import { inScope, PATH_CHARS, pointsAtSomething, RISKS, touches } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { z } from 'zod';
 import { type Contradicted, entryProblem, MOST_CONTRADICTED } from '../../gates/contradicts.ts';
@@ -690,6 +690,15 @@ function replanLines({ asked, lastSpec, replan, change, answers }: PlannerInput)
   ];
 }
 
+/**
+ * What the planner is told of a visitor's report's ticket that names only its page: the line held it for Martin to
+ * describe it (`undescribed` in `machine.ts`), so his answer says what was reported, and the fix is for that alone.
+ */
+const REPORT_DESCRIBED = [
+  '',
+  'The ticket names only the page and the kind of problem. What was reported is what Martin described in his answers above: plan the fix for that, and for no other problem of its kind on the page.',
+];
+
 /** A fix's plan: the ticket, what the senses saw and what came of fixes before, to a diagnosis and a spec. */
 function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): string {
   const { workItem, signals, protectedPaths, answers, persisted = [], reopened = [], failure } = input;
@@ -699,6 +708,7 @@ function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): 
     ...ticketLines(ticket, signals),
     ...(signals.length ? ['', 'What the senses saw, by number:', ...numbered(signals)] : []),
     ...answerLines(answers),
+    ...(input.aboutReport && !pointsAtSomething(ticket.points) ? REPORT_DESCRIBED : []),
     ...(persisted.length
       ? [
           '',

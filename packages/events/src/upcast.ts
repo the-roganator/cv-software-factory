@@ -81,6 +81,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     9: (payload) => payload,
     // Version 11 names a merge hold's pull request as the review gate judged it; a version 10 merge hold named none.
     10: (payload) => payload,
+    // Version 12 adds a visitor's report's ticket that waits for Martin to describe it; a version 11 hold reads as it was.
+    11: (payload) => payload,
   },
   // Version 2 names the hold it answers, and says when its words stay Martin's; a version 1 answer said neither.
   // Version 3 adds sending the work back to the planner to the decisions; a version 2 answer reads as it was.

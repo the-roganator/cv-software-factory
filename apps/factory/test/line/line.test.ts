@@ -1258,9 +1258,23 @@ describe('the line', () => {
       ),
     ]);
     const { pass, steps, github } = line();
+    // Its ticket names only the route: it waits for Martin to describe it, before any planner.
+    await pass();
+    expect(steps.requests).toEqual([]);
+    expect(await summaries(workItem, 'hold.started')).toEqual(['A question for Martin']);
+    await martin.append(
+      event(
+        workItem,
+        'hold.answered',
+        { decision: 'answered', answer: 'Searching with a quote fails', report: true, shared: true },
+        'martin',
+      ),
+    );
     await pass();
     const prompt = String(steps.requests[0]?.prompt);
     expect(prompt).toContain('Plan the fix for ticket');
+    expect(prompt).toContain('He said: Searching with a quote fails');
+    expect(prompt).toContain('What was reported is what Martin described in his answers above');
     expect(prompt).toContain('The log watcher\'s check "new error pattern" on /search');
     expect(prompt).toContain('1 request to /search logged 1 line at error');
     expect(prompt).not.toMatch(/ignore|instructions|every.price|Ignore your/);

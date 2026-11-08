@@ -545,6 +545,16 @@ describe('the planner’s prompt', () => {
     expect(planner.prompt(INPUT)).not.toContain('never what the visitor saw');
   });
 
+  it('tells it, on a report’s ticket that names only its page, that what was reported is what Martin described', () => {
+    const described = 'What was reported is what Martin described in his answers above';
+    const ticket = (points?: (typeof TICKET)['points']) => ({ kind: 'ticket' as const, ticket: { ...TICKET, points } });
+    expect(planner.prompt({ ...INPUT, aboutReport: true, asked: ticket() })).toContain(described);
+    expect(planner.prompt({ ...INPUT, aboutReport: true, asked: ticket({ page: '/search' }) })).toContain(described);
+    const passage = ticket({ page: '/search', passage: 'No results for your search' });
+    expect(planner.prompt({ ...INPUT, aboutReport: true, asked: passage })).not.toContain(described);
+    expect(planner.prompt(INPUT)).not.toContain(described);
+  });
+
   it('tells it why its last attempt failed', () => {
     const failure =
       "The planner's result does not fit its schema (spec.scope.0: deploy names a path no patch may change)";

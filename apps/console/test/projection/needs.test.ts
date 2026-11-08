@@ -597,6 +597,26 @@ describe('Needs you', () => {
     ]);
     // The words row answers the planner: no sentence sends Martin elsewhere.
     expect(two?.note).toBeUndefined();
+    // A report's ticket that names only its page, waiting for him to describe it: his words, shared, or Reject, and
+    // no Approve, which would give the planner nothing.
+    const undescribed = report(
+      '2058',
+      hold('report-undescribed', {
+        stage: 'plan',
+        kind: 'question',
+        reason: 'Triage could point at nothing narrower than the page',
+        question: 'What is wrong on the page?',
+      }),
+    );
+    const [three] = needsView(foldItems(undescribed.events), START + 3_600_000).holds;
+    expect(three).toMatchObject({
+      kicker: 'Describe a report',
+      evidence: { kind: 'question', question: 'What is wrong on the page?' },
+    });
+    expect(three?.answers.map((a) => [a.label, a.share, a.stepUp, a.does])).toEqual([
+      ['Answer in words', true, true, 'The planner plans the fix from your words, and its criteria may quote them.'],
+      ['Reject', false, false, 'Closes #2058. Nothing is built.'],
+    ]);
     // On any other work item his words are public anyway: nothing is shared.
     const plain = work('2059', START)
       .open()

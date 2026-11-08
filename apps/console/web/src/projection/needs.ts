@@ -226,6 +226,8 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
       return 'A burst of problems';
     case 'environment':
       return 'Held for its backends';
+    case 'report-undescribed':
+      return 'Describe a report';
     case 'spec':
       return improvement ? 'An improvement’s spec' : 'A spec to approve';
     case 'question':
@@ -293,7 +295,7 @@ function doesOf(
     if (cause === 'merge' && pullRequest !== undefined) {
       return `Closes #${workItem}, unmerged. Its pull request #${pullRequest} stays open on GitHub until you close it.`;
     }
-    return `Closes #${workItem}${cause === 'question' || cause === 'spec' ? '. Nothing is built.' : ', unmerged.'}`;
+    return `Closes #${workItem}${cause === 'question' || cause === 'spec' || cause === 'report-undescribed' ? '. Nothing is built.' : ', unmerged.'}`;
   }
   if (answer === 'approved') {
     if (cause === 'finding') return 'Triage opens its ticket, and it goes down the line like any other.';
@@ -309,6 +311,9 @@ function doesOf(
     if (cause === 'question') return 'The planner plans again, with no answer.';
   }
   if (answer === 'answered' && cause === 'question') return 'The planner reads your answer, and carries on with it.';
+  if (answer === 'answered' && cause === 'report-undescribed') {
+    return 'The planner plans the fix from your words, and its criteria may quote them.';
+  }
   // Words that would go to the coder go to the planner instead: the spec, not the change, is what is wrong.
   if (answer === 'replanned') {
     return 'The planner writes the spec again from your words, and the coder rebuilds the change on it.';

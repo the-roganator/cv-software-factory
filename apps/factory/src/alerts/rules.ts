@@ -337,6 +337,11 @@ export const HOLD_WORDS: Record<HoldCause, { summary: string; description: strin
     summary: 'waits for you: held for its backends',
     description: 'Something its sense reads besides the app was not healthy when it saw the problem.',
   },
+  'report-undescribed': {
+    summary: 'waits for you to describe a report',
+    description:
+      'A visitor reported it, and triage could point at nothing narrower than the page: no planner starts until you describe it.',
+  },
   spec: { summary: 'waits for your approval of its spec', description: 'Nothing is built until you approve it.' },
   question: { summary: 'waits for your answer', description: 'An agent asks you something only you can say.' },
   'ticket-rejected': {

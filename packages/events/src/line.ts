@@ -74,8 +74,8 @@ export type Resolution =
  * merge as it stands, or tests that cannot fail. The planner writes the spec again from his words, and the coder
  * rebuilds the pull request on it. It means nothing elsewhere: where his words already go to the planner (`spec`,
  * `scope`, `nothing-to-fix`, `beyond-ticket`, `verify`), on a question, a ticket the planner rejected or a step that
- * kept failing, where his words already rerun the step that was held, and on triage's holds, a deploy, a canary and
- * the spend cap, where there is no spec yet or none left to change.
+ * kept failing, where his words already rerun the step that was held, and on triage's holds, a report's ticket waiting
+ * for his description, a deploy, a canary and the spend cap, where there is no spec yet or none left to change.
  */
 export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
   // Triage's: a suggestion never comes onto the line, nor does a defect only the planner has seen until Martin approves
@@ -87,6 +87,10 @@ export const ANSWERS: Record<HoldCause, Record<HoldAnswer, Resolution>> = {
   finding: { approved: 'carry-on', rejected: 'close', answered: 'wait', replanned: 'wait' },
   burst: { approved: 'carry-on', rejected: 'close', answered: 'wait', replanned: 'wait' },
   environment: { approved: 'carry-on', rejected: 'close', answered: 'wait', replanned: 'wait' },
+  // A visitor's report's ticket that points at nothing narrower than its page: only his words, shared, give the planner
+  // something to plan from, so they carry it on to the planner, and approving without them, which would give it
+  // nothing, does nothing.
+  'report-undescribed': { approved: 'wait', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
   spec: { approved: 'carry-on', rejected: 'close', answered: 'replan', replanned: 'wait' },
   question: { approved: 'carry-on', rejected: 'close', answered: 'carry-on', replanned: 'wait' },
   'ticket-rejected': { approved: 'close', rejected: 'close', answered: 'carry-on', replanned: 'wait' },

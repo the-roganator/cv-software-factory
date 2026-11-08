@@ -1088,6 +1088,10 @@ describe('Martin’s answer to a hold', () => {
     expect(fold([...asked, answer('answered', 'Sizes first')]).unanswered).toBe(false);
     // Until it writes a spec: a question after that is a new one.
     expect(fold([...asked, answer('approved'), spec]).unanswered).toBe(false);
+    // Or until his words reach it on any other hold, as on its rejection of the ticket.
+    const rejected = [...asked, answer('approved'), held('ticket-rejected', 'plan')];
+    expect(fold(rejected).unanswered).toBe(true);
+    expect(fold([...rejected, answer('answered', 'Sizes first')]).unanswered).toBe(false);
   });
 
   it('closes the work item when he rejects it, whatever the cause, but a canary paused for him', () => {

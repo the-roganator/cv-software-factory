@@ -526,15 +526,8 @@ const answersOf = (hold: Hold): HoldAnswer[] => {
   return hold.merge?.why === 'held' ? offered.filter((answer) => answer !== 'replanned') : offered;
 };
 
-/** What Martin may do himself where the planner rejected a visitor's report's ticket: ask for the change. */
-export const ASK_YOURSELF =
-  'Where it needs what only you can decide, ask for that yourself, as an improvement, with the “+”.';
-
 /** The one sentence after a hold's evidence, if it has one: the first that says what its rows do not. */
-const noteOf = (hold: Hold, aboutReport: boolean) =>
-  (hold.cause === 'merge' && mergeNote(hold.merge)) ||
-  (aboutReport && hold.cause === 'ticket-rejected' && ASK_YOURSELF) ||
-  undefined;
+const noteOf = (hold: Hold) => (hold.cause === 'merge' && mergeNote(hold.merge)) || undefined;
 
 /** The settings, for a spend cap. */
 const linkOf = (cause: HoldCause): Need['link'] =>
@@ -625,7 +618,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
           title: item.title,
           evidence: evidenceOf(item, hold.cause),
           link: linkOf(hold.cause),
-          note: noteOf(hold, aboutReport),
+          note: noteOf(hold),
           way: wayOf(item, hold.cause),
           answers: rows,
           aboutReport,

@@ -5,7 +5,7 @@
  * note. Or it rejects the ticket, or asks Martin a question, and the work item holds for him.
  *
  * Once Martin has approved its question with no answer (`unanswered`), it is told none will come, and offered no
- * question until it writes a spec, and its schema takes none: it would only ask the same again. It decides from the
+ * question until it writes a spec or his words reach it, and its schema takes none: it would only ask the same again. It decides from the
  * evidence, a spec or a rejection; a question handed back anyway is a result that does not fit, and fails the step,
  * which is tried again told why, as any other. On a ticket a visitor's report opened, his words reach it only where he
  * shared them, as their author; with none shared, he approves its question or rejects it.

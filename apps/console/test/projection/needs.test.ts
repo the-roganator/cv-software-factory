@@ -11,7 +11,7 @@ import { GUARDRAIL_HOLDS } from '../../web/src/access.ts';
 import { clock } from '../../web/src/format.ts';
 import { project } from '../../web/src/projection/index.ts';
 import { foldItems } from '../../web/src/projection/items.ts';
-import { ASK_YOURSELF, needsView } from '../../web/src/projection/needs.ts';
+import { needsView } from '../../web/src/projection/needs.ts';
 import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, payloads, SAMPLES, work } from './support.ts';
 
@@ -488,14 +488,15 @@ describe('Needs you', () => {
       ['Reject', false, false, false],
     ]);
     expect(asked?.note).toBeUndefined();
-    // A ticket the planner rejected: words, and one Close, with one sentence on what Martin may do himself.
+    // A ticket the planner rejected: words, shared, and one Close.
     const rejected = report('2056', hold('ticket-rejected', { stage: 'plan', reason: 'Only Martin can say which' }));
     const [two] = needsView(foldItems(rejected.events), START + 3_600_000).holds;
     expect(two?.answers.map((a) => [a.label, a.share, a.does])).toEqual([
       ['Answer in words', true, 'The line carries on from where it was held, with your words.'],
       ['Close #2056', false, 'Agrees with the planner, and closes #2056. Nothing is built.'],
     ]);
-    expect(two?.note).toBe(ASK_YOURSELF);
+    // The words row answers the planner: no sentence sends Martin elsewhere.
+    expect(two?.note).toBeUndefined();
     // On any other work item his words are public anyway: nothing is shared.
     const plain = work('2059', START)
       .open()

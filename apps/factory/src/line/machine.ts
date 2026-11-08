@@ -272,7 +272,8 @@ export interface WorkItemState {
    */
   answers: Answer[];
   /**
-   * Martin approved the planner's question with no answer, until it writes a spec: no answer will come, so the planner
+   * Martin approved the planner's question with no answer, until it writes a spec or his words on another hold reach
+   * it: no answer will come, so the planner
    * is told so and may not ask again, where it would only ask the same.
    */
   unanswered: boolean;
@@ -571,6 +572,8 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
         }
         // A question carried on with no words: the planner plans again told none will come, and may not ask again.
         if (cause === 'question') state.unanswered = resolution === 'carry-on' && words === undefined;
+        // Words he gives, on any hold, reach it: it may ask again.
+        else if (words !== undefined) state.unanswered = false;
         if (resolution === 'replan') {
           // The reviewer's findings that cite the ticket (beyond it, or short of Martin's answer), when its escalation
           // is what he answered.

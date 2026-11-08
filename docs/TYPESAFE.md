@@ -109,8 +109,8 @@ Routing (`packages/triage/src/routing.ts`), in order, against the thresholds in 
 1. Injection at or above the quarantine threshold: **quarantine**. The report is kept as evidence of an attack, its text for [30 days](COMPONENTS/TRIAGE.md#how-long-a-report-is-kept), and never reaches the planner.
 2. `suggestion`: **park for Martin** (spec 4.1).
 3. `not-a-defect`: **discard**, with the events kept.
-4. An open ticket chosen at or above the repeat threshold: **repeat**. The report joins that ticket.
-5. Anything else: **ticket**, with category, symptom and severity. Severity is read only on this branch, because it means nothing for reports that are not problems; below `degraded` it is cosmetic. A new ticket whose fingerprint matches an open one joins it instead: one fingerprint, one ticket.
+4. An open ticket chosen at or above the repeat threshold: **repeat**. The report joins that ticket, if the two point at the same thing; otherwise it is a ticket, as below ([a report on a ticket it repeats](COMPONENTS/TRIAGE.md#a-report-on-a-ticket-it-repeats)).
+5. Anything else: **ticket**, with category, symptom and severity. Severity is read only on this branch, because it means nothing for reports that are not problems; below `degraded` it is cosmetic. A new ticket whose fingerprint matches an open one that points at the same thing joins it instead: one fingerprint, one ticket.
 
 Low confidence on the category does not block a ticket. It is shown on the ticket, and the planner can reject a ticket it cannot turn into a testable spec.
 

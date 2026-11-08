@@ -47,6 +47,7 @@ import type {
   SignalSource,
   SymptomClass,
 } from '@software-factory/events';
+import { samePoints } from '@software-factory/events';
 import {
   type EventWriter,
   fingerprintOf,
@@ -146,7 +147,10 @@ interface Taken {
   received_at: Date;
 }
 
-type Ticket = { workItem: string } & Pick<PayloadOf<'ticket.opened'>, 'title' | 'category' | 'fingerprint'> & {
+type Ticket = { workItem: string } & Pick<
+  PayloadOf<'ticket.opened'>,
+  'title' | 'category' | 'fingerprint' | 'points'
+> & {
     /** The source of the signal that opened it. */
     sense: SignalSource | undefined;
   };
@@ -649,15 +653,28 @@ export class Triage {
         finding ? routeFinding : routeReport,
         !finding,
       );
+      // A report's ticket carries what was reported: a report Jev judged a repeat of a ticket that points at
+      // something else opens the ticket it would have opened alone, with its own points.
+      const repeated = decision.routed.route === 'repeat' ? decision.routed.joined : undefined;
+      if (decision.alone && !samePoints(others.find((t) => t.workItem === repeated)?.points, decision.points)) {
+        decision.routed = decision.alone;
+        const first = decision.judgements[0];
+        if (first) {
+          const { joined: _, ...alone } = first;
+          decision.judgements[0] = { ...alone, route: 'ticket' };
+        }
+      }
       // One fingerprint, one ticket: a new ticket that matches an open one joins it instead, as does a defect the
-      // planner noticed that an open ticket already has.
+      // planner noticed that an open ticket already has. A report's joins only one that points at the same thing.
       const { routed } = decision;
       const defect = routed.route === 'ticket' || (routed.route === 'park' && routed.defect !== undefined);
       const { fingerprint } = decision;
       const same =
         fingerprint &&
-        others.find((ticket) =>
-          sameFingerprint(ticket.fingerprint, fingerprint, { open: ticket.sense, found: signal.sense }),
+        others.find(
+          (ticket) =>
+            sameFingerprint(ticket.fingerprint, fingerprint, { open: ticket.sense, found: signal.sense }) &&
+            (finding || samePoints(ticket.points, decision.points)),
         );
       // One fingerprint, one hold: a defect the planner noticed that one held already has is counted into that hold,
       // its words kept beside the first's, so Martin answers it once. One he has answered already takes it too: an
@@ -1043,6 +1060,7 @@ export async function openTickets(sql: Sql): Promise<Ticket[]> {
     title: payload.title,
     category: payload.category,
     fingerprint: payload.fingerprint,
+    ...(payload.points && { points: payload.points }),
     sense: sense ?? undefined,
   }));
 }

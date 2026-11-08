@@ -18,6 +18,7 @@ import {
   WORDS_LEAVE_HELD,
 } from '../src/line.ts';
 import { formatLog, parseLog } from '../src/log-format.ts';
+import { samePoints } from '../src/points.ts';
 import { PUBLIC_VIEWS, publicView, redactSecrets } from '../src/public.ts';
 import { REQUEST_TITLE, requestTitle } from '../src/request.ts';
 import { PAYLOADS, validate, validateSignal } from '../src/schemas.ts';
@@ -2205,5 +2206,44 @@ describe('Martin’s answer to a hold in words', () => {
     const answer = PAYLOADS['hold.answered'].shape.answer;
     expect(answer.safeParse('a'.repeat(MARTIN_ANSWER_CHARS)).success).toBe(true);
     expect(answer.safeParse('a'.repeat(MARTIN_ANSWER_CHARS + 1)).success).toBe(false);
+  });
+});
+
+describe('the same thing reported', () => {
+  const link = { kind: 'link' as const, text: 'Directions', to: '/directions' };
+
+  it('is the same passage or element of the same page, or nothing narrower than a page on both sides', () => {
+    expect(
+      samePoints({ page: '/visit', passage: 'Opens at nine.' }, { page: '/visit', passage: 'Opens at nine.' }),
+    ).toBe(true);
+    // Read back from the store, an element's keys may come in another order.
+    expect(
+      samePoints(
+        { page: '/visit', element: link },
+        { page: '/visit', element: { to: '/directions', text: 'Directions', kind: 'link' } },
+      ),
+    ).toBe(true);
+    expect(samePoints({ page: '/visit' }, { page: '/garden' })).toBe(true);
+    expect(samePoints(undefined, { page: '/visit' })).toBe(true);
+    expect(samePoints(undefined, undefined)).toBe(true);
+  });
+
+  it('is not another passage, another element, the same one on another page, or something beside nothing', () => {
+    expect(
+      samePoints({ page: '/visit', passage: 'Opens at nine.' }, { page: '/visit', passage: 'Closes at five.' }),
+    ).toBe(false);
+    expect(samePoints({ page: '/visit', element: link }, { page: '/visit', element: { ...link, to: '/map' } })).toBe(
+      false,
+    );
+    expect(
+      samePoints(
+        { page: '/visit', element: link },
+        { page: '/visit', element: { kind: 'button', text: 'Directions' } },
+      ),
+    ).toBe(false);
+    expect(samePoints({ page: '/visit', element: link }, { page: '/garden', element: link })).toBe(false);
+    expect(samePoints({ page: '/visit', element: link }, { page: '/visit', passage: 'Directions' })).toBe(false);
+    expect(samePoints({ page: '/visit' }, { page: '/visit', passage: 'Opens at nine.' })).toBe(false);
+    expect(samePoints(undefined, { page: '/visit', element: link })).toBe(false);
   });
 });

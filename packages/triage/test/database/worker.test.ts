@@ -465,6 +465,128 @@ describe('triage', () => {
     ]);
   });
 
+  describe('a report on a page with an open ticket', () => {
+    const passages = ['The garden opens at nine on weekdays.', 'Tickets are half price on Sundays.'];
+    const links = [
+      { kind: 'link' as const, text: 'Directions', to: '/directions' },
+      { kind: 'link' as const, text: 'Opening times', to: '/times' },
+    ];
+    const pageOf = async () => {
+      const bytes = new TextEncoder().encode('a screenshot of /visit');
+      const screenshot: Screenshot = {
+        kind: 'screenshot',
+        hash: await artifacts.put(bytes),
+        type: 'image/png',
+        size: bytes.length,
+        route: '/visit',
+        version: 'c02efd8',
+        width: 1280,
+        height: 800,
+        boxes: [],
+      };
+      return { status: 200, screenshot, passages, elements: links };
+    };
+    const report = (text: string) =>
+      found({
+        sense: 'report',
+        check: 'report widget',
+        route: '/visit',
+        symptom: undefined,
+        report: { page: '/visit', text },
+      });
+    /** Jev, judging every report the symptom given, and choosing the passage or link `picks` gives for each report. */
+    const judging =
+      (symptom: string, picks: Record<string, string>, repeats = true): Judge =>
+      async (request) => {
+        const judged = await jev(request);
+        const pick = picks[request.state.report ?? ''] ?? 'none';
+        if (request.questionSet === 'passage/v1') return { ...judged, answers: { passage: choice(pick) } };
+        if (request.questionSet === 'element/v1') return { ...judged, answers: { element: choice(pick) } };
+        // Not a repeat: asked, Jev answers none of the open tickets.
+        const repeat = judged.answers.repeat && (repeats ? judged.answers.repeat : choice('none'));
+        return { ...judged, answers: { ...judged.answers, symptom: choice(symptom), ...(repeat && { repeat }) } };
+      };
+    const ticketOf = async (text: string) => {
+      const [row] = await writer<{ work_item: string; points: object | null }[]>`
+        select s.work_item, t.payload->'points' as points from events s
+        left join events t on t.work_item = s.work_item and t.type = 'ticket.opened'
+        where s.type = 'signal.received' and s.payload->'report'->>'text' = ${text}`;
+      return row;
+    };
+
+    it('opens its own ticket when Jev calls it a repeat of one that points at another passage, and joins the same', async () => {
+      const read = pageOf;
+      const judge = judging('wrong-result', {
+        'The opening hour is wrong': 'p1',
+        'The Sunday price is wrong': 'p2',
+        'Nine is the wrong hour': 'p1',
+      });
+      const run = triage({ judge, read });
+      for (const text of ['The opening hour is wrong', 'The Sunday price is wrong', 'Nine is the wrong hour']) {
+        await sendSignal(database.owner, report(text));
+        expect(await run.takeOne()).toBe('report');
+      }
+      const first = await ticketOf('The opening hour is wrong');
+      const second = await ticketOf('The Sunday price is wrong');
+      const third = await ticketOf('Nine is the wrong hour');
+      expect(first?.points).toEqual({ page: '/visit', passage: passages[0] });
+      // Jev called it a repeat of the open ticket, which points at another passage: it opened its own, with its own.
+      expect(second?.work_item).not.toBe(first?.work_item);
+      expect(second?.points).toEqual({ page: '/visit', passage: passages[1] });
+      // Jev called the third a repeat of the newest ticket, about the other passage; it joined the one on its own.
+      expect(third?.work_item).toBe(first?.work_item);
+      const [judged] = await writer<{ payload: { route: string; joined?: string } }[]>`
+        select payload from events where work_item = ${second?.work_item ?? ''} and type = 'judgement.made' order by seq limit 1`;
+      expect(judged?.payload.route).toBe('ticket');
+      expect(judged?.payload.joined).toBeUndefined();
+    });
+
+    it('joins one with its fingerprint only when it points at the same link, or neither points narrower than the page', async () => {
+      const judge = judging(
+        'broken-link',
+        { 'Directions go nowhere': 'e1', 'The times link is dead': 'e2', 'Directions are broken': 'e1' },
+        false,
+      );
+      const run = triage({ judge, read: pageOf });
+      for (const text of [
+        'Directions go nowhere',
+        'The times link is dead',
+        'Directions are broken',
+        'A link is broken',
+      ]) {
+        await sendSignal(database.owner, report(text));
+        expect(await run.takeOne()).toBe('report');
+      }
+      const [directions, times, again, unnamed] = await Promise.all(
+        ['Directions go nowhere', 'The times link is dead', 'Directions are broken', 'A link is broken'].map(ticketOf),
+      );
+      expect(directions?.points).toEqual({ page: '/visit', element: links[0] });
+      expect(times?.points).toEqual({ page: '/visit', element: links[1] });
+      expect(times?.work_item).not.toBe(directions?.work_item);
+      expect(again?.work_item).toBe(directions?.work_item);
+      // One that points at no link has a ticket of its own too, which waits for Martin to describe it.
+      expect(unnamed?.points).toEqual({ page: '/visit' });
+      expect(new Set([directions, times, unnamed].map((t) => t?.work_item)).size).toBe(3);
+    });
+
+    it('joins a sense’s ticket only when it points at nothing narrower than the page', async () => {
+      await sendSignal(database.owner, found({ route: '/visit' }));
+      expect(await triage().takeOne()).toBe('opened');
+      const [{ work_item: crawled = '' } = {}] = await writer<{ work_item: string }[]>`
+        select work_item from inbox where outcome = 'opened' order by received_at desc limit 1`;
+      const judge = judging('broken-link', { 'The times link is dead': 'e2' }, false);
+      const run = triage({ judge, read: pageOf });
+      for (const text of ['The times link is dead', 'A link here is broken']) {
+        await sendSignal(database.owner, report(text));
+        expect(await run.takeOne()).toBe('report');
+      }
+      const named = await ticketOf('The times link is dead');
+      expect(named?.work_item).not.toBe(crawled);
+      expect(named?.points).toEqual({ page: '/visit', element: links[1] });
+      expect((await ticketOf('A link here is broken'))?.work_item).toBe(crawled);
+    });
+  });
+
   it('quarantines a report that gives orders, recording typed judgement’s refusal as its own role', async () => {
     const orders: Judge = async (request) => ({
       ...(await jev(request)),

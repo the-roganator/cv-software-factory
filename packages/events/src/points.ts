@@ -86,6 +86,32 @@ export function pointWords(points: Points): string {
 /** Whether a ticket's points name something on the page, not just the page. */
 export const pointsAtSomething = (points: Points | undefined) => Boolean(points?.passage || points?.element);
 
+/**
+ * Whether two tickets' points are the same thing reported: the same passage, or the same element, of the same page;
+ * or neither points at anything narrower than a page. A ticket a sense opened points at nothing. A report joins an open ticket only on the same points, so a
+ * ticket never stands for something reported that it does not point at.
+ */
+export function samePoints(a: Points | undefined, b: Points | undefined): boolean {
+  if (!pointsAtSomething(a) && !pointsAtSomething(b)) return true;
+  if (!a || !b || a.page !== b.page) return false;
+  if (a.passage || b.passage) return a.passage === b.passage;
+  return a.element !== undefined && b.element !== undefined && sameElement(a.element, b.element);
+}
+
+/** The same element, field by field: an element read back from the store may hold its keys in another order. */
+function sameElement(a: PageElement, b: PageElement): boolean {
+  switch (a.kind) {
+    case 'link':
+      return b.kind === 'link' && a.text === b.text && a.to === b.to;
+    case 'image':
+      return b.kind === 'image' && a.alt === b.alt && a.src === b.src;
+    case 'field':
+      return b.kind === 'field' && a.label === b.label && a.name === b.name && a.type === b.type;
+    case 'button':
+      return b.kind === 'button' && a.text === b.text;
+  }
+}
+
 /** A path an element names on the app: its path alone, cut at its query, or null when it is not one of the app's. */
 export function appPath(path: string): string | null {
   const bare = path.split(/[?#]/)[0] ?? '';

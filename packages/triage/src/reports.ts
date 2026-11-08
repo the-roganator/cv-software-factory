@@ -70,6 +70,11 @@ export interface ReportDecision {
    * any. Absent when the page could not be read or did not answer, so a path no page has never reaches an agent.
    */
   points?: Points;
+  /**
+   * For a report Jev judged a repeat, the ticket it would open alone, which it opens instead when the ticket it
+   * repeats points at something else (`samePoints`). Its fingerprint and points are this ticket's.
+   */
+  alone?: Extract<Routed, { route: 'ticket' }>;
   screenshot?: Screenshot;
   /** The scrubbed text, as Jev read it. The only form of the report triage keeps. */
   text: string;
@@ -102,11 +107,14 @@ export async function judgeReport(
   const questions = triageQuestions(candidates);
   const result = await judge({ agent: 'triage', workItem: null, questionSet: TRIAGE, model: MODEL, state, questions });
   const repeat = result.answers.repeat;
-  const routed = route({
+  const answers = {
     category: label(result, 'category', REPORT_CATEGORIES) as ReportCategory,
     symptom: label(result, 'symptom', SYMPTOM_CLASSES) as SymptomClass,
     severity: answer(result, 'severity', 'score').score,
     injection: answer(result, 'injection', 'noul').noul,
+  };
+  const routed = route({
+    ...answers,
     repeat:
       repeat?.type === 'choice'
         ? {
@@ -115,6 +123,9 @@ export async function judgeReport(
           }
         : undefined,
   });
+  // A report Jev judged a repeat joins its ticket only if it points at the same thing, which triage then compares, so
+  // it is asked what it points at as the ticket it would open alone.
+  const unjoined = routed.route === 'repeat' && pointed ? route(answers) : undefined;
 
   const judgements: Judgement[] = [
     {
@@ -131,7 +142,15 @@ export async function judgeReport(
     ...(view && { screenshot: view.screenshot }),
   };
   // A defect is fingerprinted as its ticket would be, whether it opens one or, a planner's finding, is held.
-  const defect = routed.route === 'ticket' ? routed : routed.route === 'park' ? routed.defect : undefined;
+  const defect =
+    routed.route === 'ticket'
+      ? routed
+      : routed.route === 'park'
+        ? routed.defect
+        : unjoined?.route === 'ticket'
+          ? unjoined
+          : undefined;
+  if (unjoined?.route === 'ticket') decision.alone = unjoined;
   if (!defect) return decision;
 
   decision.fingerprint = { route: privatePath(report.route), class: defect.symptom };

@@ -41,7 +41,7 @@ One pass runs at a time, and a wake during a pass runs one more after it (`score
 | The median from a ticket's first signal (or its `ticket.opened`, when that is sooner or it has none) to its verified close | Yes | As it changes |
 | False positives | Never | |
 
-It counts tickets alone. An [improvement Martin asked for](ORCHESTRATOR.md#an-improvement) has no ticket, so it counts for nothing: not as found, not as a false positive, however it closes.
+It counts entries, not tickets: an entry two tickets match, such as two reports about different parts of a page with one fingerprint, is found once, verified fixed while either is, its time the quicker's, and neither is a false positive. It counts tickets alone. An [improvement Martin asked for](ORCHESTRATOR.md#an-improvement) has no ticket, so it counts for nothing: not as found, not as a false positive, however it closes.
 
 A ticket is verified fixed while its last close is as verified on a real look: Verify's after its own fix's release, or a look again that found its signal cleared on a release that carried another's fix ([held and waiting work items](RELEASE-AND-VERIFY.md#held-and-waiting-work-items)). One a dry run verified, whose fix never shipped, is not.
 

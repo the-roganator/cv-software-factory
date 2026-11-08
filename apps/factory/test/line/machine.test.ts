@@ -5,8 +5,12 @@ import {
   HOLD_CAUSES,
   type HoldCause,
   type PayloadOf,
+  POINTED_BY,
+  pointsAtSomething,
+  SYMPTOM_CLASSES,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
+import { type Answer, type Judge, judgeReport, type PageView, reportEvents } from '@software-factory/triage';
 import { describe, expect, it } from 'vitest';
 import {
   acceptedFindings,
@@ -1837,6 +1841,99 @@ describe('a visitor’s report whose ticket names only its page', () => {
     expect(decide([...rejected, spec, backFromVerify], facts).next).toMatchObject({ do: 'step', agent: 'planner' });
   });
 });
+describe('a report’s ticket, from triage to the line', () => {
+  // A page with a passage and an element of every kind, as the factory reads it.
+  const view: PageView = {
+    status: 200,
+    screenshot: {
+      kind: 'screenshot',
+      hash: 'a'.repeat(64),
+      type: 'image/png',
+      size: 1000,
+      route: '/visit',
+      version: 'c02efd8',
+      width: 1280,
+      height: 800,
+      boxes: [],
+    },
+    passages: ['The garden opens at nine on weekdays.'],
+    elements: [
+      { kind: 'link', text: 'Directions', to: '/directions' },
+      { kind: 'image', alt: 'The garden gate', src: '/gate.png' },
+      { kind: 'field', label: 'Your email', name: 'email', type: 'email' },
+      { kind: 'button', text: 'Book a visit' },
+    ],
+  };
+  const choice = (label: string): Answer => ({
+    type: 'choice',
+    choice: label,
+    confidence: 0.9,
+    probabilities: { [label]: 0.9 },
+  });
+  const jev =
+    (category: string, symptom: string, pick: boolean): Judge =>
+    async (request) => ({
+      model: request.model,
+      answers:
+        request.questionSet === 'triage/v2'
+          ? {
+              category: choice(category),
+              symptom: choice(symptom),
+              severity: { type: 'score', score: 2.5, confidence: 0.8, probabilities: { 2: 0.5, 3: 0.5 } },
+              injection: { type: 'noul', noul: 0.01 },
+            }
+          : request.questionSet === 'passage/v1'
+            ? { passage: choice(pick ? 'p1' : 'none') }
+            : { element: choice(pick ? 'e1' : 'none') },
+      costUsd: 0.00002,
+      durationMs: 90,
+      cassette: 'c'.repeat(64),
+    });
+  const reportOn = {
+    sense: 'report' as const,
+    check: 'report widget',
+    route: '/visit',
+    version: 'c02efd8',
+    report: { page: '/visit', text: 'Something on this page is wrong' },
+    observedAt: '2026-11-08T09:00:00.000Z',
+    artifacts: [],
+  };
+  const cases = SYMPTOM_CLASSES.flatMap((symptom) =>
+    (['content', 'functional'] as const).flatMap((category) =>
+      [true, false].flatMap((pick) => [true, false].map((readable) => ({ symptom, category, pick, readable }))),
+    ),
+  );
+
+  it.each(cases)(
+    'points narrower than its page, or waits for Martin before the planner: $category $symptom, chosen $pick, read $readable',
+    async ({ symptom, category, pick, readable }) => {
+      const decision = await judgeReport(
+        { page: '/visit', text: reportOn.report.text, route: '/visit' },
+        [],
+        jev(category, symptom, pick),
+        async () => (readable ? view : null),
+      );
+      const made = reportEvents(reportOn, 'signal-1', '1001', decision, new Date('2026-11-08T09:00:01.000Z'));
+      const opened = made.find((event) => event.type === 'ticket.opened');
+      const received = made.find((event) => event.type === 'signal.received');
+      if (!opened || !received) throw new Error('a defect’s report opens a ticket');
+      const line = [opened, received] as unknown as LineEvent[];
+      const next = decide(line, facts).next;
+      const points = (opened.payload as PayloadOf<'ticket.opened'>).points;
+      if (pointsAtSomething(points)) {
+        expect(next).toMatchObject({ do: 'step', agent: 'planner' });
+        // What it points at is the factory's reading of the page, never the visitor's words.
+        expect(points?.page).toBe('/visit');
+      } else {
+        expect(next).toMatchObject({ do: 'hold', hold: { cause: 'report-undescribed' } });
+      }
+      // A symptom of part of the page, chosen from a page the factory read, always points at that part.
+      const narrow = category === 'content' || POINTED_BY[symptom] !== null;
+      expect(pointsAtSomething(points)).toBe(narrow && pick && readable);
+    },
+  );
+});
+
 const stable = { release: 'r2', version: 'd728dbe', due: true };
 
 describe('an open ticket looked at again as the line takes it', () => {

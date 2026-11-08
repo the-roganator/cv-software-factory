@@ -18,6 +18,7 @@
 import {
   ANSWERS,
   answersTo,
+  CLOSE_AGREES,
   type GateTag,
   type HoldAnswer,
   type HoldCause,
@@ -268,6 +269,10 @@ function doesOf(
       ? 'Kept with the hold. It stays held until you reject it.'
       : 'Kept with the hold. It stays held until you approve or reject it.';
   }
+  // One Close, where approving would close it as well: it agrees with the agent that closed it.
+  if (answer === 'rejected' && CLOSE_AGREES.includes(cause)) {
+    return `Agrees with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}, and closes #${workItem}. Nothing is built.`;
+  }
   if (answer === 'rejected') {
     if (cause === 'deploy')
       return `Closes #${workItem}. Its change stays merged, and goes out with the next deploy anyway.`;
@@ -328,9 +333,15 @@ const LABEL: Record<HoldAnswer, string> = {
   rejected: 'Reject',
 };
 
-/** An answer that goes with words elsewhere, given plain: where it sends the work. */
-const labelOf = (cause: HoldCause, answer: HoldAnswer, plain: boolean) =>
-  !plain ? LABEL[answer] : ANSWERS[cause][answer] === 'return' ? 'Back to the coder' : 'Back to the planner';
+/** Its button: Close where it stands in for approving too, and where an answer given plain sends the work. */
+const labelOf = (cause: HoldCause, answer: HoldAnswer, plain: boolean, workItem: string) =>
+  answer === 'rejected' && CLOSE_AGREES.includes(cause)
+    ? `Close #${workItem}`
+    : !plain
+      ? LABEL[answer]
+      : ANSWERS[cause][answer] === 'return'
+        ? 'Back to the coder'
+        : 'Back to the planner';
 
 /** How Martin answered, for Answered today. */
 const HOW: Record<HoldAnswer, string> = {
@@ -534,15 +545,12 @@ const wordsOnlyElsewhere = (cause: HoldCause) =>
   answersTo(cause).some((answer) => takesWords(cause, answer)) &&
   !answersTo(cause, true).some((answer) => takesWords(cause, answer, true));
 
-/** The sentences after a hold's evidence, if it has any. */
+/** The one sentence after a hold's evidence, if it has one: the first that says what its rows do not. */
 const noteOf = (hold: Hold, aboutReport: boolean) =>
-  [
-    hold.cause === 'merge' && mergeNote(hold.merge),
-    aboutReport && wordsOnlyElsewhere(hold.cause) && NO_WORDS_ON_REPORT,
-    aboutReport && hold.cause === 'ticket-rejected' && ASK_YOURSELF,
-  ]
-    .filter(Boolean)
-    .join(' ') || undefined;
+  (hold.cause === 'merge' && mergeNote(hold.merge)) ||
+  (aboutReport && hold.cause === 'ticket-rejected' && ASK_YOURSELF) ||
+  (aboutReport && wordsOnlyElsewhere(hold.cause) && NO_WORDS_ON_REPORT) ||
+  undefined;
 
 /** The settings, for a spend cap. */
 const linkOf = (cause: HoldCause): Need['link'] =>
@@ -615,7 +623,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
             const plain = WORDED_ANSWERS.includes(answer) && !words;
             return {
               answer,
-              label: labelOf(hold.cause, answer, plain),
+              label: labelOf(hold.cause, answer, plain, item.number),
               words,
               does:
                 answer === 'approved' && hold.needs?.some((n) => n.barred)
@@ -656,13 +664,15 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
       const how =
         plain && cause
           ? `Sent back to the ${ANSWERS[cause][decision] === 'return' ? 'coder' : 'planner'}`
-          : HOW[decision];
+          : decision === 'rejected' && cause && CLOSE_AGREES.includes(cause)
+            ? 'Closed'
+            : HOW[decision];
       answered.push({
         at,
         workItem: item.number,
         how: kept ? `${how}, still held` : how,
         words: answer ?? (report && cause && takesWords(cause, decision, true) ? 'kept' : undefined),
-        did: plain ? undefined : didOf(cause, decision),
+        did: plain || how === 'Closed' ? undefined : didOf(cause, decision),
       });
     }
   }

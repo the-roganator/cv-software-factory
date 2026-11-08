@@ -19,7 +19,9 @@
  *   words but on triage's holds, which wait for him (`takesWords`): his words there stay his, so no agent could read
  *   them, and would only hand back the same again. Words sent there are refused, as is an answer that goes with words
  *   elsewhere, unless it still sends the work back with something the line tells the agent, and then it takes none
- *   (`PLAIN_ON_REPORT`).
+ *   (`PLAIN_ON_REPORT`). Two answers that take no words and do the same are one (`sameAs`): approving the planner's
+ *   rejection, or the coder's finding nothing to fix, is refused, as Close (his rejection) does the same, and its
+ *   summary says he closed it, agreeing.
  * - **The cause is the store's.** Approving a hold whose cause is a guardrail is `hold.approve-guardrail` in the access
  *   table, which needs the passkey again; the cause is read from the stored hold, never taken from the request.
  *   Approving the spec of an improvement is `hold.approve-improvement-spec`, which needs it too, as asking for one does:
@@ -33,6 +35,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ANSWERS,
   answersTo,
+  CLOSE_AGREES,
   HOLD_ANSWERS,
   type HoldAnswer,
   type HoldCause,
@@ -242,7 +245,11 @@ function answerEvent(
     type: 'hold.answered',
     version: VERSIONS['hold.answered'],
     actor: 'martin',
-    summary: back ? `Martin sent the hold on #${workItem} back to ${back}` : `Martin ${DID[decision](workItem)}`,
+    summary: back
+      ? `Martin sent the hold on #${workItem} back to ${back}`
+      : decision === 'rejected' && CLOSE_AGREES.includes(cause)
+        ? `Martin closed #${workItem}, agreeing with the ${cause === 'nothing-to-fix' ? 'coder' : 'planner'}`
+        : `Martin ${DID[decision](workItem)}`,
     payload: { decision, ...(words !== undefined && { answer: words }), hold, ...(report && { report: true }) },
     artifacts: [],
   } as NewEvent;

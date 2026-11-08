@@ -174,10 +174,13 @@ export const takesWords = (cause: HoldCause, answer: HoldAnswer, wordsStayHis = 
  * something. An answer the line would only wait after is left off (a fix waiting for Martin's deploy takes only his
  * rejection), but for words on one of triage's holds, which are kept with it while it stays held. Where his words stay
  * his (`wordsStayHis`), an answer that goes with words elsewhere is taken only plain, where it still does something
- * (`PLAIN_ON_REPORT`), or with words on triage's holds.
+ * (`PLAIN_ON_REPORT`), or with words on triage's holds. Two that take no words and do the same are one answer, the
+ * later: approving the planner's rejection, or the coder's finding nothing to fix, closes the work item as rejecting
+ * does, so the hold takes one Close, which records his rejection (`sameAs`). Words are never merged with an answer
+ * that takes none: what they tell an agent is what makes the two differ.
  */
-export const answersTo = (cause: HoldCause, wordsStayHis = false): HoldAnswer[] =>
-  (['approved', 'answered', 'replanned', 'rejected'] as const).filter(
+export const answersTo = (cause: HoldCause, wordsStayHis = false): HoldAnswer[] => {
+  const offered = (['approved', 'answered', 'replanned', 'rejected'] as const).filter(
     (answer) =>
       (ANSWERS[cause][answer] !== 'wait' || (answer === 'answered' && WORDS_LEAVE_HELD.includes(cause))) &&
       (!wordsStayHis ||
@@ -185,6 +188,29 @@ export const answersTo = (cause: HoldCause, wordsStayHis = false): HoldAnswer[] 
         takesWords(cause, answer, true) ||
         PLAIN_ON_REPORT[cause].includes(answer)),
   );
+  return offered.filter((answer, i) => sameAs(cause, answer, offered.slice(i + 1), wordsStayHis) === undefined);
+};
+
+/**
+ * The later answer, of those given, that does what this one does on a hold of this cause, if one does: both take no
+ * words and resolve the same. The console shows the two as one, and the admin service takes only that one.
+ */
+export const sameAs = (
+  cause: HoldCause,
+  answer: HoldAnswer,
+  later: readonly HoldAnswer[],
+  wordsStayHis = false,
+): HoldAnswer | undefined =>
+  takesWords(cause, answer, wordsStayHis)
+    ? undefined
+    : later.find(
+        (other) => !takesWords(cause, other, wordsStayHis) && ANSWERS[cause][other] === ANSWERS[cause][answer],
+      );
+
+/** The causes whose Close stands in for approving too: the line's agent closed it, and approving agrees. */
+export const CLOSE_AGREES: readonly HoldCause[] = (Object.keys(ANSWERS) as HoldCause[]).filter(
+  (cause) => ANSWERS[cause].approved === 'close',
+);
 
 /**
  * The longest path an event records, in characters: a file a patch changes, a scope entry, a review finding's file. A

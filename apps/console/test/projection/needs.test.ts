@@ -182,6 +182,17 @@ describe('Needs you', () => {
     ]);
   });
 
+  it('says Martin closed a work item whose agent closed it, where Close stood in for approving', () => {
+    const day = Date.parse('2026-10-03T12:00:00');
+    const item = work('2034', day)
+      .open()
+      .add(1, 'hold.started', 'coder', hold('nothing-to-fix'))
+      .add(30, 'hold.answered', 'martin', { decision: 'rejected' });
+    expect(needsView(foldItems(item.events), day + 3_600_000).answered).toEqual([
+      { at: item.at(30), workItem: '2034', how: 'Closed', words: undefined, did: undefined },
+    ]);
+  });
+
   it('says where an answer sent the work on a visitor’s report, given with no words, and keeps none', () => {
     const day = Date.parse('2026-10-03T12:00:00');
     const review = work('2033', day)
@@ -493,7 +504,9 @@ describe('Needs you', () => {
         );
       }
       const elsewhere = answersTo(cause).some((a) => WORDED_ANSWERS.includes(a));
-      if (elsewhere && !WORDS_LEAVE_HELD.includes(cause)) expect(need?.note, cause).toContain(NO_WORDS_ON_REPORT);
+      // One sentence: a merge's own note, or what Martin may ask for himself, comes first where it has one.
+      if (cause === 'merge' || cause === 'ticket-rejected') continue;
+      if (elsewhere && !WORDS_LEAVE_HELD.includes(cause)) expect(need?.note, cause).toBe(NO_WORDS_ON_REPORT);
       else expect(need?.note ?? '', cause).not.toContain(NO_WORDS_ON_REPORT);
     }
   });
@@ -517,8 +530,11 @@ describe('Needs you', () => {
       ],
       ['Reject', false, 'Closes #2055, unmerged.'],
     ]);
-    expect(two?.answers.map((a) => a.answer)).toEqual(['approved', 'rejected']);
-    expect(two?.note).toBe(`${NO_WORDS_ON_REPORT} ${ASK_YOURSELF}`);
+    // Approving the planner's rejection would close it as Close does: one button, named for what it does.
+    expect(two?.answers.map((a) => [a.answer, a.label, a.does])).toEqual([
+      ['rejected', 'Close #2056', 'Agrees with the planner, and closes #2056. Nothing is built.'],
+    ]);
+    expect(two?.note).toBe(ASK_YOURSELF);
   });
 
   describe('a merge the line holds for Martin, by why it does not add it to the merge queue itself', () => {

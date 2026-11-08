@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.12.0](https://github.com/the-roganator/cv-software-factory/compare/v0.11.0...v0.12.0) (2026-11-08)
+
+
+### Features
+
+* **line:** close a work item the line has not taken, from Martin's command line, as his ([#931](https://github.com/the-roganator/cv-software-factory/issues/931)) ([36c2f5c](https://github.com/the-roganator/cv-software-factory/commit/36c2f5ca9b3e5f61a4e967811e2595bceaf737ff))
+* **line:** let Martin share his words on a visitor's report's work item ([#922](https://github.com/the-roganator/cv-software-factory/issues/922)) ([ddf3cc6](https://github.com/the-roganator/cv-software-factory/commit/ddf3cc6cddea83801f780b8059c00cd476ce1253))
+* **line:** say on the work item when the build that carries it was not signed ([#917](https://github.com/the-roganator/cv-software-factory/issues/917)) ([d221904](https://github.com/the-roganator/cv-software-factory/commit/d2219042a5f9c999f690112e2c16bbac2a2002e2))
+* **red-team:** give the attack pods a namespace of their own ([#921](https://github.com/the-roganator/cv-software-factory/issues/921)) ([dff68a1](https://github.com/the-roganator/cv-software-factory/commit/dff68a14a5b53630bfded00ba16d2ab8159b52cd))
+
+
+### Bug Fixes
+
+* **console:** wrap a long state in the sheet's head clear of its buttons ([#918](https://github.com/the-roganator/cv-software-factory/issues/918)) ([b3b1e0a](https://github.com/the-roganator/cv-software-factory/commit/b3b1e0ad8ecab2ab81a124f47c6dde4a16cda488))
+* **deploy:** take the red-team harness's Role out of runners, and refuse its pods there ([#940](https://github.com/the-roganator/cv-software-factory/issues/940)) ([2bcb232](https://github.com/the-roganator/cv-software-factory/commit/2bcb23268664a0129e8b1d6d98cfe210aebd0051))
+* **implement:** stop waiting for Copilot on a pull request it was never asked to review ([#927](https://github.com/the-roganator/cv-software-factory/issues/927)) ([24b0273](https://github.com/the-roganator/cv-software-factory/commit/24b027307cede3193055f04264a7daf6d69f4b15))
+* **line:** offer no unread words on a visitor's report's holds, and one Close per outcome ([#920](https://github.com/the-roganator/cv-software-factory/issues/920)) ([569a032](https://github.com/the-roganator/cv-software-factory/commit/569a032930a72ec79269ca68977dca978b71a24f))
+* **line:** plan a report's fix only for what was reported, or wait for Martin to describe it ([#929](https://github.com/the-roganator/cv-software-factory/issues/929)) ([49b8848](https://github.com/the-roganator/cv-software-factory/commit/49b8848e46dabb23a8ddb0280ba72260cf3ecfcf))
+* **line:** replan without the shipped spec's criteria, and code again without dropped ones ([#924](https://github.com/the-roganator/cv-software-factory/issues/924)) ([c49428b](https://github.com/the-roganator/cv-software-factory/commit/c49428b7aae07525091d79a2db5a94f5b39199d7))
+* **line:** take no words on a visitor's report where they would only do what approving does ([#911](https://github.com/the-roganator/cv-software-factory/issues/911)) ([5e992de](https://github.com/the-roganator/cv-software-factory/commit/5e992de7d0168e6c247bb4ad6f69e7c31ec6465d))
+* **review:** say why an exact pin did not pass, and wait when the gate could not check it ([#915](https://github.com/the-roganator/cv-software-factory/issues/915)) ([7586b56](https://github.com/the-roganator/cv-software-factory/commit/7586b5693d8f813bcc11456e75c37a8875878b5c))
+* **triage:** point a report's ticket at the passage or element it is about ([#925](https://github.com/the-roganator/cv-software-factory/issues/925)) ([add42bb](https://github.com/the-roganator/cv-software-factory/commit/add42bb1c5eea97c00643e2a3d893f532e6bbd02))
+* **triage:** ride out a short event-store outage, taking the lock again first ([#916](https://github.com/the-roganator/cv-software-factory/issues/916)) ([83ef0a1](https://github.com/the-roganator/cv-software-factory/commit/83ef0a1cd3591c5f059d9f036ba96493d00af892))
+
 ## [0.11.0](https://github.com/the-roganator/cv-software-factory/compare/v0.10.0...v0.11.0) (2026-11-07)
 
 

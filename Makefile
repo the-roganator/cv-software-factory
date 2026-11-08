@@ -58,7 +58,7 @@ password = $(call namespace,$(1)) && \
 		$(apply-secret) >/dev/null; }; }; }
 
 .DEFAULT_GOAL := help
-.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line enrol guardrails
+.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -366,11 +366,11 @@ real-store: node_modules ## Replace the cluster's store with an empty one for re
 
 stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts if its stable version has a pod (REASON="...")
 	@# Both halves run whichever fails: a canary is aborted even if the store cannot be reached, and the other way round.
-	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason "$(REASON)")); } || failed=1; \
+	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason '$(subst ','\'',$(value REASON))')); } || failed=1; \
 		KUBECTL="$(KUBECTL)" scripts/abort-canaries.sh || failed=1; exit $${failed:-0}
 
 start-the-line: node_modules ## Start the line, first on a new store or again; workers take what waited in the inbox (REASON="...")
-	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason "$(REASON)"))
+	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
 
 # What the line takes, as the console's Controls set it, through the same check, keeping every other control: one of
 # ONLY (a work item's number), NEXT (how many, from now) or EVERY=1. From Martin's command line, it needs no passkey.
@@ -380,6 +380,13 @@ take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<
 	if [ "$$#" -eq 0 ] || { [ "$$1" = every ] && [ "$$#" -ne 1 ]; } || { [ "$$1" != every ] && [ "$$#" -ne 2 ]; }; then \
 		echo "Give one of ONLY=<work item>, NEXT=<how many> or EVERY=1." >&2; exit 2; fi; \
 	$(call as-operator,node apps/factory/src/cli.ts line take "$$@")
+
+# A work item the line has not taken, closed as Martin's, from his command line, with the same role: a try's invented
+# report, or one he is done with. A discard with his reason; refused if it is not open, or the line has it (its issue
+# goes with it only through the line: close that one in the console). A reason is quoted whole, `$` and all.
+close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
+	@[ -n "$(ONLY)" ] || { echo "Give ONLY=<work item>." >&2; exit 2; }; \
+	$(call as-operator,node apps/factory/src/cli.ts line close "$(ONLY)" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

@@ -27,6 +27,7 @@ export type AdminEvent =
   | 'improvement.requested'
   | 'line.started'
   | 'line.stopped'
+  | 'work-item.closed'
   | 'passkey.enrolled'
   | 'passkey.revoked'
   | 'release.controlled'

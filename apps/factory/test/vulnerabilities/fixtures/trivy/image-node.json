@@ -3,6 +3,7 @@
   "ArtifactName": "ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "ArtifactType": "container_image",
   "Metadata": {
+    "ImageID": "sha256:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
     "OS": {
       "Family": "debian",
       "Name": "13.1"

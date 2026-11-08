@@ -171,9 +171,15 @@ describe('an item it cannot read', () => {
     expect(lines.join('\n')).not.toMatch(/libxml2|CVE-2026-0202|minimatch|GHSA/);
   });
 
-  it('is an image Trivy reads no packages from, or a chart with a values file the checkout does not track', async () => {
+  it('is an image Trivy gave no analysis of, or a chart with a values file the checkout does not track', async () => {
     const fake = everything();
-    if (fake.images) fake.images[POSTGRES] = { ...fixture('image-postgres'), Results: [] };
+    // An image with no packages at all is read; a report naming no image Trivy analysed is not.
+    const pause = `registry.k8s.io/pause:3.10@${digest('6')}`;
+    if (fake.images) {
+      fake.images[POSTGRES] = { SchemaVersion: 2, ArtifactName: POSTGRES };
+      fake.images[pause] = { SchemaVersion: 2, ArtifactName: pause, Metadata: { ImageID: `sha256:${'7'.repeat(64)}` } };
+    }
+    const empty: Item = { kind: 'third-party', name: pause, file: 'deploy/pause.yaml', line: 3, image: pause };
     const chart: Item = {
       kind: 'chart',
       name: 'grafana',
@@ -194,13 +200,13 @@ describe('an item it cannot read', () => {
     const outcome = await scan(
       t,
       checkout(),
-      [...items(), outside(['../../.docker/config.json']), outside(['deploy/values/untracked.yaml'])],
+      [...items(), empty, outside(['../../.docker/config.json']), outside(['deploy/values/untracked.yaml'])],
       [],
       DB,
       TRACKED,
     );
     expect(outcome.unreadable.map((entry) => [entry.name, entry.why])).toEqual([
-      [POSTGRES, 'could not be pulled: Trivy read no packages from it'],
+      [POSTGRES, 'could not be pulled: Trivy gave no image it analysed'],
       ['grafana', 'a values file it names is not a file the checkout tracks: ../../.docker/config.json'],
       ['grafana', 'a values file it names is not a file the checkout tracks: deploy/values/untracked.yaml'],
     ]);

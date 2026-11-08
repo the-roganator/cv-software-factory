@@ -66,7 +66,11 @@ export interface TrivyResult {
 export interface TrivyReport {
   SchemaVersion?: number;
   ArtifactName?: string;
-  Metadata?: { RepoDigests?: string[] | null; ImageConfig?: { config?: { Env?: string[] | null } } };
+  Metadata?: {
+    ImageID?: string;
+    RepoDigests?: string[] | null;
+    ImageConfig?: { config?: { Env?: string[] | null } };
+  };
   Results?: TrivyResult[] | null;
 }
 
@@ -290,8 +294,9 @@ export async function readImage(tools: Tools, target: Target): Promise<Read> {
   const image = target.image ?? '';
   const scan = async (reference: string) => {
     const report = await tools.trivy(['image', ...IMAGE_ARGS, '--', reference]);
-    // An image Trivy reads nothing from is not read: its alerts would close with nothing behind them.
-    if (packagesRead([report]) === 0) throw new Error('Trivy read no packages from it');
+    // A report that names no image Trivy analysed is not a read: its alerts would close with nothing behind them. An
+    // image with no packages at all (k3s's pause, a static busybox) is read, and has no findings.
+    if (!report.Metadata?.ImageID) throw new Error('Trivy gave no image it analysed');
     return report;
   };
   try {

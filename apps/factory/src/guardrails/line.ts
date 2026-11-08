@@ -21,6 +21,7 @@ import { upcast } from '@software-factory/events';
 import { lineState, storeClock } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
+import { isRedTeam } from '../runners/jobs.ts';
 
 export interface Taken {
   held: boolean;
@@ -91,10 +92,29 @@ export async function abortedByStop(sql: Sql, now: Date): Promise<Taken> {
   };
 }
 
+/** A pod as `kubectl get pods -o json` lists it, with only what the drill reads. */
+export interface ListedPod {
+  metadata: { name: string; labels?: Record<string, string> };
+}
+
+/**
+ * The line's runner pods among those listed in `runners`, by name, with the runner part each is: never one the red-team
+ * harness made (`RED_TEAM_LABEL`), which Stop the line does not end and which may start while the line is stopped, so
+ * the drill passes over it as the line does. The harness makes its pods in `red-team`, apart from the runners, but an
+ * image that makes them in `runners` may still be running.
+ */
+export const runnerPodsOf = (items: ListedPod[]): { name: string; part?: string }[] =>
+  items
+    .filter(({ metadata }) => !isRedTeam(metadata.labels))
+    .map(({ metadata }) => ({
+      name: metadata.name,
+      ...(metadata.labels?.['factory.mrogan.dev/runner'] && { part: metadata.labels['factory.mrogan.dev/runner'] }),
+    }));
+
 /** What the drill needs of the world: the store, the cluster, Martin, the Makefile and a clock. */
 export interface Drill {
   sql: Sql;
-  /** The pods in `runners`, by name, with the runner part (`agent` or `prepare`) each is. */
+  /** The line's runner pods in `runners`, by name, with the runner part (`agent` or `prepare`) each is (`runnerPodsOf`). */
   runnerPods(): Promise<{ name: string; part?: string }[]>;
   ask(question: string): Promise<boolean>;
   /** `make stop-the-line` or `make start-the-line`, with a reason; true when it exited 0. */

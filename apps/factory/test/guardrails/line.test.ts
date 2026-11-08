@@ -7,8 +7,9 @@ import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import { RED_TEAM_LABEL } from '../../../../policy/attacks.ts';
 import { proved } from '../../src/guardrails/command.ts';
-import { abortedByStop, age, type Drill, rollback, stopTheLine } from '../../src/guardrails/line.ts';
+import { abortedByStop, age, type Drill, rollback, runnerPodsOf, stopTheLine } from '../../src/guardrails/line.ts';
 
 let database: Database;
 beforeEach(async () => {
@@ -109,6 +110,28 @@ describe('the last canary a stop aborted', () => {
     const taken = await abortedByStop(database.proofs, new Date(stamped.getTime() + 48 * 3_600_000));
     expect(taken).toMatchObject({ held: true });
     expect(taken.output).toMatch(/aborted by Stop the line at 2026-10-30T10:00:00Z, back to 1\.2\.0, 2 days ago\./);
+  });
+});
+
+describe('the runner pods the drill waits on', () => {
+  it('are the line’s, with their part, and never a pod the red-team harness made, which Stop the line does not end', () => {
+    expect(
+      runnerPodsOf([
+        { metadata: { name: 'coder-1-1-1-agent', labels: { 'factory.mrogan.dev/runner': 'agent' } } },
+        { metadata: { name: 'coder-1-1-1-prepare', labels: { 'factory.mrogan.dev/runner': 'prepare' } } },
+        { metadata: { name: 'unlabelled' } },
+        {
+          metadata: {
+            name: 'red-team-egress-1a2b3c4d',
+            labels: { 'factory.mrogan.dev/runner': 'agent', [RED_TEAM_LABEL]: 'egress' },
+          },
+        },
+      ]),
+    ).toEqual([
+      { name: 'coder-1-1-1-agent', part: 'agent' },
+      { name: 'coder-1-1-1-prepare', part: 'prepare' },
+      { name: 'unlabelled' },
+    ]);
   });
 });
 

@@ -9,8 +9,8 @@
 #
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
-#   fails and uploads nothing, so no alert closes because its item went unread. Until task 30 the run fails only on
-#   what it could not read.
+#   fails and uploads nothing, so no alert closes because its item went unread. It fails on nothing else: a finding is
+#   an alert, not a failed run.
 # - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
 #   not showing CVE-2026-111497, and its log carries the counts. Every job that writes refuses any event but a push to

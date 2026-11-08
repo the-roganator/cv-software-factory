@@ -2,9 +2,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { inSbom, listed, missing, pnpmVersion } from '../../src/vulnerabilities/coverage.ts';
+import { INSTALL, inSbom, LIST, listed, missing, pnpmVersion } from '../../src/vulnerabilities/coverage.ts';
 import type { Item } from '../../src/vulnerabilities/inventory.ts';
-import { advisoriesFor, entries, nodeInConfig, nodeInSbom, satisfies } from '../../src/vulnerabilities/node.ts';
+import {
+  advisoriesFor,
+  entries,
+  nodeInConfig,
+  nodeInSbom,
+  readable,
+  satisfies,
+} from '../../src/vulnerabilities/node.ts';
 import { PROOF } from '../../src/vulnerabilities/proof.ts';
 import { fingerprint, LIMITS, sarif } from '../../src/vulnerabilities/sarif.ts';
 import {
@@ -29,6 +36,8 @@ const fixture = (name: string) =>
   JSON.parse(readFileSync(new URL(`./fixtures/trivy/${name}.json`, import.meta.url), 'utf-8')) as TrivyReport;
 const digest = (c: string) => `sha256:${c.repeat(64)}`;
 /** Four of Node's own core entries (fixtures/node-core.json, from nodejs/security-wg's vuln/core/index.json). */
+/** The files the test checkout tracks. */
+const TRACKED = new Set(['pnpm-lock.yaml', 'deploy/values/grafana.yaml']);
 const DB = entries(readFileSync(new URL('./fixtures/node-core.json', import.meta.url), 'utf-8'));
 
 const made: string[] = [];
@@ -153,13 +162,56 @@ describe('an item it cannot read', () => {
   it('fails the run, is named, and nothing is uploaded', async () => {
     const fake = everything();
     delete fake.images?.[POSTGRES];
-    const outcome = await scan(tools(fake).tools, checkout(), items(), [], DB);
+    const outcome = await scan(tools(fake).tools, checkout(), items(), [], DB, TRACKED);
     expect(outcome.unreadable).toEqual([{ name: POSTGRES, why: `could not be pulled: MANIFEST_UNKNOWN: ${POSTGRES}` }]);
     const { lines, passes } = report(outcome, true);
     expect(passes).toBe(false);
     expect(lines.at(-1)).toBe('The run fails, and nothing is uploaded.');
     // The log names the item, never a package or an advisory.
     expect(lines.join('\n')).not.toMatch(/libxml2|CVE-2026-0202|minimatch|GHSA/);
+  });
+
+  it('is an image Trivy reads no packages from, or a chart with a values file the checkout does not track', async () => {
+    const fake = everything();
+    if (fake.images) fake.images[POSTGRES] = { ...fixture('image-postgres'), Results: [] };
+    const chart: Item = {
+      kind: 'chart',
+      name: 'grafana',
+      file: 'deploy/grafana.yaml',
+      line: 14,
+      chart: { repo: 'https://example.test', chart: 'grafana', version: '1.0.0', release: 'grafana', values: [] },
+    };
+    const outside = (values: string[]): Item => ({
+      ...chart,
+      chart: { ...(chart.chart as NonNullable<Item['chart']>), values },
+    });
+    const { tools: t } = tools(fake);
+    let rendered = 0;
+    t.render = async () => {
+      rendered++;
+      return 'image: busybox\n';
+    };
+    const outcome = await scan(
+      t,
+      checkout(),
+      [...items(), outside(['../../.docker/config.json']), outside(['deploy/values/untracked.yaml'])],
+      [],
+      DB,
+      TRACKED,
+    );
+    expect(outcome.unreadable.map((entry) => [entry.name, entry.why])).toEqual([
+      [POSTGRES, 'could not be pulled: Trivy read no packages from it'],
+      ['grafana', 'a values file it names is not a file the checkout tracks: ../../.docker/config.json'],
+      ['grafana', 'a values file it names is not a file the checkout tracks: deploy/values/untracked.yaml'],
+    ]);
+    // Neither chart was rendered: a values file outside the checkout never reaches Helm.
+    expect(rendered).toBe(0);
+    // A tracked one renders, and its bare image is scanned, not passed over.
+    const read = await scan(t, checkout(), [outside(['deploy/values/grafana.yaml'])], [], DB, TRACKED);
+    expect(rendered).toBe(1);
+    expect(read.unreadable).toEqual([
+      { name: 'grafana: busybox', why: 'could not be pulled: MANIFEST_UNKNOWN: busybox' },
+    ]);
   });
 
   it('is a lockfile Trivy reads no packages from, an image with no SBOM attested, or a pin the list does not read', async () => {
@@ -171,7 +223,7 @@ describe('an item it cannot read', () => {
       reference: `alpine@${digest('9')}`,
       why: 'a FROM the list does not read',
     };
-    const outcome = await scan(tools(fake).tools, checkout(), items(), [pin], DB);
+    const outcome = await scan(tools(fake).tools, checkout(), items(), [pin], DB, TRACKED);
     expect(outcome.unreadable.map((entry) => entry.name)).toEqual([
       `alpine@${digest('9')} (Dockerfile:3)`,
       'pnpm-lock.yaml',
@@ -183,7 +235,7 @@ describe('an item it cannot read', () => {
   });
 
   it('passes when every item was read and the proof shows its advisory', async () => {
-    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB);
+    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
     expect(outcome.unreadable).toEqual([]);
     expect(outcome.proof).toEqual({ found: true, source: 'image', unreadable: undefined, node: '24.22.0' });
     const { lines, passes } = report(outcome, true);
@@ -203,7 +255,7 @@ describe('an item it cannot read', () => {
 
 describe('results over the limit', () => {
   it('fail the run, and nothing is uploaded', async () => {
-    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB);
+    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
     const { lines, passes } = report(outcome, true, { ...LIMITS, results: 2 });
     expect(passes).toBe(false);
     expect(lines).toContain("The results are over code scanning's limits: 3 results, over 2.");
@@ -254,6 +306,7 @@ describe('an SBOM with no Node', () => {
       items(),
       [],
       DB,
+      TRACKED,
     );
     expect(outcome.proof).toMatchObject({ found: false, source: 'sbom', node: '24.22.1' });
     const { lines, passes } = report(outcome, true);
@@ -278,6 +331,15 @@ describe("Node's own advisories", () => {
     expect(satisfies('11.0.0', '<=10')).toBe(false);
     expect(satisfies('8.2.3', '8.2.x')).toBe(true);
     expect(() => satisfies('8.2.3', '8.2.3-beta')).toThrow(/a range not read/);
+    // A caret keeps the major, partial or not.
+    expect(satisfies('24.23.0', '^24.22')).toBe(true);
+    expect(satisfies('25.0.0', '^24.22')).toBe(false);
+    expect(satisfies('24.21.9', '^24.22.x')).toBe(false);
+    // The whole database is read when it is fetched, so a range it cannot read refuses it then.
+    expect(() => readable(DB)).not.toThrow();
+    expect(() => readable([['9', { vulnerable: '24.x', patched: '>=24.22.1-rc.1' }]])).toThrow(
+      /^entry 9: a range not read/,
+    );
   });
 
   it("gives each CVE of an entry the version is in and not patched in, at the publisher's severity", () => {
@@ -307,7 +369,7 @@ describe("Node's own advisories", () => {
     const fake = everything();
     if (fake.images) fake.images[node] = fixture('image-node');
     const all = [...items(), { kind: 'dockerfile' as const, name: node, file: 'Dockerfile', line: 3, image: node }];
-    const outcome = await scan(tools(fake).tools, checkout(), all, [], DB);
+    const outcome = await scan(tools(fake).tools, checkout(), all, [], DB, TRACKED);
     const results = sarif(outcome.findings).runs[0]?.results.filter((r) => r.ruleId === PROOF.advisory) ?? [];
     expect(results).toHaveLength(1);
     expect(results[0]?.locations[0]?.physicalLocation).toEqual({
@@ -331,7 +393,7 @@ describe("Node's own advisories", () => {
 
 describe("two platforms' findings", () => {
   it('are one result, and an image’s copy of a package is never folded into a lockfile’s', async () => {
-    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB);
+    const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
     const openssl = outcome.findings.filter((finding) => finding.advisory === 'CVE-2026-0101');
     expect(openssl).toHaveLength(2);
     const results = sarif(outcome.findings).runs[0]?.results ?? [];
@@ -351,7 +413,7 @@ describe("two platforms' findings", () => {
 
 describe('a moved pin', () => {
   it('keeps its fingerprint while the finding stays, and closes it once past the fix', async () => {
-    const before = await scan(tools(everything()).tools, checkout(), items(), [], DB);
+    const before = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
     // Postgres moves to a new digest, on another line: the same finding is the same alert.
     const moved = `postgres:18.7-alpine3.24@${digest('3')}`;
     const fake = everything();
@@ -362,6 +424,7 @@ describe('a moved pin', () => {
       items().map((item) => (item.image === POSTGRES ? { ...item, name: moved, image: moved, line: 30 } : item)),
       [],
       DB,
+      TRACKED,
     );
     const print = (outcome: typeof before) =>
       sarif(outcome.findings).runs[0]?.results.find((result) => result.ruleId === 'CVE-2026-0202');
@@ -371,7 +434,7 @@ describe('a moved pin', () => {
     const fixed = everything();
     if (fixed.images)
       fixed.images[POSTGRES] = { ...fixture('image-postgres'), Results: [{ Packages: [{ Name: 'libxml2' }] }] };
-    expect(print(await scan(tools(fixed).tools, checkout(), items(), [], DB))).toBeUndefined();
+    expect(print(await scan(tools(fixed).tools, checkout(), items(), [], DB, TRACKED))).toBeUndefined();
   });
 
   it('is the item, the package and the advisory, never the version, the line or the digest', () => {
@@ -421,6 +484,12 @@ describe('reading', () => {
 });
 
 describe('coverage', () => {
+  it("runs pnpm with no pnpmfile of the checkout's, on install and on list", () => {
+    expect(INSTALL).toContain('--ignore-pnpmfile');
+    expect(INSTALL).toContain('--ignore-scripts');
+    expect(LIST).toContain('--ignore-pnpmfile');
+  });
+
   it('reads the pnpm the checkout pins, from its mise.lock, or an exact version in its mise.toml', () => {
     expect(
       pnpmVersion('[[tools.node]]\nversion = "24.22.2"\n\n[[tools.pnpm]]\nversion = "12.16.1"\n', 'pnpm = "12"'),

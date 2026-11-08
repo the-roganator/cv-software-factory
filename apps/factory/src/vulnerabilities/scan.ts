@@ -29,7 +29,7 @@ import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFile
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
-import { advisoriesFor, type CoreEntry, entries, NODE_DATABASE, nodeInConfig, nodeInSbom } from './node.ts';
+import { advisoriesFor, type CoreEntry, entries, NODE_DATABASE, nodeInConfig, nodeInSbom, readable } from './node.ts';
 import { PROOF } from './proof.ts';
 import { type Finding, LIMITS, merge, overLimits, SEVERITIES, type Severity, sarif } from './sarif.ts';
 
@@ -139,8 +139,9 @@ export function packagesRead(reports: TrivyReport[]) {
 export function imagesIn(rendered: string) {
   const found = new Set<string>();
   for (const line of rendered.split('\n')) {
-    const image = /^\s*(?:-\s+)?image:\s*['"]?([^\s'"#{}]+)['"]?\s*(?:#.*)?$/.exec(line)?.[1];
-    if (image?.includes('/') || image?.includes(':')) found.add(image);
+    // Any reference, a bare `busybox` too: an image not scanned would pass unread.
+    const image = /^\s*(?:-\s+)?image:\s*['"]?([a-z0-9][\w./:@-]*)['"]?\s*(?:#.*)?$/i.exec(line)?.[1];
+    if (image) found.add(image);
   }
   return [...found];
 }
@@ -268,7 +269,9 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
   const node = predicates.map(nodeInSbom).find(Boolean);
   if (node) return { target, reports, source: 'sbom', node };
   try {
-    const own = await tools.retry(() => tools.trivy(['image', ...IMAGE_ARGS, '--platform', FALLBACK_PLATFORM, image]));
+    const own = await tools.retry(() =>
+      tools.trivy(['image', ...IMAGE_ARGS, '--platform', FALLBACK_PLATFORM, '--', image]),
+    );
     const configured = nodeInConfig(own.Metadata?.ImageConfig);
     if (!configured)
       return { target, reports: [], unreadable: 'its Node version is in neither its SBOM nor its image' };
@@ -285,7 +288,12 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
 /** Any other image: CI's copy where there is one, then its own registry, with retries. */
 export async function readImage(tools: Tools, target: Target): Promise<Read> {
   const image = target.image ?? '';
-  const scan = (reference: string) => tools.trivy(['image', ...IMAGE_ARGS, reference]);
+  const scan = async (reference: string) => {
+    const report = await tools.trivy(['image', ...IMAGE_ARGS, '--', reference]);
+    // An image Trivy reads nothing from is not read: its alerts would close with nothing behind them.
+    if (packagesRead([report]) === 0) throw new Error('Trivy read no packages from it');
+    return report;
+  };
   try {
     if (target.ci) {
       try {
@@ -310,7 +318,7 @@ const firstLine = (error: unknown) =>
     ?.slice(0, 300) ?? '';
 
 /** The targets an item is read as: itself, or each image a chart renders or a k3s release lists. */
-async function targetsOf(tools: Tools, root: string, item: Item, kubeVersion?: string) {
+async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<string>, kubeVersion?: string) {
   const image = (reference: string): Target => ({
     item,
     key: itemKey(item, reference),
@@ -321,6 +329,13 @@ async function targetsOf(tools: Tools, root: string, item: Item, kubeVersion?: s
   });
   if (item.kind === 'lockfile') return { targets: [{ item, key: itemKey(item), label: item.file }] };
   if (item.kind === 'chart' && item.chart) {
+    // A values file is a file the checkout tracks, inside it: a path that left it could hand a chart anything on the
+    // runner, the registry's credentials among them, to write into an image's name.
+    const outside = item.chart.values.find(
+      (file) => !tracked.has(file) || !resolve(root, file).startsWith(`${resolve(root)}/`),
+    );
+    if (outside)
+      return { targets: [], unreadable: `a values file it names is not a file the checkout tracks: ${outside}` };
     let rendered: string;
     try {
       rendered = await tools.retry(() => tools.render(item.chart as Chart, root, kubeVersion));
@@ -368,6 +383,7 @@ export async function scan(
   items: Item[],
   pins: { file: string; line: number; reference: string; why: string }[],
   database: [string, CoreEntry][],
+  tracked: Set<string>,
 ): Promise<Outcome> {
   const unreadable: Outcome['unreadable'] = pins.map((pin) => ({
     name: `${pin.reference} (${pin.file}:${pin.line})`,
@@ -380,7 +396,7 @@ export async function scan(
   const kubeVersion = items.find((item) => item.kind === 'k3s')?.image?.match(/:v?(\d+\.\d+\.\d+)/)?.[1];
   let read = 0;
   for (const item of items) {
-    const { targets, unreadable: why } = await targetsOf(tools, root, item, kubeVersion);
+    const { targets, unreadable: why } = await targetsOf(tools, root, item, tracked, kubeVersion);
     if (why) {
       unreadable.push({ name: item.name, why });
       continue;
@@ -458,7 +474,7 @@ export function counts(findings: Finding[]) {
 }
 
 /** What the run reports, and whether it passes: never a package or an advisory, only counts and the items not read. */
-export function report(outcome: Outcome, upload: boolean, limits = LIMITS) {
+export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivyVersion?: string) {
   const lines: string[] = [];
   const total = counts(outcome.findings);
   lines.push(
@@ -476,7 +492,7 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS) {
         ? `The proof image shows ${PROOF.advisory} in its Node ${proof.node}, read from its ${proof.source === 'image' ? 'image' : 'SBOM'}.`
         : `The proof image does not show ${PROOF.advisory} in its Node ${proof.node}: the scan has stopped seeing Node.`,
   );
-  const file = sarif(outcome.findings);
+  const file = sarif(outcome.findings, trivyVersion);
   const over = overLimits(file, limits);
   if (over.length) lines.push(`The results are over code scanning's limits: ${over.join('; ')}.`);
   const passes = !outcome.unreadable.length && proof.found && !proof.unreadable && !over.length;
@@ -491,8 +507,20 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS) {
 }
 
 /** The tools as the workflow has them: Trivy in its image through Docker, cosign and helm from mise. */
+/** Trivy in its image: the registries' credentials read-only, and its cache. */
+const dockerRun = (cache: string, mounts: string[] = []) => [
+  'run',
+  '--rm',
+  '-e',
+  'DOCKER_CONFIG=/docker',
+  '-v',
+  `${process.env.DOCKER_CONFIG ?? join(process.env.HOME ?? '', '.docker')}:/docker:ro`,
+  '-v',
+  `${cache}:/cache`,
+  ...mounts.flatMap((mount) => ['-v', mount]),
+];
+
 export function realTools(trivyImage: string, cache: string, work: string): Tools {
-  const dockerConfig = process.env.DOCKER_CONFIG ?? join(process.env.HOME ?? '', '.docker');
   let count = 0;
   const temp = () => mkdtempSync(join(work, 'target-'));
   return {
@@ -503,17 +531,7 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
       await run(
         'docker',
         [
-          'run',
-          '--rm',
-          '-e',
-          'DOCKER_CONFIG=/docker',
-          '-v',
-          `${dockerConfig}:/docker:ro`,
-          '-v',
-          `${cache}:/cache`,
-          '-v',
-          `${out}:/out`,
-          ...(src ? ['-v', `${src}:/src:ro`] : []),
+          ...dockerRun(cache, [`${out}:/out`, ...(src ? [`${src}:/src:ro`] : [])]),
           trivyImage,
           ...args.slice(0, 1),
           '--cache-dir',
@@ -611,22 +629,7 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
 async function databases(tools: Tools, trivyImage: string, cache: string) {
   const pull = (args: string[]) =>
     tools.retry(() =>
-      run('docker', [
-        'run',
-        '--rm',
-        '-e',
-        'DOCKER_CONFIG=/docker',
-        '-v',
-        `${process.env.DOCKER_CONFIG ?? join(process.env.HOME ?? '', '.docker')}:/docker:ro`,
-        '-v',
-        `${cache}:/cache`,
-        trivyImage,
-        'image',
-        '--cache-dir',
-        '/cache',
-        '--quiet',
-        ...args,
-      ]),
+      run('docker', [...dockerRun(cache), trivyImage, 'image', '--cache-dir', '/cache', '--quiet', ...args]),
     );
   await pull(['--download-db-only', '--db-repository', DB_REPOSITORY]);
   await pull(['--download-java-db-only', '--java-db-repository', JAVA_DB_REPOSITORY]);
@@ -677,7 +680,7 @@ export async function main(args: string[]): Promise<number> {
   try {
     database = entries(await tools.retry(() => tools.fetch(NODE_DATABASE)));
     // Every range read now, so one the scan cannot read refuses the database rather than misreading a version.
-    advisoriesFor('0.0.0', database);
+    readable(database);
   } catch (error) {
     console.error(
       `::error::Node's vulnerability database is refused: ${firstLine(error)}. The run fails, and nothing is uploaded.`,
@@ -687,15 +690,16 @@ export async function main(args: string[]): Promise<number> {
   console.log(`Node's vulnerability database has ${database.length} entries.`);
 
   const checkout = resolve(root);
-  const { items } = inventory(checkout);
-  const outcome = await scan(tools, checkout, items, unlisted(checkout), database);
-  const { lines, passes } = report(outcome, upload);
+  const { items, checkout: files } = inventory(checkout);
+  const outcome = await scan(tools, checkout, items, unlisted(checkout), database, new Set(files.files));
+  const { lines, passes, file } = report(outcome, upload, LIMITS, pin[2]);
   for (const line of lines) console.log(line);
   for (const entry of outcome.unreadable) console.log(`::error::Not read: ${entry.name}: ${entry.why}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary(outcome, lines)}\n`);
   if (!passes) return 1;
   if (upload) {
-    writeFileSync(join(out, 'vulnerabilities.sarif'), JSON.stringify(sarif(outcome.findings, pin[2])));
+    // The file checked against the limits, as it was checked.
+    writeFileSync(join(out, 'vulnerabilities.sarif'), JSON.stringify(file));
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'sarif=true\n');
   }
   return 0;

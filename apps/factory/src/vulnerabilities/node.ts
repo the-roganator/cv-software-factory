@@ -59,10 +59,14 @@ function meets(version: Version, comparator: string): boolean {
     const low: Version = [fixed[0] ?? 0, fixed[1] ?? 0, 0];
     const high: Version = fixed.length === 1 ? [low[0] + 1, 0, 0] : [low[0], low[1] + 1, 0];
     const inside = compare(version, low) >= 0 && compare(version, high) < 0;
+    // A caret keeps the major (`^24.22` is 24.22.0 up to 25.0.0); a tilde, the minor where one is given.
+    const major: Version = [low[0] + 1, 0, 0];
     switch (operator) {
       case '':
       case '=':
+        return inside;
       case '^':
+        return compare(version, low) >= 0 && compare(version, low[0] === 0 && fixed.length > 1 ? high : major) < 0;
       case '~':
         return inside;
       case '>=':
@@ -122,6 +126,30 @@ export function entries(json: string): [string, CoreEntry][] {
   if (!all.length || !all.every(([, entry]) => typeof entry === 'object' && entry !== null))
     throw new Error("not Node's core vulnerability database");
   return all;
+}
+
+/**
+ * Throws unless every comparator of every range in the database is one this module reads, so a range it cannot read
+ * refuses the database when it is fetched, rather than stopping the scan partway.
+ */
+export function readable(database: [string, CoreEntry][]) {
+  const probe: Version = [0, 0, 0];
+  for (const [id, entry] of database)
+    for (const range of [entry.vulnerable, entry.patched]) {
+      if (range === undefined) continue;
+      for (const set of range.split('||'))
+        for (const comparator of set
+          .trim()
+          .replace(/([<>]=?|=|\^|~)\s+/g, '$1')
+          .split(/\s+/)
+          .filter(Boolean)) {
+          try {
+            meets(probe, comparator);
+          } catch (error) {
+            throw new Error(`entry ${id}: ${(error as Error).message}`);
+          }
+        }
+    }
 }
 
 /** Each of Node's advisories a version has: in an entry's `vulnerable` range and not its `patched` one. */

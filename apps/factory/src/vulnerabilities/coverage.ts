@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { isFixture } from './inventory.ts';
+import { lockfiles as listedLockfiles } from './inventory.ts';
 import { trivyPin } from './scan.ts';
 
 const run = promisify(execFile);
@@ -37,6 +37,10 @@ interface Listed {
 }
 
 const OWN = /^(link|file|workspace|portal):/;
+
+/** pnpm's two commands, each with no script and no pnpmfile of the checkout's: pnpm loads a pnpmfile on any command. */
+export const INSTALL = ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile'];
+export const LIST = ['list', '--recursive', '--depth', 'Infinity', '--json', '--ignore-pnpmfile'];
 
 /** Every package `pnpm list --recursive --depth Infinity --json` names, as `name@version`, the workspace's own left out. */
 export function listed(projects: (Listed & { name?: string })[]) {
@@ -132,15 +136,8 @@ export async function main(args: string[]): Promise<number> {
     console.error('::error::coverage.ts needs --trivy-pin naming the pinned Trivy, and --out.');
     return 2;
   }
-  // The lockfiles on the list, as inventory.ts finds them: each git tracks, outside prose and test fixtures.
-  const tracked = await run('git', ['-C', checkout, '-c', 'core.fsmonitor=false', 'ls-files', '-z'], {
-    encoding: 'utf-8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const lockfiles = tracked.stdout
-    .split('\0')
-    .filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file) && !isFixture(file))
-    .map((file) => ({ file }));
+  // The lockfiles on the list, as inventory.ts finds them.
+  const lockfiles = listedLockfiles(checkout).map((file) => ({ file }));
   if (!lockfiles.length) {
     console.error('::error::The list names no lockfile.');
     return 1;
@@ -161,13 +158,17 @@ export async function main(args: string[]): Promise<number> {
     npm_config_globalconfig: npmrc,
     pnpm_config_userconfig: npmrc,
     pnpm_config_globalconfig: npmrc,
+    // No pnpmfile of the checkout's, on any command: pnpm loads one on `list` as on `install`.
+    npm_config_ignore_pnpmfile: 'true',
+    pnpm_config_ignore_pnpmfile: 'true',
     // The pnpm this repository installed, never one the checkout's packageManager names.
     npm_config_manage_package_manager_versions: 'false',
     pnpm_config_manage_package_manager_versions: 'false',
   };
 
   let failed = false;
-  for (const lockfile of lockfiles) {
+  for (const [index, lockfile] of lockfiles.entries()) {
+    const sbom = `lockfile-${index}.cdx.json`;
     const dir = join(checkout, dirname(lockfile.file));
     const alone = mkdtempSync(join(work, 'lockfile-'));
     cpSync(join(checkout, lockfile.file), join(alone, 'pnpm-lock.yaml'));
@@ -188,25 +189,23 @@ export async function main(args: string[]): Promise<number> {
           'cyclonedx',
           '--include-dev-deps',
           '--output',
-          `/out/${lockfile.file.replaceAll('/', '_')}.cdx.json`,
+          `/out/${sbom}`,
           '/src',
         ],
         { maxBuffer: 64 * 1024 * 1024 },
       );
-      await run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile'], {
+      await run('pnpm', INSTALL, {
         cwd: dir,
         env,
         maxBuffer: 64 * 1024 * 1024,
       });
-      const list = await run('pnpm', ['list', '--recursive', '--depth', 'Infinity', '--json'], {
+      const list = await run('pnpm', LIST, {
         cwd: dir,
         env,
         maxBuffer: 512 * 1024 * 1024,
       });
       const fromPnpm = listed(JSON.parse(list.stdout));
-      const fromTrivy = inSbom(
-        JSON.parse(readFileSync(join(work, `${lockfile.file.replaceAll('/', '_')}.cdx.json`), 'utf-8')),
-      );
+      const fromTrivy = inSbom(JSON.parse(readFileSync(join(work, sbom), 'utf-8')));
       const gone = missing(fromPnpm, fromTrivy);
       console.log(
         `${lockfile.file}: pnpm lists ${fromPnpm.size} packages; Trivy's SBOM of the lockfile names ${fromTrivy.size}; ${gone.length} not in it.`,

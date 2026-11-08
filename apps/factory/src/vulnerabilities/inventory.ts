@@ -255,6 +255,11 @@ function chartSources(manifests: Manifest[]) {
 }
 
 /** The list, and what it read along the way that `--unlisted` compares with it. */
+/** The lockfiles on a checkout's list: each `pnpm-lock.yaml` git tracks as a regular file, outside prose and fixtures. */
+export function lockfiles(root: string) {
+  return new Checkout(root).files.filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file) && !isFixture(file));
+}
+
 export function inventory(root: string) {
   const checkout = new Checkout(root);
   const items: Item[] = [];
@@ -274,6 +279,7 @@ export function inventory(root: string) {
   // Lockfiles.
   for (const file of tracked.filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file)))
     add({ kind: 'lockfile', name: file, file, line: 1 });
+  // lockfiles() above reads the same.
 
   // Images of ours, as the local overlay pins them.
   for (const file of tracked.filter((file) =>

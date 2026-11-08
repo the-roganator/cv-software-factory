@@ -20,7 +20,15 @@ import { capital, startOfDay } from '../format.ts';
 import { type AttackState, attackWords, limitOf, type Verdict, verdictAt, WHO } from './attacks.ts';
 import { waitPicture } from './fixing.ts';
 import { itemFlag, STAGE_NAME } from './flags.ts';
-import { type Capture, type ItemState, type Outcome, ofType, stopsRelease, summaryOf } from './items.ts';
+import {
+  type Capture,
+  type ItemState,
+  type Outcome,
+  ofType,
+  stopsRelease,
+  summaryOf,
+  type UnsignedBuild,
+} from './items.ts';
 import type { Release, StoppedBy } from './release.ts';
 
 /** How far a work item got at each stage. `refused`: where an attack met the mechanism that refused it, which is good. */
@@ -115,9 +123,13 @@ export type Picture =
       merged: { at: number; commit: string; byMartin: boolean } | undefined;
       /** The release that carried the merge, if it ended without shipping. */
       ended: Ended | undefined;
-      /** The deploy pull request that carries it, once the App has opened one. */
+      /**
+       * The deploy pull request that carries it, once the App has opened one; or the build that carries it, while its
+       * pipeline has not signed it, so no pull request may.
+       */
       deploy:
         | Pick<PayloadOf<'deploy.changed'>, 'pullRequest' | 'state' | 'failed' | 'waits' | 'rule' | 'reason' | 'said'>
+        | UnsignedBuild
         | undefined;
       /** Whether it waits for Martin: his deploy to merge, its checks passed, or his retry. */
       waitsForMartin: boolean;

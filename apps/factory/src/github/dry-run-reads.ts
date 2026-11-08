@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
 import { structuredPatch } from 'diff';
 import { verdictBlock } from '../../../../policy/review-verdict.ts';
 import { APP_LOGIN, type DryRunActions, type DryRunPull } from './actions.ts';
-import { DEPLOYS, type DeployProposal } from './deploys.ts';
+import { DEPLOYS, type DeployBuild, type DeployProposal } from './deploys.ts';
 import { type Mergeability, type MergeQueue, type ReviewCheck, type ReviewVerdict, verdictOf } from './merging.ts';
 import type { Checkout, CheckRun, Commits, Comparison, FileAt, PullRequestState, Reads, Signed } from './reads.ts';
 
@@ -170,6 +170,11 @@ export class DryRunReads implements Reads {
   /** As the deploy watch has it, whether its proposals are real or the dry run's own. */
   deployProposal(repo: string, branch: string): Promise<DeployProposal | null> {
     return this.#live.deployProposal(repo, branch);
+  }
+
+  /** As the deploy watch has it: a dry run builds and signs nothing. */
+  deployBuild(repo: string, branch: string): Promise<DeployBuild | null> {
+    return this.#live.deployBuild(repo, branch);
   }
 
   /** The real commit under one the dry run made, and its commits on it, each as a patch, oldest first. */

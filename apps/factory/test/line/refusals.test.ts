@@ -257,7 +257,7 @@ describe('the denials an Event records', () => {
       workItem: null,
       cause: 'production',
       action:
-        'Create a pod for ReplicaSet runners/psa-probe-944-6cd7b66bf7, refused by Pod Security at restricted:latest',
+        'Create a pod, refused by Pod Security at restricted:latest, for ReplicaSet runners/psa-probe-944-6cd7b66bf7',
       output: message,
       subject: {
         namespace: 'runners',
@@ -271,6 +271,23 @@ describe('the denials an Event records', () => {
     expect(denialOf(combined)?.action).toBe(denialOf(event)?.action);
     // Not in a guarded namespace: not the line's to record.
     expect(denialOf({ ...event, metadata: { uid: 'e5', namespace: 'telemetry' } })).toBeUndefined();
+  });
+
+  it('reads a runner’s pod Pod Security refused onto its work item, and a webhook quoting Pod Security as the webhook’s', () => {
+    const runner = failedCreate({
+      message:
+        'Error creating: pods "coder-1400-1-3-agent-x7k2p" is forbidden: violates PodSecurity "restricted:latest": privileged (container "agent" must not set securityContext.privileged=true)',
+    });
+    expect(denialOf(runner)).toMatchObject({
+      workItem: '1400',
+      cause: 'production',
+      action: 'Create a pod, refused by Pod Security at restricted:latest, for Job runners/coder-1400-1-3-agent',
+    });
+    const webhook = failedCreate({
+      message:
+        'Error creating: admission webhook "validate.kyverno.svc-fail" denied the request: It violates PodSecurity "restricted:latest": privileged',
+    });
+    expect(denialOf(webhook)).toMatchObject({ action: 'Create a pod for Job runners/coder-1400-1-3-agent' });
   });
 
   it('reads nothing else: an audit, another namespace, another reporter, a failure that is not a denial', () => {

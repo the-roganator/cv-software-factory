@@ -47,7 +47,7 @@ const resolved = (...ids: string[]) =>
   Object.fromEntries(
     ids.map((id) => {
       const at = id.lastIndexOf('@');
-      const purl = `pkg:npm/${encodeURIComponent(id.slice(0, at)).replace('%2F', '/')}@${id.slice(at + 1)}`;
+      const purl = `pkg:npm/${id.slice(0, at).replace(/^@/, '%40')}@${id.slice(at + 1)}`;
       return [purl, { package_url: purl, relationship: 'direct', scope: 'runtime' }];
     }),
   );

@@ -17,6 +17,8 @@ Deterministic gates (spec 4.1). Part of the [GitHub plane](README.md#github-plan
 - ZAP's baseline scan of the console signed in as Martin;
 - each image built, and a runner's prepare step run in the runner image ([agent runners](AGENT-RUNNERS.md#trying-a-runner)).
 
+Beside them, not on every pull request, the daily scan (`vulnerabilities.yml`, [security scanning](SECURITY-SCANNING.md#the-daily-scan)) runs each day, on each push to `main` and by hand; a pull request that changes the scan itself runs it in its proving mode, read-only, against its base, which uploads nothing.
+
 ## ZAP's baseline scan
 
 `make zap` runs it on the Mac, as CI's `zap` job does (`apps/console/zap/scan.ts`), against the console's server and the [admin service](ADMIN-SERVICE.md) on one origin, behind a proxy standing in for Traefik, on a throwaway store. A browser enrols a passkey through the console's enrolment page with a virtual authenticator, so it signs in as Martin's does and no image holds a way in made for tests. ZAP's baseline (its spider, then its passive rules, which read each answer and send no attack) then runs in its pinned image, with Martin's session and token on every request, reading the pages the console's script draws and the admin service's answers too (`hooks.py`).

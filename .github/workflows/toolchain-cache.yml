@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [static, tests, zap, node, review]
+        job: [static, tests, zap, node, review, scan]
         include:
           - job: static
             tools: node pnpm kustomize
@@ -47,6 +47,9 @@ jobs:
           # Node and cosign, for review.yml, which checks an exact pin's signatures.
           - job: review
             tools: node cosign
+          # The daily scan (vulnerabilities.yml): the list, its charts rendered, and the SBOMs of ours verified.
+          - job: scan
+            tools: node kustomize helm yq cosign
     steps:
       # The whole checkout, as check.yml's jobs have it, so the cache's key hashes the same files: mise.toml and mise.lock,
       # which the other workflows' sparse checkouts hold too.

@@ -1,0 +1,39 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "/src",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "pnpm-lock.yaml",
+      "Class": "lang-pkgs",
+      "Type": "pnpm",
+      "Packages": [
+        {
+          "ID": "minimatch@10.0.3",
+          "Name": "minimatch",
+          "Identifier": { "PURL": "pkg:npm/minimatch@10.0.3" },
+          "Version": "10.0.3",
+          "Dev": true
+        },
+        { "ID": "yaml@2.9.1", "Name": "yaml", "Identifier": { "PURL": "pkg:npm/yaml@2.9.1" }, "Version": "2.9.1" }
+      ],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "GHSA-g3hv-75wg-m249",
+          "PkgID": "minimatch@10.0.3",
+          "PkgName": "minimatch",
+          "PkgIdentifier": { "PURL": "pkg:npm/minimatch@10.0.3" },
+          "InstalledVersion": "10.0.3",
+          "FixedVersion": "11.0.1",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://github.com/advisories/GHSA-g3hv-75wg-m249",
+          "Title": "minimatch ReDoS at high optimization levels",
+          "Description": "A pattern's parts can be amplified into a denial of service.",
+          "Severity": "MEDIUM",
+          "CVSS": { "ghsa": { "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L", "V3Score": 5.3 } }
+        }
+      ]
+    }
+  ]
+}

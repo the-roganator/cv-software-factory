@@ -1,0 +1,40 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "ImageID": "sha256:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+    "OS": {
+      "Family": "debian",
+      "Name": "13.1"
+    },
+    "RepoDigests": [
+      "ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "ImageConfig": {
+      "architecture": "amd64",
+      "os": "linux",
+      "config": {
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "NODE_VERSION=24.22.0",
+          "NODE_ENV=production"
+        ]
+      }
+    }
+  },
+  "Results": [
+    {
+      "Target": "Node.js",
+      "Class": "lang-pkgs",
+      "Type": "node-pkg",
+      "Packages": [
+        {
+          "ID": "undici@7.16.0",
+          "Name": "undici",
+          "Version": "7.16.0"
+        }
+      ]
+    }
+  ]
+}

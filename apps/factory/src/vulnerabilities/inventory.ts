@@ -33,6 +33,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { PROOF } from './proof.ts';
 
 export type Kind =
   | 'lockfile'
@@ -254,6 +255,11 @@ function chartSources(manifests: Manifest[]) {
 }
 
 /** The list, and what it read along the way that `--unlisted` compares with it. */
+/** The lockfiles on a checkout's list: each `pnpm-lock.yaml` git tracks as a regular file, outside prose and fixtures. */
+export function lockfiles(root: string) {
+  return new Checkout(root).files.filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file) && !isFixture(file));
+}
+
 export function inventory(root: string) {
   const checkout = new Checkout(root);
   const items: Item[] = [];
@@ -273,6 +279,7 @@ export function inventory(root: string) {
   // Lockfiles.
   for (const file of tracked.filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file)))
     add({ kind: 'lockfile', name: file, file, line: 1 });
+  // lockfiles() above reads the same.
 
   // Images of ours, as the local overlay pins them.
   for (const file of tracked.filter((file) =>
@@ -524,6 +531,8 @@ export function unlisted(root: string): Unlisted[] {
       for (const reference of references(line)) {
         const digest = reference.slice(reference.indexOf('sha256:'));
         if (listed.has(identity(reference)) || pinned.get(`${file}:${index + 1}`)?.has(digest)) continue;
+        // The scan's proof image, which it reads and nothing runs.
+        if (file === PROOF.file && reference === PROOF.image) continue;
         found.push({ file, line: index + 1, reference, why: 'a reference by digest the list does not read' });
       }
     });

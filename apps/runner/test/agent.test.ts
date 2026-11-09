@@ -150,6 +150,33 @@ describe('a runner’s agent', () => {
     ]);
   });
 
+  it('ends with its result, ending what its tools left running rather than wait on it', async () => {
+    const work = volume();
+    const pidFile = join(work, 'child.pid');
+    // A command past its timeout, which Claude Code moves to the background and would wait on: a minute's sleep.
+    const sleeper = `node -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setTimeout(() => {}, 60000)"`;
+    const lines: string[] = [];
+    const started = Date.now();
+    const handback = await run(
+      [
+        bash("sed -i.bak 's/ - 1;/;/' src/count.ts && rm src/count.ts.bak"),
+        { tool: 'Bash', input: { command: sleeper, description: 'Type-check', timeout: 2000 } },
+        { text: 'Fixed the count.' },
+      ],
+      { work, lines },
+    );
+    // The child's two seconds, then the query closed: well inside the minute it would have held the step.
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(handback).toMatchObject({ ending: 'finished', note: 'Fixed the count.', turns: 3 });
+    expect(handback.patch).toContain('+export const count = (xs: unknown[]) => xs.length;');
+    // The agent was not woken again when the command ended: three turns of its own, and no more.
+    expect(model?.requests.filter((r) => Array.isArray(r.body.tools) && r.body.tools.length > 0)).toHaveLength(3);
+    const ended = JSON.parse(lines.find((line) => line.includes('the agent ended')) ?? '{}');
+    expect(ended).toMatchObject({ subtype: 'success', turns: 3 });
+    const child = Number(readFileSync(pidFile, 'utf-8'));
+    expect(() => process.kill(child, 0)).toThrow();
+  }, 30_000);
+
   it('stops at its turn limit, and says so', async () => {
     const handback = await run([bash('echo still thinking')], { maxTurns: 2, repeat: true });
     expect(handback).toMatchObject({ ending: 'max-turns', patch: '', turns: expect.any(Number) });

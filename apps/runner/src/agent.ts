@@ -12,7 +12,9 @@
  *    exactly what it asked before skills came in, so its cassettes still replay.
  * 3. It says what the agent does as it does it, a JSON line each (`log.ts`): each turn, each tool it calls, by name
  *    alone, and each call that failed. Never what a tool was given or gave back.
- * 4. It hands back a patch of what the agent changed and the agent's last word, and its structured result when the
+ * 4. It ends with the agent's result: it closes the SDK's query and ends whatever the agent's tools left running
+ *    (`processes.ts`), rather than wait on a command Claude Code moved to the background.
+ * 5. It hands back a patch of what the agent changed and the agent's last word, and its structured result when the
  *    step asks for one. The patch is data: the line checks it against the spec's scope, and the GitHub worker
  *    applies it outside the sandbox. The result is data too: the line reads it through the agent's schema.
  */
@@ -23,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { query, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { git } from './git.ts';
 import { bounded, cutTo, type Log, runnerLog } from './log.ts';
+import { descendants, endAll, type Proc, processTable } from './processes.ts';
 import {
   type Ending,
   type Handback,
@@ -213,6 +216,7 @@ export async function runAgent(
 
   let result: SDKResultMessage | undefined;
   let error: string | undefined;
+  let leftover: Proc[] = [];
   const narrate = narrator(log);
   try {
     for await (const message of query({
@@ -246,12 +250,21 @@ export async function runAgent(
       },
     })) {
       narrate(message);
-      if (message.type === 'result') result = message;
+      if (message.type === 'result') {
+        // The step ends with the agent's result. Claude Code would hold the session open while a command its tools
+        // moved to the background runs, and then wake the agent to say it ended: the step has its result, so what
+        // its tools started is snapshotted, the query is closed, and anything of theirs still running is ended.
+        result = message;
+        leftover = descendants(processTable());
+        break;
+      }
     }
   } catch (thrown) {
     error = (thrown as Error)?.message ?? String(thrown);
     log('the Agent SDK failed', { level: 'error', error: bounded(error) });
   }
+  const ended = endAll(leftover);
+  if (ended) log('ended what the agent’s tools left running', { processes: ended });
 
   if (!error && !result) error = 'The agent ended without a result.';
   if (!error && result?.subtype !== 'success') error = result?.errors.join('; ') || result?.subtype;

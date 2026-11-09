@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { irregularLockfiles, judge, type Scanned, trivyPin } from '../../src/gates/lockfile-scan.ts';
+import {
+  irregularLockfiles,
+  judge,
+  lockfileDirSettings,
+  type Scanned,
+  trivyPin,
+} from '../../src/gates/lockfile-scan.ts';
 
 // Trivy's JSON for a pnpm lockfile, as `trivy fs --include-dev-deps --list-all-pkgs` writes it: `Dev` on a package
 // only development dependencies reach, and each vulnerability naming its package's UID.
@@ -172,6 +178,52 @@ describe('a lockfile git tracks as something other than a regular file', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a setting that moves the lockfile pnpm installs from', () => {
+  /** A git repository holding the files given, each tracked. */
+  function repo(files: Record<string, string>) {
+    const root = mkdtempSync(join(tmpdir(), 'lockfile-gate-'));
+    execFileSync('git', ['-C', root, 'init', '-q']);
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(join(root, file, '..'), { recursive: true });
+      writeFileSync(join(root, file), text);
+    }
+    execFileSync('git', ['-C', root, 'add', '.']);
+    return root;
+  }
+  const settingsOf = (files: Record<string, string>) => {
+    const root = repo(files);
+    try {
+      return lockfileDirSettings(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it('is named in pnpm-workspace.yaml, quoted or not, in either spelling', () => {
+    expect(settingsOf({ 'pnpm-workspace.yaml': 'packages:\n  - apps/*\nlockfileDir: test/alt\n' })).toEqual([
+      'pnpm-workspace.yaml:3',
+    ]);
+    expect(settingsOf({ 'pnpm-workspace.yaml': "'lockfile-dir': test/alt\n" })).toEqual(['pnpm-workspace.yaml:1']);
+  });
+
+  it('is named in an .npmrc, at any depth', () => {
+    expect(settingsOf({ '.npmrc': 'lockfile-dir=test/alt\n', 'apps/x/.npmrc': 'lockfileDir = ../..\n' })).toEqual([
+      '.npmrc:1',
+      'apps/x/.npmrc:1',
+    ]);
+  });
+
+  it('is not found where there is none, or only in a comment', () => {
+    expect(
+      settingsOf({
+        'pnpm-workspace.yaml': 'packages:\n  - apps/*\n# lockfileDir: test/alt\n',
+        '.npmrc': 'engine-strict=true\n',
+        'docs/lockfileDir.md': 'lockfileDir: elsewhere\n',
+      }),
+    ).toEqual([]);
   });
 });
 

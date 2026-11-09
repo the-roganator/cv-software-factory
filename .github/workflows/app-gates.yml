@@ -335,7 +335,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
-          sparse-checkout: pnpm-lock.yaml
+          # Its lockfiles, and the settings that could point pnpm at another one, at any depth.
+          sparse-checkout: |
+            pnpm-lock.yaml
+            pnpm-workspace.yaml
+            .npmrc
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -14,6 +14,8 @@
  * - A lockfile Trivy reads no packages from, on either side, or whose report is empty or cannot be parsed, fails: an
  *   unread lockfile would otherwise pass for one with nothing in it. So does a `pnpm-lock.yaml` git tracks as anything
  *   but a regular file: pnpm follows a symbolic link the list leaves out, so one could stand in for a vulnerable tree.
+ * - So does a change whose `pnpm-workspace.yaml` or `.npmrc`, at any depth, sets `lockfileDir` or `lockfile-dir`: pnpm
+ *   would then install from a lockfile elsewhere, perhaps one the list leaves out as a fixture.
  * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
  *
  * It excepts nothing: no exception is read from the change, or from anywhere else.
@@ -23,7 +25,7 @@
  * the base look clean. Node alone runs this, from a sparse checkout with no dependencies.
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -163,6 +165,28 @@ export function irregularLockfiles(root: string) {
     });
 }
 
+/** A setting that moves the lockfile pnpm installs from, in either spelling, as a key of YAML or of an `.npmrc`. */
+const LOCKFILE_DIR = /^\s*["']?(lockfileDir|lockfile-dir)["']?\s*[:=]/;
+
+/**
+ * Each place a checkout's pnpm settings move the lockfile: every tracked `pnpm-workspace.yaml` and `.npmrc`, at any
+ * depth, that sets `lockfileDir` or `lockfile-dir`, as `<file>:<line>`. Read as text, so a setting in any shape fails
+ * the gate rather than slipping past a parser.
+ */
+export function lockfileDirSettings(root: string) {
+  const files = execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-z'], {
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+    .split('\0')
+    .filter((file) => /(^|\/)(pnpm-workspace\.yaml|\.npmrc)$/.test(file) && existsSync(join(root, file)));
+  return files.flatMap((file) =>
+    readFileSync(join(root, file), 'utf-8')
+      .split('\n')
+      .flatMap((line, index) => (LOCKFILE_DIR.test(line) ? [`${file}:${index + 1}`] : [])),
+  );
+}
+
 /** Where the advisory database is pulled from: GHCR, as the daily scan pulls it (../vulnerabilities/scan.ts). */
 const DB = 'ghcr.io/aquasecurity/trivy-db:2';
 
@@ -296,6 +320,12 @@ export async function main(args: string[]): Promise<number> {
     };
     const base = await scanAll(basePath);
     const change = await scanAll(changePath, { root: basePath, scans: base });
+    for (const setting of lockfileDirSettings(changePath)) {
+      const at = setting.lastIndexOf(':');
+      change.set(setting.slice(0, at), {
+        unscannable: `line ${setting.slice(at + 1)} sets lockfileDir or lockfile-dir, so pnpm would install from a lockfile the gate does not read`,
+      });
+    }
     if (!change.size) {
       console.error('::error::The change tracks no lockfile to scan.');
       return 1;
@@ -312,7 +342,7 @@ export async function main(args: string[]): Promise<number> {
         '## Lockfile scan',
         `Scanned ${base.size} lockfile${base.size === 1 ? '' : 's'} of the base and ${change.size} of the change.`,
         unread.length
-          ? `${unread.length} could not be read:\n\n${unread.map((u) => `- ${u.side}: ${cell(u.lockfile)}: ${u.why}`).join('\n')}`
+          ? `${unread.length} could not be judged:\n\n${unread.map((u) => `- ${u.side}: ${cell(u.lockfile)}: ${u.why}`).join('\n')}`
           : '',
         added.length
           ? `This change brings in ${added.length} vulnerabilit${added.length === 1 ? 'y' : 'ies'} the base does not have.\n\n| Severity | Vulnerability | Package | Reached from | Fixed in | Lockfile | Title |\n|---|---|---|---|---|---|---|\n${rows}`
@@ -321,7 +351,8 @@ export async function main(args: string[]): Promise<number> {
         .filter(Boolean)
         .join('\n\n'),
     );
-    for (const u of unread) annotate('error', `The ${u.side}'s ${u.lockfile} could not be read: ${u.why}`, u.lockfile);
+    for (const u of unread)
+      annotate('error', `The ${u.side}'s ${u.lockfile} could not be judged: ${u.why}`, u.lockfile);
     for (const f of added)
       annotate(
         'error',

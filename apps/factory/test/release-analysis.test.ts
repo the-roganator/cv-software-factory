@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -10,9 +10,11 @@ import { METRICS_FROM_THE_ADMIN_SERVICE, METRICS_FROM_THE_LINE } from '../src/pr
 import {
   conditions,
   ingressServiceOf,
+  OFF_LABEL,
   outOfDate,
   queries,
   render,
+  STABLE_SEEN,
   SWITCH_FRESH,
   switched,
   TEMPLATES,
@@ -79,7 +81,8 @@ describe('the canary analysis', () => {
       expect(query).not.toMatch(/http_route="/);
       expect(query).not.toContain('by (http_route)');
     }
-    // A baseline with no series fails the canary, rather than leaving nothing to compare.
+    // A canary with no series fails, rather than leaving nothing to judge; one with no stable version to compare with
+    // passes (evaluated below, in "with no stable version").
     expect(q.errors).toContain('or on () vector(Inf)');
     expect(q.latency).toContain('or on () vector(Inf)');
     expect(q.errors).toContain('http_response_status_code=~"5.."');
@@ -196,6 +199,24 @@ function phase(c: { successCondition: string; failureCondition: string }, result
   return evaluate(c.successCondition, result) ? 'Successful' : 'Inconclusive';
 }
 
+/** Runs promtool's rule tests on these, in a folder of their own that it removes: whether they passed, and what it said. */
+function promtool(tests: unknown[]): { passed: boolean; output: string } {
+  const folder = mkdtempSync(join(tmpdir(), 'promtool-'));
+  const file = join(folder, 'tests.yml');
+  try {
+    writeFileSync(file, stringify({ rule_files: [], evaluation_interval: '15s', tests }, { lineWidth: 0 }));
+    return {
+      passed: true,
+      output: execFileSync('promtool', ['test', 'rules', file], { encoding: 'utf-8', stdio: 'pipe' }),
+    };
+  } catch (error) {
+    const { stdout = '', stderr = '', message } = error as { stdout?: string; stderr?: string; message: string };
+    return { passed: false, output: `${message}\n${stdout}${stderr}` };
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
 describe('auto-rollback, as the analysis reads it', () => {
   const latency = conditions('result[0] <= 0');
 
@@ -222,7 +243,6 @@ describe('auto-rollback, as the analysis reads it', () => {
 
   /** Whether the switch's query answers its figure twice at 5m, given these series of the switch over the 5 minutes. */
   function offAt5m(series: { series: string; values: string }[], figure = 'sum(figure)'): boolean {
-    const folder = mkdtempSync(join(tmpdir(), 'auto-rollback-'));
     const test = (expected: number) => ({
       interval: '15s',
       input_series: [{ series: 'figure', values: '0.17x40' }, ...series],
@@ -234,30 +254,11 @@ describe('auto-rollback, as the analysis reads it', () => {
         },
       ],
     });
-    writeFileSync(
-      join(folder, 'tests.yml'),
-      stringify({ rule_files: [], evaluation_interval: '15s', tests: [test(2)] }, { lineWidth: 0 }),
-    );
-    try {
-      execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8', stdio: 'pipe' });
-      return true;
-    } catch {
-      // Not two: check it is one, so a query that answers nothing (or fails to parse) does not pass as "on".
-      writeFileSync(
-        join(folder, 'tests.yml'),
-        stringify({ rule_files: [], evaluation_interval: '15s', tests: [test(1)] }, { lineWidth: 0 }),
-      );
-      const output = (() => {
-        try {
-          return execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8' });
-        } catch (error) {
-          const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
-          throw new Error(`neither one answer nor two:\n${stdout}${stderr}`);
-        }
-      })();
-      expect(output).toContain('SUCCESS');
-      return false;
-    }
+    if (promtool([test(2)]).passed) return true;
+    // Not two: check it is one, so a query that answers nothing (or fails to parse) does not pass as "on".
+    const one = promtool([test(1)]);
+    if (!one.passed) throw new Error(`neither one answer nor two:\n${one.output}`);
+    return false;
   }
 
   const admin = (value: string, extra = '') => ({
@@ -302,32 +303,191 @@ describe('auto-rollback, as the analysis reads it', () => {
   });
 
   it('parses as Prometheus reads it, around the real measures', () => {
-    const folder = mkdtempSync(join(tmpdir(), 'auto-rollback-'));
     const q = queries(release);
     const real = (query: string) =>
       switched(query).replaceAll('{{args.canary-hash}}', 'c4n4ry').replaceAll('{{args.stable-hash}}', 's74b1e');
-    writeFileSync(
-      join(folder, 'tests.yml'),
-      stringify(
-        {
-          rule_files: [],
-          tests: [
-            {
-              interval: '15s',
-              input_series: [],
-              promql_expr_test: [q.errors, q.latency].map((query) => ({
-                expr: real(query),
-                eval_time: '5m',
-                exp_samples: [],
-              })),
-            },
-          ],
-        },
-        { lineWidth: 0 },
-      ),
-    );
-    expect(execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8' })).toContain(
-      'SUCCESS',
-    );
+    const parsed = promtool([
+      {
+        interval: '15s',
+        input_series: [],
+        promql_expr_test: [q.errors, q.latency].map((query) => ({
+          expr: real(query),
+          eval_time: '5m',
+          exp_samples: [],
+        })),
+      },
+    ]);
+    expect(parsed.passed, parsed.output).toBe(true);
+    expect(parsed.output).toContain('SUCCESS');
   });
+});
+
+describe('with no stable version, as the analysis reads it', () => {
+  const CANARY = 'c4n4ry';
+  const STABLE = 's74b1e';
+  /**
+   * A counter sampled every 15s for ten minutes, `step` more each time (60 is 4 a second); with `until`, its samples
+   * stop after that many steps, as a version's telemetry does when it goes dark. Evaluated at 5m.
+   */
+  const counter = (step: number, until = 40) => (until < 40 ? `0+${step}x${until} _x${40 - until}` : `0+${step}x40`);
+  const of = (hash: string, extra = '') =>
+    `{job="${release.app.metricsJob}", http_route="/", k8s_pod_label_rollouts_pod_template_hash="${hash}"${extra}}`;
+  /** A version's requests, 4 a second, a share of them 5xx, each answered within `le` seconds. */
+  const version = (
+    hash: string,
+    { errors = 0, le = '0.1', until = 40 }: { errors?: number; le?: string; until?: number } = {},
+  ) => [
+    {
+      series: `http_server_request_duration_seconds_count${of(hash, ', http_response_status_code="200"')}`,
+      values: counter(60 * (1 - errors), until),
+    },
+    {
+      series: `http_server_request_duration_seconds_count${of(hash, ', http_response_status_code="500"')}`,
+      values: counter(60 * errors, until),
+    },
+    ...['0.1', '0.5', '+Inf'].map((bucket) => ({
+      series: `http_server_request_duration_seconds_bucket${of(hash, `, le="${bucket}"`)}`,
+      values: counter(Number(bucket) >= Number(le) ? 60 : 0, until),
+    })),
+  ];
+  /** What the split sent the canary through the ingress: enough to judge. */
+  const split = {
+    series: `traefik_service_requests_total{service="${ingressServiceOf(release.app.canary)}"}`,
+    values: counter(60),
+  };
+  const switchOff = [
+    { series: `admin_auto_rollback{${METRICS_FROM_THE_ADMIN_SERVICE}}`, values: '0x40' },
+    { series: `line_auto_rollback{${METRICS_FROM_THE_LINE}}`, values: '0x40' },
+  ];
+
+  /**
+   * Has promtool evaluate a template's measure at 5m over these series and check it answers exactly these figures (the
+   * second under the switch's label), then gives the measurement's phase from the template's own conditions.
+   */
+  function judge(
+    template: string,
+    name: string,
+    series: { series: string; values: string }[],
+    figures: number[],
+    { interval = '15s', at = '5m' } = {},
+  ) {
+    const metric = metricsOf(template).find((m) => m.name === name);
+    const query = metric?.provider.prometheus?.query;
+    if (!metric?.successCondition || !metric.failureCondition || !query) throw new Error(`no measure ${name}`);
+    const labels = ['{}', `{${OFF_LABEL}="off"}`];
+    const run = promtool([
+      {
+        interval,
+        input_series: series,
+        promql_expr_test: [
+          {
+            expr: query.replaceAll('{{args.canary-hash}}', CANARY).replaceAll('{{args.stable-hash}}', STABLE),
+            eval_time: at,
+            exp_samples: figures.map((value, i) => ({ labels: labels[i], value })),
+          },
+        ],
+      },
+    ]);
+    if (!run.passed) throw new Error(`${template} ${name} did not answer ${JSON.stringify(figures)}:\n${run.output}`);
+    return phase({ successCondition: metric.successCondition, failureCondition: metric.failureCondition }, figures);
+  }
+
+  const measures = [TEMPLATES.step, TEMPLATES.background].flatMap((template) =>
+    ['errors', 'latency'].map((name) => ({ template, name })),
+  );
+  /** A bad canary for each measure: a tenth of its answers 5xx, or every answer slower than 100 ms. */
+  const bad = (name: string) => (name === 'errors' ? { errors: 0.1 } : { le: '0.5' });
+  /** What a bad canary's figure is against a good stable version: 0.1 more 5xx; p99 0.496 s against 0.099 + 0.1 s. */
+  const badFigure = (name: string) => (name === 'errors' ? 0.1 : 0.297);
+  /** A good canary's against a good stable version: no more 5xx; p99 0.099 s against 0.099 + 0.1 s. */
+  const goodFigure = (name: string) => (name === 'errors' ? 0 : -0.1);
+
+  it.each(measures)(
+    '$template $name compares the canary with the stable version, exactly as before, when it has one',
+    ({ template, name }) => {
+      expect(judge(template, name, [...version(CANARY), ...version(STABLE), split], [goodFigure(name)])).toBe(
+        'Successful',
+      );
+      expect(judge(template, name, [...version(CANARY, bad(name)), ...version(STABLE), split], [badFigure(name)])).toBe(
+        'Failed',
+      );
+      // With auto-rollback off, the bad figure pauses the canary rather than failing it.
+      expect(
+        judge(
+          template,
+          name,
+          [...version(CANARY, bad(name)), ...version(STABLE), split, ...switchOff],
+          [badFigure(name), badFigure(name)],
+        ),
+      ).toBe('Inconclusive');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name passes a canary with no stable version to compare with, good or bad',
+    ({ template, name }) => {
+      expect(judge(template, name, [...version(CANARY), split], [0])).toBe('Successful');
+      expect(judge(template, name, [...version(CANARY, bad(name)), split], [0])).toBe('Successful');
+      expect(judge(template, name, [...version(CANARY), split, ...switchOff], [0, 0])).toBe('Successful');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name still fails a canary with nothing measured, with a stable version or none',
+    ({ template, name }) => {
+      expect(judge(template, name, [...version(STABLE), split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+      expect(judge(template, name, [split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+      expect(judge(template, name, [split, ...switchOff], [Number.POSITIVE_INFINITY])).toBe('Failed');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name fails a canary whose stable version went dark in the window, as before',
+    ({ template, name }) => {
+      const dark = [...version(CANARY), ...version(STABLE, { until: 4 }), split];
+      // The stable version served until 1m and has nothing in the window from 2m: a gap in its telemetry, not a reset.
+      expect(judge(template, name, dark, [Number.POSITIVE_INFINITY])).toBe('Failed');
+      // So is one sampled with counters that never grew: seen, the stricter reading, not none.
+      const flat = version(STABLE, { until: 4 }).map((v) => ({ ...v, values: counter(0, 4) }));
+      expect(judge(template, name, [...version(CANARY), ...flat, split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+      // A stable version that answers on no route the app named is seen too: nothing to compare, but not none.
+      const unrouted = version(STABLE).map((v) => ({
+        ...v,
+        series: v.series.replace('http_route="/"', 'http_route=""'),
+      }));
+      expect(judge(template, name, [...version(CANARY), ...unrouted, split], [Number.POSITIVE_INFINITY])).toBe(
+        'Failed',
+      );
+    },
+  );
+
+  it.each(measures)(
+    '$template $name fails a canary with series whose requests did not grow, with no stable version',
+    ({ template, name }) => {
+      const flat = version(CANARY).map((v) => ({ ...v, values: counter(0) }));
+      expect(judge(template, name, [...flat, split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+    },
+  );
+
+  it.each(measures)(
+    `$template $name calls a stable version not measured for ${STABLE_SEEN} none, and one measured within it a gap`,
+    ({ template, name }) => {
+      // Every minute for 25 hours: the canary and the split from 1490m, judged at 1500m.
+      const late = (v: { series: string; values: string }) => ({ ...v, values: `_x1490 ${v.values}` });
+      const canary = [...version(CANARY), split].map(late);
+      const daily = { interval: '1m', at: '1500m' };
+      // The stable version served from 0 to 10m, more than a day before: no baseline.
+      expect(judge(template, name, [...canary, ...version(STABLE, { until: 10 })], [0], daily)).toBe('Successful');
+      // It served from 100m to 110m, within the day: a gap in its telemetry.
+      const within = version(STABLE, { until: 10 }).map((v) => ({ ...v, values: `_x100 ${v.values}` }));
+      expect(judge(template, name, [...canary, ...within], [Number.POSITIVE_INFINITY], daily)).toBe('Failed');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name judges nothing before the split has sent the canary enough',
+    ({ template, name }) => {
+      expect(judge(template, name, version(CANARY), [])).toBe('Successful');
+    },
+  );
 });

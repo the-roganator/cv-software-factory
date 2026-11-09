@@ -34,7 +34,9 @@
  * read 0 (`autoRollbackOff`): two answers that fail the success condition are inconclusive, one is a failure. Anything
  * else, a series missing, stale, doubled or reading 1, answers once, and a bad canary rolls back. Nothing here writes the
  * Rollout. A canary with no figure to judge (none of its series reached Prometheus) is not judged bad but unmeasured,
- * and still fails.
+ * and still fails. A canary with no baseline, whose stable version has no sample of its request counts in Prometheus
+ * over the last day (`STABLE_SEEN`), as on the first release after the app is reset, has nothing to be worse than, and passes errors and
+ * latency; a stable version measured in that day but not in the window could not be compared, and fails the canary.
  *
  * The switch covers what the analysis judges of the canary against its baseline in Prometheus: errors and latency. It
  * leaves alone what says the analysis could not judge: too few requests still fails a step, and an analysis error
@@ -116,6 +118,16 @@ export function routeQueries(r: Release, hash: string, seconds: number) {
 }
 
 /**
+ * How far back the analysis looks for any sample of the stable version's request counts before it calls the canary's
+ * comparison one with no stable version: a day, within Prometheus's seven. A stable version sampled in that time, even
+ * one whose counters did not grow, with nothing in the window, is a gap in its telemetry, and fails the canary as a
+ * comparison that could not be made: the stricter reading. One with no sample in it has not run in that time, or
+ * Prometheus has lost what it kept (a new local cluster's Prometheus starts empty), and either way there is no
+ * baseline to compare with: as on the first release after the app is reset.
+ */
+export const STABLE_SEEN = '1d';
+
+/**
  * The PromQL behind each measure, for one release policy. Each is written across lines, as the templates show it: a
  * version's figure on a line of its own.
  */
@@ -128,10 +140,16 @@ export function queries(r: Release) {
   const latency = (v: Version) => version(v).latency;
   // Nothing is judged until the split has sent the canary enough requests: the result is then empty, which passes,
   // so a step that falls short fails on `enough-requests` alone, for that reason, and not on what the journeys alone
-  // made of errors and latency. Once it has, a version with nothing to compare (no series for its hash) is infinitely
-  // worse, which fails.
+  // made of errors and latency. Once it has, a canary with nothing measured (no series for its own hash, or counters
+  // that did not grow in the window) is infinitely worse, which fails; so is one whose stable version has served within
+  // `STABLE_SEEN` but has nothing in the window, a gap in its telemetry. A stable version not measured in that time, on
+  // any route, as on the first release after the app is reset, leaves nothing to compare with: the canary is no worse
+  // than nothing, 0, which passes. With the stable version's series in the window, the middle branch answers nothing,
+  // and the comparison is all.
+  const stableSeen = `count(last_over_time(${REQUESTS}_count{job="${r.app.metricsJob}", ${HASH}="{{args.stable-hash}}"}[${STABLE_SEEN}]))`;
+  const noStable = `(\n  vector(0)\n  and on () ${version('canary').requests} > 0\n  unless on () ${stableSeen}\n)`;
   const judged = (expr: string) =>
-    `(\n${expr}\nor on () vector(Inf)\n)\nand on () ${canaryRequests} >= ${r.minRequests}`;
+    `(\n${expr}\nor on () ${noStable}\nor on () vector(Inf)\n)\nand on () ${canaryRequests} >= ${r.minRequests}`;
   return {
     /** How many requests the traffic split sent the canary in the window, through the ingress. */
     requests: `${canaryRequests} or vector(0)`,
@@ -180,8 +198,8 @@ export const OFF_LABEL = 'auto_rollback';
 /**
  * A measure's query with the switch: its figure, and, only while auto-rollback is off by both series and the figure is
  * finite, the same figure again under `OFF_LABEL`. Both are the one figure, so `result[0]` is it whichever comes first.
- * An infinite figure, a version with nothing to compare (`queries`), is no verdict on the canary but that it could not
- * be measured, so it answers once and fails, whatever the switch.
+ * An infinite figure, a canary with nothing measured (`queries`), is no verdict on the canary but that it could not be
+ * measured, so it answers once and fails, whatever the switch.
  */
 export function switched(query: string): string {
   return `(

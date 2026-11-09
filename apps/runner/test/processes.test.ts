@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { descendants, endAll, processTable } from '../src/processes.ts';
+import { descendants, endAll, processTable, settled } from '../src/processes.ts';
 
 const alive = (pid: number) => {
   try {
@@ -38,20 +38,48 @@ describe('what the agent’s tools left running', () => {
       stdio: 'ignore',
     });
     const pid = shell.pid as number;
-    let snapshot = descendants(processTable());
-    await until(() => {
-      snapshot = descendants(processTable());
-      return snapshot.some((p) => p.ppid === pid);
-    });
-    const child = snapshot.find((p) => p.ppid === pid)?.pid as number;
-    expect(snapshot.find((p) => p.pid === pid)).toMatchObject({ pgid: pid });
-    // The shell goes first, so its child is no longer under the runner, only in the shell's group.
-    process.kill(pid, 'SIGKILL');
-    await until(() => !descendants(processTable()).some((p) => p.pid === child));
-    expect(alive(child)).toBe(true);
+    let snapshot: ReturnType<typeof descendants> = [];
+    let child = 0;
+    try {
+      await until(() => {
+        snapshot = descendants(processTable());
+        return snapshot.some((p) => p.ppid === pid);
+      });
+      child = snapshot.find((p) => p.ppid === pid)?.pid as number;
+      expect(snapshot.find((p) => p.pid === pid)).toMatchObject({ pgid: pid });
+      // The shell goes first, so its child is no longer under the runner, only in the shell's group.
+      process.kill(pid, 'SIGKILL');
+      await until(() => !descendants(processTable()).some((p) => p.pid === child));
+      expect(alive(child)).toBe(true);
 
-    expect(endAll(snapshot)).toBeGreaterThan(0);
-    await until(() => !alive(child));
+      expect(endAll(snapshot)).toBeGreaterThan(0);
+      await until(() => !alive(child));
+    } finally {
+      // Nothing of the test outlives it, whatever failed.
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {}
+    }
+  });
+
+  it('waits for the runner’s own children to end, and no longer than it is given', async () => {
+    const quick = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], { stdio: 'ignore' });
+    const slow = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    try {
+      await until(
+        () => descendants(processTable()).filter((p) => p.pid === quick.pid || p.pid === slow.pid).length === 2,
+      );
+      const quickOnly = descendants(processTable()).filter((p) => p.pid === quick.pid);
+      let started = Date.now();
+      await settled(quickOnly);
+      expect(Date.now() - started).toBeLessThan(3000);
+      const slowOnly = descendants(processTable()).filter((p) => p.pid === slow.pid);
+      started = Date.now();
+      await settled(slowOnly, 500);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(500);
+    } finally {
+      slow.kill('SIGKILL');
+    }
   });
 
   it('is nothing to end when nothing is left', () => {

@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { query, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { git } from './git.ts';
 import { bounded, cutTo, type Log, runnerLog } from './log.ts';
-import { descendants, endAll, type Proc, processTable } from './processes.ts';
+import { descendants, endAll, type Proc, processTable, settled } from './processes.ts';
 import {
   type Ending,
   type Handback,
@@ -263,6 +263,12 @@ export async function runAgent(
     error = (thrown as Error)?.message ?? String(thrown);
     log('the Agent SDK failed', { level: 'error', error: bounded(error) });
   }
+  // With no result (the SDK threw, or ended without one), what is left is ended all the same, before the patch is
+  // read: a command still writing to the checkout would change it as it is read.
+  if (!result) leftover = descendants(processTable());
+  // Claude Code is given the time the SDK gives it to end on its own, so its session is whole for a step that
+  // resumes it; only then is anything of it or its tools still running killed.
+  await settled(leftover);
   const ended = endAll(leftover);
   if (ended) log('ended what the agent’s tools left running', { processes: ended });
 

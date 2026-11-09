@@ -27,7 +27,10 @@ export function processTable(): Proc[] {
       try {
         // The command's name is in brackets and may hold spaces or brackets of its own: the fields after its last `)`.
         const stat = readFileSync(`/proc/${entry}/stat`, 'utf-8');
-        const [, ppid, pgid] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        const [state, ppid, pgid] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        // A zombie has ended: in the pod the runner, as its first process, is the parent of every orphan, and
+        // does not reap them.
+        if (state === 'Z') continue;
         table.push({ pid: Number(entry), ppid: Number(ppid), pgid: Number(pgid) });
       } catch {
         // It ended while the table was read.
@@ -35,13 +38,12 @@ export function processTable(): Proc[] {
     }
     return table;
   }
-  return execFileSync('ps', ['-A', '-o', 'pid=,ppid=,pgid='], { encoding: 'utf-8' })
+  return execFileSync('ps', ['-A', '-o', 'pid=,ppid=,pgid=,stat='], { encoding: 'utf-8' })
     .trim()
     .split('\n')
-    .map((line) => {
-      const [pid = 0, ppid = 0, pgid = 0] = line.trim().split(/\s+/).map(Number);
-      return { pid, ppid, pgid };
-    });
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([, , , stat]) => !stat?.startsWith('Z'))
+    .map(([pid = '0', ppid = '0', pgid = '0']) => ({ pid: Number(pid), ppid: Number(ppid), pgid: Number(pgid) }));
 }
 
 /** The processes under `root`, children and theirs, as `table` has them. */
@@ -59,6 +61,21 @@ export function descendants(table: Proc[], root = process.pid): Proc[] {
     }
   }
   return found;
+}
+
+/** How long the SDK gives Claude Code to end on its own when the query closes, before it kills it, and a second. */
+export const SETTLE_MS = 6000;
+
+/**
+ * Waits until the runner's own children in `snapshot` (Claude Code, which the SDK started) have ended, or `ms` has
+ * passed: closing the query asks Claude Code to end, and it ends its tools' commands as it goes.
+ */
+export async function settled(snapshot: Proc[], ms = SETTLE_MS): Promise<void> {
+  const children = new Set(snapshot.filter((proc) => proc.ppid === process.pid).map((proc) => proc.pid));
+  for (const until = Date.now() + ms; Date.now() < until; ) {
+    if (!processTable().some((proc) => children.has(proc.pid))) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 /**

@@ -30,8 +30,8 @@ if (command === 'prepare' || command === 'agent') {
     process.exitCode = 1;
   }
   // Nothing is left to wait on once the step is done: a handle a tool's child held open must not keep the pod up. Its
-  // lines are written out first, since stdout may be a pipe written asynchronously.
-  await new Promise((resolve) => process.stdout.write('', resolve));
+  // lines are written out first, since stdout and stderr may be pipes written asynchronously.
+  await Promise.all([process.stdout, process.stderr].map((out) => new Promise((resolve) => out.write('', resolve))));
   process.exit();
 } else {
   console.log('Usage:\n  runner prepare\n  runner agent');

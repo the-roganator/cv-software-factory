@@ -14,7 +14,16 @@ import {
   satisfies,
 } from '../../src/vulnerabilities/node.ts';
 import { PROOF } from '../../src/vulnerabilities/proof.ts';
-import { fingerprint, LIMITS, sarif } from '../../src/vulnerabilities/sarif.ts';
+import {
+  CATEGORY,
+  type Finding,
+  fingerprint,
+  groups,
+  LIMITS,
+  merge,
+  overLimits,
+  sarif,
+} from '../../src/vulnerabilities/sarif.ts';
 import {
   DB_MAX_AGE_MS,
   databaseAge,
@@ -249,6 +258,10 @@ describe('an item it cannot read', () => {
     expect(passes).toBe(true);
     expect(lines[0]).toBe('Read 3 targets. Findings by severity: critical 1, high 1, medium 1, low 0, unknown 0.');
     expect(lines).toContain(`The proof image shows ${PROOF.advisory} in its Node 24.22.0, read from its image.`);
+    expect(lines).toContain('The results are in 1 of 20 runs, each a category of its own:');
+    expect(lines.filter((line) => line.startsWith('  vulnerabilities/'))).toEqual([
+      '  vulnerabilities/01: 3 results, 3 items: lockfile pnpm-lock.yaml; deploy/ours/kustomization.yaml ghcr.io/the-roganator/cv-software-factory/factory-runner; deploy/base/postgres/statefulset.yaml postgres',
+    ]);
     // The proof's own finding is not the repository's: nothing of it is in the file.
     const results = sarif(outcome.findings).runs[0]?.results ?? [];
     expect(results.map((result) => result.ruleId).sort()).toEqual([
@@ -261,12 +274,163 @@ describe('an item it cannot read', () => {
 });
 
 describe('results over the limit', () => {
-  it('fail the run, and nothing is uploaded', async () => {
+  it('fail the run when the groups need more runs than a file holds, and nothing is uploaded', async () => {
     const outcome = await scan(tools(everything()).tools, checkout(), items(), [], DB, TRACKED);
-    const { lines, passes } = report(outcome, true, { ...LIMITS, results: 2 });
+    // Three items of one result each: two to a run, so two runs, over a limit of one.
+    const { lines, passes } = report(outcome, true, { ...LIMITS, results: 2, runs: 1 });
     expect(passes).toBe(false);
-    expect(lines).toContain("The results are over code scanning's limits: 3 results, over 2.");
+    expect(lines).toContain("The results are over code scanning's limits: 2 runs, over 1.");
     expect(lines.at(-1)).toBe('The run fails, and nothing is uploaded.');
+  });
+
+  it('cut an item over 5,000 into runs of its own, in order of package and advisory, every result kept', () => {
+    const many = Array.from({ length: 2 * LIMITS.results + 1 }, (_, n) =>
+      finding(
+        'big',
+        `CVE-2026-${String(n % 100).padStart(3, '0')}`,
+        `pkg-${String(Math.floor(n / 100)).padStart(3, '0')}`,
+      ),
+    );
+    const file = sarif([finding('small', 'CVE-2026-1'), ...many, finding('after', 'CVE-2026-1')]);
+    expect(overLimits(file)).toEqual([]);
+    expect(file.runs.slice(0, 5).map((run) => [run.results.length, run.properties.items])).toEqual([
+      [1, ['small']],
+      [5_000, ['big (cut 1 of 3)']],
+      [5_000, ['big (cut 2 of 3)']],
+      [1, ['big (cut 3 of 3)']],
+      [1, ['after']],
+    ]);
+    // The first cut has the first packages, the last the last.
+    expect(file.runs[1]?.results[0]?.message.text).toMatch(/^pkg-000 /);
+    expect(file.runs[3]?.results[0]?.message.text).toMatch(/^pkg-100 /);
+    expect(
+      new Set(file.runs.flatMap((run) => run.results.map((r) => r.partialFingerprints['vulnerabilities/v1']))).size,
+    ).toBe(many.length + 2);
+  });
+
+  it('pass at 5,000 in a run, every result in the file', () => {
+    const all = [
+      ...Array.from({ length: 3_000 }, (_, n) => finding('a', `CVE-2026-${n}`)),
+      ...Array.from({ length: 2_000 }, (_, n) => finding('b', `CVE-2026-${n}`)),
+      ...Array.from({ length: 4_999 }, (_, n) => finding('c', `CVE-2026-${n}`)),
+    ];
+    const file = sarif(all);
+    expect(overLimits(file)).toEqual([]);
+    expect(file.runs.map((run) => run.results.length).slice(0, 3)).toEqual([5_000, 4_999, 0]);
+    expect(file.runs.flatMap((run) => run.results)).toHaveLength(all.length);
+  });
+});
+
+/** A finding of an invented item, for the grouping alone. */
+function finding(item: string, advisory: string, pkg = 'pkg'): Finding {
+  return {
+    item,
+    label: item,
+    file: 'Dockerfile',
+    line: 1,
+    type: 'debian',
+    package: pkg,
+    installed: '1',
+    advisory,
+    severity: 'HIGH',
+  };
+}
+
+describe('the runs', () => {
+  it('are 20, in the categories vulnerabilities/01 to /20, the unused ones empty, in every file', () => {
+    for (const file of [sarif([]), sarif([finding('a', 'CVE-2026-1')])]) {
+      expect(file.runs.map((run) => run.automationDetails.id)).toEqual(
+        Array.from({ length: 20 }, (_, n) => `${CATEGORY}/${String(n + 1).padStart(2, '0')}/`),
+      );
+      expect(file.runs.slice(1).every((run) => !run.results.length && !run.tool.driver.rules.length)).toBe(true);
+    }
+  });
+
+  it('carry each rule its results name, with indices into its own run', () => {
+    const all = [
+      ...Array.from({ length: 4_000 }, (_, n) => finding('a', `CVE-2026-${n}`)),
+      ...Array.from({ length: 2_000 }, (_, n) => finding('b', `CVE-2026-${n + 3_000}`)),
+    ];
+    for (const run of sarif(all).runs) {
+      expect(run.tool.driver.rules).toHaveLength(new Set(run.results.map((result) => result.ruleId)).size);
+      for (const result of run.results) expect(run.tool.driver.rules[result.ruleIndex]?.id).toBe(result.ruleId);
+    }
+  });
+
+  // Random sizes, a seeded generator so a failure repeats: whatever the items, the list's order is kept, no run is over
+  // the limit, only an item over it is cut, and no result is lost or doubled.
+  it('never exceed the limit, cut only an item over it, and never lose a result', () => {
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    for (let round = 0; round < 50; round++) {
+      const limit = 1 + Math.floor(random() * 50);
+      const all: Finding[] = [];
+      const order: string[] = [];
+      for (let item = 0; item < 1 + Math.floor(random() * 30); item++) {
+        order.push(`item-${item}`);
+        // Now and then an item alone over the limit.
+        const size = random() < 0.1 ? limit + 1 : Math.floor(random() * limit) + 1;
+        for (let n = 0; n < size; n++) all.push(finding(`item-${item}`, `CVE-2026-${n}`));
+      }
+      const grouped = groups(merge(all), limit);
+      const parts = grouped.flat();
+      // Every result once, the items in the list's order.
+      expect(parts.flatMap((part) => part.findings)).toHaveLength(all.length);
+      expect([...new Set(parts.map((part) => part.findings[0]?.item))]).toEqual(order);
+      for (const group of grouped) {
+        expect(group.flatMap((part) => part.findings).length).toBeLessThanOrEqual(limit);
+        for (const part of group) expect(new Set(part.findings.map((f) => f.item)).size).toBe(1);
+        // A cut of an item is alone in its run, and an item is cut only when it is over the limit.
+        if (group.some((part) => part.cut)) expect(group).toHaveLength(1);
+      }
+      for (const part of parts)
+        expect(Boolean(part.cut)).toBe(all.filter((f) => f.item === part.findings[0]?.item).length > limit);
+      // A run of whole items is filled no further than it could be: the next whole item would not have fitted.
+      for (let at = 1; at < grouped.length; at++) {
+        const before = grouped[at - 1] ?? [];
+        const next = grouped[at]?.[0];
+        if (before[0]?.cut || next?.cut) continue;
+        expect(before.flatMap((part) => part.findings).length + (next?.findings.length ?? 0)).toBeGreaterThan(limit);
+      }
+      const over = overLimits(
+        sarif(all, undefined, { ...LIMITS, results: limit, runs: Math.max(20, grouped.length) }),
+        {
+          ...LIMITS,
+          results: limit,
+          runs: 20,
+        },
+      );
+      expect(over.some((problem) => problem.includes('results, over'))).toBe(false);
+      expect(over.some((problem) => problem.includes('runs, over'))).toBe(grouped.length > 20);
+    }
+  });
+
+  it('move an item to another run as the items before it change, its fingerprints the same, the run it left still in the file', () => {
+    const day = (b: number) => [
+      ...Array.from({ length: 3_000 }, (_, n) => finding('a', `CVE-2026-${n}`)),
+      ...Array.from({ length: b }, (_, n) => finding('b', `CVE-2026-${n}`)),
+      ...Array.from({ length: 1_500 }, (_, n) => finding('c', `CVE-2026-${n}`)),
+    ];
+    const of = (all: Finding[], item: string) => {
+      const run = sarif(all).runs.find((r) => r.properties.items.includes(item));
+      return {
+        category: run?.automationDetails.id,
+        prints: run?.results
+          .filter((result) => result.message.text.includes(` in ${item}:`))
+          .map((result) => result.partialFingerprints['vulnerabilities/v1'])
+          .sort(),
+      };
+    };
+    const before = of(day(1_000), 'c');
+    const after = of(day(500), 'c');
+    expect([before.category, after.category]).toEqual([`${CATEGORY}/02/`, `${CATEGORY}/01/`]);
+    expect(after.prints).toHaveLength(1_500);
+    expect(after.prints).toEqual(before.prints);
+    // The category c left is uploaded still, with b alone: nothing of c stays open there.
+    expect(sarif(day(500)).runs.map((run) => run.automationDetails.id)).toContain(`${CATEGORY}/02/`);
   });
 });
 

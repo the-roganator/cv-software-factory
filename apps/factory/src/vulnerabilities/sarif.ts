@@ -1,6 +1,15 @@
 /**
- * The daily scan's findings as one SARIF file for code scanning, category `vulnerabilities`: a rule for each advisory,
- * and a result for each package and advisory in each item, at the line that pins the item.
+ * The daily scan's findings as one SARIF file for code scanning: a rule for each advisory, and a result for each package
+ * and advisory in each item, at the line that pins the item.
+ *
+ * Code scanning keeps only the 5,000 most severe results of a run and drops the rest without refusing the file, so the
+ * items are grouped, in the list's order, each run filled to 5,000 results, and each group is a run of its own, in a
+ * category of its own: `vulnerabilities/01` to `vulnerabilities/20`, code scanning's 20 runs to a file. An item over
+ * 5,000 alone is cut into runs of its own, its results in order of package and advisory. Every one of the 20 is in
+ * every file, the unused ones empty: a category that stopped being uploaded would keep its last results open for good,
+ * so a result that moves to another run as the counts before it change, or a run no longer needed, leaves nothing
+ * stale. An alert is open while any configuration (here, a category) reports it, so a result that moves keeps its
+ * alert.
  *
  * A result's `partialFingerprints` are the item, the package and the advisory, never the line, the version or the
  * image's digest, so moving a pin that leaves the finding keeps its alert, and moving it past the fix closes it. An
@@ -40,9 +49,16 @@ export const SEVERITIES: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNK
 
 /**
  * Code scanning's limits for one upload (GitHub's "SARIF support for code scanning"): an upload past any of them is
- * refused, or has results dropped, so the scan uploads nothing instead and fails.
+ * refused, or has results dropped, so the scan uploads nothing instead and fails. A run is refused past 25,000 results
+ * but keeps only the 5,000 most severe, so 5,000 is the limit; a file is refused past 20 runs.
  */
-export const LIMITS = { gzipBytes: 10 * 1024 * 1024, results: 25_000, rules: 25_000, locations: 1_000 };
+export const LIMITS = { gzipBytes: 10 * 1024 * 1024, runs: 20, results: 5_000, rules: 25_000, locations: 1_000 };
+
+/** The categories' common prefix: each run's is this, a slash and its number from 01. */
+export const CATEGORY = 'vulnerabilities';
+
+/** A run's category: `vulnerabilities/01` for the first. */
+export const category = (index: number) => `${CATEGORY}/${String(index + 1).padStart(2, '0')}`;
 
 const FINGERPRINT = 'vulnerabilities/v1';
 
@@ -89,10 +105,16 @@ const SCORE: Record<Severity, number> = { CRITICAL: 9.5, HIGH: 8.0, MEDIUM: 5.5,
 export interface Sarif {
   version: '2.1.0';
   $schema: string;
-  runs: {
-    tool: { driver: { name: string; informationUri: string; version?: string; rules: Rule[] } };
-    results: Result[];
-  }[];
+  runs: Run[];
+}
+
+export interface Run {
+  tool: { driver: { name: string; informationUri: string; version?: string; rules: Rule[] } };
+  /** The category is the id up to its last slash: `vulnerabilities/01/` is `vulnerabilities/01`. */
+  automationDetails: { id: string };
+  results: Result[];
+  /** The items whose results the run carries, by their keys, in the list's order, a cut of one named as such. */
+  properties: { items: string[] };
 }
 
 interface Rule {
@@ -114,16 +136,69 @@ interface Result {
   partialFingerprints: Record<string, string>;
 }
 
-/** The SARIF for a repository's findings, the proof's left out by the caller. */
-export function sarif(findings: Finding[], trivyVersion?: string): Sarif {
-  const merged = merge(findings).sort(
-    (a, b) =>
-      a.advisory.localeCompare(b.advisory) || a.item.localeCompare(b.item) || a.package.localeCompare(b.package),
-  );
-  const rules: Rule[] = [];
-  const index = new Map<string, number>();
+/** An item's results, or a cut of them, as a run carries them. */
+export interface Part {
+  findings: Finding[];
+  /** For a cut of an item over the limit: which cut, from 1, and how many. */
+  cut?: { at: number; of: number };
+}
+
+/** A part as the run's properties and the log name it: the item's key, and its cut where it has one. */
+export const partName = (part: Part) =>
+  `${part.findings[0]?.item ?? ''}${part.cut ? ` (cut ${part.cut.at} of ${part.cut.of})` : ''}`;
+
+/**
+ * The items, in the order of their first finding (the list's order), grouped so that no group carries more than
+ * `limit` results: each group filled in turn with whole items. An item over the limit is cut, its results in order of
+ * package and advisory, into groups of its own, each full but the last.
+ */
+export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
+  const byItem = new Map<string, Finding[]>();
   for (const finding of merged) {
-    const at = index.get(finding.advisory);
+    const seen = byItem.get(finding.item);
+    if (seen) seen.push(finding);
+    else byItem.set(finding.item, [finding]);
+  }
+  const out: Part[][] = [];
+  let current: Part[] = [];
+  let size = 0;
+  const close = () => {
+    if (current.length) out.push(current);
+    current = [];
+    size = 0;
+  };
+  for (const item of byItem.values()) {
+    if (item.length > limit) {
+      close();
+      const sorted = [...item].sort(
+        (a, b) =>
+          a.package.localeCompare(b.package) || a.advisory.localeCompare(b.advisory) || a.type.localeCompare(b.type),
+      );
+      const of = Math.ceil(sorted.length / limit);
+      for (let at = 0; at < of; at++)
+        out.push([{ findings: sorted.slice(at * limit, (at + 1) * limit), cut: { at: at + 1, of } }]);
+      continue;
+    }
+    if (size + item.length > limit) close();
+    current.push({ findings: item });
+    size += item.length;
+  }
+  close();
+  return out;
+}
+
+/** One run: a group's results and the rules they name, in its category. */
+function run(group: Part[], index: number, trivyVersion?: string): Run {
+  const merged = group
+    .flatMap((part) => part.findings)
+    .sort(
+      (a, b) =>
+        a.advisory.localeCompare(b.advisory) || a.item.localeCompare(b.item) || a.package.localeCompare(b.package),
+    );
+  const rules: Rule[] = [];
+  const ruleAt = new Map<string, number>();
+  for (const finding of merged) {
+    const at = ruleAt.get(finding.advisory);
     const score = Math.max(finding.score ?? 0, SCORE[finding.severity]);
     if (at !== undefined) {
       // One rule per advisory, at the highest severity any of its results has.
@@ -132,7 +207,7 @@ export function sarif(findings: Finding[], trivyVersion?: string): Sarif {
         rule.properties['security-severity'] = score.toFixed(1);
       continue;
     }
-    index.set(finding.advisory, rules.length);
+    ruleAt.set(finding.advisory, rules.length);
     const title = finding.title ?? finding.advisory;
     rules.push({
       id: finding.advisory,
@@ -153,7 +228,7 @@ export function sarif(findings: Finding[], trivyVersion?: string): Sarif {
   }
   const results: Result[] = merged.map((finding) => ({
     ruleId: finding.advisory,
-    ruleIndex: index.get(finding.advisory) ?? 0,
+    ruleIndex: ruleAt.get(finding.advisory) ?? 0,
     level: LEVEL[finding.severity],
     message: {
       text: `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.`,
@@ -166,22 +241,29 @@ export function sarif(findings: Finding[], trivyVersion?: string): Sarif {
     partialFingerprints: { [FINGERPRINT]: fingerprint(finding) },
   }));
   return {
-    version: '2.1.0',
-    $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
-    runs: [
-      {
-        tool: {
-          driver: {
-            name: 'Trivy',
-            informationUri: 'https://github.com/aquasecurity/trivy',
-            ...(trivyVersion ? { version: trivyVersion } : {}),
-            rules,
-          },
-        },
-        results,
+    tool: {
+      driver: {
+        name: 'Trivy',
+        informationUri: 'https://github.com/aquasecurity/trivy',
+        ...(trivyVersion ? { version: trivyVersion } : {}),
+        rules,
       },
-    ],
+    },
+    automationDetails: { id: `${category(index)}/` },
+    results,
+    properties: { items: group.map(partName) },
   };
+}
+
+/**
+ * The SARIF for a repository's findings, the proof's left out by the caller: a run for each group of items, and an
+ * empty one for each category up to the limit on runs, so every category is uploaded every time.
+ */
+export function sarif(findings: Finding[], trivyVersion?: string, limits = LIMITS): Sarif {
+  const grouped = groups(merge(findings), limits.results);
+  const runs = grouped.map((group, index) => run(group, index, trivyVersion));
+  for (let index = runs.length; index < limits.runs; index++) runs.push(run([], index, trivyVersion));
+  return { version: '2.1.0', $schema: 'https://json.schemastore.org/sarif-2.1.0.json', runs };
 }
 
 /** Each of code scanning's limits the file passes, named; none when it can be uploaded whole. */
@@ -189,12 +271,15 @@ export function overLimits(file: Sarif, limits = LIMITS): string[] {
   const problems: string[] = [];
   const bytes = gzipSync(JSON.stringify(file)).length;
   if (bytes > limits.gzipBytes) problems.push(`${bytes} bytes gzipped, over ${limits.gzipBytes}`);
+  if (file.runs.length > limits.runs) problems.push(`${file.runs.length} runs, over ${limits.runs}`);
   for (const run of file.runs) {
-    if (run.results.length > limits.results) problems.push(`${run.results.length} results, over ${limits.results}`);
+    const name = run.automationDetails.id.replace(/\/$/, '');
+    if (run.results.length > limits.results)
+      problems.push(`${name}: ${run.results.length} results, over ${limits.results}`);
     if (run.tool.driver.rules.length > limits.rules)
-      problems.push(`${run.tool.driver.rules.length} rules, over ${limits.rules}`);
+      problems.push(`${name}: ${run.tool.driver.rules.length} rules, over ${limits.rules}`);
     if (run.results.some((result) => result.locations.length > limits.locations))
-      problems.push(`a result with more than ${limits.locations} locations`);
+      problems.push(`${name}: a result with more than ${limits.locations} locations`);
   }
   return problems;
 }

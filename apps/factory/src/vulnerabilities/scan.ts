@@ -1,6 +1,7 @@
 /**
  * The daily scan of one repository: every item on its list (inventory.ts) read with Trivy, by its digest, against an
- * advisory database built within the day, and the findings written as one SARIF file for code scanning (sarif.ts).
+ * advisory database built within the day, and the findings written as one SARIF file for code scanning (sarif.ts), the
+ * items grouped into runs of at most 5,000 results, each run a category of its own.
  *
  *     node apps/factory/src/vulnerabilities/scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir> [--upload]
  *
@@ -17,9 +18,10 @@
  * cannot be pulled, a chart that does not render, a pin the list does not read) is named in the log and fails the run,
  * and so does a database more than a day old: nothing is written for upload, so no alert closes because its item went
  * unread. The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
- * limits. Every run also scans PROOF, an image of ours that ran Node 24.22.0, as it scans ours, and fails unless
- * CVE-2026-111497 is found in its Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for
- * it. The log gives counts by severity and the items not read, never a package or an advisory.
+ * limits: no run over 5,000 results, so code scanning drops none, and no more than 20 runs. Every run also scans
+ * PROOF, an image of ours that ran Node 24.22.0, as it scans ours, and fails unless CVE-2026-111497 is found in its
+ * Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for it. The log gives counts by severity, each run's category, results and items, and the items not read, never a package
+ * or an advisory.
  *
  * The checkout is data: nothing in it runs. Trivy runs in its pinned image, which reads the registries' credentials
  * from DOCKER_CONFIG (GHCR's, the job's token); cosign, helm, kustomize and yq come from this repository's mise.lock.
@@ -40,7 +42,7 @@ import {
   readable,
 } from './node.ts';
 import { PROOF } from './proof.ts';
-import { type Finding, LIMITS, merge, overLimits, SEVERITIES, type Severity, sarif } from './sarif.ts';
+import { type Finding, LIMITS, merge, overLimits, type Run, SEVERITIES, type Severity, sarif } from './sarif.ts';
 
 const run = promisify(execFile);
 
@@ -512,7 +514,12 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivy
         ? `The proof image shows ${PROOF.advisory} in its Node ${proof.node}, read from its ${proof.source === 'image' ? 'image' : 'SBOM'}.`
         : `The proof image does not show ${PROOF.advisory} in its Node ${proof.node}: the scan has stopped seeing Node.`,
   );
-  const file = sarif(outcome.findings, trivyVersion);
+  const file = sarif(outcome.findings, trivyVersion, limits);
+  const used = file.runs.filter((run) => run.properties.items.length);
+  lines.push(
+    `The results are in ${used.length} of ${file.runs.length} runs, each a category of its own${used.length ? ':' : '.'}`,
+  );
+  for (const run of used) lines.push(`  ${runLine(run)}`);
   const over = overLimits(file, limits);
   if (over.length) lines.push(`The results are over code scanning's limits: ${over.join('; ')}.`);
   const passes = !outcome.unreadable.length && proof.found && !proof.unreadable && !over.length;
@@ -524,6 +531,12 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivy
       : 'The run fails, and nothing is uploaded.',
   );
   return { lines, passes, file };
+}
+
+/** A run as the log names it: its category, how many results, and its items, by their keys. */
+export function runLine(run: Run) {
+  const items = run.properties.items;
+  return `${run.automationDetails.id.replace(/\/$/, '')}: ${run.results.length} results, ${items.length} ${items.length === 1 ? 'item' : 'items'}: ${items.join('; ')}`;
 }
 
 /** The tools as the workflow has them: Trivy in its image through Docker, cosign and helm from mise. */

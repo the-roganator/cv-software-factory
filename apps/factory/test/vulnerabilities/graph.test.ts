@@ -147,6 +147,21 @@ describe('the snapshot', () => {
     expect(of('@pnpm/exe.linux-x64@12.0.0')).toBe('indirect development');
   });
 
+  it("gives each package the packages it depends on, from the lockfile, not Syft's list of its dependents", () => {
+    const syftMade = syft({ 'pnpm-lock.yaml': ALL });
+    const deep = syftMade.manifests?.['/src/pnpm-lock.yaml']?.resolved?.['pkg:npm/deep@5.0.0'];
+    if (deep) deep.dependencies = ['pkg:npm/%40scope/app-lib@1.0.0', 'pkg:npm/tester@3.0.0'];
+    const made = snapshot(syftMade, { 'pnpm-lock.yaml': [env, project] }, job);
+    const resolvedMade = made.manifests?.['pnpm-lock.yaml']?.resolved ?? {};
+    expect(resolvedMade['pkg:npm/deep@5.0.0']?.dependencies).toEqual(['pkg:npm/deep-native@5.0.0']);
+    expect(resolvedMade['pkg:npm/%40scope/app-lib@1.0.0']?.dependencies).toEqual([
+      'pkg:npm/deep@5.0.0',
+      'pkg:npm/peer@2.0.0',
+    ]);
+    expect(resolvedMade['pkg:npm/pnpm@12.0.0']?.dependencies).toEqual(['pkg:npm/%40pnpm/exe.linux-x64@12.0.0']);
+    expect(resolvedMade['pkg:npm/peer@2.0.0']?.dependencies).toBeUndefined();
+  });
+
   it('keeps each lockfile apart, at its own path', () => {
     const made = snapshot(
       syft({ 'pnpm-lock.yaml': ['@scope/app-lib@1.0.0'], 'tools/pnpm-lock.yaml': ['tester@3.0.0'] }),

@@ -7,10 +7,11 @@
  *       --sha <commit> --ref <ref> --run <id> [--prove]
  *
  * Each lockfile alone is copied, at its path, into an empty directory, which Syft's image (by digest, from its one pin)
- * reads, read-only and with no network, for its `github-json` snapshot. Syft names every package and the packages each
- * depends on, but marks every one direct and at runtime, so this sets each package's relationship and scope from the
- * lockfile: direct when an importer names it, and at runtime when an importer's dependencies or optional dependencies
- * reach it, development when only development dependencies do. It writes `<dir>/snapshot.json`, with the commit, the
+ * reads, read-only and with no network, for its `github-json` snapshot. Syft names every package, but marks every one
+ * direct and at runtime, and gives as a package's dependencies the packages that depend on it, so this sets each
+ * package's relationship, scope and dependencies from the lockfile: direct when an importer names it, at runtime when an
+ * importer's dependencies or optional dependencies reach it, development when only development dependencies do, and
+ * depending on what its entry in the lockfile's snapshots names. It writes `<dir>/snapshot.json`, with the commit, the
  * ref and a correlator naming the workflow, so the next snapshot replaces it; the workflow submits it.
  *
  * With `--prove` it submits nothing and installs each lockfile as the scan's coverage does (`coverage.ts`), and fails
@@ -109,7 +110,7 @@ export function relationships(documents: Lockfile[]) {
     runtime.add(id);
     queue.push(...(edges.get(id) ?? []));
   }
-  return { direct, runtime, known: new Set([...direct, ...edges.keys()]) };
+  return { direct, runtime, edges, known: new Set([...direct, ...edges.keys()]) };
 }
 
 /** `name@version` of an npm package URL, or undefined. */
@@ -142,7 +143,7 @@ export interface Snapshot {
 
 /**
  * Syft's snapshot of lockfiles copied at their paths under `/src`, made the one to submit: each manifest named by its
- * lockfile's path in the repository, each package's relationship and scope the lockfile's. Throws when a lockfile has
+ * lockfile's path in the repository, each package's relationship, scope and dependencies the lockfile's. Throws when a lockfile has
  * no manifest, a manifest names no package, or the lockfile cannot be read.
  */
 export function snapshot(
@@ -169,6 +170,12 @@ export function snapshot(
     const names = (set: Set<string>) => new Set([...set].map((id) => id.slice(0, id.lastIndexOf('@'))));
     const directNames = names(known.direct);
     const runtimeNames = names(known.runtime);
+    // Each package's key in the manifest, by its id, for its dependents' lists.
+    const keys = new Map<string, string>();
+    for (const [key, entry] of resolvedByName) {
+      const id = fromPurl(entry.package_url ?? key);
+      if (id) keys.set(id, key);
+    }
     const resolved: Record<string, Resolved> = {};
     for (const [key, entry] of resolvedByName) {
       const id = fromPurl(entry.package_url ?? key);
@@ -178,10 +185,19 @@ export function snapshot(
       const exact = id !== undefined && known.known.has(id);
       const direct = exact ? known.direct.has(id) : name !== undefined && directNames.has(name);
       const runtime = exact ? known.runtime.has(id) : name !== undefined && runtimeNames.has(name);
+      const dependencies = [
+        ...new Set(
+          (exact ? (known.edges.get(id) ?? []) : [])
+            .map((dep) => keys.get(dep))
+            .filter((dep): dep is string => dep !== undefined),
+        ),
+      ];
+      const { dependencies: _dependents, ...rest } = entry;
       resolved[key] = {
-        ...entry,
+        ...rest,
         relationship: direct ? 'direct' : 'indirect',
         scope: runtime ? 'runtime' : 'development',
+        ...(dependencies.length ? { dependencies } : {}),
       };
     }
     manifests[file] = {

@@ -1,5 +1,9 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { judge, type Scanned, trivyPin } from '../../src/gates/lockfile-scan.ts';
+import { irregularLockfiles, judge, type Scanned, trivyPin } from '../../src/gates/lockfile-scan.ts';
 
 // Trivy's JSON for a pnpm lockfile, as `trivy fs --include-dev-deps --list-all-pkgs` writes it: `Dev` on a package
 // only development dependencies reach, and each vulnerability naming its package's UID.
@@ -110,6 +114,15 @@ describe('the lockfile gate', () => {
     expect(judge(base, lockfiles({ [ROOT]: unmatched })).added).toMatchObject([{ dev: false }]);
   });
 
+  it('names every version of a new package and advisory, once', () => {
+    const base = lockfiles({ [ROOT]: report([LODASH]) });
+    const older = { name: 'lodash', version: '4.17.19' };
+    const change = lockfiles({ [ROOT]: report([LODASH, older], [LODASH_CVE, { ...LODASH_CVE, version: '4.17.19' }]) });
+    const { added, total } = judge(base, change);
+    expect(total).toBe(1);
+    expect(added).toMatchObject([{ advisory: 'CVE-2021-23337', version: '4.17.19, 4.17.20' }]);
+  });
+
   it('compares a lockfile only the change has with none', () => {
     const base = lockfiles({ [ROOT]: report([LODASH], [LODASH_CVE]) });
     const change = lockfiles({
@@ -129,6 +142,7 @@ describe('the lockfile gate', () => {
       { report: JSON.stringify({ Results: [{ Packages: [] }] }) },
       { report: JSON.stringify({ Results: [{ Packages: null, Vulnerabilities: null }] }) },
       { error: 'docker: exit 1' },
+      { unscannable: 'git tracks it as something other than a regular file' },
     ] satisfies Scanned[]) {
       expect(judge(lockfiles({ [ROOT]: good }), lockfiles({ [ROOT]: bad })).unread).toMatchObject([
         { side: 'change', lockfile: ROOT },
@@ -136,6 +150,27 @@ describe('the lockfile gate', () => {
       expect(judge(lockfiles({ [ROOT]: bad }), lockfiles({ [ROOT]: good })).unread).toMatchObject([
         { side: 'base', lockfile: ROOT },
       ]);
+    }
+  });
+});
+
+describe('a lockfile git tracks as something other than a regular file', () => {
+  it('is named, so the gate fails it, while the list leaves it out', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lockfile-gate-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' });
+      git('init', '-q');
+      mkdirSync(join(root, 'deps'));
+      mkdirSync(join(root, 'tools'));
+      mkdirSync(join(root, 'test'));
+      writeFileSync(join(root, 'deps/lock'), 'lockfileVersion: 9.0\n');
+      writeFileSync(join(root, 'tools/pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
+      symlinkSync('deps/lock', join(root, 'pnpm-lock.yaml'));
+      symlinkSync('../deps/lock', join(root, 'test/pnpm-lock.yaml'));
+      git('add', '.');
+      expect(irregularLockfiles(root)).toEqual(['pnpm-lock.yaml']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

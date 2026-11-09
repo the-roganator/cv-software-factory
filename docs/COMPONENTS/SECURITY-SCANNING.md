@@ -13,11 +13,11 @@ Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#git
 
 `lockfile scan` (`apps/factory/src/gates/lockfile-scan.ts`) runs on every pull request and in the merge queue, in both repositories: `check.yml` here, and `app-gates.yml` in the app's gates. It fails on any vulnerability, at any severity, that the change's lockfiles have and the base's do not.
 
-- **What it reads:** each lockfile the daily scan's list names (every `pnpm-lock.yaml` git tracks, outside prose and fixtures), of the base and of the change, each scanned alone by Trivy from a directory holding only it, development dependencies included, both against one advisory database pulled once. A lockfile only the change has is compared with none.
+- **What it reads:** each lockfile the daily scan's list names (every `pnpm-lock.yaml` git tracks, outside prose and fixtures), of the base and of the change, each scanned alone by Trivy from a directory holding only it, development dependencies included, both against one advisory database pulled once from GHCR, as the daily scan's is. A lockfile the same on both sides is scanned once; one only the change has is compared with none.
 - **What is new:** a vulnerability is known by its lockfile, its advisory, its package, and whether a production dependency reaches it (Trivy's `Dev`). A package moved to another version with the same advisory brings nothing new; one a production dependency newly reaches does; one the base reaches from production and the change only from development is less reached, not new.
-- **It fails on what it cannot read:** a lockfile Trivy reads no packages from, on either side, or whose report is empty or cannot be parsed.
+- **It fails on what it cannot read:** a lockfile Trivy reads no packages from, on either side, or whose report is empty or cannot be parsed, and a `pnpm-lock.yaml` git tracks as a symbolic link or a submodule, which pnpm would follow and the list leaves out.
 - **Judged by code the change cannot alter:** the script, Trivy's pin and the base's lockfiles come from the base (`pull_request.base.sha`, or the merge group's base) here, and from this repository at the pinned commit in the app's gates; only the change's lockfiles come from the change, as data, and nothing in either checkout runs. The job is read-only. In the app's gates it refuses any event but `pull_request` and `merge_group`, and is skipped with the rest for the App's deploy and release pull requests.
-- **No exceptions:** it excepts nothing. Exceptions, when there are any, are read from this repository's `main`, never from the change.
+- **No exceptions:** it excepts nothing, and reads nothing from the change that could.
 
 The summary names each finding the change brings in, its package, version, advisory, severity and whether production reaches it: the change is public and has not merged.
 

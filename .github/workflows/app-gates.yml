@@ -16,7 +16,7 @@
 #   required: a fix whose tests all pass before it holds for Martin, and the line reads this to know.
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
 # - lockfile scan: Trivy's findings on each lockfile of the base and of the change, each scanned alone with development
-#   dependencies; fails on any vulnerability, at any severity, the change's have and the base's do not
+#   dependencies; fails on any vulnerability, at any severity, the change's lockfiles have and the base's do not
 #   (apps/factory/src/gates/lockfile-scan.ts). It reads the change's lockfiles alone, as data.
 #
 # Every job is skipped for a deploy or release pull request the factory's App opened (`skip`), which changes nothing

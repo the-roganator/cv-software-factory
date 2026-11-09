@@ -283,7 +283,7 @@ export async function main(args: string[]): Promise<number> {
         const before = same?.scans.get(lockfile);
         scans.set(
           lockfile,
-          before && same && text(same.root, lockfile) === text(root, lockfile)
+          before && 'report' in before && same && text(same.root, lockfile) === text(root, lockfile)
             ? before
             : await scanner.scan(root, lockfile),
         );

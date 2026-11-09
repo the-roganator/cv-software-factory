@@ -72,7 +72,7 @@ function movedOn() {
   git(origin, 'init', '-q');
   const opened = commit(origin, 'cart.test.ts', "expect(header).toBe('no-store');\n");
   git(origin, 'checkout', '-q', '-b', 'pr');
-  commit(origin, 'package.json', '{ "version": "2" }\n');
+  commit(origin, 'cart.ts', 'export const total = 2;\n');
   git(origin, 'checkout', '-q', 'main');
   const first = mergeRef(origin);
   const moved = commit(origin, 'cart.test.ts', "expect(header).toBe('public, max-age=60');\n");

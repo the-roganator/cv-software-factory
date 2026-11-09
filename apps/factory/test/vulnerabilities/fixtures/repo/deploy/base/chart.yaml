@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: telemetry
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: telemetry
+  sources:
+    - repoURL: https://charts.example.com
+      chart: example-chart
+      targetRevision: 1.2.3 # the chart's app 4.5.6
+      helm:
+        releaseName: telemetry
+        valueFiles:
+          - $values/deploy/base/values/chart.yaml
+    - repoURL: https://github.com/example/shop.git
+      targetRevision: main
+      ref: values

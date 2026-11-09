@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop
+spec:
+  selector:
+    matchLabels: { app: shop }
+  template:
+    metadata:
+      labels: { app: shop }
+    spec:
+      containers:
+        - name: shop
+          image: shop
+        - name: sidecar
+          image: quay.io/example/sidecar:1.2.3@sha256:2222222222222222222222222222222222222222222222222222222222222222

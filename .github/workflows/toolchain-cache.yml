@@ -38,7 +38,7 @@ jobs:
           - job: static
             tools: node pnpm kustomize
           - job: tests
-            tools: node pnpm kustomize step promtool
+            tools: node pnpm kustomize step promtool yq
           - job: zap
             tools: node pnpm
           # Node alone, for the workflows that run one script: pr-title.yml, drift-check.yml and the rest.

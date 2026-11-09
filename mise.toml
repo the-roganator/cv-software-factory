@@ -35,3 +35,6 @@ step = "0"
 promtool = "3.15"
 # GitHub's CLI, for the skills' scripts (.claude/skills/*/bin) and some workflows' steps.
 gh = "2"
+# YAML read as JSON, by the vulnerability scan's scripts (apps/factory/src/vulnerabilities), which run with no
+# dependencies from a sparse checkout, as on the runners, whose image carries yq 4.
+yq = "4"

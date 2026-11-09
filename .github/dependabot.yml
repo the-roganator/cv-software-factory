@@ -87,6 +87,18 @@ updates:
   # of it (public.ecr.aws) refuses Dependabot partway through listing Node's thousands of tags. Postgres has one pin, its
   # StatefulSet's, which everything else that runs it reads. The Postgres exporter, which CI never runs, is named on
   # Quay, where its maintainers publish it, and has one pin too, its Deployment's.
+  #
+  # A docker cooldown holds only where the registry gives Dependabot the image's publication date. Where it gives none,
+  # the pull request opens with Dependabot's warning that no publication date was available, and the image arrives at
+  # the first weekly run after its release, held by its digest and review alone. By registry, from each one's bumps:
+  #   Docker Hub (node, postgres, nginxinc/nginx-unprivileged)       no date
+  #   gcr.io (distroless/nodejs24-debian13)                          no date
+  #   Microsoft's, mcr.microsoft.com (playwright, devcontainers)     no date
+  #   GHCR (open-feature/flagd, below)                               no date
+  #   GHCR (aquasecurity/trivy)                                      unknown until its first bump: taken to give none
+  #   Quay (prometheuscommunity/postgres-exporter)                   unknown until its first bump
+  # Trivy is the scanner every workflow runs, pinned once, in .github/images/trivy/Dockerfile, which nothing builds; the
+  # cooldown is kept for it so that it holds if GHCR gives a date, and a bump waits for Martin, as .github/ is his.
   - package-ecosystem: docker
     directory: /apps/factory
     schedule:
@@ -100,6 +112,7 @@ updates:
       - /apps/factory
       - /apps/runner
       - /.devcontainer
+      - /.github/images/trivy
       - /deploy/base/postgres
       - /deploy/base/postgres-exporter
       # The read-only proxy's nginx (query.yaml).

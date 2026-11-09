@@ -1,0 +1,392 @@
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, describe, expect, it } from 'vitest';
+import { signerOf as routedSigner } from '../../../../scripts/review-routing.ts';
+import { pipeline } from '../../src/github/signatures.ts';
+import {
+  ciCopy,
+  type Item,
+  identity,
+  inventory,
+  isFixture,
+  signerOf,
+  stages,
+  tagOf,
+  unlisted,
+} from '../../src/vulnerabilities/inventory.ts';
+
+/**
+ * The list of what is scanned, worked out from a fixture repository that has one of each kind of source, and from this
+ * repository: everything either runs or pins is on it, and a pin it does not read is named.
+ */
+const FIXTURE = fileURLToPath(new URL('./fixtures/repo/', import.meta.url));
+const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
+const digest = (c: string) => `sha256:${c.repeat(64)}`;
+
+const made: string[] = [];
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A git checkout of the fixture, with files changed (a string) or removed (null), every file tracked. */
+function checkout(changes: Record<string, string | null> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'inventory-'));
+  made.push(dir);
+  cpSync(FIXTURE, dir, { recursive: true });
+  for (const [file, text] of Object.entries(changes)) {
+    if (text === null) rmSync(join(dir, file));
+    else {
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
+      writeFileSync(join(dir, file), text);
+    }
+  }
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['add', '-A'], { cwd: dir });
+  return dir;
+}
+
+const where = (item: Item) => `${item.file}:${item.line}`;
+const read = (file: string) => readFileSync(join(FIXTURE, file), 'utf-8');
+
+describe('the list of a fixture repository', () => {
+  const { items } = inventory(checkout());
+  const find = (name: string) => items.find((item) => item.name === name);
+
+  it('has each tracked lockfile', () => {
+    expect(items.filter((item) => item.kind === 'lockfile').map(where)).toEqual([
+      'packages/tool/pnpm-lock.yaml:1',
+      'pnpm-lock.yaml:1',
+    ]);
+  });
+
+  it('has each image of ours the local overlay pins, at its digest, and no signer for a repository not trusted', () => {
+    const shop = find(`ghcr.io/example/shop@${digest('1')}`);
+    expect(shop).toMatchObject({
+      kind: 'ours',
+      file: 'deploy/overlays/local/image/kustomization.yaml',
+      line: 6,
+    });
+    expect(shop?.signer).toBeUndefined();
+  });
+
+  it('has each third-party image the rendered overlay runs, at the line in deploy/ that pins it', () => {
+    expect(find(`quay.io/example/sidecar:1.2.3@${digest('2')}`)).toMatchObject({
+      kind: 'third-party',
+      file: 'deploy/base/deployment.yaml',
+      line: 16,
+    });
+  });
+
+  it("has each chart an Application installs, at its targetRevision, with its values, and Argo CD's own", () => {
+    expect(find('telemetry')).toEqual({
+      kind: 'chart',
+      name: 'telemetry',
+      file: 'deploy/base/chart.yaml',
+      line: 14,
+      chart: {
+        repo: 'https://charts.example.com',
+        chart: 'example-chart',
+        version: '1.2.3',
+        release: 'telemetry',
+        values: ['deploy/base/values/chart.yaml'],
+      },
+    });
+    expect(find('argocd')).toEqual({
+      kind: 'chart',
+      name: 'argocd',
+      file: 'Makefile',
+      line: 1,
+      chart: {
+        repo: 'https://argoproj.github.io/argo-helm',
+        chart: 'argo-cd',
+        version: '9.0.0',
+        release: 'argocd',
+        values: ['deploy/argocd/values.yaml'],
+      },
+    });
+  });
+
+  it("has k3s's node image, the release whose list of images the scan fetches, and k3d's images at mise.lock's", () => {
+    expect(find('rancher/k3s:v1.30.0-k3s1')).toMatchObject({ kind: 'k3s', file: 'deploy/k3d/cluster.yaml', line: 6 });
+    expect(find('k3s v1.30.0+k3s1')).toMatchObject({
+      kind: 'k3s-release',
+      list: 'https://github.com/k3s-io/k3s/releases/download/v1.30.0%2Bk3s1/k3s-images.txt',
+    });
+    expect(items.filter((item) => item.kind === 'k3d').map((item) => `${item.name} ${where(item)}`)).toEqual([
+      'ghcr.io/k3d-io/k3d-proxy:5.8.3 mise.lock:6',
+      'ghcr.io/k3d-io/k3d-tools:5.8.3 mise.lock:6',
+    ]);
+  });
+
+  it('has each Dockerfile stage that names an image, not an earlier stage, the dev container among them', () => {
+    expect(items.filter((item) => item.kind === 'dockerfile').map(where)).toEqual([
+      '.devcontainer/Dockerfile:1',
+      'Dockerfile:1',
+      'Dockerfile:4',
+    ]);
+  });
+
+  it('has each image the workflows start: named in a workflow, pinned under .github/images/, or in a script they run', () => {
+    expect(items.filter((item) => item.kind === 'workflow').map((item) => `${item.name} ${where(item)}`)).toEqual([
+      `ghcr.io/example/scanner:1.0.0@${digest('7')} .github/images/scanner/Dockerfile:1`,
+      `ghcr.io/example/tool:1.0@${digest('8')} .github/workflows/ci.yml:4`,
+      'example/cache:7 .github/workflows/ci.yml:17',
+      'ghcr.io/example/action:1 .github/workflows/ci.yml:19',
+      `ghcr.io/example/zap:2.0@${digest('9')} apps/console/zap/scan.ts:1`,
+    ]);
+  });
+
+  it('lists an image once, at its first source', () => {
+    const sidecar = items.filter((item) => item.image?.startsWith('quay.io/example/sidecar'));
+    expect(sidecar.map(where)).toEqual(['deploy/base/deployment.yaml:16']);
+    expect(read('.github/workflows/ci.yml')).toContain(`quay.io/example/sidecar:1.2.3@${digest('2')}`);
+  });
+
+  it('reads nothing from prose or test fixtures', () => {
+    expect(items.some((item) => item.file === 'README.md' || item.file.startsWith('test/'))).toBe(false);
+  });
+
+  it('prints it as JSON with --json', () => {
+    const json = execFileSync(
+      'node',
+      [join(ROOT, 'apps/factory/src/vulnerabilities/inventory.ts'), checkout(), '--json'],
+      {
+        encoding: 'utf-8',
+      },
+    );
+    expect((JSON.parse(json) as Item[]).map((item) => item.name)).toEqual(items.map((item) => item.name));
+  });
+});
+
+describe('--unlisted', () => {
+  it('names nothing in the fixture, whose every pin is on the list', () => {
+    expect(unlisted(checkout())).toEqual([]);
+  });
+
+  it('names a reference by digest in a file the list does not read', () => {
+    const found = unlisted(checkout({ 'scripts/pull.sh': `docker pull ghcr.io/example/other:1@${digest('c')}\n` }));
+    expect(found).toEqual([
+      {
+        file: 'scripts/pull.sh',
+        line: 1,
+        reference: `ghcr.io/example/other:1@${digest('c')}`,
+        why: 'a reference by digest the list does not read',
+      },
+    ]);
+  });
+
+  it('names a FROM the list cannot read', () => {
+    const found = unlisted(checkout({ 'tools/Dockerfile': 'ARG BASE\nFROM $BASE\n' }));
+    expect(found.map((entry) => `${entry.file}:${entry.line} ${entry.reference}`)).toEqual([
+      'tools/Dockerfile:2 $BASE',
+    ]);
+  });
+
+  it('names an image the overlay runs that no file pins as it is rendered', () => {
+    const base = read('deploy/base/kustomization.yaml');
+    const found = unlisted(
+      checkout({
+        'deploy/base/kustomization.yaml': `${base}images:\n  - name: quay.io/example/sidecar\n    newTag: 9.9.9\n    digest: ${digest('d')}\n`,
+      }),
+    );
+    expect(found.map((entry) => entry.reference)).toContain(`quay.io/example/sidecar:9.9.9@${digest('d')}`);
+  });
+
+  it('names an Application whose chart is pinned in no file', () => {
+    const overlay = read('deploy/overlays/local/kustomization.yaml');
+    const patch = `patches:\n  - target: { kind: Application, name: telemetry }\n    patch: |\n      - op: replace\n        path: /spec/sources/0/targetRevision\n        value: 2.0.0\n`;
+    const found = unlisted(checkout({ 'deploy/overlays/local/kustomization.yaml': `${overlay}${patch}` }));
+    expect(found.map((entry) => `${entry.reference}: ${entry.why}`)).toContain(
+      'Application telemetry: its chart is pinned in no file',
+    );
+  });
+
+  it("leaves out a chart's values, prose and test fixtures, which pin nothing the list does not render or read", () => {
+    expect(read('deploy/base/values/chart.yaml')).toContain(digest('3'));
+    expect(read('README.md')).toContain(digest('a'));
+    expect(read('test/recorded.json')).toContain(digest('b'));
+    expect(unlisted(checkout())).toEqual([]);
+  });
+
+  it('exits 1 from the command line when it names something, and 0 when not', () => {
+    const run = (dir: string) => {
+      try {
+        execFileSync('node', [join(ROOT, 'apps/factory/src/vulnerabilities/inventory.ts'), '--unlisted', dir], {
+          encoding: 'utf-8',
+        });
+        return 0;
+      } catch (error) {
+        return (error as { status: number }).status;
+      }
+    };
+    expect(run(checkout())).toBe(0);
+    expect(run(checkout({ 'scripts/pull.sh': `docker pull ghcr.io/example/other:1@${digest('c')}\n` }))).toBe(1);
+  });
+});
+
+describe('the list, read closely', () => {
+  it('lists each chart of an Application that installs several, by the Application and the chart', () => {
+    const chart = read('deploy/base/chart.yaml').replace(
+      '    - repoURL: https://github.com/example/shop.git',
+      '    - repoURL: https://charts.example.com\n      chart: second-chart\n      targetRevision: 0.1.0\n    - repoURL: https://github.com/example/shop.git',
+    );
+    const { items } = inventory(checkout({ 'deploy/base/chart.yaml': chart }));
+    expect(items.filter((item) => item.kind === 'chart').map((item) => `${item.name} ${where(item)}`)).toEqual([
+      'telemetry/example-chart deploy/base/chart.yaml:14',
+      'telemetry/second-chart deploy/base/chart.yaml:21',
+      'argocd Makefile:1',
+    ]);
+  });
+
+  it("reads Argo CD's chart however its helm command is wrapped, and names the pin when no command installs it", () => {
+    const wrapped =
+      'ARGOCD_CHART := 9.0.0\n\nup:\n\thelm upgrade --install argocd argo-cd \\\n\t\t--repo=https://argoproj.github.io/argo-helm \\\n\t\t--version $(ARGOCD_CHART) --values=deploy/argocd/values.yaml\n';
+    expect(inventory(checkout({ Makefile: wrapped })).items.find((item) => item.name === 'argocd')?.chart).toEqual({
+      repo: 'https://argoproj.github.io/argo-helm',
+      chart: 'argo-cd',
+      version: '9.0.0',
+      release: 'argocd',
+      values: ['deploy/argocd/values.yaml'],
+    });
+    const none = checkout({ Makefile: 'ARGOCD_CHART := 9.0.0\n' });
+    expect(inventory(none).items.some((item) => item.name === 'argocd')).toBe(false);
+    expect(unlisted(none).map((entry) => `${entry.file} ${entry.reference}`)).toEqual(['Makefile ARGOCD_CHART']);
+  });
+
+  it("reads Argo CD's values as its chart's, so a digest there is not named", () => {
+    const dir = checkout({ 'deploy/argocd/values.yaml': `image:\n  tag: v3.5.0@${digest('a')}\n` });
+    expect(unlisted(dir)).toEqual([]);
+  });
+
+  it("names k3s's release from its tag when the node image is pinned by digest too", () => {
+    const cluster = read('deploy/k3d/cluster.yaml').replace('v1.30.0-k3s1', `v1.30.0-k3s1@${digest('f')}`);
+    const { items } = inventory(checkout({ 'deploy/k3d/cluster.yaml': cluster }));
+    expect(items.find((item) => item.kind === 'k3s-release')?.name).toBe('k3s v1.30.0+k3s1');
+  });
+
+  it('places a third-party image at the image: line that writes it, not at a line that merely mentions it', () => {
+    const mention = `# The sidecar, quay.io/example/sidecar:1.2.3@${digest('2')}, is pinned in deployment.yaml.\n`;
+    const { items } = inventory(checkout({ 'deploy/base/a-note.yaml': mention }));
+    expect(items.find((item) => item.kind === 'third-party')).toMatchObject({
+      file: 'deploy/base/deployment.yaml',
+      line: 16,
+    });
+  });
+
+  it('follows no symbolic link, which could point outside the checkout', () => {
+    const dir = checkout();
+    symlinkSync('/etc/hosts', join(dir, 'Dockerfile.linked'));
+    execFileSync('git', ['add', 'Dockerfile.linked'], { cwd: dir });
+    expect(inventory(dir).items.some((item) => item.file === 'Dockerfile.linked')).toBe(false);
+  });
+
+  it('names a second reference on a line the list reads', () => {
+    const deployment = read('deploy/base/deployment.yaml').replace(
+      `image: quay.io/example/sidecar:1.2.3@${digest('2')}`,
+      `image: quay.io/example/sidecar:1.2.3@${digest('2')} # was ghcr.io/example/other@${digest('c')}`,
+    );
+    expect(unlisted(checkout({ 'deploy/base/deployment.yaml': deployment })).map((entry) => entry.reference)).toEqual([
+      `ghcr.io/example/other@${digest('c')}`,
+    ]);
+  });
+});
+
+describe('the list of this repository', () => {
+  const { items } = inventory(ROOT);
+  const kinds = new Set(items.map((item) => item.kind));
+
+  it('has every kind of source', () => {
+    expect([...kinds].sort()).toEqual(
+      ['chart', 'dockerfile', 'k3d', 'k3s', 'k3s-release', 'lockfile', 'ours', 'third-party', 'workflow'].sort(),
+    );
+  });
+
+  it("has flagd's image, Trivy's, ZAP's and each image of ours", () => {
+    const names = items.map((item) => item.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^ghcr\.io\/open-feature\/flagd:/),
+        expect.stringMatching(/^ghcr\.io\/aquasecurity\/trivy:/),
+        expect.stringMatching(/^ghcr\.io\/zaproxy\/zaproxy:/),
+      ]),
+    );
+    expect(items.filter((item) => item.kind === 'ours').map((item) => item.name.split('@')[0])).toEqual([
+      'ghcr.io/the-roganator/cv-software-factory/console',
+      'ghcr.io/the-roganator/cv-software-factory/factory',
+      'ghcr.io/the-roganator/cv-software-factory/factory-browser',
+      'ghcr.io/the-roganator/cv-software-factory/factory-runner',
+    ]);
+  });
+
+  it("has CI's copy of each image ci-images.sh keeps one of", () => {
+    const postgres = items.find((item) => item.name.startsWith('postgres:'));
+    expect(postgres?.ci).toMatch(
+      /^ghcr\.io\/the-roganator\/cv-software-factory\/mirror\/docker\/library\/postgres@sha256:/,
+    );
+  });
+
+  it('names no pin it does not read', () => {
+    expect(unlisted(ROOT)).toEqual([]);
+  });
+});
+
+describe('reading a pin', () => {
+  it('knows an image by its name and digest, whatever its tag, and by its whole reference when it has no digest', () => {
+    expect(identity(`ghcr.io/a/b:1.0@${digest('e')}`)).toBe(`ghcr.io/a/b@${digest('e')}`);
+    expect(identity(`localhost:5000/b@${digest('e')}`)).toBe(`localhost:5000/b@${digest('e')}`);
+    expect(identity('rancher/k3s:v1.30.0-k3s1')).toBe('rancher/k3s:v1.30.0-k3s1');
+  });
+
+  it("names CI's copy of Docker's official images and Playwright's, and of nothing else", () => {
+    expect(ciCopy(`node:24-alpine@${digest('e')}`)).toBe(
+      `ghcr.io/the-roganator/cv-software-factory/mirror/docker/library/node@${digest('e')}`,
+    );
+    expect(ciCopy(`mcr.microsoft.com/playwright:v1.0.0-noble@${digest('e')}`)).toBe(
+      `ghcr.io/the-roganator/cv-software-factory/mirror/mcr/playwright@${digest('e')}`,
+    );
+    expect(ciCopy(`nginxinc/nginx-unprivileged:1@${digest('e')}`)).toBeUndefined();
+    expect(ciCopy('node:24')).toBeUndefined();
+  });
+
+  it("signs an image of ours as build.yml on its repository's main, for the repositories review routing trusts alone", () => {
+    for (const image of [
+      'ghcr.io/the-roganator/cv-software-factory/console',
+      'ghcr.io/the-roganator/cv-worlds-worst-website',
+      'ghcr.io/the-roganator/other-repository',
+      'ghcr.io/someone-else/cv-software-factory/console',
+      'quay.io/example/sidecar',
+    ]) {
+      const repository = routedSigner(image);
+      expect(signerOf(image), image).toBe(repository ? pipeline(repository).identity : undefined);
+    }
+    expect(signerOf('ghcr.io/the-roganator/cv-worlds-worst-website')).toBeDefined();
+  });
+
+  it("finds an image's tag past a registry's port and before its digest", () => {
+    expect(tagOf(`localhost:5000/k3s:v1.30.0-k3s1@${digest('e')}`)).toBe('v1.30.0-k3s1');
+    expect(tagOf(`localhost:5000/k3s@${digest('e')}`)).toBeUndefined();
+  });
+
+  it('reads a FROM across continuations, and none inside a heredoc', () => {
+    expect(stages(['RUN <<EOF', 'FROM inside/heredoc:1', 'EOF', 'FROM \\', '  a/b:1 AS base', 'FROM base'])).toEqual([
+      { image: 'a/b:1', line: 4 },
+    ]);
+  });
+
+  it('takes a stage that names an earlier one, or scratch, as no image', () => {
+    expect(
+      stages(['FROM --platform=$BUILDPLATFORM a/b:1 AS Build', 'FROM build', 'FROM scratch', 'from c/d:2']),
+    ).toEqual([
+      { image: 'a/b:1', line: 1 },
+      { image: 'c/d:2', line: 4 },
+    ]);
+  });
+
+  it('takes prose, tests and their fixtures as pinning nothing', () => {
+    expect(['docs/x.md', 'apps/a/test/f.json', 'scripts/x.test.ts', 'a/fixtures/b.yaml'].every(isFixture)).toBe(true);
+    expect(['deploy/base/a.yaml', 'scripts/x.ts', 'Dockerfile'].some(isFixture)).toBe(false);
+  });
+});

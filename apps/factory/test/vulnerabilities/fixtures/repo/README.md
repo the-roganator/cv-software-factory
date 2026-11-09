@@ -1,0 +1,1 @@
+Prose names ghcr.io/example/old@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and pins nothing.

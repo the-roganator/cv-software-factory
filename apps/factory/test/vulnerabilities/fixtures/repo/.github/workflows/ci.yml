@@ -1,0 +1,19 @@
+on: pull_request
+permissions: {}
+env:
+  TOOL: ghcr.io/example/tool:1.0@sha256:8888888888888888888888888888888888888888888888888888888888888888
+  SIDECAR: quay.io/example/sidecar:1.2.3@sha256:2222222222222222222222222222222222222222222222222222222222222222
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - image: not-an-image
+    container:
+      image: ${{ vars.IMAGE }}
+    services:
+      cache:
+        image: example/cache:7
+    steps:
+      - uses: docker://ghcr.io/example/action:1

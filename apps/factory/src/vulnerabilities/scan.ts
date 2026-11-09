@@ -20,8 +20,8 @@
  * unread. The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
  * limits: no run over 5,000 results, so code scanning drops none, and no more than 20 runs. Every run also scans
  * PROOF, an image of ours that ran Node 24.22.0, as it scans ours, and fails unless CVE-2026-111497 is found in its
- * Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for it. The log gives counts by severity, each run's category, results and items, and the items not read, never a package
- * or an advisory.
+ * Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for it. The log gives counts by
+ * severity, each run's category, results and items, and the items not read, never a package or an advisory.
  *
  * The checkout is data: nothing in it runs. Trivy runs in its pinned image, which reads the registries' credentials
  * from DOCKER_CONFIG (GHCR's, the job's token); cosign, helm, kustomize and yq come from this repository's mise.lock.
@@ -42,7 +42,17 @@ import {
   readable,
 } from './node.ts';
 import { PROOF } from './proof.ts';
-import { type Finding, LIMITS, merge, overLimits, type Run, SEVERITIES, type Severity, sarif } from './sarif.ts';
+import {
+  categoryOf,
+  type Finding,
+  LIMITS,
+  merge,
+  overLimits,
+  type Run,
+  SEVERITIES,
+  type Severity,
+  sarif,
+} from './sarif.ts';
 
 const run = promisify(execFile);
 
@@ -536,10 +546,9 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivy
 /** A run as the log names it: its category, how many results, and its items, by their keys. */
 export function runLine(run: Run) {
   const items = run.properties.items;
-  return `${run.automationDetails.id.replace(/\/$/, '')}: ${run.results.length} results, ${items.length} ${items.length === 1 ? 'item' : 'items'}: ${items.join('; ')}`;
+  return `${categoryOf(run)}: ${run.results.length} results, ${items.length} ${items.length === 1 ? 'item' : 'items'}: ${items.join('; ')}`;
 }
 
-/** The tools as the workflow has them: Trivy in its image through Docker, cosign and helm from mise. */
 /** Trivy in its image: the registries' credentials read-only, and its cache. */
 const dockerRun = (cache: string, mounts: string[] = []) => [
   'run',
@@ -553,6 +562,7 @@ const dockerRun = (cache: string, mounts: string[] = []) => [
   ...mounts.flatMap((mount) => ['-v', mount]),
 ];
 
+/** The tools as the workflow has them: Trivy in its image through Docker, cosign and helm from mise. */
 export function realTools(trivyImage: string, cache: string, work: string): Tools {
   let count = 0;
   const temp = () => mkdtempSync(join(work, 'target-'));

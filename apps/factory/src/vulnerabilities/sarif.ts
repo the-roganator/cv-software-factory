@@ -5,7 +5,8 @@
  * Code scanning keeps only the 5,000 most severe results of a run and drops the rest without refusing the file, so the
  * items are grouped, in the list's order, each run filled to 5,000 results, and each group is a run of its own, in a
  * category of its own: `vulnerabilities/01` to `vulnerabilities/20`, code scanning's 20 runs to a file. An item over
- * 5,000 alone is cut into runs of its own, its results in order of package and advisory. Every one of the 20 is in
+ * 5,000 is cut, its results in order of package and advisory, into full runs of its own, and whole items fill the run
+ * its last cut begins. Every one of the 20 is in
  * every file, the unused ones empty: a category that stopped being uploaded would keep its last results open for good,
  * so a result that moves to another run as the counts before it change, or a run no longer needed, leaves nothing
  * stale. An alert is open while any configuration (here, a category) reports it, so a result that moves keeps its
@@ -59,6 +60,12 @@ export const CATEGORY = 'vulnerabilities';
 
 /** A run's category: `vulnerabilities/01` for the first. */
 export const category = (index: number) => `${CATEGORY}/${String(index + 1).padStart(2, '0')}`;
+
+/** A run's category from its id, which is the category and a slash. */
+export const categoryOf = (run: Pick<Run, 'automationDetails'>) => run.automationDetails.id.replace(/\/$/, '');
+
+/** Strings in code-unit order, the same on every runner whatever its locale. */
+const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 const FINGERPRINT = 'vulnerabilities/v1';
 
@@ -150,7 +157,7 @@ export const partName = (part: Part) =>
 /**
  * The items, in the order of their first finding (the list's order), grouped so that no group carries more than
  * `limit` results: each group filled in turn with whole items. An item over the limit is cut, its results in order of
- * package and advisory, into groups of its own, each full but the last.
+ * package and advisory, into full groups of its own, and its last cut begins a group that whole items after it fill.
  */
 export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
   const byItem = new Map<string, Finding[]>();
@@ -171,12 +178,16 @@ export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
     if (item.length > limit) {
       close();
       const sorted = [...item].sort(
-        (a, b) =>
-          a.package.localeCompare(b.package) || a.advisory.localeCompare(b.advisory) || a.type.localeCompare(b.type),
+        (a, b) => order(a.package, b.package) || order(a.advisory, b.advisory) || order(a.type, b.type),
       );
       const of = Math.ceil(sorted.length / limit);
-      for (let at = 0; at < of; at++)
-        out.push([{ findings: sorted.slice(at * limit, (at + 1) * limit), cut: { at: at + 1, of } }]);
+      for (let at = 0; at < of; at++) {
+        const findings = sorted.slice(at * limit, (at + 1) * limit);
+        current = [{ findings, cut: { at: at + 1, of } }];
+        size = findings.length;
+        // Every cut but the last is full; the last stays open, for whole items after it.
+        if (at < of - 1) close();
+      }
       continue;
     }
     if (size + item.length > limit) close();
@@ -191,10 +202,7 @@ export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
 function run(group: Part[], index: number, trivyVersion?: string): Run {
   const merged = group
     .flatMap((part) => part.findings)
-    .sort(
-      (a, b) =>
-        a.advisory.localeCompare(b.advisory) || a.item.localeCompare(b.item) || a.package.localeCompare(b.package),
-    );
+    .sort((a, b) => order(a.advisory, b.advisory) || order(a.item, b.item) || order(a.package, b.package));
   const rules: Rule[] = [];
   const ruleAt = new Map<string, number>();
   for (const finding of merged) {
@@ -272,8 +280,12 @@ export function overLimits(file: Sarif, limits = LIMITS): string[] {
   const bytes = gzipSync(JSON.stringify(file)).length;
   if (bytes > limits.gzipBytes) problems.push(`${bytes} bytes gzipped, over ${limits.gzipBytes}`);
   if (file.runs.length > limits.runs) problems.push(`${file.runs.length} runs, over ${limits.runs}`);
+  // Code scanning refuses a file with two runs of one tool in one category.
+  const names = file.runs.map(categoryOf);
+  const twice = [...new Set(names.filter((name, at) => names.indexOf(name) !== at))];
+  if (twice.length) problems.push(`more than one run in ${twice.join(', ')}`);
   for (const run of file.runs) {
-    const name = run.automationDetails.id.replace(/\/$/, '');
+    const name = categoryOf(run);
     if (run.results.length > limits.results)
       problems.push(`${name}: ${run.results.length} results, over ${limits.results}`);
     if (run.tool.driver.rules.length > limits.rules)

@@ -283,7 +283,7 @@ describe('results over the limit', () => {
     expect(lines.at(-1)).toBe('The run fails, and nothing is uploaded.');
   });
 
-  it('cut an item over 5,000 into runs of its own, in order of package and advisory, every result kept', () => {
+  it('cut an item over 5,000 into full runs of its own, in order of package and advisory, every result kept', () => {
     const many = Array.from({ length: 2 * LIMITS.results + 1 }, (_, n) =>
       finding(
         'big',
@@ -297,8 +297,9 @@ describe('results over the limit', () => {
       [1, ['small']],
       [5_000, ['big (cut 1 of 3)']],
       [5_000, ['big (cut 2 of 3)']],
-      [1, ['big (cut 3 of 3)']],
-      [1, ['after']],
+      // The last cut's run is filled with the whole items after it.
+      [2, ['big (cut 3 of 3)', 'after']],
+      [0, []],
     ]);
     // The first cut has the first packages, the last the last.
     expect(file.runs[1]?.results[0]?.message.text).toMatch(/^pkg-000 /);
@@ -337,6 +338,13 @@ function finding(item: string, advisory: string, pkg = 'pkg'): Finding {
 }
 
 describe('the runs', () => {
+  it('fail the file when two share a category', () => {
+    const file = sarif([finding('a', 'CVE-2026-1')]);
+    const [first, second] = file.runs;
+    if (first && second) second.automationDetails = { ...first.automationDetails };
+    expect(overLimits(file)).toEqual([`more than one run in ${CATEGORY}/01`]);
+  });
+
   it('are 20, in the categories vulnerabilities/01 to /20, the unused ones empty, in every file', () => {
     for (const file of [sarif([]), sarif([finding('a', 'CVE-2026-1')])]) {
       expect(file.runs.map((run) => run.automationDetails.id)).toEqual(
@@ -383,8 +391,12 @@ describe('the runs', () => {
       for (const group of grouped) {
         expect(group.flatMap((part) => part.findings).length).toBeLessThanOrEqual(limit);
         for (const part of group) expect(new Set(part.findings.map((f) => f.item)).size).toBe(1);
-        // A cut of an item is alone in its run, and an item is cut only when it is over the limit.
-        if (group.some((part) => part.cut)) expect(group).toHaveLength(1);
+        // A run holds one cut at most, first, and a cut but an item's last is alone and full.
+        const cuts = group.filter((part) => part.cut);
+        expect(cuts.length).toBeLessThanOrEqual(1);
+        if (cuts.length) expect(group[0]?.cut).toBeDefined();
+        const cut = group[0]?.cut;
+        if (cut && cut.at < cut.of) expect([group.length, group[0]?.findings.length]).toEqual([1, limit]);
       }
       for (const part of parts)
         expect(Boolean(part.cut)).toBe(all.filter((f) => f.item === part.findings[0]?.item).length > limit);
@@ -392,7 +404,7 @@ describe('the runs', () => {
       for (let at = 1; at < grouped.length; at++) {
         const before = grouped[at - 1] ?? [];
         const next = grouped[at]?.[0];
-        if (before[0]?.cut || next?.cut) continue;
+        if (next?.cut) continue;
         expect(before.flatMap((part) => part.findings).length + (next?.findings.length ?? 0)).toBeGreaterThan(limit);
       }
       const over = overLimits(

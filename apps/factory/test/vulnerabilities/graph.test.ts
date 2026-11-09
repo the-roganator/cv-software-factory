@@ -171,7 +171,7 @@ describe('the snapshot', () => {
     expect(Object.keys(made.manifests ?? {}).sort()).toEqual(['pnpm-lock.yaml', 'tools/pnpm-lock.yaml']);
   });
 
-  it('is not made when Syft leaves out a package an importer names, as when it reads one document alone', () => {
+  it('is not made when Syft leaves out a package the lockfile resolves, direct or indirect, as when it reads one document alone', () => {
     expect(() =>
       snapshot(
         syft({ 'pnpm-lock.yaml': ['pnpm@12.0.0', '@pnpm/exe.linux-x64@12.0.0'] }),
@@ -179,6 +179,26 @@ describe('the snapshot', () => {
         job,
       ),
     ).toThrow(/did not read all of pnpm-lock.yaml: @scope\/app-lib@1.0.0/);
+    expect(() =>
+      snapshot(
+        syft({ 'pnpm-lock.yaml': ALL.filter((id) => id !== 'deep-native@5.0.0') }),
+        { 'pnpm-lock.yaml': [env, project] },
+        job,
+      ),
+    ).toThrow(/did not read all of pnpm-lock.yaml: deep-native@5.0.0/);
+    const fromGit = {
+      ...project,
+      importers: {
+        '.': { dependencies: { tool: { specifier: 'github:o/tool', version: 'https://codeload/o/tool' } } },
+      },
+      snapshots: { 'tool@https://codeload/o/tool': {} },
+    };
+    expect(() => snapshot(syft({ 'pnpm-lock.yaml': ['peer@2.0.0'] }), { 'pnpm-lock.yaml': [fromGit] }, job)).toThrow(
+      /did not read all of pnpm-lock.yaml: tool@https/,
+    );
+    expect(() =>
+      snapshot(syft({ 'pnpm-lock.yaml': ['tool@0.0.0-git'] }), { 'pnpm-lock.yaml': [fromGit] }, job),
+    ).not.toThrow();
   });
 
   it("does not give one version of a package another version's place", () => {
@@ -232,9 +252,9 @@ describe('the proof', () => {
   });
 
   it('finds a package the snapshot lacks', () => {
-    expect(compare(manifest(ALL.filter((id) => id !== 'test-only@1.1.0')), projects).absent).toEqual([
-      'test-only@1.1.0',
-    ]);
+    const made = manifest(ALL);
+    delete made.resolved?.['pkg:npm/test-only@1.1.0'];
+    expect(compare(made, projects).absent).toEqual(['test-only@1.1.0']);
   });
 
   it('finds a package called direct that pnpm lists as indirect', () => {

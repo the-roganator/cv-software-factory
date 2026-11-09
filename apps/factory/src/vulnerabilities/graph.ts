@@ -167,9 +167,14 @@ export function snapshot(
       throw new Error(
         `${file} is not a pnpm lockfile of version 9 (${lockfile.map((doc) => String(doc.lockfileVersion)).join(', ')}).`,
       );
-    // Every package an importer names is in the snapshot, or Syft did not read the whole lockfile.
+    // Every package the lockfile resolves is in the snapshot, or Syft did not read the whole lockfile: a registry's
+    // version exactly, any other (a tarball's or a git repository's) by name, as Syft may write its version another way.
     const named = new Set(resolvedByName.map(([key, entry]) => fromPurl(entry.package_url ?? key)));
-    const unread = [...known.direct].filter((id) => !named.has(id) && /@\d+\.\d+\.\d+/.test(id));
+    const namedNames = new Set([...named].map((id) => id?.slice(0, id.lastIndexOf('@'))));
+    const unread = [...known.known].filter((id) => {
+      const at = id.lastIndexOf('@');
+      return /^\d+\.\d+\.\d+/.test(id.slice(at + 1)) ? !named.has(id) : !namedNames.has(id.slice(0, at));
+    });
     if (unread.length) throw new Error(`Syft did not read all of ${file}: ${unread.slice(0, 10).join(', ')}`);
     const names = (set: Set<string>) => new Set([...set].map((id) => id.slice(0, id.lastIndexOf('@'))));
     const directNames = names(known.direct);

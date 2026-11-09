@@ -278,9 +278,12 @@ describe('reading a workflow', () => {
 /**
  * Trivy is one image everywhere, pinned by version and digest in one file, which Dependabot moves: every job that runs
  * it reads that file from this repository at the workflow's own commit, never from a change's checkout or the app's,
- * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart.
+ * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart. A job of this
+ * repository's own pull requests, in a workflow nothing calls, reads it from the pull request's base instead (the
+ * lockfile gate in check.yml, whose own commit is the change's), or the merge queue's.
  */
 const TRIVY_PIN = '.github/images/trivy/Dockerfile';
+const BASE = expression('github.event.pull_request.base.sha || github.event.merge_group.base_sha');
 
 /** The Trivy image a Dockerfile pins, if it pins exactly one, by version and digest, and nothing else. */
 function trivyPin(dockerfile: string) {
@@ -316,12 +319,15 @@ describe("Trivy's pin", () => {
         const runs = steps.map((step) => step.run ?? '').join('\n');
         if (!/trivy/i.test(runs) && !JSON.stringify(job.env ?? {}).match(/trivy/i)) continue;
         readers++;
-        // The pin, read from a checkout of this repository at the workflow's own commit, by its path there.
+        // The pin, read from a checkout of this repository at the workflow's own commit, by its path there, or at the
+        // base's, in a workflow no other repository can call.
+        const called = triggers(workflow).includes('workflow_call');
         const own = steps.find(
           (step) =>
             step.uses?.startsWith('actions/checkout@') &&
-            step.with?.repository === expression('job.workflow_repository') &&
-            step.with?.ref === expression('job.workflow_sha') &&
+            ((step.with?.repository === expression('job.workflow_repository') &&
+              step.with?.ref === expression('job.workflow_sha')) ||
+              (!called && step.with?.repository === undefined && step.with?.ref === BASE)) &&
             String(step.with?.['sparse-checkout'] ?? '')
               .split('\n')
               .includes(TRIVY_PIN),

@@ -30,7 +30,13 @@ import { execFileSync } from 'node:child_process';
  * reports as "<calling job> / <job>".
  */
 export const REPOSITORIES: Record<string, string[]> = {
-  'the-roganator/cv-software-factory': ['lint, types, tests', 'browser tests', 'image builds', 'pull request title'],
+  'the-roganator/cv-software-factory': [
+    'lint, types, tests',
+    'browser tests',
+    'image builds',
+    'lockfile scan',
+    'pull request title',
+  ],
   // The app's gates come from this repository (app-gates.yml); tests first is a signal, not a requirement.
   'the-roganator/cv-worlds-worst-website': [
     'lint, types, tests',

@@ -192,6 +192,45 @@ jobs:
           done
           exit 1
 
+  # The lockfile gate (apps/factory/src/gates/lockfile-scan.ts): fails on any vulnerability, at any severity, that the
+  # change's lockfiles have and the base's do not, each lockfile scanned alone by Trivy. The script, Trivy's pin and the
+  # base's lockfiles come from the base, and only the change's lockfiles, as data, from the change, so a change to the
+  # gate is judged by the one before it, and nothing the change holds runs. Read-only, on every pull request and in the
+  # merge queue, where the base is the group's.
+  lockfile-scan:
+    name: lockfile scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          path: base
+          # Every pnpm-lock.yaml, at any depth, beside the script and the pins it reads.
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/gates/
+            apps/factory/src/vulnerabilities/inventory.ts
+            apps/factory/src/vulnerabilities/proof.ts
+            .github/images/trivy/Dockerfile
+            pnpm-lock.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: change
+          sparse-checkout: pnpm-lock.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: base
+          install_args: node
+      - run: node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin base/.github/images/trivy/Dockerfile
+
   # The browser tests run side by side: the console's, in parts, and the factory's senses (the crawler and the probes).
   # Each needs the pinned Playwright image, on arm64 like the laptops the snapshots are made on, so they match.
   console-browser:

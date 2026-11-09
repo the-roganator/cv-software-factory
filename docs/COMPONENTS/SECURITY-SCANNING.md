@@ -2,14 +2,28 @@
 
 Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** CodeQL, Dependabot, GitHub secret scanning, the daily scan of everything either repository runs or pins, and two gates on the app's pull requests.
+- **v1:** CodeQL, Dependabot, GitHub secret scanning, the daily scan of everything either repository runs or pins, the lockfile gate on both repositories' pull requests, and two more gates on the app's.
 - **Later:** Semgrep, licence checks.
 
 ## CodeQL
 
 `codeql.yml` analyses the TypeScript and the workflows, with the `security-and-quality` queries, on every pull request, `main` and once a week, in both public repositories: the app's calls it. Each repository's `main` ruleset holds a pull request while its own analysis finds a new security alert of medium severity or higher, or a new error ([repositories and rulesets](REPOSITORIES-AND-RULESETS.md#the-ruleset)). A false positive is dismissed in code scanning, with a written reason. CodeQL does not run in the merge queue, which does not wait for it.
 
+## The lockfile gate
+
+`lockfile scan` (`apps/factory/src/gates/lockfile-scan.ts`) runs on every pull request and in the merge queue, in both repositories: `check.yml` here, and `app-gates.yml` in the app's gates. It fails on any vulnerability, at any severity, that the change's lockfiles have and the base's do not.
+
+- **What it reads:** each lockfile the daily scan's list names (every `pnpm-lock.yaml` git tracks, outside prose and fixtures), of the base and of the change, each scanned alone by Trivy from a directory holding only it, development dependencies included, both against one advisory database pulled once. A lockfile only the change has is compared with none.
+- **What is new:** a vulnerability is known by its lockfile, its advisory, its package, and whether a production dependency reaches it (Trivy's `Dev`). A package moved to another version with the same advisory brings nothing new; one a production dependency newly reaches does; one the base reaches from production and the change only from development is less reached, not new.
+- **It fails on what it cannot read:** a lockfile Trivy reads no packages from, on either side, or whose report is empty or cannot be parsed.
+- **Judged by code the change cannot alter:** the script, Trivy's pin and the base's lockfiles come from the base (`pull_request.base.sha`, or the merge group's base) here, and from this repository at the pinned commit in the app's gates; only the change's lockfiles come from the change, as data, and nothing in either checkout runs. The job is read-only. In the app's gates it refuses any event but `pull_request` and `merge_group`, and is skipped with the rest for the App's deploy and release pull requests.
+- **No exceptions:** it excepts nothing. Exceptions, when there are any, are read from this repository's `main`, never from the change.
+
+The summary names each finding the change brings in, its package, version, advisory, severity and whether production reaches it: the change is public and has not merged.
+
 ## On the app's pull requests
+
+Besides the lockfile gate:
 
 - **Dependency review** (GitHub's) fails a dependency with a known vulnerability the change brings in.
 - **Trivy** (pinned by digest) scans the base's image and the change's, and fails on a high or critical vulnerability only the change's has.

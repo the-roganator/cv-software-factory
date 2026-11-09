@@ -294,15 +294,15 @@ describe("Trivy's pin", () => {
     expect(trivyPin(readFileSync(TRIVY_PIN, 'utf-8'))).toMatch(/^ghcr\.io\/aquasecurity\/trivy:/);
   });
 
-  it('is in a directory Dependabot moves, outside .github/, which it may not write', () => {
+  it('is in a directory Dependabot moves, and none it moves is under .github/, where a docker update may not write', () => {
     const config = parse(readFileSync('.github/dependabot.yml', 'utf-8')) as {
       updates: { 'package-ecosystem': string; directory?: string; directories?: string[] }[];
     };
     const docker = config.updates
       .filter((update) => update['package-ecosystem'] === 'docker')
-      .flatMap((update) => update.directories ?? [update.directory]);
+      .flatMap((update) => update.directories ?? (update.directory ? [update.directory] : []));
     expect(docker).toContain(`/${TRIVY_PIN.replace(/\/Dockerfile$/, '')}`);
-    expect(TRIVY_PIN.startsWith('.github/')).toBe(false);
+    expect(docker.filter((directory) => directory.startsWith('/.github/'))).toEqual([]);
   });
 
   it('refuses a FROM without a version, without a digest, of another image, or beside another', () => {

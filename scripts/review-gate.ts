@@ -52,6 +52,7 @@ import {
   type FileChange,
   type IssueEvent,
   MARTIN,
+  notJudged,
   type OwnerRule,
   type PullRequest,
   REVIEW_APP,
@@ -534,11 +535,15 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     if ('run' in integrity) {
       const annotations = await paged<Annotation>(`/repos/${repo}/check-runs/${integrity.run.id}/annotations`, read);
       const expected = integrity.run.output?.annotations_count ?? 0;
+      const unjudged = notJudged(annotations, pr.number, pr.base.ref, head);
       // Fewer is a page lost, more a set that is not the run's: either way, the excused tests are not known. The run
       // has completed, so no new reading is coming: a hold, not a wait.
       if (annotations.length !== expected)
         testIntegrity = { read: false, reason: `GitHub gave ${annotations.length} of its ${expected} annotations` };
-      excused = excusedTests(annotations);
+      else if (unjudged) testIntegrity = { read: false, ...unjudged };
+      // Another pull request's excuses, from its description, are never this one's tags. Any other run's are kept: a
+      // tag only holds.
+      if (!unjudged?.pending) excused = excusedTests(annotations);
     } else testIntegrity = { read: false, ...integrity };
     const complete = files.length >= (pr.changed_files ?? 0);
     const tags = tagsOf({

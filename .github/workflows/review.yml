@@ -83,10 +83,12 @@ permissions: {}
 # One verdict at a time for a branch, each read afresh, so an older one is never posted after a newer one. By the
 # branch of the run that asked, which every run names, a fork's included; the merge queue's runs each have a branch of
 # their own. A deleted fork names no repository, and its run, which then finds no pull request to judge, goes by its own
-# id, so none shares a group with another branch's.
+# id, so none shares a group with another branch's. A run GitHub leaves `waiting` with nothing to approve, and refuses
+# to cancel, holds its group for 30 days, and every run after it in that group never starts: the number in the name
+# retires the groups such a run holds, and goes up when one holds a group again.
 concurrency:
   group: >-
-    review-${{ github.event.workflow_run.head_repository.full_name || format('gone-{0}', github.run_id) }}:${{
+    review-2-${{ github.event.workflow_run.head_repository.full_name || format('gone-{0}', github.run_id) }}:${{
     github.event.workflow_run.head_branch }}
 
 jobs:
@@ -117,7 +119,7 @@ jobs:
             policy/review-verdict.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -198,6 +198,24 @@ function phase(c: { successCondition: string; failureCondition: string }, result
   return evaluate(c.successCondition, result) ? 'Successful' : 'Inconclusive';
 }
 
+/** Runs promtool's rule tests on these, in a folder of their own that it removes: whether they passed, and what it said. */
+function promtool(tests: unknown[]): { passed: boolean; output: string } {
+  const folder = mkdtempSync(join(tmpdir(), 'promtool-'));
+  const file = join(folder, 'tests.yml');
+  try {
+    writeFileSync(file, stringify({ rule_files: [], evaluation_interval: '15s', tests }, { lineWidth: 0 }));
+    return {
+      passed: true,
+      output: execFileSync('promtool', ['test', 'rules', file], { encoding: 'utf-8', stdio: 'pipe' }),
+    };
+  } catch (error) {
+    const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
+    return { passed: false, output: `${stdout}${stderr}` };
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
 describe('auto-rollback, as the analysis reads it', () => {
   const latency = conditions('result[0] <= 0');
 
@@ -224,7 +242,6 @@ describe('auto-rollback, as the analysis reads it', () => {
 
   /** Whether the switch's query answers its figure twice at 5m, given these series of the switch over the 5 minutes. */
   function offAt5m(series: { series: string; values: string }[], figure = 'sum(figure)'): boolean {
-    const folder = mkdtempSync(join(tmpdir(), 'auto-rollback-'));
     const test = (expected: number) => ({
       interval: '15s',
       input_series: [{ series: 'figure', values: '0.17x40' }, ...series],
@@ -236,30 +253,11 @@ describe('auto-rollback, as the analysis reads it', () => {
         },
       ],
     });
-    writeFileSync(
-      join(folder, 'tests.yml'),
-      stringify({ rule_files: [], evaluation_interval: '15s', tests: [test(2)] }, { lineWidth: 0 }),
-    );
-    try {
-      execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8', stdio: 'pipe' });
-      return true;
-    } catch {
-      // Not two: check it is one, so a query that answers nothing (or fails to parse) does not pass as "on".
-      writeFileSync(
-        join(folder, 'tests.yml'),
-        stringify({ rule_files: [], evaluation_interval: '15s', tests: [test(1)] }, { lineWidth: 0 }),
-      );
-      const output = (() => {
-        try {
-          return execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8' });
-        } catch (error) {
-          const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
-          throw new Error(`neither one answer nor two:\n${stdout}${stderr}`);
-        }
-      })();
-      expect(output).toContain('SUCCESS');
-      return false;
-    }
+    if (promtool([test(2)]).passed) return true;
+    // Not two: check it is one, so a query that answers nothing (or fails to parse) does not pass as "on".
+    const one = promtool([test(1)]);
+    if (!one.passed) throw new Error(`neither one answer nor two:\n${one.output}`);
+    return false;
   }
 
   const admin = (value: string, extra = '') => ({
@@ -304,56 +302,51 @@ describe('auto-rollback, as the analysis reads it', () => {
   });
 
   it('parses as Prometheus reads it, around the real measures', () => {
-    const folder = mkdtempSync(join(tmpdir(), 'auto-rollback-'));
     const q = queries(release);
     const real = (query: string) =>
       switched(query).replaceAll('{{args.canary-hash}}', 'c4n4ry').replaceAll('{{args.stable-hash}}', 's74b1e');
-    writeFileSync(
-      join(folder, 'tests.yml'),
-      stringify(
-        {
-          rule_files: [],
-          tests: [
-            {
-              interval: '15s',
-              input_series: [],
-              promql_expr_test: [q.errors, q.latency].map((query) => ({
-                expr: real(query),
-                eval_time: '5m',
-                exp_samples: [],
-              })),
-            },
-          ],
-        },
-        { lineWidth: 0 },
-      ),
-    );
-    expect(execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8' })).toContain(
-      'SUCCESS',
-    );
+    const parsed = promtool([
+      {
+        interval: '15s',
+        input_series: [],
+        promql_expr_test: [q.errors, q.latency].map((query) => ({
+          expr: real(query),
+          eval_time: '5m',
+          exp_samples: [],
+        })),
+      },
+    ]);
+    expect(parsed.passed, parsed.output).toBe(true);
+    expect(parsed.output).toContain('SUCCESS');
   });
 });
 
 describe('with no stable version, as the analysis reads it', () => {
   const CANARY = 'c4n4ry';
   const STABLE = 's74b1e';
-  /** Every 15s for ten minutes: 60 more each time, 4 a second; evaluated at 5m, over the policy's window. */
-  const counter = (step: number) => `0+${step}x40`;
+  /**
+   * A counter sampled every 15s for ten minutes, `step` more each time (60 is 4 a second); with `until`, its samples
+   * stop after that many steps, as a version's telemetry does when it goes dark. Evaluated at 5m.
+   */
+  const counter = (step: number, until = 40) => (until < 40 ? `0+${step}x${until} _x${40 - until}` : `0+${step}x40`);
   const of = (hash: string, extra = '') =>
     `{job="${release.app.metricsJob}", http_route="/", k8s_pod_label_rollouts_pod_template_hash="${hash}"${extra}}`;
   /** A version's requests, 4 a second, a share of them 5xx, each answered within `le` seconds. */
-  const version = (hash: string, { errors = 0, le = '0.1' }: { errors?: number; le?: string } = {}) => [
+  const version = (
+    hash: string,
+    { errors = 0, le = '0.1', until = 40 }: { errors?: number; le?: string; until?: number } = {},
+  ) => [
     {
       series: `http_server_request_duration_seconds_count${of(hash, ', http_response_status_code="200"')}`,
-      values: counter(60 * (1 - errors)),
+      values: counter(60 * (1 - errors), until),
     },
     {
       series: `http_server_request_duration_seconds_count${of(hash, ', http_response_status_code="500"')}`,
-      values: counter(60 * errors),
+      values: counter(60 * errors, until),
     },
     ...['0.1', '0.5', '+Inf'].map((bucket) => ({
       series: `http_server_request_duration_seconds_bucket${of(hash, `, le="${bucket}"`)}`,
-      values: Number(bucket) >= Number(le) ? counter(60) : counter(0),
+      values: counter(Number(bucket) >= Number(le) ? 60 : 0, until),
     })),
   ];
   /** What the split sent the canary through the ingress: enough to judge. */
@@ -374,36 +367,21 @@ describe('with no stable version, as the analysis reads it', () => {
     const metric = metricsOf(template).find((m) => m.name === name);
     const query = metric?.provider.prometheus?.query;
     if (!metric?.successCondition || !metric.failureCondition || !query) throw new Error(`no measure ${name}`);
-    const folder = mkdtempSync(join(tmpdir(), 'no-stable-'));
     const labels = ['{}', `{${OFF_LABEL}="off"}`];
-    writeFileSync(
-      join(folder, 'tests.yml'),
-      stringify(
-        {
-          rule_files: [],
-          tests: [
-            {
-              interval: '15s',
-              input_series: series,
-              promql_expr_test: [
-                {
-                  expr: query.replaceAll('{{args.canary-hash}}', CANARY).replaceAll('{{args.stable-hash}}', STABLE),
-                  eval_time: '5m',
-                  exp_samples: figures.map((value, i) => ({ labels: labels[i], value })),
-                },
-              ],
-            },
-          ],
-        },
-        { lineWidth: 0 },
-      ),
-    );
-    try {
-      execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8', stdio: 'pipe' });
-    } catch (error) {
-      const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
-      throw new Error(`${template} ${name} did not answer ${JSON.stringify(figures)}:\n${stdout}${stderr}`);
-    }
+    const run = promtool([
+      {
+        interval: '15s',
+        input_series: series,
+        promql_expr_test: [
+          {
+            expr: query.replaceAll('{{args.canary-hash}}', CANARY).replaceAll('{{args.stable-hash}}', STABLE),
+            eval_time: '5m',
+            exp_samples: figures.map((value, i) => ({ labels: labels[i], value })),
+          },
+        ],
+      },
+    ]);
+    if (!run.passed) throw new Error(`${template} ${name} did not answer ${JSON.stringify(figures)}:\n${run.output}`);
     return phase({ successCondition: metric.successCondition, failureCondition: metric.failureCondition }, figures);
   }
 
@@ -453,6 +431,23 @@ describe('with no stable version, as the analysis reads it', () => {
       expect(judge(template, name, [...version(STABLE), split], [Number.POSITIVE_INFINITY])).toBe('Failed');
       expect(judge(template, name, [split], [Number.POSITIVE_INFINITY])).toBe('Failed');
       expect(judge(template, name, [split, ...switchOff], [Number.POSITIVE_INFINITY])).toBe('Failed');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name fails a canary whose stable version went dark in the window, as before',
+    ({ template, name }) => {
+      const dark = [...version(CANARY), ...version(STABLE, { until: 4 }), split];
+      // The stable version served until 1m and has nothing in the window from 2m: a gap in its telemetry, not a reset.
+      expect(judge(template, name, dark, [Number.POSITIVE_INFINITY])).toBe('Failed');
+      // A stable version that answers on no route the app named is seen too: nothing to compare, but not none.
+      const unrouted = version(STABLE).map((v) => ({
+        ...v,
+        series: v.series.replace('http_route="/"', 'http_route=""'),
+      }));
+      expect(judge(template, name, [...version(CANARY), ...unrouted, split], [Number.POSITIVE_INFINITY])).toBe(
+        'Failed',
+      );
     },
   );
 

@@ -36,7 +36,7 @@ An analysis runs after each pause, and one in the background from the start.
 
 - **Against the baseline.** The canary is compared with its baseline, not with the objectives, which the baseline fails on purpose.
 - **Telling them apart.** Their telemetry is told apart by the pod-template hash the collector adds ([telemetry](TELEMETRY.md)), and every query sums over routes.
-- **No baseline.** A canary with no stable version to compare with (no series for the stable version's hash in the window, as on the first release after the app is reset, whose stable version admission never let run) passes errors and latency: there is nothing for it to be worse than. With a stable version, the comparison is all. A canary with nothing measured of its own fails, whatever the stable version.
+- **No baseline.** A canary whose stable version has never been measured (no request of the stable version's hash, on any route, in Prometheus over the last day, as on the first release after the app is reset, whose stable version admission never let run) passes errors and latency: there is nothing for it to be worse than. A stable version measured in that day but not in the window is a gap in its telemetry, and fails the canary, as a comparison that could not be made; so does a canary with nothing measured of its own. With the stable version measured in the window, the comparison is all.
 
 ### `website-step`
 

@@ -116,6 +116,14 @@ export function routeQueries(r: Release, hash: string, seconds: number) {
 }
 
 /**
+ * How far back the analysis looks for the stable version's requests before it calls the canary's comparison one with
+ * no stable version: a day, against Prometheus's seven. A stable version that served in that time and has nothing in
+ * the window is a gap in its telemetry, and fails the canary as a comparison that could not be made; one never seen
+ * in it, as on the first release after the app is reset, has never served.
+ */
+export const STABLE_SEEN = '1d';
+
+/**
  * The PromQL behind each measure, for one release policy. Each is written across lines, as the templates show it: a
  * version's figure on a line of its own.
  */
@@ -128,12 +136,13 @@ export function queries(r: Release) {
   const latency = (v: Version) => version(v).latency;
   // Nothing is judged until the split has sent the canary enough requests: the result is then empty, which passes,
   // so a step that falls short fails on `enough-requests` alone, for that reason, and not on what the journeys alone
-  // made of errors and latency. Once it has, a canary measured against no stable version (no series for the stable
-  // hash, as on the first release after the app is reset) is no worse than nothing, 0, which passes: there is no
-  // baseline to be worse than. A canary with nothing measured (no series for its own hash) is infinitely worse, which
-  // fails. With the stable version's series present, the middle line answers nothing, and the comparison is all.
-  const measured = (v: Version) => version(v).requests;
-  const noStable = `(\n  vector(0)\n  and on () ${measured('canary')}\n  unless on () ${measured('stable')}\n)`;
+  // made of errors and latency. Once it has, a canary with nothing measured (no series for its own hash) is infinitely
+  // worse, which fails; so is one whose stable version has served within `STABLE_SEEN` but has nothing in the window,
+  // a gap in its telemetry. A stable version never measured in that time, on any route, as on the first release after
+  // the app is reset, leaves nothing to compare with: the canary is no worse than nothing, 0, which passes. With the
+  // stable version's series in the window, the middle branch answers nothing, and the comparison is all.
+  const stableSeen = `count(last_over_time(${REQUESTS}_count{job="${r.app.metricsJob}", ${HASH}="{{args.stable-hash}}"}[${STABLE_SEEN}]))`;
+  const noStable = `(\n  vector(0)\n  and on () ${version('canary').requests}\n  unless on () ${stableSeen}\n)`;
   const judged = (expr: string) =>
     `(\n${expr}\nor on () ${noStable}\nor on () vector(Inf)\n)\nand on () ${canaryRequests} >= ${r.minRequests}`;
   return {

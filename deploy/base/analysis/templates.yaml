@@ -43,7 +43,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -66,7 +66,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -97,7 +97,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -117,7 +117,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -230,7 +230,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -253,7 +253,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -285,7 +285,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )
@@ -305,7 +305,7 @@ spec:
             or on () (
               vector(0)
               and on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.canary-hash}}"}[3m]))
-              unless on () sum(increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website", http_route!="", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[3m]))
+              unless on () count(last_over_time(http_server_request_duration_seconds_count{job="worlds-worst-website/website", k8s_pod_label_rollouts_pod_template_hash="{{args.stable-hash}}"}[1d]))
             )
             or on () vector(Inf)
             )

@@ -12,21 +12,22 @@
  *   production dependency newly reaches does. One the base reaches from production and the change from development
  *   alone is less reached, not new.
  * - A lockfile Trivy reads no packages from, on either side, or whose report is empty or cannot be parsed, fails: an
- *   unread lockfile would otherwise pass for one with nothing in it.
+ *   unread lockfile would otherwise pass for one with nothing in it. So does a `pnpm-lock.yaml` git tracks as anything
+ *   but a regular file: pnpm follows a symbolic link the list leaves out, so one could stand in for a vulnerable tree.
+ * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
  *
- * It excepts nothing. Exceptions, once there are any, are read from this repository's `main` (`policy/vulnerabilities.ts`,
- * the plan's task 30), never from the change.
+ * It excepts nothing: no exception is read from the change, or from anywhere else.
  *
  * Both checkouts are data: nothing in them runs. Trivy runs in its pinned image, the advisory database pulled once,
  * with retries, and both sides read against that one database, so an advisory published during the run cannot make
  * the base look clean. Node alone runs this, from a sparse checkout with no dependencies.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { lockfiles } from '../vulnerabilities/inventory.ts';
+import { isFixture, lockfiles } from '../vulnerabilities/inventory.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 const run = promisify(execFile);
@@ -66,11 +67,12 @@ export interface Finding {
   title: string;
 }
 
-/** What scanning one lockfile gave: Trivy's report as text, or why there is none. */
-export type Scanned = { report: string } | { error: string };
+/** What scanning one lockfile gave: Trivy's report as text, why Trivy failed, or why it was not scanned. */
+export type Scanned = { report: string } | { error: string } | { unscannable: string };
 
 /** One lockfile's findings, or why it could not be read. */
 export function findingsOf(lockfile: string, scanned: Scanned): Finding[] | string {
+  if ('unscannable' in scanned) return scanned.unscannable;
   if ('error' in scanned) return `Trivy could not scan it: ${scanned.error}`;
   let report: TrivyReport;
   try {
@@ -124,7 +126,13 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
       return found;
     });
   const before = new Set(read('base', base).map(key));
-  const after = new Map(read('change', change).map((f) => [key(f), f]));
+  // Each package and advisory once, naming every version of it the lockfile holds.
+  const after = new Map<string, Finding>();
+  for (const f of read('change', change)) {
+    const seen = after.get(key(f));
+    const versions = new Set([...(seen?.version.split(', ') ?? []), f.version].filter(Boolean));
+    after.set(key(f), { ...(seen ?? f), version: [...versions].sort().join(', ') });
+  }
   // One the base reaches from production covers the change's from development alone: that is less reached, not new.
   const added = [...after.values()].filter(
     (f) => !before.has(key(f)) && !(f.dev && before.has(key({ ...f, dev: false }))),
@@ -136,6 +144,27 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
 export function trivyPin(dockerfile: string) {
   return /^FROM (ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64})$/m.exec(dockerfile)?.[1];
 }
+
+/**
+ * Every `pnpm-lock.yaml` a checkout tracks, outside prose and fixtures, as anything but a regular file: a symbolic
+ * link (120000), which pnpm would follow, or a submodule (160000). The list leaves these out, so the gate names them.
+ */
+export function irregularLockfiles(root: string) {
+  return execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-s', '-z'], {
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+    .split('\0')
+    .flatMap((entry) => {
+      const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
+      return file && /(^|\/)pnpm-lock\.yaml$/.test(file) && !isFixture(file) && mode !== '100644' && mode !== '100755'
+        ? [file]
+        : [];
+    });
+}
+
+/** Where the advisory database is pulled from: GHCR, as the daily scan pulls it (../vulnerabilities/scan.ts). */
+const DB = 'ghcr.io/aquasecurity/trivy-db:2';
 
 /** Removes what the gate made, and never fails it: the verdict is already given. */
 function remove(path: string) {
@@ -175,7 +204,7 @@ function trivy(image: string, cache: string) {
       for (const wait of [0, 15, 30, 60]) {
         await new Promise((resolve) => setTimeout(resolve, wait * 1000));
         try {
-          await docker([], ['image', '--cache-dir', '/cache', '--quiet', '--download-db-only']);
+          await docker([], ['image', '--cache-dir', '/cache', '--quiet', '--download-db-only', '--db-repository', DB]);
           return;
         } catch (error) {
           last = error;
@@ -213,7 +242,10 @@ function trivy(image: string, cache: string) {
         );
         return { report: readFileSync(join(dir, 'out', 'report.json'), 'utf-8') };
       } catch (error) {
-        return { error: (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'failed' };
+        // Trivy's own words, from its stderr, rather than the command line Node's error begins with.
+        const stderr = String((error as { stderr?: unknown }).stderr ?? '').trim();
+        const message = stderr || (error instanceof Error ? error.message : String(error));
+        return { error: message.split('\n').filter(Boolean).slice(-3).join(' ') || 'failed' };
       } finally {
         remove(dir);
       }
@@ -235,49 +267,71 @@ export async function main(args: string[]): Promise<number> {
     return 2;
   }
   const cache = mkdtempSync(join(tmpdir(), 'trivy-cache-'));
-  const scanner = trivy(image, cache);
-  await scanner.database();
-  const scanAll = async (root: string) => {
-    const scans = new Map<string, Scanned>();
-    for (const lockfile of lockfiles(root)) scans.set(lockfile, await scanner.scan(root, lockfile));
-    return scans;
-  };
-  const base = await scanAll(basePath);
-  const change = await scanAll(changePath);
-  if (!change.size) {
-    console.error('::error::The change tracks no lockfile to scan.');
-    return 1;
-  }
-  const { added, unread, total } = judge(base, change);
-  const rows = added
-    .map(
-      (f) =>
-        `| ${f.severity} | ${f.advisory} | ${cell(f.pkg)} ${cell(f.version)} | ${f.dev ? 'development' : 'production'} | ${cell(f.fixed || 'none yet')} | ${cell(f.lockfile)} | ${cell(f.title)} |`,
-    )
-    .join('\n');
-  await summarise(
-    [
-      '## Lockfile scan',
-      `Scanned ${base.size} lockfile${base.size === 1 ? '' : 's'} of the base and ${change.size} of the change.`,
-      unread.length
-        ? `${unread.length} could not be read:\n\n${unread.map((u) => `- ${u.side}: ${cell(u.lockfile)}: ${u.why}`).join('\n')}`
-        : '',
-      added.length
-        ? `This change brings in ${added.length} vulnerabilit${added.length === 1 ? 'y' : 'ies'} the base does not have.\n\n| Severity | Vulnerability | Package | Reached from | Fixed in | Lockfile | Title |\n|---|---|---|---|---|---|---|\n${rows}`
-        : `This change brings in no vulnerability. Its lockfiles have ${total} known in all.`,
-    ]
-      .filter(Boolean)
-      .join('\n\n'),
-  );
-  for (const u of unread) annotate('error', `The ${u.side}'s ${u.lockfile} could not be read: ${u.why}`, u.lockfile);
-  for (const f of added)
-    annotate(
-      'error',
-      `${f.severity} ${f.advisory} in ${f.pkg} ${f.version}, reached from ${f.dev ? 'development' : 'production'}`,
-      f.lockfile,
+  try {
+    const scanner = trivy(image, cache);
+    try {
+      await scanner.database();
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? '').trim();
+      annotate('error', `Trivy's advisory database could not be pulled: ${stderr.split('\n').at(-1) || String(error)}`);
+      return 1;
+    }
+    const text = (root: string, lockfile: string) => readFileSync(join(root, lockfile), 'utf-8');
+    const scanAll = async (root: string, same?: { root: string; scans: Map<string, Scanned> }) => {
+      const scans = new Map<string, Scanned>();
+      for (const lockfile of lockfiles(root)) {
+        const before = same?.scans.get(lockfile);
+        scans.set(
+          lockfile,
+          before && same && text(same.root, lockfile) === text(root, lockfile)
+            ? before
+            : await scanner.scan(root, lockfile),
+        );
+      }
+      for (const lockfile of irregularLockfiles(root))
+        scans.set(lockfile, {
+          unscannable: 'git tracks it as something other than a regular file, which is not scanned',
+        });
+      return scans;
+    };
+    const base = await scanAll(basePath);
+    const change = await scanAll(changePath, { root: basePath, scans: base });
+    if (!change.size) {
+      console.error('::error::The change tracks no lockfile to scan.');
+      return 1;
+    }
+    const { added, unread, total } = judge(base, change);
+    const rows = added
+      .map(
+        (f) =>
+          `| ${f.severity} | ${f.advisory} | ${cell(f.pkg)} ${cell(f.version)} | ${f.dev ? 'development' : 'production'} | ${cell(f.fixed || 'none yet')} | ${cell(f.lockfile)} | ${cell(f.title)} |`,
+      )
+      .join('\n');
+    await summarise(
+      [
+        '## Lockfile scan',
+        `Scanned ${base.size} lockfile${base.size === 1 ? '' : 's'} of the base and ${change.size} of the change.`,
+        unread.length
+          ? `${unread.length} could not be read:\n\n${unread.map((u) => `- ${u.side}: ${cell(u.lockfile)}: ${u.why}`).join('\n')}`
+          : '',
+        added.length
+          ? `This change brings in ${added.length} vulnerabilit${added.length === 1 ? 'y' : 'ies'} the base does not have.\n\n| Severity | Vulnerability | Package | Reached from | Fixed in | Lockfile | Title |\n|---|---|---|---|---|---|---|\n${rows}`
+          : `This change brings in no vulnerability. Its lockfiles have ${total} known in all.`,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
     );
-  remove(cache);
-  return added.length || unread.length ? 1 : 0;
+    for (const u of unread) annotate('error', `The ${u.side}'s ${u.lockfile} could not be read: ${u.why}`, u.lockfile);
+    for (const f of added)
+      annotate(
+        'error',
+        `${f.severity} ${f.advisory} in ${f.pkg} ${f.version}, reached from ${f.dev ? 'development' : 'production'}`,
+        f.lockfile,
+      );
+    return added.length || unread.length ? 1 : 0;
+  } finally {
+    remove(cache);
+  }
 }
 
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2));

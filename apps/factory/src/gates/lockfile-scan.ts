@@ -168,6 +168,32 @@ export function documents(text: string) {
 }
 
 /**
+ * Every package a document lists under `packages:`, as `name@version`: what pnpm installs from it, whatever Trivy
+ * reads. Read from the text, so it fails (a string, the reason) on any document it cannot read plainly: a key at the
+ * top level that is not a plain word, `packages` written as a flow mapping, or a line in its block that is not a
+ * package's key or deeper.
+ */
+export function packageKeys(doc: string): string[] | string {
+  const lines = doc.split('\n');
+  const plain = (line: string) => !line.trim() || line.trim().startsWith('#');
+  for (const line of lines)
+    if (!plain(line) && !/^\s/.test(line) && !/^[A-Za-z][A-Za-z0-9]*:(\s.*)?$/.test(line))
+      return `its top-level line \`${line.slice(0, 40)}\` is not a plain key`;
+  const at = lines.findIndex((line) => /^packages:/.test(line));
+  if (at < 0) return [];
+  if (!/^packages:\s*(#.*)?$/.test(lines[at] ?? '')) return '`packages` is not written as a block';
+  const keys: string[] = [];
+  for (const line of lines.slice(at + 1)) {
+    if (plain(line) || /^ {4}/.test(line)) continue;
+    if (/^\S/.test(line)) break;
+    const key = /^ {2}(['"]?)([^\s'"#].*?)\1:(\s.*)?$/.exec(line)?.[2];
+    if (!key) return `a line under \`packages\` is not a package's key: \`${line.trim().slice(0, 40)}\``;
+    keys.push(key);
+  }
+  return keys;
+}
+
+/**
  * A document as Trivy can read it. pnpm writes its env lockfile, pnpm itself and its config dependencies, as a
  * document of its own before the main one, under `packageManagerDependencies` and `configDependencies`, which Trivy
  * does not read: in a document with no dependencies of the usual names, they are given those names, so Trivy reads
@@ -283,6 +309,19 @@ function trivy(image: string, cache: string) {
         const read = Array.isArray(report?.Results) ? report.Results : [];
         if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
           return { unscannable: `Trivy read no packages from its document ${index + 1} of ${docs.length}` };
+        // Every package the document lists, Trivy must have read: it builds its list from other sections, which a
+        // lockfile can leave a package out of while pnpm still installs it.
+        const listed = packageKeys(doc);
+        if (typeof listed === 'string')
+          return { unscannable: `its document ${index + 1} of ${docs.length} cannot be read plainly: ${listed}` };
+        const seen = new Set(
+          read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
+        );
+        const unread = listed.filter((key) => !seen.has(key));
+        if (unread.length)
+          return {
+            unscannable: `Trivy did not read ${unread.length} of the packages its document ${index + 1} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`,
+          };
         results.push(...read);
       }
       return { report: JSON.stringify({ Results: results }), empty: isEmptyLockfile(text) };

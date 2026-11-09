@@ -8,6 +8,7 @@ import {
   forTrivy,
   isEmptyLockfile,
   judge,
+  packageKeys,
   type Scanned,
   trackedLockfiles,
   trivyPin,
@@ -233,6 +234,38 @@ describe("pnpm's env lockfile", () => {
     const withSnapshots = `${env}\n\nsnapshots:\n\n  pnpm@12.16.1:\n    optionalDependencies:\n      x: 1.0.0`;
     expect(forTrivy(withSnapshots)).toContain('    dependencies: {}');
     expect(forTrivy(withSnapshots).endsWith('    optionalDependencies:\n      x: 1.0.0')).toBe(true);
+  });
+});
+
+describe('the packages a document lists, which Trivy must have read', () => {
+  it('are every key under packages, quoted or not', () => {
+    const doc = [
+      "lockfileVersion: '9.0'",
+      'packages:',
+      '',
+      "  '@pnpm/exe.darwin-arm64@12.16.1':",
+      '    resolution: {integrity: sha512-x}',
+      '  lodash@4.17.20:',
+      '    resolution: {integrity: sha512-y}',
+      '',
+      'snapshots:',
+      '',
+      '  is-number@7.0.0: {}',
+    ].join('\n');
+    expect(packageKeys(doc)).toEqual(['@pnpm/exe.darwin-arm64@12.16.1', 'lodash@4.17.20']);
+    expect(packageKeys("lockfileVersion: '9.0'")).toEqual([]);
+  });
+
+  it('cannot be read from a document written in any other shape, which fails', () => {
+    for (const doc of [
+      "lockfileVersion: '9.0'\npackages: {lodash@4.17.20: {}}",
+      "'packages':\n  lodash@4.17.20: {}",
+      "<<: *env\nlockfileVersion: '9.0'",
+      "{lockfileVersion: '9.0'}",
+      'packages:\n ? lodash@4.17.20\n : {}',
+      'packages:\n   lodash@4.17.20: {}',
+    ])
+      expect(typeof packageKeys(doc), doc).toBe('string');
   });
 });
 

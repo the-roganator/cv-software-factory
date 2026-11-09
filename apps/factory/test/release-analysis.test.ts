@@ -447,6 +447,9 @@ describe('with no stable version, as the analysis reads it', () => {
       const dark = [...version(CANARY), ...version(STABLE, { until: 4 }), split];
       // The stable version served until 1m and has nothing in the window from 2m: a gap in its telemetry, not a reset.
       expect(judge(template, name, dark, [Number.POSITIVE_INFINITY])).toBe('Failed');
+      // So is one sampled with counters that never grew: seen, the stricter reading, not none.
+      const flat = version(STABLE, { until: 4 }).map((v) => ({ ...v, values: counter(0, 4) }));
+      expect(judge(template, name, [...version(CANARY), ...flat, split], [Number.POSITIVE_INFINITY])).toBe('Failed');
       // A stable version that answers on no route the app named is seen too: nothing to compare, but not none.
       const unrouted = version(STABLE).map((v) => ({
         ...v,

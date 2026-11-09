@@ -34,8 +34,8 @@
  * read 0 (`autoRollbackOff`): two answers that fail the success condition are inconclusive, one is a failure. Anything
  * else, a series missing, stale, doubled or reading 1, answers once, and a bad canary rolls back. Nothing here writes the
  * Rollout. A canary with no figure to judge (none of its series reached Prometheus) is not judged bad but unmeasured,
- * and still fails. A canary with no baseline, whose stable version has no request in Prometheus over the last day
- * (`STABLE_SEEN`), as on the first release after the app is reset, has nothing to be worse than, and passes errors and
+ * and still fails. A canary with no baseline, whose stable version has no sample of its request counts in Prometheus
+ * over the last day (`STABLE_SEEN`), as on the first release after the app is reset, has nothing to be worse than, and passes errors and
  * latency; a stable version measured in that day but not in the window could not be compared, and fails the canary.
  *
  * The switch covers what the analysis judges of the canary against its baseline in Prometheus: errors and latency. It
@@ -118,11 +118,12 @@ export function routeQueries(r: Release, hash: string, seconds: number) {
 }
 
 /**
- * How far back the analysis looks for the stable version's requests before it calls the canary's comparison one with
- * no stable version: a day, within Prometheus's seven. A stable version that served in that time and has nothing in
- * the window is a gap in its telemetry, and fails the canary as a comparison that could not be made; one with no
- * request in it has not served in that time, or Prometheus has lost what it kept (as a new local cluster starts with
- * none), and either way there is no baseline to compare with: as on the first release after the app is reset.
+ * How far back the analysis looks for any sample of the stable version's request counts before it calls the canary's
+ * comparison one with no stable version: a day, within Prometheus's seven. A stable version sampled in that time, even
+ * one whose counters did not grow, with nothing in the window, is a gap in its telemetry, and fails the canary as a
+ * comparison that could not be made: the stricter reading. One with no sample in it has not run in that time, or
+ * Prometheus has lost what it kept (a new local cluster's Prometheus starts empty), and either way there is no
+ * baseline to compare with: as on the first release after the app is reset.
  */
 export const STABLE_SEEN = '1d';
 

@@ -14,7 +14,7 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.5",
+    "@biomejs/biome": "^2.6.6",
     "@software-factory/testing": "workspace:*",
     "@types/node": "^24.19.2",
     "@types/pngjs": "^6.0.5",

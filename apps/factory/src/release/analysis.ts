@@ -128,10 +128,14 @@ export function queries(r: Release) {
   const latency = (v: Version) => version(v).latency;
   // Nothing is judged until the split has sent the canary enough requests: the result is then empty, which passes,
   // so a step that falls short fails on `enough-requests` alone, for that reason, and not on what the journeys alone
-  // made of errors and latency. Once it has, a version with nothing to compare (no series for its hash) is infinitely
-  // worse, which fails.
+  // made of errors and latency. Once it has, a canary measured against no stable version (no series for the stable
+  // hash, as on the first release after the app is reset) is no worse than nothing, 0, which passes: there is no
+  // baseline to be worse than. A canary with nothing measured (no series for its own hash) is infinitely worse, which
+  // fails. With the stable version's series present, the middle line answers nothing, and the comparison is all.
+  const measured = (v: Version) => version(v).requests;
+  const noStable = `(\n  vector(0)\n  and on () ${measured('canary')}\n  unless on () ${measured('stable')}\n)`;
   const judged = (expr: string) =>
-    `(\n${expr}\nor on () vector(Inf)\n)\nand on () ${canaryRequests} >= ${r.minRequests}`;
+    `(\n${expr}\nor on () ${noStable}\nor on () vector(Inf)\n)\nand on () ${canaryRequests} >= ${r.minRequests}`;
   return {
     /** How many requests the traffic split sent the canary in the window, through the ingress. */
     requests: `${canaryRequests} or vector(0)`,
@@ -180,8 +184,8 @@ export const OFF_LABEL = 'auto_rollback';
 /**
  * A measure's query with the switch: its figure, and, only while auto-rollback is off by both series and the figure is
  * finite, the same figure again under `OFF_LABEL`. Both are the one figure, so `result[0]` is it whichever comes first.
- * An infinite figure, a version with nothing to compare (`queries`), is no verdict on the canary but that it could not
- * be measured, so it answers once and fails, whatever the switch.
+ * An infinite figure, a canary with nothing measured (`queries`), is no verdict on the canary but that it could not be
+ * measured, so it answers once and fails, whatever the switch.
  */
 export function switched(query: string): string {
   return `(

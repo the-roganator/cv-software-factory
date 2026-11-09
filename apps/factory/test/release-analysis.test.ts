@@ -10,6 +10,7 @@ import { METRICS_FROM_THE_ADMIN_SERVICE, METRICS_FROM_THE_LINE } from '../src/pr
 import {
   conditions,
   ingressServiceOf,
+  OFF_LABEL,
   outOfDate,
   queries,
   render,
@@ -79,7 +80,8 @@ describe('the canary analysis', () => {
       expect(query).not.toMatch(/http_route="/);
       expect(query).not.toContain('by (http_route)');
     }
-    // A baseline with no series fails the canary, rather than leaving nothing to compare.
+    // A canary with no series fails, rather than leaving nothing to judge; one with no stable version to compare with
+    // passes (evaluated below, in "with no stable version").
     expect(q.errors).toContain('or on () vector(Inf)');
     expect(q.latency).toContain('or on () vector(Inf)');
     expect(q.errors).toContain('http_response_status_code=~"5.."');
@@ -330,4 +332,134 @@ describe('auto-rollback, as the analysis reads it', () => {
       'SUCCESS',
     );
   });
+});
+
+describe('with no stable version, as the analysis reads it', () => {
+  const CANARY = 'c4n4ry';
+  const STABLE = 's74b1e';
+  /** Every 15s for ten minutes: 60 more each time, 4 a second; evaluated at 5m, over the policy's window. */
+  const counter = (step: number) => `0+${step}x40`;
+  const of = (hash: string, extra = '') =>
+    `{job="${release.app.metricsJob}", http_route="/", k8s_pod_label_rollouts_pod_template_hash="${hash}"${extra}}`;
+  /** A version's requests, 4 a second, a share of them 5xx, each answered within `le` seconds. */
+  const version = (hash: string, { errors = 0, le = '0.1' }: { errors?: number; le?: string } = {}) => [
+    {
+      series: `http_server_request_duration_seconds_count${of(hash, ', http_response_status_code="200"')}`,
+      values: counter(60 * (1 - errors)),
+    },
+    {
+      series: `http_server_request_duration_seconds_count${of(hash, ', http_response_status_code="500"')}`,
+      values: counter(60 * errors),
+    },
+    ...['0.1', '0.5', '+Inf'].map((bucket) => ({
+      series: `http_server_request_duration_seconds_bucket${of(hash, `, le="${bucket}"`)}`,
+      values: Number(bucket) >= Number(le) ? counter(60) : counter(0),
+    })),
+  ];
+  /** What the split sent the canary through the ingress: enough to judge. */
+  const split = {
+    series: `traefik_service_requests_total{service="${ingressServiceOf(release.app.canary)}"}`,
+    values: counter(60),
+  };
+  const switchOff = [
+    { series: `admin_auto_rollback{${METRICS_FROM_THE_ADMIN_SERVICE}}`, values: '0x40' },
+    { series: `line_auto_rollback{${METRICS_FROM_THE_LINE}}`, values: '0x40' },
+  ];
+
+  /**
+   * Has promtool evaluate a template's measure at 5m over these series and check it answers exactly these figures (the
+   * second under the switch's label), then gives the measurement's phase from the template's own conditions.
+   */
+  function judge(template: string, name: string, series: { series: string; values: string }[], figures: number[]) {
+    const metric = metricsOf(template).find((m) => m.name === name);
+    const query = metric?.provider.prometheus?.query;
+    if (!metric?.successCondition || !metric.failureCondition || !query) throw new Error(`no measure ${name}`);
+    const folder = mkdtempSync(join(tmpdir(), 'no-stable-'));
+    const labels = ['{}', `{${OFF_LABEL}="off"}`];
+    writeFileSync(
+      join(folder, 'tests.yml'),
+      stringify(
+        {
+          rule_files: [],
+          tests: [
+            {
+              interval: '15s',
+              input_series: series,
+              promql_expr_test: [
+                {
+                  expr: query.replaceAll('{{args.canary-hash}}', CANARY).replaceAll('{{args.stable-hash}}', STABLE),
+                  eval_time: '5m',
+                  exp_samples: figures.map((value, i) => ({ labels: labels[i], value })),
+                },
+              ],
+            },
+          ],
+        },
+        { lineWidth: 0 },
+      ),
+    );
+    try {
+      execFileSync('promtool', ['test', 'rules', join(folder, 'tests.yml')], { encoding: 'utf-8', stdio: 'pipe' });
+    } catch (error) {
+      const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
+      throw new Error(`${template} ${name} did not answer ${JSON.stringify(figures)}:\n${stdout}${stderr}`);
+    }
+    return phase({ successCondition: metric.successCondition, failureCondition: metric.failureCondition }, figures);
+  }
+
+  const measures = [TEMPLATES.step, TEMPLATES.background].flatMap((template) =>
+    ['errors', 'latency'].map((name) => ({ template, name })),
+  );
+  /** A bad canary for each measure: a tenth of its answers 5xx, or every answer slower than 100 ms. */
+  const bad = (name: string) => (name === 'errors' ? { errors: 0.1 } : { le: '0.5' });
+  /** What a bad canary's figure is against a good stable version: 0.1 more 5xx; p99 0.496 s against 0.099 + 0.1 s. */
+  const badFigure = (name: string) => (name === 'errors' ? 0.1 : 0.297);
+  /** A good canary's against a good stable version: no more 5xx; p99 0.099 s against 0.099 + 0.1 s. */
+  const goodFigure = (name: string) => (name === 'errors' ? 0 : -0.1);
+
+  it.each(measures)(
+    '$template $name compares the canary with the stable version, exactly as before, when it has one',
+    ({ template, name }) => {
+      expect(judge(template, name, [...version(CANARY), ...version(STABLE), split], [goodFigure(name)])).toBe(
+        'Successful',
+      );
+      expect(judge(template, name, [...version(CANARY, bad(name)), ...version(STABLE), split], [badFigure(name)])).toBe(
+        'Failed',
+      );
+      // With auto-rollback off, the bad figure pauses the canary rather than failing it.
+      expect(
+        judge(
+          template,
+          name,
+          [...version(CANARY, bad(name)), ...version(STABLE), split, ...switchOff],
+          [badFigure(name), badFigure(name)],
+        ),
+      ).toBe('Inconclusive');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name passes a canary with no stable version to compare with, good or bad',
+    ({ template, name }) => {
+      expect(judge(template, name, [...version(CANARY), split], [0])).toBe('Successful');
+      expect(judge(template, name, [...version(CANARY, bad(name)), split], [0])).toBe('Successful');
+      expect(judge(template, name, [...version(CANARY), split, ...switchOff], [0, 0])).toBe('Successful');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name still fails a canary with nothing measured, with a stable version or none',
+    ({ template, name }) => {
+      expect(judge(template, name, [...version(STABLE), split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+      expect(judge(template, name, [split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+      expect(judge(template, name, [split, ...switchOff], [Number.POSITIVE_INFINITY])).toBe('Failed');
+    },
+  );
+
+  it.each(measures)(
+    '$template $name judges nothing before the split has sent the canary enough',
+    ({ template, name }) => {
+      expect(judge(template, name, version(CANARY), [])).toBe('Successful');
+    },
+  );
 });

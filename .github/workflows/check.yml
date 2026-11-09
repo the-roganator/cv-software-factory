@@ -206,13 +206,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           path: base
-          # Every pnpm-lock.yaml, at any depth, beside the script and the pins it reads.
+          # Every lockfile (pnpm-lock.yaml, and a branch's pnpm-lock.<name>.yaml), at any depth, beside the script and
+          # the pins it reads.
           sparse-checkout: |
             mise.toml
             mise.lock
             apps/factory/src/gates/
             .github/images/trivy/Dockerfile
-            pnpm-lock.yaml
+            pnpm-lock*.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -220,7 +221,7 @@ jobs:
           path: change
           # Its lockfiles, at any depth, and whether it holds the gate, for the base that does not.
           sparse-checkout: |
-            pnpm-lock.yaml
+            pnpm-lock*.yaml
             apps/factory/src/gates/lockfile-scan.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false

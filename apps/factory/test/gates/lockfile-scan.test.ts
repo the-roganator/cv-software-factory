@@ -3,7 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isEmptyLockfile, judge, type Scanned, trackedLockfiles, trivyPin } from '../../src/gates/lockfile-scan.ts';
+import {
+  documents,
+  forTrivy,
+  isEmptyLockfile,
+  judge,
+  type Scanned,
+  trackedLockfiles,
+  trivyPin,
+} from '../../src/gates/lockfile-scan.ts';
 
 // Trivy's JSON for a pnpm lockfile, as `trivy fs --include-dev-deps --list-all-pkgs` writes it: `Dev` on a package
 // only development dependencies reach, and each vulnerability naming its package's UID.
@@ -165,15 +173,66 @@ describe('the lockfiles a checkout tracks', () => {
       writeFileSync(join(root, 'tools/pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
       // Where `lockfileDir: test/alt` would point pnpm, however the setting is spelled.
       writeFileSync(join(root, 'test/alt/pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+      // A branch's lockfile, which pnpm reads with gitBranchLockfile or merges by mergeGitBranchLockfilesBranchPattern.
+      writeFileSync(join(root, 'pnpm-lock.main.yaml'), "lockfileVersion: '9.0'\n");
+      writeFileSync(join(root, 'pnpm-lock.yml'), "lockfileVersion: '9.0'\n");
       symlinkSync('deps/lock', join(root, 'pnpm-lock.yaml'));
       git('add', '.');
       expect(trackedLockfiles(root)).toEqual({
-        regular: ['test/alt/pnpm-lock.yaml', 'tools/pnpm-lock.yaml'],
+        regular: ['pnpm-lock.main.yaml', 'test/alt/pnpm-lock.yaml', 'tools/pnpm-lock.yaml'],
         irregular: ['pnpm-lock.yaml'],
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a lockfile's YAML documents", () => {
+  it('are each scanned alone: pnpm reads the second of two, where Trivy reads only the first', () => {
+    const clean = "lockfileVersion: '9.0'\npackages:\n  is-number@7.0.0: {}";
+    const old = "lockfileVersion: '9.0'\npackages:\n  is-number@6.0.0: {}";
+    expect(documents(`---\n${clean}\n---\n${old}\n`)).toEqual([clean, old]);
+    expect(documents(`${clean}\r\n--- # a comment\r\n${old}\r\n...\r\n`)).toEqual([clean, old]);
+  });
+
+  it('are one for a lockfile with one, whatever starts it, and none beside it that holds only comments', () => {
+    expect(documents("---\nlockfileVersion: '9.0'\n")).toEqual(["lockfileVersion: '9.0'"]);
+    expect(documents("lockfileVersion: '9.0'\n---\n# nothing\n\n")).toEqual(["lockfileVersion: '9.0'"]);
+    // A line that only begins with three dashes inside a document starts nothing.
+    expect(documents('a: |\n  ---x\nb: 1\n')).toHaveLength(1);
+  });
+});
+
+describe("pnpm's env lockfile", () => {
+  const env = [
+    "lockfileVersion: '9.0'",
+    'importers:',
+    '  .:',
+    '    configDependencies: {}',
+    '    packageManagerDependencies:',
+    '      pnpm:',
+    '        specifier: 12.16.1',
+    '        version: 12.16.1',
+  ].join('\n');
+
+  it('is given the names Trivy reads, so pnpm itself and its config dependencies are judged as production’s', () => {
+    expect(forTrivy(env)).toBe(
+      env
+        .replace('    configDependencies:', '    dependencies:')
+        .replace('    packageManagerDependencies:', '    optionalDependencies:'),
+    );
+  });
+
+  it('is left alone in a document that has dependencies of its own', () => {
+    const main = `${env}\n    dependencies:\n      lodash:\n        specifier: 4.17.21\n        version: 4.17.21`;
+    expect(forTrivy(main)).toBe(main);
+  });
+
+  it("renames only in the importers, never a snapshot's optional dependencies", () => {
+    const withSnapshots = `${env}\n\nsnapshots:\n\n  pnpm@12.16.1:\n    optionalDependencies:\n      x: 1.0.0`;
+    expect(forTrivy(withSnapshots)).toContain('    dependencies: {}');
+    expect(forTrivy(withSnapshots).endsWith('    optionalDependencies:\n      x: 1.0.0')).toBe(true);
   });
 });
 

@@ -4,15 +4,18 @@
  *
  *     node apps/factory/src/gates/lockfile-scan.ts <base checkout> <change checkout> --trivy-pin <Dockerfile>
  *
- * - Each lockfile is every `pnpm-lock.yaml` git tracks, at any depth, fixtures included: whatever points pnpm at one
- *   (`lockfileDir` in any spelling, a flag, a variable), the one it installs from is tracked, so it is read here. Each
- *   is scanned alone, from a directory holding only it, development dependencies included. A lockfile only the change
- *   has is compared with none, so all its findings are new.
+ * - Each lockfile is every `pnpm-lock.yaml` and `pnpm-lock.<name>.yaml` (a branch's, which pnpm reads or merges) git
+ *   tracks, at any depth, fixtures included: whatever points pnpm at one (`lockfileDir` in any spelling, a flag, a
+ *   variable), the one a frozen install reads is tracked, so it is read here. Each YAML document in it is scanned
+ *   alone, from a directory holding only it, development dependencies included: pnpm reads a lockfile's second
+ *   document, where Trivy reads only its first. A lockfile only the change has is compared with none, so all its
+ *   findings are new.
  * - A vulnerability is known by its lockfile, its advisory, its package, and whether a production dependency reaches
  *   it (Trivy's `Dev` on the package), so a package moved to another vulnerable version brings nothing new, and one a
  *   production dependency newly reaches does. One the base reaches from production and the change from development
  *   alone is less reached, not new.
- * - A lockfile Trivy reads no packages from, on either side, fails unless it holds nothing but its `lockfileVersion`:
+ * - A lockfile, or a document of one, Trivy reads no packages from, on either side, fails unless it holds nothing but
+ *   its `lockfileVersion`:
  *   an unread lockfile would otherwise pass for one with nothing in it. So does one whose report is empty or cannot be
  *   parsed, and a `pnpm-lock.yaml` git tracks as anything but a regular file: pnpm follows a symbolic link, which
  *   could stand in for a vulnerable tree.
@@ -25,7 +28,7 @@
  * the base look clean. Node alone runs this, from a sparse checkout with no dependencies.
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -83,7 +86,7 @@ export function findingsOf(lockfile: string, scanned: Scanned): Finding[] | stri
   }
   const results = Array.isArray(report?.Results) ? report.Results : [];
   const packages = results.flatMap((result) => (Array.isArray(result?.Packages) ? result.Packages : []));
-  if (!packages.length) return 'empty' in scanned && scanned.empty ? [] : 'Trivy read no packages from it';
+  if (!packages.length) return scanned.empty ? [] : 'Trivy read no packages from it';
   // A package is a development dependency only when Trivy says so of every copy of it: one it cannot match is
   // production's, the stricter reading.
   const dev = new Map<string, boolean>();
@@ -146,8 +149,49 @@ export function trivyPin(dockerfile: string) {
   return /^FROM (ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64})$/m.exec(dockerfile)?.[1];
 }
 
+/** A lockfile pnpm may install from: `pnpm-lock.yaml`, or a branch's `pnpm-lock.<name>.yaml`. */
+export const LOCKFILE = /(^|\/)pnpm-lock(\.[^/]+)?\.yaml$/;
+
 /**
- * Every `pnpm-lock.yaml` a checkout tracks, at any depth, fixtures included: the regular files, which are scanned, and
+ * A lockfile's YAML documents, each that holds more than blank lines and comments, split where a line is a document's
+ * start (`---`, alone or before a space) or end (`...`).
+ */
+export function documents(text: string) {
+  const docs: string[][] = [[]];
+  for (const line of text.split(/\r?\n|\r/)) {
+    if (/^(---|\.\.\.)([ \t].*)?$/.test(line)) docs.push([]);
+    else docs.at(-1)?.push(line);
+  }
+  return docs
+    .map((lines) => lines.join('\n').trimEnd())
+    .filter((doc) => doc.split('\n').some((line) => line.trim() && !line.trim().startsWith('#')));
+}
+
+/**
+ * A document as Trivy can read it. pnpm writes its env lockfile, pnpm itself and its config dependencies, as a
+ * document of its own before the main one, under `packageManagerDependencies` and `configDependencies`, which Trivy
+ * does not read: in a document with no dependencies of the usual names, they are given those names, so Trivy reads
+ * them as production's. Anything else is left as it is, and a document Trivy still reads nothing from fails.
+ */
+export function forTrivy(doc: string) {
+  const lines = doc.split('\n');
+  // The importers' block alone: from `importers:` to the next key at the top level.
+  const start = lines.indexOf('importers:');
+  if (start < 0) return doc;
+  const next = lines.findIndex((line, i) => i > start && /^\S/.test(line));
+  const end = next < 0 ? lines.length : next;
+  const block = lines.slice(start, end);
+  if (block.some((line) => /^ {4}(dependencies|optionalDependencies|devDependencies):/.test(line))) return doc;
+  const renamed = block.map((line) =>
+    line
+      .replace(/^ {4}configDependencies:/, '    dependencies:')
+      .replace(/^ {4}packageManagerDependencies:/, '    optionalDependencies:'),
+  );
+  return [...lines.slice(0, start), ...renamed, ...lines.slice(end)].join('\n');
+}
+
+/**
+ * Every lockfile a checkout tracks, at any depth, fixtures included: the regular files, which are scanned, and
  * the rest (a symbolic link, 120000, which pnpm would follow, or a submodule, 160000), which fail.
  */
 export function trackedLockfiles(root: string) {
@@ -158,7 +202,7 @@ export function trackedLockfiles(root: string) {
     maxBuffer: 64 * 1024 * 1024,
   }).split('\0')) {
     const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
-    if (!file || !/(^|\/)pnpm-lock\.yaml$/.test(file)) continue;
+    if (!file || !LOCKFILE.test(file)) continue;
     (mode === '100644' || mode === '100755' ? regular : irregular).push(file);
   }
   return { regular, irregular };
@@ -222,13 +266,34 @@ function trivy(image: string, cache: string) {
       }
       throw last;
     },
-    /** One lockfile, alone in a directory of its own. */
+    /** One lockfile, each YAML document of it alone in a directory of its own, the reports as one. */
     async scan(root: string, lockfile: string): Promise<Scanned> {
+      const text = readFileSync(join(root, lockfile), 'utf-8');
+      const docs = documents(text);
+      const results: unknown[] = [];
+      for (const [index, doc] of docs.entries()) {
+        const one = await this.scanDocument(doc);
+        if (!('report' in one)) return one;
+        let report: TrivyReport;
+        try {
+          report = JSON.parse(one.report) as TrivyReport;
+        } catch {
+          return { unscannable: `Trivy's report on its document ${index + 1} could not be parsed` };
+        }
+        const read = Array.isArray(report?.Results) ? report.Results : [];
+        if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
+          return { unscannable: `Trivy read no packages from its document ${index + 1} of ${docs.length}` };
+        results.push(...read);
+      }
+      return { report: JSON.stringify({ Results: results }), empty: isEmptyLockfile(text) };
+    },
+    /** One YAML document, as a lockfile alone in a directory of its own. */
+    async scanDocument(doc: string): Promise<Scanned> {
       const dir = mkdtempSync(join(tmpdir(), 'lockfile-'));
       try {
         mkdirSync(join(dir, 'src'));
         mkdirSync(join(dir, 'out'));
-        cpSync(join(root, lockfile), join(dir, 'src', 'pnpm-lock.yaml'));
+        writeFileSync(join(dir, 'src', 'pnpm-lock.yaml'), `${forTrivy(doc)}\n`);
         await docker(
           [`${join(dir, 'src')}:/src:ro`, `${join(dir, 'out')}:/out`],
           [
@@ -249,10 +314,7 @@ function trivy(image: string, cache: string) {
             '/src',
           ],
         );
-        return {
-          report: readFileSync(join(dir, 'out', 'report.json'), 'utf-8'),
-          empty: isEmptyLockfile(readFileSync(join(dir, 'src', 'pnpm-lock.yaml'), 'utf-8')),
-        };
+        return { report: readFileSync(join(dir, 'out', 'report.json'), 'utf-8') };
       } catch (error) {
         // Trivy's own words, from its stderr, rather than the command line Node's error begins with.
         const stderr = String((error as { stderr?: unknown }).stderr ?? '').trim();

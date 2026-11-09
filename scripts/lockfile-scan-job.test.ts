@@ -31,6 +31,20 @@ function compare(gate?: string, { changeBringsIt = true } = {}) {
   }
 }
 
+describe("the lockfile scan's checkouts", () => {
+  it("fetch every lockfile the gate reads, a branch's too, at any depth, on both sides, in both workflows", () => {
+    for (const file of ['.github/workflows/check.yml', '.github/workflows/app-gates.yml']) {
+      const job = parse(readFileSync(file, 'utf-8')).jobs['lockfile-scan'] as {
+        steps: { uses?: string; with?: Record<string, string> }[];
+      };
+      for (const path of ['base', 'change']) {
+        const checkout = job.steps.find((s) => s.uses?.startsWith('actions/checkout@') && s.with?.path === path);
+        expect(String(checkout?.with?.['sparse-checkout']).split('\n'), `${file} ${path}`).toContain('pnpm-lock*.yaml');
+      }
+    }
+  });
+});
+
 describe("check.yml's lockfile scan", () => {
   it('judges nothing, and says so, when the base has no gate and the change brings it in', () => {
     const run = compare();

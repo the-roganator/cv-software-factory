@@ -229,7 +229,16 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: base
           install_args: node
-      - run: node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin base/.github/images/trivy/Dockerfile
+      # A base with no gate is the gate's own first landing, the only pull request whose base lacks it: there is no
+      # script the change cannot alter, so it judges nothing and says so. Any later change that removed the script is
+      # judged by the base that still has it.
+      - name: Compare the lockfiles
+        run: |
+          if [ ! -f base/apps/factory/src/gates/lockfile-scan.ts ]; then
+            echo "::notice::The base has no lockfile gate yet: this change brings it in, so it judges nothing."
+            exit 0
+          fi
+          node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin base/.github/images/trivy/Dockerfile
 
   # The browser tests run side by side: the console's, in parts, and the factory's senses (the crawler and the probes).
   # Each needs the pinned Playwright image, on arm64 like the laptops the snapshots are made on, so they match.

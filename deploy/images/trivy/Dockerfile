@@ -1,4 +1,5 @@
 # The vulnerability scanner every workflow runs, by version and digest: the image scan gate (app-gates.yml) reads it
 # from here, from this repository's checkout at the workflow's own commit, never from the change's. Nothing builds this
-# file; Dependabot reads it (.github/dependabot.yml), and scripts/workflows.test.ts holds every use of Trivy to it.
+# file; Dependabot moves it (.github/dependabot.yml), which is why it lives outside .github/, where Dependabot may not
+# write, and scripts/workflows.test.ts holds every use of Trivy to it.
 FROM ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969

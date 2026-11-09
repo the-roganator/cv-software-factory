@@ -280,7 +280,7 @@ describe('reading a workflow', () => {
  * it reads that file from this repository at the workflow's own commit, never from a change's checkout or the app's,
  * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart.
  */
-const TRIVY_PIN = '.github/images/trivy/Dockerfile';
+const TRIVY_PIN = 'deploy/images/trivy/Dockerfile';
 
 /** The Trivy image a Dockerfile pins, if it pins exactly one, by version and digest, and nothing else. */
 function trivyPin(dockerfile: string) {
@@ -292,6 +292,17 @@ function trivyPin(dockerfile: string) {
 describe("Trivy's pin", () => {
   it('is one image, by version and digest, in its own file', () => {
     expect(trivyPin(readFileSync(TRIVY_PIN, 'utf-8'))).toMatch(/^ghcr\.io\/aquasecurity\/trivy:/);
+  });
+
+  it('is in a directory Dependabot moves, outside .github/, which it may not write', () => {
+    const config = parse(readFileSync('.github/dependabot.yml', 'utf-8')) as {
+      updates: { 'package-ecosystem': string; directory?: string; directories?: string[] }[];
+    };
+    const docker = config.updates
+      .filter((update) => update['package-ecosystem'] === 'docker')
+      .flatMap((update) => update.directories ?? [update.directory]);
+    expect(docker).toContain(`/${TRIVY_PIN.replace(/\/Dockerfile$/, '')}`);
+    expect(TRIVY_PIN.startsWith('.github/')).toBe(false);
   });
 
   it('refuses a FROM without a version, without a digest, of another image, or beside another', () => {
@@ -400,7 +411,7 @@ describe('vulnerabilities.yml', () => {
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/vulnerabilities/**',
-      '.github/images/trivy/**',
+      'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));

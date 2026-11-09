@@ -129,9 +129,9 @@ describe('the list of a fixture repository', () => {
     ]);
   });
 
-  it('has each image the workflows start: named in a workflow, pinned under .github/images/, or in a script they run', () => {
+  it('has each image the workflows start: named in a workflow, pinned under deploy/images/, or in a script they run', () => {
     expect(items.filter((item) => item.kind === 'workflow').map((item) => `${item.name} ${where(item)}`)).toEqual([
-      `ghcr.io/example/scanner:1.0.0@${digest('7')} .github/images/scanner/Dockerfile:1`,
+      `ghcr.io/example/scanner:1.0.0@${digest('7')} deploy/images/scanner/Dockerfile:1`,
       `ghcr.io/example/tool:1.0@${digest('8')} .github/workflows/ci.yml:4`,
       'example/cache:7 .github/workflows/ci.yml:17',
       'ghcr.io/example/action:1 .github/workflows/ci.yml:19',

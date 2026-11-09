@@ -8,9 +8,9 @@
  *   for, or with what was refused when none. One that does not verify, or with no key to verify it, is logged and not
  *   appended. Relaying changes nothing the line does with the answer: the action fails as it would have.
  * - **Admission control's** (`admission-control`), read from the cluster's Events (`AdmissionReader`): a request
- *   Kyverno blocked in a guarded namespace, and a pod a controller could not make because a policy refused it. Its
- *   output is what the Event says, the policy's message verbatim within it; its guardrails 3 for an image and 4 for
- *   the rest. It goes on the work item when the refused object is a runner's Job, and always names the object.
+ *   Kyverno blocked in a guarded namespace, and a pod a controller could not make because a policy or Pod Security
+ *   refused it. Its output is what the Event says, the refusal's message verbatim within it; its guardrails 3 for an
+ *   image and 4 for the rest. It goes on the work item when the refused object is a runner's Job, and always names the object.
  *
  * Where each Event is, as Kyverno 1.19 makes them:
  *
@@ -18,8 +18,9 @@
  *   object. Its policies are cluster-wide, so the Event is in `default`, never in the namespace of what it refused.
  *   It records none for an object with no name yet: a pod a controller makes, named from `generateName`.
  * - So a pod a ReplicaSet, a Job or the app's Rollout could not make is recorded by its controller, as `FailedCreate`
- *   in the controller's namespace, with the webhook's answer in its message; the controller tries again, and each
- *   try adds to that one Event's count, so the line records each try, folded.
+ *   in the controller's namespace, with the webhook's answer in its message, or Pod Security's, which refuses before
+ *   any webhook and names the level the namespace enforces; the controller tries again, and each try adds to that
+ *   one Event's count, so the line records each try, folded.
  * - The cluster's own ValidatingAdmissionPolicies (the Rollout's controls, the flags, the flags' stages, the share
  *   key) record no Event at all: their refusals reach only whoever asked, and are not recorded here.
  *
@@ -209,6 +210,12 @@ export const DENIED =
   /admission webhook "[^"]+" denied the request|ValidatingAdmissionPolicy '[^']+' with binding '[^']+' denied request/;
 /** Kyverno's image policies answer through webhooks of their own (`ivpol.…`). */
 export const IMAGE_WEBHOOK = /admission webhook "ivpol\./;
+/**
+ * How the API server words a pod Pod Security refused, with the level and version the namespace enforces
+ * (`restricted:latest`). It refuses before any webhook or policy sees the pod, so it leaves no other Event. Read
+ * only where `DENIED` is not: a webhook's own answer may quote these words.
+ */
+export const POD_SECURITY = /is forbidden: violates PodSecurity "([^"]+)"/;
 
 /** How many times an Event says it happened. */
 export const timesOf = (event: KubeEvent): number => Math.max(1, event.series?.count ?? event.count ?? 1);
@@ -250,7 +257,8 @@ const subjectOf = (namespace: string, kind: string, name: string, uid: string | 
 
 /**
  * The denial an Event records, or undefined for any other Event: Kyverno's own record of a request it blocked in a
- * guarded namespace, or a controller's of a pod admission would not let it make there. Pure.
+ * guarded namespace, or a controller's of a pod admission would not let it make there, whether a webhook, a
+ * ValidatingAdmissionPolicy or Pod Security refused it. Pure.
  */
 export function denialOf(event: KubeEvent): Omit<Denial, 'at'> | undefined {
   const output = event.message?.trim();
@@ -276,13 +284,18 @@ export function denialOf(event: KubeEvent): Omit<Denial, 'at'> | undefined {
     };
   }
   const namespace = event.metadata.namespace ?? event.involvedObject.namespace;
-  if (event.reason === 'FailedCreate' && guarded(namespace) && DENIED.test(output)) {
+  const denied = DENIED.test(output);
+  const podSecurity = denied ? null : POD_SECURITY.exec(output);
+  if (event.reason === 'FailedCreate' && guarded(namespace) && (denied || podSecurity)) {
     const kind = event.involvedObject.kind ?? '';
     const name = event.involvedObject.name ?? '';
     return {
       workItem: workItemOf(namespace, kind, name),
       cause: IMAGE_WEBHOOK.test(output) ? 'image' : 'production',
-      action: `Create a pod for ${kind} ${namespace}/${name}`,
+      // The level before the object's name, which can be long enough to cut it off.
+      action: podSecurity
+        ? `Create a pod, refused by Pod Security at ${podSecurity[1]}, for ${kind} ${namespace}/${name}`
+        : `Create a pod for ${kind} ${namespace}/${name}`,
       output,
       subject: subjectOf(namespace, kind, name, event.involvedObject.uid),
     };

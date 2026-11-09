@@ -1,6 +1,7 @@
 # The daily scan (docs/COMPONENTS/SECURITY-SCANNING.md): every item on the scanned repository's list
 # (apps/factory/src/vulnerabilities/inventory.ts) read with Trivy against the day's advisories, each finding an alert in
-# that repository's code scanning, category `vulnerabilities`, at the line that pins it.
+# that repository's code scanning, at the line that pins it, in one of the categories `vulnerabilities/01` to
+# `vulnerabilities/20`: the file has a run for each, no run over the 5,000 results code scanning keeps of one.
 #
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit and grants `contents: read`, `packages: read`
 # and `security-events: write`, and its results reach its own code scanning, since the upload names the calling
@@ -153,7 +154,8 @@ jobs:
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/.github/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload
-      # The scan writes the file only when every item was read and it is within code scanning's limits.
+      # The scan writes the file only when every item was read and it is within code scanning's limits: no run over 5,000
+      # results, and no more than 20 runs.
       - name: Refuse to upload from anything but the default branch's push, the schedule or a run by hand
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         env:
@@ -167,8 +169,8 @@ jobs:
       - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         with:
+          # No `category`: each run names its own (`automationDetails.id`), which the action keeps.
           sarif_file: ${{ runner.temp }}/scan/vulnerabilities.sarif
-          category: vulnerabilities
           checkout_path: ${{ github.workspace }}/scanned
 
   # The same scan, of the pull request's base, with no permission to write anything: a pull request proves a change to

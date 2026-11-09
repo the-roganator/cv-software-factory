@@ -64,7 +64,7 @@ export const REFUSALS = {
     guardrails: { egress: [5] },
   },
   'admission-control': {
-    for: "Kyverno or a ValidatingAdmissionPolicy in a guarded namespace: the cluster's Events, read by the line.",
+    for: "Kyverno, a ValidatingAdmissionPolicy or Pod Security in a guarded namespace: the cluster's Events, read by the line.",
     appendedBy: ['factory_line'],
     guardrails: { image: [3], production: [4] },
   },

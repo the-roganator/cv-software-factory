@@ -258,6 +258,40 @@ export function testIntegrityRun(
 }
 
 /**
+ * Test integrity's notice of the pull request a run judged, and its base, as `test-integrity.ts` writes it
+ * (`judgedNote`). The run reads that pull request's description, so its excuses are that pull request's alone.
+ */
+export const JUDGED = /^Test integrity judged #([1-9]\d*) into (.+)$/s;
+
+/**
+ * Why test integrity's run is not the judged pull request's reading, by the notice it wrote of what it judged, or
+ * nothing when it is: its notice, and only its, names the pull request, into the base it has now. Another pull
+ * request's run at the same head, from another branch or another base, closed since or not, read that one's
+ * description, and is never this one's; nor is a run that judged it into another base, before it was retargeted. The
+ * latest run at the head being another's is a wait, as its own may yet be run again; a run that names no pull request,
+ * or judged this one into another base, is a hold.
+ */
+export function notJudged(
+  annotations: readonly Annotation[],
+  number: number,
+  base: string,
+  head: string,
+): { reason: string; pending?: true } | undefined {
+  const judged = annotations
+    .filter((a) => a.annotation_level === 'notice')
+    .map((a) => JUDGED.exec(a.message))
+    .filter((m) => m !== null)
+    .map((m) => ({ number: Number(m[1]), base: m[2] as string }));
+  const at = `test integrity's run at ${short(head)}`;
+  if (!judged.length) return { reason: `${at} does not say which pull request it judged` };
+  const other = judged.find((j) => j.number !== number);
+  if (other) return { reason: `${at} judged #${other.number}, not #${number}`, pending: true };
+  const into = judged.find((j) => j.base !== base);
+  if (into) return { reason: `${at} judged #${number} into ${into.base}, not ${base}` };
+  return undefined;
+}
+
+/**
  * Test integrity's words for a test it excused, as `test-integrity.ts` annotates each: `"<test>" was deleted` or
  * `rewritten`, `as the spec it was changed for contradicts it`. A test holds the two the same.
  */

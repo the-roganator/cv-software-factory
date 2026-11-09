@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { excusedNote } from '../apps/factory/src/gates/test-integrity.ts';
+import { excusedNote, judgedNote } from '../apps/factory/src/gates/test-integrity.ts';
 import {
   type Found,
   found,
@@ -24,10 +24,12 @@ import {
   type Facts,
   type FileChange,
   imageOf,
+  JUDGED,
   levelPasses,
   literally,
   MARTIN,
   martinsRule,
+  notJudged,
   type PinChecks,
   type PullRequest,
   riskLabelsRemoved,
@@ -462,6 +464,33 @@ describe('test integrity’s reading', () => {
     expect(testIntegrityRun([run()], HEAD, files, 'factory/1-fix')).toEqual({
       reason: "it is into factory/1-fix, so test integrity's run is not the workflow on main's",
     });
+  });
+
+  it('reads a run only when test integrity’s notice says it judged the pull request, into its base', () => {
+    expect(JUDGED.exec(judgedNote(7, 'main'))?.slice(1)).toEqual(['7', 'main']);
+    const judged = (number: number, base = 'main') => ({
+      path: '.github',
+      annotation_level: 'notice',
+      message: judgedNote(number, base),
+    });
+    const excused = { path: 'test/a.test.ts', annotation_level: 'warning', message: 'x' };
+    expect(notJudged([judged(7), excused], 7, 'main', HEAD)).toBeUndefined();
+    // Another pull request's run at the same head, from another branch, open or closed: its own may yet run again.
+    expect(notJudged([judged(8), excused], 7, 'main', HEAD)).toEqual({
+      reason: "test integrity's run at aaaaaaa judged #8, not #7",
+      pending: true,
+    });
+    expect(notJudged([judged(7), judged(8)], 7, 'main', HEAD)).toMatchObject({ pending: true });
+    // Judged into another base, before a retarget: the run compared with that base's tests.
+    expect(notJudged([judged(7, 'dev')], 7, 'main', HEAD)).toEqual({
+      reason: "test integrity's run at aaaaaaa judged #7 into dev, not main",
+    });
+    // Saying nothing of what it judged, as before test integrity wrote the notice, or only in a warning a test name
+    // could put the words in: a hold.
+    for (const annotations of [[], [excused], [{ ...judged(7), annotation_level: 'warning' }]])
+      expect(notJudged(annotations, 7, 'main', HEAD)).toEqual({
+        reason: "test integrity's run at aaaaaaa does not say which pull request it judged",
+      });
   });
 
   it('names each test it excused, from the annotation test integrity writes, and counts one it cannot read', () => {

@@ -159,6 +159,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          # Named in its notice of what it judged, which the review gate reads: a run is that pull request's alone.
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
 
   tests-first:
     name: tests first

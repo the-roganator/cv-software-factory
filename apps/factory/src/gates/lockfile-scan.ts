@@ -170,12 +170,15 @@ export function documents(text: string) {
 /**
  * Every package a document lists under `packages:`, as `name@version`: what pnpm installs from it, whatever Trivy
  * reads. Read from the text, so it fails (a string, the reason) on any document it cannot read plainly: a key at the
- * top level that is not a plain word, `packages` written as a flow mapping, or a line in its block that is not a
- * package's key or deeper.
+ * top level that is not a plain word, a document indented as a whole, `packages` written as a flow mapping, or a line
+ * in its block that is not a package's key at two spaces or deeper under one.
  */
 export function packageKeys(doc: string): string[] | string {
   const lines = doc.split('\n');
   const plain = (line: string) => !line.trim() || line.trim().startsWith('#');
+  // The document's mapping starts at the first column: one indented as a whole would hide its keys from what follows.
+  const first = lines.find((line) => !plain(line));
+  if (first !== undefined && /^\s/.test(first)) return 'it is indented as a whole';
   for (const line of lines)
     if (!plain(line) && !/^\s/.test(line) && !/^[A-Za-z][A-Za-z0-9]*:(\s.*)?$/.test(line))
       return `its top-level line \`${line.slice(0, 40)}\` is not a plain key`;
@@ -183,9 +186,15 @@ export function packageKeys(doc: string): string[] | string {
   if (at < 0) return [];
   if (!/^packages:\s*(#.*)?$/.test(lines[at] ?? '')) return '`packages` is not written as a block';
   const keys: string[] = [];
+  // Each package's key at exactly two spaces, its fields deeper and only after it: keys written deeper would read as
+  // fields of none.
   for (const line of lines.slice(at + 1)) {
-    if (plain(line) || /^ {4}/.test(line)) continue;
+    if (plain(line)) continue;
     if (/^\S/.test(line)) break;
+    if (/^ {4}/.test(line)) {
+      if (!keys.length) return 'the keys under `packages` are not at two spaces';
+      continue;
+    }
     const key = /^ {2}(['"]?)([^\s'"#].*?)\1:(\s.*)?$/.exec(line)?.[2];
     if (!key) return `a line under \`packages\` is not a package's key: \`${line.trim().slice(0, 40)}\``;
     keys.push(key);

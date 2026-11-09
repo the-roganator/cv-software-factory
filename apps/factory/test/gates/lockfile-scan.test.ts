@@ -264,6 +264,10 @@ describe('the packages a document lists, which Trivy must have read', () => {
       "{lockfileVersion: '9.0'}",
       'packages:\n ? lodash@4.17.20\n : {}',
       'packages:\n   lodash@4.17.20: {}',
+      // Keys at four spaces, which pnpm reads, would otherwise read as fields of no key, and list nothing.
+      "lockfileVersion: '9.0'\npackages:\n\n    lodash@4.17.20:\n        resolution: {integrity: sha512-y}",
+      // A document indented as a whole.
+      " lockfileVersion: '9.0'\n packages:\n   lodash@4.17.20: {}",
     ])
       expect(typeof packageKeys(doc), doc).toBe('string');
   });

@@ -211,8 +211,6 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/gates/
-            apps/factory/src/vulnerabilities/inventory.ts
-            apps/factory/src/vulnerabilities/proof.ts
             .github/images/trivy/Dockerfile
             pnpm-lock.yaml
           sparse-checkout-cone-mode: false
@@ -220,11 +218,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
-          # Its lockfiles, and the settings that could point pnpm at another one, at any depth.
+          # Its lockfiles, at any depth, and whether it holds the gate, for the base that does not.
           sparse-checkout: |
             pnpm-lock.yaml
-            pnpm-workspace.yaml
-            .npmrc
+            apps/factory/src/gates/lockfile-scan.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -233,14 +230,18 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: base
           install_args: node
-      # A base with no gate is the gate's own first landing, the only pull request whose base lacks it: there is no
-      # script the change cannot alter, so it judges nothing and says so. Any later change that removed the script is
-      # judged by the base that still has it.
+      # A base with no gate, and a change that brings it in, is the gate's own first landing: there is no script the
+      # change cannot alter, so it judges nothing and says so. A base with no gate otherwise fails: the gate is never
+      # dropped or moved without a pull request that says how it is judged.
       - name: Compare the lockfiles
         run: |
           if [ ! -f base/apps/factory/src/gates/lockfile-scan.ts ]; then
-            echo "::notice::The base has no lockfile gate yet: this change brings it in, so it judges nothing."
-            exit 0
+            if [ -f change/apps/factory/src/gates/lockfile-scan.ts ]; then
+              echo "::notice::The base has no lockfile gate yet: this change brings it in, so it judges nothing."
+              exit 0
+            fi
+            echo "::error::The base has no lockfile gate, and this change does not bring one in."
+            exit 1
           fi
           node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin base/.github/images/trivy/Dockerfile
 

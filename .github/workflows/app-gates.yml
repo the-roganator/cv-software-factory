@@ -335,11 +335,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
-          # Its lockfiles, and the settings that could point pnpm at another one, at any depth.
-          sparse-checkout: |
-            pnpm-lock.yaml
-            pnpm-workspace.yaml
-            .npmrc
+          sparse-checkout: pnpm-lock.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -347,14 +343,11 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: factory
-          # The scanner, by version and digest, from its one pin (.github/images/trivy/Dockerfile), and the daily scan's
-          # rule for which lockfiles a checkout tracks.
+          # The scanner, by version and digest, from its one pin (.github/images/trivy/Dockerfile).
           sparse-checkout: |
             mise.toml
             mise.lock
             apps/factory/src/gates/
-            apps/factory/src/vulnerabilities/inventory.ts
-            apps/factory/src/vulnerabilities/proof.ts
             .github/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false

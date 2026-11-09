@@ -4,18 +4,18 @@
  *
  *     node apps/factory/src/gates/lockfile-scan.ts <base checkout> <change checkout> --trivy-pin <Dockerfile>
  *
- * - Each lockfile is the daily scan's (`lockfiles` in ../vulnerabilities/inventory.ts: every `pnpm-lock.yaml` git
- *   tracks, outside prose and fixtures), and is scanned alone, from a directory holding only it, development
- *   dependencies included. A lockfile only the change has is compared with none, so all its findings are new.
+ * - Each lockfile is every `pnpm-lock.yaml` git tracks, at any depth, fixtures included: whatever points pnpm at one
+ *   (`lockfileDir` in any spelling, a flag, a variable), the one it installs from is tracked, so it is read here. Each
+ *   is scanned alone, from a directory holding only it, development dependencies included. A lockfile only the change
+ *   has is compared with none, so all its findings are new.
  * - A vulnerability is known by its lockfile, its advisory, its package, and whether a production dependency reaches
  *   it (Trivy's `Dev` on the package), so a package moved to another vulnerable version brings nothing new, and one a
  *   production dependency newly reaches does. One the base reaches from production and the change from development
  *   alone is less reached, not new.
- * - A lockfile Trivy reads no packages from, on either side, or whose report is empty or cannot be parsed, fails: an
- *   unread lockfile would otherwise pass for one with nothing in it. So does a `pnpm-lock.yaml` git tracks as anything
- *   but a regular file: pnpm follows a symbolic link the list leaves out, so one could stand in for a vulnerable tree.
- * - So does a change whose `pnpm-workspace.yaml` or `.npmrc`, at any depth, sets `lockfileDir` or `lockfile-dir`: pnpm
- *   would then install from a lockfile elsewhere, perhaps one the list leaves out as a fixture.
+ * - A lockfile Trivy reads no packages from, on either side, fails unless it holds nothing but its `lockfileVersion`:
+ *   an unread lockfile would otherwise pass for one with nothing in it. So does one whose report is empty or cannot be
+ *   parsed, and a `pnpm-lock.yaml` git tracks as anything but a regular file: pnpm follows a symbolic link, which
+ *   could stand in for a vulnerable tree.
  * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
  *
  * It excepts nothing: no exception is read from the change, or from anywhere else.
@@ -29,7 +29,6 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { isFixture, lockfiles } from '../vulnerabilities/inventory.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 const run = promisify(execFile);
@@ -70,7 +69,7 @@ export interface Finding {
 }
 
 /** What scanning one lockfile gave: Trivy's report as text, why Trivy failed, or why it was not scanned. */
-export type Scanned = { report: string } | { error: string } | { unscannable: string };
+export type Scanned = { report: string; empty?: boolean } | { error: string } | { unscannable: string };
 
 /** One lockfile's findings, or why it could not be read. */
 export function findingsOf(lockfile: string, scanned: Scanned): Finding[] | string {
@@ -84,7 +83,7 @@ export function findingsOf(lockfile: string, scanned: Scanned): Finding[] | stri
   }
   const results = Array.isArray(report?.Results) ? report.Results : [];
   const packages = results.flatMap((result) => (Array.isArray(result?.Packages) ? result.Packages : []));
-  if (!packages.length) return 'Trivy read no packages from it';
+  if (!packages.length) return 'empty' in scanned && scanned.empty ? [] : 'Trivy read no packages from it';
   // A package is a development dependency only when Trivy says so of every copy of it: one it cannot match is
   // production's, the stricter reading.
   const dev = new Map<string, boolean>();
@@ -148,43 +147,29 @@ export function trivyPin(dockerfile: string) {
 }
 
 /**
- * Every `pnpm-lock.yaml` a checkout tracks, outside prose and fixtures, as anything but a regular file: a symbolic
- * link (120000), which pnpm would follow, or a submodule (160000). The list leaves these out, so the gate names them.
+ * Every `pnpm-lock.yaml` a checkout tracks, at any depth, fixtures included: the regular files, which are scanned, and
+ * the rest (a symbolic link, 120000, which pnpm would follow, or a submodule, 160000), which fail.
  */
-export function irregularLockfiles(root: string) {
-  return execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-s', '-z'], {
+export function trackedLockfiles(root: string) {
+  const regular: string[] = [];
+  const irregular: string[] = [];
+  for (const entry of execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-s', '-z'], {
     encoding: 'utf-8',
     maxBuffer: 64 * 1024 * 1024,
-  })
-    .split('\0')
-    .flatMap((entry) => {
-      const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
-      return file && /(^|\/)pnpm-lock\.yaml$/.test(file) && !isFixture(file) && mode !== '100644' && mode !== '100755'
-        ? [file]
-        : [];
-    });
+  }).split('\0')) {
+    const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
+    if (!file || !/(^|\/)pnpm-lock\.yaml$/.test(file)) continue;
+    (mode === '100644' || mode === '100755' ? regular : irregular).push(file);
+  }
+  return { regular, irregular };
 }
 
-/** A setting that moves the lockfile pnpm installs from, in either spelling, as a key of YAML or of an `.npmrc`. */
-const LOCKFILE_DIR = /^\s*["']?(lockfileDir|lockfile-dir)["']?\s*[:=]/;
-
-/**
- * Each place a checkout's pnpm settings move the lockfile: every tracked `pnpm-workspace.yaml` and `.npmrc`, at any
- * depth, that sets `lockfileDir` or `lockfile-dir`, as `<file>:<line>`. Read as text, so a setting in any shape fails
- * the gate rather than slipping past a parser.
- */
-export function lockfileDirSettings(root: string) {
-  const files = execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-z'], {
-    encoding: 'utf-8',
-    maxBuffer: 64 * 1024 * 1024,
-  })
-    .split('\0')
-    .filter((file) => /(^|\/)(pnpm-workspace\.yaml|\.npmrc)$/.test(file) && existsSync(join(root, file)));
-  return files.flatMap((file) =>
-    readFileSync(join(root, file), 'utf-8')
-      .split('\n')
-      .flatMap((line, index) => (LOCKFILE_DIR.test(line) ? [`${file}:${index + 1}`] : [])),
-  );
+/** A lockfile that holds nothing but its version: pnpm installs nothing from it, and Trivy rightly reads nothing. */
+export function isEmptyLockfile(text: string) {
+  return text
+    .split(/\r?\n|\r/)
+    .filter((line) => line.trim() && !line.trim().startsWith('#'))
+    .every((line) => /^(---|lockfileVersion:\s*\S+)\s*$/.test(line));
 }
 
 /** Where the advisory database is pulled from: GHCR, as the daily scan pulls it (../vulnerabilities/scan.ts). */
@@ -264,7 +249,10 @@ function trivy(image: string, cache: string) {
             '/src',
           ],
         );
-        return { report: readFileSync(join(dir, 'out', 'report.json'), 'utf-8') };
+        return {
+          report: readFileSync(join(dir, 'out', 'report.json'), 'utf-8'),
+          empty: isEmptyLockfile(readFileSync(join(dir, 'src', 'pnpm-lock.yaml'), 'utf-8')),
+        };
       } catch (error) {
         // Trivy's own words, from its stderr, rather than the command line Node's error begins with.
         const stderr = String((error as { stderr?: unknown }).stderr ?? '').trim();
@@ -303,7 +291,12 @@ export async function main(args: string[]): Promise<number> {
     const text = (root: string, lockfile: string) => readFileSync(join(root, lockfile), 'utf-8');
     const scanAll = async (root: string, same?: { root: string; scans: Map<string, Scanned> }) => {
       const scans = new Map<string, Scanned>();
-      for (const lockfile of lockfiles(root)) {
+      const { regular, irregular } = trackedLockfiles(root);
+      for (const lockfile of regular) {
+        if (!existsSync(join(root, lockfile))) {
+          scans.set(lockfile, { unscannable: 'it is tracked but was not checked out' });
+          continue;
+        }
         const before = same?.scans.get(lockfile);
         scans.set(
           lockfile,
@@ -312,7 +305,7 @@ export async function main(args: string[]): Promise<number> {
             : await scanner.scan(root, lockfile),
         );
       }
-      for (const lockfile of irregularLockfiles(root))
+      for (const lockfile of irregular)
         scans.set(lockfile, {
           unscannable: 'git tracks it as something other than a regular file, which is not scanned',
         });
@@ -320,12 +313,6 @@ export async function main(args: string[]): Promise<number> {
     };
     const base = await scanAll(basePath);
     const change = await scanAll(changePath, { root: basePath, scans: base });
-    for (const setting of lockfileDirSettings(changePath)) {
-      const at = setting.lastIndexOf(':');
-      change.set(setting.slice(0, at), {
-        unscannable: `line ${setting.slice(at + 1)} sets lockfileDir or lockfile-dir, so pnpm would install from a lockfile the gate does not read`,
-      });
-    }
     if (!change.size) {
       console.error('::error::The change tracks no lockfile to scan.');
       return 1;

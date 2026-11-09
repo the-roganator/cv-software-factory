@@ -3,13 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  irregularLockfiles,
-  judge,
-  lockfileDirSettings,
-  type Scanned,
-  trivyPin,
-} from '../../src/gates/lockfile-scan.ts';
+import { isEmptyLockfile, judge, type Scanned, trackedLockfiles, trivyPin } from '../../src/gates/lockfile-scan.ts';
 
 // Trivy's JSON for a pnpm lockfile, as `trivy fs --include-dev-deps --list-all-pkgs` writes it: `Dev` on a package
 // only development dependencies reach, and each vulnerability naming its package's UID.
@@ -160,70 +154,44 @@ describe('the lockfile gate', () => {
   });
 });
 
-describe('a lockfile git tracks as something other than a regular file', () => {
-  it('is named, so the gate fails it, while the list leaves it out', () => {
+describe('the lockfiles a checkout tracks', () => {
+  it('are every pnpm-lock.yaml at any depth, fixtures included, the regular apart from a link', () => {
     const root = mkdtempSync(join(tmpdir(), 'lockfile-gate-'));
     try {
       const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' });
       git('init', '-q');
-      mkdirSync(join(root, 'deps'));
-      mkdirSync(join(root, 'tools'));
-      mkdirSync(join(root, 'test'));
-      writeFileSync(join(root, 'deps/lock'), 'lockfileVersion: 9.0\n');
-      writeFileSync(join(root, 'tools/pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
+      for (const dir of ['deps', 'tools', 'test/alt']) mkdirSync(join(root, dir), { recursive: true });
+      writeFileSync(join(root, 'deps/lock'), "lockfileVersion: '9.0'\n");
+      writeFileSync(join(root, 'tools/pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+      // Where `lockfileDir: test/alt` would point pnpm, however the setting is spelled.
+      writeFileSync(join(root, 'test/alt/pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
       symlinkSync('deps/lock', join(root, 'pnpm-lock.yaml'));
-      symlinkSync('../deps/lock', join(root, 'test/pnpm-lock.yaml'));
       git('add', '.');
-      expect(irregularLockfiles(root)).toEqual(['pnpm-lock.yaml']);
+      expect(trackedLockfiles(root)).toEqual({
+        regular: ['test/alt/pnpm-lock.yaml', 'tools/pnpm-lock.yaml'],
+        irregular: ['pnpm-lock.yaml'],
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 });
 
-describe('a setting that moves the lockfile pnpm installs from', () => {
-  /** A git repository holding the files given, each tracked. */
-  function repo(files: Record<string, string>) {
-    const root = mkdtempSync(join(tmpdir(), 'lockfile-gate-'));
-    execFileSync('git', ['-C', root, 'init', '-q']);
-    for (const [file, text] of Object.entries(files)) {
-      mkdirSync(join(root, file, '..'), { recursive: true });
-      writeFileSync(join(root, file), text);
-    }
-    execFileSync('git', ['-C', root, 'add', '.']);
-    return root;
-  }
-  const settingsOf = (files: Record<string, string>) => {
-    const root = repo(files);
-    try {
-      return lockfileDirSettings(root);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  };
-
-  it('is named in pnpm-workspace.yaml, quoted or not, in either spelling', () => {
-    expect(settingsOf({ 'pnpm-workspace.yaml': 'packages:\n  - apps/*\nlockfileDir: test/alt\n' })).toEqual([
-      'pnpm-workspace.yaml:3',
-    ]);
-    expect(settingsOf({ 'pnpm-workspace.yaml': "'lockfile-dir': test/alt\n" })).toEqual(['pnpm-workspace.yaml:1']);
-  });
-
-  it('is named in an .npmrc, at any depth', () => {
-    expect(settingsOf({ '.npmrc': 'lockfile-dir=test/alt\n', 'apps/x/.npmrc': 'lockfileDir = ../..\n' })).toEqual([
-      '.npmrc:1',
-      'apps/x/.npmrc:1',
-    ]);
-  });
-
-  it('is not found where there is none, or only in a comment', () => {
+describe('an empty lockfile', () => {
+  it('passes with no packages read, when it holds nothing but its version', () => {
+    const none = { report: JSON.stringify({ Results: [{ Packages: [] }] }) };
     expect(
-      settingsOf({
-        'pnpm-workspace.yaml': 'packages:\n  - apps/*\n# lockfileDir: test/alt\n',
-        '.npmrc': 'engine-strict=true\n',
-        'docs/lockfileDir.md': 'lockfileDir: elsewhere\n',
-      }),
-    ).toEqual([]);
+      judge(lockfiles({ [ROOT]: { ...none, empty: true } }), lockfiles({ [ROOT]: { ...none, empty: true } })),
+    ).toEqual({ added: [], unread: [], total: 0 });
+    expect(judge(lockfiles({}), lockfiles({ [ROOT]: none })).unread).toMatchObject([{ side: 'change' }]);
+  });
+
+  it('is one with only its version, a document start and comments, in any line ending', () => {
+    expect(isEmptyLockfile("lockfileVersion: '9.0'\n")).toBe(true);
+    expect(isEmptyLockfile("---\r\n# a comment\r\nlockfileVersion: '9.0'\r\n\r\n")).toBe(true);
+    expect(isEmptyLockfile("lockfileVersion: '9.0'\rpackages:\r  lodash@4.17.20: {}\r")).toBe(false);
+    expect(isEmptyLockfile("{lockfileVersion: '9.0', packages: {lodash@4.17.20: {}}}\n")).toBe(false);
+    expect(isEmptyLockfile("lockfileVersion: '9.0'\nimporters:\n  .: {}\n")).toBe(false);
   });
 });
 

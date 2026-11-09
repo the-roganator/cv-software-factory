@@ -164,11 +164,33 @@ describe('the snapshot', () => {
 
   it('keeps each lockfile apart, at its own path', () => {
     const made = snapshot(
-      syft({ 'pnpm-lock.yaml': ['@scope/app-lib@1.0.0'], 'tools/pnpm-lock.yaml': ['tester@3.0.0'] }),
+      syft({ 'pnpm-lock.yaml': ALL, 'tools/pnpm-lock.yaml': ALL }),
       { 'pnpm-lock.yaml': [project], 'tools/pnpm-lock.yaml': [project] },
       job,
     );
     expect(Object.keys(made.manifests ?? {}).sort()).toEqual(['pnpm-lock.yaml', 'tools/pnpm-lock.yaml']);
+  });
+
+  it('is not made when Syft leaves out a package an importer names, as when it reads one document alone', () => {
+    expect(() =>
+      snapshot(
+        syft({ 'pnpm-lock.yaml': ['pnpm@12.0.0', '@pnpm/exe.linux-x64@12.0.0'] }),
+        { 'pnpm-lock.yaml': [env, project] },
+        job,
+      ),
+    ).toThrow(/did not read all of pnpm-lock.yaml: @scope\/app-lib@1.0.0/);
+  });
+
+  it("does not give one version of a package another version's place", () => {
+    const made = snapshot(
+      syft({ 'pnpm-lock.yaml': [...ALL, 'tester@2.0.0'] }),
+      { 'pnpm-lock.yaml': [env, project] },
+      job,
+    );
+    expect(made.manifests?.['pnpm-lock.yaml']?.resolved?.['pkg:npm/tester@2.0.0']).toMatchObject({
+      relationship: 'indirect',
+      scope: 'development',
+    });
   });
 
   it('is not made when a lockfile has no packages in it, or is not one pnpm 9 reads', () => {

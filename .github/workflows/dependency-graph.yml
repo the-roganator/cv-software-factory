@@ -10,7 +10,7 @@
 #
 # - submit: on a push to the default branch alone, here or the caller's, with `contents: write` and nothing else. Each
 #   snapshot names the commit, the ref and the correlator `dependency-graph.yml`, so it replaces the one before it.
-# - prove: on a pull request that changes the graph or the scripts it runs, with `contents: read` alone. It makes the
+# - prove: on a pull request that changes the graph, the scripts it runs or the toolchain, with `contents: read` alone. It makes the
 #   same snapshot of the base's checkout and submits nothing, then installs each lockfile as the scan's coverage does,
 #   and fails if the snapshot lacks a package `pnpm list --depth Infinity` names, calls one direct or indirect where
 #   pnpm lists it the other way, or names no indirect package. Its log carries the counts.
@@ -25,6 +25,8 @@ on:
       - .github/workflows/dependency-graph.yml
       - apps/factory/src/vulnerabilities/**
       - .github/images/syft/**
+      - mise.toml
+      - mise.lock
 
 permissions: {}
 

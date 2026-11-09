@@ -167,6 +167,10 @@ export function snapshot(
       throw new Error(
         `${file} is not a pnpm lockfile of version 9 (${lockfile.map((doc) => String(doc.lockfileVersion)).join(', ')}).`,
       );
+    // Every package an importer names is in the snapshot, or Syft did not read the whole lockfile.
+    const named = new Set(resolvedByName.map(([key, entry]) => fromPurl(entry.package_url ?? key)));
+    const unread = [...known.direct].filter((id) => !named.has(id) && /@\d+\.\d+\.\d+/.test(id));
+    if (unread.length) throw new Error(`Syft did not read all of ${file}: ${unread.slice(0, 10).join(', ')}`);
     const names = (set: Set<string>) => new Set([...set].map((id) => id.slice(0, id.lastIndexOf('@'))));
     const directNames = names(known.direct);
     const runtimeNames = names(known.runtime);
@@ -181,10 +185,11 @@ export function snapshot(
       const id = fromPurl(entry.package_url ?? key);
       const name = id?.slice(0, id.lastIndexOf('@'));
       // A version that is not a registry's (a tarball's or a git repository's URL) is matched by name alone, as Syft may
-      // write it another way.
+      // write it another way; a registry's version is matched exactly, so one version's place is never another's.
       const exact = id !== undefined && known.known.has(id);
-      const direct = exact ? known.direct.has(id) : name !== undefined && directNames.has(name);
-      const runtime = exact ? known.runtime.has(id) : name !== undefined && runtimeNames.has(name);
+      const byName = !exact && name !== undefined && !/^\d+\.\d+\.\d+/.test(id?.slice(name.length + 1) ?? '');
+      const direct = exact ? known.direct.has(id) : byName && directNames.has(name);
+      const runtime = exact ? known.runtime.has(id) : byName && runtimeNames.has(name);
       const dependencies = [
         ...new Set(
           (exact ? (known.edges.get(id) ?? []) : [])
@@ -294,6 +299,8 @@ export async function main(args: string[]): Promise<number> {
         'run',
         '--rm',
         '--read-only',
+        '--tmpfs',
+        '/tmp',
         '--network',
         'none',
         '--cap-drop',

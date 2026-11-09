@@ -465,6 +465,8 @@ describe('dependency-graph.yml', () => {
       '.github/workflows/dependency-graph.yml',
       'apps/factory/src/vulnerabilities/**',
       '.github/images/syft/**',
+      'mise.toml',
+      'mise.lock',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));

@@ -18,21 +18,15 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
-// The group kill is for a Claude Code killed before it could end its tools' commands (the SDK's SIGKILL, five seconds
-// after asking): given its time, it ends them itself, so `runAgent`'s own tests cannot reach this path.
+// The step's end is tested through `runAgent` (agent.test.ts): a command moved to the background, and one whose
+// process ignores SIGTERM, each ended within seconds of the result and the step handed back whole. What is tested here
+// directly is only what `runAgent` cannot show:
+// - the group kill, for a Claude Code killed (the SDK's SIGKILL, five seconds after asking) before it could end its
+//   tools' commands: given its time, Claude Code ends them itself, so no test through the SDK reaches this path;
+// - the bound on the wait for Claude Code to end, which, ending in time, it never reaches.
+// The process's exit after the handback (cli.ts) is shown in the runner's container: on the host `runner agent` waits
+// for a fence it has not got.
 describe('what the agent’s tools left running', () => {
-  it('is every process under the runner, children and theirs', () => {
-    const table = [
-      { pid: 1, ppid: 0, pgid: 1 },
-      { pid: 10, ppid: 1, pgid: 1 },
-      { pid: 11, ppid: 10, pgid: 11 },
-      { pid: 12, ppid: 11, pgid: 11 },
-      { pid: 20, ppid: 2, pgid: 20 },
-    ];
-    expect(descendants(table, 1).map((p) => p.pid)).toEqual([10, 11, 12]);
-    expect(descendants(table, 12)).toEqual([]);
-  });
-
   it('is ended with its group, a child its shell left behind too', async () => {
     // A process in a group of its own, as Claude Code runs a command's shell, with a long child. No shell: Node
     // starts the child itself.
@@ -69,27 +63,17 @@ describe('what the agent’s tools left running', () => {
     }
   });
 
-  it('waits for the runner’s own children to end, and no longer than it is given', async () => {
-    const quick = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], { stdio: 'ignore' });
+  it('waits for Claude Code to end no longer than it is given', async () => {
     const slow = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
     try {
-      await until(
-        () => descendants(processTable()).filter((p) => p.pid === quick.pid || p.pid === slow.pid).length === 2,
-      );
-      const quickOnly = descendants(processTable()).filter((p) => p.pid === quick.pid);
-      let started = Date.now();
-      await settled(quickOnly);
-      expect(Date.now() - started).toBeLessThan(3000);
-      const slowOnly = descendants(processTable()).filter((p) => p.pid === slow.pid);
-      started = Date.now();
-      await settled(slowOnly, 500);
+      await until(() => descendants(processTable()).some((p) => p.pid === slow.pid));
+      const snapshot = descendants(processTable()).filter((p) => p.pid === slow.pid);
+      const started = Date.now();
+      await settled(snapshot, 500);
       expect(Date.now() - started).toBeGreaterThanOrEqual(500);
+      expect(Date.now() - started).toBeLessThan(3000);
     } finally {
       slow.kill('SIGKILL');
     }
-  });
-
-  it('is nothing to end when nothing is left', () => {
-    expect(endAll([])).toBe(0);
   });
 });

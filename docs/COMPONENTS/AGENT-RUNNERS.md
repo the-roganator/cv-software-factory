@@ -50,7 +50,8 @@ sequenceDiagram
    - no settings from the checkout;
    - a system prompt that is the same on every run;
    - for a step that names a skill, that skill alone, from the runner's own plugin (`apps/runner/plugin`, read-only in the image; nothing in the checkout or the volume adds one);
-3. hands back:
+3. ends with the agent's result: it closes the SDK's query, ends whatever the agent's tools left running, each process under it and the process group each of Claude Code's shells leads (`processes.ts`). Claude Code moves a shell command past its timeout into the background and would hold the step open until that command ended, then wake the agent to say so: a `pnpm install` waiting on a network the pod does not have would hold it until its deadline;
+4. hands back, and exits:
    - a patch of everything changed since the step's commit, committed or not;
    - its note, its turns and its session;
    - when the step asks for one, its result.

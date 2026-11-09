@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import {
   AdmissionReader,
+  DENIED,
   type Denial,
   denialOf,
   type KubeEvent,
@@ -223,6 +224,53 @@ describe('the denials an Event records', () => {
       workItem: null,
       subject: { namespace: 'website', kind: 'ReplicaSet' },
     });
+  });
+
+  it('reads a controller’s record of a pod Pod Security refused, with the level the namespace enforces', () => {
+    // Verbatim from the local cluster (9 Nov): a one-replica Deployment in runners whose pod is privileged, on an image
+    // admission admits. Pod Security refuses it before any webhook or policy sees it, so this is its only record.
+    const message =
+      'Error creating: pods "psa-probe-944-6cd7b66bf7-lzvkl" is forbidden: violates PodSecurity "restricted:latest": privileged (container "probe" must not set securityContext.privileged=true), allowPrivilegeEscalation != false (container "probe" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "probe" must set securityContext.capabilities.drop=["ALL"]), runAsNonRoot != true (pod or container "probe" must set securityContext.runAsNonRoot=true), seccompProfile (pod or container "probe" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")';
+    const event: KubeEvent = {
+      metadata: {
+        uid: 'f0e0447b-9435-47d1-a185-9ee13f515a6e',
+        namespace: 'runners',
+        creationTimestamp: '2026-11-09T17:43:08Z',
+      },
+      involvedObject: {
+        kind: 'ReplicaSet',
+        namespace: 'runners',
+        name: 'psa-probe-944-6cd7b66bf7',
+        uid: '45327154-a11e-4033-9d19-b5ca416ee147',
+      },
+      reason: 'FailedCreate',
+      message,
+      reportingComponent: 'replicaset-controller',
+      source: { component: 'replicaset-controller' },
+      count: 1,
+      firstTimestamp: '2026-11-09T17:43:08Z',
+      lastTimestamp: '2026-11-09T17:43:08Z',
+    };
+    // The webhook and ValidatingAdmissionPolicy wording alone, all the line read before, drops it.
+    expect(DENIED.test(message)).toBe(false);
+    expect(denialOf(event)).toEqual({
+      workItem: null,
+      cause: 'production',
+      action:
+        'Create a pod for ReplicaSet runners/psa-probe-944-6cd7b66bf7, refused by Pod Security at restricted:latest',
+      output: message,
+      subject: {
+        namespace: 'runners',
+        kind: 'ReplicaSet',
+        name: 'psa-probe-944-6cd7b66bf7',
+        uid: '45327154-a11e-4033-9d19-b5ca416ee147',
+      },
+    });
+    // The controller's later tries, which the API server folds into one Event, read the same.
+    const combined = { ...event, message: `(combined from similar events): ${message}`, reportingComponent: '' };
+    expect(denialOf(combined)?.action).toBe(denialOf(event)?.action);
+    // Not in a guarded namespace: not the line's to record.
+    expect(denialOf({ ...event, metadata: { uid: 'e5', namespace: 'telemetry' } })).toBeUndefined();
   });
 
   it('reads nothing else: an audit, another namespace, another reporter, a failure that is not a denial', () => {

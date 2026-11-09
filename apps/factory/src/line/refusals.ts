@@ -209,6 +209,11 @@ export const DENIED =
   /admission webhook "[^"]+" denied the request|ValidatingAdmissionPolicy '[^']+' with binding '[^']+' denied request/;
 /** Kyverno's image policies answer through webhooks of their own (`ivpol.…`). */
 export const IMAGE_WEBHOOK = /admission webhook "ivpol\./;
+/**
+ * How the API server words a pod Pod Security refused, with the level and version the namespace enforces
+ * (`restricted:latest`). It refuses before any webhook or policy sees the pod, so it leaves no other Event.
+ */
+export const POD_SECURITY = /violates PodSecurity "([^"]+)"/;
 
 /** How many times an Event says it happened. */
 export const timesOf = (event: KubeEvent): number => Math.max(1, event.series?.count ?? event.count ?? 1);
@@ -250,7 +255,8 @@ const subjectOf = (namespace: string, kind: string, name: string, uid: string | 
 
 /**
  * The denial an Event records, or undefined for any other Event: Kyverno's own record of a request it blocked in a
- * guarded namespace, or a controller's of a pod admission would not let it make there. Pure.
+ * guarded namespace, or a controller's of a pod admission would not let it make there, whether a webhook, a
+ * ValidatingAdmissionPolicy or Pod Security refused it. Pure.
  */
 export function denialOf(event: KubeEvent): Omit<Denial, 'at'> | undefined {
   const output = event.message?.trim();
@@ -276,13 +282,14 @@ export function denialOf(event: KubeEvent): Omit<Denial, 'at'> | undefined {
     };
   }
   const namespace = event.metadata.namespace ?? event.involvedObject.namespace;
-  if (event.reason === 'FailedCreate' && guarded(namespace) && DENIED.test(output)) {
+  const podSecurity = POD_SECURITY.exec(output);
+  if (event.reason === 'FailedCreate' && guarded(namespace) && (DENIED.test(output) || podSecurity)) {
     const kind = event.involvedObject.kind ?? '';
     const name = event.involvedObject.name ?? '';
     return {
       workItem: workItemOf(namespace, kind, name),
       cause: IMAGE_WEBHOOK.test(output) ? 'image' : 'production',
-      action: `Create a pod for ${kind} ${namespace}/${name}`,
+      action: `Create a pod for ${kind} ${namespace}/${name}${podSecurity ? `, refused by Pod Security at ${podSecurity[1]}` : ''}`,
       output,
       subject: subjectOf(namespace, kind, name, event.involvedObject.uid),
     };

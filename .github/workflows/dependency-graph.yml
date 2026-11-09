@@ -24,7 +24,7 @@ on:
     paths:
       - .github/workflows/dependency-graph.yml
       - apps/factory/src/vulnerabilities/**
-      - .github/images/syft/**
+      - deploy/images/syft/**
       - mise.toml
       - mise.lock
 
@@ -66,7 +66,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            .github/images/syft/Dockerfile
+            deploy/images/syft/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # Node to run the script, and yq for the list and the lockfile: each at the version this repository's mise.lock holds.
@@ -79,7 +79,7 @@ jobs:
       - name: Make the snapshot
         run: |
           node factory/apps/factory/src/vulnerabilities/graph.ts scanned \
-            --syft-pin factory/.github/images/syft/Dockerfile --out "$RUNNER_TEMP/graph" \
+            --syft-pin factory/deploy/images/syft/Dockerfile --out "$RUNNER_TEMP/graph" \
             --sha "$GITHUB_SHA" --ref "$GITHUB_REF" --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Submit it
         env:
@@ -118,7 +118,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            .github/images/syft/Dockerfile
+            deploy/images/syft/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -136,6 +136,6 @@ jobs:
           version=$(node factory/apps/factory/src/vulnerabilities/coverage.ts --pnpm-version scanned)
           cd factory
           mise exec "pnpm@$version" -- node "$GITHUB_WORKSPACE/factory/apps/factory/src/vulnerabilities/graph.ts" \
-            "$GITHUB_WORKSPACE/scanned" --syft-pin "$GITHUB_WORKSPACE/factory/.github/images/syft/Dockerfile" \
+            "$GITHUB_WORKSPACE/scanned" --syft-pin "$GITHUB_WORKSPACE/factory/deploy/images/syft/Dockerfile" \
             --out "$RUNNER_TEMP/graph" --sha "$BASE_SHA" --ref "refs/heads/$BASE_REF" \
             --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --prove

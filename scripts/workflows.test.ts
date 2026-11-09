@@ -415,7 +415,7 @@ describe('vulnerabilities.yml', () => {
 describe('dependency-graph.yml', () => {
   const workflow = read('dependency-graph.yml');
   const jobs = workflow.jobs;
-  const SYFT_PIN = '.github/images/syft/Dockerfile';
+  const SYFT_PIN = 'deploy/images/syft/Dockerfile';
 
   function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
     const step = jobs[job]?.steps?.[0];
@@ -464,7 +464,7 @@ describe('dependency-graph.yml', () => {
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/dependency-graph.yml',
       'apps/factory/src/vulnerabilities/**',
-      '.github/images/syft/**',
+      'deploy/images/syft/**',
       'mise.toml',
       'mise.lock',
     ]);

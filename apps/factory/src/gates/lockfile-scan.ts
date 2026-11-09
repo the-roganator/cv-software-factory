@@ -137,12 +137,38 @@ export function trivyPin(dockerfile: string) {
   return /^FROM (ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64})$/m.exec(dockerfile)?.[1];
 }
 
-/** Trivy in its pinned image, through Docker, with one cache for the database. */
+/** Removes what the gate made, and never fails it: the verdict is already given. */
+function remove(path: string) {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch (error) {
+    console.log(`Could not remove ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Trivy in its pinned image, through Docker, with one cache for the database. It runs as this process's user, so
+ * what it writes (the database, the report) is ours to read and remove.
+ */
 function trivy(image: string, cache: string) {
+  const user = process.getuid && process.getgid ? ['--user', `${process.getuid()}:${process.getgid()}`] : [];
   const docker = (mounts: string[], args: string[]) =>
-    run('docker', ['run', '--rm', '-v', `${cache}:/cache`, ...mounts.flatMap((m) => ['-v', m]), image, ...args], {
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    run(
+      'docker',
+      [
+        'run',
+        '--rm',
+        ...user,
+        '-e',
+        'HOME=/tmp',
+        '-v',
+        `${cache}:/cache`,
+        ...mounts.flatMap((m) => ['-v', m]),
+        image,
+        ...args,
+      ],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
   return {
     async database() {
       let last: unknown;
@@ -189,7 +215,7 @@ function trivy(image: string, cache: string) {
       } catch (error) {
         return { error: (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'failed' };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        remove(dir);
       }
     },
   };
@@ -250,7 +276,7 @@ export async function main(args: string[]): Promise<number> {
       `${f.severity} ${f.advisory} in ${f.pkg} ${f.version}, reached from ${f.dev ? 'development' : 'production'}`,
       f.lockfile,
     );
-  rmSync(cache, { recursive: true, force: true });
+  remove(cache);
   return added.length || unread.length ? 1 : 0;
 }
 

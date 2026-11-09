@@ -96,9 +96,12 @@ updates:
   #   Microsoft's, mcr.microsoft.com (playwright, devcontainers)     no date
   #   GHCR (open-feature/flagd, below)                               no date
   #   GHCR (aquasecurity/trivy)                                      unknown until its first bump: taken to give none
+  #   GHCR (anchore/syft)                                            unknown until its first bump: taken to give none
   #   Quay (prometheuscommunity/postgres-exporter)                   unknown until its first bump
   # Trivy is the scanner every workflow runs, pinned once, in .github/images/trivy/Dockerfile, which nothing builds; the
   # cooldown is kept for it so that it holds if GHCR gives a date, and a bump waits for Martin, as .github/ is his.
+  # Syft, which the dependency graph runs, is pinned the same way, in .github/images/syft/Dockerfile; its bump moves
+  # build.yml's `syft-version` by hand in the same pull request (scripts/workflows.test.ts holds the two together).
   - package-ecosystem: docker
     directory: /apps/factory
     schedule:
@@ -112,6 +115,7 @@ updates:
       - /apps/factory
       - /apps/runner
       - /.devcontainer
+      - /.github/images/syft
       - /.github/images/trivy
       - /deploy/base/postgres
       - /deploy/base/postgres-exporter

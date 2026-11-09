@@ -1,0 +1,139 @@
+# The dependency graph (docs/COMPONENTS/SECURITY-SCANNING.md#the-dependency-graph): every package each lockfile on the
+# repository's list resolves, indirect ones included, submitted to GitHub's dependency submission API on each push to
+# the default branch, so the graph and Dependabot's alerts hold the whole lockfile and not only what a manifest names.
+#
+# Shared: cv-worlds-worst-website calls this workflow at a pinned commit, on a push alone, and grants `contents: write`
+# to it alone; its snapshot reaches its own graph, since the submission names the calling repository. The script and
+# Syft's pin come from this repository at the workflow's own commit; the submitted repository's checkout is data, and
+# nothing in it runs. Each lockfile is copied alone into an empty directory, which Syft's image reads, read-only and
+# with no network (apps/factory/src/vulnerabilities/graph.ts).
+#
+# - submit: on a push to the default branch alone, here or the caller's, with `contents: write` and nothing else. Each
+#   snapshot names the commit, the ref and the correlator `dependency-graph.yml`, so it replaces the one before it.
+# - prove: on a pull request that changes the graph or the scripts it runs, with `contents: read` alone. It makes the
+#   same snapshot of the base's checkout and submits nothing, then installs each lockfile as the scan's coverage does,
+#   and fails if the snapshot lacks a package `pnpm list --depth Infinity` names, calls one direct or indirect where
+#   pnpm lists it the other way, or names no indirect package. Its log carries the counts.
+name: dependency-graph
+
+on:
+  push:
+    branches: [main]
+  workflow_call:
+  pull_request:
+    paths:
+      - .github/workflows/dependency-graph.yml
+      - apps/factory/src/vulnerabilities/**
+      - .github/images/syft/**
+
+permissions: {}
+
+jobs:
+  submit:
+    name: submit
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # One submission at a time, the newest waiting: GitHub keeps the last snapshot of a correlator it is sent, so an
+    # older run finishing last would hold the graph at its commit.
+    concurrency:
+      group: dependency-graph-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # the dependency submission API, with the job's token
+    steps:
+      - name: Refuse a privileged context
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != push ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::The graph is submitted only on a push to the default branch, not $GITHUB_EVENT_NAME to $GITHUB_REF."
+            exit 1
+          fi
+      # The submitted repository, as data.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: scanned
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/vulnerabilities/
+            .github/images/syft/Dockerfile
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # Node to run the script, and yq for the list and the lockfile: each at the version this repository's mise.lock holds.
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node yq
+      - name: Make the snapshot
+        run: |
+          node factory/apps/factory/src/vulnerabilities/graph.ts scanned \
+            --syft-pin factory/.github/images/syft/Dockerfile --out "$RUNNER_TEMP/graph" \
+            --sha "$GITHUB_SHA" --ref "$GITHUB_REF" --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Submit it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" \
+            --input "$RUNNER_TEMP/graph/snapshot.json" --jq '"Snapshot \(.id): \(.result), \(.message)"'
+
+  # The same snapshot, of the pull request's base, with no permission to write anything: a pull request proves a change
+  # to the graph by its own run, and nothing it does reaches the graph.
+  prove:
+    name: submit (proving)
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a privileged context
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "::error::The proving run runs only on a pull request, not $GITHUB_EVENT_NAME."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: scanned
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/vulnerabilities/
+            .github/images/syft/Dockerfile
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node yq
+      # The pnpm the checkout's mise pins, read as data, installed by this repository's mise, as the scan's coverage does.
+      - name: Make the snapshot and compare it with pnpm's list
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          version=$(node factory/apps/factory/src/vulnerabilities/coverage.ts --pnpm-version scanned)
+          cd factory
+          mise exec "pnpm@$version" -- node "$GITHUB_WORKSPACE/factory/apps/factory/src/vulnerabilities/graph.ts" \
+            "$GITHUB_WORKSPACE/scanned" --syft-pin "$GITHUB_WORKSPACE/factory/.github/images/syft/Dockerfile" \
+            --out "$RUNNER_TEMP/graph" --sha "$BASE_SHA" --ref "refs/heads/$BASE_REF" \
+            --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --prove

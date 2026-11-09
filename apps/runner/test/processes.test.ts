@@ -18,6 +18,8 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
+// The group kill is for a Claude Code killed before it could end its tools' commands (the SDK's SIGKILL, five seconds
+// after asking): given its time, it ends them itself, so `runAgent`'s own tests cannot reach this path.
 describe('what the agent’s tools left running', () => {
   it('is every process under the runner, children and theirs', () => {
     const table = [
@@ -33,7 +35,8 @@ describe('what the agent’s tools left running', () => {
 
   it('is ended with its group, a child its shell left behind too', async () => {
     // A shell in a group of its own, as Claude Code runs a command, with a long child.
-    const shell = spawn('sh', ['-c', `${process.execPath} -e "setTimeout(() => {}, 60000)" & wait`], {
+    // Node's path is the shell's $0, an argument, not part of the command.
+    const shell = spawn('sh', ['-c', '"$0" -e "setTimeout(() => {}, 60000)" & wait', process.execPath], {
       detached: true,
       stdio: 'ignore',
     });

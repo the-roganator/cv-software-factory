@@ -177,6 +177,26 @@ describe('a runner’s agent', () => {
     expect(() => process.kill(child, 0)).toThrow();
   }, 30_000);
 
+  it('ends with its result when a child of its tools will not end when asked', async () => {
+    const work = volume();
+    const pidFile = join(work, 'stubborn.pid');
+    // A command past its timeout whose process ignores the SIGTERM Claude Code ends its commands with.
+    const stubborn = `node -e "process.on('SIGTERM', () => {}); require('fs').writeFileSync('${pidFile}', String(process.pid)); setTimeout(() => {}, 60000)"`;
+    const started = Date.now();
+    const handback = await run(
+      [
+        { tool: 'Bash', input: { command: stubborn, description: 'Install', timeout: 2000 } },
+        { text: 'Started the install.' },
+      ],
+      { work },
+    );
+    // The child's two seconds and Claude Code's time to end, at most: not the minute.
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(handback).toMatchObject({ ending: 'finished', note: 'Started the install.' });
+    const child = Number(readFileSync(pidFile, 'utf-8'));
+    expect(() => process.kill(child, 0)).toThrow();
+  }, 30_000);
+
   it('stops at its turn limit, and says so', async () => {
     const handback = await run([bash('echo still thinking')], { maxTurns: 2, repeat: true });
     expect(handback).toMatchObject({ ending: 'max-turns', patch: '', turns: expect.any(Number) });

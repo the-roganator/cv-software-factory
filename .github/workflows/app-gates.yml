@@ -69,6 +69,7 @@ jobs:
       - name: Find the base
         id: base
         env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           base=$(factory/apps/factory/src/gates/base.sh change)
@@ -156,6 +157,7 @@ jobs:
       - name: Find the base
         id: base
         env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           base=$(factory/apps/factory/src/gates/base.sh change)
@@ -214,6 +216,7 @@ jobs:
       - name: Find the base
         id: base
         env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           base=$(factory/apps/factory/src/gates/base.sh change)
@@ -309,6 +312,7 @@ jobs:
       - name: Find the base
         id: base
         env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           base=$(factory/apps/factory/src/gates/base.sh change)

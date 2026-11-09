@@ -63,7 +63,10 @@ function checkout(origin: string, ref: string): string {
 }
 
 const base = (change: string, env: Record<string, string>) =>
-  spawnSync(SCRIPT, [change], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf-8' });
+  spawnSync(SCRIPT, [change], {
+    env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...env },
+    encoding: 'utf-8',
+  });
 
 /** A pull request that opened on main's first commit, and main moved on after it by a change to a test. */
 function movedOn() {
@@ -72,21 +75,21 @@ function movedOn() {
   git(origin, 'init', '-q');
   const opened = commit(origin, 'cart.test.ts', "expect(header).toBe('no-store');\n");
   git(origin, 'checkout', '-q', '-b', 'pr');
-  commit(origin, 'cart.ts', 'export const total = 2;\n');
+  const head = commit(origin, 'cart.ts', 'export const total = 2;\n');
   git(origin, 'checkout', '-q', 'main');
   const first = mergeRef(origin);
   const moved = commit(origin, 'cart.test.ts', "expect(header).toBe('public, max-age=60');\n");
   const now = mergeRef(origin);
-  return { origin, opened, first, moved, now };
+  return { origin, opened, head, first, moved, now };
 }
 
 describe("the app's gates' base (base.sh)", () => {
   it('is the base a pull request would merge into now, not the one it opened on', () => {
-    const { origin, opened, moved, now } = movedOn();
+    const { origin, opened, head, moved, now } = movedOn();
     const change = checkout(origin, 'refs/pull/1/merge');
     expect(git(change, 'rev-parse', 'HEAD')).toBe(now);
 
-    const found = base(change, { GITHUB_EVENT_NAME: 'pull_request' });
+    const found = base(change, { GITHUB_EVENT_NAME: 'pull_request', PR_HEAD_SHA: head });
     expect(found.stderr).toBe('');
     expect(found.status).toBe(0);
     expect(found.stdout).toBe(`${moved}\n`);
@@ -94,15 +97,26 @@ describe("the app's gates' base (base.sh)", () => {
   });
 
   it('is the base it opened on while main has not moved', () => {
-    const { origin, opened, first } = movedOn();
+    const { origin, opened, head, first } = movedOn();
     const change = checkout(origin, first);
-    expect(base(change, { GITHUB_EVENT_NAME: 'pull_request' }).stdout).toBe(`${opened}\n`);
+    expect(base(change, { GITHUB_EVENT_NAME: 'pull_request', PR_HEAD_SHA: head }).stdout).toBe(`${opened}\n`);
+  });
+
+  it('is none when the merge commit does not merge the pull request’s head', () => {
+    const { origin, opened } = movedOn();
+    const change = checkout(origin, 'refs/pull/1/merge');
+    for (const head of [opened, '']) {
+      const found = base(change, { GITHUB_EVENT_NAME: 'pull_request', PR_HEAD_SHA: head });
+      expect(found.status).toBe(1);
+      expect(found.stdout).toBe('');
+      expect(found.stderr).toMatch(/not the pull request's head/);
+    }
   });
 
   it('is none on a pull request whose checkout is not a merge commit', () => {
-    const { origin } = movedOn();
+    const { origin, head } = movedOn();
     const change = checkout(origin, 'pr');
-    const found = base(change, { GITHUB_EVENT_NAME: 'pull_request' });
+    const found = base(change, { GITHUB_EVENT_NAME: 'pull_request', PR_HEAD_SHA: head });
     expect(found.status).toBe(1);
     expect(found.stdout).toBe('');
     expect(found.stderr).toMatch(

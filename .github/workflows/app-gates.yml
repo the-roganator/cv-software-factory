@@ -32,11 +32,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # The commit the change is compared with: the pull request's base, or in the merge queue the group's, which is main
-  # with the pull requests ahead of it in the queue, so each is judged on its own change.
-  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-
 jobs:
   journeys:
     name: journeys
@@ -53,23 +48,36 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
-      # This workflow's own repository and commit, for the image its local profile pins.
+      # This workflow's own repository and commit, for the image its local profile pins and the base's script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: factory
-          sparse-checkout: deploy/overlays/local/factory-image/kustomization.yaml
+          sparse-checkout: |
+            deploy/overlays/local/factory-image/kustomization.yaml
+            apps/factory/src/gates/base.sh
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with: the one it would merge into now (base.sh).
+      - name: Find the base
+        id: base
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
           persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -77,7 +85,7 @@ jobs:
           context: base
           load: true
           tags: app:base
-          build-args: GIT_COMMIT=${{ env.BASE_SHA }}
+          build-args: GIT_COMMIT=${{ steps.base.outputs.sha }}
           cache-from: type=gha
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -127,14 +135,11 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,6 +151,20 @@ jobs:
             mise.lock
             apps/factory/src/gates/
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with: the one it would merge into now (base.sh).
+      - name: Find the base
+        id: base
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
@@ -177,14 +196,11 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,6 +209,20 @@ jobs:
           path: factory
           sparse-checkout: apps/factory/src/gates/
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with: the one it would merge into now (base.sh).
+      - name: Find the base
+        id: base
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
           persist-credentials: false
       # The app's own toolchain, as its base pins it.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -233,7 +263,9 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      # It compares the dependency graph of the base and the change, so it fails only on what the change brings in.
+      # It compares the dependency graph of the base and the change, so it fails only on what the change brings in. It
+      # takes them from the event, and compares from where the change left the base (`base...head`), so the event's
+      # base being older than main changes nothing it sees.
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: low
@@ -254,14 +286,11 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -275,6 +304,20 @@ jobs:
             apps/factory/src/gates/
             .github/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with: the one it would merge into now (base.sh).
+      - name: Find the base
+        id: base
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:

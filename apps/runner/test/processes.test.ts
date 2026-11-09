@@ -34,12 +34,16 @@ describe('what the agent’s tools left running', () => {
   });
 
   it('is ended with its group, a child its shell left behind too', async () => {
-    // A shell in a group of its own, as Claude Code runs a command, with a long child.
-    // Node's path is the shell's $0, an argument, not part of the command.
-    const shell = spawn('sh', ['-c', '"$0" -e "setTimeout(() => {}, 60000)" & wait', process.execPath], {
-      detached: true,
-      stdio: 'ignore',
-    });
+    // A process in a group of its own, as Claude Code runs a command's shell, with a long child. No shell: Node
+    // starts the child itself.
+    const shell = spawn(
+      process.execPath,
+      [
+        '-e',
+        "require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' }); setTimeout(() => {}, 60000)",
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
     const pid = shell.pid as number;
     let snapshot: ReturnType<typeof descendants> = [];
     let child = 0;

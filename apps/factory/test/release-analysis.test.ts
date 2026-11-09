@@ -14,6 +14,7 @@ import {
   outOfDate,
   queries,
   render,
+  STABLE_SEEN,
   SWITCH_FRESH,
   switched,
   TEMPLATES,
@@ -209,8 +210,8 @@ function promtool(tests: unknown[]): { passed: boolean; output: string } {
       output: execFileSync('promtool', ['test', 'rules', file], { encoding: 'utf-8', stdio: 'pipe' }),
     };
   } catch (error) {
-    const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
-    return { passed: false, output: `${stdout}${stderr}` };
+    const { stdout = '', stderr = '', message } = error as { stdout?: string; stderr?: string; message: string };
+    return { passed: false, output: `${message}\n${stdout}${stderr}` };
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
@@ -363,19 +364,25 @@ describe('with no stable version, as the analysis reads it', () => {
    * Has promtool evaluate a template's measure at 5m over these series and check it answers exactly these figures (the
    * second under the switch's label), then gives the measurement's phase from the template's own conditions.
    */
-  function judge(template: string, name: string, series: { series: string; values: string }[], figures: number[]) {
+  function judge(
+    template: string,
+    name: string,
+    series: { series: string; values: string }[],
+    figures: number[],
+    { interval = '15s', at = '5m' } = {},
+  ) {
     const metric = metricsOf(template).find((m) => m.name === name);
     const query = metric?.provider.prometheus?.query;
     if (!metric?.successCondition || !metric.failureCondition || !query) throw new Error(`no measure ${name}`);
     const labels = ['{}', `{${OFF_LABEL}="off"}`];
     const run = promtool([
       {
-        interval: '15s',
+        interval,
         input_series: series,
         promql_expr_test: [
           {
             expr: query.replaceAll('{{args.canary-hash}}', CANARY).replaceAll('{{args.stable-hash}}', STABLE),
-            eval_time: '5m',
+            eval_time: at,
             exp_samples: figures.map((value, i) => ({ labels: labels[i], value })),
           },
         ],
@@ -448,6 +455,29 @@ describe('with no stable version, as the analysis reads it', () => {
       expect(judge(template, name, [...version(CANARY), ...unrouted, split], [Number.POSITIVE_INFINITY])).toBe(
         'Failed',
       );
+    },
+  );
+
+  it.each(measures)(
+    '$template $name fails a canary with series whose requests did not grow, with no stable version',
+    ({ template, name }) => {
+      const flat = version(CANARY).map((v) => ({ ...v, values: counter(0) }));
+      expect(judge(template, name, [...flat, split], [Number.POSITIVE_INFINITY])).toBe('Failed');
+    },
+  );
+
+  it.each(measures)(
+    `$template $name calls a stable version not measured for ${STABLE_SEEN} none, and one measured within it a gap`,
+    ({ template, name }) => {
+      // Every minute for 25 hours: the canary and the split from 1490m, judged at 1500m.
+      const late = (v: { series: string; values: string }) => ({ ...v, values: `_x1490 ${v.values}` });
+      const canary = [...version(CANARY), split].map(late);
+      const daily = { interval: '1m', at: '1500m' };
+      // The stable version served from 0 to 10m, more than a day before: no baseline.
+      expect(judge(template, name, [...canary, ...version(STABLE, { until: 10 })], [0], daily)).toBe('Successful');
+      // It served from 100m to 110m, within the day: a gap in its telemetry.
+      const within = version(STABLE, { until: 10 }).map((v) => ({ ...v, values: `_x100 ${v.values}` }));
+      expect(judge(template, name, [...canary, ...within], [Number.POSITIVE_INFINITY], daily)).toBe('Failed');
     },
   );
 

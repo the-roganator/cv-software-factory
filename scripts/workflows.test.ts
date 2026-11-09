@@ -302,7 +302,7 @@ describe("Trivy's pin", () => {
       .filter((update) => update['package-ecosystem'] === 'docker')
       .flatMap((update) => update.directories ?? (update.directory ? [update.directory] : []));
     expect(docker).toContain(`/${TRIVY_PIN.replace(/\/Dockerfile$/, '')}`);
-    expect(docker.filter((directory) => directory.startsWith('/.github/'))).toEqual([]);
+    expect(docker.filter((directory) => `${directory}/`.startsWith('/.github/'))).toEqual([]);
   });
 
   it('refuses a FROM without a version, without a digest, of another image, or beside another', () => {

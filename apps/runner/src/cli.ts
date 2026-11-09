@@ -29,6 +29,10 @@ if (command === 'prepare' || command === 'agent') {
     log(`the ${command} step failed`, { level: 'error', error: errorText(error) });
     process.exitCode = 1;
   }
+  // Nothing is left to wait on once the step is done: a handle a tool's child held open must not keep the pod up. Its
+  // lines are written out first, since stdout and stderr may be pipes written asynchronously.
+  await Promise.all([process.stdout, process.stderr].map((out) => new Promise((resolve) => out.write('', resolve))));
+  process.exit();
 } else {
   console.log('Usage:\n  runner prepare\n  runner agent');
   process.exitCode = 2;

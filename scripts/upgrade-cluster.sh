@@ -114,6 +114,11 @@ if [[ "$mode" == back ]]; then
   [[ -n "$backup" ]] || { echo "No copy of $cluster's state to go back to." >&2; exit 1; }
   [[ "$backup" != *$'\n'* ]] || { echo "More than one copy of $cluster's state is kept, and BACK=1 will not choose: $(echo $backup)." >&2; exit 1; }
   was=$(docker volume inspect -f '{{index .Labels "software-factory.k3s"}}' "$backup")
+  # Going back with the line running would take the work in flight back with it.
+  if running && [[ "$(node "$here/cluster-figures.ts" take "$context" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).line)')" == started ]]; then
+    echo "The line is running, and going back would take its work in flight back too. Stop it first: make stop-the-line REASON=\"k3s upgrade\"" >&2
+    exit 1
+  fi
   echo "Going back to $backup, on $was."
   # What the cluster holds now, and has made since the move, is kept too, never deleted by going back.
   left=$state-left-$(date -u +%Y%m%dT%H%M%SZ)

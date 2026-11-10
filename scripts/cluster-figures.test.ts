@@ -67,6 +67,15 @@ describe('the figures a moved cluster must match (make upgrade-cluster)', () => 
     ]);
   });
 
+  it('find the line started during the move', () => {
+    const after = figures();
+    after.line = 'started';
+    expect(compare(figures(), after)).toEqual(['the line was started during the move']);
+    const before = figures();
+    before.line = 'never started';
+    expect(compare(before, figures())).toEqual([]);
+  });
+
   it('find the flags, the Secrets or a volume moved', () => {
     const after = figures();
     after.flags = null;

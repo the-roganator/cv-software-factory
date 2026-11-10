@@ -8,7 +8,7 @@
 
 import type * as POLICY from '../../../../policy/vulnerabilities.ts';
 import type { Exception } from '../../../../policy/vulnerabilities.ts';
-import { alertKey, type Finding, merge } from './sarif.ts';
+import { alertKey, type Finding, fingerprint, merge } from './sarif.ts';
 
 /** policy/vulnerabilities.ts, or the same functions over other entries, for the tests. */
 export type Policy = typeof POLICY;
@@ -82,15 +82,28 @@ export function judge(
   const warnings: string[] = [];
   const entries = policy.EXCEPTIONS.filter((entry) => entry.repository === repository);
   const used = new Set<Exception>();
-  for (const finding of merge(findings)) {
-    const entry = policy.exceptionFor(
-      entries,
-      { repository, item: finding.listed ?? '', package: finding.package, advisory: finding.advisory },
-      today,
+  // A result is every finding with its fingerprint (sarif.ts's `merge`): two stages of one Dockerfile on two tags of
+  // one image are one result. It is excepted only when an entry in force covers every one of them, so an exception for
+  // one stage's image never dismisses the other's finding.
+  const byResult = new Map<string, Finding[]>();
+  for (const finding of findings) {
+    const key = fingerprint(finding);
+    byResult.set(key, [...(byResult.get(key) ?? []), finding]);
+  }
+  const results = new Map(merge(findings).map((result) => [fingerprint(result), result]));
+  for (const [key, group] of byResult) {
+    const found = group.map((finding) =>
+      policy.exceptionFor(
+        entries,
+        { repository, item: finding.listed ?? '', package: finding.package, advisory: finding.advisory },
+        today,
+      ),
     );
-    if (!entry) continue;
-    used.add(entry);
-    excepted.set(alertKey(finding), policy.dismissal(entry));
+    const [entry] = found;
+    const result = results.get(key);
+    if (!entry || !result || found.some((each) => !each)) continue;
+    for (const each of found) if (each) used.add(each);
+    excepted.set(alertKey(result), policy.dismissal(entry));
   }
   const unused = idle(policy, repository, names, today);
   lines.push(
@@ -129,8 +142,19 @@ export function problems(
   for (const entry of policy.EXCEPTIONS) {
     const name = entryName(entry);
     if (!entry.reason?.trim()) found.push(`${name}: it gives no reason`);
+    // An expired entry is the scan's to report; every other lapse is a fault in the entry.
+    const day = typeof today === 'string' ? today : today.toISOString().slice(0, 10);
     const why = policy.lapsed(entry, today);
-    if (why && !why.startsWith('it expired')) found.push(`${name}: ${why}`);
+    if (why && !(entry.expires < day && !policy.lapsed(entry, entry.expires))) found.push(`${name}: ${why}`);
+    const same = policy.EXCEPTIONS.filter(
+      (other) =>
+        other.repository === entry.repository &&
+        policy.withoutDigest(other.item) === policy.withoutDigest(entry.item) &&
+        other.package === entry.package &&
+        other.advisory === entry.advisory,
+    );
+    if (same.length > 1 && same[0] === entry)
+      found.push(`${name}: it is excepted by ${same.length} entries: renew one by its expiry, and remove the rest`);
     if (!repositories.includes(entry.repository))
       found.push(`${name}: ${entry.repository} is not one of the repositories`);
     if (!policy.ADVISORY.test(entry.advisory)) found.push(`${name}: ${entry.advisory} is not a CVE or GHSA id`);

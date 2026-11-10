@@ -105,6 +105,10 @@ describe('the policy', () => {
     // An image by its reference, its digest aside; one that names two of the list's items is not one item.
     expect(check({ item: 'ghcr.io/example/app' })).toEqual([]);
     expect(check({ item: 'node:24.22.2-alpine3.24' })).toEqual([expect.stringContaining('names 2 items')]);
+    // Two entries for one finding: a renewal that left the old one.
+    expect(problems(withEntries([entry(), entry({ expires: '2027-01-31' })]), REPOSITORIES, lists, TODAY)).toEqual([
+      expect.stringContaining('it is excepted by 2 entries'),
+    ]);
   });
 
   it('is in force to its expiry and no further than 90 days off', () => {
@@ -179,6 +183,28 @@ describe("the scan's reading of it", () => {
     expect(idle(p, APP, ['pnpm-lock.yaml'], TODAY)).toEqual([]);
   });
 
+  it("excepts a result two stages of one Dockerfile share only when an entry covers each stage's image", () => {
+    const stage = (tag: string) =>
+      finding({
+        item: 'apps/x/Dockerfile node',
+        listed: `node:${tag}@sha256:${'c'.repeat(64)}`,
+        label: `node:${tag}`,
+        file: 'apps/x/Dockerfile',
+        line: 2,
+        type: 'debian',
+        package: 'openssl',
+      });
+    const both = [stage('22'), stage('24')];
+    const names = both.map((f) => f.listed ?? '');
+    const one = withEntries([entry({ item: 'node:24', package: 'openssl' })]);
+    expect(judge(one, FACTORY, names, both, osvScannerToml(one, FACTORY, TODAY), TODAY).excepted.size).toBe(0);
+    const each = withEntries([
+      entry({ item: 'node:24', package: 'openssl' }),
+      entry({ item: 'node:22', package: 'openssl' }),
+    ]);
+    expect(judge(each, FACTORY, names, both, osvScannerToml(each, FACTORY, TODAY), TODAY).excepted.size).toBe(1);
+  });
+
   it("warns, and fails nothing, when the repository's osv-scanner.toml is not the policy's or is missing", () => {
     const p = withEntries([entry()]);
     expect(judge(p, FACTORY, ['pnpm-lock.yaml'], [], osvScannerToml(p, FACTORY, TODAY), TODAY).warnings).toEqual([]);
@@ -231,7 +257,8 @@ describe('the alerts, on code scanning’s recorded answers', () => {
       { number: 101, to: 'dismissed', comment: policy.dismissal(entry()) },
       // Dismissed as a false positive by hand: the policy holds no exception for it.
       { number: 201, to: 'open' },
-      // Dismissed for the exception, with older words: dismissed again with the policy's.
+      // Dismissed for the exception, with older words: dismissed again with the policy's. (#205's words, stored with a
+      // trailing newline, would count as the same.)
       { number: 202, to: 'open' },
       { number: 202, to: 'dismissed', comment: policy.dismissal(entry()) },
       // A finding no longer reported, dismissed: reopened, as nothing excepts it.
@@ -300,6 +327,12 @@ describe('the alerts, on code scanning’s recorded answers', () => {
     };
     await expect(hold(api, FACTORY, excepted, () => {})).rejects.toThrow(/other than a list/);
     expect(patched).toEqual([]);
+  });
+
+  it('takes a comment code scanning stored with whitespace about it as the same comment', () => {
+    const stored = recorded('patched') as unknown as Alert;
+    const alert = { ...stored, dismissed_comment: ` ${policy.dismissal(entry())}\n` } as Alert;
+    expect(changes([alert], excepted)).toEqual([]);
   });
 });
 

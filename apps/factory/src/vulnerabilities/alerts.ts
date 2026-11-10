@@ -63,7 +63,7 @@ export function changes(alerts: Alert[], excepted: Record<string, string>): Chan
     if (alert.state === 'open' && comment !== undefined) out.push({ number: alert.number, to: 'dismissed', comment });
     if (alert.state !== 'dismissed') continue;
     if (comment === undefined) out.push({ number: alert.number, to: 'open' });
-    else if (alert.dismissed_reason !== WONT_FIX || alert.dismissed_comment !== comment)
+    else if (alert.dismissed_reason !== WONT_FIX || (alert.dismissed_comment ?? '').trim() !== comment.trim())
       out.push({ number: alert.number, to: 'open' }, { number: alert.number, to: 'dismissed', comment });
   }
   return out;

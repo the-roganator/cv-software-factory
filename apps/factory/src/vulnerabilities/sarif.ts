@@ -26,6 +26,8 @@ import { gzipSync } from 'node:zlib';
 export interface Finding {
   /** The item, as its alerts know it: what stays the same when its pin moves (scan.ts's `itemKey`). */
   item: string;
+  /** The item as the repository's list names it (inventory.ts's `name`), which an exception names. */
+  listed?: string | undefined;
   /** The item as the message names it: an image with its digest, a lockfile's path, a chart's image. */
   label: string;
   /** The line that pins it, where the alert is located. */
@@ -198,6 +200,17 @@ export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
   return out;
 }
 
+/** A result's message, which its alert's latest instance carries: the package, its version, the item and the advisory. */
+export const messageOf = (finding: Finding) =>
+  `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.`;
+
+/**
+ * What tells a result's alert apart, as code scanning's API gives it back: the advisory (its rule), the file and line,
+ * and the message. The fingerprint itself is not in the API's answer.
+ */
+export const alertKey = (finding: Finding) =>
+  JSON.stringify([finding.advisory, finding.file, Math.max(1, finding.line), messageOf(finding)]);
+
 /** One run: a group's results and the rules they name, in its category. */
 function run(group: Part[], index: number, trivyVersion?: string): Run {
   const merged = group
@@ -238,9 +251,7 @@ function run(group: Part[], index: number, trivyVersion?: string): Run {
     ruleId: finding.advisory,
     ruleIndex: ruleAt.get(finding.advisory) ?? 0,
     level: LEVEL[finding.severity],
-    message: {
-      text: `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.`,
-    },
+    message: { text: messageOf(finding) },
     locations: [
       {
         physicalLocation: { artifactLocation: { uri: finding.file }, region: { startLine: Math.max(1, finding.line) } },

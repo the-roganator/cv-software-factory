@@ -21,7 +21,10 @@
  *   could stand in for a vulnerable tree.
  * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
  *
- * It excepts nothing: no exception is read from the change, or from anywhere else.
+ * Its exceptions are the daily scan's: the entries of `policy/vulnerabilities.ts` in force, read from this repository's
+ * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges (GITHUB_REPOSITORY), each for one lockfile, package and
+ * advisory. A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
+ * excepted finding is not held by it. Nothing is read from the change that could except anything.
  *
  * Both checkouts are data: nothing in them runs. Trivy runs in its pinned image, the advisory database pulled once,
  * with retries, and both sides read against that one database, so an advisory published during the run cannot make
@@ -32,6 +35,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { EXCEPTIONS, type Exception, exceptionFor } from '../../../../policy/vulnerabilities.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 const run = promisify(execFile);
@@ -142,6 +146,26 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
     (f) => !before.has(key(f)) && !(f.dev && before.has(key({ ...f, dev: false }))),
   );
   return { added, unread, total: after.size };
+}
+
+/**
+ * What the change brings in, split into what fails and what an exception in force for the repository excepts: the
+ * entries of policy/vulnerabilities.ts, which the workflow takes from `main`, or others, for the tests.
+ */
+export function except(
+  added: Finding[],
+  repository: string,
+  entries: readonly Exception[] = EXCEPTIONS,
+  today: Date | string = new Date(),
+) {
+  const excepted: (Finding & { expires: string })[] = [];
+  const failing: Finding[] = [];
+  for (const f of added) {
+    const entry = exceptionFor(entries, { repository, item: f.lockfile, package: f.pkg, advisory: f.advisory }, today);
+    if (entry) excepted.push({ ...f, expires: entry.expires });
+    else failing.push(f);
+  }
+  return { excepted, failing };
 }
 
 /** The Trivy image a Dockerfile pins, by version and digest, as scripts/workflows.test.ts holds it. */
@@ -383,6 +407,7 @@ export async function main(args: string[]): Promise<number> {
     console.error('Usage: lockfile-scan.ts <base checkout> <change checkout> --trivy-pin <Dockerfile>');
     return 2;
   }
+  const repository = process.env.GITHUB_REPOSITORY ?? '';
   const image = trivyPin(readFileSync(pinFile, 'utf-8'));
   if (!image) {
     console.error(`::error::${pinFile} pins no Trivy by version and digest.`);
@@ -427,7 +452,8 @@ export async function main(args: string[]): Promise<number> {
       console.error('::error::The change tracks no lockfile to scan.');
       return 1;
     }
-    const { added, unread, total } = judge(base, change);
+    const { added: brought, unread, total } = judge(base, change);
+    const { excepted, failing: added } = except(brought, repository);
     const rows = added
       .map(
         (f) =>
@@ -443,7 +469,10 @@ export async function main(args: string[]): Promise<number> {
           : '',
         added.length
           ? `This change brings in ${added.length} vulnerabilit${added.length === 1 ? 'y' : 'ies'} the base does not have.\n\n| Severity | Vulnerability | Package | Reached from | Fixed in | Lockfile | Title |\n|---|---|---|---|---|---|---|\n${rows}`
-          : `This change brings in no vulnerability. Its lockfiles have ${total} known in all.`,
+          : `This change brings in no vulnerability${excepted.length ? ' but those excepted' : ''}. Its lockfiles have ${total} known in all.`,
+        excepted.length
+          ? `It brings in ${excepted.length} that policy/vulnerabilities.ts on main excepts, which fail nothing:\n\n| Vulnerability | Package | Lockfile | Excepted until |\n|---|---|---|---|\n${excepted.map((f) => `| ${f.advisory} | ${cell(f.pkg)} ${cell(f.version)} | ${cell(f.lockfile)} | ${f.expires} |`).join('\n')}`
+          : '',
       ]
         .filter(Boolean)
         .join('\n\n'),

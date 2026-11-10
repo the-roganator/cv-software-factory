@@ -62,7 +62,7 @@ describe("check.yml's lockfile scan", () => {
     expect(run.stdout).toContain('::error::The base has no lockfile gate');
   });
 
-  it("runs the base's gate when it has one, with the base, the change and the base's pin, and fails as it fails", () => {
+  it("runs the base's gate when it has one, with the base, the change, the base's pin, and fails as it fails", () => {
     const argv = 'console.log(JSON.stringify(process.argv.slice(2)));';
     const passed = compare(argv);
     expect(passed.status).toBe(0);
@@ -73,12 +73,65 @@ describe("check.yml's lockfile scan", () => {
 
   it("reads the base's pin at its old path only when the base has none at the new one", () => {
     const argv = 'console.log(JSON.stringify(process.argv.slice(2)));';
-    const pinOf = (pins: string[]) => JSON.parse(compare(argv, { pins }).stdout).at(-1);
+    const pinOf = (pins: string[]) => {
+      const args = JSON.parse(compare(argv, { pins }).stdout) as string[];
+      return args[args.indexOf('--trivy-pin') + 1];
+    };
     expect(pinOf(['.github/images/trivy/Dockerfile'])).toBe('base/.github/images/trivy/Dockerfile');
     expect(pinOf(['deploy/images/trivy/Dockerfile', '.github/images/trivy/Dockerfile'])).toBe(
       'base/deploy/images/trivy/Dockerfile',
     );
     // With neither, the base's gate is given the new path, and fails on it.
     expect(pinOf([])).toBe('base/deploy/images/trivy/Dockerfile');
+  });
+});
+
+describe("the exceptions, from main's policy alone", () => {
+  type Step = { name?: string; uses?: string; run?: string; with?: Record<string, string> };
+  const jobs = [
+    ['.github/workflows/check.yml', 'lockfile-scan', 'base'],
+    ['.github/workflows/app-gates.yml', 'lockfile-scan', 'factory'],
+    ['.github/workflows/vulnerabilities.yml', 'scan', 'factory'],
+    ['.github/workflows/vulnerabilities.yml', 'prove', 'factory'],
+  ] as const;
+
+  it("put main's policy/vulnerabilities.ts where the script imports it, before it runs, in every job that reads it", () => {
+    for (const [file, name, into] of jobs) {
+      const steps = (parse(readFileSync(file, 'utf-8')).jobs[name] as { steps: Step[] }).steps;
+      const main = steps.findIndex((s) => s.uses?.startsWith('actions/checkout@') && s.with?.path === 'policy-main');
+      const checkout = steps[main]?.with ?? {};
+      expect(checkout.ref, `${file} ${name}`).toBe('main');
+      expect(checkout['sparse-checkout'], `${file} ${name}`).toBe('policy/vulnerabilities.ts');
+      // This repository's main, whoever calls the workflow.
+      if (file !== '.github/workflows/check.yml')
+        expect(checkout.repository).toBe(['${{', 'job.workflow_repository', '}}'].join(' '));
+      const take = steps.findIndex((s) => s.name === 'Take the exceptions from main');
+      expect(take, `${file} ${name}`).toBeGreaterThan(main);
+      expect(steps[take]?.run).toContain(`cp policy-main/policy/vulnerabilities.ts ${into}/policy/vulnerabilities.ts`);
+      const runs = steps.findIndex((s) => /lockfile-scan\.ts|scan\.ts/.test(s.run ?? ''));
+      expect(runs, `${file} ${name}`).toBeGreaterThan(take);
+    }
+  });
+
+  it("replaces the checkout's copy with main's, and keeps the checkout's only while main has none", () => {
+    const step =
+      (
+        parse(readFileSync('.github/workflows/check.yml', 'utf-8')).jobs['lockfile-scan'] as { steps: Step[] }
+      ).steps.find((s) => s.name === 'Take the exceptions from main')?.run ?? 'exit 99';
+    const workspace = mkdtempSync(join(tmpdir(), 'exceptions-take-'));
+    try {
+      mkdirSync(join(workspace, 'base/policy'), { recursive: true });
+      writeFileSync(join(workspace, 'base/policy/vulnerabilities.ts'), "// the base's\n");
+      const none = spawnSync('bash', ['-e', '-c', step], { cwd: workspace, encoding: 'utf-8' });
+      expect(none.status).toBe(0);
+      expect(none.stdout).toContain('::warning::main holds no policy/vulnerabilities.ts yet');
+      expect(readFileSync(join(workspace, 'base/policy/vulnerabilities.ts'), 'utf-8')).toBe("// the base's\n");
+      mkdirSync(join(workspace, 'policy-main/policy'), { recursive: true });
+      writeFileSync(join(workspace, 'policy-main/policy/vulnerabilities.ts'), "// main's\n");
+      expect(spawnSync('bash', ['-e', '-c', step], { cwd: workspace }).status).toBe(0);
+      expect(readFileSync(join(workspace, 'base/policy/vulnerabilities.ts'), 'utf-8')).toBe("// main's\n");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

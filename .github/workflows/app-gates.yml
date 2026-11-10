@@ -17,7 +17,8 @@
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
 # - lockfile scan: Trivy's findings on each lockfile of the base and of the change, each scanned alone with development
 #   dependencies; fails on any vulnerability, at any severity, the change's lockfiles have and the base's do not
-#   (apps/factory/src/gates/lockfile-scan.ts). It reads the change's lockfiles alone, as data.
+#   (apps/factory/src/gates/lockfile-scan.ts), but those policy/vulnerabilities.ts on this repository's main excepts.
+#   It reads the change's lockfiles alone, as data.
 #
 # Every job is skipped for a deploy or release pull request the factory's App opened (`skip`), which changes nothing
 # they judge. In the merge queue every required job runs, since a merge group names no author to tell them apart by;
@@ -391,6 +392,7 @@ jobs:
             mise.lock
             apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
+            policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
@@ -416,4 +418,22 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node
+      # The exceptions, from this repository's main alone, as the daily scan reads them: main's
+      # policy/vulnerabilities.ts, which imports nothing, in place of the pinned commit's (the gate imports it).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: main
+          path: policy-main
+          sparse-checkout: policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Take the exceptions from main
+        run: |
+          if [ -f policy-main/policy/vulnerabilities.ts ]; then
+            mkdir -p factory/policy
+            cp policy-main/policy/vulnerabilities.ts factory/policy/vulnerabilities.ts
+          else
+            echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
+          fi
       - run: node factory/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin factory/deploy/images/trivy/Dockerfile

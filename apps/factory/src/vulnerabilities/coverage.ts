@@ -17,7 +17,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { lockfiles as listedLockfiles } from './inventory.ts';
-import { trivyPin } from './scan.ts';
+import { trivyPin } from './trivy-pin.ts';
 
 const run = promisify(execFile);
 

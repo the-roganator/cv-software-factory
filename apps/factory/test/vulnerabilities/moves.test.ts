@@ -166,15 +166,18 @@ describe('the day’s moves', () => {
         laneOf(result({ kind: 'k3s-release', name: 'k3s', target: { kind: 'k3s', release: 'v1.37.2+k3s1' } })),
       ).toBe('cluster');
     });
-    it('approval: a major, and a chart’s version', () => {
+    it('approval: a major, of any kind; a chart on its major is the worker’s, even in a directory Dependabot reads', () => {
       const chart = (major: boolean) =>
         result({
           kind: 'chart',
           name: 'grafana',
-          target: { kind: 'chart', chart: 'grafana', version: '14.3.1', major },
+          pin: { file: 'deploy/base/telemetry/grafana.yaml', line: 14 },
+          target: { kind: 'chart', chart: 'grafana', version: major ? '14.3.1' : '13.7.0', major },
+          severity: 'MEDIUM',
+          due: NOW + 20 * DAY,
         });
       expect(laneOf(chart(true))).toBe('approval');
-      expect(laneOf(chart(false))).toBe('approval');
+      expect(laneOf(chart(false), { dependabot: ['/deploy/base/telemetry'] })).toBe('worker');
       expect(moves([chart(true)], context())[0]?.major).toBe(true);
     });
     it('issue: what mise pins, a workflow, a tool', () => {

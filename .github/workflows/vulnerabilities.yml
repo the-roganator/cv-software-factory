@@ -22,8 +22,10 @@
 # - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
 #   not showing CVE-2026-111497, and its log carries the counts, the deadlines' and the moves' too, read against the
-#   repository's alerts and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job that writes refuses any event but a push to
-#   the default branch, the schedule or a run by hand there; this one writes nothing, and runs on a pull request alone.
+#   repository's alerts and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
+#   that writes refuses any event but a push to the default branch, the schedule or a run by hand there; this one writes
+#   nothing, and runs on a pull request alone, from a branch of this repository: a fork's is refused before anything of
+#   it runs, since its token would read the alerts, which are not public.
 name: vulnerabilities
 
 on:
@@ -262,10 +264,19 @@ jobs:
       packages: read # the advisory database and the images in GHCR, with the job's token
       security-events: read # when each alert was made, for the deadlines' counts
     steps:
+      # A fork's pull request is refused before anything of it runs: its token reads this repository's alerts, which are
+      # not public, and its scripts would run with it. A change to the scan from a fork is proved from a branch here.
       - name: Refuse a privileged context
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo "::error::The proving run runs only on a pull request, not $GITHUB_EVENT_NAME."
+            exit 1
+          fi
+          if [ -z "$HEAD_REPOSITORY" ] || [ "$HEAD_REPOSITORY" != "$REPOSITORY" ]; then
+            echo "::error::The proving run reads this repository's alerts, so it runs only for a branch of $REPOSITORY, not one of ${HEAD_REPOSITORY:-an unknown repository}: push the change to a branch here to prove it."
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -409,12 +409,25 @@ describe('vulnerabilities.yml', () => {
   const jobs = workflow.jobs;
 
   /** A job's first step, its refusal, run as the runner would, with the event and ref given. */
-  function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
+  function refuses(
+    job: string,
+    event: string,
+    ref: string,
+    defaultBranch = 'main',
+    head = 'the-roganator/cv-software-factory',
+  ) {
     const step = jobs[job]?.steps?.[0];
     expect(step?.name, job).toBe('Refuse a privileged context');
     try {
       execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
-        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, DEFAULT_BRANCH: defaultBranch },
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_EVENT_NAME: event,
+          GITHUB_REF: ref,
+          DEFAULT_BRANCH: defaultBranch,
+          HEAD_REPOSITORY: head,
+          REPOSITORY: 'the-roganator/cv-software-factory',
+        },
         stdio: 'pipe',
       });
       return false;
@@ -450,6 +463,16 @@ describe('vulnerabilities.yml', () => {
     expect(refuses('scan', 'push', 'refs/heads/main', '')).toBe(true);
     for (const event of ['pull_request', 'pull_request_target', 'merge_group', 'workflow_run', 'issue_comment'])
       expect(refuses('scan', event, 'refs/heads/main'), event).toBe(true);
+  });
+
+  it('refuses a fork’s pull request in the proving run, whose token would read the alerts', () => {
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge', 'main', 'someone/cv-software-factory')).toBe(true);
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge', 'main', '')).toBe(true);
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
+    expect((jobs.prove?.steps?.[0] as { env?: unknown } | undefined)?.env).toEqual({
+      HEAD_REPOSITORY: expression('github.event.pull_request.head.repo.full_name'),
+      REPOSITORY: expression('github.repository'),
+    });
   });
 
   it('runs the proving run on a pull request alone, and coverage, which writes nothing, on either', () => {

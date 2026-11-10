@@ -1,14 +1,15 @@
-# The local cluster: one k3s node in a container. `make up` creates it; `make down` deletes it.
+# The local cluster: one k3s node in a container. `make up` creates it; `make upgrade-cluster` moves it to the k3s this
+# pins, keeping everything in it; `make down` deletes it.
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:
   name: software-factory
 servers: 1
 agents: 0
-image: rancher/k3s:v1.37.1-k3s1
+image: rancher/k3s:v1.37.2-k3s1
 # The Kubernetes API, on the Mac alone and at a port of its own: left out, k3d publishes it on every interface at a
 # random port, reachable from any network the Mac is on. The kubeconfig k3d writes names this address. `k3d cluster
-# edit` cannot move it, so a cluster made before it keeps its old binding until `make down` and `make up`.
+# edit` cannot move it, so a cluster made before it keeps its old binding until `make upgrade-cluster` makes it again.
 kubeAPI:
   hostIP: 127.0.0.1
   hostPort: '6550'
@@ -19,6 +20,12 @@ ports:
     nodeFilters: [loadbalancer]
   - port: 127.0.0.1:8443:443
     nodeFilters: [loadbalancer]
+# k3s's data directory (its datastore, certificates and the local-path volumes, the event store's among them) on a
+# volume of its own, outside the node: `make up` makes it first, k3d does not delete it with the cluster, and
+# `make upgrade-cluster` moves the cluster to a new k3s by starting it on the same directory, as k3s upgrades itself.
+volumes:
+  - volume: k3d-software-factory-state:/var/lib/rancher/k3s
+    nodeFilters: [server:0]
 options:
   kubeconfig:
     updateDefaultKubeconfig: true

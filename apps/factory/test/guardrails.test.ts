@@ -221,7 +221,7 @@ describe('what takes each proof', () => {
         ran.push({ command, args, ...(env && { env }) });
         return { status: 0, stdout: '', stderr: '' };
       },
-      runnerPods: async () => ({ pods: [], finished: 0 }),
+      runnerPods: async () => [],
       ask: async () => true,
       now: () => new Date(),
       sleep: async () => undefined,

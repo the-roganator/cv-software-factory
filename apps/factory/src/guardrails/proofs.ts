@@ -14,7 +14,7 @@ import { REPOSITORIES } from '../github/config.ts';
 import type { Refusal } from '../github/refusal.ts';
 import { readCiProof } from './ci.ts';
 import { type Installation, judgeInstallations } from './github.ts';
-import { type DrillTaken, type RunnerPods, rollback, stopTheLine } from './line.ts';
+import { type DrillTaken, type RunnerPod, rollback, stopTheLine } from './line.ts';
 import { type EgressRecord, judgeEgress, judgeRecord, otherIdentityProblems, type RefusalRecord } from './records.ts';
 
 /** What a command run printed, and how it exited. */
@@ -45,11 +45,11 @@ export interface Context {
   /** The cluster's kubeconfig context, which the drill's `make` targets are given as `CONTEXT`. */
   kubeContext: string;
   /**
-   * The drill's needs of the cluster and of Martin. `runnerPods` is the line's runner pods in `runners` alone that have
-   * not finished, never one the red-team harness made, and how many finished ones it passed over (`runnerPodsOf` in
-   * ./line.ts): Stop the line ends neither a red-team pod nor a finished one.
+   * The drill's needs of the cluster and of Martin. `runnerPods` is the line's runner pods in `runners` alone, each
+   * marked when it has finished, never one the red-team harness made (`runnerPodsOf` in ./line.ts), which Stop the line
+   * does not end.
    */
-  runnerPods(): Promise<RunnerPods>;
+  runnerPods(): Promise<RunnerPod[]>;
   ask(question: string): Promise<boolean>;
   now(): Date;
   sleep(ms: number): Promise<void>;

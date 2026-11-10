@@ -2,7 +2,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  ADMITTED,
   ASKS,
+  admitted,
   type Binding,
   beyond,
   canonical,
@@ -15,6 +17,7 @@ import {
   RECORDS,
   type RecordName,
   type Resource,
+  repository,
   taken,
   writers,
 } from '../../../scripts/policy-hash.ts';
@@ -159,6 +162,141 @@ describe('the hash of a record’s policies', () => {
 
   it('names a missing object rather than hashing without it', () => {
     expect(() => named('route-refusals', [policy])).toThrow(/ValidatingPolicy website-routes: 0 found/);
+  });
+});
+
+/** A copy of the image policy, as the profile renders it, with what its `allowed` variable says. */
+type ImagePolicy = Resource & {
+  spec: {
+    variables: { name: string; expression: string }[];
+    matchConstraints: { namespaceSelector: { matchExpressions: { values: string[] }[] } };
+  };
+};
+const imagePolicy = (manifests: Resource[], name: string) => {
+  const found = manifests.find((m) => m.kind === 'ImageValidatingPolicy' && m.metadata?.name === name);
+  if (!found) throw new Error(`No ImageValidatingPolicy ${name}`);
+  return found as ImagePolicy;
+};
+const allowedOf = (p: ImagePolicy) => {
+  const v = p.spec.variables.find((x) => x.name === ADMITTED);
+  if (!v) throw new Error(`${p.metadata?.name} has no ${ADMITTED} variable`);
+  return v;
+};
+/** The record's hash, from the profile as rendered with one change made to a copy of the image policy. */
+const admissionHashWith = (change: (manifests: Resource[]) => void) => {
+  const manifests = structuredClone(profile());
+  change(manifests);
+  return taken('admission-refusals', manifests).policyHash;
+};
+
+describe('the hash of the image policies leaves out the digests they admit (ADR 0018)', () => {
+  // The hash of the profile as rendered, which the record is held to above.
+  const kept = () => admissionHashWith(() => {});
+
+  it('stands when a third-party digest moves, as #951 moved Postgres’s', () => {
+    // #951, Dependabot's: postgres:18.6-alpine3.24 from 898c60c to 123b179, which took the record again on a cluster.
+    const before = 'postgres:18.6-alpine3.24@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5';
+    const after = 'postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395';
+    const now = allowedOf(imagePolicy(profile(), 'factory-images')).expression;
+    expect(now, 'the factory’s copy admits the Postgres #951 pinned').toContain(after);
+    const replayed = admissionHashWith((m) => {
+      const v = allowedOf(imagePolicy(m, 'factory-images'));
+      v.expression = v.expression.replace(after, before);
+    });
+    expect(replayed).toBe(kept());
+  });
+
+  it('stands when flagd’s or the exporter’s tag and digest move', () => {
+    const moved = admissionHashWith((m) => {
+      for (const name of ['factory-images', 'flagd-images']) {
+        const v = allowedOf(imagePolicy(m, name));
+        v.expression = v.expression
+          .replace(/(flagd):v[\d.]+@sha256:[0-9a-f]{64}/, `$1:v9.9.9@sha256:${'0'.repeat(64)}`)
+          .replace(/(postgres-exporter):v[\d.]+@sha256:[0-9a-f]{64}/, `$1:v9.9.9@sha256:${'1'.repeat(64)}`);
+      }
+    });
+    expect(moved).toBe(kept());
+  });
+
+  it('moves when a rule changes', () => {
+    // The check that refuses an image from another registry, loosened to admit every one.
+    expect(
+      admissionHashWith((m) => {
+        const v = imagePolicy(m, 'factory-images').spec.variables.find((x) => x.name === 'foreign');
+        if (!v) throw new Error('No foreign variable');
+        v.expression = '[]';
+      }),
+    ).not.toBe(kept());
+    // A namespace taken out of a copy's guard.
+    expect(
+      admissionHashWith((m) => {
+        imagePolicy(m, 'factory-images').spec.matchConstraints.namespaceSelector.matchExpressions[0]?.values.pop();
+      }),
+    ).not.toBe(kept());
+  });
+
+  it('moves when what is admitted changes beyond a tag and a digest', () => {
+    const cases: [string, (expression: string) => string][] = [
+      ['another repository', (e) => e.replace("'postgres:", "'evil/postgres:")],
+      ['one more image', (e) => e.replace(/\]\s*$/, `, 'busybox@sha256:${'2'.repeat(64)}']`)],
+      ['one fewer', (e) => `[${e.match(/'[^']*'/)?.[0]}]`],
+      // Not a list of literals, which admits every image the pod names: read whole.
+      ['an expression', () => 'variables.images'],
+    ];
+    for (const [what, change] of cases) {
+      const hash = admissionHashWith((m) => {
+        const v = allowedOf(imagePolicy(m, 'factory-images'));
+        v.expression = change(v.expression);
+      });
+      expect(hash, what).not.toBe(kept());
+    }
+    // And in a copy that admits none, one admitted.
+    expect(
+      admissionHashWith((m) => {
+        allowedOf(imagePolicy(m, 'website-images')).expression = `['busybox@sha256:${'3'.repeat(64)}']`;
+      }),
+    ).not.toBe(kept());
+  });
+
+  it('admits only what a workload in a namespace the copy guards pins, image for image', () => {
+    const manifests = profile();
+    const pinned = (namespaces: string[]) =>
+      new Set(
+        manifests
+          .filter((m) => namespaces.includes(m.metadata?.namespace ?? ''))
+          .flatMap((m) => {
+            const pod = (m as { spec?: { template?: { spec?: unknown } } }).spec?.template?.spec as
+              | { containers?: { image: string }[]; initContainers?: { image: string }[] }
+              | undefined;
+            return [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])].map((c) => c.image);
+          }),
+      );
+    const copies = manifests.filter((m) => m.kind === 'ImageValidatingPolicy') as ImagePolicy[];
+    expect(copies.map((c) => c.metadata?.name).sort()).toEqual([
+      'factory-images',
+      'flagd-images',
+      'scoreboard-images',
+      'website-images',
+    ]);
+    for (const copy of copies) {
+      const references = admitted(copy);
+      expect(references, `${copy.metadata?.name} lists its admitted images as literals`).toBeDefined();
+      const guarded = copy.spec.matchConstraints.namespaceSelector.matchExpressions[0]?.values ?? [];
+      expect(guarded.length, `${copy.metadata?.name} guards a namespace`).toBeGreaterThan(0);
+      for (const reference of references ?? []) {
+        expect(reference, copy.metadata?.name).toMatch(/@sha256:[0-9a-f]{64}$/);
+        expect([...pinned(guarded)], `${copy.metadata?.name} admits ${reference}`).toContain(reference);
+      }
+    }
+  });
+
+  it('cuts a reference to its repository', () => {
+    expect(repository('postgres:18.6-alpine3.24@sha256:abc')).toBe('postgres');
+    expect(repository('quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:abc')).toBe(
+      'quay.io/prometheuscommunity/postgres-exporter',
+    );
+    expect(repository('localhost:5000/flagd@sha256:abc')).toBe('localhost:5000/flagd');
+    expect(repository('localhost:5000/flagd')).toBe('localhost:5000/flagd');
   });
 });
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { syftPin } from '../apps/factory/src/vulnerabilities/graph.ts';
 import { ENVIRONMENTS, KEY_BRANCH } from './github-settings.ts';
 
 /**
@@ -47,6 +48,8 @@ interface Step {
   with?: Record<string, unknown>;
 }
 interface Job {
+  needs?: string | string[];
+  outputs?: Record<string, string>;
   'runs-on'?: unknown;
   if?: string;
   permissions?: unknown;
@@ -548,27 +551,43 @@ describe('dependency-graph.yml', () => {
       readFileSync(SYFT_PIN, 'utf-8'),
     );
     expect(pin?.[1]).toBeDefined();
-    // build.yml attests with the version the pin names, read from its own commit, and writes none of its own: no
-    // workflow names the pinned version, so Dependabot's bump of the pin is the whole change.
-    const steps = read('build.yml').jobs.sign?.steps ?? [];
-    const downloads = steps.filter((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
-    expect(downloads).toHaveLength(1);
-    expect(downloads[0]?.with?.['syft-version']).toBe(expression('steps.syft-pin.outputs.version'));
-    const reads = steps.find((step) => step.id === 'syft-pin');
-    expect(reads?.env?.PIN).toBe(`factory/${SYFT_PIN}`);
-    const own = steps.find((step) => step.with?.ref === expression('job.workflow_sha'));
-    expect(own?.with).toMatchObject({
+    // build.yml attests with the version the pin names, read from its own commit by a job that holds no OIDC token,
+    // and writes none of its own: no workflow names a Syft version, so Dependabot's bump of the pin is the whole change.
+    const build = read('build.yml').jobs;
+    const reader = build['syft-version'];
+    const sign = build.sign;
+    expect(reader?.permissions).toEqual({ contents: 'read' });
+    expect(reader?.outputs?.version).toBe(expression('steps.pin.outputs.version'));
+    const [own, reads, ...rest] = reader?.steps ?? [];
+    expect(rest).toEqual([]);
+    expect(own?.uses).toMatch(/^actions\/checkout@/);
+    expect(own?.with).toEqual({
       repository: expression('job.workflow_repository'),
+      ref: expression('job.workflow_sha'),
       path: 'factory',
       'sparse-checkout': SYFT_PIN,
+      'sparse-checkout-cone-mode': false,
       'persist-credentials': false,
     });
-    expect(steps.indexOf(own as Step)).toBeLessThan(steps.indexOf(reads as Step));
-    expect(steps.indexOf(reads as Step)).toBeLessThan(steps.indexOf(downloads[0] as Step));
+    expect(reads?.id).toBe('pin');
+    expect(reads?.env?.PIN).toBe(`factory/${SYFT_PIN}`);
+    // The sign job checks nothing out, and never runs without the version: download-syft given none installs the newest.
+    expect(sign?.needs).toContain('syft-version');
+    expect(sign?.if).toContain("needs.syft-version.result == 'success'");
+    expect((sign?.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@'))).toEqual([]);
+    const downloads = Object.values(build)
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
+    expect(downloads).toEqual([
+      expect.objectContaining({ with: { 'syft-version': expression('needs.syft-version.outputs.version') } }),
+    ]);
+    expect(sign?.steps).toContain(downloads[0]);
     for (const { file } of workflows) {
-      const text = readFileSync(`${DIR}/${file}`, 'utf-8');
-      expect(text, file).not.toContain(pin?.[1]);
-      expect(text, file).not.toMatch(/syft-version:\s*['"]?v?\d/);
+      const lines = readFileSync(`${DIR}/${file}`, 'utf-8').split('\n');
+      expect(
+        lines.filter((line) => /syft/i.test(line) && /v?\d+\.\d+\.\d+/.test(line.replace(/#\s*v\d+\.\d+\.\d+$/, ''))),
+        file,
+      ).toEqual([]);
     }
     // check.yml's check of the scanners' signatures names Syft's image, and runs no Syft: it is left out, as for Trivy.
     for (const { file } of workflows)
@@ -585,7 +604,7 @@ describe('dependency-graph.yml', () => {
   });
 
   it("gives build.yml's Syft the version its pin names, and fails on any pin but one of Syft's image by version and digest", () => {
-    const step = read('build.yml').jobs.sign?.steps?.find((s) => s.id === 'syft-pin');
+    const step = read('build.yml').jobs['syft-version']?.steps?.find((s) => s.id === 'pin');
     const dir = mkdtempSync(join(tmpdir(), 'syft-pin-'));
     const version = (dockerfile: string) => {
       const pin = join(dir, 'Dockerfile');
@@ -600,7 +619,10 @@ describe('dependency-graph.yml', () => {
       } catch {
         return undefined;
       }
-      return /^version=(.*)$/m.exec(readFileSync(output, 'utf-8'))?.[1];
+      const read = /^version=(.*)$/m.exec(readFileSync(output, 'utf-8'))?.[1];
+      // The dependency graph's reader (graph.ts) takes the same version from any pin this one takes.
+      if (read) expect(`v${syftPin(dockerfile)?.[2]}`, dockerfile).toBe(read);
+      return read;
     };
     try {
       const pinned = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@/m.exec(readFileSync(SYFT_PIN, 'utf-8'))?.[1];

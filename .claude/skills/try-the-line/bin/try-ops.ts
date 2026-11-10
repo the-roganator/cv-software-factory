@@ -300,6 +300,14 @@ export const ops: Ops = {
     const row = out.split('\n').slice(1).find(Boolean);
     return row?.trim().split(/\s+/)[2];
   },
+  namedOnNode(digest) {
+    return run('docker', ['exec', NODE, 'ctr', '-n', 'k8s.io', 'images', 'ls'])
+      .split('\n')
+      .slice(1)
+      .map((row) => row.trim().split(/\s+/))
+      .filter((cols) => cols[2] === digest)
+      .flatMap((cols) => (cols[0] ? [cols[0]] : []));
+  },
   tagOnNode(ref, as) {
     run('docker', ['exec', NODE, 'ctr', '-n', 'k8s.io', 'images', 'tag', '--force', ref, as]);
   },

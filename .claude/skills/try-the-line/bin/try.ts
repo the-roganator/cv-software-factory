@@ -94,6 +94,8 @@ export interface Ops {
   load(refs: string[]): void;
   /** The digest the node's containerd holds for a reference, or undefined when it holds none. */
   onNode(ref: string): string | undefined;
+  /** Every reference the node's containerd holds to a digest: tags, digest references and the id k3d's import adds. */
+  namedOnNode(digest: string): string[];
   tagOnNode(ref: string, as: string): void;
   removeFromNode(ref: string): void;
   removeLocal(ref: string): void;
@@ -389,6 +391,10 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   for (const i of state.images) {
     const digest = ops.onNode(i.ref);
     if (!digest) throw new Refused(`${i.ref} is not on the node after loading it: nothing is pointed at it`);
+    // Removing the try's image from the node removes every name its digest has, so it must be no image main runs.
+    if (recorded.some((d) => Object.values(d.images).some((was) => was.endsWith(`@${digest}`)))) {
+      throw new Refused(`${i.ref} is the image main runs (${digest}): there is nothing to try`);
+    }
     to[i.image] = `${REGISTRY}/${i.image}@${digest}`;
   }
   state.nodeRefs = Object.values(to);
@@ -426,6 +432,8 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   );
 }
 
+const nodeDigests = (state: State): string[] => state.nodeRefs.map((r) => r.slice(r.indexOf('@') + 1));
+
 /** Each way the cluster is not yet as the state recorded it; none when it is back. */
 export function notBack(ops: Ops, state: State): string[] {
   const wrong: string[] = [];
@@ -458,8 +466,9 @@ export function notBack(ops: Ops, state: State): string[] {
     const local = w.images.filter((i) => tryImage(i, state));
     if (local.length) wrong.push(`${w.kind} ${w.namespace}/${w.name} runs ${[...new Set(local)].join(', ')}`);
   }
-  for (const ref of [...state.nodeRefs, ...state.images.map((i) => i.ref)]) {
-    if (ops.onNode(ref)) wrong.push(`${ref} is still on the node`);
+  for (const ref of state.images.map((i) => i.ref)) if (ops.onNode(ref)) wrong.push(`${ref} is still on the node`);
+  for (const digest of nodeDigests(state)) {
+    for (const name of ops.namedOnNode(digest)) wrong.push(`${name} (${digest}) is still on the node`);
   }
   for (const i of state.images) if (!i.existed && ops.hasLocal(i.ref)) wrong.push(`${i.ref} is still on the Mac`);
   return wrong;
@@ -535,11 +544,11 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
     ops.setRootPolicy(state.root);
     ops.say('Argo CD root has its sync policy back.');
   }
-  for (const ref of state.nodeRefs) if (ops.onNode(ref)) ops.removeFromNode(ref);
-  for (const i of state.images) {
-    if (ops.onNode(i.ref)) ops.removeFromNode(i.ref);
-    if (!i.existed && ops.hasLocal(i.ref)) ops.removeLocal(i.ref);
-  }
+  // Every name the node holds for the try's digests (a begin stopped before it recorded them has only the tags).
+  const digests = new Set([...nodeDigests(state), ...state.images.flatMap((i) => ops.onNode(i.ref) ?? [])]);
+  for (const i of state.images) if (ops.onNode(i.ref)) ops.removeFromNode(i.ref);
+  for (const digest of digests) for (const name of ops.namedOnNode(digest)) ops.removeFromNode(name);
+  for (const i of state.images) if (!i.existed && ops.hasLocal(i.ref)) ops.removeLocal(i.ref);
 
   const deadline = ops.now().getTime() + options.timeoutSeconds * 1000;
   let wrong = notBack(ops, state);

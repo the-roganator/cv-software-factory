@@ -138,9 +138,15 @@ class Cluster implements Ops {
   load(refs: string[]) {
     this.call('load');
     if (!this.loads) return;
-    for (const r of refs) this.node.set(r, `sha256:${(r.includes('runner') ? 'e' : 'd').repeat(64)}`);
+    for (const r of refs) {
+      const digest = `sha256:${(r.includes('runner') ? 'e' : 'd').repeat(64)}`;
+      this.node.set(r, digest);
+      // k3d's import also names the image by its id, which no deployment points at.
+      this.node.set(`sha256:${r.includes('runner') ? '1' : '2'}${'0'.repeat(63)}`, digest);
+    }
   }
   onNode = (ref: string) => this.node.get(ref);
+  namedOnNode = (digest: string) => [...this.node].filter(([, d]) => d === digest).map(([name]) => name);
   tagOnNode(ref: string, as: string) {
     this.call(`tagOnNode ${as}`);
     this.node.set(as, this.node.get(ref) as string);
@@ -388,6 +394,16 @@ describe('try begin', () => {
     expect(readState(path)?.phase).toBe('beginning');
     expect(await end(fresh(c))).toBe(0);
     expect(existsSync(path)).toBe(false);
+  });
+
+  it('refuses a branch whose image is the one main runs, which removing it from the node would take away', async () => {
+    const c = new Cluster();
+    c.deps = c.deps.map((d) =>
+      d.name === 'github' ? deployment('github', [['github', `${REGISTRY}/factory@sha256:${'d'.repeat(64)}`]]) : d,
+    );
+    expect(await begin(c, '--only', 'github')).toBe(2);
+    expect(said(c)).toMatch(/is the image main runs/);
+    expect(c.calls.some((x) => /tagOnNode|setImages|pauseRoot/.test(x))).toBe(false);
   });
 
   it('reuses an image the Mac already had, and leaves it there after', async () => {

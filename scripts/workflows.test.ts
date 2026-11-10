@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { ENVIRONMENTS, KEY_BRANCH } from './github-settings.ts';
@@ -37,8 +39,10 @@ const CHECKED_OUT: Record<string, string[]> = {
 };
 
 interface Step {
+  id?: string;
   name?: string;
   uses?: string;
+  env?: Record<string, unknown>;
   run?: string;
   with?: Record<string, unknown>;
 }
@@ -543,12 +547,29 @@ describe('dependency-graph.yml', () => {
     const pin = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@sha256:[0-9a-f]{64}$/m.exec(
       readFileSync(SYFT_PIN, 'utf-8'),
     );
-    const build = read('build.yml');
-    const attests = Object.values(build.jobs)
-      .flatMap((job) => job.steps ?? [])
-      .find((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
     expect(pin?.[1]).toBeDefined();
-    expect(attests?.with?.['syft-version']).toBe(pin?.[1]);
+    // build.yml attests with the version the pin names, read from its own commit, and writes none of its own: no
+    // workflow names the pinned version, so Dependabot's bump of the pin is the whole change.
+    const steps = read('build.yml').jobs.sign?.steps ?? [];
+    const downloads = steps.filter((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0]?.with?.['syft-version']).toBe(expression('steps.syft-pin.outputs.version'));
+    const reads = steps.find((step) => step.id === 'syft-pin');
+    expect(reads?.env?.PIN).toBe(`factory/${SYFT_PIN}`);
+    const own = steps.find((step) => step.with?.ref === expression('job.workflow_sha'));
+    expect(own?.with).toMatchObject({
+      repository: expression('job.workflow_repository'),
+      path: 'factory',
+      'sparse-checkout': SYFT_PIN,
+      'persist-credentials': false,
+    });
+    expect(steps.indexOf(own as Step)).toBeLessThan(steps.indexOf(reads as Step));
+    expect(steps.indexOf(reads as Step)).toBeLessThan(steps.indexOf(downloads[0] as Step));
+    for (const { file } of workflows) {
+      const text = readFileSync(`${DIR}/${file}`, 'utf-8');
+      expect(text, file).not.toContain(pin?.[1]);
+      expect(text, file).not.toMatch(/syft-version:\s*['"]?v?\d/);
+    }
     // check.yml's check of the scanners' signatures names Syft's image, and runs no Syft: it is left out, as for Trivy.
     for (const { file } of workflows)
       if (file !== 'build.yml')
@@ -560,6 +581,46 @@ describe('dependency-graph.yml', () => {
       expect(String(own?.with?.['sparse-checkout']), id).toContain(SYFT_PIN);
       const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
       expect(runs, id).toContain(`factory/${SYFT_PIN}`);
+    }
+  });
+
+  it("gives build.yml's Syft the version its pin names, and fails on any pin but one of Syft's image by version and digest", () => {
+    const step = read('build.yml').jobs.sign?.steps?.find((s) => s.id === 'syft-pin');
+    const dir = mkdtempSync(join(tmpdir(), 'syft-pin-'));
+    const version = (dockerfile: string) => {
+      const pin = join(dir, 'Dockerfile');
+      const output = join(dir, 'output');
+      writeFileSync(pin, dockerfile);
+      writeFileSync(output, '');
+      try {
+        execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+          env: { PATH: process.env.PATH, PIN: pin, GITHUB_OUTPUT: output },
+          stdio: 'pipe',
+        });
+      } catch {
+        return undefined;
+      }
+      return /^version=(.*)$/m.exec(readFileSync(output, 'utf-8'))?.[1];
+    };
+    try {
+      const pinned = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@/m.exec(readFileSync(SYFT_PIN, 'utf-8'))?.[1];
+      expect(version(readFileSync(SYFT_PIN, 'utf-8'))).toBe(pinned);
+      const digest = `sha256:${'a'.repeat(64)}`;
+      expect(version(`# a comment\nFROM ghcr.io/anchore/syft:v1.57.1@${digest}\n`)).toBe('v1.57.1');
+      for (const bad of [
+        `FROM ghcr.io/anchore/syft:v1.57.1\n`,
+        `FROM ghcr.io/anchore/syft@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:latest@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:1.57.1@${digest}\n`,
+        `FROM ghcr.io/evil/syft:v1.57.1@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:v1.57.1@${digest} AS x\n`,
+        `FROM ghcr.io/anchore/syft:v1.57.1@${digest}\nFROM ghcr.io/anchore/syft:v1.54.0@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:v1.57.1-rc1@${digest}\n`,
+        '',
+      ])
+        expect(version(bad), bad).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

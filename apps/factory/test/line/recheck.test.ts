@@ -1,6 +1,7 @@
 /**
  * The line looking again at held and waiting work items: after a release that did not carry their fix, and at the end
- * of a wait for a spec that overlaps one in flight.
+ * of a wait for a spec that overlaps one in flight. And closing a held work item with an open pull request on Martin's
+ * Reject: the pull request with it.
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { EVER, setTake, startLine } from '../../../../packages/store/test/line.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
+import { rejectedPullComment } from '../../src/line/issues.ts';
 import { Line, type LineOptions } from '../../src/line/worker.ts';
 import type { VerifyAnswer } from '../../src/probes/verify.ts';
 import { quiet } from '../github/fake.ts';
@@ -719,5 +721,143 @@ describe('an open ticket a release since already fixed', () => {
     expect(await payloads(unlike, 'signal.rechecked')).toEqual([]);
     expect(await payloads(unlike, 'work-item.closed')).toEqual([]);
     expect(await stage(beside)).toBeUndefined();
+  });
+});
+
+describe('Martin’s Reject of a held work item with an open pull request', () => {
+  // Martin's answer, as the admin service writes it.
+  const rejected = (workItem: string, answer?: string) =>
+    new EventWriter(database.admin, {
+      kind: 'real',
+      artifacts: new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-'))),
+    }).append([event(workItem, 'hold.answered', { decision: 'rejected', ...(answer ? { answer } : {}) }, 'martin')]);
+  const closing = (github: FakeGitHub) =>
+    github.acts
+      .filter((a) => a.action === 'closeIssue' || a.action === 'closePullRequest')
+      .map((a) => [a.action, a.args.number]);
+
+  // Every hold a pull request may be open under, and Reject closes.
+  for (const cause of [
+    'gates',
+    'scope',
+    'review',
+    'beyond-ticket',
+    'merge',
+    'failures',
+    'spend',
+    'tests-first',
+  ] as const) {
+    it(`closes the pull request once, saying why, with the work item and its issue: ${cause}`, async () => {
+      const { line: it, github } = line(new FakeProbes(CLEARED));
+      const workItem = await held(cause, github);
+      await rejected(workItem);
+      await pass(it);
+      expect(closing(github)).toEqual([
+        ['closePullRequest', 12],
+        ['closeIssue', 11],
+      ]);
+      expect(github.acts.find((a) => a.action === 'closePullRequest')?.args.comment).toBe(
+        [
+          'The factory closes this pull request unmerged. Martin rejected it.',
+          '',
+          `The factory’s work item #${workItem} is closed with no change, and its issue with it.`,
+        ].join('\n'),
+      );
+      expect(github.actingFor.at(github.acts.findIndex((a) => a.action === 'closePullRequest'))).toEqual({ workItem });
+      expect(github.pulls.get(12)?.state).toBe('closed');
+      expect(await payloads(workItem, 'work-item.closed')).toEqual([
+        { outcome: 'no-change', reason: 'Martin rejected it' },
+      ]);
+      const [closed] = await database.as.line<{ summary: string; actor: string }[]>`
+        select summary, actor from events where work_item = ${workItem} and type = 'work-item.closed'`;
+      expect(closed).toEqual({ summary: 'Closed with PR #12 unmerged, as Martin answered', actor: 'factory' });
+      // Closed, it says nothing more.
+      now += 60_000;
+      await pass(it);
+      expect(closing(github)).toHaveLength(2);
+      expect(await payloads(workItem, 'work-item.closed')).toHaveLength(1);
+    });
+  }
+
+  it('says his words on the pull request', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('review', github);
+    await rejected(workItem, 'Not worth the risk before the launch.');
+    await pass(it);
+    expect(github.acts.find((a) => a.action === 'closePullRequest')?.args.comment).toBe(
+      rejectedPullComment('Martin rejected it: Not worth the risk before the launch.', workItem),
+    );
+    expect(rejectedPullComment('Martin rejected it: Not worth the risk before the launch.', workItem)).toMatch(
+      /^The factory closes this pull request unmerged\. Martin rejected it: Not worth the risk before the launch\.\n/,
+    );
+  });
+
+  it('closes nothing until the pull request closes, trying again after GitHub fails', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('gates', github);
+    await rejected(workItem);
+    github.failing.set('closePullRequest', 1);
+    await pass(it);
+    expect(closing(github)).toEqual([]);
+    expect(await payloads(workItem, 'work-item.closed')).toEqual([]);
+    now += 60_000;
+    await pass(it);
+    expect(closing(github)).toEqual([
+      ['closePullRequest', 12],
+      ['closeIssue', 11],
+    ]);
+    expect(await payloads(workItem, 'work-item.closed')).toHaveLength(1);
+  });
+
+  it('closes the work item and says the pull request is still open, when the GitHub worker refuses to close it', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('merge', github);
+    await rejected(workItem);
+    github.refusing.set(
+      'closePullRequest',
+      new GitHubWorkerError(
+        403,
+        'branch-refused',
+        'feature/x is not the factory’s: it acts only on branches under factory/',
+      ),
+    );
+    await pass(it);
+    expect(closing(github)).toEqual([['closeIssue', 11]]);
+    expect(github.pulls.get(12)?.state).toBe('open');
+    const [closed] = await database.as.line<{ summary: string }[]>`
+      select summary from events where work_item = ${workItem} and type = 'work-item.closed'`;
+    expect(closed?.summary).toMatch(
+      /^Closed as Martin answered, but PR #12 could not be closed and is still open: feature\/x/,
+    );
+    expect(await stage(workItem)).toBe('ended');
+  });
+
+  it('closes it with his reason after a crash once the pull request closed, not as closed on GitHub by him', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('scope', github);
+    await rejected(workItem, 'Out of scope for now.');
+    github.crashAfter = 'closePullRequest';
+    await pass(it);
+    expect(github.pulls.get(12)?.state).toBe('closed');
+    expect(await payloads(workItem, 'work-item.closed')).toEqual([]);
+    now += 60_000;
+    await pass(it);
+    expect(await payloads(workItem, 'work-item.closed')).toEqual([
+      { outcome: 'no-change', reason: 'Martin rejected it: Out of scope for now.' },
+    ]);
+    expect(closing(github).at(-1)).toEqual(['closeIssue', 11]);
+  });
+
+  it('asks nothing of a merged pull request: the change stays merged', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('gates', github);
+    await events.append([
+      event(workItem, 'pull-request.merged', { number: 12, commit: NEW, by: 'martin' }, 'martin'),
+      event(workItem, 'hold.started', { stage: 'verify', kind: 'held', cause: 'verify', reason: 'Held for the test' }),
+    ]);
+    await rejected(workItem);
+    await pass(it);
+    expect(closing(github)).toEqual([['closeIssue', 11]]);
+    expect(await payloads(workItem, 'work-item.closed')).toHaveLength(1);
   });
 });

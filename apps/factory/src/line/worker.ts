@@ -175,11 +175,12 @@ import {
 } from './deploy.ts';
 import { FlagPass } from './flags.ts';
 import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
-import { closeIssue } from './issues.ts';
+import { closeIssue, rejectedPullComment } from './issues.ts';
 import {
   acceptedFindings,
   atMerge,
   atTake,
+  closesOnAnswer,
   closesWhenCleared,
   decide,
   dryRunLeft,
@@ -1080,7 +1081,24 @@ export class Line {
         this.#o.log.info({ workItem, on: next.on, files: next.files }, 'a spec that overlaps waits');
         return;
       }
-      case 'close':
+      case 'close': {
+        // Its pull request first, unless it merged: nothing of the work item is left open for nobody to merge, and the
+        // pull request says why. Closing one already closed changes nothing, and says nothing again. Any other failure
+        // is thrown, before anything is closed, and the next pass tries again: it is still Martin's answer to act on,
+        // which the gates' read leaves to this. One that is gone, or that the GitHub worker's guard or GitHub refused
+        // (a refusal the line records), is left as it is, and the close says so.
+        const open = !next.merged && state.pullRequest ? state.pullRequest.number : undefined;
+        let left: string | undefined;
+        if (open !== undefined) {
+          const comment = rejectedPullComment(next.reason, workItem);
+          await this.#o.github
+            .act('closePullRequest', this.#o.repo, { number: open, comment }, { workItem })
+            .catch((error: unknown) => {
+              if (!issueGone(error)) throw error;
+              left = messageOf(error);
+              this.#o.log.warn({ workItem, number: open, err: error }, 'the pull request cannot be closed: left open');
+            });
+        }
         // The issue goes with it; closing one already closed changes nothing, and one that is gone, or that the App may
         // not change, has nothing to close.
         if (item.issue) {
@@ -1096,11 +1114,21 @@ export class Line {
           {
             type: 'work-item.closed',
             actor: 'factory',
-            summary: next.merged ? 'Closed after its merge, as Martin answered' : 'Closed unmerged, as Martin answered',
+            summary: next.merged
+              ? 'Closed after its merge, as Martin answered'
+              : open === undefined
+                ? 'Closed unmerged, as Martin answered'
+                : left === undefined
+                  ? `Closed with PR #${open} unmerged, as Martin answered`
+                  : cutTo(
+                      `Closed as Martin answered, but PR #${open} could not be closed and is still open: ${left}`,
+                      200,
+                    ),
             payload: { outcome: 'no-change', reason: next.reason },
           },
         ]);
         return;
+      }
       case 'verified': {
         // The issue first, with what cleared it: closing one already closed changes nothing, and says nothing again;
         // one that is gone, or that the App may not change, has nothing to close.
@@ -1987,6 +2015,8 @@ export class Line {
         const state = fold(raw as LineEvent[]);
         // Once merged, the pull request has nothing more to say: the release carries the work item on.
         if (!state.pullRequest || state.merged) continue;
+        // Martin's answer closes it: the line's close does, its pull request with it, with his reason.
+        if (closesOnAnswer(state)) continue;
         const pr = await github.read('pullRequest', repo, { number: state.pullRequest.number });
         // A merged pull request's checks too, on its head, once GitHub names the merge commit: what they did since the
         // last read is recorded with the merge, which waits for that commit.

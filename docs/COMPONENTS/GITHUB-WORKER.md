@@ -25,7 +25,7 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
 - branches;
 - signed commits through GraphQL's `createCommitOnBranch`, never `git push`;
 - opening, updating, labelling and readying pull requests (updating and labelling only the App's own, [as for issues](#its-issues-and-pull-requests-only)), and putting them back to draft, and updating a branch;
-- closing a pull request unmerged with a comment once (`closePullRequest`), as the line does for a held or waiting work item whose defect went with another change; one already closed is left as it is, and one from a branch the factory does not own is refused;
+- closing a pull request unmerged with a comment once (`closePullRequest`), as the line does for a held or waiting work item whose defect went with another change, and for one Martin rejects; one already closed is left as it is, and one from a branch the factory does not own is refused;
 - comment reviews anchored to lines, and resolving their threads (`resolveThreads`): on each open thread the App began with a finding now answered (matched by path, line and words), the reply it is given, made once, then the thread resolved. The reply names the commit when a later review finds the finding put right or the suggestion taken, gives the coder's reason when it declines a suggestion, and says Martin accepted the review when he approves its hold in the console;
 - check runs;
 - adding its own pull request to the merge queue (`enqueuePullRequest`, [to merge](#to-merge)), at the head the line names;

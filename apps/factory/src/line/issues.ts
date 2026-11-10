@@ -27,3 +27,16 @@ export async function closeIssue(
     );
   });
 }
+
+/**
+ * The comment on a work item's pull request as the line closes it unmerged on Martin's answer: why it closed, in the
+ * close's own reason, with his words when he gave them and may share them (`fold`), and that its issue goes with it.
+ */
+export function rejectedPullComment(reason: string, workItem: string): string {
+  const said = /[.!?]$/.test(reason) ? reason : `${reason}.`;
+  return [
+    `The factory closes this pull request unmerged. ${said}`,
+    '',
+    `The factory’s work item #${workItem} is closed with no change, and its issue with it.`,
+  ].join('\n');
+}

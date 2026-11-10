@@ -114,6 +114,49 @@ describe('Needs you', () => {
     ]);
   });
 
+  it('says Reject closes the pull request with the work item, on every hold that may have one open', () => {
+    const pushed = {
+      number: 1330,
+      branch: 'factory/2012',
+      commit: 'a'.repeat(40),
+      files: [],
+      whole: [],
+    } as unknown as PayloadOf<'pull-request.pushed'>;
+    const rejectOn = (cause: HoldCause, push: boolean) => {
+      let item = work('2012', START).add(0, 'work-item.opened', 'factory', {
+        kind: 'defect-fix',
+        title: 'Real',
+        sample: false,
+      });
+      if (push) item = item.add(1, 'pull-request.pushed', 'coder', pushed);
+      item = item.add(2, 'hold.started', 'factory', hold(cause));
+      return needsView(foldItems(item.events), START + 3_600_000).holds[0]?.answers.find((a) => a.answer === 'rejected')
+        ?.does;
+    };
+    // The line closes an open pull request on every hold a Reject closes, whatever its cause.
+    for (const cause of [
+      'gates',
+      'scope',
+      'review',
+      'beyond-ticket',
+      'merge',
+      'failures',
+      'spend',
+      'tests-first',
+    ] as const) {
+      expect(rejectOn(cause, true), cause).toBe('Closes #2012 and its pull request #1330, unmerged.');
+      expect(rejectOn(cause, false), cause).toBe('Closes #2012, unmerged.');
+    }
+    expect(rejectOn('nothing-to-fix', true)).toBe(
+      'Agrees with the coder, and closes #2012 and its pull request #1330, unmerged.',
+    );
+    // After the merge, nothing is left open: the change stays merged.
+    expect(rejectOn('verify', true)).toBe('Closes #2012. Its change stays merged.');
+    expect(rejectOn('deploy', true)).toBe(
+      'Closes #2012. Its change stays merged, and goes out with the next deploy anyway.',
+    );
+  });
+
   it('keeps a hold of triage’s waiting after words, and says so in Answered today', () => {
     const t = Date.parse('2026-10-03T15:00:00Z');
     const finding = work('2020', Date.parse('2026-10-03T10:00:00Z'))
@@ -698,9 +741,9 @@ describe('Needs you', () => {
         href: 'https://github.com/the-roganator/cv-worlds-worst-website/pull/1327',
         there: 'approve-merge',
       });
-      // The line closes the work item and its issue, and leaves the pull request open.
+      // The line closes the work item, its issue and its pull request, unmerged.
       expect(realNeed?.answers.find((a) => a.answer === 'rejected')?.does).toBe(
-        'Closes #2070, unmerged. Its pull request #1327 stays open on GitHub until you close it.',
+        'Closes #2070 and its pull request #1327, unmerged.',
       );
       // With no tags read, the gate said nothing clear either.
       expect(needOf(merge('held', { tags: undefined }))?.evidence).toMatchObject({ kind: 'gate', tags: [], clear: [] });

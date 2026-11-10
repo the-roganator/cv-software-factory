@@ -106,6 +106,15 @@ interface World {
   files?: Record<string, string>;
   minimumReleaseAge?: number;
   k3s?: Record<string, { published: string; images: string[] }>;
+  /** Each image's index digest, by reference; a digest made from the reference where none is given. */
+  digests?: Record<string, string>;
+  /** Each chart's versions, by its name, and each version's rendering, by `<chart>@<version>`. */
+  charts?: Record<string, { version: string; created: string }[]>;
+  renders?: Record<string, string>;
+  /** Each tool's releases, and each release's report, by `<tool>@<version>`. */
+  toolReleases?: Record<string, { version: string; published: string }[]>;
+  toolReports?: Record<string, TrivyReport>;
+  kubeVersion?: string;
 }
 
 /** The sources as the world has them, and what was asked of them. */
@@ -129,6 +138,28 @@ function sourcesOf(world: World) {
       // A tag with no release published, as the real source answers it.
       return world.k3s?.[release];
     },
+    async digest(reference) {
+      asked.push(`digest ${reference}`);
+      return world.digests?.[reference] ?? `sha256:${'d'.repeat(64)}`;
+    },
+    async chartVersions(_repo, chart) {
+      asked.push(`chart ${chart}`);
+      return world.charts?.[chart] ?? [];
+    },
+    async render(chart) {
+      asked.push(`render ${chart.chart}@${chart.version}`);
+      const text = world.renders?.[`${chart.chart}@${chart.version}`];
+      if (text === undefined) throw new Error(`${chart.chart} ${chart.version}: no such chart`);
+      return text;
+    },
+    async toolReleases(tool) {
+      asked.push(`releases ${tool}`);
+      return world.toolReleases?.[tool] ?? [];
+    },
+    async tool(tool, version) {
+      asked.push(`tool ${tool}@${version}`);
+      return world.toolReports?.[`${tool}@${version}`];
+    },
     file: (path) => world.files?.[path],
     alerts: async () => world.alerts ?? [],
   };
@@ -144,10 +175,11 @@ async function judge(world: World, now = NOW) {
     findings: world.findings,
     excepted: (world.excepted ?? []).map(alertKey),
     targets: world.targets ?? [LOCKFILE, IMAGE],
+    kubeVersion: world.kubeVersion,
   };
   const { sources, asked } = sourcesOf(world);
-  const { rows } = await assess(handoff, sources, now);
-  return { rows, asked, verdict: verdict(rows) };
+  const { rows, fixes, judged } = await assess(handoff, sources, now);
+  return { rows, fixes, judged, asked, verdict: verdict(rows) };
 }
 
 /** A Trivy report of an image made at the time given, with the findings given. */
@@ -291,7 +323,7 @@ describe('an image’s fix', () => {
       tags,
       images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
     });
-    expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim']);
+    expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim', 'digest node:24.23.0-trixie-slim']);
     expect(rows[0]?.installable).toBe(at('2026-11-01T00:00:00Z'));
     expect(rows[0]?.due).toBe(at('2026-11-08T00:00:00Z'));
   });
@@ -314,7 +346,8 @@ describe('an image’s fix', () => {
       tags,
       images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
     });
-    expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim']);
+    // Its index digest read once too, for the target the messages name.
+    expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim', 'digest node:24.23.0-trixie-slim']);
   });
 
   describe('of ours', () => {
@@ -359,7 +392,10 @@ describe('an image’s fix', () => {
           'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('2026-11-02T00:00:00Z'),
         }),
       );
-      expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
+      expect(asked).toEqual([
+        'image gcr.io/distroless/nodejs24-debian13:nonroot',
+        'digest gcr.io/distroless/nodejs24-debian13:nonroot',
+      ]);
       expect(rows[0]?.installable).toBe(at('2026-11-02T00:00:00Z'));
     });
 

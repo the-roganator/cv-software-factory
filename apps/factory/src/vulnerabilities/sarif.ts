@@ -22,6 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { type Fix, fixText } from './fixes.ts';
 
 /** A package and an advisory in one item, as the scan read it from Trivy's JSON. */
 export interface Finding {
@@ -52,6 +53,10 @@ export interface Finding {
   url?: string | undefined;
   /** The highest CVSS base score any source gives, for code scanning's own severity. */
   score?: number | undefined;
+  /** Where in an image Trivy found the package, for one a tool brings (deadlines.ts). */
+  path?: string | undefined;
+  /** What fixes it and the day that was first seen, which its message ends with (fixes.ts), set by deadlines.ts. */
+  fix?: Fix | undefined;
 }
 
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN';
@@ -214,9 +219,12 @@ export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
   return out;
 }
 
-/** A result's message, which its alert's latest instance carries: the package, its version, the item and the advisory. */
+/**
+ * A result's message, which its alert's latest instance carries: the package, its version, the item and the advisory,
+ * and, once deadlines.ts has found one, what fixes it and since when (fixes.ts's grammar).
+ */
 export const messageOf = (finding: Finding) =>
-  `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.`;
+  `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.${finding.fix ? ` ${fixText(finding.fix)}` : ''}`;
 
 /**
  * What tells a result's alert apart, as code scanning's API gives it back: the advisory (its rule), the file and line,

@@ -85,6 +85,8 @@ const OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export interface TrivyVulnerability {
   VulnerabilityID?: string;
   PkgName?: string;
+  /** Where in an image the package was found, for a language's package. */
+  PkgPath?: string;
   InstalledVersion?: string;
   FixedVersion?: string;
   Severity?: string;
@@ -138,6 +140,8 @@ interface Target {
   label: string;
   /** Set for an image. */
   image?: string;
+  /** For a chart's image that one of its values files pins, that pin: the line its alerts are located at. */
+  pin?: { file: string; line: number } | undefined;
   ci?: string | undefined;
   signer?: string | undefined;
 }
@@ -231,13 +235,13 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
         const line =
           read.target.item.kind === 'lockfile' && lockfile
             ? lockfileLine(lockfile, v.PkgName, installed)
-            : read.target.item.line;
+            : (read.target.pin?.line ?? read.target.item.line);
         return [
           {
             item: read.target.key,
             listed: read.target.item.name,
             label,
-            file: read.target.item.file,
+            file: read.target.pin?.file ?? read.target.item.file,
             line,
             type: result.Type ?? result.Class ?? 'unknown',
             package: v.PkgName,
@@ -250,6 +254,7 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
             description: v.Description,
             url: v.PrimaryURL,
             score: scoreOf(v),
+            ...(v.PkgPath ? { path: v.PkgPath } : {}),
           },
         ];
       }),
@@ -264,8 +269,8 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
     item: read.target.key,
     listed: read.target.item.name,
     label: read.target.label,
-    file: read.target.item.file,
-    line: read.target.item.line,
+    file: read.target.pin?.file ?? read.target.item.file,
+    line: read.target.pin?.line ?? read.target.item.line,
     type: 'node',
     package: 'node',
     installed: read.node ?? '',
@@ -408,7 +413,14 @@ async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<st
     }
     const images = imagesIn(rendered);
     if (!images.length) return { targets: [], unreadable: 'its chart renders no image' };
-    return { targets: images.map(image) };
+    // An image one of the chart's values files pins is located at that pin, so moving it is a pin's line.
+    return {
+      targets: images.map((reference) => {
+        const digest = reference.split('@')[1];
+        const pin = digest ? item.pins?.find((each) => each.digest === digest) : undefined;
+        return { ...image(reference), pin: pin && { file: pin.file, line: pin.line } };
+      }),
+    };
   }
   if (item.kind === 'k3s-release' && item.list) {
     let list: string;
@@ -436,6 +448,10 @@ export interface ReadTarget {
   image?: string | undefined;
   /** For an image k3s's release brings, the URL of the release's list of images (inventory.ts's `list`). */
   list?: string | undefined;
+  /** For a chart's image, the chart, so a later version can be rendered with the same values. */
+  chart?: Chart | undefined;
+  /** For a chart's image one of its values files pins, that pin's file and line. */
+  pin?: { file: string; line: number } | undefined;
 }
 
 export interface Outcome {
@@ -444,6 +460,8 @@ export interface Outcome {
   targets: ReadTarget[];
   unreadable: { name: string; why: string }[];
   read: number;
+  /** The Kubernetes version the charts are rendered for: the k3s node's. */
+  kubeVersion?: string | undefined;
   proof: {
     found: boolean;
     source?: 'sbom' | 'image' | undefined;
@@ -509,6 +527,8 @@ export async function scan(
         label: target.label,
         image: target.image,
         list: item.list,
+        ...(item.chart ? { chart: item.chart } : {}),
+        ...(target.pin ? { pin: target.pin } : {}),
       });
       findings.push(...findingsOf(result, lockfiles.get(item.file)), ...nodeFindingsOf(result, database));
     }
@@ -534,6 +554,7 @@ export async function scan(
     targets: targetsRead,
     unreadable,
     read,
+    kubeVersion,
     proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, node: proofRead.node },
   };
 }
@@ -837,6 +858,8 @@ export interface Handoff {
   /** The alert key (sarif.ts's `alertKey`) of each excepted result. */
   excepted: string[];
   targets: ReadTarget[];
+  /** The Kubernetes version the charts were rendered for, for rendering a later chart the same way. */
+  kubeVersion?: string | undefined;
 }
 
 export function handoff(
@@ -856,6 +879,7 @@ export function handoff(
     findings: merge(outcome.findings).map(({ title: _t, description: _d, ...finding }) => finding),
     excepted: [...excepted.keys()],
     targets: outcome.targets,
+    kubeVersion: outcome.kubeVersion,
   };
 }
 

@@ -14,7 +14,8 @@
  *   keeps one, for the scan to ask `ci-images.sh resolve` for;
  * - each Helm chart an Application in the rendered overlay installs, at its `targetRevision`, with the values files its
  *   `$values` source names, and Argo CD's own chart, at the Makefile's `ARGOCD_CHART`, with the values it installs with,
- *   for the scan to render with `helm template`;
+ *   for the scan to render with `helm template`; and each tag or digest one of those values files sets for an image by
+ *   digest, a pin of that chart's item (`pins`), where the image's alerts are located;
  * - the k3s node image `deploy/k3d/cluster.yaml` names, the release whose `k3s-images.txt` lists the images k3s runs,
  *   for the scan to fetch, and the load balancer and tools images k3d starts beside it, at the version mise.lock holds;
  * - each stage of each tracked Dockerfile that names an image rather than an earlier stage;
@@ -74,8 +75,28 @@ export interface Item {
    */
   ci?: string | undefined;
   chart?: Chart;
+  /**
+   * For a chart, each image its values files pin by digest (`tag: 2.14.3@sha256:…`, or `digest: sha256:…`): the file and
+   * line, and the digest the rendered image carries, so moving one is a pin's line, and nothing the list cannot see.
+   */
+  pins?: ValuePin[];
   /** For the k3s release, the list of the images it runs, an asset of its GitHub release. */
   list?: string;
+}
+
+/** An image a chart's values file pins by digest. */
+export interface ValuePin {
+  file: string;
+  line: number;
+  digest: string;
+}
+
+/** A values file's pins of an image by digest: a `tag:` or `digest:` key whose value carries one. */
+export function valuePins(file: string, lines: string[]): ValuePin[] {
+  return lines.flatMap((text, index) => {
+    const digest = /^\s*(?:tag|digest):\s*['"]?(?:[\w.-]+@)?(sha256:[0-9a-f]{64})['"]?\s*(?:#.*)?$/.exec(text)?.[1];
+    return digest ? [{ file, line: index + 1, digest }] : [];
+  });
 }
 
 /** A reference the list does not read, and why it is named. */
@@ -320,6 +341,9 @@ export function inventory(root: string) {
       unread(`Application ${name}`, 'its chart is pinned in no file');
       continue;
     }
+    const pins = values
+      .filter((file) => tracked.includes(file))
+      .flatMap((file) => valuePins(file, checkout.lines(file)));
     add({
       kind: 'chart',
       name,
@@ -331,6 +355,7 @@ export function inventory(root: string) {
         release: source.helm?.releaseName ?? application,
         values,
       },
+      ...(pins.length ? { pins } : {}),
     });
   }
   const argocd = argoCD(checkout);
@@ -342,7 +367,10 @@ export function inventory(root: string) {
       why: 'no helm command installs it as the list reads one',
     });
   else if (argocd) {
-    add(argocd);
+    const pins = (argocd.chart?.values ?? [])
+      .filter((file) => tracked.includes(file))
+      .flatMap((file) => valuePins(file, checkout.lines(file)));
+    add(pins.length ? { ...argocd, pins } : argocd);
     for (const file of argocd.chart?.values ?? []) values.add(file);
   }
 
@@ -512,7 +540,7 @@ function argoCD(checkout: Checkout): Item | 'unread' | undefined {
 
 /** Every pin in the checkout that the list does not read. */
 export function unlisted(root: string): Unlisted[] {
-  const { items, checkout, text, unplaced, values } = inventory(root);
+  const { items, checkout, text, unplaced } = inventory(root);
   const listed = new Set(items.flatMap((item) => (item.image ? [identity(item.image)] : [])));
   // The digests each listed line pins, so a second reference on that line is still compared on its own.
   const pinned = new Map<string, Set<string>>();
@@ -522,10 +550,14 @@ export function unlisted(root: string): Unlisted[] {
     const at = `${item.file}:${item.line}`;
     pinned.set(at, new Set([...(pinned.get(at) ?? []), digest]));
   }
+  // A values file's pins are the chart's: each line a value pins is listed.
+  for (const item of items)
+    for (const pin of item.pins ?? [])
+      pinned.set(`${pin.file}:${pin.line}`, new Set([...(pinned.get(`${pin.file}:${pin.line}`) ?? []), pin.digest]));
   const found: Unlisted[] = [...unplaced];
 
   for (const file of checkout.files) {
-    if (isFixture(file) || NAMED_TO_BE_REFUSED[file] !== undefined || values.has(file)) continue;
+    if (isFixture(file) || NAMED_TO_BE_REFUSED[file] !== undefined) continue;
     const lines = checkout.lines(file);
     lines.forEach((line, index) => {
       for (const reference of references(line)) {

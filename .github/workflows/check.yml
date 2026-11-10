@@ -213,6 +213,7 @@ jobs:
             mise.lock
             apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
+            .github/images/trivy/Dockerfile
             pnpm-lock*.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -244,7 +245,11 @@ jobs:
             echo "::error::The base has no lockfile gate, and this change does not bring one in."
             exit 1
           fi
-          node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin base/deploy/images/trivy/Dockerfile
+          # Trivy's pin, from the base, as the base holds it: a base from before it moved out of .github/ (#977) holds it
+          # at its old path, which is read only when the new one is missing.
+          pin=base/deploy/images/trivy/Dockerfile
+          if [ ! -f "$pin" ] && [ -f base/.github/images/trivy/Dockerfile ]; then pin=base/.github/images/trivy/Dockerfile; fi
+          node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin "$pin"
 
   # The browser tests run side by side: the console's, in parts, and the factory's senses (the crawler and the probes).
   # Each needs the pinned Playwright image, on arm64 like the laptops the snapshots are made on, so they match.

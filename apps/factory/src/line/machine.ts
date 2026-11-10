@@ -1169,6 +1169,15 @@ export function acceptedFindings(state: WorkItemState): { blocking: Finding[]; s
 }
 
 /**
+ * Whether Martin's answer closes the work item, and the line has yet to: it closes its pull request, its issue and
+ * itself (`afterAnswer`), so a read of GitHub meanwhile leaves the pull request to it. Closed by the line and not yet
+ * recorded, after a crash, it would otherwise read as closed by Martin on GitHub, with none of his reason.
+ */
+export function closesOnAnswer(state: WorkItemState): boolean {
+  return !state.closed && !state.hold && state.answer?.resolution === 'close';
+}
+
+/**
  * Whether a held work item closes as verified by itself when a look again finds its signal cleared: the line held it
  * because its steps, gates or cap stopped the work, as the fence kept refusing the coder, the gates kept failing, a
  * step kept failing, the spend reached its cap, or the reviewer asked for changes once too often (the latest review

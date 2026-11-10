@@ -1955,6 +1955,8 @@ describe('the line', () => {
       reason: 'Martin rejected it',
     });
     expect(github.acts.at(-1)).toEqual({ action: 'closeIssue', args: { number: 41, reason: 'not_planned' } });
+    // With no pull request, none is asked to close.
+    expect(github.acts.filter((a) => a.action === 'closePullRequest')).toEqual([]);
     expect(steps.finished).toEqual([workItem]);
     expect(await stage(workItem)).toBe('ended');
   });

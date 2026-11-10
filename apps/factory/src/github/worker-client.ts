@@ -17,6 +17,8 @@ import {
 
 /**
  * What GitHub says of an issue that is gone (deleted or moved) or that the App may not change: asking again won't help.
+ * The line reads a pull request it closes the same way (`#closePullRequest` in `line/worker.ts`), so a change here
+ * changes when it gives up on one too.
  */
 export const ISSUE_GONE = [403, 404, 410];
 

@@ -9,6 +9,7 @@ import { type Actions, contentsReader, DryRunActions, LiveActions, queueCandidat
 import { createAttackServer } from './attacks.ts';
 import { GitHub } from './client.ts';
 import { type GitHubConfig, REPOSITORIES } from './config.ts';
+import { deployQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
@@ -57,6 +58,14 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       poller.watch(
         `deploy ${target.branch} in ${target.repo}`,
         deployWatch({ github, registry, signatures, actions, log, proposals }, target),
+      );
+    }
+    // This repository's local deploy pull request is added to the merge queue once the gate passes it as an exact pin
+    // and its checks are green (ADR 0017), recorded instead in a dry run; the app's is the line's.
+    for (const target of QUEUED_DEPLOYS.filter((t) => config.repositories.includes(t.repo))) {
+      poller.watch(
+        `queue ${target.branch} in ${target.repo}`,
+        deployQueueWatch({ github, reads: liveReads, actions, recorder, log }, target),
       );
     }
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.

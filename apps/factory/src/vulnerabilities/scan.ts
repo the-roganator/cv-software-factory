@@ -3,7 +3,8 @@
  * advisory database built within the day, and the findings written as one SARIF file for code scanning (sarif.ts), the
  * items grouped into runs of at most 5,000 results, each run a category of its own.
  *
- *     node apps/factory/src/vulnerabilities/scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir> [--upload]
+ *     node apps/factory/src/vulnerabilities/scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir>
+ *       [--repository <owner/name>] [--upload]
  *
  * - A lockfile is scanned on its own, from a directory holding only it, development dependencies included.
  * - An image of ours, from the SPDX SBOM of each platform `build.yml` attested, verified against its signer, and from
@@ -23,13 +24,21 @@
  * Node, so a scan that has stopped seeing Node cannot pass; nothing is uploaded for it. The log gives counts by
  * severity, each run's category, results and items, and the items not read, never a package or an advisory.
  *
+ * Exceptions come from `policy/vulnerabilities.ts` on this repository's `main` alone (exceptions.ts: the workflow puts
+ * `main`'s in place of the checkout's), for the scanned repository (`--repository`, or GITHUB_REPOSITORY): an excepted finding is still uploaded, and with `--upload`
+ * the comment each excepted result's alert is dismissed with is written beside the SARIF (`exceptions.json`), for
+ * alerts.ts to set once code scanning has the upload. The log names each entry that excepts nothing, and warns when the
+ * checkout's `osv-scanner.toml` is not the one the policy gives it; neither fails the run.
+ *
  * The checkout is data: nothing in it runs. Trivy runs in its pinned image, which reads the registries' credentials
  * from DOCKER_CONFIG (GHCR's, the job's token); cosign, helm, kustomize and yq come from this repository's mise.lock.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import * as POLICY from '../../../../policy/vulnerabilities.ts';
+import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
 import {
   advisoriesFor,
@@ -207,6 +216,7 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
         return [
           {
             item: read.target.key,
+            listed: read.target.item.name,
             label,
             file: read.target.item.file,
             line,
@@ -232,6 +242,7 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
   if (!read.node) return [];
   return advisoriesFor(read.node, database).map((advisory) => ({
     item: read.target.key,
+    listed: read.target.item.name,
     label: read.target.label,
     file: read.target.item.file,
     line: read.target.item.line,
@@ -689,12 +700,18 @@ export async function main(args: string[]): Promise<number> {
     const at = args.indexOf(name);
     return at >= 0 ? args[at + 1] : undefined;
   };
-  const [root] = args.filter((arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(trivy-pin|out)$/));
+  const [root] = args.filter(
+    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(trivy-pin|out|repository)$/),
+  );
   const pinFile = option('--trivy-pin');
   const out = option('--out');
+  const repository = option('--repository') ?? process.env.GITHUB_REPOSITORY;
   const upload = args.includes('--upload');
-  if (!root || !pinFile || !out) {
-    console.error('Usage: scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir> [--upload]');
+  if (!root || !pinFile || !out || (upload && !repository)) {
+    console.error(
+      'Usage: scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir> [--repository <owner/name>] [--upload]',
+    );
+    console.error('An upload needs the repository: the alerts it dismisses and reopens are its own.');
     return 2;
   }
   const pin = trivyPin(readFileSync(pinFile, 'utf-8'));
@@ -736,13 +753,27 @@ export async function main(args: string[]): Promise<number> {
   const { items, checkout: files } = inventory(checkout);
   const outcome = await scan(tools, checkout, items, unlisted(checkout), database, new Set(files.files));
   const { lines, passes, file } = report(outcome, upload, LIMITS, pin[2]);
+  const osv = join(checkout, 'osv-scanner.toml');
+  const exceptions = judge(
+    POLICY,
+    repository ?? '',
+    items.map((item) => item.name),
+    outcome.findings,
+    existsSync(osv) ? readFileSync(osv, 'utf-8') : undefined,
+  );
+  lines.splice(lines.length - 1, 0, ...exceptions.lines);
   for (const line of lines) console.log(line);
+  for (const warning of exceptions.warnings) console.log(`::warning::${warning}`);
   for (const entry of outcome.unreadable) console.log(`::error::Not read: ${entry.name}: ${entry.why}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary(outcome, lines)}\n`);
   if (!passes) return 1;
   if (upload) {
     // The file checked against the limits, as it was checked.
     writeFileSync(join(out, 'vulnerabilities.sarif'), JSON.stringify(file));
+    writeFileSync(
+      join(out, 'exceptions.json'),
+      JSON.stringify({ repository, excepted: Object.fromEntries(exceptions.excepted) }),
+    );
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'sarif=true\n');
   }
   return 0;

@@ -71,3 +71,5 @@
 /SECURITY.md                 @mrogan
 /LICENSE                     @mrogan
 /policy/                     @mrogan
+# Generated from policy/vulnerabilities.ts (scripts/osv-scanner.ts): Scorecard's view of the exceptions
+/osv-scanner.toml            @mrogan

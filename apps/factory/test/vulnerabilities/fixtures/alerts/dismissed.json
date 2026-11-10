@@ -1,0 +1,287 @@
+[
+  {
+    "number": 201,
+    "created_at": "2026-11-10T07:47:45Z",
+    "updated_at": "2026-11-10T07:47:46Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/201",
+    "html_url": "https://github.com/the-roganator/cv-software-factory/security/code-scanning/201",
+    "state": "dismissed",
+    "fixed_at": null,
+    "dismissed_by": {
+      "login": "mrogan",
+      "id": 1,
+      "type": "User"
+    },
+    "dismissed_at": "2026-11-09T10:00:00Z",
+    "dismissed_reason": "false positive",
+    "dismissed_comment": "Not reachable.",
+    "rule": {
+      "id": "CVE-2099-10002",
+      "severity": "error",
+      "description": "CVE-2099-10002: invented for the tests",
+      "name": "CVE-2099-10002",
+      "tags": ["security", "vulnerability"],
+      "full_description": "An advisory invented for the tests.",
+      "help": "**CVE-2099-10002**: invented for the tests",
+      "help_uri": "https://avd.aquasec.com/nvd/cve-2099-10002",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.74.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": ".github/workflows/vulnerabilities.yml:scan",
+      "environment": "{}",
+      "category": "vulnerabilities/01",
+      "state": "dismissed",
+      "commit_sha": "ef8fef8588c66825d5b0b9d08ca28452f914eac0",
+      "message": {
+        "text": "example-b 2.0.0 in pnpm-lock.yaml: CVE-2099-10002 (medium), no fix yet."
+      },
+      "location": {
+        "path": "pnpm-lock.yaml",
+        "start_line": 140,
+        "end_line": 140,
+        "start_column": 1,
+        "end_column": 0
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/201/instances",
+    "dismissal_approved_by": null,
+    "assignees": [],
+    "linked_pull_requests": [],
+    "linked_issues": []
+  },
+  {
+    "number": 202,
+    "created_at": "2026-11-10T07:47:45Z",
+    "updated_at": "2026-11-10T07:47:46Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/202",
+    "html_url": "https://github.com/the-roganator/cv-software-factory/security/code-scanning/202",
+    "state": "dismissed",
+    "fixed_at": null,
+    "dismissed_by": {
+      "login": "mrogan",
+      "id": 1,
+      "type": "User"
+    },
+    "dismissed_at": "2026-11-09T10:00:00Z",
+    "dismissed_reason": "won't fix",
+    "dismissed_comment": "Excepted in policy/vulnerabilities.ts until 2026-12-01: older words.",
+    "rule": {
+      "id": "CVE-2099-10001",
+      "severity": "error",
+      "description": "CVE-2099-10001: invented for the tests",
+      "name": "CVE-2099-10001",
+      "tags": ["security", "vulnerability"],
+      "full_description": "An advisory invented for the tests.",
+      "help": "**CVE-2099-10001**: invented for the tests",
+      "help_uri": "https://avd.aquasec.com/nvd/cve-2099-10001",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.74.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": ".github/workflows/vulnerabilities.yml:scan",
+      "environment": "{}",
+      "category": "vulnerabilities/01",
+      "state": "dismissed",
+      "commit_sha": "ef8fef8588c66825d5b0b9d08ca28452f914eac0",
+      "message": {
+        "text": "example-a 1.0.0 in pnpm-lock.yaml: CVE-2099-10001 (high), fixed in 1.0.1."
+      },
+      "location": {
+        "path": "pnpm-lock.yaml",
+        "start_line": 120,
+        "end_line": 120,
+        "start_column": 1,
+        "end_column": 0
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/202/instances",
+    "dismissal_approved_by": null,
+    "assignees": [],
+    "linked_pull_requests": [],
+    "linked_issues": []
+  },
+  {
+    "number": 203,
+    "created_at": "2026-11-10T07:47:45Z",
+    "updated_at": "2026-11-10T07:47:46Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/203",
+    "html_url": "https://github.com/the-roganator/cv-software-factory/security/code-scanning/203",
+    "state": "dismissed",
+    "fixed_at": null,
+    "dismissed_by": {
+      "login": "mrogan",
+      "id": 1,
+      "type": "User"
+    },
+    "dismissed_at": "2026-11-09T10:00:00Z",
+    "dismissed_reason": "won't fix",
+    "dismissed_comment": "Old.",
+    "rule": {
+      "id": "CVE-2099-10003",
+      "severity": "error",
+      "description": "CVE-2099-10003: invented for the tests",
+      "name": "CVE-2099-10003",
+      "tags": ["security", "vulnerability"],
+      "full_description": "An advisory invented for the tests.",
+      "help": "**CVE-2099-10003**: invented for the tests",
+      "help_uri": "https://avd.aquasec.com/nvd/cve-2099-10003",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.74.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": ".github/workflows/vulnerabilities.yml:scan",
+      "environment": "{}",
+      "category": "vulnerabilities/14",
+      "state": "dismissed",
+      "commit_sha": "ef8fef8588c66825d5b0b9d08ca28452f914eac0",
+      "message": {
+        "text": "example-c 3.0.0 in node:24: CVE-2099-10003 (low), no fix yet."
+      },
+      "location": {
+        "path": "apps/x/Dockerfile",
+        "start_line": 2,
+        "end_line": 2,
+        "start_column": 1,
+        "end_column": 0
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/203/instances",
+    "dismissal_approved_by": null,
+    "assignees": [],
+    "linked_pull_requests": [],
+    "linked_issues": []
+  },
+  {
+    "number": 204,
+    "created_at": "2026-11-10T07:47:45Z",
+    "updated_at": "2026-11-10T07:47:46Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/204",
+    "html_url": "https://github.com/the-roganator/cv-software-factory/security/code-scanning/204",
+    "state": "dismissed",
+    "fixed_at": null,
+    "dismissed_by": {
+      "login": "mrogan",
+      "id": 1,
+      "type": "User"
+    },
+    "dismissed_at": "2026-11-09T10:00:00Z",
+    "dismissed_reason": "won't fix",
+    "dismissed_comment": "Another workflow's category: never the scan's.",
+    "rule": {
+      "id": "CVE-2099-10002",
+      "severity": "error",
+      "description": "CVE-2099-10002: invented for the tests",
+      "name": "CVE-2099-10002",
+      "tags": ["security", "vulnerability"],
+      "full_description": "An advisory invented for the tests.",
+      "help": "**CVE-2099-10002**: invented for the tests",
+      "help_uri": "https://avd.aquasec.com/nvd/cve-2099-10002",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.74.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": ".github/workflows/vulnerabilities.yml:scan",
+      "environment": "{}",
+      "category": "trivy-image",
+      "state": "dismissed",
+      "commit_sha": "ef8fef8588c66825d5b0b9d08ca28452f914eac0",
+      "message": {
+        "text": "example-b 2.0.0 in pnpm-lock.yaml: CVE-2099-10002 (medium), no fix yet."
+      },
+      "location": {
+        "path": "pnpm-lock.yaml",
+        "start_line": 140,
+        "end_line": 140,
+        "start_column": 1,
+        "end_column": 0
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/204/instances",
+    "dismissal_approved_by": null,
+    "assignees": [],
+    "linked_pull_requests": [],
+    "linked_issues": []
+  },
+  {
+    "number": 205,
+    "created_at": "2026-11-10T07:47:45Z",
+    "updated_at": "2026-11-10T07:47:46Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/205",
+    "html_url": "https://github.com/the-roganator/cv-software-factory/security/code-scanning/205",
+    "state": "dismissed",
+    "fixed_at": null,
+    "dismissed_by": {
+      "login": "mrogan",
+      "id": 1,
+      "type": "User"
+    },
+    "dismissed_at": "2026-11-09T10:00:00Z",
+    "dismissed_reason": "won't fix",
+    "dismissed_comment": "Excepted in policy/vulnerabilities.ts until 2026-12-31: example-a is reached only by the build, which never parses untrusted input.",
+    "rule": {
+      "id": "CVE-2099-10001",
+      "severity": "error",
+      "description": "CVE-2099-10001: invented for the tests",
+      "name": "CVE-2099-10001",
+      "tags": ["security", "vulnerability"],
+      "full_description": "An advisory invented for the tests.",
+      "help": "**CVE-2099-10001**: invented for the tests",
+      "help_uri": "https://avd.aquasec.com/nvd/cve-2099-10001",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.74.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": ".github/workflows/vulnerabilities.yml:scan",
+      "environment": "{}",
+      "category": "vulnerabilities/02",
+      "state": "dismissed",
+      "commit_sha": "ef8fef8588c66825d5b0b9d08ca28452f914eac0",
+      "message": {
+        "text": "example-a 1.0.0 in ghcr.io/example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: CVE-2099-10001 (high), fixed in 1.0.1."
+      },
+      "location": {
+        "path": "deploy/app.yaml",
+        "start_line": 4,
+        "end_line": 4,
+        "start_column": 1,
+        "end_column": 0
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-software-factory/code-scanning/alerts/205/instances",
+    "dismissal_approved_by": null,
+    "assignees": [],
+    "linked_pull_requests": [],
+    "linked_issues": []
+  }
+]

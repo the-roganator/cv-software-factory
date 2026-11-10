@@ -193,7 +193,8 @@ jobs:
           exit 1
 
   # The lockfile gate (apps/factory/src/gates/lockfile-scan.ts): fails on any vulnerability, at any severity, that the
-  # change's lockfiles have and the base's do not, each lockfile scanned alone by Trivy. The script, Trivy's pin and the
+  # change's lockfiles have and the base's do not, but one policy/vulnerabilities.ts on main excepts, each lockfile
+  # scanned alone by Trivy. The script, Trivy's pin and the
   # base's lockfiles come from the base, and only the change's lockfiles, as data, from the change, so a change to the
   # gate is judged by the one before it, and nothing the change holds runs. Read-only, on every pull request and in the
   # merge queue, where the base is the group's.
@@ -214,6 +215,7 @@ jobs:
             apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
             .github/images/trivy/Dockerfile
+            policy/vulnerabilities.ts
             pnpm-lock*.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -226,6 +228,23 @@ jobs:
             apps/factory/src/gates/lockfile-scan.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
+      # The exceptions, from main alone, as the daily scan reads them, never the change's: main's
+      # policy/vulnerabilities.ts, which imports nothing, in place of the base's (the gate imports it).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: policy-main
+          sparse-checkout: policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Take the exceptions from main
+        run: |
+          if [ -f policy-main/policy/vulnerabilities.ts ]; then
+            mkdir -p base/policy
+            cp policy-main/policy/vulnerabilities.ts base/policy/vulnerabilities.ts
+          else
+            echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
+          fi
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17

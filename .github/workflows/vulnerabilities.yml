@@ -5,13 +5,15 @@
 #
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit and grants `contents: read`, `packages: read`
 # and `security-events: write`, and its results reach its own code scanning, since the upload names the calling
-# repository. The scripts and Trivy's pin come from this repository at the workflow's own commit; the scanned
-# repository's checkout is data, and nothing in it runs.
+# repository. The scripts and Trivy's pin come from this repository at the workflow's own commit, and the exceptions
+# (policy/vulnerabilities.ts) from its main alone; the scanned repository's checkout is data, and nothing in it runs.
 #
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
 #   fails and uploads nothing, so no alert closes because its item went unread. It fails on nothing else: a finding is
-#   an alert, not a failed run.
+#   an alert, not a failed run. After the upload it holds its categories' alerts to policy/vulnerabilities.ts, read
+#   from this repository's main alone: each excepted result's alert dismissed as won't fix, and any dismissed with no
+#   exception in force reopened (alerts.ts).
 # - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
 #   not showing CVE-2026-111497, and its log carries the counts. Every job that writes refuses any event but a push to
@@ -134,8 +136,27 @@ jobs:
             mise.lock
             apps/factory/src/vulnerabilities/
             deploy/images/trivy/Dockerfile
+            policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
+      # The exceptions, from this repository's main alone, whatever commit the caller pins: main's
+      # policy/vulnerabilities.ts, which imports nothing, in place of the pinned commit's (the scripts import it).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: main
+          path: policy-main
+          sparse-checkout: policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Take the exceptions from main
+        run: |
+          if [ -f policy-main/policy/vulnerabilities.ts ]; then
+            mkdir -p factory/policy
+            cp policy-main/policy/vulnerabilities.ts factory/policy/vulnerabilities.ts
+          else
+            echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
+          fi
       # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours: each at the
       # version this repository's mise.lock holds.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -153,7 +174,8 @@ jobs:
         id: scan
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload \
+            --repository "$GITHUB_REPOSITORY"
       # The scan writes the file only when every item was read and it is within code scanning's limits: no run over 5,000
       # results, and no more than 20 runs.
       - name: Refuse to upload from anything but the default branch's push, the schedule or a run by hand
@@ -172,6 +194,15 @@ jobs:
           # No `category`: each run names its own (`automationDetails.id`), which the action keeps.
           sarif_file: ${{ runner.temp }}/scan/vulnerabilities.sarif
           checkout_path: ${{ github.workspace }}/scanned
+          # The alerts are held to the policy once code scanning has processed the upload.
+          wait-for-processing: true
+      # Each excepted result's alert dismissed, and each of the scan's categories' alerts dismissed with no exception in
+      # force reopened (alerts.ts), with the job's token.
+      - name: Hold the alerts to the policy
+        if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node factory/apps/factory/src/vulnerabilities/alerts.ts "$RUNNER_TEMP/scan/exceptions.json"
 
   # The same scan, of the pull request's base, with no permission to write anything: a pull request proves a change to
   # the scan by its own run, and nothing it does reaches code scanning.
@@ -206,8 +237,27 @@ jobs:
             mise.lock
             apps/factory/src/vulnerabilities/
             deploy/images/trivy/Dockerfile
+            policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
+      # The exceptions, from this repository's main alone, whatever commit the caller pins: main's
+      # policy/vulnerabilities.ts, which imports nothing, in place of the pinned commit's (the scripts import it).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: main
+          path: policy-main
+          sparse-checkout: policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Take the exceptions from main
+        run: |
+          if [ -f policy-main/policy/vulnerabilities.ts ]; then
+            mkdir -p factory/policy
+            cp policy-main/policy/vulnerabilities.ts factory/policy/vulnerabilities.ts
+          else
+            echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
+          fi
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
@@ -221,4 +271,5 @@ jobs:
       - name: Scan, uploading nothing
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan"
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" \
+            --repository "$GITHUB_REPOSITORY"

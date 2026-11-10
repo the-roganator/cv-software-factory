@@ -434,6 +434,8 @@ export interface ReadTarget {
   file: string;
   label: string;
   image?: string | undefined;
+  /** For an image k3s's release brings, the URL of the release's list of images (inventory.ts's `list`). */
+  list?: string | undefined;
 }
 
 export interface Outcome {
@@ -506,6 +508,7 @@ export async function scan(
         file: item.file,
         label: target.label,
         image: target.image,
+        list: item.list,
       });
       findings.push(...findingsOf(result, lockfiles.get(item.file)), ...nodeFindingsOf(result, database));
     }

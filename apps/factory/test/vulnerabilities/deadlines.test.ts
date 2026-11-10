@@ -5,6 +5,7 @@ import {
   DAYS,
   dockerfileOf,
   firstFixed,
+  k3sReleaseOf,
   newestOnLine,
   npmUrl,
   runtimeStage,
@@ -103,6 +104,7 @@ interface World {
   images?: Record<string, TrivyReport>;
   files?: Record<string, string>;
   minimumReleaseAge?: number;
+  k3s?: Record<string, { published: string; images: string[] }>;
 }
 
 /** The sources as the world has them, and what was asked of them. */
@@ -120,6 +122,12 @@ function sourcesOf(world: World) {
       const report = world.images?.[reference];
       if (!report) throw new Error(`${reference}: no such image`);
       return report;
+    },
+    async k3s(release) {
+      asked.push(`k3s ${release}`);
+      const found = world.k3s?.[release];
+      if (!found) throw new Error(`${release}: no such release`);
+      return found;
     },
     file: (path) => world.files?.[path],
     alerts: async () => world.alerts ?? [],
@@ -408,6 +416,58 @@ describe('an image’s fix', () => {
     });
   });
 
+  describe('that arrives only with a k3s release', () => {
+    const PINNED = 'rancher/mirrored-metrics-server:v0.8.9';
+    const target: ReadTarget = {
+      key: 'k3s rancher/mirrored-metrics-server',
+      kind: 'k3s-release',
+      file: 'deploy/k3d/cluster.yaml',
+      label: PINNED,
+      image: PINNED,
+      list: 'https://github.com/k3s-io/k3s/releases/download/v1.37.1%2Bk3s1/k3s-images.txt',
+    };
+    const inK3s = os({
+      item: target.key,
+      file: target.file,
+      label: PINNED,
+      listed: 'k3s v1.37.1+k3s1',
+      type: 'gobinary',
+      package: 'example.org/x',
+    });
+    const world = (shipped: Finding[]) => ({
+      findings: [inK3s],
+      targets: [target],
+      alerts: [alertOf(inK3s, '2026-10-01T00:00:00Z')],
+      tags: {
+        'rancher/k3s': ['v1.36.9-k3s1', 'v1.37.1-k3s1', 'v1.37.2-k3s1', 'v1.37.3-rc1-k3s1'],
+        // The image's own line has a newer tag, which no k3s release on the pin's line ships.
+        'rancher/mirrored-metrics-server': ['v0.8.9', 'v0.9.0', 'v0.9.1'],
+      },
+      k3s: {
+        'v1.37.2+k3s1': {
+          published: '2026-11-03T12:00:00Z',
+          images: ['docker.io/rancher/klipper-lb:v0.4.17', 'rancher/mirrored-metrics-server:v0.9.0'],
+        },
+      },
+      images: {
+        'rancher/mirrored-metrics-server:v0.9.0': imageReport('2026-10-30T00:00:00Z', shipped),
+        'rancher/mirrored-metrics-server:v0.9.1': imageReport('2026-11-05T00:00:00Z'),
+      },
+    });
+
+    it('counts from the newest k3s release on the pin’s line whose image no longer has the finding', async () => {
+      const { rows, asked } = await judge(world([]));
+      expect(asked).toEqual(['tags rancher/k3s', 'k3s v1.37.2+k3s1', 'image rancher/mirrored-metrics-server:v0.9.0']);
+      expect(rows[0]?.installable).toBe(at('2026-11-03T12:00:00Z'));
+    });
+
+    it('has no deadline while that release still ships it, whatever the image’s own newest tag', async () => {
+      const { rows } = await judge(world([inK3s]));
+      expect(rows[0]?.installable).toBeUndefined();
+      expect(rows[0]?.bucket).toBe('none');
+    });
+  });
+
   it('fails the read when the newest image cannot be scanned', async () => {
     await expect(judge({ findings: [finding], alerts, tags, images: {} })).rejects.toThrow(/no such image/);
   });
@@ -617,6 +677,13 @@ describe('the parts', () => {
     expect(npmUrl('example-a')).toBe('https://registry.npmjs.org/example-a');
     expect(npmUrl('@types/node')).toBe('https://registry.npmjs.org/@types%2Fnode');
     expect(npmUrl('a/b/../c?d#e')).toBe('https://registry.npmjs.org/a%2Fb%2F..%2Fc%3Fd%23e');
+  });
+
+  it('reads a k3s release from its list’s URL', () => {
+    expect(k3sReleaseOf('https://github.com/k3s-io/k3s/releases/download/v1.37.1%2Bk3s1/k3s-images.txt')).toBe(
+      'v1.37.1+k3s1',
+    );
+    expect(k3sReleaseOf('https://example.org/v1.37.1%2Bk3s1/k3s-images.txt')).toBeUndefined();
   });
 
   it('names a repository as skopeo reads it', () => {

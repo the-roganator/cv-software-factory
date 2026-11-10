@@ -13,7 +13,9 @@
  *   in Node's release index. For anything else in an image (an operating system's package, a binary it ships), from
  *   the creation of the newest image on the line of the pin that brings it (the runtime stage of its Dockerfile, for an
  *   image of ours), found as `scripts/ci-images.sh`'s `newest` finds it, or the tag's current image for a tag that is
- *   not a version, once that image no longer has the finding. In an image of ours, only what its runtime stage's image
+ *   not a version, once that image no longer has the finding. An image that arrives only with a k3s release is
+ *   installable from the newest k3s release on the pin's line (its node image's tags), once the copy its
+ *   `k3s-images.txt` lists no longer has the finding, from the day it was published. In an image of ours, only what its runtime stage's image
  *   has comes that way; anything else its Dockerfile adds, but an npm package, has no fix to count from. A package in
  *   several versions is installable once every copy's fix is, and Node's fix is a release on the major installed. Only
  *   an image with such a finding that Trivy says is fixed has its line's newest scanned, each once, and nothing is
@@ -61,6 +63,21 @@ const EARLIEST = Date.parse('2000-01-01T00:00:00Z');
 /** Trivy's types of an npm package. */
 const NPM_TYPES = new Set(['pnpm', 'npm', 'yarn', 'node-pkg']);
 
+/** k3s's node image, whose tags name its releases (`v1.37.1-k3s1` for `v1.37.1+k3s1`). */
+const K3S_IMAGE = 'rancher/k3s';
+
+/** Whether two references name one repository, Docker Hub's written with its registry or without. */
+const sameRepository = (a: string, b: string) => {
+  const bare = (reference: string) => repositoryOf(reference).replace(/^docker\.io\/(library\/)?/, '');
+  return bare(a) === bare(b);
+};
+
+/** A k3s release's version, from the URL of its list of images (inventory.ts's `list`). */
+export function k3sReleaseOf(list: string) {
+  const version = /^https:\/\/github\.com\/k3s-io\/k3s\/releases\/download\/([^/]+)\/k3s-images\.txt$/.exec(list)?.[1];
+  return version ? decodeURIComponent(version) : undefined;
+}
+
 /** What the deadlines are read from, so the tests give recorded answers instead. */
 export interface Sources {
   /** When npm published a version of a package, or undefined when npm has no such version. */
@@ -71,6 +88,8 @@ export interface Sources {
   tags(repository: string): Promise<string[]>;
   /** Trivy's report of an image. */
   image(reference: string): Promise<TrivyReport>;
+  /** A k3s release (`v1.37.2+k3s1`): when it was published, and the images its `k3s-images.txt` lists. */
+  k3s(release: string): Promise<{ published: string; images: string[] }>;
   /** A file of the scanned checkout, or undefined. */
   file(path: string): string | undefined;
   /** The scan's alerts, open and dismissed, and those fixed since the time given. */
@@ -297,6 +316,26 @@ export async function installable(
     pins.set(target.key, pin);
     return pin;
   };
+  // Each k3s line's newest release, once: found as the node image's newest tag on the line, read as scan.ts reads one.
+  const k3s = new Map<string, Promise<{ published: string; images: string[] } | undefined>>();
+  const k3sNewestOf = (list: string) => {
+    let once = k3s.get(list);
+    if (!once) {
+      once = (async () => {
+        const pinned = k3sReleaseOf(list);
+        if (!pinned) return undefined;
+        let listed = tags.get(K3S_IMAGE);
+        if (!listed) {
+          listed = sources.tags(K3S_IMAGE);
+          tags.set(K3S_IMAGE, listed);
+        }
+        const latest = newestOnLine(pinned.replace('+', '-'), await listed) ?? pinned.replace('+', '-');
+        return sources.k3s(latest.replace(/-(k3s\d+)$/, '+$1'));
+      })();
+      k3s.set(list, once);
+    }
+    return once;
+  };
   const newestOf = async (pin: string) => {
     const { repository, tag } = nameAndTag(pin);
     if (!tag) return undefined;
@@ -372,7 +411,15 @@ export async function installable(
         if (days.length) at[index] = Math.min(...days);
         return;
       }
-      const reference = await newestOf(pin ?? pinOf(target) ?? '');
+      // An image that arrives only with a k3s release: the newest release on the pin's line, and its copy of the image.
+      let released: number | undefined;
+      let reference: string | undefined;
+      if (target.kind === 'k3s-release') {
+        const release = await k3sNewestOf(target.list ?? '');
+        reference = release?.images.find((image) => sameRepository(image, target.image ?? ''));
+        released = time(release?.published);
+        if (!reference || Number.isNaN(released)) return;
+      } else reference = await newestOf(pin ?? pinOf(target) ?? '');
       if (!reference) return;
       let once = newest.get(reference);
       if (!once) {
@@ -393,8 +440,8 @@ export async function installable(
         newest.set(reference, once);
       }
       const image = await once;
-      if (image.created !== undefined && !image.has.has(has(finding.package, finding.advisory)))
-        at[index] = image.created;
+      const from = target.kind === 'k3s-release' ? released : image.created;
+      if (from !== undefined && !image.has.has(has(finding.package, finding.advisory))) at[index] = from;
     }),
   );
   return { at, looked: lines };
@@ -578,6 +625,32 @@ export function realSources(
       if (!Array.isArray(listed) || !listed.every((tag) => typeof tag === 'string'))
         throw new Error(`skopeo gave no list of tags for ${repository}`);
       return listed as string[];
+    },
+    async k3s(release) {
+      const tag = encodeURIComponent(release);
+      const list = await tools.retry(async () => {
+        const response = await fetch(`https://github.com/k3s-io/k3s/releases/download/${tag}/k3s-images.txt`, {
+          redirect: 'follow',
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status} for its images`);
+        return response.text();
+      });
+      const about = (await tools.retry(async () => {
+        const response = await fetch(`https://api.github.com/repos/k3s-io/k3s/releases/tags/${tag}`, {
+          headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status}`);
+        return response.json();
+      })) as { published_at?: unknown };
+      if (typeof about.published_at !== 'string') throw new Error(`k3s's release ${release} gives no publish time`);
+      const images = list
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith('#'));
+      if (!images.length) throw new Error(`k3s's release ${release} lists no images`);
+      return { published: about.published_at, images };
     },
     image: (reference) =>
       tools.retry(() => tools.trivy(['image', '--scanners', 'vuln', '--image-src', 'remote', '--', reference])),

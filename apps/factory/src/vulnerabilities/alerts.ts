@@ -20,6 +20,9 @@ import { CATEGORY } from './sarif.ts';
 export interface Alert {
   number: number;
   state: 'open' | 'dismissed' | 'fixed' | string;
+  created_at?: string;
+  updated_at?: string;
+  fixed_at?: string | null;
   dismissed_reason?: string | null;
   dismissed_comment?: string | null;
   rule?: { id?: string } | null;

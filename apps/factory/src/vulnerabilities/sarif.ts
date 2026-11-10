@@ -40,6 +40,12 @@ export interface Finding {
   fixed?: string | undefined;
   advisory: string;
   severity: Severity;
+  /**
+   * The publisher's own rating, where it gives one: Trivy's `VendorSeverity` for the advisory's own source (GitHub's
+   * advisory for an npm package, the distribution's for an operating system's), or Node's for Node's own. A finding's
+   * deadline is at the higher of this and `severity` (deadlines.ts).
+   */
+  publisher?: Severity | undefined;
   title?: string | undefined;
   description?: string | undefined;
   url?: string | undefined;
@@ -94,6 +100,11 @@ export function merge(findings: Finding[]): Finding[] {
     const versions = new Set([...seen.installed.split(', '), finding.installed]);
     seen.installed = [...versions].sort().join(', ');
     if (SEVERITIES.indexOf(finding.severity) < SEVERITIES.indexOf(seen.severity)) seen.severity = finding.severity;
+    if (
+      finding.publisher &&
+      (!seen.publisher || SEVERITIES.indexOf(finding.publisher) < SEVERITIES.indexOf(seen.publisher))
+    )
+      seen.publisher = finding.publisher;
     seen.score = Math.max(seen.score ?? 0, finding.score ?? 0) || undefined;
     seen.fixed ??= finding.fixed;
   }

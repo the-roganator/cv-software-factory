@@ -389,9 +389,14 @@ describe('a lockfile', () => {
     expect(read.unreadable).toBe('Trivy read no packages from its document 2 of 2');
   });
 
-  it('cannot be read when a document cannot be read plainly, and Trivy is not asked', async () => {
-    const { read, given } = await readText(`${MAIN.replace('packages:', 'packages: {}')}\n`);
+  it('cannot be read when a document cannot be read plainly', async () => {
+    const { read } = await readText(`${MAIN.replace('packages:', 'packages: {}')}\nsnapshots2: x\n`);
     expect(read.unreadable).toBe('it cannot be read plainly: `packages` is not written as a block');
+  });
+
+  it('cannot be read when it holds no YAML document at all', async () => {
+    const { read, given } = await readText('# nothing\n\n');
+    expect(read.unreadable).toBe('it holds no YAML document');
     expect(given).toEqual([]);
   });
 

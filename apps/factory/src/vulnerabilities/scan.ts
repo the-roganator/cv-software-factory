@@ -40,7 +40,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
-import { documents, forTrivy, isEmptyLockfile, packageKeys } from '../gates/lockfile-scan.ts';
+import { documents, forTrivy, unreadDocument } from '../gates/lockfile-scan.ts';
 import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
 import {
@@ -267,21 +267,16 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
 const IMAGE_ARGS = ['--scanners', 'vuln', '--list-all-pkgs', '--image-src', 'remote'];
 
 /**
- * A lockfile, each YAML document of it alone in a directory, with development dependencies, as the lockfile gate reads
- * it (gates/lockfile-scan.ts, whose reading this shares): pnpm installs from every document, pnpm itself and its config
- * dependencies from one of their own, where Trivy reads one alone. It cannot be read when Trivy reads no package from a
- * document that holds more than its `lockfileVersion`, when a document cannot be read plainly, or when Trivy did not
- * read every package a document lists under `packages:`: one left out of `snapshots:` and the importers is still
- * installed, and Trivy builds its list from those.
+ * A lockfile, each YAML document of it alone in a directory, with development dependencies, judged as the lockfile gate
+ * judges it (gates/lockfile-scan.ts's `unreadDocument`): pnpm installs from every document, pnpm itself and its config
+ * dependencies from one of their own, where Trivy reads one alone. A lockfile with no document at all cannot be read.
  */
 export async function readLockfile(tools: Tools, root: string, target: Target): Promise<Read> {
   const docs = documents(readFileSync(join(root, target.item.file), 'utf-8'));
+  if (!docs.length) return { target, reports: [], unreadable: 'it holds no YAML document' };
   const reports: TrivyReport[] = [];
   for (const [index, doc] of docs.entries()) {
     const which = docs.length > 1 ? `its document ${index + 1} of ${docs.length}` : 'it';
-    const listed = packageKeys(doc);
-    if (typeof listed === 'string')
-      return { target, reports: [], unreadable: `${which} cannot be read plainly: ${listed}` };
     const dir = tools.temp();
     writeFileSync(join(dir, 'pnpm-lock.yaml'), `${forTrivy(doc)}\n`);
     let report: TrivyReport;
@@ -290,18 +285,8 @@ export async function readLockfile(tools: Tools, root: string, target: Target): 
     } catch (error) {
       return { target, reports: [], unreadable: `Trivy could not scan ${which}: ${firstLine(error)}` };
     }
-    if (packagesRead([report]) === 0 && !isEmptyLockfile(doc))
-      return { target, reports: [], unreadable: `Trivy read no packages from ${which}` };
-    const seen = new Set(
-      (report.Results ?? []).flatMap((result) => (result.Packages ?? []).map((p) => `${p.Name}@${p.Version}`)),
-    );
-    const unread = listed.filter((key) => !seen.has(key));
-    if (unread.length)
-      return {
-        target,
-        reports: [],
-        unreadable: `Trivy did not read ${unread.length} of the packages ${which} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`,
-      };
+    const why = unreadDocument(doc, report, which);
+    if (why) return { target, reports: [], unreadable: why };
     reports.push(report);
   }
   return { target, reports };

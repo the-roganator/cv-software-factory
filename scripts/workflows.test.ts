@@ -467,6 +467,7 @@ describe('vulnerabilities.yml', () => {
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/vulnerabilities/**',
       'apps/factory/src/gates/lockfile-scan.ts',
+      'apps/factory/src/gates/report.ts',
       'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');

@@ -275,6 +275,32 @@ export function isEmptyLockfile(text: string) {
     .every((line) => /^(---|lockfileVersion:\s*\S+)\s*$/.test(line));
 }
 
+/**
+ * Why Trivy's report on one document of a lockfile cannot be trusted, or undefined when it can: it read no package
+ * from a document that holds more than its `lockfileVersion`; the document cannot be read plainly; or it did not read
+ * every package the document lists under `packages:`, since Trivy builds its list from other sections, which a
+ * lockfile can leave a package out of (a config dependency outside `snapshots:`) while pnpm still installs it. `which`
+ * names the document in the reason. The daily scan judges each document by this too (../vulnerabilities/scan.ts).
+ */
+export function unreadDocument(
+  doc: string,
+  report: { Results?: { Packages?: { Name?: string; Version?: string }[] | null }[] | null },
+  which: string,
+): string | undefined {
+  const read = Array.isArray(report?.Results) ? report.Results : [];
+  if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
+    return `Trivy read no packages from ${which}`;
+  const listed = packageKeys(doc);
+  if (typeof listed === 'string') return `${which} cannot be read plainly: ${listed}`;
+  const seen = new Set(
+    read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
+  );
+  const unread = listed.filter((key) => !seen.has(key));
+  if (unread.length)
+    return `Trivy did not read ${unread.length} of the packages ${which} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`;
+  return undefined;
+}
+
 /** Where the advisory database is pulled from: GHCR, as the daily scan pulls it (../vulnerabilities/scan.ts). */
 const DB = 'ghcr.io/aquasecurity/trivy-db:2';
 
@@ -339,23 +365,9 @@ function trivy(image: string, cache: string) {
         } catch {
           return { unscannable: `Trivy's report on its document ${index + 1} could not be parsed` };
         }
-        const read = Array.isArray(report?.Results) ? report.Results : [];
-        if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
-          return { unscannable: `Trivy read no packages from its document ${index + 1} of ${docs.length}` };
-        // Every package the document lists, Trivy must have read: it builds its list from other sections, which a
-        // lockfile can leave a package out of while pnpm still installs it.
-        const listed = packageKeys(doc);
-        if (typeof listed === 'string')
-          return { unscannable: `its document ${index + 1} of ${docs.length} cannot be read plainly: ${listed}` };
-        const seen = new Set(
-          read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
-        );
-        const unread = listed.filter((key) => !seen.has(key));
-        if (unread.length)
-          return {
-            unscannable: `Trivy did not read ${unread.length} of the packages its document ${index + 1} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`,
-          };
-        results.push(...read);
+        const why = unreadDocument(doc, report, `its document ${index + 1} of ${docs.length}`);
+        if (why) return { unscannable: why };
+        results.push(...(Array.isArray(report?.Results) ? report.Results : []));
       }
       return { report: JSON.stringify({ Results: results }), empty: isEmptyLockfile(text) };
     },

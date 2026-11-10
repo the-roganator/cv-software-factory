@@ -100,6 +100,17 @@ describe('the list of a fixture repository', () => {
     );
   });
 
+  it('names a lockfile git tracks but the checkout lacks as a pin it cannot read', () => {
+    const dir = checkout();
+    rmSync(join(dir, 'packages/tool/pnpm-lock.yaml'));
+    expect(unlisted(dir)).toContainEqual(
+      expect.objectContaining({
+        file: 'packages/tool/pnpm-lock.yaml',
+        why: 'a lockfile git tracks that is not in the checkout',
+      }),
+    );
+  });
+
   it('reads lockfiles as the lockfile gate does: its LOCKFILE and this one are the same', () => {
     expect(LOCKFILE.source).toBe(GATE_LOCKFILE.source);
     expect(LOCKFILE.flags).toBe(GATE_LOCKFILE.flags);

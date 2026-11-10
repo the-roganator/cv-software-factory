@@ -152,7 +152,8 @@ export function signerOf(image: string) {
 
 /**
  * A lockfile pnpm may install from: `pnpm-lock.yaml`, or a branch's `pnpm-lock.<name>.yaml`. The lockfile gate's
- * LOCKFILE, which a test holds this to: the gate imports what the scan's sparse checkout for the list does not have.
+ * LOCKFILE, which a test holds this to: the coverage job imports this module and checks out no gate, or the policy the
+ * gate imports.
  */
 export const LOCKFILE = /(^|\/)pnpm-lock(\.[^/]+)?\.yaml$/;
 
@@ -179,6 +180,8 @@ class Checkout {
   readonly files: string[];
   /** Lockfiles git tracks as something other than a regular file: a symbolic link, or a submodule. */
   readonly irregularLockfiles: string[] = [];
+  /** Lockfiles git tracks that are not in the checkout. */
+  readonly missingLockfiles: string[] = [];
   private readonly texts = new Map<string, string[]>();
 
   constructor(root: string) {
@@ -193,7 +196,11 @@ class Checkout {
       .flatMap((entry) => {
         const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
         if (!file) return [];
-        if (mode === '100644' || mode === '100755') return existsSync(join(this.root, file)) ? [file] : [];
+        if (mode === '100644' || mode === '100755') {
+          if (existsSync(join(this.root, file))) return [file];
+          if (LOCKFILE.test(file)) this.missingLockfiles.push(file);
+          return [];
+        }
         if (LOCKFILE.test(file)) this.irregularLockfiles.push(file);
         return [];
       });
@@ -304,6 +311,8 @@ export function inventory(root: string) {
       reference: file,
       why: 'a lockfile git tracks as something other than a regular file, which pnpm would follow',
     });
+  for (const file of checkout.missingLockfiles)
+    unplaced.push({ file, line: 0, reference: file, why: 'a lockfile git tracks that is not in the checkout' });
 
   // Images of ours, as the local overlay pins them.
   for (const file of tracked.filter((file) =>

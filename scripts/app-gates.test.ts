@@ -2,8 +2,20 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const workflow = readFileSync('.github/workflows/app-gates.yml', 'utf-8');
-/** The base the jobs compare with, from their `base` step. */
-const BASE = `\${{ steps.base.outputs.sha }}`;
+/** The base the jobs compare with, which their `Find the base` step sets. */
+const BASE = `\${{ env.BASE_SHA }}`;
+/** The step that sets it, from base.sh. */
+const FIND = `\n      - name: Find the base
+        env:
+          PR_HEAD_SHA: \${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: \${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+`;
+/** Where a job first runs the change's code, or builds it: BASE_SHA is read before, so nothing the change runs sets it. */
+const RUNS_CHANGE = /context: change|docker run|pnpm |vitest/;
 /** Each job's text, by its id. */
 const jobs = Object.fromEntries(
   workflow
@@ -18,6 +30,7 @@ describe("the app's gates (ADR 0014)", () => {
       'dependency-review',
       'image-scan',
       'journeys',
+      'lockfile-scan',
       'test-integrity',
       'tests-first',
     ]);
@@ -31,25 +44,37 @@ describe("the app's gates (ADR 0014)", () => {
 
   it('compare with the base a pull request would merge into now, or in the merge queue the group’s (#960)', () => {
     // Not the event's `pull_request.base.sha`, which GitHub leaves where the base was when the pull request opened.
-    expect(workflow).not.toMatch(/pull_request\.base\.sha|BASE_SHA \}\}/);
-    const withBase = Object.entries(jobs).filter(([, job]) => / {10}path: base\n/.test(job));
-    expect(withBase.map(([id]) => id)).toEqual(['journeys', 'test-integrity', 'tests-first', 'image-scan']);
+    expect(workflow).not.toMatch(/pull_request\.base\.sha/);
+    // BASE_SHA is set only by each job's Find the base step, never as a workflow's or a job's `env:`.
+    expect(workflow).not.toMatch(/^ +BASE_SHA:/m);
+    expect(workflow.match(/GITHUB_ENV/g)).toHaveLength(workflow.split(FIND).length - 1);
+    const withBase = Object.entries(jobs).filter(([, job]) => job.includes('env.BASE_SHA'));
+    expect(withBase.map(([id]) => id)).toEqual([
+      'journeys',
+      'test-integrity',
+      'tests-first',
+      'image-scan',
+      'lockfile-scan',
+    ]);
+    // Every job that checks out a base reads it there.
+    for (const [id, job] of Object.entries(jobs)) {
+      if (/ {10}path: base\n/.test(job)) expect(withBase.map(([with_]) => with_)).toContain(id);
+    }
     for (const [, job] of withBase) {
-      const change = job.indexOf('\n          path: change\n          fetch-depth: 2\n');
+      const change = job.search(/\n {10}path: change\n {10}fetch-depth: 2\n/);
       const factory = job.indexOf('\n          path: factory\n');
-      const find = job.indexOf(
-        `\n      - name: Find the base
-        id: base
-        env:
-          PR_HEAD_SHA: \${{ github.event.pull_request.head.sha }}
-          MERGE_GROUP_BASE_SHA: \${{ github.event.merge_group.base_sha }}
-        run: |
-          base=$(factory/apps/factory/src/gates/base.sh change)
-`,
-      );
-      const base = job.indexOf(`\n          ref: ${BASE}\n          path: base\n`);
+      const find = job.indexOf(FIND);
+      const base = job.search(/\n {10}ref: \$\{\{ env\.BASE_SHA \}\}\n {10}path: base\n/);
       expect([change, factory, find, base].every((at) => at > 0)).toBe(true);
       expect(change < factory && factory < find && find < base).toBe(true);
+      expect(job.split(FIND)).toHaveLength(2);
+      // Every read of it is after the step, and before the change's code runs.
+      const reads = [...job.matchAll(/env\.BASE_SHA/g)].map((read) => read.index);
+      const runs = job.search(RUNS_CHANGE);
+      for (const read of reads) {
+        expect(read).toBeGreaterThan(find);
+        if (runs >= 0) expect(read).toBeLessThan(runs);
+      }
       // The script is in the job's sparse checkout of this repository.
       expect(job.slice(factory, find)).toMatch(
         /^ {10}sparse-checkout: (?:\|\n(?: {12}.*\n)*? {12})?apps\/factory\/src\/gates\/(?:base\.sh)?$/m,
@@ -69,6 +94,7 @@ describe("the app's gates (ADR 0014)", () => {
       'github.event.pull_request',
       'github.event.merge_group',
       'github.event.pull_request',
+      ...both,
       ...both,
       ...both,
     ]);

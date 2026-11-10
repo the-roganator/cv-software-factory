@@ -19,7 +19,7 @@
  *   for the scan to fetch, and the load balancer and tools images k3d starts beside it, at the version mise.lock holds;
  * - each stage of each tracked Dockerfile that names an image rather than an earlier stage;
  * - each image the workflows start: those a workflow names by digest or as a job's `image:`, `container:` or
- *   `docker://` action, those its Dockerfiles under `.github/images/` pin (Trivy's), and those the scripts it runs name
+ *   `docker://` action, those its Dockerfiles under `deploy/images/` pin (Trivy's), and those the scripts it runs name
  *   (ZAP's). The Postgres service and the Playwright container come through `ci-images.sh` from pins already listed.
  *
  * `--unlisted` names, and exits 1 for, every reference by digest in a tracked file outside prose and test fixtures,
@@ -376,9 +376,9 @@ export function inventory(root: string) {
       }
   }
 
-  // Dockerfiles: their stages that name an image. Those under .github/images/ are images the workflows start.
+  // Dockerfiles: their stages that name an image. Those under deploy/images/ are images the workflows start.
   for (const file of tracked.filter(isDockerfile)) {
-    const kind: Kind = file.startsWith('.github/images/') ? 'workflow' : 'dockerfile';
+    const kind: Kind = file.startsWith('deploy/images/') ? 'workflow' : 'dockerfile';
     // A FROM built from an ARG names no image until it is built, so it is not read: --unlisted names it.
     for (const stage of stages(checkout.lines(file)).filter((stage) => !stage.image.includes('$')))
       add({ kind, name: stage.image, file, line: stage.line, image: stage.image, ci: ciCopy(stage.image) });

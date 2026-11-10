@@ -139,7 +139,7 @@ describe("the scanners' signatures (check.yml)", () => {
     }
   });
 
-  it("checks Trivy's pin where it is today, in .github/images/", () => {
+  it("checks a pin under .github/images/ too, where Trivy's was before it moved", () => {
     const file = '.github/images/trivy/Dockerfile';
     const ref = `${TRIVY}@${digest('c')}`;
     const signed = [`${ref} ${release('0.76.2')} ${ISSUER}`];

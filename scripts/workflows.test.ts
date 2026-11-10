@@ -278,9 +278,17 @@ describe('reading a workflow', () => {
 /**
  * Trivy is one image everywhere, pinned by version and digest in one file, which Dependabot moves: every job that runs
  * it reads that file from this repository at the workflow's own commit, never from a change's checkout or the app's,
- * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart.
+ * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart. A job in a workflow
+ * that runs on this repository's pull requests and merge queue alone reads it from the base instead (the lockfile gate
+ * in check.yml, whose own commit is the change's).
  */
-const TRIVY_PIN = '.github/images/trivy/Dockerfile';
+const TRIVY_PIN = 'deploy/images/trivy/Dockerfile';
+const BASE = expression('github.event.pull_request.base.sha || github.event.merge_group.base_sha');
+/**
+ * Where a base from before the move out of `.github/` (#977) holds the pin. Only check.yml's lockfile scan, which reads
+ * the base's, may name it, and reads it only when the base has no file at TRIVY_PIN.
+ */
+const OLD_TRIVY_PIN = '.github/images/trivy/Dockerfile';
 /** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
 const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
 
@@ -306,6 +314,17 @@ function trivyPin(dockerfile: string) {
 describe("Trivy's pin", () => {
   it('is one image, by version and digest, in its own file', () => {
     expect(trivyPin(readFileSync(TRIVY_PIN, 'utf-8'))).toMatch(/^ghcr\.io\/aquasecurity\/trivy:/);
+  });
+
+  it('is in a directory Dependabot moves, and none it moves is under .github/, where a docker update may not write', () => {
+    const config = parse(readFileSync('.github/dependabot.yml', 'utf-8')) as {
+      updates: { 'package-ecosystem': string; directory?: string; directories?: string[] }[];
+    };
+    const docker = config.updates
+      .filter((update) => update['package-ecosystem'] === 'docker')
+      .flatMap((update) => update.directories ?? (update.directory ? [update.directory] : []));
+    expect(docker).toContain(`/${TRIVY_PIN.replace(/\/Dockerfile$/, '')}`);
+    expect(docker.filter((directory) => `${directory}/`.startsWith('/.github/'))).toEqual([]);
   });
 
   it('refuses a FROM without a version, without a digest, of another image, or beside another', () => {
@@ -345,7 +364,14 @@ describe("Trivy's pin", () => {
       // that may, left out of the file as written, from its name to the next line no deeper than it.
       const text = withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES);
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
+      // Every Trivy pin a workflow names is the one file, but the base's old one, in the lockfile scan alone.
+      for (const [path] of text.matchAll(/[\w./-]*trivy[\w./-]*Dockerfile/gi)) {
+        const named = path.replace(/^(?:[\w.-]*\/)*?(?:base|factory)\//, '');
+        if (file === 'check.yml' && named === OLD_TRIVY_PIN) continue;
+        expect(named, file).toBe(TRIVY_PIN);
+      }
       for (const [name, job] of Object.entries(workflow.jobs)) {
+        if (name !== 'lockfile-scan') expect(JSON.stringify(job), `${file} ${name}`).not.toContain(OLD_TRIVY_PIN);
         const steps = job.steps ?? [];
         const runs = steps
           .filter((step) => step.name !== SIGNATURES)
@@ -353,12 +379,15 @@ describe("Trivy's pin", () => {
           .join('\n');
         if (!/trivy/i.test(runs) && !JSON.stringify(job.env ?? {}).match(/trivy/i)) continue;
         readers++;
-        // The pin, read from a checkout of this repository at the workflow's own commit, by its path there.
+        // The pin, read from a checkout of this repository at the workflow's own commit, by its path there, or at the
+        // base's, in a workflow that runs on pull requests and the merge queue alone, which no other repository can call.
+        const onChangesAlone = triggers(workflow).every((t) => t === 'pull_request' || t === 'merge_group');
         const own = steps.find(
           (step) =>
             step.uses?.startsWith('actions/checkout@') &&
-            step.with?.repository === expression('job.workflow_repository') &&
-            step.with?.ref === expression('job.workflow_sha') &&
+            ((step.with?.repository === expression('job.workflow_repository') &&
+              step.with?.ref === expression('job.workflow_sha')) ||
+              (onChangesAlone && step.with?.repository === undefined && step.with?.ref === BASE)) &&
             String(step.with?.['sparse-checkout'] ?? '')
               .split('\n')
               .includes(TRIVY_PIN),
@@ -437,9 +466,100 @@ describe('vulnerabilities.yml', () => {
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/vulnerabilities/**',
-      '.github/images/trivy/**',
+      'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
+  });
+});
+
+/**
+ * The dependency graph (dependency-graph.yml): the job that submits holds `contents: write` and nothing else, and refuses
+ * any event but a push to the default branch; the proving run, on a pull request, can write nothing. Syft is the one
+ * build.yml attests SBOMs with, by digest, from its one pin.
+ */
+describe('dependency-graph.yml', () => {
+  const workflow = read('dependency-graph.yml');
+  const jobs = workflow.jobs;
+  const SYFT_PIN = 'deploy/images/syft/Dockerfile';
+
+  function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
+    const step = jobs[job]?.steps?.[0];
+    expect(step?.name, job).toBe('Refuse a privileged context');
+    try {
+      execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, DEFAULT_BRANCH: defaultBranch },
+        stdio: 'pipe',
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  it('gives the submission contents: write alone, and the proving run read alone', () => {
+    expect(workflow.permissions).toEqual({});
+    expect(Object.keys(jobs).sort()).toEqual(['prove', 'submit']);
+    expect(jobs.submit?.permissions).toEqual({ contents: 'write' });
+    expect(jobs.prove?.permissions).toEqual({ contents: 'read' });
+    expect(jobs.submit?.if).toBe(expression("github.event_name != 'pull_request'"));
+    expect(jobs.prove?.if).toBe(expression("github.event_name == 'pull_request'"));
+    expect(triggers(workflow).sort()).toEqual(['pull_request', 'push', 'workflow_call']);
+    // Only the submission submits, and every checkout keeps no credentials.
+    for (const [id, job] of Object.entries(jobs)) {
+      const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
+      expect(runs.includes('dependency-graph/snapshots'), id).toBe(id === 'submit');
+      for (const step of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@')))
+        expect(step.with?.['persist-credentials'], id).toBe(false);
+    }
+  });
+
+  it('submits on a push to the default branch alone, and proves on a pull request alone', () => {
+    expect(refuses('submit', 'push', 'refs/heads/main')).toBe(false);
+    expect(refuses('submit', 'push', 'refs/heads/feat/x')).toBe(true);
+    expect(refuses('submit', 'push', 'refs/heads/main', '')).toBe(true);
+    for (const event of ['schedule', 'workflow_dispatch', 'pull_request', 'pull_request_target', 'merge_group'])
+      expect(refuses('submit', event, 'refs/heads/main'), event).toBe(true);
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
+    for (const event of ['push', 'schedule', 'workflow_dispatch', 'merge_group'])
+      expect(refuses('prove', event, 'refs/heads/main'), event).toBe(true);
+  });
+
+  it('proves itself only on a change to the graph, against the base, as data', () => {
+    const on = workflow.on as Record<string, { paths?: string[] } | null>;
+    expect(on.pull_request?.paths).toEqual([
+      '.github/workflows/dependency-graph.yml',
+      'apps/factory/src/vulnerabilities/**',
+      'deploy/images/syft/**',
+      'mise.toml',
+      'mise.lock',
+    ]);
+    const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
+    expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
+    expect(jobs.prove?.steps?.some((step) => (step.run ?? '').includes('--prove'))).toBe(true);
+  });
+
+  it('runs Syft by digest from its one pin, at the version build.yml attests with, and reads it from its own commit', () => {
+    const pin = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@sha256:[0-9a-f]{64}$/m.exec(
+      readFileSync(SYFT_PIN, 'utf-8'),
+    );
+    const build = read('build.yml');
+    const attests = Object.values(build.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
+    expect(pin?.[1]).toBeDefined();
+    expect(attests?.with?.['syft-version']).toBe(pin?.[1]);
+    // check.yml's check of the scanners' signatures names Syft's image, and runs no Syft: it is left out, as for Trivy.
+    for (const { file } of workflows)
+      if (file !== 'build.yml')
+        expect(withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES), file).not.toMatch(
+          /anchore\/syft|download-syft/,
+        );
+    for (const [id, job] of Object.entries(jobs)) {
+      const own = (job.steps ?? []).find((step) => step.with?.ref === expression('job.workflow_sha'));
+      expect(String(own?.with?.['sparse-checkout']), id).toContain(SYFT_PIN);
+      const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
+      expect(runs, id).toContain(`factory/${SYFT_PIN}`);
+    }
   });
 });

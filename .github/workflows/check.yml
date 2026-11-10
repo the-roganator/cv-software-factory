@@ -192,6 +192,65 @@ jobs:
           done
           exit 1
 
+  # The lockfile gate (apps/factory/src/gates/lockfile-scan.ts): fails on any vulnerability, at any severity, that the
+  # change's lockfiles have and the base's do not, each lockfile scanned alone by Trivy. The script, Trivy's pin and the
+  # base's lockfiles come from the base, and only the change's lockfiles, as data, from the change, so a change to the
+  # gate is judged by the one before it, and nothing the change holds runs. Read-only, on every pull request and in the
+  # merge queue, where the base is the group's.
+  lockfile-scan:
+    name: lockfile scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          path: base
+          # Every lockfile (pnpm-lock.yaml, and a branch's pnpm-lock.<name>.yaml), at any depth, beside the script and
+          # the pins it reads.
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/gates/
+            deploy/images/trivy/Dockerfile
+            .github/images/trivy/Dockerfile
+            pnpm-lock*.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: change
+          # Its lockfiles, at any depth, and whether it holds the gate, for the base that does not.
+          sparse-checkout: |
+            pnpm-lock*.yaml
+            apps/factory/src/gates/lockfile-scan.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: base
+          install_args: node
+      # A base with no gate, and a change that brings it in, is the gate's own first landing: there is no script the
+      # change cannot alter, so it judges nothing and says so. A base with no gate otherwise fails: the gate is never
+      # dropped or moved without a pull request that says how it is judged.
+      - name: Compare the lockfiles
+        run: |
+          if [ ! -f base/apps/factory/src/gates/lockfile-scan.ts ]; then
+            if [ -f change/apps/factory/src/gates/lockfile-scan.ts ]; then
+              echo "::notice::The base has no lockfile gate yet: this change brings it in, so it judges nothing."
+              exit 0
+            fi
+            echo "::error::The base has no lockfile gate, and this change does not bring one in."
+            exit 1
+          fi
+          # Trivy's pin, from the base, as the base holds it: a base from before it moved out of .github/ (#977) holds it
+          # at its old path, which is read only when the new one is missing.
+          pin=base/deploy/images/trivy/Dockerfile
+          if [ ! -f "$pin" ] && [ -f base/.github/images/trivy/Dockerfile ]; then pin=base/.github/images/trivy/Dockerfile; fi
+          node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin "$pin"
+
   # The browser tests run side by side: the console's, in parts, and the factory's senses (the crawler and the probes).
   # Each needs the pinned Playwright image, on arm64 like the laptops the snapshots are made on, so they match.
   console-browser:
@@ -461,8 +520,8 @@ jobs:
               echo "$ref: signed by $identity, with its SBOM attested"
             done
           done
-      # Each scanner CI runs from a pin of its own (a Dockerfile under .github/images/ or deploy/images/, which nothing
-      # builds, Trivy's today) is held to the signature its publisher's release workflow makes, named whole, as ours are to build.yml's:
+      # Each scanner CI runs from a pin of its own (a Dockerfile under deploy/images/, Trivy's and Syft's, or under
+      # .github/images/, where none is now; nothing builds them) is held to the signature its publisher's release workflow makes, named whole, as ours are to build.yml's:
       # the workflow, its repository and the tag of the version pinned, so a digest from a canary, a fork or another
       # release fails. Only the pin files a change touches are checked, and every one when this file changes, so a change
       # to the check proves itself on its own pull request. Each identity is the one the publisher's release workflow

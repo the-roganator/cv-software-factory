@@ -9,7 +9,7 @@
  *   advisory's own source, or Node's own rating for Node's).
  * - **The fix is installable** from the first fixed version's publish time in npm's registry plus the scanned
  *   repository's `minimumReleaseAge` (pnpm's default of a day where it sets none), for an npm package of ours: a
- *   lockfile's, or one only an image of ours has, which a lockfile of ours brings. For Node, from the first patched release
+ *   lockfile's, or one in an image of ours that a lockfile of ours resolves at that version. For Node, from the first patched release
  *   in Node's release index. For anything else in an image (an operating system's package, a binary it ships), from
  *   the creation of the newest image on the line of the pin that brings it (the runtime stage of its Dockerfile, for an
  *   image of ours), found as `scripts/ci-images.sh`'s `newest` finds it, or the tag's current image for a tag that is
@@ -58,7 +58,7 @@ const NODE_INDEX = 'https://nodejs.org/dist/index.json';
 /** The earliest time an image may say it was made: before it, the build set none (a reproducible one says 1970). */
 const EARLIEST = Date.parse('2000-01-01T00:00:00Z');
 
-/** Trivy's types of an npm package, which a lockfile of ours brings into an image of ours. */
+/** Trivy's types of an npm package. */
 const NPM_TYPES = new Set(['pnpm', 'npm', 'yarn', 'node-pkg']);
 
 /** What the deadlines are read from, so the tests give recorded answers instead. */
@@ -118,14 +118,15 @@ export function routeOf(
   finding: Pick<Finding, 'type'>,
   kind: ReadTarget['kind'],
   fromBase = false,
+  inLockfile = false,
 ): 'npm' | 'node' | 'image' | 'none' {
   if (finding.type === 'node') return 'node';
   if (kind === 'lockfile') return 'npm';
   if (kind !== 'ours') return 'image';
-  // An image of ours: what its runtime stage's image has comes with a newer one; an npm package only it has, from a
-  // lockfile of ours; anything else its Dockerfile adds itself, which no newer base brings, has no fix to count from.
+  // An image of ours: what its runtime stage's image has comes with a newer one; an npm package a lockfile of ours
+  // resolves, through npm; anything else its Dockerfile adds itself, which no newer base brings, has no fix to count from.
   if (fromBase) return 'image';
-  return NPM_TYPES.has(finding.type) ? 'npm' : 'none';
+  return NPM_TYPES.has(finding.type) && inLockfile ? 'npm' : 'none';
 }
 
 /** A reference's name and tag, its digest left off. */
@@ -308,6 +309,15 @@ export async function installable(
     }
     return `${repository}:${newestOnLine(tag, await listed) ?? tag}`;
   };
+  // The repository's lockfiles, read once: whether one resolves a package at a version.
+  const lockfiles = targets
+    .filter((target) => target.kind === 'lockfile')
+    .map((target) => sources.file(target.file) ?? '');
+  const resolves = (name: string, version: string) => {
+    const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const entry = new RegExp(`^  '?${literal(name)}@${literal(version)}['(:]`, 'm');
+    return lockfiles.some((lockfile) => entry.test(lockfile));
+  };
   const published = async (name: string, version: string) => {
     const key = `${name}@${version}`;
     let once = npm.get(key);
@@ -325,7 +335,12 @@ export async function installable(
       const pin = target.kind === 'ours' ? pinOf(target) : undefined;
       const fromBase =
         pin !== undefined && (byImage.get(identity(pin))?.has(has(finding.package, finding.advisory)) ?? false);
-      const route = routeOf(finding, target.kind, fromBase);
+      const route = routeOf(
+        finding,
+        target.kind,
+        fromBase,
+        target.kind === 'ours' && finding.installed.split(', ').every((version) => resolves(finding.package, version)),
+      );
       if (route === 'none') return;
       if (route === 'npm') {
         // Every copy of the package must be fixable: the clock runs from the last of their fixes.
@@ -533,7 +548,7 @@ export function realSources(
   // An error names the source, never the package asked for: the log gives counts alone.
   const get = async (url: string, source: string) => {
     const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-    if (response.status === 404) return undefined;
+    // A package Trivy read is one npm has: a 404 is a source not read, not a package with no fix.
     if (!response.ok) throw new Error(`${source} answered ${response.status}`);
     return response.json() as Promise<unknown>;
   };
@@ -543,7 +558,8 @@ export function realSources(
       if (!once) {
         once = tools.retry(async () => {
           const body = (await get(npmUrl(name), "npm's registry")) as { time?: Record<string, string> } | undefined;
-          return body?.time ?? {};
+          if (!body?.time || typeof body.time !== 'object') throw new Error("npm's registry gave no publish times");
+          return body.time;
         });
         times.set(name, once);
       }
@@ -558,7 +574,10 @@ export function realSources(
       const { stdout } = await tools.retry(() =>
         run('skopeo', ['list-tags', skopeoName(repository)], { maxBuffer: 64 * 1024 * 1024, timeout: 5 * 60 * 1000 }),
       );
-      return (JSON.parse(stdout) as { Tags?: string[] }).Tags ?? [];
+      const listed = (JSON.parse(stdout) as { Tags?: unknown }).Tags;
+      if (!Array.isArray(listed) || !listed.every((tag) => typeof tag === 'string'))
+        throw new Error(`skopeo gave no list of tags for ${repository}`);
+      return listed as string[];
     },
     image: (reference) =>
       tools.retry(() => tools.trivy(['image', '--scanners', 'vuln', '--image-src', 'remote', '--', reference])),

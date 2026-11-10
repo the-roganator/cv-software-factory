@@ -13,7 +13,7 @@ import {
   skopeoName,
   verdict,
 } from '../../src/vulnerabilities/deadlines.ts';
-import { alertKey, type Finding, messageOf } from '../../src/vulnerabilities/sarif.ts';
+import { alertKey, type Finding, merge, messageOf } from '../../src/vulnerabilities/sarif.ts';
 import {
   type Handoff,
   minimumReleaseAge,
@@ -213,6 +213,12 @@ describe('a finding’s deadline', () => {
     expect(longer.rows[0]?.installable).toBe(at('2026-11-12T12:00:00Z'));
   });
 
+  it('keeps each copy’s fixed versions when two copies are one result', () => {
+    const [one] = merge([npm({ installed: '1.2.0', fixed: '1.2.5' }), npm({ installed: '2.0.0', fixed: '2.0.3' })]);
+    expect(one?.installed).toBe('1.2.0, 2.0.0');
+    expect(one?.fixed).toBe('1.2.5, 2.0.3');
+  });
+
   it('runs the clock of a package in two versions from the later of their fixes', async () => {
     const finding = npm({ installed: '1.2.0, 2.0.0', fixed: '1.2.5, 2.0.3' });
     const { rows } = await judge({
@@ -349,8 +355,9 @@ describe('an image’s fix', () => {
       expect(rows[0]?.installable).toBe(at('2026-11-02T00:00:00Z'));
     });
 
-    it('gives what its Dockerfile adds no fix from a newer base, and its own npm packages npm’s', async () => {
+    it('gives what its Dockerfile adds no fix from a newer base, and npm packages its lockfile resolves npm’s', async () => {
       const added = inOurs({ package: 'libadded', advisory: 'CVE-2099-20011' });
+      const copied = inOurs({ type: 'node-pkg', package: 'example-copied', installed: '3.0.0', fixed: '3.0.1' });
       const own = inOurs({ type: 'node-pkg', package: 'example-a', installed: '1.0.0', fixed: '1.0.1' });
       const bundled = inOurs({ type: 'node-pkg', package: 'cross-example', installed: '7.0.0', fixed: '7.0.5' });
       const { rows, asked } = await judge({
@@ -359,6 +366,7 @@ describe('an image’s fix', () => {
             added,
             own,
             bundled,
+            copied,
             inStage({ type: 'node-pkg', package: 'cross-example', installed: '7.0.0', fixed: '7.0.5' }),
           ],
           {
@@ -367,12 +375,25 @@ describe('an image’s fix', () => {
             ]),
           },
         ),
-        published: { 'example-a@1.0.1': '2026-10-15T00:00:00Z', 'cross-example@7.0.5': '2026-10-15T00:00:00Z' },
+        targets: [ours, stage, LOCKFILE],
+        files: {
+          ...files,
+          'pnpm-lock.yaml': ['lockfileVersion: 9.0', 'packages:', '  example-a@1.0.0:', '    resolution: {}'].join(
+            '\n',
+          ),
+        },
+        published: {
+          'example-a@1.0.1': '2026-10-15T00:00:00Z',
+          'cross-example@7.0.5': '2026-10-15T00:00:00Z',
+          'example-copied@3.0.1': '2026-10-15T00:00:00Z',
+        },
       });
       expect(rows[0]?.installable).toBeUndefined();
       expect(rows[1]?.installable).toBe(at('2026-10-16T00:00:00Z'));
       // npm's own copy, bundled with the base, waits for a base that no longer has it, not for npm.
       expect(rows[2]?.installable).toBeUndefined();
+      // Copied in by the Dockerfile, not resolved by a lockfile of ours: no fix to count from.
+      expect(rows[3]?.installable).toBeUndefined();
       expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
     });
 

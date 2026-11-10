@@ -106,7 +106,9 @@ export function merge(findings: Finding[]): Finding[] {
     )
       seen.publisher = finding.publisher;
     seen.score = Math.max(seen.score ?? 0, finding.score ?? 0) || undefined;
-    seen.fixed ??= finding.fixed;
+    // Each copy's fixed versions, so a copy in another version keeps its own.
+    const fixes = new Set([...(seen.fixed?.split(', ') ?? []), ...(finding.fixed?.split(', ') ?? [])].filter(Boolean));
+    seen.fixed = fixes.size ? [...fixes].join(', ') : undefined;
   }
   return [...byKey.values()];
 }

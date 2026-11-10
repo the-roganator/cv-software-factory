@@ -3,9 +3,9 @@
  * everything moving it clears. A pure function of the results deadlines.ts judged, so the same results always give the
  * same moves, and anything that reads the alerts' messages (fixes.ts) can group them again the same way.
  *
- * A move is one pin's name, what it pins now and what fixes it (fixes.ts's target): every result with the same three is
- * one move, wherever it is pinned, so one image in three Dockerfiles is one move of three pins, and a package in two
- * versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
+ * A move is one pin's name and what it pins now: every result with a fix there is one move, wherever it is pinned, to
+ * the furthest target (fixes.ts) any of them needs, and a line no longer built is a move apart; so one image in three
+ * Dockerfiles is one move of three pins, and a package in two versions one move. A chart's images are the chart's own: two charts that run one image are two moves.
  *
  * Its lane says who moves it, worked out, never chosen, in this order:
  *
@@ -157,6 +157,41 @@ export function laneOf(
   return 'worker';
 }
 
+/** A target's version, for telling which of two on one pin is further. */
+const versionOf = (target: Target) => {
+  switch (target.kind) {
+    case 'version':
+      return target.versions.at(-1) ?? '';
+    case 'image':
+      return target.tag;
+    case 'chart':
+    case 'tool':
+      return target.version;
+    case 'k3s':
+      return target.release;
+    case 'unbuilt':
+      return '';
+  }
+};
+
+const numbers = (version: string) => (version.match(/\d+/g) ?? []).map(Number);
+
+/** Which of two versions is later, by their numbers in order. */
+const later = (a: string, b: string) => {
+  const x = numbers(a);
+  const y = numbers(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d;
+  }
+  return order(a, b);
+};
+
+/** The furthest of the targets one pin's results need: moving there is the move. */
+export function furthest(targets: Target[]): Target | undefined {
+  return [...targets].sort((a, b) => later(versionOf(a), versionOf(b))).at(-1);
+}
+
 /** The day's moves, from the judged results: the most urgent first (earliest deadline, then most Critical, then name). */
 export function moves(results: Judged[], context: Context): Move[] {
   const open = results.filter((each) => !each.excepted);
@@ -164,7 +199,8 @@ export function moves(results: Judged[], context: Context): Move[] {
   for (const each of open) {
     const target = each.finding.fix?.target;
     if (!target) continue;
-    const key = JSON.stringify([pinKey(each), targetText(target)]);
+    // One pin is one move, to the furthest target any of its results needs; a line no longer built is a move apart.
+    const key = JSON.stringify([pinKey(each), target.kind === 'unbuilt']);
     const group = groups.get(key);
     if (group) group.push(each);
     else groups.set(key, [each]);
@@ -180,7 +216,7 @@ export function moves(results: Judged[], context: Context): Move[] {
   const out: Move[] = [];
   for (const members of groups.values()) {
     const first = members[0];
-    const target = first?.finding.fix?.target;
+    const target = furthest(members.flatMap((each) => (each.finding.fix ? [each.finding.fix.target] : [])));
     if (!first || !target) continue;
     const pins = new Map<string, Pin>();
     for (const each of members) pins.set(`${each.pin.file}:${each.pin.line}`, each.pin);

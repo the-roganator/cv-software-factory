@@ -33,9 +33,11 @@ import {
   nodeFindingsOf,
   readOurs,
   report,
+  sbomPaths,
   scan,
   type Tools,
   type TrivyReport,
+  withPaths,
 } from '../../src/vulnerabilities/scan.ts';
 
 /**
@@ -728,5 +730,48 @@ describe('coverage', () => {
     });
     expect(fromTrivy.has('@esbuild/linux-arm64@0.25.0')).toBe(true);
     expect(missing(fromPnpm, fromTrivy)).toEqual(['tinypool@2.0.0']);
+  });
+});
+
+describe('the paths an SBOM gives', () => {
+  it('gives each vulnerable package the one place Syft found it, which Trivy drops reading an SBOM', () => {
+    const predicate = {
+      packages: [
+        {
+          name: 'example-bundled',
+          versionInfo: '6.28.0',
+          sourceInfo:
+            'acquired package info from installed node module manifest file: /opt/pnpm/dist/node_modules/example-bundled/index.js',
+        },
+        {
+          name: 'example-twice',
+          versionInfo: '1.0.0',
+          sourceInfo: 'acquired package info from installed node module manifest file: /a/index.js',
+        },
+        {
+          name: 'example-twice',
+          versionInfo: '1.0.0',
+          sourceInfo: 'acquired package info from installed node module manifest file: /b/index.js',
+        },
+      ],
+    };
+    const report = withPaths(
+      {
+        Results: [
+          {
+            Type: 'node-pkg',
+            Vulnerabilities: [
+              { PkgName: 'example-bundled', InstalledVersion: '6.28.0', VulnerabilityID: 'CVE-2099-1' },
+              { PkgName: 'example-twice', InstalledVersion: '1.0.0', VulnerabilityID: 'CVE-2099-2' },
+            ],
+          },
+        ],
+      },
+      sbomPaths(predicate),
+    );
+    const [bundled, twice] = report.Results?.[0]?.Vulnerabilities ?? [];
+    expect(bundled?.PkgPath).toBe('opt/pnpm/dist/node_modules/example-bundled/index.js');
+    // Found in two places: neither is its alone.
+    expect(twice?.PkgPath).toBeUndefined();
   });
 });

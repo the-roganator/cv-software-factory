@@ -303,6 +303,34 @@ export async function readLockfile(tools: Tools, root: string, target: Target): 
 }
 
 /**
+ * Where Syft found each package in an image, by name and version, from its SPDX SBOM's `sourceInfo` (`… manifest file:
+ * /opt/pnpm/dist/node_modules/undici/package.json`): Trivy keeps no path when it reads an SBOM.
+ */
+export function sbomPaths(predicate: unknown) {
+  const paths = new Map<string, Set<string>>();
+  const packages = (predicate as { packages?: unknown } | undefined)?.packages;
+  for (const each of Array.isArray(packages) ? packages : []) {
+    const { name, versionInfo, sourceInfo } = each as { name?: unknown; versionInfo?: unknown; sourceInfo?: unknown };
+    const path = typeof sourceInfo === 'string' ? /: (\/\S+)$/.exec(sourceInfo)?.[1] : undefined;
+    if (typeof name !== 'string' || typeof versionInfo !== 'string' || !path) continue;
+    const key = `${name}@${versionInfo}`;
+    paths.set(key, new Set([...(paths.get(key) ?? []), path.replace(/^\//, '')]));
+  }
+  return paths;
+}
+
+/** A report with each vulnerable package's path, where the SBOM gives it one place and Trivy gave none. */
+export function withPaths(report: TrivyReport, paths: Map<string, Set<string>>): TrivyReport {
+  for (const result of report.Results ?? [])
+    for (const v of result.Vulnerabilities ?? []) {
+      const found = paths.get(`${v.PkgName}@${v.InstalledVersion}`);
+      const [only] = found?.size === 1 ? [...found] : [];
+      if (!v.PkgPath && only) v.PkgPath = only;
+    }
+  return report;
+}
+
+/**
  * An image of ours: each platform's SBOM, verified against its signer, and its Node version from Syft's
  * `pkg:generic/node` there; and the image itself when no SBOM gives Node, for its findings and its `NODE_VERSION`. An
  * image of ours whose Node cannot be read either way is an item the scan cannot read: every one of ours runs Node.
@@ -323,7 +351,8 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
     const dir = tools.temp();
     writeFileSync(join(dir, 'sbom.spdx.json'), JSON.stringify(predicate));
     try {
-      reports.push(await tools.trivy(['sbom', '--scanners', 'vuln', '--list-all-pkgs', '/src/sbom.spdx.json'], dir));
+      const report = await tools.trivy(['sbom', '--scanners', 'vuln', '--list-all-pkgs', '/src/sbom.spdx.json'], dir);
+      reports.push(withPaths(report, sbomPaths(predicate)));
     } catch (error) {
       return { target, reports: [], unreadable: `Trivy could not read its SBOM: ${firstLine(error)}` };
     }

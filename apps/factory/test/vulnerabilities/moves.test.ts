@@ -303,3 +303,23 @@ describe('what the lanes are read from', () => {
     expect([...directPackages(lockfile)]).toEqual(['example-a', '@example/b']);
   });
 });
+
+describe('one pin with several targets', () => {
+  it('is one move, to the furthest target any of its results needs', () => {
+    const chart = (version: string, major: boolean) =>
+      result({
+        kind: 'chart',
+        name: 'grafana',
+        from: '13.2.7',
+        target: { kind: 'chart', chart: 'grafana', version, major },
+      });
+    const list = moves([chart('13.7.0', false), chart('14.4.1', true), chart('14.4.1', true)], context());
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      to: { kind: 'chart', version: '14.4.1', major: true },
+      major: true,
+      lane: 'approval',
+    });
+    expect(list[0]?.clears.HIGH).toBe(3);
+  });
+});

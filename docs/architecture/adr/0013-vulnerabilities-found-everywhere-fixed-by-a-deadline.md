@@ -58,7 +58,7 @@ The file is code-owned, and the scan reads it from this repository's `main`, not
 - **The app:** the line, as milestone 7's Patching (Part D) sets out.
 - **The factory's lockfile, its images and the platform:** Martin, from an issue the scan's finding opens (Part D), which `/implement` can take as it stands. Dependabot's security updates cover direct dependencies; an indirect one is a lockfile refresh, or an override when its parent's range does not admit the fix.
 
-The daily scan fails on a new High or Critical finding, on one due within a day, and on any deadline passed. Its log, which anyone can read in a public repository, gives counts by severity and deadline; the packages and advisories are in code scanning, which only those with access to the repository's security findings see. A failed scheduled run is GitHub's own notice to Martin, who alone changes the workflows, with no new secret in CI. From Part D, the factory reads each day's results with its App and alerts him at Notify, through Alertmanager.
+The daily scan fails on a new High or Critical finding that has a fix, on one due within a day, and on any deadline passed. A new one with no fix is counted in its log and fails nothing: nobody can act on it, so a failed scan always means something can be moved and has not been. Its log, which anyone can read in a public repository, gives counts by severity and deadline; the packages and advisories are in code scanning, which only those with access to the repository's security findings see. A failed scheduled run is GitHub's own notice to Martin, who alone changes the workflows, with no new secret in CI. From Part D, the factory reads each day's results with its App and alerts him at Notify, through Alertmanager.
 
 ## Why
 

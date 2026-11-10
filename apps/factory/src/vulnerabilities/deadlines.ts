@@ -708,7 +708,9 @@ export function realSources(
   const times = new Map<string, Promise<Record<string, string>>>();
   // An error names the source, never the package asked for: the log gives counts alone.
   const get = async (url: string, source: string) => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(120_000) }).catch((error: unknown) => {
+      throw new Error(`${source}: ${firstLine(error)}`);
+    });
     // A package Trivy read is one npm has: a 404 is a source not read, not a package with no fix.
     if (!response.ok) throw new Error(`${source} answered ${response.status}`);
     return response.json() as Promise<unknown>;
@@ -746,6 +748,8 @@ export function realSources(
         const response = await fetch(`https://github.com/k3s-io/k3s/releases/download/${tag}/k3s-images.txt`, {
           redirect: 'follow',
           signal: AbortSignal.timeout(60_000),
+        }).catch((error: unknown) => {
+          throw new Error(`k3s's release ${release}: ${firstLine(error)}`);
         });
         if (response.status === 404) return undefined;
         if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status} for its images`);
@@ -757,6 +761,8 @@ export function realSources(
         const response = await fetch(`https://api.github.com/repos/k3s-io/k3s/releases/tags/${tag}`, {
           headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
           signal: AbortSignal.timeout(60_000),
+        }).catch((error: unknown) => {
+          throw new Error(`k3s's release ${release}: ${firstLine(error)}`);
         });
         if (response.status === 404) return {};
         if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status}`);
@@ -779,7 +785,17 @@ export function realSources(
     },
     async alerts() {
       if (!token) throw new Error('no token to read code scanning with');
-      const api = realApi(token);
+      // Each page tried again, as a pull is: a run reads several hundred, and one dropped connection is no answer.
+      const direct = realApi(token);
+      const api = {
+        ...direct,
+        get: (path: string) =>
+          tools.retry(() =>
+            direct.get(path).catch((error: unknown) => {
+              throw new Error(`code scanning: ${firstLine(error)}`);
+            }),
+          ),
+      };
       const repository = handoff.repository;
       const [open, dismissed] = await Promise.all([
         alertsIn(api, repository, 'open'),

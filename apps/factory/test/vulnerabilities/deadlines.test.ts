@@ -509,6 +509,16 @@ describe('an image’s fix', () => {
       expect(asked).toEqual(['tags rancher/k3s', 'k3s v1.37.2+k3s1', 'k3s v1.37.3+k3s1']);
     });
 
+    it('takes no fix from a release that lists the pinned image itself', async () => {
+      const base = world([]);
+      const { rows } = await judge({
+        ...base,
+        k3s: { 'v1.37.2+k3s1': { published: '2026-11-03T12:00:00Z', images: [`docker.io/${PINNED}`] } },
+        images: { [`docker.io/${PINNED}`]: imageReport('2026-10-01T00:00:00Z') },
+      });
+      expect(rows[0]?.installable).toBeUndefined();
+    });
+
     it('has no deadline while that release still ships it, whatever the image’s own newest tag', async () => {
       const { rows } = await judge(world([inK3s]));
       expect(rows[0]?.installable).toBeUndefined();

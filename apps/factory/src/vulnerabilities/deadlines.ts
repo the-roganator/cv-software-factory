@@ -83,6 +83,11 @@ export function k3sLine(pinned: string, tags: string[]) {
 }
 
 /** Whether two references name one repository, Docker Hub's written with its registry or without. */
+const bareName = (reference: string) => reference.replace(/^docker\.io\/(library\/)?/, '');
+
+/** Whether two references name one image: the same repository and tag (or digest). */
+const sameImage = (a: string, b: string) => bareName(a) === bareName(b);
+
 const sameRepository = (a: string, b: string) => {
   const bare = (reference: string) => repositoryOf(reference).replace(/^docker\.io\/(library\/)?/, '');
   return bare(a) === bare(b);
@@ -332,7 +337,6 @@ export async function installable(
     pins.set(target.key, pin);
     return pin;
   };
-  // Each k3s line's newest release, once: found as the node image's newest tag on the line, read as scan.ts reads one.
   // The k3s releases after a pinned one on its line, oldest first, each read once.
   const k3sLines = new Map<string, Promise<string[]>>();
   const k3sReleases = new Map<string, Promise<{ published: string; images: string[] } | undefined>>();
@@ -366,23 +370,32 @@ export async function installable(
   };
   /** The first k3s release after the pinned one whose copy of the image no longer has the finding, and its day. */
   const k3sFix = async (target: ReadTarget, finding: Finding) => {
+    if (!target.list) {
+      log(
+        `::warning::${repositoryOf(target.image ?? '')} came with a k3s release the scan named no list for: no fix to count from.`,
+      );
+      return undefined;
+    }
+    // Releases are walked in order: a pin is a release or two behind on its minor, so a few reads at most.
     let listedLast = true;
-    for (const release of await k3sAfter(target.list ?? '')) {
-      // A tag with no release published yet is not one to install.
+    for (const release of await k3sAfter(target.list)) {
       const read = await k3sRelease(release);
-      if (!read) continue;
+      if (!read) {
+        unpublished.add(release);
+        continue;
+      }
       const reference = read.images.find((image) => sameRepository(image, target.image ?? ''));
       listedLast = reference !== undefined;
-      if (!reference) continue;
+      // The same image as the pin's is no fix, whatever the advisory database says of it today.
+      if (!reference || sameImage(reference, target.image ?? '')) continue;
       const image = await scanned(reference, false);
-      if (!image.has.has(has(finding.package, finding.advisory))) {
-        const published = time(read.published);
-        return Number.isNaN(published) ? undefined : published;
-      }
+      const published = time(read.published);
+      if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(published)) return published;
     }
     if (!listedLast) dropped.add(repositoryOf(target.image ?? ''));
     return undefined;
   };
+  const unpublished = new Set<string>();
   const dropped = new Set<string>();
   /** An image scanned once: what it has, and when it was made, where the day is wanted. */
   const scanned = (reference: string, dated: boolean) => {
@@ -393,7 +406,6 @@ export async function installable(
         let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
         // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
         if (Number.isNaN(created) || created < EARLIEST) {
-          if (dated) log(`::warning::${reference} gives no time it was made: its fixes have no day to count from.`);
           created = undefined;
         }
         const found = new Set<string>();
@@ -404,8 +416,17 @@ export async function installable(
       });
       newest.set(reference, once);
     }
-    return once;
+    return dated
+      ? once.then((image) => {
+          if (image.created === undefined && !undated.has(reference)) {
+            undated.add(reference);
+            log(`::warning::${reference} gives no time it was made: its fixes have no day to count from.`);
+          }
+          return image;
+        })
+      : once;
   };
+  const undated = new Set<string>();
   const newestOf = async (pin: string) => {
     const { repository, tag } = nameAndTag(pin);
     if (!tag) return undefined;
@@ -497,7 +518,11 @@ export async function installable(
   );
   for (const repository of dropped)
     log(
-      `::warning::The newest k3s release on the pin's line no longer lists ${repository}: its findings have no fix to count from.`,
+      `::warning::The last k3s release read after the pin no longer lists ${repository}: its findings have no fix to count from.`,
+    );
+  for (const release of unpublished)
+    log(
+      `::warning::k3s ${release} has a node image and no published, stable release with its list of images: passed over.`,
     );
   return { at, looked: lines };
 }
@@ -702,9 +727,9 @@ export function realSources(
         if (response.status === 404) return {};
         if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status}`);
         return response.json();
-      })) as { published_at?: unknown };
+      })) as { published_at?: unknown; prerelease?: unknown; draft?: unknown };
       // A draft, or a release not yet published: nothing to install.
-      if (typeof about.published_at !== 'string') return undefined;
+      if (typeof about.published_at !== 'string' || about.prerelease === true || about.draft === true) return undefined;
       const images = list
         .split('\n')
         .map((line) => line.trim())

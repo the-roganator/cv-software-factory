@@ -466,10 +466,36 @@ describe('vulnerabilities.yml', () => {
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/vulnerabilities/**',
+      'apps/factory/src/gates/lockfile-scan.ts',
       'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
+  });
+
+  it("checks out, in each job, every module its scripts import: the lockfile gate's reading of a lockfile too", () => {
+    const entries: Record<string, string[]> = {
+      coverage: ['apps/factory/src/vulnerabilities/coverage.ts'],
+      scan: ['apps/factory/src/vulnerabilities/scan.ts', 'apps/factory/src/vulnerabilities/alerts.ts'],
+      prove: ['apps/factory/src/vulnerabilities/scan.ts'],
+    };
+    for (const [id, scripts] of Object.entries(entries)) {
+      const own = jobs[id]?.steps?.find((step) => step.with?.path === 'factory');
+      const sparse = String(own?.with?.['sparse-checkout'] ?? '')
+        .split('\n')
+        .filter(Boolean);
+      const has = (file: string) =>
+        sparse.some((entry) => (entry.endsWith('/') ? file.startsWith(entry) : file === entry));
+      const seen = new Set<string>();
+      const walk = (file: string) => {
+        if (seen.has(file)) return;
+        seen.add(file);
+        expect(has(file), `${id}: ${file}`).toBe(true);
+        for (const [, path] of readFileSync(file, 'utf-8').matchAll(/^(?:import|export) [^;]*? from '(\.[^']+)';$/gms))
+          walk(new URL(path ?? '', new URL(file, 'file:///r/')).pathname.slice(3));
+      };
+      for (const script of scripts) walk(script);
+    }
   });
 });
 

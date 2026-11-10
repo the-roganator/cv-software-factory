@@ -6,7 +6,8 @@
  *     node apps/factory/src/vulnerabilities/scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir>
  *       [--repository <owner/name>] [--upload]
  *
- * - A lockfile is scanned on its own, from a directory holding only it, development dependencies included.
+ * - A lockfile, every one git tracks, is scanned a YAML document at a time, each from a directory holding only it,
+ *   development dependencies included, as the lockfile gate scans it (gates/lockfile-scan.ts).
  * - An image of ours, from the SPDX SBOM of each platform `build.yml` attested, verified against its signer, and from
  *   the image itself when its SBOM gives no Node.
  * - Every other image by pulling it, from CI's copy where there is one, with retries; a chart's, from what `helm
@@ -15,8 +16,9 @@
  *   matched against Node's own core vulnerability database (node.ts), fetched each run and refused, as Trivy's is,
  *   when it cannot be read. An image of ours whose Node version cannot be read is an item the scan cannot read.
  *
- * An item that cannot be read (a lockfile Trivy reads no packages from, an SBOM with no attestation, an image that
- * cannot be pulled, a chart that does not render, a pin the list does not read) is named in the log and fails the run,
+ * An item that cannot be read (a lockfile Trivy reads no packages from, or not every package of, one git tracks as
+ * anything but a regular file, an SBOM with no attestation, an image that cannot be pulled, a chart that does not
+ * render, a pin the list does not read) is named in the log and fails the run,
  * and so does a database more than a day old: nothing is written for upload, so no alert closes because its item went
  * unread. The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
  * limits: no run over 5,000 results, so code scanning drops none, and no more than 20 runs. Every run also scans
@@ -34,10 +36,11 @@
  * from DOCKER_CONFIG (GHCR's, the job's token); cosign, helm, kustomize and yq come from this repository's mise.lock.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
+import { documents, forTrivy, isEmptyLockfile, packageKeys } from '../gates/lockfile-scan.ts';
 import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
 import {
@@ -263,20 +266,45 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
 
 const IMAGE_ARGS = ['--scanners', 'vuln', '--list-all-pkgs', '--image-src', 'remote'];
 
-/** A lockfile, alone in a directory, with development dependencies. */
+/**
+ * A lockfile, each YAML document of it alone in a directory, with development dependencies, as the lockfile gate reads
+ * it (gates/lockfile-scan.ts, whose reading this shares): pnpm installs from every document, pnpm itself and its config
+ * dependencies from one of their own, where Trivy reads one alone. It cannot be read when Trivy reads no package from a
+ * document that holds more than its `lockfileVersion`, when a document cannot be read plainly, or when Trivy did not
+ * read every package a document lists under `packages:`: one left out of `snapshots:` and the importers is still
+ * installed, and Trivy builds its list from those.
+ */
 export async function readLockfile(tools: Tools, root: string, target: Target): Promise<Read> {
-  const dir = tools.temp();
-  cpSync(join(root, target.item.file), join(dir, 'pnpm-lock.yaml'));
-  try {
-    const report = await tools.trivy(
-      ['fs', '--scanners', 'vuln', '--include-dev-deps', '--list-all-pkgs', '/src'],
-      dir,
+  const docs = documents(readFileSync(join(root, target.item.file), 'utf-8'));
+  const reports: TrivyReport[] = [];
+  for (const [index, doc] of docs.entries()) {
+    const which = docs.length > 1 ? `its document ${index + 1} of ${docs.length}` : 'it';
+    const listed = packageKeys(doc);
+    if (typeof listed === 'string')
+      return { target, reports: [], unreadable: `${which} cannot be read plainly: ${listed}` };
+    const dir = tools.temp();
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), `${forTrivy(doc)}\n`);
+    let report: TrivyReport;
+    try {
+      report = await tools.trivy(['fs', '--scanners', 'vuln', '--include-dev-deps', '--list-all-pkgs', '/src'], dir);
+    } catch (error) {
+      return { target, reports: [], unreadable: `Trivy could not scan ${which}: ${firstLine(error)}` };
+    }
+    if (packagesRead([report]) === 0 && !isEmptyLockfile(doc))
+      return { target, reports: [], unreadable: `Trivy read no packages from ${which}` };
+    const seen = new Set(
+      (report.Results ?? []).flatMap((result) => (result.Packages ?? []).map((p) => `${p.Name}@${p.Version}`)),
     );
-    if (packagesRead([report]) === 0) return { target, reports: [], unreadable: 'Trivy read no packages from it' };
-    return { target, reports: [report] };
-  } catch (error) {
-    return { target, reports: [], unreadable: `Trivy could not scan it: ${firstLine(error)}` };
+    const unread = listed.filter((key) => !seen.has(key));
+    if (unread.length)
+      return {
+        target,
+        reports: [],
+        unreadable: `Trivy did not read ${unread.length} of the packages ${which} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`,
+      };
+    reports.push(report);
   }
+  return { target, reports };
 }
 
 /**

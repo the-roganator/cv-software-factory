@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { signerOf as routedSigner } from '../../../../scripts/review-routing.ts';
+import { LOCKFILE as GATE_LOCKFILE } from '../../src/gates/lockfile-scan.ts';
 import { pipeline } from '../../src/github/signatures.ts';
 import {
   ciCopy,
@@ -12,6 +13,8 @@ import {
   identity,
   inventory,
   isFixture,
+  LOCKFILE,
+  lockfiles,
   signerOf,
   stages,
   tagOf,
@@ -60,6 +63,46 @@ describe('the list of a fixture repository', () => {
       'packages/tool/pnpm-lock.yaml:1',
       'pnpm-lock.yaml:1',
     ]);
+  });
+
+  it("has every lockfile pnpm could be pointed at: a fixture's, a test's and a branch's, as the gate reads them", () => {
+    const dir = checkout({
+      'test/alt/pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
+      'fixtures/pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
+      'pnpm-lock.feature.yaml': "lockfileVersion: '9.0'\n",
+      'packages/tool/pnpm-lock.next.yaml': "lockfileVersion: '9.0'\n",
+      'pnpm-lock.yaml.orig': "lockfileVersion: '9.0'\n",
+      'not-pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
+    });
+    const listed = inventory(dir).items.filter((item) => item.kind === 'lockfile');
+    expect(listed.map(where).sort()).toEqual(
+      [
+        'fixtures/pnpm-lock.yaml:1',
+        'packages/tool/pnpm-lock.next.yaml:1',
+        'packages/tool/pnpm-lock.yaml:1',
+        'pnpm-lock.feature.yaml:1',
+        'pnpm-lock.yaml:1',
+        'test/alt/pnpm-lock.yaml:1',
+      ].sort(),
+    );
+    // Those pnpm installs where they lie, which coverage and the dependency graph install, are fewer.
+    expect(lockfiles(dir).sort()).toEqual(['packages/tool/pnpm-lock.yaml', 'pnpm-lock.yaml']);
+  });
+
+  it('names a lockfile git tracks as a symbolic link as a pin it cannot read, and lists nothing for it', () => {
+    const dir = checkout();
+    symlinkSync('../pnpm-lock.yaml', join(dir, 'test/pnpm-lock.yaml'));
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    expect(inventory(dir).items.some((item) => item.file === 'test/pnpm-lock.yaml')).toBe(false);
+    expect(lockfiles(dir)).not.toContain('test/pnpm-lock.yaml');
+    expect(unlisted(dir)).toContainEqual(
+      expect.objectContaining({ file: 'test/pnpm-lock.yaml', reference: 'test/pnpm-lock.yaml' }),
+    );
+  });
+
+  it('reads lockfiles as the lockfile gate does: its LOCKFILE and this one are the same', () => {
+    expect(LOCKFILE.source).toBe(GATE_LOCKFILE.source);
+    expect(LOCKFILE.flags).toBe(GATE_LOCKFILE.flags);
   });
 
   it('has each image of ours the local overlay pins, at its digest, and no signer for a repository not trusted', () => {

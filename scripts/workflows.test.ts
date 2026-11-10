@@ -289,6 +289,20 @@ const BASE = expression('github.event.pull_request.base.sha || github.event.merg
  * the base's, may name it, and reads it only when the base has no file at TRIVY_PIN.
  */
 const OLD_TRIVY_PIN = '.github/images/trivy/Dockerfile';
+/** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
+const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
+
+/** A workflow as written, without the step of that name: its lines from `- name:` to the next no deeper than it. */
+function withoutStep(text: string, name: string) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  if (start < 0) return text;
+  const depth = (line: string) => line.length - line.trimStart().length;
+  const after = lines.findIndex(
+    (line, i) => i > start && line.trim() !== '' && depth(line) <= depth(lines[start] ?? ''),
+  );
+  return [...lines.slice(0, start), ...lines.slice(after < 0 ? lines.length : after)].join('\n');
+}
 
 /** The Trivy image a Dockerfile pins, if it pins exactly one, by version and digest, and nothing else. */
 function trivyPin(dockerfile: string) {
@@ -325,10 +339,30 @@ describe("Trivy's pin", () => {
     ).toBeUndefined();
   });
 
+  it("names Trivy, outside its pin, only in check.yml's check of its signature, and only its image and signer", () => {
+    const named = workflows.flatMap(({ file, workflow }) =>
+      Object.values(workflow.jobs).flatMap((job) =>
+        (job.steps ?? []).filter((step) => step.name === SIGNATURES).map((step) => ({ file, step })),
+      ),
+    );
+    expect(named.map(({ file }) => file)).toEqual(['check.yml']);
+    // Every line that names Trivy, its comments' and its messages' aside: the image it matches, and the signer.
+    const lines = (named[0]?.step.run ?? '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith('#') && !line.startsWith('echo') && /trivy/i.test(line));
+    expect(lines).toEqual([
+      'ghcr.io/aquasecurity/trivy)',
+      'identity="https://github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v$version" ;;',
+    ]);
+  });
+
   it('is the only Trivy any workflow names, and each job that runs it reads it from its own commit', () => {
     let readers = 0;
     for (const { file, workflow } of workflows) {
-      const text = readFileSync(`${DIR}/${file}`, 'utf-8');
+      // check.yml's check of the scanners' signatures names Trivy's image and signer, and runs no Trivy: the one step
+      // that may, left out of the file as written, from its name to the next line no deeper than it.
+      const text = withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES);
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
       // Every Trivy pin a workflow names is the one file, but the base's old one, in the lockfile scan alone.
       for (const [path] of text.matchAll(/[\w./-]*trivy[\w./-]*Dockerfile/gi)) {
@@ -339,7 +373,10 @@ describe("Trivy's pin", () => {
       for (const [name, job] of Object.entries(workflow.jobs)) {
         if (name !== 'lockfile-scan') expect(JSON.stringify(job), `${file} ${name}`).not.toContain(OLD_TRIVY_PIN);
         const steps = job.steps ?? [];
-        const runs = steps.map((step) => step.run ?? '').join('\n');
+        const runs = steps
+          .filter((step) => step.name !== SIGNATURES)
+          .map((step) => step.run ?? '')
+          .join('\n');
         if (!/trivy/i.test(runs) && !JSON.stringify(job.env ?? {}).match(/trivy/i)) continue;
         readers++;
         // The pin, read from a checkout of this repository at the workflow's own commit, by its path there, or at the
@@ -512,8 +549,12 @@ describe('dependency-graph.yml', () => {
       .find((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
     expect(pin?.[1]).toBeDefined();
     expect(attests?.with?.['syft-version']).toBe(pin?.[1]);
-    for (const { file, workflow: other } of workflows)
-      if (file !== 'build.yml') expect(JSON.stringify(other), file).not.toMatch(/anchore\/syft|download-syft/);
+    // check.yml's check of the scanners' signatures names Syft's image, and runs no Syft: it is left out, as for Trivy.
+    for (const { file } of workflows)
+      if (file !== 'build.yml')
+        expect(withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES), file).not.toMatch(
+          /anchore\/syft|download-syft/,
+        );
     for (const [id, job] of Object.entries(jobs)) {
       const own = (job.steps ?? []).find((step) => step.with?.ref === expression('job.workflow_sha'));
       expect(String(own?.with?.['sparse-checkout']), id).toContain(SYFT_PIN);

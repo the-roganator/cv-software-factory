@@ -11,6 +11,7 @@ import { DiskArtifacts, EventWriter, nextWorkItem } from '@software-factory/stor
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { EVER, setTake, startLine } from '../../../../packages/store/test/line.ts';
+import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { rejectedPullComment } from '../../src/line/issues.ts';
 import { Line, type LineOptions } from '../../src/line/worker.ts';
@@ -859,5 +860,49 @@ describe('Martin’s Reject of a held work item with an open pull request', () =
     await pass(it);
     expect(closing(github)).toEqual([['closeIssue', 11]]);
     expect(await payloads(workItem, 'work-item.closed')).toHaveLength(1);
+  });
+
+  it('closes nothing when Martin merged it on GitHub before the line read it: the merge is recorded, and goes on', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('merge', github);
+    await rejected(workItem);
+    const pr = github.pulls.get(12);
+    if (pr) Object.assign(pr, { state: 'closed', merged: true, mergeCommit: NEW, mergedBy: 'the-roganator' });
+    await pass(it);
+    now += 60_000;
+    await pass(it);
+    expect(closing(github)).toEqual([]);
+    expect(await payloads(workItem, 'pull-request.merged')).toHaveLength(1);
+    expect(await payloads(workItem, 'work-item.closed')).toEqual([]);
+  });
+
+  it('asks GitHub nothing of a dry run’s pull request once the line runs live', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('gates', github, DRY_RUN_NUMBERS_FROM + 12);
+    await rejected(workItem);
+    await pass(it);
+    expect(github.acts.filter((a) => a.action === 'closePullRequest')).toEqual([]);
+    // The live line's close of a dry run's work item takes it, and says so.
+    expect(await payloads(workItem, 'work-item.closed')).toHaveLength(1);
+  });
+
+  it('ends the comment with his words’ own mark, or the ellipsis of a reason cut to fit', () => {
+    expect(rejectedPullComment('Martin rejected it: why (again)?', '1')).toMatch(/^.*why \(again\)\?\n/);
+    expect(rejectedPullComment('Martin rejected it: a long story…', '1')).toMatch(/a long story…\n/);
+    expect(rejectedPullComment('Martin rejected it: “no”', '1')).toMatch(/“no”\n/);
+  });
+});
+
+describe('a look again that cleared a held work item whose pull request cannot be closed', () => {
+  it('closes the work item as verified, leaving a pull request GitHub no longer has', async () => {
+    const probes = new FakeProbes(CLEARED);
+    const { line: it, github } = line(probes);
+    const workItem = await held('gates', github);
+    await promoted(null);
+    await pass(it); // the probe looks again
+    github.refusing.set('closePullRequest', new GitHubWorkerError(404, 'not-found', 'Not Found'));
+    await pass(it); // and the work item closes, as verified, all the same
+    expect(await payloads(workItem, 'work-item.closed')).toMatchObject([{ outcome: 'verified' }]);
+    expect(await stage(workItem)).toBe('ended');
   });
 });

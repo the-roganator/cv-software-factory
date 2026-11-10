@@ -33,7 +33,8 @@ export async function closeIssue(
  * close's own reason, with his words when he gave them and may share them (`fold`), and that its issue goes with it.
  */
 export function rejectedPullComment(reason: string, workItem: string): string {
-  const said = /[.!?]$/.test(reason) ? reason : `${reason}.`;
+  // A full stop only after a word: a reason cut to fit ends in an ellipsis, and his words may end in their own mark.
+  const said = /[\p{L}\p{N}]$/u.test(reason) ? `${reason}.` : reason;
   return [
     `The factory closes this pull request unmerged. ${said}`,
     '',

@@ -264,6 +264,23 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
 }
 
 /**
+ * The work item's pull request while it is open, as the line reads it: from its push until it merges, or the work
+ * starts a fresh pass (back to Plan after a merge, or reopened), whose first round opens another. A pull request
+ * closed unmerged closes the work item, so a hold never sees one.
+ */
+function openPullRequest(item: ItemState): number | undefined {
+  let open: number | undefined;
+  for (const event of item.events) {
+    if (event.type === 'pull-request.pushed') open = event.payload.number;
+    else if (event.type === 'pull-request.merged' && event.payload.number === open) open = undefined;
+    else if (event.type === 'work-item.reopened' || (event.type === 'work.returned' && event.payload.to === 'plan')) {
+      open = undefined;
+    }
+  }
+  return open;
+}
+
+/**
  * What an answer does, by what the line does with it, for the hold's cause. Rejecting closes the work item, its issue
  * and its pull request, unmerged, which the card names; a merged change stays merged.
  */
@@ -296,10 +313,11 @@ function doesOf(
     }
     // At Verify its change has merged and shipped: closing it takes nothing back out.
     if (cause === 'verify') return `Closes #${workItem}. Its change stays merged.`;
+    // Back with the planner before the merge, its pull request is still open, and closes with it.
+    if (pullRequest !== undefined) return `Closes #${workItem} and its pull request #${pullRequest}, unmerged.`;
     if (cause === 'question' || cause === 'spec' || cause === 'report-undescribed') {
       return `Closes #${workItem}. Nothing is built.`;
     }
-    if (pullRequest !== undefined) return `Closes #${workItem} and its pull request #${pullRequest}, unmerged.`;
     return `Closes #${workItem}, unmerged.`;
   }
   if (answer === 'approved') {
@@ -626,7 +644,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
                   item.number,
                   improvement,
                   // A sample's pull request never existed, so there is none to close.
-                  item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                  item.sample ? undefined : openPullRequest(item),
                 ),
           stepUp: (answer === 'approved' && keyed) || (share && SHARE_STEP_UP['hold.share-words']),
         };

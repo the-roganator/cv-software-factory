@@ -150,6 +150,22 @@ describe('Needs you', () => {
     expect(rejectOn('nothing-to-fix', true)).toBe(
       'Agrees with the coder, and closes #2012 and its pull request #1330, unmerged.',
     );
+    // Back with the planner before the merge, its pull request is still open: Reject closes it too.
+    for (const cause of ['question', 'spec'] as const) {
+      expect(rejectOn(cause, true), cause).toBe('Closes #2012 and its pull request #1330, unmerged.');
+      expect(rejectOn(cause, false), cause).toBe('Closes #2012. Nothing is built.');
+    }
+    // Merged, then back to Plan for a fresh pass: the merged pull request is not one Reject closes.
+    const fresh = work('2013', START)
+      .add(0, 'work-item.opened', 'factory', { kind: 'defect-fix', title: 'Real', sample: false })
+      .add(1, 'pull-request.pushed', 'coder', pushed)
+      .add(2, 'pull-request.merged', 'martin', { number: 1330, commit: 'b'.repeat(40), by: 'martin' })
+      .add(3, 'work.returned', 'factory', { from: 'verify', to: 'plan', reason: 'It persisted' })
+      .add(4, 'hold.started', 'factory', hold('spend'));
+    expect(
+      needsView(foldItems(fresh.events), START + 3_600_000).holds[0]?.answers.find((a) => a.answer === 'rejected')
+        ?.does,
+    ).toBe('Closes #2013, unmerged.');
     // After the merge, nothing is left open: the change stays merged.
     expect(rejectOn('verify', true)).toBe('Closes #2012. Its change stays merged.');
     expect(rejectOn('deploy', true)).toBe(

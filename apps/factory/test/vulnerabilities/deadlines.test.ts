@@ -615,6 +615,72 @@ describe('the clock', () => {
     expect(rows[0]?.firstSeenToday).toBe(true);
   });
 
+  describe('across a re-pin', () => {
+    // Code scanning split each result of the item at 20:04:50 on the 9th: it closed the old alert and opened another.
+    const REPIN = '2026-11-09T20:04:50Z';
+    const before = os({ label: `node:24.22.1-trixie-slim@sha256:${'a'.repeat(64)}` });
+    const after = os();
+    const world = (findings: Finding[], alerts: Alert[]) => ({
+      findings,
+      targets: [IMAGE],
+      alerts,
+      tags: { node: ['24.22.1-trixie-slim'] },
+      images: { 'node:24.22.1-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+    });
+
+    it('keeps the first clock of a finding the new pin still has, and does not count it new', async () => {
+      const { rows, verdict: v } = await judge(
+        world(
+          [after],
+          [alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: REPIN }), alertOf(after, REPIN)],
+        ),
+      );
+      expect(rows[0]?.seen).toBe(at('2026-11-01T00:00:00Z'));
+      expect(rows[0]?.firstSeenToday).toBe(false);
+      expect(v.fresh).toBe(0);
+    });
+
+    it('carries the clock back across several re-pins, and counts a finding first seen today new once', async () => {
+      const middle = os({ label: `node:24.22.1-trixie-slim@sha256:${'c'.repeat(64)}` });
+      const added = os({ package: 'libnew', advisory: 'CVE-2099-20030' });
+      const { rows, verdict: v } = await judge(
+        world(
+          [after, added],
+          [
+            alertOf(before, '2026-10-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-10-20T08:00:00Z' }),
+            alertOf(middle, '2026-10-20T08:00:00Z', { state: 'fixed', fixed_at: REPIN }),
+            alertOf(after, REPIN),
+            alertOf(added, '2026-11-10T04:25:00Z'),
+          ],
+        ),
+      );
+      expect(rows[0]?.seen).toBe(at('2026-10-01T00:00:00Z'));
+      expect(rows[1]?.firstSeenToday).toBe(true);
+      expect(v.fresh).toBe(1);
+    });
+
+    it('starts a new clock for a finding that was really fixed and came back', async () => {
+      const { rows } = await judge(
+        world(
+          [after],
+          [
+            alertOf(before, '2026-09-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-09-10T04:30:00Z' }),
+            alertOf(after, '2026-11-08T04:30:00Z'),
+          ],
+        ),
+      );
+      expect(rows[0]?.seen).toBe(at('2026-11-08T04:30:00Z'));
+    });
+
+    it('closes a finding the new pin really fixed: it has no row and fails nothing', async () => {
+      const { rows, verdict: v } = await judge(
+        world([], [alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: REPIN })]),
+      );
+      expect(rows).toEqual([]);
+      expect(v.passes).toBe(true);
+    });
+  });
+
   it('matches an alert whose pin has moved since, by its item, package and advisory, never its line or version', async () => {
     const finding = npm({ line: 400, installed: '1.0.0' });
     const before = npm({ line: 120, installed: '0.9.0' });

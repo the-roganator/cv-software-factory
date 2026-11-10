@@ -63,10 +63,11 @@ jobs:
               exit 1
               ;;
           esac
-      # The scanned repository, as data: the base of a proving run's pull request.
+      # The scanned repository, as data: for a proving run, its base branch as it is now, not as it was when the pull
+      # request was last pushed, which can be several merges behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.ref || github.sha }}
           path: scanned
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,6 +91,7 @@ jobs:
       # The pnpm the scanned repository's mise pins, read as data, installed by this repository's mise.
       - name: Compare pnpm's list with Trivy's SBOM
         run: |
+          echo "The checkout read: $(git -C scanned rev-parse HEAD)."
           version=$(node factory/apps/factory/src/vulnerabilities/coverage.ts --pnpm-version scanned)
           cd factory
           mise exec "pnpm@$version" -- node "$GITHUB_WORKSPACE/factory/apps/factory/src/vulnerabilities/coverage.ts" \
@@ -237,7 +239,7 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           path: scanned
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -283,6 +285,7 @@ jobs:
         run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
       - name: Scan, uploading nothing
         run: |
+          echo "The base read: $(git -C scanned rev-parse HEAD), the tip of ${GITHUB_BASE_REF} now."
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" \
             --repository "$GITHUB_REPOSITORY"

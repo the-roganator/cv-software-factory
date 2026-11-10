@@ -113,8 +113,8 @@ export interface Sources {
   k3s(release: string): Promise<{ published: string; images: string[] } | undefined>;
   /** A file of the scanned checkout, or undefined. */
   file(path: string): string | undefined;
-  /** The scan's alerts, open and dismissed, and those fixed since the time given. */
-  alerts(since: string): Promise<Alert[]>;
+  /** The scan's alerts: open, dismissed, and closed as fixed. */
+  alerts(): Promise<Alert[]>;
 }
 
 /** The higher of Trivy's rating and the publisher's. */
@@ -273,6 +273,9 @@ export function alertPlace(alert: Alert): Place | undefined {
  */
 const renameKey = (place: Place) =>
   JSON.stringify([place.package, place.advisory, place.repository === place.file ? 'lockfile' : place.repository]);
+
+/** How far apart an alert's closing and the next one's opening may be and still be one upload's split of a result. */
+const SPLIT = 10 * 60_000;
 
 const placeKey = (place: Place) => JSON.stringify([place.advisory, place.file, place.package, place.repository]);
 const itemKey = (place: Pick<Place, 'file' | 'repository'>) => JSON.stringify([place.file, place.repository]);
@@ -531,32 +534,50 @@ export async function installable(
  * When each result was first seen, from the alerts: its own alert's creation; or, for an item new to the list, the
  * creation of an alert of the same package and advisory whose item is no longer on it; or now.
  */
-export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[], now: number) {
+export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[], now: number, started = now) {
   const today = Math.floor(now / DAY) * DAY;
   const onList = new Set(targets.map((target) => itemKey({ file: target.file, repository: itemOf(target.label) })));
-  const live = alerts.filter((alert) => alert.state === 'open' || alert.state === 'dismissed');
-  const created = new Map<string, number>();
+  // Each place's alerts: those open or dismissed, and those closed as fixed, by when.
+  const live = new Map<string, number>();
+  const closed = new Map<string, { created: number; fixed: number }[]>();
   const itemsBefore = new Set<string>();
-  for (const alert of live) {
+  for (const alert of alerts) {
     const place = alertPlace(alert);
     const at = time(alert.created_at);
     if (!place || Number.isNaN(at)) continue;
     const key = placeKey(place);
-    created.set(key, Math.min(created.get(key) ?? at, at));
     if (at < today) itemsBefore.add(itemKey(place));
+    if (alert.state === 'fixed') {
+      const fixed = time(alert.fixed_at ?? alert.updated_at);
+      if (!Number.isNaN(fixed)) closed.set(key, [...(closed.get(key) ?? []), { created: at, fixed }]);
+    } else live.set(key, Math.min(live.get(key) ?? at, at));
   }
+  /**
+   * A place's first day: its open alert's, carried back across each alert of the same place that code scanning closed
+   * in the same upload that opened the next (a re-pin it split), never across a real fix, which closed one upload and
+   * left the place clear until the finding came back.
+   */
+  const firstOf = (key: string) => {
+    let first = live.get(key);
+    if (first === undefined) return undefined;
+    const earlier = [...(closed.get(key) ?? [])].sort((a, b) => b.created - a.created);
+    for (const alert of earlier)
+      if (alert.created < first && Math.abs(alert.fixed - first) <= SPLIT) first = alert.created;
+    return first;
+  };
   // Alerts of items no longer on the list, by package and advisory: open still, or closed by this run's upload.
   const gone = new Map<string, number>();
   for (const alert of alerts) {
     const place = alertPlace(alert);
     const at = time(alert.created_at);
     if (!place || Number.isNaN(at) || onList.has(itemKey(place))) continue;
+    if (alert.state === 'fixed' && !(time(alert.fixed_at ?? alert.updated_at) >= started)) continue;
     const key = renameKey(place);
     gone.set(key, Math.min(gone.get(key) ?? at, at));
   }
   return findings.map((finding) => {
     const place = placeOf(finding);
-    const own = created.get(placeKey(place));
+    const own = firstOf(placeKey(place));
     if (own !== undefined && own < today) return { seen: own, firstSeenToday: false };
     const renamed = itemsBefore.has(itemKey(place)) ? undefined : gone.get(renameKey(place));
     if (renamed !== undefined) return { seen: renamed, firstSeenToday: false };
@@ -624,11 +645,17 @@ export async function assess(handoff: Handoff, sources: Sources, now: number, lo
   const findings = handoff.findings;
   const [fixes, alerts] = await Promise.all([
     installable(findings, handoff.targets, sources, handoff.minimumReleaseAge ?? PNPM_DEFAULT_MINUTES, log),
-    sources.alerts(handoff.started),
+    sources.alerts(),
   ]);
   const ours = alerts.filter(isOurs);
   return {
-    rows: rows(findings, new Set(handoff.excepted), fixes.at, seen(findings, handoff.targets, ours, now), now),
+    rows: rows(
+      findings,
+      new Set(handoff.excepted),
+      fixes.at,
+      seen(findings, handoff.targets, ours, now, time(handoff.started)),
+      now,
+    ),
     looked: fixes.looked,
   };
 }
@@ -743,7 +770,7 @@ export function realSources(
       const full = resolve(checkout, path);
       return full.startsWith(`${resolve(checkout)}/`) && existsSync(full) ? readFileSync(full, 'utf-8') : undefined;
     },
-    async alerts(since) {
+    async alerts() {
       if (!token) throw new Error('no token to read code scanning with');
       const api = realApi(token);
       const repository = handoff.repository;
@@ -751,11 +778,8 @@ export function realSources(
         alertsIn(api, repository, 'open'),
         alertsIn(api, repository, 'dismissed'),
       ]);
-      // Those this run's upload closed: the most recently updated first, until one older than the run.
-      const fixed = await alertsIn(api, repository, 'fixed', {
-        query: '&sort=updated&direction=desc',
-        while: (alert) => time(alert.updated_at ?? alert.fixed_at) >= time(since),
-      });
+      // Every one closed as fixed: a re-pin's split alert gives its day, and a rename's closed by this run.
+      const fixed = await alertsIn(api, repository, 'fixed');
       return [...open, ...dismissed, ...fixed];
     },
   };

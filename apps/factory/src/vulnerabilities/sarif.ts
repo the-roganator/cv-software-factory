@@ -13,7 +13,8 @@
  * alert.
  *
  * A result's `partialFingerprints` are the item, the package and the advisory, never the line, the version or the
- * image's digest, so moving a pin that leaves the finding keeps its alert, and moving it past the fix closes it. An
+ * image's digest, and its `primaryLocationLineHash` is the same, so code scanning does not hash the pinned line's text
+ * itself: moving a pin that leaves the finding keeps its alert, and moving it past the fix closes it. An
  * image's copy of a package is its own result, never folded into a lockfile's, so a finding excepted in one place is
  * still seen in another, and the same package in an image's two platforms is one result.
  *
@@ -270,7 +271,9 @@ function run(group: Part[], index: number, trivyVersion?: string): Run {
         physicalLocation: { artifactLocation: { uri: finding.file }, region: { startLine: Math.max(1, finding.line) } },
       },
     ],
-    partialFingerprints: { [FINGERPRINT]: fingerprint(finding) },
+    // Code scanning's own `primaryLocationLineHash` too, from the same identity: left out, upload-sarif hashes the pinned
+    // line's text, digest and all, and a re-pin closes every alert of the item and opens a new one.
+    partialFingerprints: { [FINGERPRINT]: fingerprint(finding), primaryLocationLineHash: `${fingerprint(finding)}:1` },
   }));
   return {
     tool: {

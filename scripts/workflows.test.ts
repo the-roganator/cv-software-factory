@@ -483,7 +483,8 @@ describe('vulnerabilities.yml', () => {
       'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
-    expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
+    // The base branch as it is now, not as it was at the pull request's last push.
+    expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.ref'));
   });
 });
 

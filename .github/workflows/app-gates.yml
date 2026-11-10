@@ -15,6 +15,9 @@
 # - tests first: runs the change's new and changed tests against the base's source, and says which fail there. Not
 #   required: a fix whose tests all pass before it holds for Martin, and the line reads this to know.
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
+# - lockfile scan: Trivy's findings on each lockfile of the base and of the change, each scanned alone with development
+#   dependencies; fails on any vulnerability, at any severity, the change's lockfiles have and the base's do not
+#   (apps/factory/src/gates/lockfile-scan.ts). It reads the change's lockfiles alone, as data.
 #
 # Every job is skipped for a deploy or release pull request the factory's App opened (`skip`), which changes nothing
 # they judge. In the merge queue every required job runs, since a merge group names no author to tell them apart by;
@@ -32,11 +35,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # The commit the change is compared with: the pull request's base, or in the merge queue the group's, which is main
-  # with the pull requests ahead of it in the queue, so each is judged on its own change.
-  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-
 jobs:
   journeys:
     name: journeys
@@ -53,23 +51,37 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
-      # This workflow's own repository and commit, for the image its local profile pins.
+      # This workflow's own repository and commit, for the image its local profile pins and the base's script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: factory
-          sparse-checkout: deploy/overlays/local/factory-image/kustomization.yaml
+          sparse-checkout: |
+            deploy/overlays/local/factory-image/kustomization.yaml
+            apps/factory/src/gates/base.sh
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
+      # (base.sh). Read only before any of the change's code runs.
+      - name: Find the base
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
           persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -127,14 +139,11 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,6 +155,21 @@ jobs:
             mise.lock
             apps/factory/src/gates/
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
+      # (base.sh). Read only before any of the change's code runs.
+      - name: Find the base
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
@@ -177,14 +201,11 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,6 +214,21 @@ jobs:
           path: factory
           sparse-checkout: apps/factory/src/gates/
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
+      # (base.sh). Read only before any of the change's code runs.
+      - name: Find the base
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
           persist-credentials: false
       # The app's own toolchain, as its base pins it.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -233,7 +269,9 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      # It compares the dependency graph of the base and the change, so it fails only on what the change brings in.
+      # It compares the dependency graph of the base and the change, so it fails only on what the change brings in. It
+      # takes them from the event, and compares from where the change left the base (`base...head`), so the event's
+      # base being older than main changes nothing it sees.
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: low
@@ -254,14 +292,11 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASE_SHA }}
-          path: base
-          persist-credentials: false
+      # The change first, with its merge commit's parents, for its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: change
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -275,6 +310,21 @@ jobs:
             apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
+      # (base.sh). Read only before any of the change's code runs.
+      - name: Find the base
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
@@ -305,3 +355,65 @@ jobs:
               image --quiet --scanners vuln --format json --output "/out/$image.json" "app:$image"
           done
       - run: node factory/apps/factory/src/gates/image-scan.ts "$RUNNER_TEMP/scan/base.json" "$RUNNER_TEMP/scan/change.json"
+
+  lockfile-scan:
+    name: lockfile scan
+    if: ${{ !inputs.skip }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # These jobs check out and run a change's code. They do it only where that code can do no harm: a pull_request
+      # or merge_group run, with this workflow's read-only token and no secrets (ADR 0014). Called from anything else,
+      # they fail rather than run.
+      - name: Refuse a privileged context
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$GITHUB_EVENT_NAME" != merge_group ]; then
+            echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
+            exit 1
+          fi
+      # Each side's lockfiles alone, at any depth: the scan reads them as data. The change first, with its merge commit's
+      # parents, for its base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: change
+          fetch-depth: 2
+          sparse-checkout: pnpm-lock*.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          # The scanner, by version and digest, from its one pin (deploy/images/trivy/Dockerfile).
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/gates/
+            deploy/images/trivy/Dockerfile
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
+      # (base.sh). Read only before any of the change's code runs.
+      - name: Find the base
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base=$(factory/apps/factory/src/gates/base.sh change)
+          echo "Comparing with $base"
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          sparse-checkout: pnpm-lock*.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node
+      - run: node factory/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin factory/deploy/images/trivy/Dockerfile

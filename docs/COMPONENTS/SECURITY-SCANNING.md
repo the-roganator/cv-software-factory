@@ -2,17 +2,41 @@
 
 Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** CodeQL, Dependabot, GitHub secret scanning, the daily scan of everything either repository runs or pins, and two gates on the app's pull requests.
+- **v1:** CodeQL, Dependabot, GitHub secret scanning, the dependency graph of every package each lockfile resolves, the daily scan of everything either repository runs or pins, the lockfile gate on both repositories' pull requests, and two more gates on the app's.
 - **Later:** Semgrep, licence checks.
 
 ## CodeQL
 
 `codeql.yml` analyses the TypeScript and the workflows, with the `security-and-quality` queries, on every pull request, `main` and once a week, in both public repositories: the app's calls it. Each repository's `main` ruleset holds a pull request while its own analysis finds a new security alert of medium severity or higher, or a new error ([repositories and rulesets](REPOSITORIES-AND-RULESETS.md#the-ruleset)). A false positive is dismissed in code scanning, with a written reason. CodeQL does not run in the merge queue, which does not wait for it.
 
+## The lockfile gate
+
+`lockfile scan` (`apps/factory/src/gates/lockfile-scan.ts`) runs on every pull request and in the merge queue, in both repositories: `check.yml` here, and `app-gates.yml` in the app's gates. It fails on any vulnerability, at any severity, that the change's lockfiles have and the base's do not.
+
+- **What it reads:** every `pnpm-lock.yaml` and branch lockfile (`pnpm-lock.<name>.yaml`, which pnpm reads or merges) git tracks, at any depth and fixtures included, of the base and of the change: whatever points pnpm at a lockfile (`lockfileDir`, a flag, a variable), the one a frozen install reads is tracked, so it is read. Each YAML document in it is scanned alone by Trivy from a directory holding only it, since pnpm reads a lockfile's later document where Trivy reads only its first; pnpm's env lockfile, the document that pins pnpm itself and its config dependencies, has those named as dependencies so Trivy reads them as production's. Each is development dependencies included, both against one advisory database pulled once from GHCR, as the daily scan's is. A lockfile the same on both sides is scanned once; one only the change has is compared with none.
+- **What is new:** a vulnerability is known by its lockfile, its advisory, its package, and whether a production dependency reaches it (Trivy's `Dev`). A package moved to another version with the same advisory brings nothing new; one a production dependency newly reaches does; one the base reaches from production and the change only from development is less reached, not new.
+- **It fails on what it cannot read:** a lockfile, or a document of one, Trivy reads no packages from, on either side, unless it holds nothing but its `lockfileVersion`; a document where Trivy did not read every package it lists under `packages:`, which pnpm installs whatever other sections say, or that is not written plainly enough to list them (flow style, quoted or merged keys at the top level); one whose report is empty or cannot be parsed; and a `pnpm-lock.yaml` git tracks as a symbolic link or a submodule, which pnpm would follow.
+- **Judged by code the change cannot alter:** the script, Trivy's pin and the base's lockfiles come from the base (`pull_request.base.sha`, or the merge group's base) here, and from this repository at the pinned commit in the app's gates; only the change's lockfiles come from the change, as data, and nothing in either checkout runs. Here, a base with no gate and a change that brings it in, the gate's own first landing, judges nothing and says so in a notice; a base with no gate otherwise fails. The job is read-only. In the app's gates it refuses any event but `pull_request` and `merge_group`, and is skipped with the rest for the App's deploy and release pull requests.
+- **No exceptions:** it excepts nothing, and reads nothing from the change that could.
+
+The summary names each finding the change brings in, its package, version, advisory, severity and whether production reaches it: the change is public and has not merged.
+
 ## On the app's pull requests
+
+Besides the lockfile gate:
 
 - **Dependency review** (GitHub's) fails a dependency with a known vulnerability the change brings in.
 - **Trivy** (pinned by digest) scans the base's image and the change's, and fails on a high or critical vulnerability only the change's has.
+
+## The dependency graph
+
+GitHub's dependency graph, and so Dependabot's alerts, read a repository's manifests, which name its direct dependencies alone. `dependency-graph.yml` submits the rest: on each push to `main`, a snapshot of every package each lockfile on the repository's list resolves, indirect ones included, to the dependency submission API, and the app calls it (`workflow_call`) at a pinned commit, on a push alone, for its own.
+
+- **Nothing of the repository runs.** Its checkout keeps no credentials, and each lockfile alone is copied into an empty directory, which Syft's image reads, by digest, from its one pin (`deploy/images/syft/Dockerfile`, at the version `build.yml` attests SBOMs with), read-only and with no network, for its `github-json` snapshot. Nothing is installed. The script (`graph.ts`) comes from this repository at the workflow's own commit.
+- **Direct and indirect, runtime and development, and what each depends on,** are the lockfile's: Syft marks every package direct and at runtime, and gives as a package's dependencies the packages that depend on it, so the script sets a package direct when an importer names it, at runtime when an importer's dependencies or optional dependencies reach it, and depending on what its entry in the lockfile names. pnpm itself, which the lockfile also resolves, is a direct development dependency.
+- **One snapshot replaces the last:** each names the commit, the ref and the correlator `dependency-graph.yml`, from a job whose token has `contents: write` alone and which refuses any event but a push to the default branch.
+- **A change to it proves itself** on its own pull request, as the scan does: the same snapshot of the base's checkout, in a job with `contents: read` alone, that submits nothing, installs each lockfile as the scan's coverage does, and fails if the snapshot lacks a package `pnpm list --depth Infinity` names, calls one direct or indirect where pnpm lists it the other way, or names no indirect package. Its log gives both counts.
+- **Dependency review** compares a pull request's manifests with the base's graph, so it sees a submitted indirect package on the base's side alone: it can find one removed, never added. What a change adds to a lockfile is the lockfile scan's to judge.
 
 ## The daily scan
 

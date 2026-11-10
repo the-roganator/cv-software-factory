@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [static, tests, zap, node, review, scan]
+        job: [static, tests, zap, node, review, scan, graph]
         include:
           - job: static
             tools: node pnpm kustomize
@@ -50,6 +50,9 @@ jobs:
           # The daily scan (vulnerabilities.yml): the list, its charts rendered, and the SBOMs of ours verified.
           - job: scan
             tools: node kustomize helm yq cosign
+          # The dependency graph (dependency-graph.yml): the list and each lockfile read.
+          - job: graph
+            tools: node yq
     steps:
       # The whole checkout, as check.yml's jobs have it, so the cache's key hashes the same files: mise.toml and mise.lock,
       # which the other workflows' sparse checkouts hold too.

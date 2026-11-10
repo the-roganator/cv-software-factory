@@ -304,12 +304,13 @@ describe('the list of this repository', () => {
     );
   });
 
-  it("has flagd's image, Trivy's, ZAP's and each image of ours", () => {
+  it("has flagd's image, Trivy's, Syft's, ZAP's and each image of ours", () => {
     const names = items.map((item) => item.name);
     expect(names).toEqual(
       expect.arrayContaining([
         expect.stringMatching(/^ghcr\.io\/open-feature\/flagd:/),
         expect.stringMatching(/^ghcr\.io\/aquasecurity\/trivy:/),
+        expect.stringMatching(/^ghcr\.io\/anchore\/syft:/),
         expect.stringMatching(/^ghcr\.io\/zaproxy\/zaproxy:/),
       ]),
     );

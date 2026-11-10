@@ -103,6 +103,9 @@ test.describe('the Canary panel', () => {
       }
       (globalThis as { EventSource: unknown }).EventSource = Either;
     });
+    // The page's clock, so its frames come only as the test moves time on: a slow machine's long frame cannot carry
+    // the count past its middle, or a fixed window end before it starts.
+    await page.clock.install();
     await page.goto(consoleUrl({ motion: true }));
     await shown(page);
     const cell = panel(page)
@@ -110,21 +113,22 @@ test.describe('the Canary panel', () => {
       .locator('td.mono')
       .first();
     await expect(cell).toHaveText('301baseline 599');
-    // Each frame's text of the figure while the look lands, read from the text node React drew.
-    const seen = await cell.evaluate(async (td, data) => {
+    // Paused a minute on, whatever the time it takes to ask: the clock never goes back.
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(now + 60_000);
+    await cell.evaluate((_, data) => {
       const held = (globalThis as { held?: { onmessage: ((event: MessageEvent) => void) | null } }).held;
       held?.onmessage?.(new MessageEvent('message', { data }));
-      const texts: string[] = [];
-      const until = performance.now() + 1200;
-      while (performance.now() < until) {
-        texts.push(td.firstChild?.nodeValue ?? '');
-        await new Promise(requestAnimationFrame);
-      }
-      return texts;
     }, JSON.stringify(latest));
-    const between = seen.map(Number).filter((n) => n > 301 && n < 376);
-    expect(between.length, seen.join(' ')).toBeGreaterThan(0);
-    expect(seen.at(-1)).toBe('376');
+    // The console takes what the stream sent on its next frame, and the cell lands as the count begins.
+    await page.clock.runFor(16);
+    await expect(cell).toHaveClass(/landed/);
+    // 160ms into its count (Canary.tsx's COUNT_MS, 650ms), eased past halfway, read from the text node React drew.
+    await page.clock.runFor(160);
+    const between = Number(await cell.evaluate((td) => td.firstChild?.nodeValue));
+    expect(between).toBeGreaterThan(301);
+    expect(between).toBeLessThan(376);
+    await page.clock.runFor(1000);
     await expect(cell).toHaveText('376baseline 524');
   });
 

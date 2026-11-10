@@ -482,8 +482,8 @@ describe('vulnerabilities.yml', () => {
 
 /**
  * The dependency graph (dependency-graph.yml): the job that submits holds `contents: write` and nothing else, and refuses
- * any event but a push to the default branch; the proving run, on a pull request, can write nothing. Syft is the one
- * build.yml attests SBOMs with, by digest, from its one pin.
+ * any event but a push to the default branch; the proving run, on a pull request, can write nothing. It runs Syft's
+ * image by digest from its one pin, whose version build.yml's sign job reads to attest SBOMs with.
  */
 describe('dependency-graph.yml', () => {
   const workflow = read('dependency-graph.yml');
@@ -547,10 +547,7 @@ describe('dependency-graph.yml', () => {
   });
 
   it('runs Syft by digest from its one pin, at the version build.yml attests with, and reads it from its own commit', () => {
-    const pin = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@sha256:[0-9a-f]{64}$/m.exec(
-      readFileSync(SYFT_PIN, 'utf-8'),
-    );
-    expect(pin?.[1]).toBeDefined();
+    expect(syftPin(readFileSync(SYFT_PIN, 'utf-8'))).toBeTruthy();
     // build.yml attests with the version the pin names, read from its own commit by a job that holds no OIDC token,
     // and writes none of its own: no workflow names a Syft version, so Dependabot's bump of the pin is the whole change.
     const build = read('build.yml').jobs;
@@ -625,7 +622,7 @@ describe('dependency-graph.yml', () => {
       return read;
     };
     try {
-      const pinned = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@/m.exec(readFileSync(SYFT_PIN, 'utf-8'))?.[1];
+      const pinned = `v${syftPin(readFileSync(SYFT_PIN, 'utf-8'))?.[2]}`;
       expect(version(readFileSync(SYFT_PIN, 'utf-8'))).toBe(pinned);
       const digest = `sha256:${'a'.repeat(64)}`;
       expect(version(`# a comment\nFROM ghcr.io/anchore/syft:v1.57.1@${digest}\n`)).toBe('v1.57.1');

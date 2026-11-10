@@ -659,6 +659,19 @@ describe('the clock', () => {
       expect(v.fresh).toBe(1);
     });
 
+    it('takes no day from an alert closed after the next was made: one upload cannot do that', async () => {
+      const { rows } = await judge(
+        world(
+          [after],
+          [
+            alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-11-09T20:05:30Z' }),
+            alertOf(after, REPIN),
+          ],
+        ),
+      );
+      expect(rows[0]?.seen).toBe(at(REPIN));
+    });
+
     it('starts a new clock for a finding that was really fixed and came back', async () => {
       const { rows } = await judge(
         world(

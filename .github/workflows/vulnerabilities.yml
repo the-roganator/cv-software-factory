@@ -44,6 +44,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    outputs:
+      # The commit read, which the proving run reads too, so both see the same base whatever merges between them.
+      base: ${{ steps.read.outputs.base }}
     steps:
       # Writes nothing: runs where the scan does, and on a pull request for the proving run.
       - name: Refuse a privileged context
@@ -70,6 +73,11 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref || github.sha }}
           path: scanned
           persist-credentials: false
+      - id: read
+        run: |
+          base=$(git -C scanned rev-parse HEAD)
+          echo "The checkout read: $base."
+          echo "base=$base" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -91,7 +99,6 @@ jobs:
       # The pnpm the scanned repository's mise pins, read as data, installed by this repository's mise.
       - name: Compare pnpm's list with Trivy's SBOM
         run: |
-          echo "The checkout read: $(git -C scanned rev-parse HEAD)."
           version=$(node factory/apps/factory/src/vulnerabilities/coverage.ts --pnpm-version scanned)
           cd factory
           mise exec "pnpm@$version" -- node "$GITHUB_WORKSPACE/factory/apps/factory/src/vulnerabilities/coverage.ts" \
@@ -239,7 +246,7 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: ${{ needs.coverage.outputs.base }}
           path: scanned
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,7 +292,7 @@ jobs:
         run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
       - name: Scan, uploading nothing
         run: |
-          echo "The base read: $(git -C scanned rev-parse HEAD), the tip of ${GITHUB_BASE_REF} now."
+          echo "The base read: $(git -C scanned rev-parse HEAD), the tip of ${GITHUB_BASE_REF} when coverage ran."
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" \
             --repository "$GITHUB_REPOSITORY"

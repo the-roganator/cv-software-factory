@@ -274,8 +274,8 @@ export function alertPlace(alert: Alert): Place | undefined {
 const renameKey = (place: Place) =>
   JSON.stringify([place.package, place.advisory, place.repository === place.file ? 'lockfile' : place.repository]);
 
-/** How far apart an alert's closing and the next one's opening may be and still be one upload's split of a result. */
-const SPLIT = 10 * 60_000;
+/** How long before the next alert's making an alert may have closed and still be one upload's split of a result. */
+const SPLIT = 60_000;
 
 const placeKey = (place: Place) => JSON.stringify([place.advisory, place.file, place.package, place.repository]);
 const itemKey = (place: Pick<Place, 'file' | 'repository'>) => JSON.stringify([place.file, place.repository]);
@@ -531,40 +531,47 @@ export async function installable(
 }
 
 /**
- * When each result was first seen, from the alerts: its own alert's creation; or, for an item new to the list, the
- * creation of an alert of the same package and advisory whose item is no longer on it; or now.
+ * When each result was first seen, from the alerts: its own alert's creation, carried back across any alert of the
+ * same place a re-pin split; or, for an item new to the list, the creation of an alert of the same package and advisory
+ * whose item is no longer on it, open still or closed by this run's upload (closed at or after `started`, when the scan
+ * began); or now.
  */
-export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[], now: number, started = now) {
+export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[], now: number, started: number) {
+  if (Number.isNaN(started)) throw new Error('the scan gave no time it started');
   const today = Math.floor(now / DAY) * DAY;
   const onList = new Set(targets.map((target) => itemKey({ file: target.file, repository: itemOf(target.label) })));
-  // Each place's alerts: those open or dismissed, and those closed as fixed, by when.
-  const live = new Map<string, number>();
+  // Each place's alerts: the earliest open or dismissed, and those closed as fixed, newest first.
+  const live = new Map<string, { at: number; item: string }>();
   const closed = new Map<string, { created: number; fixed: number }[]>();
-  const itemsBefore = new Set<string>();
   for (const alert of alerts) {
     const place = alertPlace(alert);
     const at = time(alert.created_at);
     if (!place || Number.isNaN(at)) continue;
     const key = placeKey(place);
-    if (at < today) itemsBefore.add(itemKey(place));
     if (alert.state === 'fixed') {
       const fixed = time(alert.fixed_at ?? alert.updated_at);
-      if (!Number.isNaN(fixed)) closed.set(key, [...(closed.get(key) ?? []), { created: at, fixed }]);
-    } else live.set(key, Math.min(live.get(key) ?? at, at));
+      if (Number.isNaN(fixed)) continue;
+      const list = closed.get(key);
+      if (list) list.push({ created: at, fixed });
+      else closed.set(key, [{ created: at, fixed }]);
+    } else if (at < (live.get(key)?.at ?? Number.POSITIVE_INFINITY)) live.set(key, { at, item: itemKey(place) });
   }
+  for (const list of closed.values()) list.sort((a, b) => b.created - a.created);
   /**
-   * A place's first day: its open alert's, carried back across each alert of the same place that code scanning closed
-   * in the same upload that opened the next (a re-pin it split), never across a real fix, which closed one upload and
-   * left the place clear until the finding came back.
+   * A place's first day: its open alert's, carried back across each alert of the same place code scanning closed in
+   * the upload that opened the next (a re-pin it split: closed at, or within a minute before, the next one's making),
+   * never across a real fix, which closed one upload and left the place clear until the finding came back.
    */
-  const firstOf = (key: string) => {
-    let first = live.get(key);
-    if (first === undefined) return undefined;
-    const earlier = [...(closed.get(key) ?? [])].sort((a, b) => b.created - a.created);
-    for (const alert of earlier)
-      if (alert.created < first && Math.abs(alert.fixed - first) <= SPLIT) first = alert.created;
-    return first;
-  };
+  const first = new Map<string, number>();
+  for (const [key, { at }] of live) {
+    let day = at;
+    for (const alert of closed.get(key) ?? [])
+      if (alert.created < day && day - alert.fixed >= 0 && day - alert.fixed <= SPLIT) day = alert.created;
+    first.set(key, day);
+  }
+  // The items on the list before today: those with an alert, carried back as above, made before it.
+  const itemsBefore = new Set<string>();
+  for (const [key, { item }] of live) if ((first.get(key) ?? now) < today) itemsBefore.add(item);
   // Alerts of items no longer on the list, by package and advisory: open still, or closed by this run's upload.
   const gone = new Map<string, number>();
   for (const alert of alerts) {
@@ -577,7 +584,7 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
   }
   return findings.map((finding) => {
     const place = placeOf(finding);
-    const own = firstOf(placeKey(place));
+    const own = first.get(placeKey(place));
     if (own !== undefined && own < today) return { seen: own, firstSeenToday: false };
     const renamed = itemsBefore.has(itemKey(place)) ? undefined : gone.get(renameKey(place));
     if (renamed !== undefined) return { seen: renamed, firstSeenToday: false };
@@ -778,8 +785,17 @@ export function realSources(
         alertsIn(api, repository, 'open'),
         alertsIn(api, repository, 'dismissed'),
       ]);
-      // Every one closed as fixed: a re-pin's split alert gives its day, and a rename's closed by this run.
-      const fixed = await alertsIn(api, repository, 'fixed');
+      // Those closed as fixed since the oldest alert still open was made, the most recently updated first: an alert a
+      // re-pin split closed when the next opened, so nothing older can give an open alert its day; a rename's, closed
+      // by this run, is among them.
+      const oldest = Math.min(
+        time(handoff.started),
+        ...[...open, ...dismissed].map((alert) => time(alert.created_at)).filter((n) => !Number.isNaN(n)),
+      );
+      const fixed = await alertsIn(api, repository, 'fixed', {
+        query: '&sort=updated&direction=desc',
+        while: (alert) => !(time(alert.updated_at ?? alert.fixed_at) < oldest - SPLIT),
+      });
       return [...open, ...dismissed, ...fixed];
     },
   };

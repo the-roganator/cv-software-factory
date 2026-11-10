@@ -483,8 +483,12 @@ describe('vulnerabilities.yml', () => {
       'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
-    // The base branch as it is now, not as it was at the pull request's last push.
-    expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.ref'));
+    // The base branch as it is now, not as it was at the pull request's last push, read once by coverage and the same
+    // commit for both.
+    const covered = jobs.coverage?.steps?.find((step) => step.with?.path === 'scanned');
+    expect(covered?.with?.ref).toBe(expression('github.event.pull_request.base.ref || github.sha'));
+    expect(scanned?.with?.ref).toBe(expression('needs.coverage.outputs.base'));
+    expect((jobs.prove as { needs?: unknown } | undefined)?.needs).toBe('coverage');
   });
 });
 

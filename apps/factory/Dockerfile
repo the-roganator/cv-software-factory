@@ -8,7 +8,7 @@
 # that `policy/` is found where the code imports it. The probes and the crawler need a browser and run from
 # Dockerfile.browser instead. The migrations are not here: the console's image applies them.
 
-FROM node:24.22.2-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS base
+FROM node:24.22.2-alpine3.24@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS base
 WORKDIR /repo
 # pnpm at the version (and hash) pinned in package.json's packageManager field.
 RUN corepack enable
@@ -26,7 +26,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @software-fa
   && chmod -R a+rX,go-w /repo
 
 # The dependencies first, then the code over them, each copy a layer of its own, the code with the same modes.
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:b8cec4b2f2126ff7bd034ec9ac207ffb3272667dfdc48376e3b035d3270549ba AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:088a01637f22908632ba09018be2e0b516f2fa6f7869c191d29491139db43c78 AS runtime
 COPY --from=deps /repo /repo
 WORKDIR /repo
 COPY --chmod=a+rX,go-w apps/factory/src apps/factory/src

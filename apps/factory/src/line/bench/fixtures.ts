@@ -52,6 +52,9 @@ export interface Fixture<A extends LineAgent> {
 /** The app's main the fixtures describe: its seeds apply there, and its routes, products and tests are there. */
 const APP_MAIN = '200855c66a631d2ea3014e71fdee640fea1e7024';
 
+/** `APP_MAIN` as a signal names the version it saw. */
+const APP_VERSION = APP_MAIN.slice(0, 7);
+
 /**
  * The app's CODEOWNERS at `APP_MAIN`, without its comments, and the paths no scope may name there. A copy by hand,
  * which the line reads from GitHub instead (`protectedPaths`): it holds for `APP_MAIN` only, and a fixture pinned to
@@ -338,7 +341,7 @@ const PRICE_SIGNALS: Signal[] = [
     sense: 'probe',
     check: 'a price is in pounds and two digits of pence',
     route: '/products/:slug',
-    version: '200855c',
+    version: APP_VERSION,
     symptom: 'wrong-result',
     evidence: [
       {
@@ -428,7 +431,7 @@ const HEADERS_SIGNALS: Signal[] = [
     sense: 'crawler',
     check: 'missing-header@*',
     route: '*',
-    version: '200855c',
+    version: APP_VERSION,
     symptom: 'missing-header',
     evidence: ['/', '/products', '/about'].map(headersOf),
   },
@@ -1187,13 +1190,13 @@ const STOCK_SIGNALS: Signal[] = [
     sense: 'logs',
     check: 'new error pattern',
     route: '/products',
-    version: '200855c',
+    version: APP_VERSION,
     symptom: 'server-error',
     evidence: [
       {
         kind: 'logs',
         route: '/products',
-        version: '200855c',
+        version: APP_VERSION,
         requests: 3,
         lines: LOGGED_INSTRUCTIONS.map((message, i) => ({
           ts: `2026-11-02T10:00:0${i}.000Z`,
@@ -1412,7 +1415,7 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
             sense: 'crawler',
             check: 'every image on a page loads',
             route: '*',
-            version: '200855c',
+            version: APP_VERSION,
             symptom: 'broken-image',
             evidence: [
               {
@@ -1436,7 +1439,7 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
               {
                 kind: 'console',
                 route: '/products',
-                version: '200855c',
+                version: APP_VERSION,
                 messages: [
                   {
                     level: 'error',

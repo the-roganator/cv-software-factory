@@ -590,8 +590,8 @@ describe('the line’s metrics', () => {
     const { line: it } = line({});
     const abort = new AbortController();
     const running = it.run(abort.signal);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(at(await points('line.work_items'), { stage: 'review' })).toBe(1);
+    // Once the line reports its stages, which it starts after counting every kind from 0, however long that takes.
+    await expect.poll(async () => at(await points('line.work_items'), { stage: 'review' }), { timeout: 4000 }).toBe(1);
     // Every count from 0 as it starts: a kind nothing in this file counted has its series all the same.
     const aborted = (await points('line.releases')).filter((p) => p.attributes.outcome === 'aborted');
     expect(aborted).toEqual([{ attributes: { outcome: 'aborted', dry_run: false }, value: 0 }]);

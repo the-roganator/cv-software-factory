@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -255,6 +255,20 @@ describe('the state file', () => {
     const { root: _, ...noRoot } = state;
     writeFileSync(path, JSON.stringify(noRoot));
     expect(() => readState(path)).toThrow(/lacks root/);
+    writeFileSync(path, JSON.stringify({ ...state, deployments: [{ name: 'github', images: null, env: [] }] }));
+    expect(() => readState(path)).toThrow(/a deployment it cannot read/);
+    writeFileSync(path, JSON.stringify({ ...state, nodeRefs: [1] }));
+    expect(() => readState(path)).toThrow(/lacks nodeRefs/);
+    writeFileSync(path, JSON.stringify({ ...state, images: [{ image: 'factory' }] }));
+    expect(() => readState(path)).toThrow(/an image it cannot read/);
+  });
+
+  it('replaces the file whole on each later write, leaving nothing beside it', () => {
+    writeState(path, state, true);
+    writeState(path, { ...state, phase: 'beginning' });
+    expect(readState(path)?.phase).toBe('beginning');
+    expect(readdirSync(join(dir, 'try'))).toEqual(['state.json']);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -414,6 +428,18 @@ describe('try begin', () => {
     expect(c.calls.some((x) => /tagOnNode|setImages|pauseRoot/.test(x))).toBe(false);
   });
 
+  it("leaves main's image on the node when try end follows a begin refused for building it", async () => {
+    const c = new Cluster();
+    const mains = `${REGISTRY}/factory@sha256:${'d'.repeat(64)}`;
+    c.deps = c.deps.map((d) => (d.name === 'github' ? deployment('github', [['github', mains]]) : d));
+    c.node.set(mains, `sha256:${'d'.repeat(64)}`);
+    expect(await begin(c, '--only', 'github')).toBe(2);
+    const after = fresh(c);
+    expect(await end(after)).toBe(0);
+    expect(after.node.get(mains)).toBe(`sha256:${'d'.repeat(64)}`);
+    expect(after.node.has(`${REGISTRY}/factory:local-12345678`)).toBe(false);
+  });
+
   it('takes a value beginning with @ as the value it is', async () => {
     const c = new Cluster();
     expect(await begin(c, '--only', 'github', '--env', 'github:HANDLE=@me')).toBe(0);
@@ -512,6 +538,25 @@ describe('try end', () => {
     expect(await end(after)).toBe(2);
     expect(said(after)).toMatch(/make stop-the-line/);
     expect(after.calls).toEqual([]);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('reads the line again before it changes a deployment, and stops if it was started meanwhile', async () => {
+    const c = new Cluster();
+    expect(await begin(c)).toBe(0);
+    const after = fresh(c);
+    after.extra.push({
+      namespace: 'runners',
+      kind: 'job',
+      name: 'j',
+      owned: false,
+      images: [`${REGISTRY}/factory:local-12345678`],
+    });
+    let reads = 0;
+    after.line = () => ({ ...after.lineState, state: reads++ === 0 ? 'stopped' : 'started' });
+    expect(await end(after)).toBe(2);
+    expect(said(after)).toMatch(/was started while/);
+    expect(after.calls).toEqual(['remove runners/j']);
     expect(existsSync(path)).toBe(true);
   });
 

@@ -5,7 +5,7 @@
 // flagd-images: the one image policy it changes is factory-images. The judgement (what to try, what to watch, a live
 // try's terms) is the try-the-line skill's; this is its mechanical half. The cluster is reached through Ops
 // (try-ops.ts), which the tests replace with a cluster of their own.
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -161,37 +161,68 @@ export function readState(path: string): State | undefined {
   } catch {
     throw new Refused(`${path} is not JSON: look at it, and remove it only once the cluster is shown back`);
   }
-  const s = state as Partial<State>;
-  if (s.version !== VERSION) throw new Refused(`${path} is version ${s.version}, not ${VERSION}: read it by hand`);
-  const missing = (
-    [
-      'phase',
-      'holder',
-      'began',
-      'branch',
-      'commit',
-      'tag',
-      'root',
-      'policies',
-      'line',
-      'deployments',
-      'images',
-      'nodeRefs',
-    ] as const
-  ).filter((k) => s[k] === undefined);
-  if (missing.length) throw new Refused(`${path} lacks ${missing.join(', ')}: read it by hand`);
-  for (const d of s.deployments ?? []) {
-    if (typeof d.name !== 'string' || typeof d.images !== 'object' || !Array.isArray(d.env)) {
-      throw new Refused(`${path} has a deployment it cannot read: read it by hand`);
+  const problem = shapeProblem(state);
+  if (problem) throw new Refused(`${path} ${problem}: read it by hand`);
+  return state as State;
+}
+
+const isString = (v: unknown): v is string => typeof v === 'string';
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);
+
+/** What is wrong with a state file's shape, or undefined when it is a try's, every field `try end` reads checked. */
+function shapeProblem(v: unknown): string | undefined {
+  if (!isRecord(v)) return 'is not an object';
+  if (v.version !== VERSION) return `is version ${String(v.version)}, not ${VERSION}`;
+  for (const k of ['phase', 'holder', 'user', 'host', 'began', 'branch', 'commit', 'tag'] as const) {
+    if (!isString(v[k])) return `lacks ${k}`;
+  }
+  if (v.phase !== 'beginning' && v.phase !== 'open') return `has phase ${String(v.phase)}`;
+  if (typeof v.pid !== 'number') return 'lacks pid';
+  if (!isRecord(v.root)) return 'lacks root';
+  if (!isRecord(v.policies) || !Object.values(v.policies).every(isStrings)) return 'lacks policies';
+  const line = v.line;
+  if (
+    !isRecord(line) ||
+    !['started', 'stopped', 'never'].includes(String(line.state)) ||
+    typeof line.seq !== 'number'
+  ) {
+    return 'lacks line';
+  }
+  if (!Array.isArray(v.deployments)) return 'lacks deployments';
+  for (const d of v.deployments as unknown[]) {
+    if (!isRecord(d) || !isString(d.name) || !isRecord(d.images) || !Object.values(d.images).every(isString)) {
+      return 'has a deployment it cannot read';
+    }
+    if (!Array.isArray(d.env)) return `has ${d.name} without env`;
+    for (const e of d.env as unknown[]) {
+      if (!isRecord(e) || !isString(e.container) || !isString(e.name) || !isString(e.to))
+        return `has a variable of ${d.name} it cannot read`;
+      if (e.was !== null && !isString(e.was)) return `has a variable of ${d.name} it cannot read`;
+      if (e.image !== undefined && !isString(e.image)) return `has a variable of ${d.name} it cannot read`;
     }
   }
-  return s as State;
+  if (!Array.isArray(v.images)) return 'lacks images';
+  for (const i of v.images as unknown[]) {
+    if (!isRecord(i) || !isString(i.image) || !isString(i.ref) || typeof i.existed !== 'boolean')
+      return 'has an image it cannot read';
+  }
+  if (!isStrings(v.nodeRefs)) return 'lacks nodeRefs';
+  return undefined;
 }
 
 /** Writes the state; `create` refuses if a try is already open, so two begins cannot both hold the cluster. */
 export function writeState(path: string, state: State, create = false): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { flag: create ? 'wx' : 'w', mode: 0o600 });
+  const text = `${JSON.stringify(state, null, 2)}\n`;
+  if (create) {
+    writeFileSync(path, text, { flag: 'wx', mode: 0o600 });
+    return;
+  }
+  // Every later write replaces the file whole, so a crash leaves the old state or the new, never half of one.
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, text, { mode: 0o600 });
+  renameSync(temporary, path);
 }
 
 const ours = (image: string): string | undefined => {
@@ -439,6 +470,13 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
 const left = (ops: Ops, deadline: number): number => Math.max(1, Math.ceil((deadline - ops.now().getTime()) / 1000));
 
 const nodeDigests = (state: State): string[] => state.nodeRefs.map((r) => r.slice(r.indexOf('@') + 1));
+/** The digests of the images main ran where the try moved: no name of theirs is ever removed from the node. */
+const mainDigests = (state: State): Set<string> =>
+  new Set(
+    state.deployments.flatMap((d) =>
+      Object.values(d.images).flatMap((i) => (i.includes('@') ? [i.slice(i.indexOf('@') + 1)] : [])),
+    ),
+  );
 
 /** Each way the cluster is not yet as the state recorded it; none when it is back. */
 export function notBack(ops: Ops, state: State): string[] {
@@ -473,7 +511,8 @@ export function notBack(ops: Ops, state: State): string[] {
     if (local.length) wrong.push(`${w.kind} ${w.namespace}/${w.name} runs ${[...new Set(local)].join(', ')}`);
   }
   for (const ref of state.images.map((i) => i.ref)) if (ops.onNode(ref)) wrong.push(`${ref} is still on the node`);
-  for (const digest of nodeDigests(state)) {
+  const keep = mainDigests(state);
+  for (const digest of nodeDigests(state).filter((d) => !keep.has(d))) {
     for (const name of ops.namedOnNode(digest)) wrong.push(`${name} (${digest}) is still on the node`);
   }
   for (const i of state.images) if (!i.existed && ops.hasLocal(i.ref)) wrong.push(`${i.ref} is still on the Mac`);
@@ -534,6 +573,12 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
       }
     }
   }
+  // Read again just before anything a started line would run on is changed: the first read was a while ago.
+  if (moved.has('line') && ops.line().state === 'started') {
+    throw new Refused(
+      "the line was started while the try's runner Jobs were deleted: stop it, and run `try end` again. Only those Jobs are changed.",
+    );
+  }
   // Each deployment back on the images it had, then each variable as it was: the images first, so the rollout the
   // variables make runs main's image, which Deny admits.
   const current = new Map(ops.deployments().map((d) => [d.name, d]));
@@ -570,9 +615,13 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
     ops.say('Argo CD root has its sync policy back.');
   }
   // Every name the node holds for the try's digests (a begin stopped before it recorded them has only the tags).
+  // Main's digests are left alone: a begin refused for building main's very image recorded its tag, not a digest.
+  const keep = mainDigests(state);
   const digests = new Set([...nodeDigests(state), ...state.images.flatMap((i) => ops.onNode(i.ref) ?? [])]);
   for (const i of state.images) if (ops.onNode(i.ref)) ops.removeFromNode(i.ref);
-  for (const digest of digests) for (const name of ops.namedOnNode(digest)) ops.removeFromNode(name);
+  for (const digest of digests) {
+    if (!keep.has(digest)) for (const name of ops.namedOnNode(digest)) ops.removeFromNode(name);
+  }
   for (const i of state.images) if (!i.existed && ops.hasLocal(i.ref)) ops.removeLocal(i.ref);
 
   let wrong = notBack(ops, state);

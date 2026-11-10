@@ -46,30 +46,41 @@ field() { node -e 'process.stdout.write(String(JSON.parse(require("fs").readFile
 exists() { docker volume inspect "$1" >/dev/null 2>&1; }
 running() { k3d cluster list "$cluster" >/dev/null 2>&1; }
 
+# The copies a move kept of this cluster's state: a move refuses to start while one is kept, so there is one at most.
+copies() { docker volume ls -q --filter "label=$label" --filter label=software-factory.backup; }
+
 # The way back, said whenever the move stops short.
 way_back() {
   echo >&2
-  echo "The cluster's data directory as it was before the move is kept in the Docker volume $backup." >&2
-  echo "  Go back to it: make upgrade-cluster BACK=1 (on the k3s it was made on, $(docker volume inspect -f '{{index .Labels "software-factory.k3s"}}' "$backup" 2>/dev/null))." >&2
+  if [[ -n "${backup:-}" ]] && exists "$backup"; then
+    echo "The cluster's data directory as it was before the move is kept in the Docker volume $backup." >&2
+    echo "  Go back to it: make upgrade-cluster BACK=1 (on the k3s it was made on, $(docker volume inspect -f '{{index .Labels "software-factory.k3s"}}' "$backup"))." >&2
+  else
+    echo "No copy of the state from before the move is kept: the state volume, $state, is all there is." >&2
+  fi
+  if [[ -f "$dir/before.json" ]]; then
+    echo "  Or, once what stopped it is put right, run make upgrade-cluster again: it carries on from the state it kept." >&2
+  fi
 }
 
 # Copies one volume's k3s data directory to another, without the image cache, in a container with no network.
 copy() {
   docker run --rm --network none --entrypoint /bin/sh -v "$1:/from:ro" -v "$2:/to" "$want" \
-    -c 'cd /from && tar --exclude=./agent/containerd -cf - . | tar -C /to -xf -'
+    -c 'set -o pipefail; cd /from && tar --exclude=./agent/containerd -cf - . | tar -C /to -xf -'
 }
 
 # Makes the cluster again on the state volume, with the k3s image given and the token its data directory was made
 # with (k3s refuses its own data under another). The token goes through a file only Martin may read, never a command.
 create() {
   local image=$1 token
-  token=$(docker run --rm --network none --entrypoint cat -v "$state:/state:ro" "$want" /state/server/token)
+  # Each step returns on failure itself: callers run this after `||`, where `set -e` does not hold.
+  token=$(docker run --rm --network none --entrypoint cat -v "$state:/state:ro" "$want" /state/server/token) || return 1
   [[ -n "$token" ]] || { echo "The state volume holds no token: it is not a k3s data directory." >&2; return 1; }
-  { sed -E "s|^image: .*$|image: $image|" "$config"; printf 'token: %s\n' "$token"; } >"$dir/cluster.yaml"
-  k3d cluster create --config "$dir/cluster.yaml"
+  { sed -E "s|^image: .*$|image: $image|" "$config"; printf 'token: %s\n' "$token"; } >"$dir/cluster.yaml" || return 1
+  k3d cluster create --config "$dir/cluster.yaml" || { rm -f "$dir/cluster.yaml"; return 1; }
   rm -f "$dir/cluster.yaml"
   say "Waiting for the node, then for the store's Postgres (images are pulled again: a few minutes)..."
-  kubectl --context "$context" wait node --all --for=condition=Ready --timeout=5m >/dev/null
+  kubectl --context "$context" wait node --all --for=condition=Ready --timeout=5m >/dev/null || return 1
   # The pod's status in the datastore is still the one from before the move, so ask Postgres itself, for at most 15
   # minutes: it answers once its image is pulled again and it has started on the volume it had.
   local tries=0
@@ -82,8 +93,8 @@ create() {
 # Takes the figures again and holds them to the ones taken before the move.
 prove() {
   local upto
-  upto=$(field "$dir/before.json" lastSeq)
-  node "$here/cluster-figures.ts" take "$context" --upto "$upto" >"$dir/after.json"
+  upto=$(field "$dir/before.json" lastSeq) || return 1
+  node "$here/cluster-figures.ts" take "$context" --upto "$upto" >"$dir/after.json" || return 1
   node "$here/cluster-figures.ts" compare "$dir/before.json" "$dir/after.json"
 }
 
@@ -99,27 +110,37 @@ finish() {
 }
 
 if [[ "$mode" == back ]]; then
-  backup=$(docker volume ls -q --filter "label=$label" --filter "label=software-factory.backup" | head -1)
+  backup=$(copies)
   [[ -n "$backup" ]] || { echo "No copy of $cluster's state to go back to." >&2; exit 1; }
+  [[ "$backup" != *$'\n'* ]] || { echo "More than one copy of $cluster's state is kept, and BACK=1 will not choose: $(echo $backup)." >&2; exit 1; }
   was=$(docker volume inspect -f '{{index .Labels "software-factory.k3s"}}' "$backup")
   echo "Going back to $backup, on $was."
+  # What the cluster holds now, and has made since the move, is kept too, never deleted by going back.
+  left=$state-left-$(date -u +%Y%m%dT%H%M%SZ)
+  if running; then k3d cluster stop "$cluster"; fi
+  if exists "$state"; then
+    say "Keeping the state it replaces, with everything made since the move, as $left."
+    docker volume create --label "$label" "$left" >/dev/null
+    copy "$state" "$left"
+  fi
   if running; then k3d cluster delete "$cluster"; fi
   if exists "$state"; then docker volume rm "$state" >/dev/null; fi
   docker volume create --label "$label" "$state" >/dev/null
   copy "$backup" "$state"
-  create "$was"
+  create "$was" || exit 1
   if [[ -f "$dir/before.json" ]]; then
     prove || { way_back; exit 1; }
     rm -f "$dir/before.json" "$dir/after.json"
   fi
   say "Back on $was, the copy kept: 'docker volume rm $backup' deletes it once you are done with it."
+  if exists "$left"; then say "What it replaced is kept as $left: 'docker volume rm $left' deletes it."; fi
   exit 0
 fi
 
 if ! running; then
   # A move that stopped after the cluster was deleted: the state volume holds everything, so make the cluster again.
   if exists "$state" && [[ -f "$dir/before.json" ]]; then
-    backup=$(docker volume ls -q --filter "label=$label" --filter "label=software-factory.backup" | head -1)
+    backup=$(copies | head -1)
     say "No cluster, but its state from a move that stopped: making it again on $want."
     create "$want" || { way_back; exit 1; }
     prove || { way_back; exit 1; }
@@ -134,14 +155,23 @@ have=$(docker inspect -f '{{.Config.Image}}' "$node")
 source=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/rancher/k3s"}}{{.Name}}{{end}}{{end}}' "$node")
 [[ -n "$source" ]] || { echo "$node keeps no volume at /var/lib/rancher/k3s; nothing to carry." >&2; exit 1; }
 if [[ "$have" == "$want" && "$source" == "$state" ]]; then
+  # A move that stopped before its figures matched leaves them: it is not done until they do.
+  if [[ -f "$dir/before.json" ]]; then
+    backup=$(copies | head -1)
+    say "$cluster runs $want, from a move whose figures have not matched yet: taking them again."
+    prove || { way_back; exit 1; }
+    finish
+    exit 0
+  fi
   echo "$cluster already runs $want, its state on $state."
   exit 0
 fi
-backup=$state-before-${have##*:}
-if exists "$backup"; then
-  echo "A copy from an earlier move is still kept, $backup. Go back to it (make upgrade-cluster BACK=1), or delete it (docker volume rm $backup), first." >&2
+kept=$(copies)
+if [[ -n "$kept" ]]; then
+  echo "A copy from an earlier move is still kept, $(echo $kept). Go back to it (make upgrade-cluster BACK=1), or delete it (docker volume rm $(echo $kept)), first." >&2
   exit 1
 fi
+backup=$state-before-${have##*:}
 if [[ "$source" != "$state" ]] && exists "$state"; then
   echo "$state exists but this cluster does not use it: it is left from another cluster. Delete it (docker volume rm $state) first." >&2
   exit 1

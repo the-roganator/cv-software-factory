@@ -38,7 +38,8 @@ export interface Figures {
 export const KEPT: Record<string, { columns: string; order: string }> = {
   passkeys: { columns: 'id, public_key, name, enrolled_with, enrolled_at, revoked_at', order: 'id' },
   sessions: { columns: 'id_sha256, passkey, signed_in_at, expires_at, ended_at, ended_by', order: 'id_sha256' },
-  line: { columns: 'work_item, stage, taken_at', order: 'work_item' },
+  // Its places, not their stages: a Reject or a close of Martin's moves a stage while the line is stopped.
+  line: { columns: 'work_item, taken_at', order: 'work_item' },
   store: { columns: 'sample, chosen_at', order: 'sample' },
 };
 

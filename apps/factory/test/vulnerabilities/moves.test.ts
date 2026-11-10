@@ -180,6 +180,17 @@ describe('the day’s moves', () => {
     it('issue: what mise pins, a workflow, a tool', () => {
       expect(laneOf(result({ kind: 'k3d', pin: { file: 'mise.lock', line: 40 } }))).toBe('issue');
       expect(laneOf(result({ kind: 'chart', name: 'argocd', pin: { file: 'Makefile', line: 7 } }))).toBe('issue');
+      // Argo CD's chart, which the Makefile pins, even at a major.
+      expect(
+        laneOf(
+          result({
+            kind: 'chart',
+            name: 'argocd',
+            pin: { file: 'Makefile', line: 7 },
+            target: { kind: 'chart', chart: 'argo-cd', version: '11.0.0', major: true },
+          }),
+        ),
+      ).toBe('issue');
       expect(laneOf(result({ kind: 'workflow', pin: { file: '.github/workflows/check.yml', line: 30 } }))).toBe(
         'issue',
       );

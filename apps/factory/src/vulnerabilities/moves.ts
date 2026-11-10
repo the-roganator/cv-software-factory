@@ -12,10 +12,10 @@
  * - `none`: nothing to move to (a line no longer built);
  * - `line`: the app's, which its line moves;
  * - `cluster`: k3s, which only the cluster's own command applies;
- * - `approval`: a major, or more than a pin (a chart's version, which changes its templates as well as its images);
- * - `issue`: what no pull request of the App's can write: anything mise pins (k3d, Argo CD's chart with its CLI, a
- *   tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
+ * - `issue`: what no pull request of the App's can write: anything mise or the Makefile pins (k3d, Argo CD's chart with
+ *   its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
  *   day of its fix, and an image whose other half is in the lockfile;
+ * - `approval`: a major, or more than a pin (a chart's version, which changes its templates as well as its images);
  * - `dependabot`: a pin `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
  *   package of the lockfile within a day of its fix, which its security update moves;
  * - `worker`: every other pin, which the GitHub worker moves.
@@ -139,14 +139,15 @@ export function laneOf(
   if (!target || target.kind === 'unbuilt') return 'none';
   if (context.app) return 'line';
   if (target.kind === 'k3s' || kinds.has('k3s') || kinds.has('k3s-release')) return 'cluster';
-  if (move.major) return 'approval';
-  if (target.kind === 'chart') return 'approval';
+  // What mise or the Makefile pins (Argo CD's chart with its CLI) no pull request of the App's writes, a major or not.
   if (
     target.kind === 'tool' ||
     kinds.has('k3d') ||
     move.pins.some((pin) => MISE_FILES.has(pin.file) || pin.file === 'Makefile')
   )
     return 'issue';
+  if (move.major) return 'approval';
+  if (target.kind === 'chart') return 'approval';
   if (move.pins.some((pin) => pin.file.startsWith('.github/workflows/'))) return 'issue';
   if (move.lockfile) {
     // An image of ours that carries the same package: its other half is the lockfile, which no pin move writes.

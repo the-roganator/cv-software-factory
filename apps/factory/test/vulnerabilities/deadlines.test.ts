@@ -1109,6 +1109,20 @@ describe('what fixes it', () => {
       });
     });
 
+    it('tries an earlier chart on the major when its newest still has the finding', async () => {
+      const finding = inChart();
+      const base = world(finding, {
+        'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z'),
+        'quay.io/example/sidecar:2.14.2': imageReport('2026-10-10T00:00:00Z', [finding]),
+      });
+      const { fixes } = await judge({
+        ...base,
+        charts: { example: [...base.charts.example, { version: '13.8.0', created: '2026-10-12T00:00:00Z' }] },
+        renders: { ...base.renders, 'example@13.8.0': render('2.14.2') },
+      });
+      expect(fixes[0]?.target).toEqual({ kind: 'chart', chart: 'example', version: '13.7.0', major: false });
+    });
+
     it('is a value’s pin when a values file pins the image: the image moves, on its line', async () => {
       // Its alert stays at the chart's pin, where it always was; the move writes the values file's line.
       const finding = inChart();
@@ -1164,6 +1178,46 @@ describe('what fixes it', () => {
       day: at('2026-11-02T00:00:00Z'),
     });
     expect(judged[0]).toMatchObject({ name: 'pnpm', pin: { file: 'mise.lock', line: 2 }, from: '12.16.1' });
+  });
+
+  it('tries an earlier tool release in the range when the newest still has the finding', async () => {
+    const OURS = `ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:${'1'.repeat(64)}`;
+    const ours: ReadTarget = {
+      key: 'ours runner',
+      kind: 'ours',
+      file: 'deploy/overlays/local/runner-image/kustomization.yaml',
+      label: OURS,
+      image: OURS,
+    };
+    const finding = os({
+      item: ours.key,
+      file: ours.file,
+      label: OURS,
+      type: 'node-pkg',
+      package: 'example-bundled',
+      path: 'opt/pnpm/dist/index.js',
+    });
+    const { fixes } = await judge({
+      findings: [finding],
+      targets: [ours],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      files: {
+        'mise.lock': '[[tools.pnpm]]\nversion = "12.16.1"\nbackend = "aqua:pnpm/pnpm"\n',
+        'mise.toml': '[tools]\npnpm = "12"\n',
+        'apps/factory-runner/Dockerfile': 'FROM node:24.22.1-trixie-slim AS base\n',
+      },
+      toolReleases: {
+        pnpm: [
+          { version: '12.17.0', published: '2026-11-02T00:00:00Z' },
+          { version: '12.18.0', published: '2026-11-06T00:00:00Z' },
+        ],
+      },
+      toolReports: {
+        'pnpm@12.17.0': imageReport('1970-01-01T00:00:00Z'),
+        'pnpm@12.18.0': imageReport('1970-01-01T00:00:00Z', [finding]),
+      },
+    });
+    expect(fixes[0]?.target).toEqual({ kind: 'tool', tool: 'pnpm', version: '12.17.0' });
   });
 
   it('reports a tag that is not a version, made more than 180 days ago, as a line no longer built, with no deadline', async () => {

@@ -363,6 +363,9 @@ export const UNBUILT_DAYS = 180;
 /** How many majors past a chart's pinned one are rendered for a fix, at most. */
 const CHART_MAJORS = 3;
 
+/** How many versions of one chart's major, or of a tool's range, are tried for a fix, newest first, at most. */
+const CANDIDATES = 4;
+
 /** A tool in mise.toml whose release brings a package into an image of ours, from where Trivy found it (`opt/pnpm/…`). */
 export function toolOf(path: string | undefined, tools: string[]) {
   const name = /^\/?opt\/([\w.-]+)\//.exec(path ?? '')?.[1];
@@ -618,35 +621,40 @@ export async function installable(
     );
     const majorOf = (version: string) => Number(version.split('.')[0]);
     const pinnedMajor = majorOf(chart.version);
-    const byMajor = new Map<number, { version: string; created: string }>();
+    // Each major from the pinned one, in order; within it, its versions newest first, a few at most: the newest clean
+    // one on the earliest major that has one.
+    const byMajor = new Map<number, { version: string; created: string }[]>();
     for (const each of versions) {
-      const seen = byMajor.get(majorOf(each.version));
-      if (!seen || compareVersions(each.version, seen.version) > 0) byMajor.set(majorOf(each.version), each);
+      const major = majorOf(each.version);
+      if (major < pinnedMajor || major > pinnedMajor + CHART_MAJORS) continue;
+      byMajor.set(major, [...(byMajor.get(major) ?? []), each]);
     }
-    const candidates = [...byMajor.entries()]
-      .sort(([a], [b]) => a - b)
-      .filter(([major]) => major >= pinnedMajor && major <= pinnedMajor + CHART_MAJORS);
-    for (const [major, candidate] of candidates) {
-      const images = await rendered({ ...chart, version: candidate.version });
-      const reference = images?.find((image) => sameRepository(image, target.image ?? ''));
-      // A chart that no longer runs the image is not taken for a fix: the image may only have moved registry.
-      if (!reference || sameImage(reference, target.image ?? '')) continue;
-      const image = await scanned(reference, false);
-      const created = time(candidate.created);
-      if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(created))
-        return {
-          at: created,
-          target: {
-            kind: 'chart',
-            chart: chart.chart,
-            version: candidate.version,
-            major: major > pinnedMajor,
-          } as Target,
-        };
+    for (const major of [...byMajor.keys()].sort((a, b) => a - b)) {
+      const newestFirst = (byMajor.get(major) ?? [])
+        .sort((a, b) => compareVersions(b.version, a.version))
+        .slice(0, CANDIDATES);
+      for (const candidate of newestFirst) {
+        const images = await rendered({ ...chart, version: candidate.version });
+        const reference = images?.find((image) => sameRepository(image, target.image ?? ''));
+        // A chart that no longer runs the image is not taken for a fix: the image may only have moved registry.
+        if (!reference || sameImage(reference, target.image ?? '')) continue;
+        const image = await scanned(reference, false);
+        const created = time(candidate.created);
+        if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(created))
+          return {
+            at: created,
+            target: {
+              kind: 'chart',
+              chart: chart.chart,
+              version: candidate.version,
+              major: major > pinnedMajor,
+            } as Target,
+          };
+      }
     }
     return undefined;
   };
-  /** The newest release of a tool on mise.toml's range for it, if its build lacks the finding, and its day. */
+  /** The newest release of a tool in mise.toml's range for it whose build lacks the finding, and its day. */
   const toolReleases = new Map<string, Promise<{ version: string; published: string }[]>>();
   const toolScans = new Map<string, Promise<Set<string> | undefined>>();
   const toolFix = async (tool: string, finding: Finding) => {
@@ -660,25 +668,28 @@ export async function installable(
     // Within mise.toml's range for it (`pnpm = "12"`, `kubectl = "1.37"`), as `mise upgrade` moves it; the locked
     // major where mise.toml gives none.
     const range = miseRange(sources.file('mise.toml'), tool) ?? locked.split('.')[0] ?? '';
-    const latest = (await listed)
+    // Newest first, a few at most: the newest release in the range whose download lacks the finding.
+    const candidates = (await listed)
       .filter(
         (each) =>
           (each.version === range || each.version.startsWith(`${range}.`)) && compareVersions(each.version, locked) > 0,
       )
-      .sort((a, b) => compareVersions(a.version, b.version))
-      .at(-1);
-    if (!latest) return undefined;
-    const key = `${tool}@${latest.version}`;
-    let once = toolScans.get(key);
-    if (!once) {
-      lines.tools++;
-      once = sources.tool(tool, latest.version).then((report) => (report ? found(report).has : undefined));
-      toolScans.set(key, once);
+      .sort((a, b) => compareVersions(b.version, a.version))
+      .slice(0, CANDIDATES);
+    for (const candidate of candidates) {
+      const key = `${tool}@${candidate.version}`;
+      let once = toolScans.get(key);
+      if (!once) {
+        lines.tools++;
+        once = sources.tool(tool, candidate.version).then((report) => (report ? found(report).has : undefined));
+        toolScans.set(key, once);
+      }
+      const set = await once;
+      const published = time(candidate.published);
+      if (set && !set.has(has(finding.package, finding.advisory)) && !Number.isNaN(published))
+        return { at: published, target: { kind: 'tool', tool, version: candidate.version } as Target };
     }
-    const set = await once;
-    const published = time(latest.published);
-    if (!set || set.has(has(finding.package, finding.advisory)) || Number.isNaN(published)) return undefined;
-    return { at: published, target: { kind: 'tool', tool, version: latest.version } as Target };
+    return undefined;
   };
   // The repository's lockfiles, read once: whether one resolves a package at a version.
   const lockfiles = targets

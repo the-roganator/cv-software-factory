@@ -173,7 +173,7 @@ const ARGS = {
   enqueuePullRequest: z.strictObject({ number, expectedHead: sha }),
 } satisfies Record<keyof Omit<Actions, 'dryRun'>, z.ZodType>;
 
-type Name = keyof typeof ARGS;
+export type Name = keyof typeof ARGS;
 
 /** The actions a worker may ask for, each with its arguments after the repository, and what it gives back. */
 export type ActionName = Name;
@@ -354,7 +354,12 @@ function numberOf(args: Record<string, unknown>): number | null {
  * A refusal to keep, from what an action threw: its guard's (a protected path, a branch, a deploy) or GitHub's 403. An
  * issue the guard refused was kept by the guard. Anything else is a failure, not a refusal.
  */
-function refusalOf(error: unknown, name: Name, repo: string, args: Record<string, unknown>): GitHubRefusal | undefined {
+export function refusalOf(
+  error: unknown,
+  name: Name,
+  repo: string,
+  args: Record<string, unknown>,
+): GitHubRefusal | undefined {
   const about = { repo, number: numberOf(args), action: asked(name, repo, args) };
   if (error instanceof PatchRefused && error.kind === 'protected') {
     return { ...about, mechanism: 'github-guard', cause: 'protected', output: error.message };

@@ -32,9 +32,9 @@
  * carries, as the action is for that one. A newer build's head is judged afresh. A refusal for a head that moved since
  * (409) is no refusal: nothing is recorded, and the next pass reads the new head.
  *
- * Only the app's deploy pull requests: the factory's own deploys are Martin's, and the line does not watch them. Acting
- * on one work item (`only`), the line adds one only when it carries no other (`worker.ts`). A
- * pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
+ * Only the app's deploy pull requests: the line does not watch the factory's own, whose local one the GitHub worker
+ * adds to the queue itself (`github/deploy-queue.ts`). Acting on one work item (`only`), the line adds one only when it
+ * carries no other (`worker.ts`). A pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
  * GitHub worker that restarted) is read by its number, and only what GitHub says of it is recorded: an empty proposal
  * is never taken for a merge or a close. A dry run's deploy pull request, which GitHub never had, is never recorded.
  *

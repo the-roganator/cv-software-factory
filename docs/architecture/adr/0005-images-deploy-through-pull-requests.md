@@ -10,7 +10,7 @@ Git stays the whole truth about what is running, and a deployment is reviewable,
 
 ## Consequences
 
-- A release to a cluster takes one more merge than a build. That merge is where autonomy applies: Martin makes it while the factory is Supervised, and the gates decide later.
+- A release to a cluster takes one more merge than a build. That merge is where autonomy applies: the app's is the line's within Martin's autonomy level, and this repository's local one the GitHub worker queues once the gate passes it as an exact pin (ADR 0017).
 - A pin lives beside the build that made its image. The build workflow builds and pushes, tagged and labelled with its commit, and opens nothing. The factory's GitHub worker sees the new image in GHCR and, as the App, opens the pull request; it is the only thing that holds the App's key. No workflow may open or approve a pull request (`scripts/github-settings.ts`). Argo CD watches both repositories.
 - The pin lives in a file of its own (a Kustomize component), so the deploy diff is one line.
 - `main` accepts only signed commits, so the pin is committed through GitHub's API, which signs it.

@@ -20,7 +20,7 @@ import {
 } from '../../src/guardrails/line.ts';
 
 /** A runner's agent pod as kubectl lists it, in a phase (none for a pod not yet given one). */
-const running = (
+const agentPod = (
   name: string,
   phase: string | undefined = 'Running',
   metadata: Partial<ListedPod['metadata']> = {},
@@ -156,14 +156,14 @@ describe('the runner pods the drill waits on', () => {
     const deleting = { deletionTimestamp: '2026-11-10T00:00:00Z' };
     expect(
       runnerPodsOf([
-        running('done-agent', 'Succeeded'),
-        running('crashed-agent', 'Failed'),
-        running('ended-agent', 'Failed', deleting),
-        running('starting-agent', 'Pending'),
-        running('working-agent', 'Running'),
-        running('new-agent', undefined),
-        running('lost-agent', 'Unknown'),
-        running('red-team-egress-1a2b3c4d', 'Succeeded', { labels: { [RED_TEAM_LABEL]: 'egress' } }),
+        agentPod('done-agent', 'Succeeded'),
+        agentPod('crashed-agent', 'Failed'),
+        agentPod('ended-agent', 'Failed', deleting),
+        agentPod('starting-agent', 'Pending'),
+        agentPod('working-agent', 'Running'),
+        agentPod('new-agent', undefined),
+        agentPod('lost-agent', 'Unknown'),
+        agentPod('red-team-egress-1a2b3c4d', 'Succeeded', { labels: { [RED_TEAM_LABEL]: 'egress' } }),
       ]),
     ).toEqual([
       { name: 'done-agent', part: 'agent', finished: true },
@@ -184,7 +184,7 @@ describe('the stop-the-line drill', () => {
   /** A drill against the test's store: `make` appends Martin's stop and start; the rest is as each test says. */
   function drill(o: { yes?: boolean; pods?: ListedPod[][]; take?: boolean }) {
     let clock = Date.now();
-    const pods = [...(o.pods ?? [[running('w-agent')], []])];
+    const pods = [...(o.pods ?? [[agentPod('w-agent')], []])];
     const made: string[] = [];
     const said: string[] = [];
     const d: Drill = {
@@ -221,7 +221,7 @@ describe('the stop-the-line drill', () => {
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✓ The line stopped at .+, recorded by factory_operator\./);
     expect(output).toMatch(
-      /✓ None of the line’s pods is left in runners \(1 were running at the prompt or the stop\)\./,
+      /✓ None of the line’s pods is left in runners \(1 were in runners, not finished, at the prompt or the stop\)\./,
     );
     expect(output).toMatch(/✓ No work item was taken/);
     expect(output).toMatch(/✓ The line started again\./);
@@ -294,7 +294,7 @@ describe('the stop-the-line drill', () => {
   });
 
   it('does not hold when a pod is left, a work item was taken, or no stop aborted a canary', async () => {
-    const { d, made } = drill({ pods: [[running('w-agent')]], take: true });
+    const { d, made } = drill({ pods: [[agentPod('w-agent')]], take: true });
     const taken = await stopTheLine(d);
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
     expect(taken).toMatchObject({ held: false });
@@ -306,12 +306,12 @@ describe('the stop-the-line drill', () => {
 
   it('passes over the pods finished by the stop, which their Jobs keep, and records how many', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const done = [running('done-agent', 'Succeeded'), running('crashed-agent', 'Failed')];
+    const done = [agentPod('done-agent', 'Succeeded'), agentPod('crashed-agent', 'Failed')];
     // The finished pods stay listed throughout, as their Jobs keep them; the running one finishes at the stop, and goes.
     const { d, said } = drill({
       pods: [
-        [...done, running('w-agent')],
-        [...done, running('w-agent', 'Failed', { deletionTimestamp: 'now' })],
+        [...done, agentPod('w-agent')],
+        [...done, agentPod('w-agent', 'Failed', { deletionTimestamp: 'now' })],
         done,
       ],
     });
@@ -322,15 +322,23 @@ describe('the stop-the-line drill', () => {
     expect(taken).toMatchObject({ held: true });
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(
-      /✓ None of the line’s pods is left in runners \(1 were running at the prompt or the stop\)\./,
+      /✓ None of the line’s pods is left in runners \(1 were in runners, not finished, at the prompt or the stop\)\./,
     );
-    expect(output).toMatch(/✓ 2 pod\(s\) of the line’s that had finished by the stop passed over/);
+    expect(output).toMatch(/✓ 2 pod\(s\) of the line’s that had finished before the prompt passed over/);
     expect(output).not.toMatch(/✗/);
   });
 
   it('does not hold when a pod running at the stop finishes but is never deleted, its Job left behind', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const { d } = drill({ pods: [[running('w-agent')], [running('w-agent')], [running('w-agent', 'Failed')]] });
+    const { d } = drill({ pods: [[agentPod('w-agent')], [agentPod('w-agent')], [agentPod('w-agent', 'Failed')]] });
+    const taken = await stopTheLine(d);
+    expect(taken).toMatchObject({ held: false });
+    expect('output' in taken && taken.output).toMatch(/✗ the line’s pods still in runners: w-agent/);
+  });
+
+  it('does not hold when a pod running at the prompt has finished by the stop, its Job never deleted', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const { d } = drill({ pods: [[agentPod('w-agent')], [agentPod('w-agent', 'Failed')]] });
     const taken = await stopTheLine(d);
     expect(taken).toMatchObject({ held: false });
     expect('output' in taken && taken.output).toMatch(/✗ the line’s pods still in runners: w-agent/);
@@ -338,8 +346,8 @@ describe('the stop-the-line drill', () => {
 
   it('does not hold when a step starts while the line is stopped, even one that has finished', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const done = running('done-agent', 'Succeeded');
-    const { d } = drill({ pods: [[done], [done], [done, running('short-prepare', 'Succeeded')]] });
+    const done = agentPod('done-agent', 'Succeeded');
+    const { d } = drill({ pods: [[done], [done], [done, agentPod('short-prepare', 'Succeeded')]] });
     const taken = await stopTheLine(d);
     expect(taken).toMatchObject({ held: false });
     expect('output' in taken && taken.output).toMatch(
@@ -349,7 +357,7 @@ describe('the stop-the-line drill', () => {
 
   it('lists the runners again once stopped, so a pod started after the prompt is seen and waited for', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const { d } = drill({ pods: [[], [running('late-agent')]] });
+    const { d } = drill({ pods: [[], [agentPod('late-agent')]] });
     const taken = await stopTheLine(d);
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✗ the line’s pods still in runners: late-agent/);
@@ -361,7 +369,7 @@ describe('the stop-the-line drill', () => {
     const listed = d.runnerPods;
     let calls = 0;
     // At the prompt, at the stop (gone), then a step begun meanwhile.
-    d.runnerPods = async () => (++calls >= 3 ? runnerPodsOf([running('new-agent')]) : listed());
+    d.runnerPods = async () => (++calls >= 3 ? runnerPodsOf([agentPod('new-agent')]) : listed());
     const taken = await stopTheLine(d);
     expect(taken).toMatchObject({ held: false });
     expect('output' in taken && taken.output).toMatch(

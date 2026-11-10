@@ -156,8 +156,13 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       declined: `The line ${why}: the drill stops a running line and starts it again, so it was not taken, and nothing is recorded for it. Start the line, then run it again.`,
     };
   }
+  // A pod already finished at the prompt ran no step the stop could end, and its Job keeps it for an hour: the drill
+  // passes over it, by name, from here to its end. Every other pod, one that finishes after the prompt or starts while
+  // the line is stopped and finishes, must go, its Job deleted.
   const listedBefore = await drill.runnerPods();
-  const before = listedBefore.filter((p) => !p.finished);
+  const passedOver = new Set(listedBefore.filter((p) => p.finished).map((p) => p.name));
+  const notPassedOver = (pods: RunnerPod[]) => pods.filter((p) => !passedOver.has(p.name));
+  const before = notPassedOver(listedBefore);
   const agents = before.filter((p) => p.part === 'agent');
   drill.say(
     `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) of the line’s are in runners and not finished now.`,
@@ -212,23 +217,20 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     const at = stop?.at ?? from;
     const since = (to: string) => Date.parse(to) - Date.parse(at);
 
-    // Listed again once stopped, so a pod started after the prompt is seen and waited for. A pod already finished at the
-    // prompt or the stop ran no step the stop could end, and its Job keeps it for an hour: it is passed over, by name.
-    // Every other pod must go, its Job deleted: one that only finished after the stop, or started while stopped and
-    // finished, is not passed over.
-    const atStop = await drill.runnerPods();
-    const passedOver = new Set([...listedBefore, ...atStop].filter((p) => p.finished).map((p) => p.name));
-    const notPassedOver = (pods: RunnerPod[]) => pods.filter((p) => !passedOver.has(p.name));
-    const seen = new Set(notPassedOver([...listedBefore, ...atStop]).map((p) => p.name));
+    // Listed again once stopped, so a pod started after the prompt is seen and waited for.
+    const atStop = notPassedOver(await drill.runnerPods());
+    const seen = new Set([...before, ...atStop].map((p) => p.name));
     const started = drill.now().getTime();
-    let left = notPassedOver(atStop);
+    let left = atStop;
     while (left.length && drill.now().getTime() - started < PODS_GONE_MS) {
       await drill.sleep(POLL_MS);
       left = notPassedOver(await drill.runnerPods());
     }
     if (left.length) fail(`the line’s pods still in runners: ${left.map((p) => p.name).join(', ')}`);
     else if (seen.size)
-      lines.push(`✓ None of the line’s pods is left in runners (${seen.size} were running at the prompt or the stop).`);
+      lines.push(
+        `✓ None of the line’s pods is left in runners (${seen.size} were in runners, not finished, at the prompt or the stop).`,
+      );
     // Held, as the line's tests show it ends a step (ci:stopped-line), but this drill did not show a pod ended.
     else
       lines.push(
@@ -236,7 +238,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       );
     if (passedOver.size)
       lines.push(
-        `✓ ${passedOver.size} pod(s) of the line’s that had finished by the stop passed over: their Jobs keep them for an hour, and no stop ends them.`,
+        `✓ ${passedOver.size} pod(s) of the line’s that had finished before the prompt passed over: their Jobs keep them for an hour, and no stop ends them.`,
       );
 
     const waited = since(await storeNow());

@@ -1,0 +1,561 @@
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Deployment, Line, Ops, State, Workload } from './try.ts';
+import { main, parse, plan, REGISTRY, Refused, readState, writeState } from './try.ts';
+
+const MAIN = `${REGISTRY}/factory@sha256:${'a'.repeat(64)}`;
+const RUNNER = `${REGISTRY}/factory-runner@sha256:${'b'.repeat(64)}`;
+const CONSOLE = `${REGISTRY}/console@sha256:${'c'.repeat(64)}`;
+const COMMIT = '1234567890abcdef1234567890abcdef12345678';
+const POLICY_NAMES = ['factory-images', 'flagd-images', 'scoreboard-images', 'website-images'];
+const AUTOMATED = { automated: { prune: true, selfHeal: true }, syncOptions: ['RespectIgnoreDifferences=true'] };
+
+function deployment(name: string, containers: [string, string, boolean?][], env: Deployment['env'] = []): Deployment {
+  return {
+    name,
+    containers: containers.map(([n, image, init]) => ({ name: n, image, init: init ?? false })),
+    env,
+    rolledOut: true,
+  };
+}
+
+/** A cluster, a store, a node and a Mac, in memory, with every call written down. */
+class Cluster implements Ops {
+  board: string | undefined = 'try-script';
+  syncPolicy: Record<string, unknown> | undefined = structuredClone(AUTOMATED);
+  sync = 'Synced';
+  health = 'Healthy';
+  actions: Record<string, string[]> = Object.fromEntries(POLICY_NAMES.map((n) => [n, ['Deny']]));
+  deps: Deployment[] = [
+    deployment(
+      'line',
+      [
+        ['runner-image', RUNNER, true],
+        ['line', MAIN],
+      ],
+      [
+        { container: 'line', name: 'RUNNER_IMAGE', value: RUNNER, fromRef: false },
+        { container: 'line', name: 'LINE_MODE', value: 'live', fromRef: false },
+        { container: 'line', name: 'PGPASSWORD', fromRef: true },
+      ],
+    ),
+    deployment(
+      'github',
+      [['github', MAIN]],
+      [{ container: 'github', name: 'GITHUB_DRY_RUN', value: 'false', fromRef: false }],
+    ),
+    deployment('gateway', [['gateway', MAIN]]),
+    deployment('console', [['console', CONSOLE]]),
+    deployment('postgres-exporter', [['postgres-exporter', 'quay.io/prometheuscommunity/postgres-exporter:v0.20.1']]),
+  ];
+  extra: Workload[] = [];
+  lineState: Line = { state: 'stopped', take: { kind: 'just-one', workItem: '1019' }, seq: 788 };
+  moved: string[] = [];
+  branches: Record<string, string> = { 'feat/x': COMMIT };
+  changes: string[] = ['apps/factory/src/line/machine.ts'];
+  mac = new Set<string>();
+  node = new Map<string, string>();
+  /** Whether `load` puts the images on the node; false is the mistyped tag of 10 Nov. */
+  loads = true;
+  /** Whether Argo CD would put back what root owns once root is automated again. */
+  selfHeals = true;
+  calls: string[] = [];
+  said: string[] = [];
+  clock = 0;
+  pidAlive = false;
+  failAt: string | undefined;
+
+  private call(what: string): void {
+    this.calls.push(what);
+    if (this.failAt && what.startsWith(this.failAt)) throw new Error(`killed at ${what}`);
+  }
+  private dep(name: string): Deployment {
+    return this.deps.find((d) => d.name === name) as Deployment;
+  }
+
+  holder = () => this.board;
+  root = () => ({ syncPolicy: structuredClone(this.syncPolicy), sync: this.sync, health: this.health });
+  pauseRoot() {
+    this.call('pauseRoot');
+    const { automated: _, ...rest } = this.syncPolicy ?? {};
+    this.syncPolicy = rest;
+  }
+  setRootPolicy(policy: Record<string, unknown>) {
+    this.call('setRootPolicy');
+    this.syncPolicy = structuredClone(policy);
+    if (this.selfHeals) this.actions['factory-images'] = ['Deny'];
+  }
+  policies = () => structuredClone(this.actions);
+  setFactoryImages(actions: string[]) {
+    this.call(`setFactoryImages ${actions}`);
+    this.actions['factory-images'] = actions;
+  }
+  deployments = () => structuredClone(this.deps);
+  setImages(name: string, images: Record<string, string>) {
+    this.call(`setImages ${name} ${JSON.stringify(images)}`);
+    for (const c of this.dep(name).containers) {
+      const image = images[c.name];
+      if (image) c.image = image;
+    }
+  }
+  setEnv(name: string, container: string, env: Record<string, string | null>) {
+    this.call(`setEnv ${name} ${container} ${JSON.stringify(env)}`);
+    const d = this.dep(name);
+    for (const [k, v] of Object.entries(env)) {
+      d.env = d.env.filter((e) => !(e.container === container && e.name === k));
+      if (v !== null) d.env.push({ container, name: k, value: v, fromRef: false });
+    }
+  }
+  rollout = (name: string) => {
+    this.call(`rollout ${name}`);
+    return true;
+  };
+  workloads = (): Workload[] => [
+    ...this.deps.map((d) => ({
+      namespace: 'factory',
+      kind: 'pod' as const,
+      name: `${d.name}-abc`,
+      ownedByDeployment: true,
+      images: d.containers.map((c) => c.image),
+    })),
+    ...this.extra,
+  ];
+  remove(w: Workload) {
+    this.call(`remove ${w.namespace}/${w.name}`);
+    this.extra = this.extra.filter((x) => x !== w);
+  }
+  line = () => structuredClone(this.lineState);
+  workItemsSince = () => this.moved;
+  commit = (branch: string) => this.branches[branch];
+  changed = () => this.changes;
+  hasLocal = (ref: string) => this.mac.has(ref);
+  build(_: string, dockerfile: string, ref: string) {
+    this.call(`build ${dockerfile} ${ref}`);
+    this.mac.add(ref);
+  }
+  load(refs: string[]) {
+    this.call('load');
+    if (!this.loads) return;
+    for (const r of refs) this.node.set(r, `sha256:${(r.includes('runner') ? 'e' : 'd').repeat(64)}`);
+  }
+  onNode = (ref: string) => this.node.get(ref);
+  tagOnNode(ref: string, as: string) {
+    this.call(`tagOnNode ${as}`);
+    this.node.set(as, this.node.get(ref) as string);
+  }
+  removeFromNode(ref: string) {
+    this.call(`removeFromNode ${ref}`);
+    this.node.delete(ref);
+  }
+  removeLocal(ref: string) {
+    this.call(`removeLocal ${ref}`);
+    this.mac.delete(ref);
+  }
+  alive = () => this.pidAlive;
+  sleep(ms: number) {
+    this.clock += ms;
+  }
+  now = () => new Date(Date.UTC(2026, 10, 10, 23) + this.clock);
+  say(line: string) {
+    this.said.push(line);
+  }
+}
+
+let dir: string;
+let path: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'try-'));
+  path = join(dir, 'try', 'state.json');
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+const begin = (c: Cluster, ...args: string[]) => main(['begin', 'feat/x', '--holder', 'try-script', ...args], c, path);
+const end = (c: Cluster) => main(['end', '--timeout', '60'], c, path);
+const said = (c: Cluster) => c.said.join('\n');
+/** The cluster as a fresh shell sees it after a begin: a new Ops that shares nothing with the first but the cluster. */
+function fresh(c: Cluster): Cluster {
+  const d = new Cluster();
+  const shared = [
+    'board',
+    'syncPolicy',
+    'sync',
+    'health',
+    'actions',
+    'deps',
+    'extra',
+    'lineState',
+    'moved',
+    'branches',
+    'changes',
+    'clock',
+  ] as const;
+  for (const k of shared) Object.assign(d, { [k]: structuredClone(c[k]) });
+  d.mac = new Set(c.mac);
+  d.node = new Map(c.node);
+  return d;
+}
+
+describe('the state file', () => {
+  const state: State = {
+    version: 1,
+    phase: 'open',
+    holder: 'try-script',
+    user: 'martin',
+    host: 'mac',
+    pid: 1,
+    began: '2026-11-10T23:00:00.000Z',
+    branch: 'feat/x',
+    commit: COMMIT,
+    tag: 'local-12345678',
+    root: AUTOMATED,
+    policies: { 'factory-images': ['Deny'] },
+    line: { state: 'stopped', take: null, seq: 1 },
+    deployments: [{ name: 'github', images: { github: MAIN }, env: [] }],
+    images: [{ image: 'factory', ref: `${REGISTRY}/factory:local-12345678`, existed: false }],
+    nodeRefs: [],
+  };
+
+  it('reads back what it wrote, in a directory it makes, readable by its owner alone', () => {
+    writeState(path, state, true);
+    expect(readState(path)).toEqual(state);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it('reads no state as no try open', () => {
+    expect(readState(path)).toBeUndefined();
+  });
+
+  it('refuses a second create, so two begins cannot both hold the cluster', () => {
+    writeState(path, state, true);
+    expect(() => writeState(path, state, true)).toThrow(/EEXIST/);
+  });
+
+  it('refuses a file it cannot read, rather than taking it for no try', () => {
+    writeState(path, state, true);
+    writeFileSync(path, '{"version":1');
+    expect(() => readState(path)).toThrow(Refused);
+    writeFileSync(path, JSON.stringify({ ...state, version: 2 }));
+    expect(() => readState(path)).toThrow(/version 2/);
+    const { root: _, ...noRoot } = state;
+    writeFileSync(path, JSON.stringify(noRoot));
+    expect(() => readState(path)).toThrow(/lacks root/);
+  });
+});
+
+describe('try begin', () => {
+  it("records what it changes before it changes it, then moves the factory's deployments onto the branch", async () => {
+    const c = new Cluster();
+    expect(await begin(c)).toBe(0);
+    const state = readState(path) as State;
+    expect(state.phase).toBe('open');
+    expect(state.root).toEqual(AUTOMATED);
+    expect(state.policies['factory-images']).toEqual(['Deny']);
+    expect(state.line).toEqual({ state: 'stopped', take: { kind: 'just-one', workItem: '1019' }, seq: 788 });
+    expect(state.deployments.map((d) => d.name)).toEqual(['line', 'github', 'gateway']);
+    expect(state.deployments[0]).toEqual({
+      name: 'line',
+      images: { 'runner-image': RUNNER, line: MAIN },
+      env: [{ container: 'line', name: 'RUNNER_IMAGE', was: RUNNER, to: '@factory-runner' }],
+    });
+    // The images are built and on the node before root is paused or anything points at them.
+    const first = (p: string) => c.calls.findIndex((x) => x.startsWith(p));
+    expect(first('build')).toBeLessThan(first('pauseRoot'));
+    expect(first('tagOnNode')).toBeLessThan(first('setImages'));
+    expect(c.actions).toEqual({
+      ...Object.fromEntries(POLICY_NAMES.map((n) => [n, ['Deny']])),
+      'factory-images': ['Audit'],
+    });
+    const line = c.deployments().find((d) => d.name === 'line') as Deployment;
+    const runner = `${REGISTRY}/factory-runner@sha256:${'e'.repeat(64)}`;
+    expect(line.containers.map((x) => x.image)).toEqual([runner, `${REGISTRY}/factory@sha256:${'d'.repeat(64)}`]);
+    expect(line.env.find((e) => e.name === 'RUNNER_IMAGE')?.value).toBe(runner);
+    expect(c.deployments().find((d) => d.name === 'console')?.containers[0]?.image).toBe(CONSOLE);
+    expect(said(c)).toMatch(/try end/);
+  });
+
+  it('moves only the deployments named, and sets a variable recording what it was', async () => {
+    const c = new Cluster();
+    expect(
+      await begin(
+        c,
+        '--only',
+        'github',
+        '--env',
+        'github:GITHUB_DRY_RUN=true',
+        '--env',
+        'github:GITHUB_DRY_RUN_MERGE_SECONDS=30',
+      ),
+    ).toBe(0);
+    const state = readState(path) as State;
+    expect(state.images.map((i) => i.image)).toEqual(['factory']);
+    expect(state.deployments).toEqual([
+      {
+        name: 'github',
+        images: { github: MAIN },
+        env: [
+          { container: 'github', name: 'GITHUB_DRY_RUN', was: 'false', to: 'true' },
+          { container: 'github', name: 'GITHUB_DRY_RUN_MERGE_SECONDS', was: null, to: '30' },
+        ],
+      },
+    ]);
+    expect(c.calls.filter((x) => x.startsWith('setImages')).length).toBe(1);
+  });
+
+  it('touches no image policy but factory-images', async () => {
+    const c = new Cluster();
+    await begin(c);
+    await end(fresh(c));
+    for (const name of ['flagd-images', 'scoreboard-images', 'website-images']) {
+      expect(c.calls.join('\n')).not.toContain(name);
+    }
+  });
+
+  describe('refuses, changing nothing', () => {
+    const refusals: [string, (c: Cluster) => void, RegExp, string[]?][] = [
+      ['when the board names another holder', (c) => (c.board = 'someone-else'), /holder is someone-else/],
+      ['when the board names no holder', (c) => (c.board = 'none'), /write yourself on it/],
+      ['when Argo CD root is paused', (c) => (c.syncPolicy = {}), /root is paused/],
+      [
+        'when an image policy is not on Deny',
+        (c) => (c.actions['factory-images'] = ['Audit']),
+        /factory-images is on \["Audit"\]/,
+      ],
+      [
+        'when a pod runs a local image',
+        (c) =>
+          c.extra.push({
+            namespace: 'runners',
+            kind: 'pod',
+            name: 'x',
+            ownedByDeployment: false,
+            images: [`${REGISTRY}/factory:local-abc123`],
+          }),
+        /pod runners\/x runs/,
+      ],
+      ['when root is not Synced', (c) => (c.sync = 'OutOfSync'), /OutOfSync/],
+      ['when the branch is unknown', (c) => (c.branches = {}), /no branch feat\/x/],
+      [
+        'when the branch changes deploy/',
+        (c) => c.changes.push('deploy/base/factory/line.yaml'),
+        /deploy\/base\/factory\/line\.yaml/,
+      ],
+      ['when the branch adds a migration', (c) => c.changes.push('packages/store/migrations/0099.sql'), /--by-hand/],
+      ["when a deployment is not the factory's", () => {}, /no deployment scoreboard/, ['--only', 'scoreboard']],
+      [
+        'when a deployment runs none of our images',
+        () => {},
+        /none of this repository's images/,
+        ['--only', 'postgres-exporter'],
+      ],
+      ['when a variable comes from a Secret', () => {}, /Secret or ConfigMap/, ['--env', 'line:PGPASSWORD=x']],
+      ['when a variable names no container', () => {}, /no deployment nope/, ['--env', 'nope:X=1']],
+    ];
+    for (const [what, set, message, args] of refusals) {
+      it(what, async () => {
+        const c = new Cluster();
+        set(c);
+        expect(await begin(c, ...(args ?? []))).toBe(2);
+        expect(said(c)).toMatch(message);
+        expect(c.calls).toEqual([]);
+        expect(existsSync(path)).toBe(false);
+      });
+    }
+
+    it('when a try is open', async () => {
+      const c = new Cluster();
+      await begin(c);
+      const calls = c.calls.length;
+      expect(await begin(c)).toBe(2);
+      expect(said(c)).toMatch(/a try is open: feat\/x since .* by try-script/);
+      expect(c.calls.length).toBe(calls);
+    });
+
+    it('without a holder, when there is a board', async () => {
+      const c = new Cluster();
+      expect(await main(['begin', 'feat/x'], c, path)).toBe(2);
+      expect(said(c)).toMatch(/--holder/);
+    });
+  });
+
+  it('points nothing at an image the node does not hold, and leaves the state for try end', async () => {
+    const c = new Cluster();
+    c.loads = false;
+    expect(await begin(c)).toBe(2);
+    expect(said(c)).toMatch(/not on the node after loading it/);
+    expect(c.calls.some((x) => /setImages|pauseRoot|setFactoryImages/.test(x))).toBe(false);
+    expect(readState(path)?.phase).toBe('beginning');
+    expect(await end(fresh(c))).toBe(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('reuses an image the Mac already had, and leaves it there after', async () => {
+    const c = new Cluster();
+    c.mac.add(`${REGISTRY}/factory:local-12345678`);
+    await begin(c, '--only', 'github');
+    expect(c.calls.some((x) => x.startsWith('build'))).toBe(false);
+    const after = fresh(c);
+    await end(after);
+    expect(after.mac.has(`${REGISTRY}/factory:local-12345678`)).toBe(true);
+  });
+});
+
+describe('try end', () => {
+  it('puts everything back from the state file alone, from a shell that never saw the begin', async () => {
+    const c = new Cluster();
+    const before = structuredClone({ syncPolicy: c.syncPolicy, actions: c.actions, deps: c.deps });
+    await begin(c, '--only', 'github', 'line', '--env', 'line:LINE_MODE=dry-run', '--env', 'line:ALL_LOCAL=true');
+    c.extra.push(
+      {
+        namespace: 'runners',
+        kind: 'job',
+        name: 'coder-1-1-1',
+        ownedByDeployment: false,
+        images: [`${REGISTRY}/factory-runner@sha256:${'e'.repeat(64)}`],
+      },
+      { namespace: 'runners', kind: 'job', name: 'mains', ownedByDeployment: false, images: [RUNNER] },
+    );
+    const after = fresh(c);
+    expect(await end(after)).toBe(0);
+    const sorted = (deps: Deployment[]) =>
+      deps.map((d) => ({
+        ...d,
+        env: [...d.env].sort((a, b) => `${a.container}/${a.name}`.localeCompare(`${b.container}/${b.name}`)),
+      }));
+    expect({ syncPolicy: after.syncPolicy, actions: after.actions, deps: sorted(after.deps) }).toEqual({
+      ...before,
+      deps: sorted(before.deps),
+    });
+    expect(after.extra.map((w) => w.name)).toEqual(['mains']);
+    expect(after.node.size).toBe(0);
+    expect(after.mac.size).toBe(0);
+    expect(existsSync(path)).toBe(false);
+    // The images go back before admission is on Deny again, and root gets its policy last of the three.
+    const at = (p: string) => after.calls.findIndex((x) => x.startsWith(p));
+    expect(at('setImages')).toBeLessThan(at('setFactoryImages'));
+    expect(at('setFactoryImages')).toBeLessThan(at('setRootPolicy'));
+    expect(said(after)).toMatch(/The line is stopped/);
+  });
+
+  it('puts back a begin killed part way, after root was paused', async () => {
+    const c = new Cluster();
+    c.failAt = 'setImages github';
+    await expect(begin(c, '--only', 'github')).rejects.toThrow(/killed/);
+    expect(c.syncPolicy?.automated).toBeUndefined();
+    expect(readState(path)?.phase).toBe('beginning');
+    const after = fresh(c);
+    after.failAt = undefined;
+    expect(await end(after)).toBe(0);
+    expect(after.syncPolicy).toEqual(AUTOMATED);
+    expect(after.actions['factory-images']).toEqual(['Deny']);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('refuses while the begin that opened the try is still running', async () => {
+    const c = new Cluster();
+    c.failAt = 'pauseRoot';
+    await expect(begin(c)).rejects.toThrow();
+    const state = readState(path) as State;
+    writeState(path, { ...state, pid: process.pid + 1 });
+    const after = fresh(c);
+    after.pidAlive = true;
+    expect(await end(after)).toBe(2);
+    expect(said(after)).toMatch(/still running/);
+    expect(after.calls).toEqual([]);
+  });
+
+  it("refuses, changing nothing, while the line is started on the try's images", async () => {
+    const c = new Cluster();
+    await begin(c);
+    const after = fresh(c);
+    after.lineState.state = 'started';
+    expect(await end(after)).toBe(2);
+    expect(said(after)).toMatch(/make stop-the-line/);
+    expect(after.calls).toEqual([]);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('says what is not back, keeps the state, and finishes when run again', async () => {
+    const c = new Cluster();
+    await begin(c, '--only', 'github');
+    const stuck = fresh(c);
+    stuck.health = 'Degraded';
+    expect(await end(stuck)).toBe(1);
+    expect(said(stuck)).toMatch(/Not back after 60s[\s\S]*root is Synced and Degraded/);
+    expect(existsSync(path)).toBe(true);
+    const again = fresh(stuck);
+    again.health = 'Healthy';
+    expect(await end(again)).toBe(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('names the take and the work items the try moved, for Martin, and writes neither', async () => {
+    const c = new Cluster();
+    await begin(c, '--only', 'github');
+    const after = fresh(c);
+    after.lineState = { state: 'stopped', take: { kind: 'every' }, seq: 800 };
+    after.moved = ['1040'];
+    await end(after);
+    expect(said(after)).toMatch(/The take is \{"kind":"every"\}.*Martin's to set back/);
+    expect(said(after)).toMatch(/Work items with events since seq 788: 1040/);
+  });
+
+  it('with no try open, says so and succeeds', async () => {
+    const c = new Cluster();
+    expect(await end(c)).toBe(0);
+    expect(said(c)).toBe('No try is open.');
+  });
+});
+
+describe('try status', () => {
+  it('says what is open, since when, by whom, and what is changed', async () => {
+    const c = new Cluster();
+    await begin(c, '--only', 'github', '--env', 'github:GITHUB_DRY_RUN=true');
+    const other = fresh(c);
+    expect(await main(['status'], other, path)).toBe(0);
+    const out = said(other);
+    expect(out).toMatch(/feat\/x \(12345678, local-12345678\) is open/);
+    expect(out).toMatch(/Begun 2026-11-10T23:00:00.000Z by try-script/);
+    expect(out).toMatch(/github: github moved; GITHUB_DRY_RUN \(was false\)/);
+    expect(out).toMatch(/root's sync policy is/);
+    expect(out).toMatch(/factory-images is on \["Audit"\]/);
+    expect(other.calls).toEqual([]);
+  });
+
+  it('names a try by hand when none is open by the script', async () => {
+    const c = new Cluster();
+    c.syncPolicy = {};
+    await main(['status'], c, path);
+    expect(said(c)).toMatch(/root is paused/);
+  });
+});
+
+describe('the command line', () => {
+  it('takes --only up to the next flag', () => {
+    expect(parse(['begin', 'b', '--only', 'line', 'github', '--holder', 'k'])).toEqual({
+      command: 'begin',
+      options: { branch: 'b', only: ['line', 'github'], env: [], holder: 'k', byHand: false },
+    });
+  });
+  it("bounds end's wait at twenty minutes", () => {
+    expect(() => parse(['end', '--timeout', '1201'])).toThrow(/1200 seconds/);
+  });
+  it('refuses what it does not know', () => {
+    expect(() => parse(['begin'])).toThrow(/which branch/);
+    expect(() => parse(['begin', 'b', '--force'])).toThrow(/unknown --force/);
+    expect(() => parse(['stop'])).toThrow(/usage/);
+  });
+  it("plans the default from the images the line's code is built into", () => {
+    expect(plan(new Cluster().deps, { only: [], env: [] }).moves.map((m) => m.name)).toEqual([
+      'line',
+      'github',
+      'gateway',
+    ]);
+  });
+});
+
+it('keeps its state outside the repository', async () => {
+  const { statePath } = await import('./try.ts');
+  expect(statePath({ HOME: '/h' } as NodeJS.ProcessEnv)).toMatch(/\.config\/software-factory\/try\/state\.json$/);
+});

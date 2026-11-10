@@ -1,4 +1,4 @@
-import { describe, expect, inject, it } from 'vitest';
+import { describe, expect, inject, it, vi } from 'vitest';
 import { createDatabase } from './postgres.ts';
 
 const server = () => inject('databaseUrl');
@@ -26,9 +26,23 @@ describe("each test's database", () => {
     }
   });
 
-  it('fails, naming the cause, when making it takes longer than a copy should', async () => {
-    await expect(createDatabase(server(), 'slow', inject('databaseTemplate'), 0)).rejects.toThrow(
-      /Making the test database slow_\d+_\d+ took \d+ ms, over the 0 ms a copy of the template may take/,
-    );
+  it('says, naming the cause, when making it takes longer than a copy should, and is made all the same', async () => {
+    const said = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const db = await createDatabase(server(), 'slow', inject('databaseTemplate'), 0);
+      try {
+        const [me] = await db.as.line<{ me: string }[]>`select current_user as me`;
+        expect(me?.me).toBe('factory_line');
+      } finally {
+        await db.end();
+      }
+      expect(said).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Making the test database slow_\d+_\d+ took \d+ ms, over the 0 ms a copy of the template takes/,
+        ),
+      );
+    } finally {
+      said.mockRestore();
+    }
   });
 });

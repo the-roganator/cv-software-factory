@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { metrics as api } from '@opentelemetry/api';
 import * as metrics from '@opentelemetry/sdk-metrics';
 import { type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
-import { DiskArtifacts, EventWriter, nextWorkItem } from '@software-factory/store';
+import { DiskArtifacts, EventWriter, nextWorkItem, storeClock } from '@software-factory/store';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { setTake, startLine } from '../../../../packages/store/test/line.ts';
@@ -515,15 +515,18 @@ describe('the line’s metrics', () => {
       });
       const stop = observeTaken(database.as.line, () => carrying());
       try {
+        // Minutes ago by the store's clock, which stamped the work items' moves and reads the time: the Mac's may be
+        // ahead of or behind the clock of the VM Postgres runs in, and a millisecond behind would read 19 minutes.
+        const ago = async (minutes: number) =>
+          new Date(Date.parse(await storeClock(database.owner)) - minutes * 60_000).toISOString();
         // Started again twenty minutes ago, after a stop longer than both work items' time.
-        const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
-        await martin.append([{ ...event(null, 'line.started', {}, 'martin'), ts: ago(20) }]);
+        await martin.append([{ ...event(null, 'line.started', {}, 'martin'), ts: await ago(20) }]);
         expect(await read('gates', 'build')).toEqual([
           [1, 20],
           [1, 20],
         ]);
         // A day's cap cleared five minutes ago: the build's time runs from then, the gates' does not.
-        await events.append([{ ...event(null, 'spend.cleared', { cap: 'day' }), ts: ago(5) }]);
+        await events.append([{ ...event(null, 'spend.cleared', { cap: 'day' }), ts: await ago(5) }]);
         expect(await read('gates', 'build')).toEqual([
           [1, 20],
           [1, 5],

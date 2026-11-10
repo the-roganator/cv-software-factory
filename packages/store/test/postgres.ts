@@ -160,11 +160,12 @@ export default async function setup(project: TestProject) {
 }
 
 /**
- * How long making a test database may take before `createDatabase` fails. A copy of the template takes 60 to 90 ms at
- * the median and half a second at worst while the whole run copies at once, and up to a second and a half with two runs
- * side by side on one machine. When each test migrated its own, under one lock for the server, the wait for that lock
- * alone was over two seconds for one database in ten, and up to seven. Two seconds lies between the two, and leaves
- * three of a test's five to the test.
+ * How long a copy of the template takes before `createDatabase` says so. A copy takes 60 to 90 ms at the median and
+ * half a second at worst while the whole run copies at once, up to a second and a half with two runs side by side on
+ * one machine, and past two seconds under a full `make check` beside other work. When each test migrated its own,
+ * under one lock for the server, the wait for that lock alone was over two seconds for one database in ten, and up to
+ * seven. A slow machine reaches the same figures as that queue, so a copy over the limit is said, not failed: the test
+ * goes on, and if it then times out, the line beside it names the wait.
  */
 export const CREATE_LIMIT_MS = 2000;
 
@@ -246,8 +247,8 @@ export async function createTemplate(server: string): Promise<{ name: string; dr
  * A fresh database on a given Postgres, with a connection as each role: a copy of the run's template, or, with none, one
  * migrated for itself, for a caller that makes just one (the console's browser tests).
  *
- * A copy that takes longer than `limitMs` fails, naming the cause, rather than leave a test to time out on a
- * wait that is not its own.
+ * A copy that takes longer than `limitMs` is said on stderr, naming the likely cause, so a test that then times out
+ * on a wait that is not its own says why; the copy is kept, and the test goes on.
  */
 export async function createDatabase(
   server: string,
@@ -269,10 +270,10 @@ export async function createDatabase(
       await admin.end();
     }
     if (took > limitMs) {
-      await dropDatabase(server, database).catch(() => {});
-      throw new Error(
-        `Making the test database ${database} took ${Math.round(took)} ms, over the ${limitMs} ms a copy of ` +
-          'the template may take: something is making test databases wait again (packages/store/test/postgres.ts)',
+      process.stderr.write(
+        `Making the test database ${database} took ${Math.round(took)} ms, over the ${limitMs} ms a copy of the ` +
+          'template takes: the machine is busy, or something is making test databases wait again ' +
+          '(packages/store/test/postgres.ts)\n',
       );
     }
   } else {

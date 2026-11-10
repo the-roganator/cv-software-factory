@@ -20,7 +20,7 @@ import {
   upcast,
   VERSIONS,
 } from '@software-factory/events';
-import { DiskArtifacts, EventWriter, nextWorkItem, readPublic } from '@software-factory/store';
+import { DiskArtifacts, EventWriter, nextWorkItem, readPublic, storeClock } from '@software-factory/store';
 import { pino } from 'pino';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
@@ -2059,7 +2059,8 @@ describe('the line’s controls', () => {
       status: 200,
     });
     const since = ((await changes()).at(-1)?.payload.take as { since: string } | undefined)?.since ?? '';
-    expect(Date.now() - Date.parse(since)).toBeLessThan(60_000);
+    // Within the minute by the store's clock, which stamped it: the Mac's may be ahead of or behind the VM's.
+    expect(Date.parse(await storeClock(db.owner)) - Date.parse(since)).toBeLessThan(60_000);
     // To the microsecond, as the line stamps each work item it takes.
     expect(since).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
     expect((await changes()).at(-1)?.summary).toBe('Martin widened what the line takes to the next 3 from now');

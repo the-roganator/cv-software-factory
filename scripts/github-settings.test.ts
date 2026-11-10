@@ -49,6 +49,11 @@ describe('the ruleset on main (ADR 0014)', () => {
     expect(REVIEW_APP).toBe(5470762);
   });
 
+  it('requires the lockfile scan in both repositories, as each reports it', () => {
+    expect(REPOSITORIES['the-roganator/cv-software-factory']).toContain('lockfile scan');
+    expect(REPOSITORIES['the-roganator/cv-worlds-worst-website']).toContain('gates / lockfile scan');
+  });
+
   it('merges through the queue, squashed, with no rule that a branch be up to date and no GitHub review rule', () => {
     expect(parameters('merge_queue')).toEqual(MERGE_QUEUE);
     expect(MERGE_QUEUE).toMatchObject({ merge_method: 'SQUASH', grouping_strategy: 'ALLGREEN' });

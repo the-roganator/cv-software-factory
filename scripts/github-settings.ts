@@ -46,6 +46,7 @@ export const REPOSITORIES: Record<string, string[]> = {
     'gates / test integrity',
     'gates / dependency review',
     'gates / image scan',
+    'gates / lockfile scan',
   ],
 };
 

@@ -9,13 +9,16 @@
  *   advisory's own source, or Node's own rating for Node's).
  * - **The fix is installable** from the first fixed version's publish time in npm's registry plus the scanned
  *   repository's `minimumReleaseAge` (pnpm's default of a day where it sets none), for an npm package of ours: a
- *   lockfile's, or one in an image of ours, which a lockfile of ours brings. For Node, from the first patched release
+ *   lockfile's, or one only an image of ours has, which a lockfile of ours brings. For Node, from the first patched release
  *   in Node's release index. For anything else in an image (an operating system's package, a binary it ships), from
  *   the creation of the newest image on the line of the pin that brings it (the runtime stage of its Dockerfile, for an
  *   image of ours), found as `scripts/ci-images.sh`'s `newest` finds it, or the tag's current image for a tag that is
- *   not a version, once that image no longer has the finding. Only an image with such a finding that Trivy says is
- *   fixed has its line's newest scanned, each newest once, and nothing is uploaded for it. While no fix is
- *   installable there is no deadline.
+ *   not a version, once that image no longer has the finding. In an image of ours, only what its runtime stage's image
+ *   has comes that way; anything else its Dockerfile adds, but an npm package, has no fix to count from. A package in
+ *   several versions is installable once every copy's fix is, and Node's fix is a release on the major installed. Only
+ *   an image with such a finding that Trivy says is fixed has its line's newest scanned, each once, and nothing is
+ *   uploaded for it; a newest that gives no time it was made (a reproducible build says 1970) gives no day. While no
+ *   fix is installable there is no deadline.
  * - **The clock starts** on the later of the fix being installable and the creation of the finding's alert, read from
  *   code scanning with the job's token; a finding with no alert before today is first seen today. A rename keeps its
  *   clock: when an item is new to the list, and an alert of the same package and advisory belongs to an item no longer
@@ -36,6 +39,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
+import { identity } from './inventory.ts';
 import { satisfies } from './node.ts';
 import { alertKey, type Finding, SEVERITIES, type Severity } from './sarif.ts';
 import { type Handoff, type ReadTarget, realTools, repositoryOf, type TrivyReport, trivyPin } from './scan.ts';
@@ -50,6 +54,9 @@ export const DAYS: Record<Severity, number> = { CRITICAL: 2, HIGH: 7, MEDIUM: 30
 export const PNPM_DEFAULT_MINUTES = 24 * 60;
 
 const NODE_INDEX = 'https://nodejs.org/dist/index.json';
+
+/** The earliest time an image may say it was made: before it, the build set none (a reproducible one says 1970). */
+const EARLIEST = Date.parse('2000-01-01T00:00:00Z');
 
 /** Trivy's types of an npm package, which a lockfile of ours brings into an image of ours. */
 const NPM_TYPES = new Set(['pnpm', 'npm', 'yarn', 'node-pkg']);
@@ -107,10 +114,18 @@ export function firstFixed(installed: string, fixed: string | undefined) {
 }
 
 /** How a finding's fix reaches us: through npm, Node's releases, or a newer image on its pin's line. */
-export function routeOf(finding: Pick<Finding, 'type'>, kind: ReadTarget['kind']): 'npm' | 'node' | 'image' {
+export function routeOf(
+  finding: Pick<Finding, 'type'>,
+  kind: ReadTarget['kind'],
+  fromBase = false,
+): 'npm' | 'node' | 'image' | 'none' {
   if (finding.type === 'node') return 'node';
-  if (kind === 'lockfile' || (kind === 'ours' && NPM_TYPES.has(finding.type))) return 'npm';
-  return 'image';
+  if (kind === 'lockfile') return 'npm';
+  if (kind !== 'ours') return 'image';
+  // An image of ours: what its runtime stage's image has comes with a newer one; an npm package only it has, from a
+  // lockfile of ours; anything else its Dockerfile adds itself, which no newer base brings, has no fix to count from.
+  if (fromBase) return 'image';
+  return NPM_TYPES.has(finding.type) ? 'npm' : 'none';
 }
 
 /** A reference's name and tag, its digest left off. */
@@ -211,6 +226,13 @@ export function alertPlace(alert: Alert): Place | undefined {
   return { advisory, file, package: text.slice(0, space), repository: itemOf(text.slice(into + 4, end)) };
 }
 
+/**
+ * What a rename keeps: the package and the advisory, and the image's repository (a pin moved to another file), or that
+ * it is a lockfile (one moved to another path). An image of another repository is another item, never a rename.
+ */
+const renameKey = (place: Place) =>
+  JSON.stringify([place.package, place.advisory, place.repository === place.file ? 'lockfile' : place.repository]);
+
 const placeKey = (place: Place) => JSON.stringify([place.advisory, place.file, place.package, place.repository]);
 const itemKey = (place: Pick<Place, 'file' | 'repository'>) => JSON.stringify([place.file, place.repository]);
 const time = (text: string | null | undefined) => (text ? Date.parse(text) : Number.NaN);
@@ -242,78 +264,111 @@ export async function installable(
   const kinds = new Map(targets.map((target) => [target.key, target]));
   const at: (number | undefined)[] = findings.map(() => undefined);
   const lines = { npm: 0, images: 0 };
-  // npm: each package and version once.
-  const npm = new Map<string, Promise<string | undefined>>();
-  let releases: Promise<{ version: string; date: string }[]> | undefined;
-  // Each image line's newest: what it no longer has, and when it was made.
-  const newest = new Map<string, Promise<{ created: number; has: Set<string> }>>();
   const has = (pkg: string, advisory: string) => JSON.stringify([pkg, advisory]);
-  const lineOf = async (target: ReadTarget) => {
+  // What each image the scan read has, by its reference without its tag, so an image of ours can tell what its
+  // runtime stage brings from what its Dockerfile adds.
+  const byImage = new Map<string, Set<string>>();
+  for (const finding of findings) {
+    const image = kinds.get(finding.item)?.image;
+    if (!image) continue;
+    const found = byImage.get(identity(image)) ?? new Set<string>();
+    found.add(has(finding.package, finding.advisory));
+    byImage.set(identity(image), found);
+  }
+  // npm: each package and version once; each repository's tags once; each line's newest once.
+  const npm = new Map<string, Promise<string | undefined>>();
+  const tags = new Map<string, Promise<string[]>>();
+  let releases: Promise<{ version: string; date: string }[]> | undefined;
+  const newest = new Map<string, Promise<{ created?: number | undefined; has: Set<string> }>>();
+  const pins = new Map<string, string | undefined>();
+  /** The pin whose line brings a target's image findings: its own, or its Dockerfile's runtime stage for one of ours. */
+  const pinOf = (target: ReadTarget) => {
+    if (pins.has(target.key)) return pins.get(target.key);
     let pin = target.image;
     if (target.kind === 'ours') {
       const dockerfile = dockerfileOf(target.image ?? '', (path) => sources.file(path) !== undefined);
       pin = dockerfile ? runtimeStage(sources.file(dockerfile) ?? '') : undefined;
-      if (!pin) {
+      if (!pin)
         log(
           `::warning::No Dockerfile's runtime stage was found for ${repositoryOf(target.image ?? '')}: its image findings have no fix to count from.`,
         );
-        return undefined;
-      }
     }
-    const { repository, tag } = nameAndTag(pin ?? '');
+    pins.set(target.key, pin);
+    return pin;
+  };
+  const newestOf = async (pin: string) => {
+    const { repository, tag } = nameAndTag(pin);
     if (!tag) return undefined;
     // A version's newest on its line; any other tag, the image it names now.
-    const latest = tagLine(tag) ? newestOnLine(tag, await sources.tags(repository)) : tag;
-    return `${repository}:${latest ?? tag}`;
+    if (!tagLine(tag)) return `${repository}:${tag}`;
+    let listed = tags.get(repository);
+    if (!listed) {
+      listed = sources.tags(repository);
+      tags.set(repository, listed);
+    }
+    return `${repository}:${newestOnLine(tag, await listed) ?? tag}`;
   };
-  const lineByTarget = new Map<string, Promise<string | undefined>>();
+  const published = async (name: string, version: string) => {
+    const key = `${name}@${version}`;
+    let once = npm.get(key);
+    if (!once) {
+      once = sources.published(name, version);
+      npm.set(key, once);
+      lines.npm++;
+    }
+    return time(await once);
+  };
   await pool(
     findings.map((finding, index) => async () => {
       const target = kinds.get(finding.item);
       if (!target || !finding.fixed) return;
-      const route = routeOf(finding, target.kind);
+      const pin = target.kind === 'ours' ? pinOf(target) : undefined;
+      const fromBase =
+        pin !== undefined && (byImage.get(identity(pin))?.has(has(finding.package, finding.advisory)) ?? false);
+      const route = routeOf(finding, target.kind, fromBase);
+      if (route === 'none') return;
       if (route === 'npm') {
-        const version = firstFixed(finding.installed, finding.fixed);
-        if (!version) return;
-        const key = `${finding.package}@${version}`;
-        let once = npm.get(key);
-        if (!once) {
-          once = sources.published(finding.package, version);
-          npm.set(key, once);
-          lines.npm++;
+        // Every copy of the package must be fixable: the clock runs from the last of their fixes.
+        const versions = finding.installed.split(', ').filter(Boolean);
+        const times: number[] = [];
+        for (const installed of versions) {
+          const version = firstFixed(installed, finding.fixed);
+          const when = version ? await published(finding.package, version) : Number.NaN;
+          if (Number.isNaN(when)) return;
+          times.push(when);
         }
-        const published = time(await once);
-        if (!Number.isNaN(published)) at[index] = published + minimumReleaseAge * 60_000;
+        if (times.length) at[index] = Math.max(...times) + minimumReleaseAge * 60_000;
         return;
       }
       if (route === 'node') {
         releases ??= sources.releases();
         const all = await releases;
+        // A patched release on the installed major: moving to another major is not the fix.
         const major = finding.installed.split('.')[0];
-        const fixes = all.filter(
-          (release) =>
-            compareVersions(release.version, finding.installed) > 0 && satisfies(release.version, finding.fixed ?? ''),
-        );
-        const same = fixes.filter((release) => release.version.replace(/^v/, '').split('.')[0] === major);
-        const days = (same.length ? same : fixes)
+        const days = all
+          .filter(
+            (release) =>
+              release.version.replace(/^v/, '').split('.')[0] === major &&
+              compareVersions(release.version, finding.installed) > 0 &&
+              satisfies(release.version, finding.fixed ?? ''),
+          )
           .map((release) => time(`${release.date}T00:00:00Z`))
           .filter((n) => !Number.isNaN(n));
         if (days.length) at[index] = Math.min(...days);
         return;
       }
-      let line = lineByTarget.get(target.key);
-      if (!line) {
-        line = lineOf(target);
-        lineByTarget.set(target.key, line);
-      }
-      const reference = await line;
+      const reference = await newestOf(pin ?? pinOf(target) ?? '');
       if (!reference) return;
       let once = newest.get(reference);
       if (!once) {
         lines.images++;
         once = sources.image(reference).then((report) => {
-          const created = time(report.Metadata?.ImageConfig?.created);
-          if (Number.isNaN(created)) throw new Error(`${reference}: Trivy gave no time it was made`);
+          let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
+          // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
+          if (Number.isNaN(created) || created < EARLIEST) {
+            log(`::warning::${reference} gives no time it was made: its fixes have no day to count from.`);
+            created = undefined;
+          }
           const found = new Set<string>();
           for (const result of report.Results ?? [])
             for (const v of result.Vulnerabilities ?? [])
@@ -323,7 +378,8 @@ export async function installable(
         newest.set(reference, once);
       }
       const image = await once;
-      if (!image.has.has(has(finding.package, finding.advisory))) at[index] = image.created;
+      if (image.created !== undefined && !image.has.has(has(finding.package, finding.advisory)))
+        at[index] = image.created;
     }),
   );
   return { at, looked: lines };
@@ -353,16 +409,14 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
     const place = alertPlace(alert);
     const at = time(alert.created_at);
     if (!place || Number.isNaN(at) || onList.has(itemKey(place))) continue;
-    const key = JSON.stringify([place.package, place.advisory]);
+    const key = renameKey(place);
     gone.set(key, Math.min(gone.get(key) ?? at, at));
   }
   return findings.map((finding) => {
     const place = placeOf(finding);
     const own = created.get(placeKey(place));
     if (own !== undefined && own < today) return { seen: own, firstSeenToday: false };
-    const renamed = itemsBefore.has(itemKey(place))
-      ? undefined
-      : gone.get(JSON.stringify([place.package, place.advisory]));
+    const renamed = itemsBefore.has(itemKey(place)) ? undefined : gone.get(renameKey(place));
     if (renamed !== undefined) return { seen: renamed, firstSeenToday: false };
     return { seen: own ?? now, firstSeenToday: true };
   });
@@ -455,19 +509,6 @@ async function pool(tasks: (() => Promise<void>)[], size = 8) {
   if (failed) throw failed;
 }
 
-async function retry<T>(what: () => Promise<T>): Promise<T> {
-  let last: unknown;
-  for (const wait of [0, 5_000, 20_000]) {
-    if (wait) await new Promise((done) => setTimeout(done, wait));
-    try {
-      return await what();
-    } catch (error) {
-      last = error;
-    }
-  }
-  throw last;
-}
-
 /** A repository as skopeo names it: Docker Hub's official images under docker.io/library/. */
 export function skopeoName(repository: string) {
   const first = repository.split('/')[0] ?? '';
@@ -486,18 +527,19 @@ export function realSources(
 ): Sources {
   const tools = realTools(trivyImage, handoff.cache, work);
   const times = new Map<string, Promise<Record<string, string>>>();
-  const get = async (url: string) => {
+  // An error names the source, never the package asked for: the log gives counts alone.
+  const get = async (url: string, source: string) => {
     const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
     if (response.status === 404) return undefined;
-    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    if (!response.ok) throw new Error(`${source} answered ${response.status}`);
     return response.json() as Promise<unknown>;
   };
   return {
     async published(name, version) {
       let once = times.get(name);
       if (!once) {
-        once = retry(async () => {
-          const body = (await get(`https://registry.npmjs.org/${name.replace('/', '%2f')}`)) as
+        once = tools.retry(async () => {
+          const body = (await get(`https://registry.npmjs.org/${name.replace('/', '%2f')}`, "npm's registry")) as
             | { time?: Record<string, string> }
             | undefined;
           return body?.time ?? {};
@@ -507,12 +549,12 @@ export function realSources(
       return (await once)[version];
     },
     async releases() {
-      const body = await retry(() => get(NODE_INDEX));
+      const body = await tools.retry(() => get(NODE_INDEX, "Node's release index"));
       if (!Array.isArray(body)) throw new Error("Node's release index is not a list");
       return body as { version: string; date: string }[];
     },
     async tags(repository) {
-      const { stdout } = await retry(() =>
+      const { stdout } = await tools.retry(() =>
         run('skopeo', ['list-tags', skopeoName(repository)], { maxBuffer: 64 * 1024 * 1024, timeout: 5 * 60 * 1000 }),
       );
       return (JSON.parse(stdout) as { Tags?: string[] }).Tags ?? [];
@@ -532,18 +574,10 @@ export function realSources(
         alertsIn(api, repository, 'dismissed'),
       ]);
       // Those this run's upload closed: the most recently updated first, until one older than the run.
-      const fixed: Alert[] = [];
-      let path: string | undefined =
-        `/repos/${repository}/code-scanning/alerts?tool_name=Trivy&state=fixed&sort=updated&direction=desc&per_page=100`;
-      while (path) {
-        const page: { body: unknown; next?: string | undefined } = await api.get(path);
-        if (!Array.isArray(page.body)) throw new Error('code scanning answered with something other than a list');
-        const recent = (page.body as Alert[]).filter(
-          (alert) => time(alert.updated_at ?? alert.fixed_at) >= time(since),
-        );
-        fixed.push(...recent);
-        path = recent.length === page.body.length ? page.next : undefined;
-      }
+      const fixed = await alertsIn(api, repository, 'fixed', {
+        query: '&sort=updated&direction=desc',
+        while: (alert) => time(alert.updated_at ?? alert.fixed_at) >= time(since),
+      });
       return [...open, ...dismissed, ...fixed];
     },
   };

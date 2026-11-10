@@ -212,12 +212,32 @@ describe('a finding’s deadline', () => {
     expect(longer.rows[0]?.installable).toBe(at('2026-11-12T12:00:00Z'));
   });
 
+  it('runs the clock of a package in two versions from the later of their fixes', async () => {
+    const finding = npm({ installed: '1.2.0, 2.0.0', fixed: '1.2.5, 2.0.3' });
+    const { rows } = await judge({
+      findings: [finding],
+      published: { 'example-a@1.2.5': '2026-09-01T00:00:00Z', 'example-a@2.0.3': '2026-11-01T00:00:00Z' },
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+    });
+    expect(rows[0]?.installable).toBe(at('2026-11-02T00:00:00Z'));
+  });
+
   it('gives a fix npm does not have, or none at all, no deadline', async () => {
     const { rows } = await judge({
       findings: [npm(), npm({ package: 'example-b', fixed: undefined })],
       alerts: [],
     });
     expect(rows.map((row) => row.bucket)).toEqual(['none', 'none']);
+  });
+
+  it('gives Node no fix from another major alone', async () => {
+    const finding: Finding = { ...os(), type: 'node', package: 'node', installed: '22.30.0', fixed: '^24.22.1' };
+    const { rows } = await judge({
+      findings: [finding],
+      releases: [{ version: 'v24.22.1', date: '2026-10-20' }],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+    });
+    expect(rows[0]?.installable).toBeUndefined();
   });
 
   it('dates Node’s fix by its first patched release in Node’s index', async () => {
@@ -282,30 +302,88 @@ describe('an image’s fix', () => {
     expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim']);
   });
 
-  it('looks along an image of ours by its Dockerfile’s runtime stage, and a tag that is no version at its image now', async () => {
+  describe('of ours', () => {
+    const OURS = `ghcr.io/example/factory@sha256:${'c'.repeat(64)}`;
+    const RUNTIME = `gcr.io/distroless/nodejs24-debian13:nonroot@sha256:${'d'.repeat(64)}`;
     const ours: ReadTarget = {
       key: 'deploy/x.yaml ghcr.io/example/factory',
       kind: 'ours',
       file: 'deploy/x.yaml',
-      label: `ghcr.io/example/factory@sha256:${'c'.repeat(64)}`,
-      image: `ghcr.io/example/factory@sha256:${'c'.repeat(64)}`,
+      label: OURS,
+      image: OURS,
     };
-    const inOurs = os({ item: ours.key, file: ours.file, label: ours.label, listed: ours.label });
-    const { rows, asked } = await judge({
-      findings: [inOurs],
-      targets: [ours],
-      alerts: [alertOf(inOurs, '2026-10-01T00:00:00Z')],
-      files: {
-        'apps/factory/Dockerfile': [
-          'FROM node:24.22.1-alpine3.24@sha256:aa AS base',
-          'FROM base AS deps',
-          `FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:${'d'.repeat(64)} AS runtime`,
-        ].join('\n'),
-      },
-      images: { 'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('2026-11-02T00:00:00Z') },
+    const stage: ReadTarget = {
+      key: 'apps/factory/Dockerfile gcr.io/distroless/nodejs24-debian13',
+      kind: 'dockerfile',
+      file: 'apps/factory/Dockerfile',
+      label: RUNTIME,
+      image: RUNTIME,
+    };
+    const files = {
+      'apps/factory/Dockerfile': [
+        'FROM node:24.22.1-alpine3.24@sha256:aa AS base',
+        'FROM base AS deps',
+        `FROM ${RUNTIME} AS runtime`,
+      ].join('\n'),
+    };
+    const inOurs = (over: Partial<Finding> = {}) =>
+      os({ item: ours.key, file: ours.file, label: OURS, listed: OURS, ...over });
+    const inStage = (over: Partial<Finding> = {}) =>
+      os({ item: stage.key, file: stage.file, label: RUNTIME, listed: RUNTIME, ...over });
+    const world = (findings: Finding[], images: Record<string, TrivyReport>) => ({
+      findings,
+      targets: [ours, stage],
+      alerts: findings.map((f) => alertOf(f, '2026-10-01T00:00:00Z')),
+      files,
+      images,
     });
-    expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
-    expect(rows[0]?.installable).toBe(at('2026-11-02T00:00:00Z'));
+
+    it('looks along its Dockerfile’s runtime stage, and a tag that is no version at its image now', async () => {
+      const { rows, asked } = await judge(
+        world([inOurs(), inStage()], {
+          'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('2026-11-02T00:00:00Z'),
+        }),
+      );
+      expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
+      expect(rows[0]?.installable).toBe(at('2026-11-02T00:00:00Z'));
+    });
+
+    it('gives what its Dockerfile adds no fix from a newer base, and its own npm packages npm’s', async () => {
+      const added = inOurs({ package: 'libadded', advisory: 'CVE-2099-20011' });
+      const own = inOurs({ type: 'node-pkg', package: 'example-a', installed: '1.0.0', fixed: '1.0.1' });
+      const bundled = inOurs({ type: 'node-pkg', package: 'cross-example', installed: '7.0.0', fixed: '7.0.5' });
+      const { rows, asked } = await judge({
+        ...world(
+          [
+            added,
+            own,
+            bundled,
+            inStage({ type: 'node-pkg', package: 'cross-example', installed: '7.0.0', fixed: '7.0.5' }),
+          ],
+          {
+            'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('2026-11-02T00:00:00Z', [
+              { package: 'cross-example', advisory: 'CVE-2099-20002' },
+            ]),
+          },
+        ),
+        published: { 'example-a@1.0.1': '2026-10-15T00:00:00Z', 'cross-example@7.0.5': '2026-10-15T00:00:00Z' },
+      });
+      expect(rows[0]?.installable).toBeUndefined();
+      expect(rows[1]?.installable).toBe(at('2026-10-16T00:00:00Z'));
+      // npm's own copy, bundled with the base, waits for a base that no longer has it, not for npm.
+      expect(rows[2]?.installable).toBeUndefined();
+      expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
+    });
+
+    it('gives no day to count from when the newest says it was made in 1970, as a reproducible build does', async () => {
+      const { rows } = await judge(
+        world([inOurs(), inStage()], {
+          'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('1970-01-01T00:00:00Z'),
+        }),
+      );
+      expect(rows[0]?.installable).toBeUndefined();
+      expect(rows[0]?.bucket).toBe('none');
+    });
   });
 
   it('fails the read when the newest image cannot be scanned', async () => {
@@ -379,6 +457,22 @@ describe('the clock', () => {
     expect(rows[0]?.firstSeenToday).toBe(false);
     expect(rows[1]?.firstSeenToday).toBe(true);
     expect(rows[1]?.seen).toBe(at('2026-11-10T04:25:00Z'));
+  });
+
+  it('takes no clock from a gone image of another repository: that is another item, not a rename', async () => {
+    const gone = os({ item: 'Dockerfile old', label: `example/old:1@sha256:${'e'.repeat(64)}`, file: 'Dockerfile' });
+    const added = os();
+    const { rows } = await judge({
+      findings: [added],
+      targets: [IMAGE],
+      alerts: [
+        alertOf(gone, '2026-09-01T00:00:00Z', { state: 'fixed', updated_at: '2026-11-10T04:25:00Z' }),
+        alertOf(added, '2026-11-10T04:25:00Z'),
+      ],
+      tags: { node: ['24.22.1-trixie-slim'] },
+      images: { 'node:24.22.1-trixie-slim': imageReport('2026-11-01T00:00:00Z', [added]) },
+    });
+    expect(rows[0]?.firstSeenToday).toBe(true);
   });
 
   it('matches an alert whose pin has moved since, by its item, package and advisory, never its line or version', async () => {

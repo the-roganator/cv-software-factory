@@ -649,16 +649,18 @@ jobs:
       - name: Run the prepare step in the runner image
         if: env.BUILD == 'true'
         run: apps/runner/scripts/image-check.sh factory-runner:check
-      # The dev container's image, built only when a change moves it (its Dockerfile, as Dependabot's bumps of its base
-      # do) or this file, so a base that no longer builds, or no longer carries mise's apt repository's prerequisites,
-      # fails here rather than on the next person to open it. Then, in it, mise installs Node and pnpm from mise.lock, as
-      # its postCreateCommand begins to. Built from Microsoft's registry: scripts/ci-images.sh copies none of it.
+      # The dev container's image, built only when a change could break it (its Dockerfile, as Dependabot's bumps of its
+      # base do, the toolchain it installs, or this file), so a base that no longer builds, or on which mise no longer
+      # installs mise.lock's tools, fails here rather than on the next person to open it. Then, in it, mise installs the
+      # whole toolchain from mise.lock, as its postCreateCommand does first; the pnpm install that follows there is
+      # every other job's. Its features (devcontainer.json) are the dev container CLI's to add, so a move of one is not
+      # built here, and it is built for amd64 alone. From Microsoft's registry: scripts/ci-images.sh copies none of it.
       - name: Whether this change moves the dev container
         id: devcontainer
         if: env.BUILD == 'true'
         run: |
           # A diff that cannot be read counts as a move, and builds it.
-          if git diff --quiet HEAD^1 HEAD -- .devcontainer/ .github/workflows/check.yml; then
+          if git diff --quiet HEAD^1 HEAD -- .devcontainer/ mise.toml mise.lock .github/workflows/check.yml; then
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
@@ -671,10 +673,10 @@ jobs:
           push: false
           load: true
           tags: devcontainer:check
-      - name: Install the toolchain's Node and pnpm in the dev container
+      - name: Install the toolchain in the dev container
         if: steps.devcontainer.outputs.build == 'true'
         run: |
           docker run --rm -v "$PWD:/workspace:ro" -w /workspace devcontainer:check bash -euo pipefail -c '
             mise trust
-            mise install --locked node pnpm
+            mise install --locked
             echo "node $(node --version), pnpm $(pnpm --version)"'

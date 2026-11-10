@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { metrics as api } from '@opentelemetry/api';
 import * as metrics from '@opentelemetry/sdk-metrics';
 import { type NewEvent, type PayloadOf, VERSIONS } from '@software-factory/events';
-import { DiskArtifacts, EventWriter, nextWorkItem } from '@software-factory/store';
+import { DiskArtifacts, EventWriter, nextWorkItem, storeClock } from '@software-factory/store';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { setTake, startLine } from '../../../../packages/store/test/line.ts';
@@ -515,8 +515,11 @@ describe('the line’s metrics', () => {
       });
       const stop = observeTaken(database.as.line, () => carrying());
       try {
+        // Minutes ago by the store's clock, which stamped the work items' moves and reads the time: the Mac's may be
+        // ahead of or behind the clock of the VM Postgres runs in, and a millisecond behind would read 19 minutes.
+        const store = Date.parse(await storeClock(database.owner));
+        const ago = (minutes: number) => new Date(store - minutes * 60_000).toISOString();
         // Started again twenty minutes ago, after a stop longer than both work items' time.
-        const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
         await martin.append([{ ...event(null, 'line.started', {}, 'martin'), ts: ago(20) }]);
         expect(await read('gates', 'build')).toEqual([
           [1, 20],
@@ -587,8 +590,8 @@ describe('the line’s metrics', () => {
     const { line: it } = line({});
     const abort = new AbortController();
     const running = it.run(abort.signal);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(at(await points('line.work_items'), { stage: 'review' })).toBe(1);
+    // Once the line reports its stages, which it starts after counting every kind from 0, however long that takes.
+    await expect.poll(async () => at(await points('line.work_items'), { stage: 'review' }), { timeout: 4000 }).toBe(1);
     // Every count from 0 as it starts: a kind nothing in this file counted has its series all the same.
     const aborted = (await points('line.releases')).filter((p) => p.attributes.outcome === 'aborted');
     expect(aborted).toEqual([{ attributes: { outcome: 'aborted', dry_run: false }, value: 0 }]);

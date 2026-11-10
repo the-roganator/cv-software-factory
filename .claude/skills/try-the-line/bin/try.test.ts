@@ -108,7 +108,7 @@ class Cluster implements Ops {
       if (v !== null) d.env.push({ container, name: k, value: v, fromRef: false });
     }
   }
-  rollout = (name: string) => {
+  rollout = (name: string, _seconds?: number) => {
     this.call(`rollout ${name}`);
     return true;
   };
@@ -117,7 +117,7 @@ class Cluster implements Ops {
       namespace: 'factory',
       kind: 'pod' as const,
       name: `${d.name}-abc`,
-      ownedByDeployment: true,
+      owned: true,
       images: d.containers.map((c) => c.image),
     })),
     ...this.extra,
@@ -180,6 +180,14 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 const begin = (c: Cluster, ...args: string[]) => main(['begin', 'feat/x', '--holder', 'try-script', ...args], c, path);
 const end = (c: Cluster) => main(['end', '--timeout', '60'], c, path);
 const said = (c: Cluster) => c.said.join('\n');
+/** The state a begin on another cluster writes, read back and removed, to stand for someone else's try. */
+async function openState(c: Cluster): Promise<State> {
+  const other = Object.assign(new Cluster(), { branches: c.branches });
+  expect(await begin(other)).toBe(0);
+  const state = readState(path) as State;
+  rmSync(path);
+  return { ...state, phase: 'beginning' };
+}
 /** The cluster as a fresh shell sees it after a begin: a new Ops that shares nothing with the first but the cluster. */
 function fresh(c: Cluster): Cluster {
   const d = new Cluster();
@@ -263,7 +271,7 @@ describe('try begin', () => {
     expect(state.deployments[0]).toEqual({
       name: 'line',
       images: { 'runner-image': RUNNER, line: MAIN },
-      env: [{ container: 'line', name: 'RUNNER_IMAGE', was: RUNNER, to: '@factory-runner' }],
+      env: [{ container: 'line', name: 'RUNNER_IMAGE', was: RUNNER, to: '', image: 'factory-runner' }],
     });
     // The images are built and on the node before root is paused or anything points at them.
     const first = (p: string) => c.calls.findIndex((x) => x.startsWith(p));
@@ -311,7 +319,7 @@ describe('try begin', () => {
 
   it('touches no image policy but factory-images', async () => {
     const c = new Cluster();
-    await begin(c);
+    expect(await begin(c)).toBe(0);
     await end(fresh(c));
     for (const name of ['flagd-images', 'scoreboard-images', 'website-images']) {
       expect(c.calls.join('\n')).not.toContain(name);
@@ -335,7 +343,7 @@ describe('try begin', () => {
             namespace: 'runners',
             kind: 'pod',
             name: 'x',
-            ownedByDeployment: false,
+            owned: false,
             images: [`${REGISTRY}/factory:local-abc123`],
           }),
         /pod runners\/x runs/,
@@ -371,7 +379,7 @@ describe('try begin', () => {
 
     it('when a try is open', async () => {
       const c = new Cluster();
-      await begin(c);
+      expect(await begin(c)).toBe(0);
       const calls = c.calls.length;
       expect(await begin(c)).toBe(2);
       expect(said(c)).toMatch(/a try is open: feat\/x since .* by try-script/);
@@ -406,10 +414,23 @@ describe('try begin', () => {
     expect(c.calls.some((x) => /tagOnNode|setImages|pauseRoot/.test(x))).toBe(false);
   });
 
+  it('takes a value beginning with @ as the value it is', async () => {
+    const c = new Cluster();
+    expect(await begin(c, '--only', 'github', '--env', 'github:HANDLE=@me')).toBe(0);
+    expect(c.deps.find((d) => d.name === 'github')?.env.find((e) => e.name === 'HANDLE')?.value).toBe('@me');
+  });
+
+  it("sends no one to end another's try when it loses the race to begin", async () => {
+    const c = new Cluster();
+    writeState(path, { ...(await openState(c)), pid: process.pid + 1 });
+    expect(await begin(c)).toBe(2);
+    expect(said(c)).not.toMatch(/stopped part way/);
+  });
+
   it('reuses an image the Mac already had, and leaves it there after', async () => {
     const c = new Cluster();
     c.mac.add(`${REGISTRY}/factory:local-12345678`);
-    await begin(c, '--only', 'github');
+    expect(await begin(c, '--only', 'github')).toBe(0);
     expect(c.calls.some((x) => x.startsWith('build'))).toBe(false);
     const after = fresh(c);
     await end(after);
@@ -421,16 +442,18 @@ describe('try end', () => {
   it('puts everything back from the state file alone, from a shell that never saw the begin', async () => {
     const c = new Cluster();
     const before = structuredClone({ syncPolicy: c.syncPolicy, actions: c.actions, deps: c.deps });
-    await begin(c, '--only', 'github', 'line', '--env', 'line:LINE_MODE=dry-run', '--env', 'line:ALL_LOCAL=true');
+    expect(
+      await begin(c, '--only', 'github,line', '--env', 'line:LINE_MODE=dry-run', '--env', 'line:ALL_LOCAL=true'),
+    ).toBe(0);
     c.extra.push(
       {
         namespace: 'runners',
         kind: 'job',
         name: 'coder-1-1-1',
-        ownedByDeployment: false,
+        owned: false,
         images: [`${REGISTRY}/factory-runner@sha256:${'e'.repeat(64)}`],
       },
-      { namespace: 'runners', kind: 'job', name: 'mains', ownedByDeployment: false, images: [RUNNER] },
+      { namespace: 'runners', kind: 'job', name: 'mains', owned: false, images: [RUNNER] },
     );
     const after = fresh(c);
     expect(await end(after)).toBe(0);
@@ -483,7 +506,7 @@ describe('try end', () => {
 
   it("refuses, changing nothing, while the line is started on the try's images", async () => {
     const c = new Cluster();
-    await begin(c);
+    expect(await begin(c)).toBe(0);
     const after = fresh(c);
     after.lineState.state = 'started';
     expect(await end(after)).toBe(2);
@@ -494,7 +517,7 @@ describe('try end', () => {
 
   it('says what is not back, keeps the state, and finishes when run again', async () => {
     const c = new Cluster();
-    await begin(c, '--only', 'github');
+    expect(await begin(c, '--only', 'github')).toBe(0);
     const stuck = fresh(c);
     stuck.health = 'Degraded';
     expect(await end(stuck)).toBe(1);
@@ -508,13 +531,81 @@ describe('try end', () => {
 
   it('names the take and the work items the try moved, for Martin, and writes neither', async () => {
     const c = new Cluster();
-    await begin(c, '--only', 'github');
+    expect(await begin(c, '--only', 'github')).toBe(0);
     const after = fresh(c);
     after.lineState = { state: 'stopped', take: { kind: 'every' }, seq: 800 };
     after.moved = ['1040'];
     await end(after);
     expect(said(after)).toMatch(/The take is \{"kind":"every"\}.*Martin's to set back/);
     expect(said(after)).toMatch(/Work items with events since seq 788: 1040/);
+  });
+
+  it('waits for every rollout within the one --timeout, so factory-images is not left on Audit longer', async () => {
+    const c = new Cluster();
+    expect(await begin(c)).toBe(0);
+    const after = fresh(c);
+    const asked: number[] = [];
+    after.rollout = (_: string, seconds?: number) => {
+      if (seconds === undefined) throw new Error('no bound');
+      asked.push(seconds);
+      after.clock += seconds * 1000;
+      return false;
+    };
+    await end(after);
+    expect(asked[0]).toBe(60);
+    expect(asked.slice(1).every((s) => s === 1)).toBe(true);
+  });
+
+  it('carries on past a workload already gone', async () => {
+    const c = new Cluster();
+    expect(await begin(c, '--only', 'github')).toBe(0);
+    const after = fresh(c);
+    after.extra.push({
+      namespace: 'runners',
+      kind: 'job',
+      name: 'gone',
+      owned: false,
+      images: [`${REGISTRY}/factory:local-12345678`],
+    });
+    after.remove = (w: Workload) => {
+      after.extra = after.extra.filter((x) => x !== w);
+      throw new Error('NotFound');
+    };
+    expect(await end(after)).toBe(0);
+    expect(said(after)).toMatch(/Could not delete job runners\/gone/);
+  });
+
+  it('puts back a variable that was set to the empty string as empty, not removed', async () => {
+    const c = new Cluster();
+    c.deps.find((d) => d.name === 'github')?.env.push({ container: 'github', name: 'FLAG', value: '', fromRef: false });
+    expect(await begin(c, '--only', 'github', '--env', 'github:FLAG=1')).toBe(0);
+    expect(readState(path)?.deployments[0]?.env.find((v) => v.name === 'FLAG')?.was).toBe('');
+    const after = fresh(c);
+    await end(after);
+    expect(after.deps.find((d) => d.name === 'github')?.env.find((e) => e.name === 'FLAG')?.value).toBe('');
+  });
+
+  it('refuses, changing nothing, when the store cannot be read and the try moved the line', async () => {
+    const c = new Cluster();
+    expect(await begin(c)).toBe(0);
+    const after = fresh(c);
+    after.line = () => {
+      throw new Error('postgres-0 not found');
+    };
+    expect(await end(after)).toBe(2);
+    expect(said(after)).toMatch(/whether the line is started is not known/);
+    expect(after.calls).toEqual([]);
+  });
+
+  it('puts back without the store when the try did not move the line', async () => {
+    const c = new Cluster();
+    expect(await begin(c, '--only', 'github')).toBe(0);
+    const after = fresh(c);
+    after.line = () => {
+      throw new Error('postgres-0 not found');
+    };
+    expect(await end(after)).toBe(0);
+    expect(existsSync(path)).toBe(false);
   });
 
   it('with no try open, says so and succeeds', async () => {
@@ -527,7 +618,7 @@ describe('try end', () => {
 describe('try status', () => {
   it('says what is open, since when, by whom, and what is changed', async () => {
     const c = new Cluster();
-    await begin(c, '--only', 'github', '--env', 'github:GITHUB_DRY_RUN=true');
+    expect(await begin(c, '--only', 'github', '--env', 'github:GITHUB_DRY_RUN=true')).toBe(0);
     const other = fresh(c);
     expect(await main(['status'], other, path)).toBe(0);
     const out = said(other);
@@ -548,10 +639,10 @@ describe('try status', () => {
 });
 
 describe('the command line', () => {
-  it('takes --only up to the next flag', () => {
-    expect(parse(['begin', 'b', '--only', 'line', 'github', '--holder', 'k'])).toEqual({
+  it('takes --only one value at a time, comma-separated, so a branch after it stays the branch', () => {
+    expect(parse(['begin', '--only', 'line,github', '--only', 'red-team', 'b', '--holder', 'k'])).toEqual({
       command: 'begin',
-      options: { branch: 'b', only: ['line', 'github'], env: [], holder: 'k', byHand: false },
+      options: { branch: 'b', only: ['line', 'github', 'red-team'], env: [], holder: 'k', byHand: false },
     });
   });
   it("bounds end's wait at twenty minutes", () => {

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 import type { Deployment, Line, Ops, Root, Workload } from './try.ts';
 import { NAMESPACES, POLICY } from './try.ts';
 
@@ -112,7 +113,8 @@ function deployment(d: Item): Deployment {
       (c.env ?? []).map((e) => ({
         container: c.name,
         name: e.name,
-        ...(e.value === undefined ? {} : { value: e.value }),
+        // The API leaves out an empty value: a variable with neither is set to ''.
+        ...(e.valueFrom === undefined ? { value: e.value ?? '' } : {}),
         fromRef: e.valueFrom !== undefined,
       })),
     ),
@@ -128,8 +130,8 @@ export const ops: Ops = {
   holder() {
     const board = join(checkout(), 'scratch', 'workflow', 'board.yaml');
     if (!existsSync(board)) return undefined;
-    const m = /^cluster:\n(?:[ \t]+.*\n)*?[ \t]+holder:[ \t]*"?([^"\s#]+)/m.exec(readFileSync(board, 'utf8'));
-    return m ? m[1] : 'none';
+    const holder = (parse(readFileSync(board, 'utf8')) as { cluster?: { holder?: unknown } } | null)?.cluster?.holder;
+    return typeof holder === 'string' && holder ? holder : 'none';
   },
   root(): Root {
     const app = get('-n', 'argocd', 'get', 'application', 'root');
@@ -223,7 +225,7 @@ export const ops: Ops = {
           namespace: ns,
           kind: pod ? 'pod' : 'job',
           name: item.metadata.name,
-          ownedByDeployment: (item.metadata.ownerReferences ?? []).some((o) => o.kind === 'ReplicaSet'),
+          owned: (item.metadata.ownerReferences ?? []).some((o) => o.kind === 'ReplicaSet' || o.kind === 'Job'),
           images: [
             ...[...(spec.initContainers ?? []), ...spec.containers].map((c) => c.image),
             ...statuses.flatMap((s) => [s.image, s.imageID].filter((x): x is string => Boolean(x))),
@@ -241,6 +243,7 @@ export const ops: Ops = {
       w.kind,
       w.name,
       '--wait=false',
+      '--ignore-not-found',
       ...(w.kind === 'job' ? ['--cascade=foreground'] : []),
     );
   },
@@ -264,7 +267,7 @@ export const ops: Ops = {
   },
   commit(branch) {
     const dir = checkout();
-    for (const ref of [`origin/${branch}`, branch]) {
+    for (const ref of [`refs/heads/${branch}`, `origin/${branch}`]) {
       const r = spawnSync('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
         encoding: 'utf8',
       });
@@ -322,12 +325,9 @@ export const ops: Ops = {
     run('docker', ['rmi', ref]);
   },
   alive(pid) {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === 'EPERM';
-    }
+    // A begin, not whatever has the pid since (a reboot, or reuse).
+    const r = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    return r.status === 0 && r.stdout.includes('try-cli.ts') && r.stdout.includes(' begin');
   },
   sleep(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);

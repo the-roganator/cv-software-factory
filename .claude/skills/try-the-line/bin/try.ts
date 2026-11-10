@@ -50,8 +50,8 @@ export interface Workload {
   namespace: string;
   kind: 'pod' | 'job';
   name: string;
-  /** A deployment's pod, which its rollout replaces; anything else on a try's image is deleted. */
-  ownedByDeployment: boolean;
+  /** A pod its ReplicaSet replaces or its Job takes with it; anything else on a try's image is deleted. */
+  owned: boolean;
   /** Every image it names and, for a pod, every image id its containers run. */
   images: string[];
 }
@@ -99,6 +99,7 @@ export interface Ops {
   tagOnNode(ref: string, as: string): void;
   removeFromNode(ref: string): void;
   removeLocal(ref: string): void;
+  /** Whether the pid is a `try begin` still running (not whatever has the pid since). */
   alive(pid: number): boolean;
   sleep(ms: number): void;
   now(): Date;
@@ -110,7 +111,8 @@ export interface Moved {
   /** Each container the try repoints, with the image it had. */
   images: Record<string, string>;
   /** Each variable the try writes, with the value it had, or null when it had none. */
-  env: { container: string; name: string; was: string | null; to: string }[];
+  /** `to` is the value it is set to, or, with `image`, empty: it follows that image to the try's reference. */
+  env: { container: string; name: string; was: string | null; to: string; image?: string }[];
 }
 export interface State {
   version: number;
@@ -339,7 +341,7 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
       const image = ours(e.value);
       const from = d.containers.find((c) => c.image === e.value && move?.containers[c.name]);
       if (image && from && images.includes(image))
-        vars.push({ container: e.container, name: e.name, was: e.value, to: `@${image}` });
+        vars.push({ container: e.container, name: e.name, was: e.value, to: '', image });
     }
     for (const [key, value] of Object.entries(env[name] ?? {})) {
       const current = d.env.find((e) => e.container === name && e.name === key);
@@ -415,14 +417,15 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
       ops.setImages(d.name, Object.fromEntries(Object.entries(move.containers).map(([c, image]) => [c, at(image)])));
     const byContainer = new Map<string, Record<string, string>>();
     for (const v of d.env) {
-      const value = v.to.startsWith('@') ? at(v.to.slice(1)) : v.to;
+      const value = v.image ? at(v.image) : v.to;
       byContainer.set(v.container, { ...byContainer.get(v.container), [v.name]: value });
     }
     for (const [container, vars] of byContainer) ops.setEnv(d.name, container, vars);
   }
+  const rollouts = ops.now().getTime() + 600_000;
   for (const d of recorded) {
-    if (!ops.rollout(d.name, 300))
-      throw new Refused(`${d.name} did not roll out in 5 minutes: \`try end\` puts it back`);
+    if (!ops.rollout(d.name, left(ops, rollouts)))
+      throw new Refused(`${d.name} did not roll out within ten minutes of the first: \`try end\` puts it back`);
     ops.say(`${d.name} on ${state.tag}${d.env.length ? `, with ${d.env.map((v) => v.name).join(', ')}` : ''}.`);
   }
   state.phase = 'open';
@@ -431,6 +434,9 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
     `The try of ${options.branch} (${commit.slice(0, 8)}) is open. \`try status\` says what it changed; \`try end\` puts it all back.`,
   );
 }
+
+/** Seconds to a deadline, at least one, so a rollout past it is asked once and not waited for. */
+const left = (ops: Ops, deadline: number): number => Math.max(1, Math.ceil((deadline - ops.now().getTime()) / 1000));
 
 const nodeDigests = (state: State): string[] => state.nodeRefs.map((r) => r.slice(r.indexOf('@') + 1));
 
@@ -491,8 +497,19 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
     );
   }
   const moved = new Set(state.deployments.map((d) => d.name));
-  const line = ops.line();
-  if (moved.has('line') && line.state === 'started') {
+  let line: Line | undefined;
+  try {
+    line = ops.line();
+  } catch (e) {
+    // Whether the line is started matters only when the try moved it: then nothing is put back unknowing.
+    if (moved.has('line')) {
+      throw new Refused(
+        `the store cannot be read, so whether the line is started is not known: ${(e as Error).message}`,
+      );
+    }
+    ops.say(`The store cannot be read (${(e as Error).message}); putting back without the line's state.`);
+  }
+  if (moved.has('line') && line?.state === 'started') {
     throw new Refused(
       "the line is started, on the try's images: stop it first, which only Martin's command line writes,\n" +
         '  make stop-the-line KUBECTL="kubectl --context k3d-software-factory" REASON="putting a try back"\n' +
@@ -506,9 +523,15 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   // Runner Jobs and attack pods on the try's images go first: once factory-images is on Deny again, nothing on them
   // would be admitted, and none is a deployment's to replace.
   for (const w of ops.workloads()) {
-    if (!w.ownedByDeployment && w.images.some((i) => tryImage(i, state))) {
-      ops.remove(w);
-      ops.say(`Deleted ${w.kind} ${w.namespace}/${w.name}.`);
+    if (!w.owned && w.images.some((i) => tryImage(i, state))) {
+      try {
+        ops.remove(w);
+        ops.say(`Deleted ${w.kind} ${w.namespace}/${w.name}.`);
+      } catch (e) {
+        ops.say(
+          `Could not delete ${w.kind} ${w.namespace}/${w.name} (${(e as Error).message}); the check below says if it is still there.`,
+        );
+      }
     }
   }
   // Each deployment back on the images it had, then each variable as it was: the images first, so the rollout the
@@ -533,8 +556,10 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
       );
     }
   }
+  // Every wait shares the one deadline, so factory-images is on Audit no longer than --timeout says.
+  const deadline = ops.now().getTime() + options.timeoutSeconds * 1000;
   for (const d of state.deployments) {
-    if (current.has(d.name) && !ops.rollout(d.name, 300)) ops.say(`${d.name} has not rolled out yet.`);
+    if (current.has(d.name) && !ops.rollout(d.name, left(ops, deadline))) ops.say(`${d.name} has not rolled out yet.`);
   }
   if (!sameJSON(ops.policies()[POLICY], state.policies[POLICY])) {
     ops.setFactoryImages(must(state.policies[POLICY], `the recorded ${POLICY}`));
@@ -550,7 +575,6 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   for (const digest of digests) for (const name of ops.namedOnNode(digest)) ops.removeFromNode(name);
   for (const i of state.images) if (!i.existed && ops.hasLocal(i.ref)) ops.removeLocal(i.ref);
 
-  const deadline = ops.now().getTime() + options.timeoutSeconds * 1000;
   let wrong = notBack(ops, state);
   while (wrong.length && ops.now().getTime() < deadline) {
     ops.sleep(10_000);
@@ -566,7 +590,7 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   ops.say(
     "Back as it was: root Synced and Healthy on its own policy, every image policy as recorded, no pod or Job on the try's images, its images off the node and the Mac.",
   );
-  report(ops, state, line);
+  if (line) report(ops, state, line);
   return true;
 }
 
@@ -640,8 +664,7 @@ export function parse(
     };
     for (let a = args.shift(); a !== undefined; a = args.shift()) {
       if (a === '--only') {
-        options.only.push(value(a));
-        while (args[0] !== undefined && !args[0].startsWith('--')) options.only.push(value(a));
+        options.only.push(...value(a).split(',').filter(Boolean));
       } else if (a === '--env') options.env.push(value(a));
       else if (a === '--holder') options.holder = value(a);
       else if (a === '--by-hand') options.byHand = true;
@@ -652,7 +675,7 @@ export function parse(
     return { command, options };
   }
   throw new Refused(
-    'usage: try begin <branch> [--only <deployment>…] [--env <deployment>:<NAME>=<value>]… [--holder <key>] [--by-hand]\n' +
+    'usage: try begin <branch> [--only <deployment>[,…]]… [--env <deployment>:<NAME>=<value>]… [--holder <key>] [--by-hand]\n' +
       '       try status\n       try end [--timeout <seconds>]',
   );
 }
@@ -664,7 +687,8 @@ export async function main(argv: string[], ops: Ops, path = statePath()): Promis
       try {
         begin(ops, path, command.options);
       } catch (e) {
-        if (readState(path)?.phase === 'beginning')
+        const left = readState(path);
+        if (left?.phase === 'beginning' && left.pid === process.pid && left.host === hostname())
           ops.say('The begin stopped part way: `try end` puts back what it changed.');
         throw e;
       }

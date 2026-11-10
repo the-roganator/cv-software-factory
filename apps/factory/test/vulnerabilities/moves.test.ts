@@ -5,6 +5,7 @@ import {
   type Context,
   dependabotDirectories,
   directPackages,
+  furthest,
   type Judged,
   MOVES_VERSION,
   moves,
@@ -321,5 +322,28 @@ describe('one pin with several targets', () => {
       lane: 'approval',
     });
     expect(list[0]?.clears.HIGH).toBe(3);
+  });
+});
+
+describe('a pin’s target, joined', () => {
+  it('keeps a fix for each copy of a package in two versions', () => {
+    expect(
+      furthest([
+        { kind: 'version', versions: ['1.0.1', '2.0.1'] },
+        { kind: 'version', versions: ['1.0.5', '2.0.0'] },
+      ]),
+    ).toEqual({ kind: 'version', versions: ['1.0.5', '2.0.1'] });
+  });
+
+  it('reads dependabot.yml’s globs', () => {
+    const pin = { file: 'apps/console/Dockerfile', line: 1 };
+    const list = moves(
+      [result({ pin, severity: 'MEDIUM', due: NOW + 20 * DAY })],
+      context({ dependabot: ['/apps/*'] }),
+    );
+    expect(list[0]?.lane).toBe('dependabot');
+    expect(moves([result({ pin, severity: 'MEDIUM' })], context({ dependabot: ['/deploy/**'] }))[0]?.lane).toBe(
+      'worker',
+    );
   });
 });

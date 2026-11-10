@@ -115,10 +115,15 @@ const MISE_FILES = new Set(['mise.toml', 'mise.lock']);
 
 /** A pin `dependabot.yml`'s docker entries read: one in a directory they name. */
 const readByDependabot = (pin: Pin, directories: string[]) => {
-  const dir = `/${pin.file.split('/').slice(0, -1).join('/')}`;
-  return directories.some(
-    (each) => each.replace(/\/$/, '') === dir.replace(/\/$/, '') || (each === '/' && dir === '/'),
-  );
+  const dir = `/${pin.file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
+  return directories.some((each) => {
+    // A glob, as dependabot.yml's `directories` takes one: `*` within a directory's name, `**` across them.
+    const pattern = (each.replace(/\/$/, '') || '/')
+      .split(/(\*\*|\*)/)
+      .map((part) => (part === '**' ? '.*' : part === '*' ? '[^/]*' : part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')))
+      .join('');
+    return new RegExp(`^${pattern}$`).test(dir);
+  });
 };
 
 const isLockfile = (file: string) => /(^|\/)pnpm-lock\.yaml$/.test(file);
@@ -187,9 +192,24 @@ const later = (a: string, b: string) => {
   return order(a, b);
 };
 
-/** The furthest of the targets one pin's results need: moving there is the move. */
+/**
+ * The furthest of the targets one pin's results need: moving there is the move. A pin's own target (an image, a chart, a
+ * k3s release, a tool) is preferred to a bare version, which is Node's own fix in an image: the image's newer tag brings
+ * it. Versions alone are joined, the highest on each major, so a package in two versions keeps a fix for each copy.
+ */
 export function furthest(targets: Target[]): Target | undefined {
-  return [...targets].sort((a, b) => later(versionOf(a), versionOf(b))).at(-1);
+  const pinned = targets.filter((target) => target.kind !== 'version');
+  if (pinned.length) return [...pinned].sort((a, b) => later(versionOf(a), versionOf(b))).at(-1);
+  const byMajor = new Map<string, string>();
+  for (const target of targets)
+    if (target.kind === 'version')
+      for (const version of target.versions) {
+        const major = String(numbers(version)[0] ?? version);
+        const seen = byMajor.get(major);
+        if (seen === undefined || later(version, seen) > 0) byMajor.set(major, version);
+      }
+  if (!byMajor.size) return undefined;
+  return { kind: 'version', versions: [...byMajor.values()].sort(later) };
 }
 
 /** The day's moves, from the judged results: the most urgent first (earliest deadline, then most Critical, then name). */

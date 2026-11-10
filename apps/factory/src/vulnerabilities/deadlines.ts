@@ -43,7 +43,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
-import { type Fix, readFix, type Target } from './fixes.ts';
+import { type Fix, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
 import {
   APP,
@@ -385,6 +385,21 @@ export function miseTools(lock: string | undefined) {
   return found;
 }
 
+/** A tool's range in mise.toml (`pnpm = "12"`), or undefined. */
+export function miseRange(toml: string | undefined, tool: string) {
+  let inTools = false;
+  for (const line of (toml ?? '').split('\n')) {
+    const section = /^\s*\[([^\]]+)\]\s*$/.exec(line)?.[1];
+    if (section !== undefined) {
+      inTools = section.trim() === 'tools';
+      continue;
+    }
+    const m = /^\s*"?([\w.:/-]+)"?\s*=\s*"([^"]+)"/.exec(line);
+    if (inTools && m?.[1] === tool) return m[2];
+  }
+  return undefined;
+}
+
 /** The line a Dockerfile's `FROM <image>` is on, or 0. */
 const fromLine = (dockerfile: string, image: string) =>
   dockerfile
@@ -642,9 +657,14 @@ export async function installable(
       listed = sources.toolReleases(tool);
       toolReleases.set(tool, listed);
     }
-    const line = locked.split('.')[0];
+    // Within mise.toml's range for it (`pnpm = "12"`, `kubectl = "1.37"`), as `mise upgrade` moves it; the locked
+    // major where mise.toml gives none.
+    const range = miseRange(sources.file('mise.toml'), tool) ?? locked.split('.')[0] ?? '';
     const latest = (await listed)
-      .filter((each) => each.version.split('.')[0] === line && compareVersions(each.version, locked) > 0)
+      .filter(
+        (each) =>
+          (each.version === range || each.version.startsWith(`${range}.`)) && compareVersions(each.version, locked) > 0,
+      )
       .sort((a, b) => compareVersions(a.version, b.version))
       .at(-1);
     if (!latest) return undefined;
@@ -687,10 +707,11 @@ export async function installable(
     if (route === 'npm') return { kind: 'lockfile', name: finding.package, pin: own, from: finding.installed };
     const stage = target.kind === 'ours' ? stageOf(target) : undefined;
     const stagePin = stage ? { file: stage.dockerfile, line: stage.line } : own;
-    if (route === 'node') return { kind: target.kind, name: 'node', pin: stagePin, from: finding.installed };
     if (route === 'tool' && tool) {
       const lock = sources.file('mise.lock') ?? '';
-      const header = lock.split('\n').findIndex((line) => line.trim() === `[[tools.${tool}]]`);
+      const header = lock
+        .split('\n')
+        .findIndex((line) => [`[[tools.${tool}]]`, `[[tools."${tool}"]]`].includes(line.trim()));
       return {
         kind: target.kind,
         name: tool,
@@ -924,8 +945,10 @@ export function stated(findings: Finding[], alerts: Alert[], log: (line: string)
 
 /**
  * Each result's fix: its target, and the earlier of the day the sources give and the day its alert states, so the day
- * never moves forward. A fix not yet installable (inside pnpm's wait) is none yet. A line no longer built is first seen
- * on the first run that found it so.
+ * never moves forward. Where this run finds no fix installable but the alert states one, that fix stands: once a fix
+ * could be installed, the deadline it started stands, and the next message keeps its day. A fix not yet installable
+ * (inside pnpm's wait) with none stated is none yet. A line no longer built is first seen on the first run that found
+ * it so. A fix the grammar cannot write (fixes.ts) is none.
  */
 export function fixesOf(
   at: (number | undefined)[],
@@ -935,12 +958,18 @@ export function fixesOf(
 ): (Fix | undefined)[] {
   return targets.map((target, index) => {
     const state = states[index];
-    if (!target) return undefined;
-    if (target.kind === 'unbuilt')
-      return { target, day: state?.target.kind === 'unbuilt' ? Math.min(state.day, now) : now };
-    const day = at[index];
-    if (day === undefined || day > now) return undefined;
-    return { target, day: state && state.target.kind !== 'unbuilt' ? Math.min(day, state.day) : day };
+    const kept = state && state.target.kind !== 'unbuilt' && state.day <= now ? state : undefined;
+    let fix: Fix | undefined;
+    if (!target) fix = kept;
+    else if (target.kind === 'unbuilt')
+      fix = { target, day: state?.target.kind === 'unbuilt' ? Math.min(state.day, now) : now };
+    else {
+      const day = at[index];
+      if (day === undefined || day > now) fix = kept;
+      else fix = { target, day: kept ? Math.min(day, kept.day) : day };
+    }
+    // A fix the grammar cannot write is none: it would end no message the next run could read.
+    return fix && writable(fix) ? fix : undefined;
   });
 }
 
@@ -1330,7 +1359,8 @@ const readLock = (checkout: string) => {
 
 /** A tool's section of mise.lock: from its header to the next tool's. */
 const lockSection = (lock: string, tool: string) => {
-  const start = lock.indexOf(`[[tools.${tool}]]\n`);
+  const plain = lock.indexOf(`[[tools.${tool}]]\n`);
+  const start = plain >= 0 ? plain : lock.indexOf(`[[tools."${tool}"]]\n`);
   if (start < 0) return undefined;
   const next = lock.indexOf('\n[[tools.', start + 1);
   return lock.slice(start, next < 0 ? undefined : next);

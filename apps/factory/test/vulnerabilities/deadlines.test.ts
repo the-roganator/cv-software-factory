@@ -8,6 +8,7 @@ import {
   firstFixed,
   k3sLine,
   k3sReleaseOf,
+  miseRange,
   miseTools,
   newestOnLine,
   npmUrl,
@@ -1109,7 +1110,8 @@ describe('what fixes it', () => {
     });
 
     it('is a value’s pin when a values file pins the image: the image moves, on its line', async () => {
-      const finding = inChart({ file: 'deploy/base/values/example.yaml', line: 32 });
+      // Its alert stays at the chart's pin, where it always was; the move writes the values file's line.
+      const finding = inChart();
       const pinned: ReadTarget = { ...target, pin: { file: 'deploy/base/values/example.yaml', line: 32 } };
       const { fixes, judged, asked } = await judge({
         ...world(finding, { 'quay.io/example/sidecar:2.14.3': imageReport('2026-10-15T00:00:00Z') }),
@@ -1250,5 +1252,71 @@ describe('what fixes it', () => {
     ]);
     expect(toolOf('opt/pnpm/dist/node_modules/x/index.js', ['pnpm'])).toBe('pnpm');
     expect(toolOf('usr/lib/node_modules/x/index.js', ['pnpm'])).toBeUndefined();
+  });
+});
+
+describe('what fixes it, kept and checked', () => {
+  const tags = { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] };
+
+  it('keeps the fix its alert states when this run finds none, so the deadline it started stands', async () => {
+    const finding = os();
+    const said = {
+      ...finding,
+      fix: {
+        target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: `sha256:${'c'.repeat(64)}` } as Target,
+        day: at('2026-11-03T00:00:00Z'),
+      },
+    };
+    const { fixes, rows } = await judge({
+      findings: [finding],
+      alerts: [alertOf(said, '2026-10-01T00:00:00Z')],
+      tags,
+      // The newest has the finding again.
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-08T00:00:00Z', [finding]) },
+    });
+    expect(fixes[0]).toEqual(said.fix);
+    expect(rows[0]?.due).toBe(at('2026-11-10T00:00:00Z'));
+  });
+
+  it('names no fix the grammar cannot write', async () => {
+    const finding = os();
+    const { fixes } = await judge({
+      findings: [finding],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      tags: { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] },
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+      digests: { 'node:24.23.0-trixie-slim': 'not a digest' },
+    });
+    expect(fixes[0]).toBeUndefined();
+  });
+
+  it('moves Node’s own finding in an image with the image, at its pin', async () => {
+    const node: Finding = { ...os(), type: 'node', package: 'node', installed: '24.22.1', fixed: '^24.22.2' };
+    const { judged } = await judge({
+      findings: [node, os()],
+      alerts: [alertOf(node, '2026-10-01T00:00:00Z'), alertOf(os(), '2026-10-01T00:00:00Z')],
+      releases: [{ version: 'v24.22.2', date: '2026-11-03' }],
+      tags,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+    });
+    const list = moves(judged, { repository: REPOSITORY, app: false, dependabot: [], direct: new Set(), now: NOW });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ name: 'node', to: { kind: 'image', tag: '24.23.0-trixie-slim' } });
+    expect(list[0]?.clears.HIGH).toBe(2);
+  });
+
+  it('takes a tool’s release within mise.toml’s range for it', () => {
+    const toml = [
+      '[settings]',
+      'lockfile = true',
+      '',
+      '[tools]',
+      'node = "24.22.2"',
+      'kubectl = "1.37"',
+      'pnpm = "12"',
+    ].join('\n');
+    expect(miseRange(toml, 'kubectl')).toBe('1.37');
+    expect(miseRange(toml, 'pnpm')).toBe('12');
+    expect(miseRange(toml, 'yq')).toBeUndefined();
   });
 });

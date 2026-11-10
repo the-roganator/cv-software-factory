@@ -140,7 +140,10 @@ interface Target {
   label: string;
   /** Set for an image. */
   image?: string;
-  /** For a chart's image that one of its values files pins, that pin: the line its alerts are located at. */
+  /**
+   * For a chart's image that one of its values files pins, that pin: the line a move of it writes. Its alerts stay at the
+   * chart's pin, where they always were, so no clock restarts.
+   */
   pin?: { file: string; line: number } | undefined;
   ci?: string | undefined;
   signer?: string | undefined;
@@ -235,13 +238,13 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
         const line =
           read.target.item.kind === 'lockfile' && lockfile
             ? lockfileLine(lockfile, v.PkgName, installed)
-            : (read.target.pin?.line ?? read.target.item.line);
+            : read.target.item.line;
         return [
           {
             item: read.target.key,
             listed: read.target.item.name,
             label,
-            file: read.target.pin?.file ?? read.target.item.file,
+            file: read.target.item.file,
             line,
             type: result.Type ?? result.Class ?? 'unknown',
             package: v.PkgName,
@@ -269,8 +272,8 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
     item: read.target.key,
     listed: read.target.item.name,
     label: read.target.label,
-    file: read.target.pin?.file ?? read.target.item.file,
-    line: read.target.pin?.line ?? read.target.item.line,
+    file: read.target.item.file,
+    line: read.target.item.line,
     type: 'node',
     package: 'node',
     installed: read.node ?? '',
@@ -442,7 +445,7 @@ async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<st
     }
     const images = imagesIn(rendered);
     if (!images.length) return { targets: [], unreadable: 'its chart renders no image' };
-    // An image one of the chart's values files pins is located at that pin, so moving it is a pin's line.
+    // An image one of the chart's values files pins is moved at that pin, its own line.
     return {
       targets: images.map((reference) => {
         const digest = reference.split('@')[1];

@@ -303,12 +303,12 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: factory
-          # The scanner, by version and digest, from its one pin (.github/images/trivy/Dockerfile).
+          # The scanner, by version and digest, from its one pin (deploy/images/trivy/Dockerfile).
           sparse-checkout: |
             mise.toml
             mise.lock
             apps/factory/src/gates/
-            .github/images/trivy/Dockerfile
+            deploy/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
@@ -347,8 +347,8 @@ jobs:
           cache-from: type=gha
       - name: Scan both
         run: |
-          trivy=$(sed -nE 's/^FROM (\S+)$/\1/p' factory/.github/images/trivy/Dockerfile)
-          [ -n "$trivy" ] || { echo "::error::No Trivy pin in .github/images/trivy/Dockerfile"; exit 1; }
+          trivy=$(sed -nE 's/^FROM (\S+)$/\1/p' factory/deploy/images/trivy/Dockerfile)
+          [ -n "$trivy" ] || { echo "::error::No Trivy pin in deploy/images/trivy/Dockerfile"; exit 1; }
           mkdir -p "$RUNNER_TEMP/scan" && chmod 777 "$RUNNER_TEMP/scan"
           for image in base change; do
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_TEMP/scan:/out" "$trivy" \
@@ -385,12 +385,12 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: factory
-          # The scanner, by version and digest, from its one pin (.github/images/trivy/Dockerfile).
+          # The scanner, by version and digest, from its one pin (deploy/images/trivy/Dockerfile).
           sparse-checkout: |
             mise.toml
             mise.lock
             apps/factory/src/gates/
-            .github/images/trivy/Dockerfile
+            deploy/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
@@ -416,4 +416,4 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node
-      - run: node factory/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin factory/.github/images/trivy/Dockerfile
+      - run: node factory/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin factory/deploy/images/trivy/Dockerfile

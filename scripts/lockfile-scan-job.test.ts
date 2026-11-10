@@ -8,7 +8,7 @@ import { parse } from 'yaml';
 /**
  * check.yml's `lockfile scan` runs the gate from the base. A base without it, and a change that brings it in, is the
  * gate's own first landing: that run judges nothing and says so. A base without it otherwise fails, and every other run
- * is the base's script, whatever it answers.
+ * is the base's script, whatever it answers, given the base's pin of Trivy, at its old path for a base from before #977.
  */
 const workflow = parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as {
   jobs: Record<string, { steps?: { name?: string; run?: string }[] }>;
@@ -16,7 +16,7 @@ const workflow = parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as 
 const step = workflow.jobs['lockfile-scan']?.steps?.find((s) => s.name === 'Compare the lockfiles')?.run ?? 'exit 99';
 
 /** The step's script, run as the runner would, in a workspace with or without the base's gate. */
-function compare(gate?: string, { changeBringsIt = true } = {}) {
+function compare(gate?: string, { changeBringsIt = true, pins = ['deploy/images/trivy/Dockerfile'] } = {}) {
   const workspace = mkdtempSync(join(tmpdir(), 'lockfile-scan-job-'));
   try {
     const place = (side: string, text: string) => {
@@ -24,6 +24,10 @@ function compare(gate?: string, { changeBringsIt = true } = {}) {
       writeFileSync(join(workspace, side, 'apps/factory/src/gates/lockfile-scan.ts'), text);
     };
     if (gate !== undefined) place('base', gate);
+    for (const pin of pins) {
+      mkdirSync(join(workspace, 'base', pin, '..'), { recursive: true });
+      writeFileSync(join(workspace, 'base', pin), 'FROM trivy\n');
+    }
     if (changeBringsIt) place('change', 'process.exitCode = 1;');
     return spawnSync('bash', ['-e', '-c', step], { cwd: workspace, encoding: 'utf-8' });
   } finally {
@@ -62,13 +66,19 @@ describe("check.yml's lockfile scan", () => {
     const argv = 'console.log(JSON.stringify(process.argv.slice(2)));';
     const passed = compare(argv);
     expect(passed.status).toBe(0);
-    expect(JSON.parse(passed.stdout)).toEqual([
-      'base',
-      'change',
-      '--trivy-pin',
-      'base/.github/images/trivy/Dockerfile',
-    ]);
+    expect(JSON.parse(passed.stdout)).toEqual(['base', 'change', '--trivy-pin', 'base/deploy/images/trivy/Dockerfile']);
     expect(passed.stdout).not.toContain('::notice::');
     expect(compare('process.exitCode = 1;').status).toBe(1);
+  });
+
+  it("reads the base's pin at its old path only when the base has none at the new one", () => {
+    const argv = 'console.log(JSON.stringify(process.argv.slice(2)));';
+    const pinOf = (pins: string[]) => JSON.parse(compare(argv, { pins }).stdout).at(-1);
+    expect(pinOf(['.github/images/trivy/Dockerfile'])).toBe('base/.github/images/trivy/Dockerfile');
+    expect(pinOf(['deploy/images/trivy/Dockerfile', '.github/images/trivy/Dockerfile'])).toBe(
+      'base/deploy/images/trivy/Dockerfile',
+    );
+    // With neither, the base's gate is given the new path, and fails on it.
+    expect(pinOf([])).toBe('base/deploy/images/trivy/Dockerfile');
   });
 });

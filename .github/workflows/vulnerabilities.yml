@@ -29,7 +29,7 @@ on:
     paths:
       - .github/workflows/vulnerabilities.yml
       - apps/factory/src/vulnerabilities/**
-      - .github/images/trivy/**
+      - deploy/images/trivy/**
 
 permissions: {}
 
@@ -74,7 +74,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            .github/images/trivy/Dockerfile
+            deploy/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -89,7 +89,7 @@ jobs:
           version=$(node factory/apps/factory/src/vulnerabilities/coverage.ts --pnpm-version scanned)
           cd factory
           mise exec "pnpm@$version" -- node "$GITHUB_WORKSPACE/factory/apps/factory/src/vulnerabilities/coverage.ts" \
-            "$GITHUB_WORKSPACE/scanned" --trivy-pin "$GITHUB_WORKSPACE/factory/.github/images/trivy/Dockerfile" \
+            "$GITHUB_WORKSPACE/scanned" --trivy-pin "$GITHUB_WORKSPACE/factory/deploy/images/trivy/Dockerfile" \
             --out "$RUNNER_TEMP"
 
   scan:
@@ -133,7 +133,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            .github/images/trivy/Dockerfile
+            deploy/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # kustomize and yq for the list, helm to render its charts, cosign to verify the SBOMs of ours: each at the
@@ -153,7 +153,7 @@ jobs:
         id: scan
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
-            --trivy-pin factory/.github/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload
       # The scan writes the file only when every item was read and it is within code scanning's limits: no run over 5,000
       # results, and no more than 20 runs.
       - name: Refuse to upload from anything but the default branch's push, the schedule or a run by hand
@@ -205,7 +205,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            .github/images/trivy/Dockerfile
+            deploy/images/trivy/Dockerfile
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
@@ -221,4 +221,4 @@ jobs:
       - name: Scan, uploading nothing
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
-            --trivy-pin factory/.github/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan"
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan"

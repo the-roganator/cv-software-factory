@@ -2,6 +2,8 @@
 
 CLUSTER := software-factory
 CONTEXT := k3d-$(CLUSTER)
+# The volume k3s's data directory lives on, outside the node, so the cluster can move to a new k3s (deploy/k3d/cluster.yaml).
+STATE := k3d-$(CLUSTER)-state
 KUBECTL := kubectl --context $(CONTEXT)
 # mise.toml holds Argo CD's CLI to the minor release this chart runs (its appVersion): move them together.
 ARGOCD_CHART := 10.15.0
@@ -57,15 +59,33 @@ password = $(call namespace,$(1)) && \
 		$(KUBECTL) -n $(1) create secret generic $(2) --from-file=$(or $(3),password)=/dev/stdin $(4) --dry-run=client -o yaml | \
 		$(apply-secret) >/dev/null; }; }; }
 
+# $(deployed): wait for Argo CD to have deployed everything, then say where it is. An Application reads healthy before
+# it has deployed anything, so wait for each to sync before its health; root syncs first, and then every other
+# Application exists. Then everything healthy, except the website, whose health is its release's
+# (scripts/wait-deployed.sh).
+define deployed
+@echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
+@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
+@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
+@KUBECTL="$(KUBECTL)" scripts/wait-deployed.sh
+@$(MAKE) --no-print-directory status
+endef
+
 .DEFAULT_GOAL := help
-.PHONY: help up down gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 up: ## Create the local cluster; Argo CD then deploys everything from main (or REVISION=<branch>)
 	@docker info >/dev/null 2>&1 || { echo "Docker isn't running. Start OrbStack (or another runtime) and try again."; exit 1; }
-	@k3d cluster list $(CLUSTER) >/dev/null 2>&1 || k3d cluster create --config deploy/k3d/cluster.yaml
+	@# The cluster's state lives off its node, on a volume made first, which k3d leaves when it deletes the cluster:
+	@# `make upgrade-cluster` moves the cluster to a new k3s on it. One left without a cluster is a move's that stopped.
+	@k3d cluster list $(CLUSTER) >/dev/null 2>&1 || { \
+		if docker volume inspect $(STATE) >/dev/null 2>&1; then \
+			echo "  $(STATE) holds a cluster's state, and there is no cluster: 'make upgrade-cluster' makes it again on it, 'make down' deletes it."; exit 1; fi; \
+		docker volume create --label software-factory.cluster=$(CLUSTER) $(STATE) >/dev/null && \
+		k3d cluster create --config deploy/k3d/cluster.yaml; }
 	@# A cluster without the console's HTTPS port gets it in place: k3d makes the cluster's load balancer again, and keeps
 	@# everything in the cluster, the store included. The load balancer's configured ports, so a stopped one counts too.
 	@docker inspect -f '{{json .HostConfig.PortBindings}}' k3d-$(CLUSTER)-serverlb | grep -q '"443/tcp"' || { \
@@ -73,11 +93,11 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 		k3d cluster edit $(CLUSTER) --port-add 127.0.0.1:8443:443@loadbalancer; }
 	@# The Kubernetes API's binding is fixed when the cluster is made, and `k3d cluster edit` cannot move it: a cluster
 	@# made before deploy/k3d/cluster.yaml bound it to 127.0.0.1 still publishes it on every interface. Said, not mended:
-	@# only a new cluster moves it, and a new cluster starts with an empty store.
+	@# only a cluster made again moves it, which `make upgrade-cluster` does, keeping the store.
 	@# Each address it is published on, a line each; with none, or no load balancer to read, it says nothing.
 	@hosts="$$(docker inspect -f '{{range index .HostConfig.PortBindings "6443/tcp"}}{{println .HostIp}}{{end}}' k3d-$(CLUSTER)-serverlb 2>/dev/null)"; \
 	if [ -n "$$hosts" ] && printf '%s\n' "$$hosts" | grep -qvx '127\.0\.0\.1'; then \
-		echo "  This cluster's Kubernetes API is published beyond 127.0.0.1. Only a new cluster binds it there: 'make down' and 'make up', which empty the store."; fi
+		echo "  This cluster's Kubernetes API is published beyond 127.0.0.1. Only a cluster made again binds it there: 'make upgrade-cluster', which keeps everything in it."; fi
 	helm upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm --version $(ARGOCD_CHART) \
 		--kube-context $(CONTEXT) --namespace argocd --create-namespace \
 		--values deploy/argocd/values.yaml --wait --timeout 5m --hide-notes
@@ -101,18 +121,21 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
 	sed 's|targetRevision: main|targetRevision: $(REVISION)|' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
-	@echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
-	@# An Application reads healthy before it has deployed anything, so wait for each to sync before its health.
-	@# Root syncs first: then every other Application exists.
-	@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
-	@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
-	@# Then everything healthy, except the website, whose health is its release's (scripts/wait-deployed.sh).
-	@KUBECTL="$(KUBECTL)" scripts/wait-deployed.sh
-	@$(MAKE) --no-print-directory status
+	$(deployed)
 
 down: ## Delete the local cluster, and everything in it
 	k3d cluster delete $(CLUSTER)
+	@# Its state, and any copy a move kept: k3d deletes neither.
+	@volumes="$$(docker volume ls -q --filter label=software-factory.cluster=$(CLUSTER))"; \
+		[ -z "$$volumes" ] || docker volume rm $$volumes >/dev/null
 	@echo "  The local certificate authority stays, trusted, for the next 'make up'. 'make untrust-ca' removes it."
+
+upgrade-cluster: ## Move the local cluster to the k3s deploy/k3d/cluster.yaml pins, keeping everything in it (KEEP=1 keeps the copy taken first; BACK=1 goes back to it)
+	@docker info >/dev/null 2>&1 || { echo "Docker isn't running. Start OrbStack (or another runtime) and try again."; exit 1; }
+	@scripts/upgrade-cluster.sh $(CLUSTER) deploy/k3d/cluster.yaml $(if $(BACK),back,upgrade)
+	@# Everything `make up` makes once (the keys, the passwords, the console's certificate, Argo CD and root) is in
+	@# the state the move kept, so it waits for Argo CD alone.
+	$(deployed)
 
 .PHONY: local-tls untrust-ca
 

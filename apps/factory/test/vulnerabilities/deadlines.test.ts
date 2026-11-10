@@ -659,12 +659,25 @@ describe('the clock', () => {
       expect(v.fresh).toBe(1);
     });
 
-    it('takes no day from an alert closed after the next was made: one upload cannot do that', async () => {
+    it('carries the day across an alert closed a minute after the next was made, as one upload’s categories do', async () => {
       const { rows } = await judge(
         world(
           [after],
           [
-            alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-11-09T20:05:30Z' }),
+            alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-11-09T20:05:51Z' }),
+            alertOf(after, REPIN),
+          ],
+        ),
+      );
+      expect(rows[0]?.seen).toBe(at('2026-11-01T00:00:00Z'));
+    });
+
+    it('takes no day from an alert closed an hour from the next one’s making: two uploads, not one', async () => {
+      const { rows } = await judge(
+        world(
+          [after],
+          [
+            alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: '2026-11-09T21:04:50Z' }),
             alertOf(after, REPIN),
           ],
         ),
@@ -705,11 +718,28 @@ describe('the clock', () => {
 describe('the run', () => {
   const published = { 'example-a@1.0.1': '2025-01-01T00:00:00Z' };
 
-  it('fails on a new high or critical, first seen today, even with no fix', async () => {
-    const finding = npm({ severity: 'HIGH', fixed: undefined });
-    const { verdict: v } = await judge({ findings: [finding], alerts: [alertOf(finding, '2026-11-10T04:25:00Z')] });
-    expect(v.fresh).toBe(1);
-    expect(v.passes).toBe(false);
+  it('fails on a new high or critical with a fix to install, and counts one with none, failing nothing', async () => {
+    const fixable = npm({ severity: 'HIGH' });
+    const today = '2026-11-10T04:25:00Z';
+    const withFix = await judge({ findings: [fixable], published, alerts: [alertOf(fixable, today)] });
+    expect(withFix.verdict.fresh).toBe(1);
+    expect(withFix.verdict.passes).toBe(false);
+    const none = npm({ severity: 'CRITICAL', package: 'example-b', fixed: undefined });
+    const without = await judge({ findings: [none], alerts: [alertOf(none, today)] });
+    expect(without.verdict.fresh).toBe(0);
+    expect(without.verdict.waiting).toBe(1);
+    expect(without.verdict.passes).toBe(true);
+    expect(without.verdict.lines[2]).toBe(
+      'New high or critical (first seen today): 0 with a fix to install, 1 with none yet, which fail nothing.',
+    );
+    // A fix still inside pnpm's wait is none yet: nothing to move today.
+    const waitingFix = npm({ severity: 'HIGH', package: 'example-c' });
+    const inside = await judge({
+      findings: [waitingFix],
+      published: { 'example-c@1.0.1': '2026-11-10T00:00:00Z' },
+      alerts: [alertOf(waitingFix, today)],
+    });
+    expect(inside.verdict.passes).toBe(true);
     const medium = npm({ severity: 'MEDIUM', fixed: undefined });
     expect((await judge({ findings: [medium], alerts: [] })).verdict.passes).toBe(true);
   });

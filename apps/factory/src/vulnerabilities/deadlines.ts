@@ -27,8 +27,9 @@
  *   on it (open, or closed by this run's upload), the new finding takes that alert's day. An exception's expiry does
  *   not restart it: an excepted finding's alert is dismissed, not closed, and keeps its day. Critical 2 days, High 7,
  *   Medium 30, Low 90; a finding no source rates takes Low's. An excepted finding has no deadline.
- * - **The run fails** on a new High or Critical (first seen today), on one due within a day, and on one past its
- *   deadline, after the upload, so a new finding's alert exists. `--prove`, a proving run's, which uploads nothing,
+ * - **The run fails** on a new High or Critical (first seen today) with a fix installable, on one due within a day,
+ *   and on one past its deadline, after the upload, so a new finding's alert exists; a new one with no fix installable
+ *   is counted on its own and fails nothing, so a failed run always means a move not yet made. `--prove`, a proving run's, which uploads nothing,
  *   fails on none of them. A source that cannot be read (npm, Node's index, an image line's tags or its newest image,
  *   code scanning) fails either, as an unread item fails the scan.
  *
@@ -274,8 +275,13 @@ export function alertPlace(alert: Alert): Place | undefined {
 const renameKey = (place: Place) =>
   JSON.stringify([place.package, place.advisory, place.repository === place.file ? 'lockfile' : place.repository]);
 
-/** How long before the next alert's making an alert may have closed and still be one upload's split of a result. */
-const SPLIT = 60_000;
+/**
+ * How far from the next alert's making an alert may have closed and still be one upload's split of a result: code
+ * scanning processes an upload's 20 categories one by one, so a result that moved category opens in one and closes in
+ * another, a minute or more apart, either way round (seen: opened 20:38:29, closed 20:39:30). A real fix and the
+ * finding's return are two uploads, each a scan of at least five minutes, and a day apart as the schedule runs them.
+ */
+const SPLIT = 10 * 60_000;
 
 const placeKey = (place: Place) => JSON.stringify([place.advisory, place.file, place.package, place.repository]);
 const itemKey = (place: Pick<Place, 'file' | 'repository'>) => JSON.stringify([place.file, place.repository]);
@@ -559,14 +565,14 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
   for (const list of closed.values()) list.sort((a, b) => b.created - a.created);
   /**
    * A place's first day: its open alert's, carried back across each alert of the same place code scanning closed in
-   * the upload that opened the next (a re-pin it split: closed at, or within a minute before, the next one's making),
+   * the upload that opened the next (a re-pin it split: closed within SPLIT of the next one's making),
    * never across a real fix, which closed one upload and left the place clear until the finding came back.
    */
   const first = new Map<string, number>();
   for (const [key, { at }] of live) {
     let day = at;
     for (const alert of closed.get(key) ?? [])
-      if (alert.created < day && day - alert.fixed >= 0 && day - alert.fixed <= SPLIT) day = alert.created;
+      if (alert.created < day && Math.abs(day - alert.fixed) <= SPLIT) day = alert.created;
     first.set(key, day);
   }
   // The items on the list before today: those with an alert, carried back as above, made before it.
@@ -630,21 +636,22 @@ export function verdict(all: Row[], prove = false) {
   const byBucket = Object.fromEntries(
     BUCKETS.map(([b]) => [b, open.filter((row) => row.bucket === b).length]),
   ) as Record<Bucket, number>;
-  const fresh = open.filter(
-    (row) => row.firstSeenToday && (row.severity === 'CRITICAL' || row.severity === 'HIGH'),
-  ).length;
+  // A new High or Critical fails the run only with a fix to install: a red run always means a move not yet made.
+  const newHigh = open.filter((row) => row.firstSeenToday && (row.severity === 'CRITICAL' || row.severity === 'HIGH'));
+  const fresh = newHigh.filter((row) => row.bucket !== 'none').length;
+  const waiting = newHigh.length - fresh;
   const failing = fresh + byBucket.overdue + byBucket.day;
   const lines = [
     `Deadlines: ${open.length} open results, ${all.length - open.length} excepted. By severity: ${SEVERITIES.map((s) => `${s.toLowerCase()} ${bySeverity[s]}`).join(', ')}.`,
     `By deadline: ${BUCKETS.map(([b, name]) => `${name} ${byBucket[b]}`).join(', ')}.`,
-    `New high or critical (first seen today): ${fresh}.`,
+    `New high or critical (first seen today): ${fresh} with a fix to install, ${waiting} with none yet, which fail nothing.`,
     failing
       ? prove
-        ? `The real run would fail on ${fresh} new high or critical, ${byBucket.day} due within a day and ${byBucket.overdue} past their deadline; a proving run fails on none.`
-        : `The run fails: ${fresh} new high or critical, ${byBucket.day} due within a day, ${byBucket.overdue} past their deadline.`
-      : 'Nothing is new at high or critical, due within a day or past its deadline.',
+        ? `The real run would fail on ${fresh} new high or critical with a fix, ${byBucket.day} due within a day and ${byBucket.overdue} past their deadline; a proving run fails on none.`
+        : `The run fails: ${fresh} new high or critical with a fix, ${byBucket.day} due within a day, ${byBucket.overdue} past their deadline.`
+      : 'Nothing new at high or critical has a fix to install, and nothing is due within a day or past its deadline.',
   ];
-  return { lines, bySeverity, byBucket, fresh, passes: prove || failing === 0 };
+  return { lines, bySeverity, byBucket, fresh, waiting, passes: prove || failing === 0 };
 }
 
 /** The whole judgement of a scan's hand-off, against the time given. */
@@ -852,7 +859,7 @@ export async function main(args: string[]): Promise<number> {
     console.error(`::error::The deadlines could not be read: ${firstLine(error)}. The run fails.`);
     return 1;
   }
-  const { lines, bySeverity, byBucket, fresh, passes } = verdict(judged.rows, prove);
+  const { lines, bySeverity, byBucket, fresh, waiting, passes } = verdict(judged.rows, prove);
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, and ${judged.looked.images} newer images. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet.`;
   for (const line of [looked, ...lines]) console.log(line);
   if (!passes) console.log(`::error::${lines.at(-1)}`);
@@ -870,7 +877,7 @@ export async function main(args: string[]): Promise<number> {
         }),
         `| all | ${Object.values(bySeverity).reduce((a, b) => a + b, 0)} | ${BUCKETS.map(([b]) => byBucket[b]).join(' | ')} |`,
         '',
-        `New high or critical (first seen today): ${fresh}. ${lines.at(-1)}`,
+        `New high or critical (first seen today): ${fresh} with a fix to install, ${waiting} with none yet. ${lines.at(-1)}`,
         '',
       ].join('\n'),
     );

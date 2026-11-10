@@ -16,6 +16,7 @@ describe("the app's gates (ADR 0014)", () => {
       'dependency-review',
       'image-scan',
       'journeys',
+      'lockfile-scan',
       'test-integrity',
       'tests-first',
     ]);

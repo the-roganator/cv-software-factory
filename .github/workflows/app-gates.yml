@@ -15,6 +15,9 @@
 # - tests first: runs the change's new and changed tests against the base's source, and says which fail there. Not
 #   required: a fix whose tests all pass before it holds for Martin, and the line reads this to know.
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
+# - lockfile scan: Trivy's findings on each lockfile of the base and of the change, each scanned alone with development
+#   dependencies; fails on any vulnerability, at any severity, the change's lockfiles have and the base's do not
+#   (apps/factory/src/gates/lockfile-scan.ts). It reads the change's lockfiles alone, as data.
 #
 # Every job is skipped for a deploy or release pull request the factory's App opened (`skip`), which changes nothing
 # they judge. In the merge queue every required job runs, since a merge group names no author to tell them apart by;
@@ -305,3 +308,53 @@ jobs:
               image --quiet --scanners vuln --format json --output "/out/$image.json" "app:$image"
           done
       - run: node factory/apps/factory/src/gates/image-scan.ts "$RUNNER_TEMP/scan/base.json" "$RUNNER_TEMP/scan/change.json"
+
+  lockfile-scan:
+    name: lockfile scan
+    if: ${{ !inputs.skip }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # These jobs check out and run a change's code. They do it only where that code can do no harm: a pull_request
+      # or merge_group run, with this workflow's read-only token and no secrets (ADR 0014). Called from anything else,
+      # they fail rather than run.
+      - name: Refuse a privileged context
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$GITHUB_EVENT_NAME" != merge_group ]; then
+            echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
+            exit 1
+          fi
+      # Each side's lockfiles alone, at any depth: the scan reads them as data.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          sparse-checkout: pnpm-lock*.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: change
+          sparse-checkout: pnpm-lock*.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          # The scanner, by version and digest, from its one pin (.github/images/trivy/Dockerfile).
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/gates/
+            .github/images/trivy/Dockerfile
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node
+      - run: node factory/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin factory/.github/images/trivy/Dockerfile

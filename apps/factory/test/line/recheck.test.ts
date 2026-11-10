@@ -876,6 +876,41 @@ describe('Martin’s Reject of a held work item with an open pull request', () =
     expect(await payloads(workItem, 'work-item.closed')).toEqual([]);
   });
 
+  it('closes nothing more when he merged it while the line asked for the close', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('review', github);
+    await rejected(workItem);
+    // The worker's close finds it merged, and changes nothing, as GitHub's would.
+    const pr = github.pulls.get(12);
+    const act = github.act.bind(github);
+    github.act = (async (action, repo, args, on) => {
+      if (action === 'closePullRequest' && pr)
+        Object.assign(pr, { state: 'closed', merged: true, mergeCommit: NEW, mergedBy: 'the-roganator' });
+      return act(action, repo, args, on);
+    }) as typeof github.act;
+    await pass(it);
+    expect(closing(github)).toEqual([['closePullRequest', 12]]);
+    expect(await payloads(workItem, 'work-item.closed')).toEqual([]);
+    now += 60_000;
+    await pass(it);
+    expect(await payloads(workItem, 'pull-request.merged')).toHaveLength(1);
+    expect(await payloads(workItem, 'work-item.closed')).toEqual([]);
+  });
+
+  it('closes the work item and says so when its pull request is gone, reading nothing of it', async () => {
+    const { line: it, github } = line(new FakeProbes(CLEARED));
+    const workItem = await held('gates', github);
+    await rejected(workItem);
+    github.refusing.set('closePullRequest', new GitHubWorkerError(404, 'not-found', 'Not Found'));
+    github.failingReads.set('pullRequest', 5);
+    await pass(it);
+    const [closed] = await database.as.line<{ summary: string }[]>`
+      select summary from events where work_item = ${workItem} and type = 'work-item.closed'`;
+    expect(closed?.summary).toBe(
+      'Closed as Martin answered, but PR #12 could not be closed and is still open: Not Found',
+    );
+  });
+
   it('asks GitHub nothing of a dry run’s pull request once the line runs live', async () => {
     const { line: it, github } = line(new FakeProbes(CLEARED));
     const workItem = await held('gates', github, DRY_RUN_NUMBERS_FROM + 12);

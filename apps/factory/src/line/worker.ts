@@ -1090,14 +1090,17 @@ export class Line {
             : undefined;
         let left: string | undefined;
         if (pull !== undefined) {
-          // Merged on GitHub before the line read it: nothing is closed, and the gates' read records the merge, which
-          // the work item goes on from. Any failure here, or below, is thrown before anything is closed, and the next
-          // pass tries again: it is still Martin's answer to act on, which the gates' read leaves to this.
-          const pr = await this.#o.github.read('pullRequest', this.#o.repo, { number: pull });
-          if (pr.merged) return false;
-          // Closing one already closed changes nothing, and says nothing again. One that is gone, or that the GitHub
-          // worker's guard or GitHub refused (a refusal the line records), is left as it is, and the close says so.
+          // Closing one already closed or merged changes nothing, and says nothing again. One that is gone, or that the
+          // GitHub worker's guard or GitHub refused (a refusal the line records), is left as it is, and the close says
+          // so. Any other failure, here or below, is thrown before the work item closes, and the next pass tries again:
+          // it is still Martin's answer to act on, which the gates' read leaves to this.
           left = await this.#closePullRequest(workItem, pull, rejectedPullComment(next.reason, workItem));
+          // Read after the close, so a merge before it, or while it was asked, is seen: nothing more is closed, and
+          // the gates' read records the merge, which the work item goes on from.
+          if (left === undefined) {
+            const pr = await this.#o.github.read('pullRequest', this.#o.repo, { number: pull });
+            if (pr.merged) return false;
+          }
         }
         // The issue goes with it; closing one already closed changes nothing, and one that is gone, or that the App may
         // not change, has nothing to close.

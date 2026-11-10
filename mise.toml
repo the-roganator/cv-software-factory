@@ -26,7 +26,7 @@ argo-rollouts = "1.10"
 # Argo CD's CLI, for what its automatic sync does not do (pausing an Application, ending a stuck operation, a selective
 # sync), with `--core` through the kube context and no login, at the version of the server the Makefile's ARGOCD_CHART
 # runs: patch releases only.
-argocd = "3.5"
+argocd = "3.6"
 # The local certificate authority `make up` makes for https://console.localhost:8443, constrained to `localhost` names
 # (mkcert cannot constrain one), and the tests that hold it to them.
 step = "0"

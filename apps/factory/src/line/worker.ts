@@ -175,11 +175,12 @@ import {
 } from './deploy.ts';
 import { FlagPass } from './flags.ts';
 import { asEvent, type Draft, gateEvents, gateRecord } from './gates.ts';
-import { closeIssue } from './issues.ts';
+import { closeIssue, rejectedPullComment } from './issues.ts';
 import {
   acceptedFindings,
   atMerge,
   atTake,
+  closesOnAnswer,
   closesWhenCleared,
   decide,
   dryRunLeft,
@@ -1080,7 +1081,27 @@ export class Line {
         this.#o.log.info({ workItem, on: next.on, files: next.files }, 'a spec that overlaps waits');
         return;
       }
-      case 'close':
+      case 'close': {
+        // Its pull request first, unless it merged: nothing of the work item is left open for nobody to merge, and the
+        // pull request says why. A dry run's number is one GitHub never had, so a live line asks nothing of it.
+        const pull =
+          !next.merged && state.pullRequest && (this.#o.dryRun || state.pullRequest.number < DRY_RUN_NUMBERS_FROM)
+            ? state.pullRequest.number
+            : undefined;
+        let left: string | undefined;
+        if (pull !== undefined) {
+          // Closing one already closed or merged changes nothing, and says nothing again. One that is gone, or that the
+          // GitHub worker's guard or GitHub refused (a refusal the line records), is left as it is, and the close says
+          // so. Any other failure, here or below, is thrown before the work item closes, and the next pass tries again:
+          // it is still Martin's answer to act on, which the gates' read leaves to this.
+          left = await this.#closePullRequest(workItem, pull, rejectedPullComment(next.reason, workItem));
+          // Read after the close, so a merge before it, or while it was asked, is seen: nothing more is closed, and
+          // the gates' read records the merge, which the work item goes on from.
+          if (left === undefined) {
+            const pr = await this.#o.github.read('pullRequest', this.#o.repo, { number: pull });
+            if (pr.merged) return false;
+          }
+        }
         // The issue goes with it; closing one already closed changes nothing, and one that is gone, or that the App may
         // not change, has nothing to close.
         if (item.issue) {
@@ -1096,11 +1117,12 @@ export class Line {
           {
             type: 'work-item.closed',
             actor: 'factory',
-            summary: next.merged ? 'Closed after its merge, as Martin answered' : 'Closed unmerged, as Martin answered',
+            summary: closedOnAnswer(next.merged, pull, left),
             payload: { outcome: 'no-change', reason: next.reason },
           },
         ]);
         return;
+      }
       case 'verified': {
         // The issue first, with what cleared it: closing one already closed changes nothing, and says nothing again;
         // one that is gone, or that the App may not change, has nothing to close.
@@ -1122,13 +1144,11 @@ export class Line {
         // A pull request for a defect that went another way is left for nobody to merge. Once it is closed, a crash
         // before the close below is caught as the gates are read: the pull request reads as closed unmerged, and the
         // clearance that stands closes the work item as verified.
+        // One that is gone, or that the GitHub worker's guard or GitHub refused, is left as it is, as on Martin's Reject:
+        // asking again would not help, and the work item closes all the same.
         if (rechecked && state.pullRequest && !state.merged) {
-          await this.#o.github.act(
-            'closePullRequest',
-            this.#o.repo,
-            { number: state.pullRequest.number, comment: closingPullComment(rechecked, workItem) },
-            { workItem },
-          );
+          const { number } = state.pullRequest;
+          await this.#closePullRequest(workItem, number, closingPullComment(rechecked, workItem));
         }
         const summary = rechecked
           ? CLEARED_ON_LOOK[rechecked.for]
@@ -1150,6 +1170,22 @@ export class Line {
         await this.#o.steps.finish(workItem);
         this.#o.log.info({ workItem }, 'the work item is over');
         return;
+    }
+  }
+
+  /**
+   * Closes a work item's pull request unmerged, with a comment, through the GitHub worker. Gives back why it is left
+   * open when it is gone, or the worker's guard or GitHub refused it (`ISSUE_GONE`, the same answers as for an issue):
+   * asking again would not help. Any other failure is thrown, for the next pass to try again.
+   */
+  async #closePullRequest(workItem: string, number: number, comment: string): Promise<string | undefined> {
+    try {
+      await this.#o.github.act('closePullRequest', this.#o.repo, { number, comment }, { workItem });
+      return undefined;
+    } catch (error) {
+      if (!issueGone(error)) throw error;
+      this.#o.log.warn({ workItem, number, err: error }, 'the pull request cannot be closed: left open');
+      return messageOf(error);
     }
   }
 
@@ -1988,6 +2024,9 @@ export class Line {
         // Once merged, the pull request has nothing more to say: the release carries the work item on.
         if (!state.pullRequest || state.merged) continue;
         const pr = await github.read('pullRequest', repo, { number: state.pullRequest.number });
+        // Martin's answer closes it: the line's close does, its pull request with it, with his reason, so one closed is
+        // the line's close, caught here after a crash. A merge is still recorded: the work item goes on from it.
+        if (closesOnAnswer(state) && !pr.merged) continue;
         // A merged pull request's checks too, on its head, once GitHub names the merge commit: what they did since the
         // last read is recorded with the merge, which waits for that commit.
         const runs =
@@ -2590,6 +2629,14 @@ export const signalId = (workItem: string, key: string) => uuidFrom(`line:${work
 
 /** An error's own message, for an event: its causes are for the log, where they can name the cluster's addresses. */
 const messageOf = (error: unknown) => (error as Error)?.message ?? String(error);
+
+/** The summary of a work item closed on Martin's answer: what became of its pull request, and why if it is open. */
+function closedOnAnswer(merged: boolean, pull: number | undefined, left: string | undefined): string {
+  if (merged) return 'Closed after its merge, as Martin answered';
+  if (pull === undefined) return 'Closed unmerged, as Martin answered';
+  if (left === undefined) return `Closed with PR #${pull} unmerged, as Martin answered`;
+  return cutTo(`Closed as Martin answered, but PR #${pull} could not be closed and is still open: ${left}`, 200);
+}
 
 const calledLine = (agent: LineAgent, calls: PayloadOf<'model.called'>) =>
   `${agent[0]?.toUpperCase()}${agent.slice(1)} called ${calls.model} ${count(calls.calls, 'time')}`;

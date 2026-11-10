@@ -264,8 +264,25 @@ function kickerOf(cause: HoldCause, stage: Stage, opener: string | undefined, im
 }
 
 /**
- * What an answer does, by what the line does with it, for the hold's cause. Rejecting closes the work item and its
- * issue only: a merge's pull request stays open on GitHub, which the card says, so Martin knows to close it there.
+ * The work item's pull request while it is open, as the line reads it: from its push until it merges, or the work
+ * starts a fresh pass (back to Plan after a merge, or reopened), whose first round opens another. A pull request
+ * closed unmerged closes the work item, so a hold never sees one.
+ */
+function openPullRequest(item: ItemState): number | undefined {
+  let open: number | undefined;
+  for (const event of item.events) {
+    if (event.type === 'pull-request.pushed') open = event.payload.number;
+    else if (event.type === 'pull-request.merged' && event.payload.number === open) open = undefined;
+    else if (event.type === 'work-item.reopened' || (event.type === 'work.returned' && event.payload.to === 'plan')) {
+      open = undefined;
+    }
+  }
+  return open;
+}
+
+/**
+ * What an answer does, by what the line does with it, for the hold's cause. Rejecting closes the work item, its issue
+ * and its pull request, unmerged, which the card names; a merged change stays merged.
  */
 function doesOf(
   cause: HoldCause,
@@ -282,7 +299,9 @@ function doesOf(
   }
   // One Close, where approving would close it as well: it agrees with the agent that closed it.
   if (answer === 'rejected' && CLOSE_AGREES.includes(cause)) {
-    return `Agrees with the ${closedBy(cause)}, and closes #${workItem}. Nothing is built.`;
+    return pullRequest === undefined
+      ? `Agrees with the ${closedBy(cause)}, and closes #${workItem}. Nothing is built.`
+      : `Agrees with the ${closedBy(cause)}, and closes #${workItem} and its pull request #${pullRequest}, unmerged.`;
   }
   if (answer === 'rejected') {
     if (cause === 'deploy')
@@ -292,10 +311,14 @@ function doesOf(
     if (cause === 'burst' || cause === 'environment') {
       return 'Closes it with no tickets. A problem still there is found again.';
     }
-    if (cause === 'merge' && pullRequest !== undefined) {
-      return `Closes #${workItem}, unmerged. Its pull request #${pullRequest} stays open on GitHub until you close it.`;
+    // At Verify its change has merged and shipped: closing it takes nothing back out.
+    if (cause === 'verify') return `Closes #${workItem}. Its change stays merged.`;
+    // Back with the planner before the merge, its pull request is still open, and closes with it.
+    if (pullRequest !== undefined) return `Closes #${workItem} and its pull request #${pullRequest}, unmerged.`;
+    if (cause === 'question' || cause === 'spec' || cause === 'report-undescribed') {
+      return `Closes #${workItem}. Nothing is built.`;
     }
-    return `Closes #${workItem}${cause === 'question' || cause === 'spec' || cause === 'report-undescribed' ? '. Nothing is built.' : ', unmerged.'}`;
+    return `Closes #${workItem}, unmerged.`;
   }
   if (answer === 'approved') {
     if (cause === 'finding') return 'Triage opens its ticket, and it goes down the line like any other.';
@@ -620,8 +643,8 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
                   answer,
                   item.number,
                   improvement,
-                  // A sample's pull request never existed, so nothing stays open.
-                  item.sample ? undefined : (hold.merge?.pullRequest ?? item.pullRequest),
+                  // A sample's pull request never existed, so there is none to close.
+                  item.sample ? undefined : openPullRequest(item),
                 ),
           stepUp: (answer === 'approved' && keyed) || (share && SHARE_STEP_UP['hold.share-words']),
         };

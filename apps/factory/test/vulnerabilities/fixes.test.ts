@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type Fix, fixText, readFix, type Target } from '../../src/vulnerabilities/fixes.ts';
+import { type Fix, fixText, moveText, readFix, readMove, type Target } from '../../src/vulnerabilities/fixes.ts';
 import { type Finding, messageOf } from '../../src/vulnerabilities/sarif.ts';
 
 /** The grammar a result's message ends with (fixes.ts), which the scan writes and the GitHub worker reads. */
@@ -77,5 +77,20 @@ describe('what fixes a finding, as its message ends', () => {
     expect(() => fixText({ target: { kind: 'image', tag: '2.14.3', digest: 'sha256:short' }, day: DAY })).toThrow();
     expect(() => fixText({ target: { kind: 'version', versions: [] }, day: DAY })).toThrow();
     expect(() => fixText({ target: { kind: 'k3s', release: 'v1.37.2+k3s1' }, day: Number.NaN })).toThrow();
+  });
+});
+
+describe('a result’s move, after its fix', () => {
+  it('writes and reads back its place in the run’s moves.json, and leaves the fix readable', () => {
+    const message = `${fixText({ target: { kind: 'version', versions: ['1.0.1'] }, day: DAY })} ${moveText({ index: 3, run: '19234567890' })}`;
+    expect(message.endsWith('Move 3 of run 19234567890.')).toBe(true);
+    expect(readMove(message)).toEqual({ index: 3, run: '19234567890' });
+    expect(readFix(message)?.target).toEqual({ kind: 'version', versions: ['1.0.1'] });
+    expect(readMove(fixText({ target: { kind: 'k3s', release: 'v1.37.2+k3s1' }, day: DAY }))).toBeUndefined();
+  });
+
+  it('writes no move it could not read back', () => {
+    expect(() => moveText({ index: 0, run: '1' })).toThrow();
+    expect(() => moveText({ index: 1, run: 'run 1' })).toThrow();
   });
 });

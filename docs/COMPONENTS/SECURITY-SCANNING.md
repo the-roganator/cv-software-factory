@@ -83,7 +83,7 @@ Each result's message, which its alert's latest instance carries, ends with what
 | A tool's release | `tool pnpm 12.17.0` |
 | A line no longer built, with no target | `another line (this one last built 2025-10-16T08:00:00Z)` |
 
-The scan reads the day back from the alert on its next run, and the GitHub worker reads each alert's ending for what `moves.json` withholds. An ending that starts `Fixed by ` and does not parse is an error to its reader, never a finding with no fix.
+A result in a move ends, after its fix, with its place in that run's `moves.json` (`moves`, from 1) and the run: `Move 3 of run 19234567890.` (`moveText` writes it, `readMove` reads it, the type `MoveTag`), so a reader of the alerts ties each to its move without the grouping, and tells an upload of another run from the artifact's; an index names nothing of a lockfile's hidden package. The scan reads the day back from the alert on its next run, and the GitHub worker reads each alert's ending for what `moves.json` withholds. An ending that starts `Fixed by ` and does not parse is an error to its reader, never a finding with no fix.
 
 ## Moves
 
@@ -99,7 +99,7 @@ A finding is evidence; a move is the unit of work. `apps/factory/src/vulnerabili
 | `dependabot` | Dependabot | a pin its docker entries read, with no High or Critical on a deadline, and a direct package of the lockfile within a day of its fix |
 | `worker` | the GitHub worker | every other pin: an image's digest, a value's pin, a chart on its major, a stage of a Dockerfile Dependabot does not read |
 
-The log and the step summary print the table of moves (name, from, to, what it clears and leaves, new today, deadline, lane) and the totals: results with a fix, moves, and moves by lane. The same is uploaded as the artifact `moves`, `moves.json` (`MovesFile`, with `version: 1`, the `MOVES_VERSION` a reader checks), which holds nothing the log does not. A lockfile's move is "a package in `pnpm-lock.yaml`", with no package, version or line, which in a public lockfile would name it; its alerts hold the rest, for those who can read code scanning.
+The log and the step summary print the table of moves (name, from, to, what it clears and leaves, new today, deadline, lane) and the totals: results with a fix, moves, and moves by lane. The same is uploaded as the artifact `moves`, `moves.json` (`MovesFile`, with `version: 1`, the `MOVES_VERSION` a reader checks, and `run`, the run that made it), which holds nothing the log does not. A lockfile's move is "a package in `pnpm-lock.yaml`", with no package, version or line, which in a public lockfile would name it; its alerts hold the rest, for those who can read code scanning.
 
 ## Exceptions
 

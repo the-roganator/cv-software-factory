@@ -43,7 +43,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
-import { type Fix, readFix, type Target, writable } from './fixes.ts';
+import { type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
 import {
   APP,
@@ -1441,7 +1441,9 @@ export function rewrite(file: Sarif, excepted: Record<string, string>, findings:
       if (finding?.fix) result.message.text = messageOf(finding);
     }
   const keys: Record<string, string> = {};
-  const byKey = new Map(findings.map((finding) => [alertKey({ ...finding, fix: undefined }), finding]));
+  const byKey = new Map(
+    findings.map((finding) => [alertKey({ ...finding, fix: undefined, move: undefined }), finding]),
+  );
   for (const [key, comment] of Object.entries(excepted)) {
     const finding = byKey.get(key);
     keys[finding ? alertKey(finding) : key] = comment;
@@ -1512,7 +1514,13 @@ export async function main(args: string[]): Promise<number> {
     now,
   };
   const list = moves(judged.judged, context);
-  const file = movesFile(list, context);
+  // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
+  const run = /^\d+$/.test(process.env.GITHUB_RUN_ID ?? '') ? process.env.GITHUB_RUN_ID : undefined;
+  const file = movesFile(list, context, run);
+  const tags = new Map<string, MoveTag>();
+  if (run)
+    for (const [index, move] of list.entries())
+      for (const each of move.results) tags.set(each, { index: index + 1, run });
   const { lines, bySeverity, byBucket, passes } = verdict(judged.rows, prove, list);
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
   const table = movesTable(file);
@@ -1526,7 +1534,7 @@ export async function main(args: string[]): Promise<number> {
       repository: string;
       excepted: Record<string, string>;
     };
-    const findings = judged.judged.map((each) => each.finding);
+    const findings = judged.judged.map((each) => ({ ...each.finding, move: tags.get(fingerprint(each.finding)) }));
     const rewritten = rewrite(JSON.parse(readFileSync(sarifPath, 'utf-8')) as Sarif, exceptions.excepted, findings);
     const over = overLimits(rewritten.file);
     if (over.length) {

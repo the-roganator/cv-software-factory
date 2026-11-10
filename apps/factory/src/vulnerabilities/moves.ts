@@ -301,6 +301,8 @@ export interface MovesFile {
   repository: string;
   /** When the scan judged them, UTC to the second. */
   judged: string;
+  /** The run that made it (GITHUB_RUN_ID), which each of its results' messages names after its move's place. */
+  run?: string | undefined;
   /** How many results have a fix and are not excepted, how many moves, and the moves in each lane. */
   totals: { fixed: number; moves: number; lanes: Record<Lane, number> };
   moves: PublicMove[];
@@ -325,7 +327,7 @@ export function publicMove(move: Move): PublicMove {
   };
 }
 
-export function movesFile(list: Move[], context: Pick<Context, 'repository' | 'now'>): MovesFile {
+export function movesFile(list: Move[], context: Pick<Context, 'repository' | 'now'>, run?: string): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
     number
@@ -335,6 +337,7 @@ export function movesFile(list: Move[], context: Pick<Context, 'repository' | 'n
     version: MOVES_VERSION,
     repository: context.repository,
     judged: dayText(context.now),
+    ...(run ? { run } : {}),
     totals: { fixed, moves: list.length, lanes },
     moves: list.map(publicMove),
   };

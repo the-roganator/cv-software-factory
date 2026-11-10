@@ -1281,6 +1281,10 @@ describe('what fixes it', () => {
     expect(result?.message.text).toBe(messageOf(fixed));
     expect(result?.message.text.endsWith('Fixed by version 1.0.1, first seen 2026-11-01T00:00:00Z.')).toBe(true);
     expect(excepted).toEqual({ [alertKey(fixed)]: 'why, until when' });
+    // A result in a move names its place in moves.json and the run, after its fix.
+    const moved = { ...fixed, move: { index: 2, run: '42' } };
+    const again = rewrite(sarif([plain]), {}, [moved]).file.runs[0]?.results[0]?.message.text ?? '';
+    expect(again.endsWith('Fixed by version 1.0.1, first seen 2026-11-01T00:00:00Z. Move 2 of run 42.')).toBe(true);
   });
 
   it('finds a tool’s release from mise.lock: its repository, and its download at another version', () => {

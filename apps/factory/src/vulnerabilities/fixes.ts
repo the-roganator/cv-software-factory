@@ -108,6 +108,31 @@ export function fixText(fix: Fix) {
 
 const ENDING = new RegExp(String.raw`(?:^| )Fixed by (.+), first seen (${DAY})\.$`);
 
+/**
+ * Where a result's move is, after its fix: its place in that run's `moves.json` (`moves`, from 1) and the run, `Move 3
+ * of run 19234567890.`, so a reader of the alerts ties each to its move and can tell an upload from another run than
+ * the artifact's. An index names nothing about a lockfile's hidden package.
+ */
+export interface MoveTag {
+  index: number;
+  run: string;
+}
+
+const MOVE = / Move (\d+) of run (\d+)\.$/;
+
+/** A result's move, as its message ends after its fix. */
+export function moveText(tag: MoveTag) {
+  if (!Number.isInteger(tag.index) || tag.index < 1 || !/^\d+$/.test(tag.run))
+    throw new Error(`a move the grammar cannot write: ${JSON.stringify(tag)}`);
+  return `Move ${tag.index} of run ${tag.run}.`;
+}
+
+/** The move a message ends with, or undefined when it names none. */
+export function readMove(message: string): MoveTag | undefined {
+  const m = MOVE.exec(message);
+  return m?.[1] && m[2] ? { index: Number(m[1]), run: m[2] } : undefined;
+}
+
 /** A target from its text, or undefined. */
 export function readTarget(text: string): Target | undefined {
   let m = new RegExp(`^version (${WORD})$`).exec(text);
@@ -134,7 +159,7 @@ export function readTarget(text: string): Target | undefined {
  */
 export function readFix(message: string): Fix | undefined {
   if (!/(?:^| )Fixed by /.test(message)) return undefined;
-  const m = ENDING.exec(message);
+  const m = ENDING.exec(message.replace(MOVE, ''));
   const target = m?.[1] ? readTarget(m[1]) : undefined;
   const day = m?.[2] ? readDay(m[2]) : undefined;
   if (!target || day === undefined) throw new Error('a message ends with a fix the grammar does not read');

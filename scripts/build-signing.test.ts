@@ -23,6 +23,8 @@ const sign = steps('build.yml', 'sign').find((s) => s.run?.includes('cosign sign
 const verify =
   steps('check.yml', 'image').find((s) => s.name === 'Check the images it moves to were signed by build.yml on main')
     ?.run ?? '';
+const scanners =
+  steps('check.yml', 'image').find((s) => s.name?.startsWith('Check the scanners it moves to were signed'))?.run ?? '';
 const pins =
   steps('check.yml', 'image').find((s) => s.name === 'Check the pinned images were built from main')?.run ?? '';
 const INDEX = 'scripts/image-index.sh';
@@ -58,7 +60,7 @@ const calls = (script: string) =>
 describe('trying Sigstore and GHCR again (build.yml, check.yml)', () => {
   it('is found, whole, and the same in every copy', () => {
     expect(retry(sign)).toContain('sleep $((15 << (try - 1)))');
-    for (const copy of [verify, pins, index]) expect(retry(copy)).toBe(retry(sign));
+    for (const copy of [verify, scanners, pins, index]) expect(retry(copy)).toBe(retry(sign));
   });
 
   it('calls cosign once when it works', () => {

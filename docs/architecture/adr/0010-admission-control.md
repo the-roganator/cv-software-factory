@@ -11,6 +11,8 @@ A third-party image is admitted on its digest alone: none of the three is verifi
 
 The signer is compared whole: the issuer is GitHub Actions' OIDC issuer, and the identity is `https://github.com/<repository>/.github/workflows/build.yml@refs/heads/main`, never a pattern. The factory's images must carry the factory's signature, the app's the app's. Ours is the organisation `the-roganator`'s (ADR 0014): an image under `ghcr.io/the-roganator/`, signed by `build.yml` on `main` of the repository there. Each repository has one attestor, with one identity: Kyverno verifies no attestor with several identities, and refuses every image checked against one.
 
+The scanners CI runs from pins of their own, which never run in the cluster, are held to the same rule where their publisher signs. A change to Trivy's pin passes `check.yml` only when its image is signed, with GitHub Actions' OIDC issuer, by Aqua's release workflow on the tag of the version pinned, named whole: `https://github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v<version>`. Anchore signs no image of Syft (its release signs only its archives' checksums), so Syft's pin, like flagd's, is held by its digest and its review, and each bump tries its signature again.
+
 The rule is one `ImageValidatingPolicy` (`deploy/base/admission/images`), in four copies, each admitting only the images its namespaces run:
 
 - `factory-images`, for `factory`, `runners` and `red-team` (the red-team harness's attack pods): the factory's four images (`factory`, `factory-browser`, `factory-runner` and `console`), signed by the factory's `build.yml`, and Postgres and its exporter by digest. None of the app's.

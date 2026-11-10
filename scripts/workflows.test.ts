@@ -281,6 +281,8 @@ describe('reading a workflow', () => {
  * so no pull request chooses its own scanner, and the gates and the daily scan cannot drift apart.
  */
 const TRIVY_PIN = '.github/images/trivy/Dockerfile';
+/** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
+const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
 
 /** The Trivy image a Dockerfile pins, if it pins exactly one, by version and digest, and nothing else. */
 function trivyPin(dockerfile: string) {
@@ -306,14 +308,42 @@ describe("Trivy's pin", () => {
     ).toBeUndefined();
   });
 
+  it("names Trivy, outside its pin, only in check.yml's check of its signature, which runs cosign alone", () => {
+    const named = workflows.flatMap(({ file, workflow }) =>
+      Object.values(workflow.jobs).flatMap((job) =>
+        (job.steps ?? []).filter((step) => step.name === SIGNATURES).map((step) => ({ file, step })),
+      ),
+    );
+    expect(named.map(({ file }) => file)).toEqual(['check.yml']);
+    const commands = (named[0]?.step.run ?? '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith('#') && !line.startsWith('echo') && /\btrivy\b/i.test(line));
+    for (const line of commands) expect(line).not.toMatch(/(^|[\s;|&(])trivy\s/);
+  });
+
   it('is the only Trivy any workflow names, and each job that runs it reads it from its own commit', () => {
     let readers = 0;
     for (const { file, workflow } of workflows) {
-      const text = readFileSync(`${DIR}/${file}`, 'utf-8');
+      // check.yml's check of the scanners' signatures names Trivy's signer, and runs no Trivy: the one step that may.
+      const others = Object.fromEntries(
+        Object.entries(workflow.jobs).map(([name, job]) => [
+          name,
+          { ...job, steps: (job.steps ?? []).filter((step) => step.name !== SIGNATURES) },
+        ]),
+      );
+      const comments = readFileSync(`${DIR}/${file}`, 'utf-8')
+        .split('\n')
+        .filter((line) => /^\s*#/.test(line))
+        .join('\n');
+      const text = `${JSON.stringify({ ...workflow, jobs: others })}\n${comments}`;
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
       for (const [name, job] of Object.entries(workflow.jobs)) {
         const steps = job.steps ?? [];
-        const runs = steps.map((step) => step.run ?? '').join('\n');
+        const runs = steps
+          .filter((step) => step.name !== SIGNATURES)
+          .map((step) => step.run ?? '')
+          .join('\n');
         if (!/trivy/i.test(runs) && !JSON.stringify(job.env ?? {}).match(/trivy/i)) continue;
         readers++;
         // The pin, read from a checkout of this repository at the workflow's own commit, by its path there.

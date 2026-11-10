@@ -462,7 +462,7 @@ jobs:
             done
           done
       # Each scanner CI runs from a pin of its own (a Dockerfile under .github/images/ or deploy/images/, which nothing
-      # builds) is held to the signature its publisher's release workflow makes, named whole, as ours are to build.yml's:
+      # builds, Trivy's today) is held to the signature its publisher's release workflow makes, named whole, as ours are to build.yml's:
       # the workflow, its repository and the tag of the version pinned, so a digest from a canary, a fork or another
       # release fails. Only the pin files a change touches are checked, and every one when this file changes, so a change
       # to the check proves itself on its own pull request. Each identity is the one the publisher's release workflow
@@ -492,6 +492,9 @@ jobs:
           fi
           [ -n "$files" ] || echo "No scanner's pin changes, nothing to check"
           for file in $files; do
+            # A regular file, as git holds it: a link could point the pin at a file this check does not watch.
+            mode=$(git ls-files -s -- "$file" | cut -d' ' -f1)
+            [ "$mode" = 100644 ] || { echo "::error file=$file::$file must be a regular file (mode ${mode:-none})"; exit 1; }
             froms=$(grep -iE '^[[:space:]]*FROM[[:space:]]' "$file" || true)
             if [ -z "$froms" ] || [ "$(wc -l <<< "$froms")" -ne 1 ] ||
               [[ ! $froms =~ ^FROM\ ([a-z0-9./-]+):([A-Za-z0-9._-]+)@(sha256:[0-9a-f]{64})$ ]]; then
@@ -506,8 +509,9 @@ jobs:
                   echo "::error file=$file::$name's version must be <major>.<minor>.<patch>, as Aqua tags it"; exit 1
                 }
                 identity="https://github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v$version" ;;
-              # Anchore signs no image of Syft: its release signs only the checksums of its archives. Its pin is held by
-              # its digest and its review alone, as flagd's is (ADR 0010), and is tried again at each bump.
+              # Anchore signs no image of Syft: its release signs only the checksums of its archives. A pin of Syft's
+              # image is held by its digest and its review alone, as flagd's is (ADR 0010), and this notice in the log
+              # of each change to it is the reminder to look again for a signature.
               ghcr.io/anchore/syft)
                 echo "::notice file=$file::$ref: Anchore signs no image of Syft, so its digest and its review are its whole gate"
                 continue ;;

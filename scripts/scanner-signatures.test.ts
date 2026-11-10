@@ -50,9 +50,15 @@ afterEach(() => {
 
 /**
  * Runs the step on a change from `base` to `head` (each a map of path to content, null to leave a file out), with the
- * signatures `signed` lists as `<ref> <identity> <issuer>`.
+ * signatures `signed` lists as `<ref> <identity> <issuer>`, and `also`, a command run in the repository before the
+ * change is committed.
  */
-function check(base: Record<string, string>, head: Record<string, string | null>, signed: string[] = []) {
+function check(
+  base: Record<string, string>,
+  head: Record<string, string | null>,
+  signed: string[] = [],
+  also?: () => string[],
+) {
   const dir = mkdtempSync(join(tmpdir(), 'scanner-signatures-'));
   dirs.push(dir);
   const repo = join(dir, 'repo');
@@ -70,7 +76,7 @@ function check(base: Record<string, string>, head: Record<string, string | null>
   git('config', 'user.email', 'test@example.com');
   git('config', 'user.name', 'test');
   git('config', 'commit.gpgsign', 'false');
-  const write = (files: Record<string, string | null>) => {
+  const write = (files: Record<string, string | null>, before?: () => string[]) => {
     for (const [path, content] of Object.entries(files)) {
       if (content === null) rmSync(join(repo, path), { force: true });
       else {
@@ -78,11 +84,13 @@ function check(base: Record<string, string>, head: Record<string, string | null>
         writeFileSync(join(repo, path), content);
       }
     }
+    const command = before?.();
+    if (command) execFileSync(command[0] ?? 'false', command.slice(1), { cwd: repo });
     git('add', '-A');
     git('commit', '-q', '--allow-empty', '-m', 'commit');
   };
   write({ '.github/workflows/check.yml': 'base\n', ...base });
-  write(head);
+  write(head, also);
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', step], {
     cwd: repo,
     encoding: 'utf-8',
@@ -129,6 +137,32 @@ describe("the scanners' signatures (check.yml)", () => {
       // Every try failed, and none passed on a looser match.
       expect(result.calls).toHaveLength(4);
     }
+  });
+
+  it("checks Trivy's pin where it is today, in .github/images/", () => {
+    const file = '.github/images/trivy/Dockerfile';
+    const ref = `${TRIVY}@${digest('c')}`;
+    const signed = [`${ref} ${release('0.76.2')} ${ISSUER}`];
+    const moved = check(
+      { [file]: trivyPin('0.74.0', digest('a')) },
+      { [file]: trivyPin('0.76.2', digest('c')) },
+      signed,
+    );
+    expect(moved.status, moved.err).toBe(0);
+    expect(moved.out).toContain(`${file}: ${ref}, signed by ${release('0.76.2')}`);
+    const unsigned = check({ [file]: trivyPin('0.74.0', digest('a')) }, { [file]: trivyPin('0.76.2', digest('c')) });
+    expect(unsigned.status).toBe(1);
+  });
+
+  it('fails a pin that is a link, which could point it at a file the check does not watch', () => {
+    const result = check({ 'elsewhere/Dockerfile': trivyPin('0.76.2', digest('c')) }, {}, [], () => [
+      'sh',
+      '-c',
+      `mkdir -p ${dirname(TRIVY_FILE)} && ln -s ../../../elsewhere/Dockerfile ${TRIVY_FILE}`,
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.out).toContain('must be a regular file (mode 120000)');
+    expect(result.calls).toEqual([]);
   });
 
   it('fails an unsigned digest', () => {

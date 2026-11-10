@@ -284,6 +284,18 @@ const TRIVY_PIN = '.github/images/trivy/Dockerfile';
 /** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
 const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
 
+/** A workflow as written, without the step of that name: its lines from `- name:` to the next no deeper than it. */
+function withoutStep(text: string, name: string) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  if (start < 0) return text;
+  const depth = (line: string) => line.length - line.trimStart().length;
+  const after = lines.findIndex(
+    (line, i) => i > start && line.trim() !== '' && depth(line) <= depth(lines[start] ?? ''),
+  );
+  return [...lines.slice(0, start), ...lines.slice(after < 0 ? lines.length : after)].join('\n');
+}
+
 /** The Trivy image a Dockerfile pins, if it pins exactly one, by version and digest, and nothing else. */
 function trivyPin(dockerfile: string) {
   const froms = dockerfile.split('\n').filter((line) => /^\s*FROM\s/i.test(line));
@@ -308,35 +320,30 @@ describe("Trivy's pin", () => {
     ).toBeUndefined();
   });
 
-  it("names Trivy, outside its pin, only in check.yml's check of its signature, which runs cosign alone", () => {
+  it("names Trivy, outside its pin, only in check.yml's check of its signature, and only its image and signer", () => {
     const named = workflows.flatMap(({ file, workflow }) =>
       Object.values(workflow.jobs).flatMap((job) =>
         (job.steps ?? []).filter((step) => step.name === SIGNATURES).map((step) => ({ file, step })),
       ),
     );
     expect(named.map(({ file }) => file)).toEqual(['check.yml']);
-    const commands = (named[0]?.step.run ?? '')
+    // Every line that names Trivy, its comments' and its messages' aside: the image it matches, and the signer.
+    const lines = (named[0]?.step.run ?? '')
       .split('\n')
       .map((line) => line.trim())
-      .filter((line) => !line.startsWith('#') && !line.startsWith('echo') && /\btrivy\b/i.test(line));
-    for (const line of commands) expect(line).not.toMatch(/(^|[\s;|&(])trivy\s/);
+      .filter((line) => !line.startsWith('#') && !line.startsWith('echo') && /trivy/i.test(line));
+    expect(lines).toEqual([
+      'ghcr.io/aquasecurity/trivy)',
+      'identity="https://github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v$version" ;;',
+    ]);
   });
 
   it('is the only Trivy any workflow names, and each job that runs it reads it from its own commit', () => {
     let readers = 0;
     for (const { file, workflow } of workflows) {
-      // check.yml's check of the scanners' signatures names Trivy's signer, and runs no Trivy: the one step that may.
-      const others = Object.fromEntries(
-        Object.entries(workflow.jobs).map(([name, job]) => [
-          name,
-          { ...job, steps: (job.steps ?? []).filter((step) => step.name !== SIGNATURES) },
-        ]),
-      );
-      const comments = readFileSync(`${DIR}/${file}`, 'utf-8')
-        .split('\n')
-        .filter((line) => /^\s*#/.test(line))
-        .join('\n');
-      const text = `${JSON.stringify({ ...workflow, jobs: others })}\n${comments}`;
+      // check.yml's check of the scanners' signatures names Trivy's image and signer, and runs no Trivy: the one step
+      // that may, left out of the file as written, from its name to the next line no deeper than it.
+      const text = withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES);
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
       for (const [name, job] of Object.entries(workflow.jobs)) {
         const steps = job.steps ?? [];

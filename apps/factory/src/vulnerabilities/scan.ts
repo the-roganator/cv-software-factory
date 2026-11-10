@@ -17,7 +17,7 @@
  *   when it cannot be read. An image of ours whose Node version cannot be read is an item the scan cannot read.
  *
  * An item that cannot be read (a lockfile Trivy reads no packages from, or not every package of, one git tracks as
- * anything but a regular file, an SBOM with no attestation, an image that cannot be pulled, a chart that does not
+ * anything but a regular file, any other symbolic link git tracks, which `lockfileDir` could point pnpm through, an SBOM with no attestation, an image that cannot be pulled, a chart that does not
  * render, a pin the list does not read) is named in the log and fails the run,
  * and so does a database more than a day old: nothing is written for upload, so no alert closes because its item went
  * unread. The SARIF is written only with `--upload`, when every item was read and the file is within code scanning's
@@ -40,7 +40,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
-import { documents, forTrivy, unreadDocument } from '../gates/lockfile-scan.ts';
+import { documents, forTrivy, LINK, trackedLockfiles, unreadDocument } from '../gates/lockfile-scan.ts';
 import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
 import {
@@ -265,6 +265,14 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
 }
 
 const IMAGE_ARGS = ['--scanners', 'vuln', '--list-all-pkgs', '--image-src', 'remote'];
+
+/**
+ * Each symbolic link the checkout tracks, as the lockfile gate finds them (gates/lockfile-scan.ts): an item the scan
+ * cannot read, since `lockfileDir` through one installs from a lockfile outside the checkout.
+ */
+export function links(root: string) {
+  return trackedLockfiles(root).links.map((file) => ({ file, line: 0, reference: file, why: LINK }));
+}
 
 /**
  * A lockfile, each YAML document of it alone in a directory, with development dependencies, judged as the lockfile gate
@@ -762,7 +770,14 @@ export async function main(args: string[]): Promise<number> {
 
   const checkout = resolve(root);
   const { items, checkout: files } = inventory(checkout);
-  const outcome = await scan(tools, checkout, items, unlisted(checkout), database, new Set(files.files));
+  const outcome = await scan(
+    tools,
+    checkout,
+    items,
+    [...unlisted(checkout), ...links(checkout)],
+    database,
+    new Set(files.files),
+  );
   const { lines, passes, file } = report(outcome, upload, LIMITS, pin[2]);
   const osv = join(checkout, 'osv-scanner.toml');
   const exceptions = judge(

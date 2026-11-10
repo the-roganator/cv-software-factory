@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { LINK } from '../../src/gates/lockfile-scan.ts';
 import { INSTALL, inSbom, LIST, listed, missing, pnpmVersion } from '../../src/vulnerabilities/coverage.ts';
 import type { Item } from '../../src/vulnerabilities/inventory.ts';
 import {
@@ -29,6 +31,7 @@ import {
   databaseAge,
   imagesIn,
   itemKey,
+  links,
   lockfileLine,
   nodeFindingsOf,
   readLockfile,
@@ -398,6 +401,19 @@ describe('a lockfile', () => {
     const { read, given } = await readText('# nothing\n\n');
     expect(read.unreadable).toBe('it holds no YAML document');
     expect(given).toEqual([]);
+  });
+
+  it("is never reached through a symbolic link: each link git tracks is a pin the scan cannot read, as the gate's", () => {
+    const root = temp();
+    writeFileSync(join(root, 'pnpm-lock.yaml'), MAIN);
+    symlinkSync('../outside', join(root, 'vendor'));
+    symlinkSync('README.md', join(root, 'docs'));
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['add', '-A'], { cwd: root });
+    expect(links(root)).toEqual([
+      { file: 'docs', line: 0, reference: 'docs', why: LINK },
+      { file: 'vendor', line: 0, reference: 'vendor', why: LINK },
+    ]);
   });
 
   it('holding nothing but its version, is read, with nothing in it', async () => {

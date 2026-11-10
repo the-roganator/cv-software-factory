@@ -211,8 +211,9 @@ async function step<A extends LineAgent>(
     const started = Date.now();
     // The prepare step has the developer's environment, for pnpm's store; the agent never sees it.
     await o.runner.prepare({ ...process.env, ...shared, PREPARE: prepareDir }, o.log);
-    if (o.fixture.change) await commitChange(o.runner, join(shared.WORK, 'repo'), o.fixture.change);
+    // At the base, before a change is committed on it, as the line reads them at the commit it starts from.
     await protectedAsCheckedOut(join(shared.WORK, 'repo'), input);
+    if (o.fixture.change) await commitChange(o.runner, join(shared.WORK, 'repo'), o.fixture.change);
     const prepared = Date.now();
     const handback = await o.runner.runAgent(
       {
@@ -259,14 +260,17 @@ export async function protectedAsCheckedOut(repo: string, input: unknown): Promi
   if (!told) return;
   let codeowners: string | null = null;
   for (const path of CODEOWNERS_PATHS) {
-    codeowners = await readFile(join(repo, path), 'utf8').catch(() => null);
+    codeowners = await readFile(join(repo, path), 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
     if (codeowners !== null) break;
   }
   const owned = protectedFrom(codeowners);
   const differ = [...owned.filter((p) => !told.includes(p)), ...told.filter((p) => !owned.includes(p))];
   if (differ.length > 0) {
     throw new Error(
-      `The fixture's protected paths are not its checkout's CODEOWNERS (${differ.join(', ')}): copy APP_CODEOWNERS again.`,
+      `The fixture's protected paths are not its checkout's CODEOWNERS (${differ.join(', ')}): copy APP_CODEOWNERS again, or bench a commit whose CODEOWNERS is the fixture's.`,
     );
   }
 }

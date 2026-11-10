@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jobForToken } from '@software-factory/store';
@@ -88,6 +88,11 @@ describe('the bench', () => {
     await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('(mise.lock, mise.lock/)');
     // An input with no protected paths has nothing to hold.
     await expect(protectedAsCheckedOut(join(repo, 'none'), {})).resolves.toBeUndefined();
+    // A CODEOWNERS that cannot be read is an error of its own, not a file that is not there.
+    rmSync(join(repo, '.github', 'CODEOWNERS'));
+    mkdirSync(join(repo, '.github', 'CODEOWNERS'));
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('EISDIR');
+    rmSync(repo, { recursive: true });
   });
 
   it("runs the agent's own step on a fixture, in a fixed folder with a fresh home, and ends its token", async () => {

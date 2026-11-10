@@ -69,6 +69,29 @@ const A_IMAGE = finding({
 });
 
 describe('the policy', () => {
+  it('is reached only by what checks it out: coverage.ts and graph.ts, which check out the scan folder alone, never import it', () => {
+    // Every module a file reaches through its relative imports.
+    const reach = (file: string, seen = new Set<string>()): Set<string> => {
+      if (seen.has(file)) return seen;
+      seen.add(file);
+      for (const [, spec] of readFileSync(file, 'utf-8').matchAll(/\bfrom\s+'(\.[^']+)'/g))
+        if (spec) reach(resolve(file, '..', spec), seen);
+      return seen;
+    };
+    for (const start of ['coverage.ts', 'graph.ts']) {
+      const reached = [...reach(join(ROOT, 'apps/factory/src/vulnerabilities', start))].map((f) =>
+        f.slice(ROOT.length + 1),
+      );
+      expect(
+        reached.filter((f) => !f.startsWith('apps/factory/src/vulnerabilities/')),
+        start,
+      ).toEqual([]);
+    }
+    expect([...reach(join(ROOT, 'apps/factory/src/vulnerabilities/scan.ts'))]).toContain(
+      join(ROOT, 'policy/vulnerabilities.ts'),
+    );
+  });
+
   it('imports nothing, so a sparse checkout of it from main is all the scan and the gate read', () => {
     const source = readFileSync(join(ROOT, 'policy/vulnerabilities.ts'), 'utf-8');
     expect(source).not.toMatch(/^\s*import\b|\bimport\s*\(|\brequire\s*\(/m);

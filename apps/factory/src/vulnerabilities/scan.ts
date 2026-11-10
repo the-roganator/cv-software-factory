@@ -62,6 +62,9 @@ import {
   type Severity,
   sarif,
 } from './sarif.ts';
+import { trivyPin } from './trivy-pin.ts';
+
+export { trivyPin };
 
 const run = promisify(execFile);
 
@@ -688,11 +691,6 @@ async function databases(tools: Tools, trivyImage: string, cache: string) {
   await pull(['--download-db-only', '--db-repository', DB_REPOSITORY]);
   await pull(['--download-java-db-only', '--java-db-repository', JAVA_DB_REPOSITORY]);
   return databaseAge(readFileSync(join(cache, 'db/metadata.json'), 'utf-8'));
-}
-
-/** The Trivy image a Dockerfile pins, by version and digest, as scripts/workflows.test.ts holds it. */
-export function trivyPin(dockerfile: string) {
-  return /^FROM (ghcr\.io\/aquasecurity\/trivy:(\d+\.\d+\.\d+)@sha256:[0-9a-f]{64})$/m.exec(dockerfile);
 }
 
 export async function main(args: string[]): Promise<number> {

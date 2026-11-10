@@ -307,7 +307,7 @@ export async function readLockfile(tools: Tools, root: string, target: Target): 
 
 /**
  * Where Syft found each package in an image, by name and version, from its SPDX SBOM's `sourceInfo` (`… manifest file:
- * /opt/pnpm/dist/node_modules/undici/package.json`): Trivy keeps no path when it reads an SBOM.
+ * /opt/pnpm/dist/node_modules/<name>/…`): Trivy keeps no path when it reads an SBOM.
  */
 export function sbomPaths(predicate: unknown) {
   const paths = new Map<string, Set<string>>();

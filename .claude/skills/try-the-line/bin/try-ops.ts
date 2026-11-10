@@ -286,7 +286,11 @@ export const ops: Ops = {
     const tree = join(dir, 'tree');
     run('git', ['-C', checkout(), 'worktree', 'add', '-q', '--detach', tree, commit]);
     try {
-      run('docker', ['build', '-f', dockerfile, '-t', ref, '.'], { cwd: tree, timeoutMs: 20 * 60_000, show: true });
+      run('docker', ['build', '-f', dockerfile, '--build-arg', `GIT_COMMIT=${commit}`, '-t', ref, '.'], {
+        cwd: tree,
+        timeoutMs: 20 * 60_000,
+        show: true,
+      });
     } finally {
       run('git', ['-C', checkout(), 'worktree', 'remove', '--force', tree]);
       rmSync(dir, { recursive: true, force: true });

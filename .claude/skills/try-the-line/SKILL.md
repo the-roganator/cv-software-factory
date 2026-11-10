@@ -11,13 +11,13 @@ The local cluster is `k3d-software-factory`, and it is disposable. Unmerged code
 
 A try is the proof, and merging ratifies it: a change to what runs on the cluster is tried here before its review, live where the fault can only show live ([A live try](#a-live-try)), and nothing is learned from a merge and a deploy that a try could have shown. One session holds the cluster at a time, and says so where the others read it (the board's notes, `scratch/workflow/board.yaml`, under `sessions`), from before the first change until the undo list is ticked.
 
-The helpers are in `bin/` beside this file: `k` is kubectl on the local cluster, `argocd-core` is Argo CD's CLI on it (`--core`, with no login), `q` is psql on its store, `poll` and `watch` follow a run, and `trace.js` prints a step's conversation.
+The helpers are in `bin/` beside this file: `try` begins and ends a try on the local cluster ([below](#try-begin-and-try-end)), `k` is kubectl on the local cluster, `argocd-core` is Argo CD's CLI on it (`--core`, with no login), `q` is psql on its store, `poll` and `watch` follow a run, and `trace.js` prints a step's conversation.
 
 **Which model.** A try, to see that work runs as it should, runs on Claude: it is faster, and Martin has agreed to its spend for tries. Qwen is for what runs unattended, a night's soak, for a run that must spend nothing (`soak-check --no-spend`), and for working on an agent's prompt on the bench, which root `AGENTS.md` starts on Qwen and records on Claude after. Note what a try on Claude cost (`bin/poll`, or the bench's own `model_calls`), and say so.
 
 ## Before you change anything
 
-Copy the checklist at the end into `scratch/` and record each value before you change it: the sync policy, every image, every env variable. Tick each line as you put it back.
+Copy the checklist at the end into `scratch/` and record each value before you change it: the sync policy, every image, every env variable. Tick each line as you put it back. What `bin/try begin` changes it records itself, and `bin/try end` puts back: the list then names the try's state file for those lines, and holds by hand only what the script does not do.
 
 To change the cluster in auto mode, Martin may add `Bash(kubectl --context k3d-software-factory *)` to `.claude/settings.local.json`. Without it, ask him.
 
@@ -54,6 +54,24 @@ LM Studio's settings are part of a run. Save them as the model's defaults (My Mo
 ## The line on the local cluster
 
 The line runs in the cluster only: its agent pods may reach only the gateway and the handback.
+
+### `try begin` and `try end`
+
+The mechanical half of the steps below is a script, so that what a try changed is put back by one command that needs nothing from the session that began it:
+
+```sh
+bin/try begin <branch> [--only <deployment>…] [--env <deployment>:<NAME>=<value>]… --holder <your key>
+bin/try status
+bin/try end
+```
+
+`try begin` refuses while a try is open, by the script or by hand (`root` paused, a policy off Deny, a pod on a `local-` image), while the board's `cluster.holder` is not `--holder` (`TRY_HOLDER`), and on a branch that changes `deploy/` or adds a migration, which steps 7 and 8 apply by hand, unless `--by-hand` says they are in your undo list. Then it records, in `~/.config/software-factory/try/state.json` and before the first change, `root`'s sync policy, each image policy's actions, each deployment's images and every variable it will write, the line's state, take and last seq; builds the images those deployments run (step 1) from the branch in a worktree of its own, loads them, and finds each on the node, by a digest reference it makes there (step 6), before pausing `root` (step 2), setting `factory-images` to Audit (step 3) and pointing the deployments at them (step 5), each variable that names a moved image (`RUNNER_IMAGE`) following it. Without `--only` it moves every deployment on the `factory` and `factory-runner` images; `--only console` or `--only probes` builds that one's image too. `--env` sets a variable for the try, as step 4's dry run or step 10's model needs, on the container named after its deployment.
+
+`try end` reads only the state file. It refuses, changing nothing, while the line is started on the try's images: stopping it is Martin's command line's (`make stop-the-line`), and the script never writes the store. Otherwise it deletes the runner Jobs and attack pods on the try's images, puts each deployment's images and then its variables back, sets `factory-images` back and gives `root` its policy, and waits, ten minutes at most (`--timeout`, twenty at most), for `root` Synced and Healthy, each policy as recorded, no pod or Job in `factory`, `runners` or `red-team` on the try's images, and its images gone from the node, by every name the node holds for their digests, and from the Mac. Only then does it delete the state file; otherwise it says what is not back, keeps the file, and can be run again. It says the line's state and take and the work items with events since the try began, for Martin. `try status` says what is open, since when, by whom, and what is changed now.
+
+What stays in your hands: whether the try is dry or live and what it takes (steps 4 and 11, and [A live try](#a-live-try)'s terms), migrations, manifests and alert rules (steps 7 to 9), stopping and starting the line, and what to watch. A begin killed part way leaves its state file at `beginning`, and `try end` puts back whatever it had changed.
+
+### By hand
 
 1. **Build** `factory` and `factory-runner` from one commit, in a worktree, and import them:
    ```sh
@@ -152,6 +170,8 @@ An agent's step after a hold (a replan, say) is tried on the bench first, on a f
 - **Runner Job names** are `<agent>-<work item>-<round>-<n>`, where `n` counts every step the work item has started, whichever agent.
 
 ## Putting it back
+
+`bin/try end` does what follows for everything `try begin` changed, in this order, from its state file. What you changed by hand you put back by hand, as follows.
 
 Order matters. Giving `root` its sync policy back restores images and the values `main` sets, but not env variables that `main` does not set, nor Martin's take, which is in the store: with `LINE_MODE` restored to `live`, the line would act in GitHub on the work item the try took. And a line in dry run takes the next ticket at once once a take allows it, which a live line then carries to its end, with the dry run's made-up issue. So first, in one `set env` on `line`, set `LINE_MODE=off`, which takes nothing, and remove every env the try added (`ALL_LOCAL`), and do the same for each other deployment (`github`'s dry-run delays, `gateway`'s and `console`'s `ALL_LOCAL`), waiting for each rollout (`bin/k -n factory rollout status deployment/<name>`): each `set env` makes a new ReplicaSet on the local image, admitted only while `factory-images` is still on Audit, so one still rolling out, or made after, when `root` puts it back to Deny is refused, and recorded on the Guardrails panel as if it were an attack. Then stop the line (`make stop-the-line REASON="putting a try back"`, which aborts a release in flight: look first, as [Stopping the line](#stopping-the-line-and-a-cap) says): once `root` sets `LINE_MODE` back to `live`, the line reopens every ticket the dry run verified ("the dry run's fix never shipped") and takes it again, in GitHub for real, so it stays stopped until Martin, told which work items those are, starts it. Then delete any runner Jobs left in `runners` (`bin/k -n runners delete jobs --all`), or wait until there are none, since `root` puts `factory-images` back to Deny before it moves the deployments off the local images, and a Job on one would be refused; then restore the sync policy, which sets `LINE_MODE` back and puts `factory-images` back as `main` says; then check each deployment's env against what you recorded, that `bin/k get imagevalidatingpolicy -o custom-columns=NAME:.metadata.name,ACTIONS:.spec.validationActions` shows the four policies as `main` sets them (all `[Deny]`), that no pod or Job in `factory` or `runners` still runs a local image (`bin/k -n factory get pods,jobs -o jsonpath='{..image}'`, and the same for `runners`, with nothing `local-` and none of the digest references made for the run: a pod admitted under Audit keeps running after Deny returns), that no red-team attack pod is left in `red-team` or `runners` (`bin/k -n red-team delete pods -l factory.mrogan.dev/red-team`, and the same in `runners`, where admission refuses a new one but an older image may have left one, as they are bare pods and not Jobs), that each manifest applied by hand is gone, or `main`'s again, that the `prometheus` Application is back on `main` (`bin/argocd-core app get prometheus`), and that `select work_item, stage from line` has nothing new. The node's digest references are not Argo CD's: remove each one made for the run.
 

@@ -36,6 +36,14 @@ loki:
 rbac:
   namespaced: true
 
+# The rules' sidecar, 2.11.2 in the chart, carries a Critical in its Python certifi (GHSA-6q48-6c7w-9gw2) that 2.14.3
+# fixes, and no 18.x chart ships 2.14.3. This comes out when the chart moves to 20.2.2 or later, whose own sidecar is
+# 2.14.3; until then the scan reads it through the chart's rendering, and Dependabot does not move it. Pinned by
+# digest, the tag's index, with the tag kept beside it for the reader, as Kyverno's are.
+sidecar:
+  image:
+    tag: 2.14.3@sha256:52d311dcedd587421a236c4d6c621f05614c40a51386e955e0699dca97ec0880
+
 singleBinary:
   replicas: 1
   # Its own metrics, on its HTTP port, for Prometheus to scrape.

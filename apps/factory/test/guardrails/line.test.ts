@@ -9,7 +9,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { RED_TEAM_LABEL } from '../../../../policy/attacks.ts';
 import { proved } from '../../src/guardrails/command.ts';
-import { abortedByStop, age, type Drill, rollback, runnerPodsOf, stopTheLine } from '../../src/guardrails/line.ts';
+import {
+  abortedByStop,
+  age,
+  type Drill,
+  type ListedPod,
+  rollback,
+  runnerPodsOf,
+  stopTheLine,
+} from '../../src/guardrails/line.ts';
+
+/** A runner's agent pod as kubectl lists it, in a phase. */
+const running = (name: string, phase = 'Running'): ListedPod => ({
+  metadata: { name, labels: { 'factory.mrogan.dev/runner': 'agent' } },
+  status: { phase },
+});
 
 let database: Database;
 beforeEach(async () => {
@@ -127,11 +141,41 @@ describe('the runner pods the drill waits on', () => {
           },
         },
       ]),
-    ).toEqual([
-      { name: 'coder-1-1-1-agent', part: 'agent' },
-      { name: 'coder-1-1-1-prepare', part: 'prepare' },
-      { name: 'unlabelled' },
-    ]);
+    ).toEqual({
+      pods: [
+        { name: 'coder-1-1-1-agent', part: 'agent' },
+        { name: 'coder-1-1-1-prepare', part: 'prepare' },
+        { name: 'unlabelled' },
+      ],
+      finished: 0,
+    });
+  });
+
+  it('are those pending or running, and count apart the finished ones a Job keeps for its hour', () => {
+    const pod = (name: string, phase?: string, labels: Record<string, string> = {}) => ({
+      metadata: { name, labels: { 'factory.mrogan.dev/runner': 'agent', ...labels } },
+      ...(phase && { status: { phase } }),
+    });
+    expect(
+      runnerPodsOf([
+        pod('done-agent', 'Succeeded'),
+        pod('crashed-agent', 'Failed'),
+        pod('starting-agent', 'Pending'),
+        pod('working-agent', 'Running'),
+        pod('new-agent'),
+        pod('lost-agent', 'Unknown'),
+        // A finished red-team pod is the harness's, and not counted among the line's finished ones either.
+        pod('red-team-egress-1a2b3c4d', 'Succeeded', { [RED_TEAM_LABEL]: 'egress' }),
+      ]),
+    ).toEqual({
+      pods: [
+        { name: 'starting-agent', part: 'agent' },
+        { name: 'working-agent', part: 'agent' },
+        { name: 'new-agent', part: 'agent' },
+        { name: 'lost-agent', part: 'agent' },
+      ],
+      finished: 2,
+    });
   });
 });
 
@@ -140,14 +184,15 @@ describe('the stop-the-line drill', () => {
   beforeEach(() => append(database.operator, 'line.started', {}));
 
   /** A drill against the test's store: `make` appends Martin's stop and start; the rest is as each test says. */
-  function drill(o: { yes?: boolean; pods?: { name: string; part?: string }[][]; take?: boolean }) {
+  function drill(o: { yes?: boolean; pods?: ListedPod[][]; take?: boolean }) {
     let clock = Date.now();
-    const pods = [...(o.pods ?? [[{ name: 'w-agent', part: 'agent' }], []])];
+    const pods = [...(o.pods ?? [[running('w-agent')], []])];
     const made: string[] = [];
     const said: string[] = [];
     const d: Drill = {
       sql: database.proofs,
-      runnerPods: async () => (pods.length > 1 ? (pods.shift() ?? []) : (pods[0] ?? [])),
+      // Listed as kubectl lists them, and read as command.ts reads them.
+      runnerPods: async () => runnerPodsOf(pods.length > 1 ? (pods.shift() ?? []) : (pods[0] ?? [])),
       ask: async () => o.yes ?? true,
       make: async (target, reason) => {
         made.push(target);
@@ -249,7 +294,7 @@ describe('the stop-the-line drill', () => {
   });
 
   it('does not hold when a pod is left, a work item was taken, or no stop aborted a canary', async () => {
-    const { d, made } = drill({ pods: [[{ name: 'w-agent', part: 'agent' }]], take: true });
+    const { d, made } = drill({ pods: [[running('w-agent')]], take: true });
     const taken = await stopTheLine(d);
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
     expect(taken).toMatchObject({ held: false });
@@ -259,9 +304,25 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(/✗ No canary in flight has been aborted by Stop the line/);
   });
 
+  it('waits only on the pods still running, and records the finished ones it passed over', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const done = [running('done-agent', 'Succeeded'), running('crashed-agent', 'Failed')];
+    // The finished pods stay listed throughout, as their Jobs keep them; the running one goes after the stop.
+    const { d, said } = drill({ pods: [[...done, running('w-agent')], [...done, running('w-agent')], done] });
+    const taken = await stopTheLine(d);
+    expect(said[0]).toMatch(/1 agent pod\(s\) and 0 other pod\(s\) of the line’s are running in runners now\./);
+    expect(taken).toMatchObject({ held: true });
+    const output = 'output' in taken ? taken.output : '';
+    expect(output).toMatch(
+      /✓ None of the line’s pods is left in runners \(1 were running at the prompt or the stop\)\./,
+    );
+    expect(output).toMatch(/2 finished pod\(s\) of the line’s in runners passed over/);
+    expect(output).not.toMatch(/still in runners|started in runners/);
+  });
+
   it('lists the runners again once stopped, so a pod started after the prompt is seen and waited for', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const { d } = drill({ pods: [[], [{ name: 'late-agent', part: 'agent' }]] });
+    const { d } = drill({ pods: [[], [running('late-agent')]] });
     const taken = await stopTheLine(d);
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✗ the line’s pods still in runners: late-agent/);
@@ -273,7 +334,7 @@ describe('the stop-the-line drill', () => {
     const listed = d.runnerPods;
     let calls = 0;
     // At the prompt, at the stop (gone), then a step begun meanwhile.
-    d.runnerPods = async () => (++calls >= 3 ? [{ name: 'new-agent', part: 'agent' }] : listed());
+    d.runnerPods = async () => (++calls >= 3 ? runnerPodsOf([running('new-agent')]) : listed());
     const taken = await stopTheLine(d);
     expect(taken).toMatchObject({ held: false });
     expect('output' in taken && taken.output).toMatch(

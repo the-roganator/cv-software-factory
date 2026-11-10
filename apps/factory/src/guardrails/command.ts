@@ -149,7 +149,8 @@ export async function run(args: string[]): Promise<number> {
     sql,
     kubeContext: context_,
     runnerPods: async () => {
-      // The line's own runners: the selector leaves out the red-team harness's pods, and runnerPodsOf reads the labels too.
+      // The line's own runners: the selector leaves out the red-team harness's pods, and runnerPodsOf reads the labels too,
+      // and the phase, so a finished pod its Job keeps for an hour is counted apart and never waited on.
       const kubectl = ['--context', context_, '-n', 'runners', 'get', 'pods', '-l', NOT_RED_TEAM, '-o', 'json'];
       const { stdout } = await exec('kubectl', kubectl);
       return runnerPodsOf((JSON.parse(stdout) as { items: ListedPod[] }).items);

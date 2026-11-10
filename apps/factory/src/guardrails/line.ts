@@ -5,8 +5,8 @@
  *   analysis's verdict verbatim, who rolled it back and how long ago. None, and it does not hold: the drill that makes
  *   one is the rollback switch's (task 25).
  * - `stop-the-line`, in two parts. The drill, against the line as it is, after Martin says yes: `make stop-the-line`;
- *   then the line's stop is recorded by one of his roles, no pod is left in `runners`, and the line took no work item
- *   while it was stopped; then `make start-the-line`, whatever happened. Only a running line is drilled: one that is
+ *   then the line's stop is recorded by one of his roles, no pod of the line's is left in `runners` but those already
+ *   finished at the prompt, which their Jobs keep for an hour, and the line took no work item while it was stopped; then `make start-the-line`, whatever happened. Only a running line is drilled: one that is
  *   stopped, or not yet started, as on a new store, is not taken, since starting it after would be a start Martin
  *   never chose. And the last real canary a stop aborted, by
  *   the line's role, and how long ago: none, and it does not hold.
@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { upcast } from '@software-factory/events';
 import { lineState, storeClock } from '@software-factory/store';
 import type { Sql } from 'postgres';
+import { z } from 'zod';
 import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 import { isRedTeam } from '../runners/jobs.ts';
 
@@ -92,11 +93,23 @@ export async function abortedByStop(sql: Sql, now: Date): Promise<Taken> {
   };
 }
 
-/** A pod as `kubectl get pods -o json` lists it, with only what the drill reads. */
-export interface ListedPod {
-  metadata: { name: string; labels?: Record<string, string>; deletionTimestamp?: string };
-  status?: { phase?: string };
-}
+/**
+ * Pods as `kubectl get pods -o json` lists them, with only what the drill reads. A listing that does not fit throws,
+ * and the drill is then not held: which pods to pass over is never guessed from a partial answer.
+ */
+export const POD_LIST = z.object({
+  items: z.array(
+    z.object({
+      metadata: z.object({
+        name: z.string(),
+        labels: z.record(z.string(), z.string()).optional(),
+        deletionTimestamp: z.string().optional(),
+      }),
+      status: z.object({ phase: z.string().optional() }).optional(),
+    }),
+  ),
+});
+export type ListedPod = z.infer<typeof POD_LIST>['items'][number];
 
 /**
  * One of the line's runner pods, with the runner part it is, marked `finished` when its containers have all ended and
@@ -238,7 +251,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       );
     if (passedOver.size)
       lines.push(
-        `✓ ${passedOver.size} pod(s) of the line’s that had finished before the prompt passed over: their Jobs keep them for an hour, and no stop ends them.`,
+        `✓ ${passedOver.size} pod(s) of the line’s that had finished before the prompt were passed over: their Jobs keep them for an hour, and no stop ends them.`,
       );
 
     const waited = since(await storeNow());

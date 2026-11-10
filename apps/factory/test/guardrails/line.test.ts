@@ -14,6 +14,7 @@ import {
   age,
   type Drill,
   type ListedPod,
+  POD_LIST,
   rollback,
   runnerPodsOf,
   stopTheLine,
@@ -177,6 +178,16 @@ describe('the runner pods the drill waits on', () => {
   });
 });
 
+describe('the pod listing the drill reads', () => {
+  it('takes kubectl’s listing, and refuses one without the fields it decides on', () => {
+    const listed = { items: [{ metadata: { name: 'w-agent', uid: 'u' }, status: { phase: 'Running' }, spec: {} }] };
+    expect(POD_LIST.parse(listed).items).toEqual([{ metadata: { name: 'w-agent' }, status: { phase: 'Running' } }]);
+    expect(() => POD_LIST.parse({})).toThrow();
+    expect(() => POD_LIST.parse({ items: [{ metadata: {} }] })).toThrow();
+    expect(() => POD_LIST.parse({ items: [{ metadata: { name: 'w' }, status: { phase: 3 } }] })).toThrow();
+  });
+});
+
 describe('the stop-the-line drill', () => {
   // A running line, as Martin left it: only that is drilled.
   beforeEach(() => append(database.operator, 'line.started', {}));
@@ -324,7 +335,7 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(
       /✓ None of the line’s pods is left in runners \(1 were in runners, not finished, at the prompt or the stop\)\./,
     );
-    expect(output).toMatch(/✓ 2 pod\(s\) of the line’s that had finished before the prompt passed over/);
+    expect(output).toMatch(/✓ 2 pod\(s\) of the line’s that had finished before the prompt were passed over/);
     expect(output).not.toMatch(/✗/);
   });
 

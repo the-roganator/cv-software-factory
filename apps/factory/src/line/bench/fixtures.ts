@@ -56,11 +56,11 @@ const APP_MAIN = '200855c66a631d2ea3014e71fdee640fea1e7024';
 const APP_VERSION = APP_MAIN.slice(0, 7);
 
 /**
- * The app's CODEOWNERS at `APP_MAIN`, without its comments, and the paths no scope may name there. A copy by hand,
- * which the line reads from GitHub instead (`protectedPaths`): it holds for `APP_MAIN` only, and a fixture pinned to
- * a later commit needs it copied again.
+ * The app's CODEOWNERS at `APP_MAIN`, without its comments, and the paths no scope may name there. A copy, so a
+ * fixture's input is whole without a checkout, which the line reads from GitHub instead (`protectedPaths`): the bench
+ * refuses a step whose checkout's CODEOWNERS gives other paths, so a pin moved without it fails before any call.
  */
-const APP_CODEOWNERS = [
+export const APP_CODEOWNERS = [
   '/.github/',
   '/deploy/',
   '/Dockerfile',

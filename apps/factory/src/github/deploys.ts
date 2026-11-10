@@ -188,8 +188,17 @@ const said = (target: DeployTarget, title: string): string[] => {
   return runs?.[2] === target.profile ? (runs[1] ?? '').split(' and ') : [];
 };
 
-/** Whether a title is one `deployTitle` writes for this target's profile, running any pins. */
-export const isDeployTitle = (target: DeployTarget, title: string): boolean => said(target, title).length > 0;
+/** Whether a title is one `deployTitle` writes for this target: its profile, and each run one of its pins at a commit. */
+export const isDeployTitle = (target: DeployTarget, title: string): boolean => {
+  const runs = said(target, title);
+  const ofPin = (run: string) =>
+    target.pins.some(
+      (pin) =>
+        /^[0-9a-f]{7}$/.test(pin.what ? run.slice(pin.what.length + 1) : run) &&
+        (!pin.what || run.startsWith(`${pin.what} `)),
+    );
+  return runs.length > 0 && runs.every(ofPin);
+};
 
 /** Whether a deploy pull request's title says it runs this pin at this commit, alone or beside another. */
 export const titleRuns = (target: DeployTarget, title: string, runs: Runs): boolean =>

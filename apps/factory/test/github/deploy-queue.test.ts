@@ -177,6 +177,8 @@ describe('the deploy queue watch', () => {
       pull({ base: { ref: 'deploy/next' } }),
       pull({ head: { ref: 'deploy/local', sha: HEAD, repo: { full_name: 'someone/fork' } } }),
       pull({ title: 'chore(deploy): run console 06f60ad on the local cluster and more' }),
+      pull({ title: 'chore(deploy): run unrelated 06f60ad on the local cluster' }),
+      pull({ title: 'chore(deploy): run console 06f60ad and 1234567 on the local cluster' }),
     ];
     for (const other of others) {
       expect(deployPullWait(FACTORY, other)?.waits, other.title).toBe('not-a-deploy');
@@ -185,6 +187,13 @@ describe('the deploy queue watch', () => {
       expect(enqueued, JSON.stringify(other)).toEqual([]);
     }
     expect(deployPullWait(FACTORY, pull())).toBeUndefined();
+  });
+
+  it('finds the deploy watch’s pull request among others from the same branch', async () => {
+    const other = pull({ number: 990, base: { ref: 'deploy/next' } });
+    const { pass, enqueued } = harness({ pulls: () => [other, pull()] });
+    await pass();
+    expect(enqueued).toEqual([[973, HEAD]]);
   });
 
   it('never queues a head the gate held, judged by another rule, has not judged, or judged at another head', async () => {

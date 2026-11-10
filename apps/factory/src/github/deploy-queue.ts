@@ -164,7 +164,8 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
       `/repos/${repo}/pulls?state=open&per_page=10&head=${owner}:${encodeURIComponent(target.branch)}`,
       PULLS,
     );
-    const pull = pulls[0];
+    // The deploy watch's own, if GitHub lists another from the same branch into another base beside it.
+    const pull = pulls.find((p) => deployPullWait(target, p) === undefined) ?? pulls[0];
     if (!pull) return;
     const { number } = pull;
     const head = pull.head.sha;

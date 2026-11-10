@@ -4,7 +4,7 @@ CLUSTER := software-factory
 CONTEXT := k3d-$(CLUSTER)
 KUBECTL := kubectl --context $(CONTEXT)
 # mise.toml holds Argo CD's CLI to the minor release this chart runs (its appVersion): move them together.
-ARGOCD_CHART := 10.9.5
+ARGOCD_CHART := 10.15.0
 # The Postgres the console's live browser tests run beside, as in CI: the cluster's, whose one pin is its StatefulSet's.
 POSTGRES := $(shell sed -nE 's/^ +image: (postgres:[^ ]+@sha256:[0-9a-f]{64})$$/\1/p' deploy/base/postgres/statefulset.yaml | head -1)
 # The branch Argo CD deploys this repository's deploy/ from. `make up REVISION=my-branch` tries a change there

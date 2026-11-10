@@ -28,5 +28,6 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
-      # Kyverno's CRDs are larger than client-side apply's annotation allows.
+      # Kyverno's CRDs are larger than client-side apply's annotation allows. Argo CD then diffs them server-side too,
+      # by a dry-run apply, as Kubernetes would apply them.
       - ServerSideApply=true

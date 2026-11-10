@@ -28,9 +28,9 @@
  *   not restart it: an excepted finding's alert is dismissed, not closed, and keeps its day. Critical 2 days, High 7,
  *   Medium 30, Low 90; a finding no source rates takes Low's. An excepted finding has no deadline.
  * - **The run fails** on a new High or Critical (first seen today) with a fix installable, on one due within a day,
- *   and on one past its deadline, after the upload, so a new finding's alert exists; a new one with no fix installable
- *   is counted on its own and fails nothing, so a failed run always means a move not yet made. `--prove`, a proving run's, which uploads nothing,
- *   fails on none of them. A source that cannot be read (npm, Node's index, an image line's tags or its newest image,
+ *   and on one past its deadline, after the upload, so a new finding's alert exists. A new one with no fix the scan
+ *   can date is counted on its own and fails nothing, so a failed run always means a move not yet made. `--prove`, a
+ *   proving run's, which uploads nothing, fails on none of them. A source that cannot be read (npm, Node's index, an image line's tags or its newest image,
  *   code scanning) fails either, as an unread item fails the scan.
  *
  * The log and the step summary give counts alone, never a package or an advisory: by severity, and by overdue, due
@@ -644,7 +644,7 @@ export function verdict(all: Row[], prove = false) {
   const lines = [
     `Deadlines: ${open.length} open results, ${all.length - open.length} excepted. By severity: ${SEVERITIES.map((s) => `${s.toLowerCase()} ${bySeverity[s]}`).join(', ')}.`,
     `By deadline: ${BUCKETS.map(([b, name]) => `${name} ${byBucket[b]}`).join(', ')}.`,
-    `New high or critical (first seen today): ${fresh} with a fix to install, ${waiting} with none yet, which fail nothing.`,
+    `New high or critical (first seen today): ${fresh} with a fix to install, ${waiting} with none the scan can date, which fail nothing.`,
     failing
       ? prove
         ? `The real run would fail on ${fresh} new high or critical with a fix, ${byBucket.day} due within a day and ${byBucket.overdue} past their deadline; a proving run fails on none.`
@@ -713,20 +713,39 @@ export function realSources(
 ): Sources {
   const tools = realTools(trivyImage, handoff.cache, work);
   const times = new Map<string, Promise<Record<string, string>>>();
-  // An error names the source, never the package asked for: the log gives counts alone.
-  const get = async (url: string, source: string) => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(120_000) }).catch((error: unknown) => {
-      throw new Error(`${source}: ${firstLine(error)}`);
+  // One HTTP read: the answer's status and text, or an error that names the source, never the package asked for (the
+  // log gives counts alone), and is permanent for an answer trying again cannot change.
+  const request = async (url: string, source: string, init: RequestInit = {}) => {
+    const named = (error: unknown) => new Error(`${source}: ${reason(error)}`);
+    const response = await fetch(url, { redirect: 'follow', ...init, signal: AbortSignal.timeout(120_000) }).catch(
+      (error: unknown) => {
+        throw named(error);
+      },
+    );
+    if (response.status !== 404 && !response.ok) throw answered(source, response.status);
+    const text = await response.text().catch((error: unknown) => {
+      throw named(error);
     });
-    // A package Trivy read is one npm has: a 404 is a source not read, not a package with no fix.
-    if (!response.ok) throw new Error(`${source} answered ${response.status}`);
-    return response.json() as Promise<unknown>;
+    return { status: response.status, text };
+  };
+  const json = (text: string, source: string): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`${source} gave an answer that is not JSON`);
+    }
+  };
+  // A package Trivy read is one npm has: a 404 is a source not read, not a package with no fix.
+  const get = async (url: string, source: string) => {
+    const { status, text } = await request(url, source);
+    if (status === 404) throw new Permanent(`${source} answered 404`);
+    return json(text, source);
   };
   return {
     async published(name, version) {
       let once = times.get(name);
       if (!once) {
-        once = tools.retry(async () => {
+        once = transient(async () => {
           const body = (await get(npmUrl(name), "npm's registry")) as { time?: Record<string, string> } | undefined;
           if (!body?.time || typeof body.time !== 'object') throw new Error("npm's registry gave no publish times");
           return body.time;
@@ -736,7 +755,7 @@ export function realSources(
       return (await once)[version];
     },
     async releases() {
-      const body = await tools.retry(() => get(NODE_INDEX, "Node's release index"));
+      const body = await transient(() => get(NODE_INDEX, "Node's release index"));
       if (!Array.isArray(body)) throw new Error("Node's release index is not a list");
       return body as { version: string; date: string }[];
     },
@@ -751,30 +770,23 @@ export function realSources(
     },
     async k3s(release) {
       const tag = encodeURIComponent(release);
-      const list = await tools.retry(async () => {
-        const response = await fetch(`https://github.com/k3s-io/k3s/releases/download/${tag}/k3s-images.txt`, {
-          redirect: 'follow',
-          signal: AbortSignal.timeout(60_000),
-        }).catch((error: unknown) => {
-          throw new Error(`k3s's release ${release}: ${firstLine(error)}`);
-        });
-        if (response.status === 404) return undefined;
-        if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status} for its images`);
-        return response.text();
-      });
+      const source = `k3s's release ${release}`;
+      const listed = await transient(() =>
+        request(`https://github.com/k3s-io/k3s/releases/download/${tag}/k3s-images.txt`, source),
+      );
       // A tag whose release is not published yet: nothing to install.
-      if (list === undefined) return undefined;
-      const about = (await tools.retry(async () => {
-        const response = await fetch(`https://api.github.com/repos/k3s-io/k3s/releases/tags/${tag}`, {
+      if (listed.status === 404) return undefined;
+      const list = listed.text;
+      const answer = await transient(() =>
+        request(`https://api.github.com/repos/k3s-io/k3s/releases/tags/${tag}`, source, {
           headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-          signal: AbortSignal.timeout(60_000),
-        }).catch((error: unknown) => {
-          throw new Error(`k3s's release ${release}: ${firstLine(error)}`);
-        });
-        if (response.status === 404) return {};
-        if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status}`);
-        return response.json();
-      })) as { published_at?: unknown; prerelease?: unknown; draft?: unknown };
+        }),
+      );
+      const about = (answer.status === 404 ? {} : json(answer.text, source)) as {
+        published_at?: unknown;
+        prerelease?: unknown;
+        draft?: unknown;
+      };
       // A draft, or a release not yet published: nothing to install.
       if (typeof about.published_at !== 'string' || about.prerelease === true || about.draft === true) return undefined;
       const images = list
@@ -797,9 +809,11 @@ export function realSources(
       const api = {
         ...direct,
         get: (path: string) =>
-          tools.retry(() =>
+          transient(() =>
             direct.get(path).catch((error: unknown) => {
-              throw new Error(`code scanning: ${firstLine(error)}`);
+              // realApi names the status after the path: `GET /repos/…: 403 …`.
+              const status = Number(/: (\d{3}) /.exec(error instanceof Error ? error.message : '')?.[1]);
+              throw status ? answered('code scanning', status) : new Error(`code scanning: ${reason(error)}`);
             }),
           ),
       };
@@ -823,6 +837,36 @@ export function realSources(
     },
   };
 }
+
+/** An answer trying again cannot change: a 4xx but 429. */
+class Permanent extends Error {}
+
+const answered = (source: string, status: number) =>
+  status === 429 || status >= 500
+    ? new Error(`${source} answered ${status}`)
+    : new Permanent(`${source} answered ${status}`);
+
+/** Tries again on a dropped connection, a timeout, a 429 or a 5xx, as a pull is tried; a permanent answer at once. */
+async function transient<T>(what: () => Promise<T>, waits = [0, 15_000, 45_000, 90_000]): Promise<T> {
+  let last: unknown;
+  for (const wait of waits) {
+    if (wait) await new Promise((done) => setTimeout(done, wait));
+    try {
+      return await what();
+    } catch (error) {
+      if (error instanceof Permanent) throw error;
+      last = error;
+    }
+  }
+  throw last;
+}
+
+/** Why a fetch failed: its message, and the cause undici keeps beneath "fetch failed" (ECONNRESET, a TLS error). */
+const reason = (error: unknown) => {
+  const message = firstLine(error);
+  const cause = (error as { cause?: { code?: string; message?: string } } | undefined)?.cause;
+  return cause ? `${message} (${cause.code ?? cause.message ?? 'no cause given'})` : message;
+};
 
 const firstLine = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 300);
@@ -859,7 +903,7 @@ export async function main(args: string[]): Promise<number> {
     console.error(`::error::The deadlines could not be read: ${firstLine(error)}. The run fails.`);
     return 1;
   }
-  const { lines, bySeverity, byBucket, fresh, waiting, passes } = verdict(judged.rows, prove);
+  const { lines, bySeverity, byBucket, passes } = verdict(judged.rows, prove);
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, and ${judged.looked.images} newer images. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet.`;
   for (const line of [looked, ...lines]) console.log(line);
   if (!passes) console.log(`::error::${lines.at(-1)}`);
@@ -877,7 +921,7 @@ export async function main(args: string[]): Promise<number> {
         }),
         `| all | ${Object.values(bySeverity).reduce((a, b) => a + b, 0)} | ${BUCKETS.map(([b]) => byBucket[b]).join(' | ')} |`,
         '',
-        `New high or critical (first seen today): ${fresh} with a fix to install, ${waiting} with none yet. ${lines.at(-1)}`,
+        `${lines[2]} ${lines.at(-1)}`,
         '',
       ].join('\n'),
     );

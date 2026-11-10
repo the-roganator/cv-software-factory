@@ -672,6 +672,22 @@ describe('the clock', () => {
       expect(rows[0]?.seen).toBe(at('2026-11-01T00:00:00Z'));
     });
 
+    it('carries the day within ten minutes either side of the next one’s making, and no further', async () => {
+      const at10 = (fixed: string) =>
+        judge(
+          world(
+            [after],
+            [alertOf(before, '2026-11-01T00:00:00Z', { state: 'fixed', fixed_at: fixed }), alertOf(after, REPIN)],
+          ),
+        );
+      // Nine minutes before, and ten after: one upload's categories.
+      expect((await at10('2026-11-09T19:55:50Z')).rows[0]?.seen).toBe(at('2026-11-01T00:00:00Z'));
+      expect((await at10('2026-11-09T20:14:50Z')).rows[0]?.seen).toBe(at('2026-11-01T00:00:00Z'));
+      // Eleven minutes either way: another upload.
+      expect((await at10('2026-11-09T19:53:50Z')).rows[0]?.seen).toBe(at(REPIN));
+      expect((await at10('2026-11-09T20:15:51Z')).rows[0]?.seen).toBe(at(REPIN));
+    });
+
     it('takes no day from an alert closed an hour from the next one’s making: two uploads, not one', async () => {
       const { rows } = await judge(
         world(
@@ -730,7 +746,7 @@ describe('the run', () => {
     expect(without.verdict.waiting).toBe(1);
     expect(without.verdict.passes).toBe(true);
     expect(without.verdict.lines[2]).toBe(
-      'New high or critical (first seen today): 0 with a fix to install, 1 with none yet, which fail nothing.',
+      'New high or critical (first seen today): 0 with a fix to install, 1 with none the scan can date, which fail nothing.',
     );
     // A fix still inside pnpm's wait is none yet: nothing to move today.
     const waitingFix = npm({ severity: 'HIGH', package: 'example-c' });

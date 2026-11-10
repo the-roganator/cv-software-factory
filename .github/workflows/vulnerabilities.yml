@@ -13,8 +13,9 @@
 #   fails and uploads nothing, so no alert closes because its item went unread. After the upload it holds its
 #   categories' alerts to policy/vulnerabilities.ts, read from this repository's main alone: each excepted result's
 #   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then each open
-#   finding's deadline (deadlines.ts), and the run fails on a new High or Critical with a fix, one due within a day, or one past
-#   its deadline; it reads code scanning for when each alert was made.
+#   finding's deadline (deadlines.ts), and the run fails on a new High or Critical with a fix, one due within a day,
+#   or one past its deadline; it reads code scanning for when each alert was made. One scan at a time uploads, so
+#   no two uploads' alerts interleave.
 # - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
 #   not showing CVE-2026-111497, and its log carries the counts, the deadlines' too, read against the repository's alerts
@@ -109,6 +110,12 @@ jobs:
     name: scan
     needs: coverage
     if: ${{ github.event_name != 'pull_request' }}
+    # One upload at a time, so an alert one closes and the next opens are never two uploads' interleaved (deadlines.ts
+    # reads an alert closed within minutes of the next one's making as one upload's split). A run waits; none is
+    # cancelled.
+    concurrency:
+      group: vulnerabilities-scan-${{ github.repository }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -214,9 +221,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node factory/apps/factory/src/vulnerabilities/alerts.ts "$RUNNER_TEMP/scan/exceptions.json"
-      # Each open finding's deadline, once its alert exists: fails on a new High or Critical with a fix, one due within a day, or one
-      # past its deadline (deadlines.ts). It reads code scanning with the job's token, npm's registry, Node's release
-      # index, and the newest image on each line with a fixed finding (skopeo for the tags, Trivy on the scan's database).
+      # Each open finding's deadline, once its alert exists: fails on a new High or Critical with a fix, one due within
+      # a day, or one past its deadline (deadlines.ts). It reads code scanning with the job's token, npm's registry,
+      # Node's release index, k3s's releases, and the newer images on each line with a fixed finding (skopeo for the
+      # tags, Trivy on the scan's database).
       - name: Deadlines
         if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
         env:

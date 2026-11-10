@@ -5,8 +5,8 @@
  *   analysis's verdict verbatim, who rolled it back and how long ago. None, and it does not hold: the drill that makes
  *   one is the rollback switch's (task 25).
  * - `stop-the-line`, in two parts. The drill, against the line as it is, after Martin says yes: `make stop-the-line`;
- *   then the line's stop is recorded by one of his roles, no pod is left in `runners`, and the line took no work item
- *   while it was stopped; then `make start-the-line`, whatever happened. Only a running line is drilled: one that is
+ *   then the line's stop is recorded by one of his roles, no pod of the line's is left in `runners` but those already
+ *   finished at the prompt, which their Jobs keep for an hour, and the line took no work item while it was stopped; then `make start-the-line`, whatever happened. Only a running line is drilled: one that is
  *   stopped, or not yet started, as on a new store, is not taken, since starting it after would be a start Martin
  *   never chose. And the last real canary a stop aborted, by
  *   the line's role, and how long ago: none, and it does not hold.
@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { upcast } from '@software-factory/events';
 import { lineState, storeClock } from '@software-factory/store';
 import type { Sql } from 'postgres';
+import { z } from 'zod';
 import { MARTINS_ROLES } from '../../../../policy/store-grants.ts';
 import { isRedTeam } from '../runners/jobs.ts';
 
@@ -92,30 +93,56 @@ export async function abortedByStop(sql: Sql, now: Date): Promise<Taken> {
   };
 }
 
-/** A pod as `kubectl get pods -o json` lists it, with only what the drill reads. */
-export interface ListedPod {
-  metadata: { name: string; labels?: Record<string, string> };
+/**
+ * Pods as `kubectl get pods -o json` lists them, with only what the drill reads. A listing that does not fit throws,
+ * and the drill is then not held: which pods to pass over is never guessed from a partial answer.
+ */
+export const POD_LIST = z.object({
+  items: z.array(
+    z.object({
+      metadata: z.object({
+        name: z.string(),
+        labels: z.record(z.string(), z.string()).optional(),
+        deletionTimestamp: z.string().optional(),
+      }),
+      status: z.object({ phase: z.string().optional() }).optional(),
+    }),
+  ),
+});
+export type ListedPod = z.infer<typeof POD_LIST>['items'][number];
+
+/**
+ * One of the line's runner pods, with the runner part it is, marked `finished` when its containers have all ended and
+ * nothing is deleting it: a pod its Job keeps for an hour (`ttlSecondsAfterFinished`), which no stop ends.
+ */
+export interface RunnerPod {
+  name: string;
+  part?: string;
+  finished?: true;
 }
 
 /**
- * The line's runner pods among those listed in `runners`, by name, with the runner part each is: never one the red-team
- * harness made (`RED_TEAM_LABEL`), which Stop the line does not end and which may start while the line is stopped, so
- * the drill passes over it as the line does. The harness makes its pods in `red-team`, apart from the runners, and
- * admission refuses a marked pod in `runners`.
+ * The line's runner pods among those listed in `runners`, by name, with the runner part each is and whether it has
+ * finished (Succeeded or Failed, and not being deleted; a pod a stop is deleting is not finished until it is gone):
+ * never one the red-team harness made (`RED_TEAM_LABEL`), which Stop the line does not end and which may start while
+ * the line is stopped, so the drill passes over it as the line does. The harness makes its pods in `red-team`, apart
+ * from the runners, and admission refuses a marked pod in `runners`.
  */
-export const runnerPodsOf = (items: ListedPod[]): { name: string; part?: string }[] =>
+export const runnerPodsOf = (items: ListedPod[]): RunnerPod[] =>
   items
     .filter(({ metadata }) => !isRedTeam(metadata.labels))
-    .map(({ metadata }) => ({
+    .map(({ metadata, status }) => ({
       name: metadata.name,
       ...(metadata.labels?.['factory.mrogan.dev/runner'] && { part: metadata.labels['factory.mrogan.dev/runner'] }),
+      ...((status?.phase === 'Succeeded' || status?.phase === 'Failed') &&
+        !metadata.deletionTimestamp && { finished: true as const }),
     }));
 
 /** What the drill needs of the world: the store, the cluster, Martin, the Makefile and a clock. */
 export interface Drill {
   sql: Sql;
-  /** The line's runner pods in `runners`, by name, with the runner part (`agent` or `prepare`) each is (`runnerPodsOf`). */
-  runnerPods(): Promise<{ name: string; part?: string }[]>;
+  /** The line's runner pods in `runners`, by name, with the runner part (`agent` or `prepare`) each is and whether it has finished (`runnerPodsOf`). */
+  runnerPods(): Promise<RunnerPod[]>;
   ask(question: string): Promise<boolean>;
   /** `make stop-the-line` or `make start-the-line`, with a reason; true when it exited 0. */
   make(target: 'stop-the-line' | 'start-the-line', reason: string): Promise<boolean>;
@@ -142,10 +169,16 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
       declined: `The line ${why}: the drill stops a running line and starts it again, so it was not taken, and nothing is recorded for it. Start the line, then run it again.`,
     };
   }
-  const before = await drill.runnerPods();
+  // A pod already finished at the prompt ran no step the stop could end, and its Job keeps it for an hour: the drill
+  // passes over it, by name, from here to its end. Every other pod, one that finishes after the prompt or starts while
+  // the line is stopped and finishes, must go, its Job deleted.
+  const listedBefore = await drill.runnerPods();
+  const passedOver = new Set(listedBefore.filter((p) => p.finished).map((p) => p.name));
+  const notPassedOver = (pods: RunnerPod[]) => pods.filter((p) => !passedOver.has(p.name));
+  const before = notPassedOver(listedBefore);
   const agents = before.filter((p) => p.part === 'agent');
   drill.say(
-    `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) of the line’s are running in runners now.`,
+    `The drill stops the line, as make stop-the-line does: every step in hand is lost, and runs again when it starts, and a canary in flight is aborted. ${agents.length} agent pod(s) and ${before.length - agents.length} other pod(s) of the line’s are in runners and not finished now.`,
   );
   if (!(await drill.ask('Stop the line now, and start it again after the checks?'))) {
     return { declined: 'Martin did not say yes: the drill was not taken, and nothing is recorded for it.' };
@@ -198,21 +231,27 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     const since = (to: string) => Date.parse(to) - Date.parse(at);
 
     // Listed again once stopped, so a pod started after the prompt is seen and waited for.
-    const atStop = await drill.runnerPods();
+    const atStop = notPassedOver(await drill.runnerPods());
     const seen = new Set([...before, ...atStop].map((p) => p.name));
     const started = drill.now().getTime();
     let left = atStop;
     while (left.length && drill.now().getTime() - started < PODS_GONE_MS) {
       await drill.sleep(POLL_MS);
-      left = await drill.runnerPods();
+      left = notPassedOver(await drill.runnerPods());
     }
     if (left.length) fail(`the line’s pods still in runners: ${left.map((p) => p.name).join(', ')}`);
     else if (seen.size)
-      lines.push(`✓ None of the line’s pods is left in runners (${seen.size} were running at the prompt or the stop).`);
+      lines.push(
+        `✓ None of the line’s pods is left in runners (${seen.size} were in runners, not finished, at the prompt or the stop).`,
+      );
     // Held, as the line's tests show it ends a step (ci:stopped-line), but this drill did not show a pod ended.
     else
       lines.push(
         '✓ None of the line’s pods is in runners: none was running at the prompt or the stop, so no step was there to end.',
+      );
+    if (passedOver.size)
+      lines.push(
+        `✓ ${passedOver.size} pod(s) of the line’s that had finished before the prompt were passed over: their Jobs keep them for an hour, and no stop ends them.`,
       );
 
     const waited = since(await storeNow());
@@ -224,7 +263,7 @@ export async function stopTheLine(drill: Drill): Promise<DrillTaken> {
     else lines.push(`✓ No work item was taken in the ${Math.round(stoppedFor / 1000)}s the line was stopped.`);
     // Listed once more before the start, so a step begun while stopped is seen, though the pods had gone.
     if (!left.length) {
-      const late = await drill.runnerPods();
+      const late = notPassedOver(await drill.runnerPods());
       if (late.length)
         fail(`the line’s pods started in runners while the line was stopped: ${late.map((p) => p.name).join(', ')}`);
     }

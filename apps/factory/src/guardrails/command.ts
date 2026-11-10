@@ -14,7 +14,7 @@ import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
 import { guardrailsProvedBy, PROOFS, type ProofId } from '../../../../policy/guardrails.ts';
 import { type Resource, render } from '../../../../scripts/policy-hash.ts';
 import { NOT_RED_TEAM } from '../runners/jobs.ts';
-import { type ListedPod, runnerPodsOf } from './line.ts';
+import { POD_LIST, runnerPodsOf } from './line.ts';
 import { type Context, ORDER, type Ran, TAKERS, type Taken, text } from './proofs.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
@@ -149,10 +149,11 @@ export async function run(args: string[]): Promise<number> {
     sql,
     kubeContext: context_,
     runnerPods: async () => {
-      // The line's own runners: the selector leaves out the red-team harness's pods, and runnerPodsOf reads the labels too.
+      // The line's own runners: the selector leaves out the red-team harness's pods, and runnerPodsOf reads the labels too,
+      // and the phase, so the drill can pass over a pod its Job keeps for an hour after it finished.
       const kubectl = ['--context', context_, '-n', 'runners', 'get', 'pods', '-l', NOT_RED_TEAM, '-o', 'json'];
       const { stdout } = await exec('kubectl', kubectl);
-      return runnerPodsOf((JSON.parse(stdout) as { items: ListedPod[] }).items);
+      return runnerPodsOf(POD_LIST.parse(JSON.parse(stdout)).items);
     },
     ask: async (question) => {
       if (!process.stdin.isTTY) {

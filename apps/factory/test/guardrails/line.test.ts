@@ -9,7 +9,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import { RED_TEAM_LABEL } from '../../../../policy/attacks.ts';
 import { proved } from '../../src/guardrails/command.ts';
-import { abortedByStop, age, type Drill, rollback, runnerPodsOf, stopTheLine } from '../../src/guardrails/line.ts';
+import {
+  abortedByStop,
+  age,
+  type Drill,
+  type ListedPod,
+  POD_LIST,
+  rollback,
+  runnerPodsOf,
+  stopTheLine,
+} from '../../src/guardrails/line.ts';
+
+/** A runner's agent pod as kubectl lists it, in a phase (none for a pod not yet given one). */
+const agentPod = (
+  name: string,
+  phase: string | undefined = 'Running',
+  metadata: Partial<ListedPod['metadata']> = {},
+) => ({
+  metadata: { name, ...metadata, labels: { 'factory.mrogan.dev/runner': 'agent', ...metadata.labels } },
+  ...(phase && { status: { phase } }),
+});
 
 let database: Database;
 beforeEach(async () => {
@@ -133,6 +152,40 @@ describe('the runner pods the drill waits on', () => {
       { name: 'unlabelled' },
     ]);
   });
+
+  it('are marked finished once Succeeded or Failed, unless a stop is deleting them, and in any other phase are not', () => {
+    const deleting = { deletionTimestamp: '2026-11-10T00:00:00Z' };
+    expect(
+      runnerPodsOf([
+        agentPod('done-agent', 'Succeeded'),
+        agentPod('crashed-agent', 'Failed'),
+        agentPod('ended-agent', 'Failed', deleting),
+        agentPod('starting-agent', 'Pending'),
+        agentPod('working-agent', 'Running'),
+        agentPod('new-agent', undefined),
+        agentPod('lost-agent', 'Unknown'),
+        agentPod('red-team-egress-1a2b3c4d', 'Succeeded', { labels: { [RED_TEAM_LABEL]: 'egress' } }),
+      ]),
+    ).toEqual([
+      { name: 'done-agent', part: 'agent', finished: true },
+      { name: 'crashed-agent', part: 'agent', finished: true },
+      { name: 'ended-agent', part: 'agent' },
+      { name: 'starting-agent', part: 'agent' },
+      { name: 'working-agent', part: 'agent' },
+      { name: 'new-agent', part: 'agent' },
+      { name: 'lost-agent', part: 'agent' },
+    ]);
+  });
+});
+
+describe('the pod listing the drill reads', () => {
+  it('takes kubectl’s listing, and refuses one without the fields it decides on', () => {
+    const listed = { items: [{ metadata: { name: 'w-agent', uid: 'u' }, status: { phase: 'Running' }, spec: {} }] };
+    expect(POD_LIST.parse(listed).items).toEqual([{ metadata: { name: 'w-agent' }, status: { phase: 'Running' } }]);
+    expect(() => POD_LIST.parse({})).toThrow();
+    expect(() => POD_LIST.parse({ items: [{ metadata: {} }] })).toThrow();
+    expect(() => POD_LIST.parse({ items: [{ metadata: { name: 'w' }, status: { phase: 3 } }] })).toThrow();
+  });
 });
 
 describe('the stop-the-line drill', () => {
@@ -140,14 +193,15 @@ describe('the stop-the-line drill', () => {
   beforeEach(() => append(database.operator, 'line.started', {}));
 
   /** A drill against the test's store: `make` appends Martin's stop and start; the rest is as each test says. */
-  function drill(o: { yes?: boolean; pods?: { name: string; part?: string }[][]; take?: boolean }) {
+  function drill(o: { yes?: boolean; pods?: ListedPod[][]; take?: boolean }) {
     let clock = Date.now();
-    const pods = [...(o.pods ?? [[{ name: 'w-agent', part: 'agent' }], []])];
+    const pods = [...(o.pods ?? [[agentPod('w-agent')], []])];
     const made: string[] = [];
     const said: string[] = [];
     const d: Drill = {
       sql: database.proofs,
-      runnerPods: async () => (pods.length > 1 ? (pods.shift() ?? []) : (pods[0] ?? [])),
+      // Listed as kubectl lists them, and read as command.ts reads them.
+      runnerPods: async () => runnerPodsOf(pods.length > 1 ? (pods.shift() ?? []) : (pods[0] ?? [])),
       ask: async () => o.yes ?? true,
       make: async (target, reason) => {
         made.push(target);
@@ -171,12 +225,14 @@ describe('the stop-the-line drill', () => {
     const { d, made, said } = drill({});
     const taken = await stopTheLine(d);
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
-    expect(said[0]).toMatch(/1 agent pod\(s\) and 0 other pod\(s\) of the line’s are running in runners now\./);
+    expect(said[0]).toMatch(
+      /1 agent pod\(s\) and 0 other pod\(s\) of the line’s are in runners and not finished now\./,
+    );
     expect(taken).toMatchObject({ held: true });
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✓ The line stopped at .+, recorded by factory_operator\./);
     expect(output).toMatch(
-      /✓ None of the line’s pods is left in runners \(1 were running at the prompt or the stop\)\./,
+      /✓ None of the line’s pods is left in runners \(1 were in runners, not finished, at the prompt or the stop\)\./,
     );
     expect(output).toMatch(/✓ No work item was taken/);
     expect(output).toMatch(/✓ The line started again\./);
@@ -249,7 +305,7 @@ describe('the stop-the-line drill', () => {
   });
 
   it('does not hold when a pod is left, a work item was taken, or no stop aborted a canary', async () => {
-    const { d, made } = drill({ pods: [[{ name: 'w-agent', part: 'agent' }]], take: true });
+    const { d, made } = drill({ pods: [[agentPod('w-agent')]], take: true });
     const taken = await stopTheLine(d);
     expect(made).toEqual(['stop-the-line', 'start-the-line']);
     expect(taken).toMatchObject({ held: false });
@@ -259,9 +315,60 @@ describe('the stop-the-line drill', () => {
     expect(output).toMatch(/✗ No canary in flight has been aborted by Stop the line/);
   });
 
+  it('passes over the pods finished by the stop, which their Jobs keep, and records how many', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const done = [agentPod('done-agent', 'Succeeded'), agentPod('crashed-agent', 'Failed')];
+    // The finished pods stay listed throughout, as their Jobs keep them; the running one finishes at the stop, and goes.
+    const { d, said } = drill({
+      pods: [
+        [...done, agentPod('w-agent')],
+        [...done, agentPod('w-agent', 'Failed', { deletionTimestamp: 'now' })],
+        done,
+      ],
+    });
+    const taken = await stopTheLine(d);
+    expect(said[0]).toMatch(
+      /1 agent pod\(s\) and 0 other pod\(s\) of the line’s are in runners and not finished now\./,
+    );
+    expect(taken).toMatchObject({ held: true });
+    const output = 'output' in taken ? taken.output : '';
+    expect(output).toMatch(
+      /✓ None of the line’s pods is left in runners \(1 were in runners, not finished, at the prompt or the stop\)\./,
+    );
+    expect(output).toMatch(/✓ 2 pod\(s\) of the line’s that had finished before the prompt were passed over/);
+    expect(output).not.toMatch(/✗/);
+  });
+
+  it('does not hold when a pod running at the stop finishes but is never deleted, its Job left behind', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const { d } = drill({ pods: [[agentPod('w-agent')], [agentPod('w-agent')], [agentPod('w-agent', 'Failed')]] });
+    const taken = await stopTheLine(d);
+    expect(taken).toMatchObject({ held: false });
+    expect('output' in taken && taken.output).toMatch(/✗ the line’s pods still in runners: w-agent/);
+  });
+
+  it('does not hold when a pod running at the prompt has finished by the stop, its Job never deleted', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const { d } = drill({ pods: [[agentPod('w-agent')], [agentPod('w-agent', 'Failed')]] });
+    const taken = await stopTheLine(d);
+    expect(taken).toMatchObject({ held: false });
+    expect('output' in taken && taken.output).toMatch(/✗ the line’s pods still in runners: w-agent/);
+  });
+
+  it('does not hold when a step starts while the line is stopped, even one that has finished', async () => {
+    await append(database.as.line, 'release.aborted', aborted('stop'));
+    const done = agentPod('done-agent', 'Succeeded');
+    const { d } = drill({ pods: [[done], [done], [done, agentPod('short-prepare', 'Succeeded')]] });
+    const taken = await stopTheLine(d);
+    expect(taken).toMatchObject({ held: false });
+    expect('output' in taken && taken.output).toMatch(
+      /✗ the line’s pods started in runners while the line was stopped: short-prepare/,
+    );
+  });
+
   it('lists the runners again once stopped, so a pod started after the prompt is seen and waited for', async () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
-    const { d } = drill({ pods: [[], [{ name: 'late-agent', part: 'agent' }]] });
+    const { d } = drill({ pods: [[], [agentPod('late-agent')]] });
     const taken = await stopTheLine(d);
     const output = 'output' in taken ? taken.output : '';
     expect(output).toMatch(/✗ the line’s pods still in runners: late-agent/);
@@ -273,7 +380,7 @@ describe('the stop-the-line drill', () => {
     const listed = d.runnerPods;
     let calls = 0;
     // At the prompt, at the stop (gone), then a step begun meanwhile.
-    d.runnerPods = async () => (++calls >= 3 ? [{ name: 'new-agent', part: 'agent' }] : listed());
+    d.runnerPods = async () => (++calls >= 3 ? runnerPodsOf([agentPod('new-agent')]) : listed());
     const taken = await stopTheLine(d);
     expect(taken).toMatchObject({ held: false });
     expect('output' in taken && taken.output).toMatch(
@@ -285,7 +392,9 @@ describe('the stop-the-line drill', () => {
     await append(database.as.line, 'release.aborted', aborted('stop'));
     const { d, said } = drill({ pods: [[]] });
     const taken = await stopTheLine(d);
-    expect(said[0]).toMatch(/0 agent pod\(s\) and 0 other pod\(s\) of the line’s are running in runners now\.$/);
+    expect(said[0]).toMatch(
+      /0 agent pod\(s\) and 0 other pod\(s\) of the line’s are in runners and not finished now\.$/,
+    );
     expect(taken).toMatchObject({ held: true });
     expect('output' in taken && taken.output).toMatch(
       /✓ None of the line’s pods is in runners: none was running at the prompt or the stop/,

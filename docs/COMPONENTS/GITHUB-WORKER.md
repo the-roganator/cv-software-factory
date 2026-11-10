@@ -28,7 +28,7 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
 - closing a pull request unmerged with a comment once (`closePullRequest`), as the line does for a held or waiting work item whose defect went with another change; one already closed is left as it is, and one from a branch the factory does not own is refused;
 - comment reviews anchored to lines, and resolving their threads (`resolveThreads`): on each open thread the App began with a finding now answered (matched by path, line and words), the reply it is given, made once, then the thread resolved. The reply names the commit when a later review finds the finding put right or the suggestion taken, gives the coder's reason when it declines a suggestion, and says Martin accepted the review when he approves its hold in the console;
 - check runs;
-- adding its own pull request to the merge queue (`enqueuePullRequest`, [to merge](#to-merge)), at the head the line names;
+- adding its own pull request to the merge queue (`enqueuePullRequest`, [to merge](#to-merge)), at the head the line names, or, for this repository's local deploy pull request, the head [the deploy queue](#the-deploy-queue) found passed;
 - issues and comments:
   - opening one;
   - only on an issue the App opened ([its issues and pull requests only](#its-issues-and-pull-requests-only));
@@ -169,6 +169,10 @@ flowchart TD
 - **One writer.** The deploy branch has this one writer.
 - **One head.** A pass reads everything at one head of main.
 - **In memory.** Which deploy pull request is open is kept in memory, so a restarted worker knows it after its first pass. The line reads the app's, to say what it carries, and to record where it stands for each held work item it carries ([its state](RELEASE-AND-VERIFY.md#the-deploy-pull-requests-state)), from `pullRequest` and `checkRuns`: the worker keeps no state of it beyond the proposal.
+
+#### The deploy queue
+
+`github/deploy-queue.ts`, beside the deploy watch in this repository alone ([ADR 0017](../architecture/adr/0017-the-worker-queues-the-local-deploy-pins.md)). Each pass reads the open pull request from `deploy/local` and adds it to the merge queue at its head, once for each head, when it is the App's deploy pull request (into `main`, labelled `deploy: local`, its title the watch's), the review App's `review` check passed that head as `exact-pin`, every other required check's latest run there finished and did not fail, and it does not conflict with `main` nor is queued already ([the worker's part](APPROVAL-ROUTING.md#the-workers-part)). Until then it logs why it waits, once for each head and reason (`the deploy pull request waits to be queued`); queued, it logs `added the deploy pull request to the merge queue`. A refusal is kept and signed as its door keeps one; a dry run records the enqueue. The app's deploy pull request is the line's.
 
 #### Signatures
 

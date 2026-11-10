@@ -412,3 +412,90 @@ describe('vulnerabilities.yml', () => {
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
   });
 });
+
+/**
+ * The dependency graph (dependency-graph.yml): the job that submits holds `contents: write` and nothing else, and refuses
+ * any event but a push to the default branch; the proving run, on a pull request, can write nothing. Syft is the one
+ * build.yml attests SBOMs with, by digest, from its one pin.
+ */
+describe('dependency-graph.yml', () => {
+  const workflow = read('dependency-graph.yml');
+  const jobs = workflow.jobs;
+  const SYFT_PIN = 'deploy/images/syft/Dockerfile';
+
+  function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
+    const step = jobs[job]?.steps?.[0];
+    expect(step?.name, job).toBe('Refuse a privileged context');
+    try {
+      execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, DEFAULT_BRANCH: defaultBranch },
+        stdio: 'pipe',
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  it('gives the submission contents: write alone, and the proving run read alone', () => {
+    expect(workflow.permissions).toEqual({});
+    expect(Object.keys(jobs).sort()).toEqual(['prove', 'submit']);
+    expect(jobs.submit?.permissions).toEqual({ contents: 'write' });
+    expect(jobs.prove?.permissions).toEqual({ contents: 'read' });
+    expect(jobs.submit?.if).toBe(expression("github.event_name != 'pull_request'"));
+    expect(jobs.prove?.if).toBe(expression("github.event_name == 'pull_request'"));
+    expect(triggers(workflow).sort()).toEqual(['pull_request', 'push', 'workflow_call']);
+    // Only the submission submits, and every checkout keeps no credentials.
+    for (const [id, job] of Object.entries(jobs)) {
+      const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
+      expect(runs.includes('dependency-graph/snapshots'), id).toBe(id === 'submit');
+      for (const step of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@')))
+        expect(step.with?.['persist-credentials'], id).toBe(false);
+    }
+  });
+
+  it('submits on a push to the default branch alone, and proves on a pull request alone', () => {
+    expect(refuses('submit', 'push', 'refs/heads/main')).toBe(false);
+    expect(refuses('submit', 'push', 'refs/heads/feat/x')).toBe(true);
+    expect(refuses('submit', 'push', 'refs/heads/main', '')).toBe(true);
+    for (const event of ['schedule', 'workflow_dispatch', 'pull_request', 'pull_request_target', 'merge_group'])
+      expect(refuses('submit', event, 'refs/heads/main'), event).toBe(true);
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
+    for (const event of ['push', 'schedule', 'workflow_dispatch', 'merge_group'])
+      expect(refuses('prove', event, 'refs/heads/main'), event).toBe(true);
+  });
+
+  it('proves itself only on a change to the graph, against the base, as data', () => {
+    const on = workflow.on as Record<string, { paths?: string[] } | null>;
+    expect(on.pull_request?.paths).toEqual([
+      '.github/workflows/dependency-graph.yml',
+      'apps/factory/src/vulnerabilities/**',
+      'deploy/images/syft/**',
+      'mise.toml',
+      'mise.lock',
+    ]);
+    const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
+    expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
+    expect(jobs.prove?.steps?.some((step) => (step.run ?? '').includes('--prove'))).toBe(true);
+  });
+
+  it('runs Syft by digest from its one pin, at the version build.yml attests with, and reads it from its own commit', () => {
+    const pin = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@sha256:[0-9a-f]{64}$/m.exec(
+      readFileSync(SYFT_PIN, 'utf-8'),
+    );
+    const build = read('build.yml');
+    const attests = Object.values(build.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
+    expect(pin?.[1]).toBeDefined();
+    expect(attests?.with?.['syft-version']).toBe(pin?.[1]);
+    for (const { file, workflow: other } of workflows)
+      if (file !== 'build.yml') expect(JSON.stringify(other), file).not.toMatch(/anchore\/syft|download-syft/);
+    for (const [id, job] of Object.entries(jobs)) {
+      const own = (job.steps ?? []).find((step) => step.with?.ref === expression('job.workflow_sha'));
+      expect(String(own?.with?.['sparse-checkout']), id).toContain(SYFT_PIN);
+      const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
+      expect(runs, id).toContain(`factory/${SYFT_PIN}`);
+    }
+  });
+});

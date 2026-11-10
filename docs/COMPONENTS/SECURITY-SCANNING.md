@@ -2,7 +2,7 @@
 
 Code, dependencies, images and secrets. Part of the [GitHub plane](README.md#github-plane).
 
-- **v1:** CodeQL, Dependabot, GitHub secret scanning, the daily scan of everything either repository runs or pins, the lockfile gate on both repositories' pull requests, and two more gates on the app's.
+- **v1:** CodeQL, Dependabot, GitHub secret scanning, the dependency graph of every package each lockfile resolves, the daily scan of everything either repository runs or pins, the lockfile gate on both repositories' pull requests, and two more gates on the app's.
 - **Later:** Semgrep, licence checks.
 
 ## CodeQL
@@ -27,6 +27,16 @@ Besides the lockfile gate:
 
 - **Dependency review** (GitHub's) fails a dependency with a known vulnerability the change brings in.
 - **Trivy** (pinned by digest) scans the base's image and the change's, and fails on a high or critical vulnerability only the change's has.
+
+## The dependency graph
+
+GitHub's dependency graph, and so Dependabot's alerts, read a repository's manifests, which name its direct dependencies alone. `dependency-graph.yml` submits the rest: on each push to `main`, a snapshot of every package each lockfile on the repository's list resolves, indirect ones included, to the dependency submission API, and the app calls it (`workflow_call`) at a pinned commit, on a push alone, for its own.
+
+- **Nothing of the repository runs.** Its checkout keeps no credentials, and each lockfile alone is copied into an empty directory, which Syft's image reads, by digest, from its one pin (`deploy/images/syft/Dockerfile`, at the version `build.yml` attests SBOMs with), read-only and with no network, for its `github-json` snapshot. Nothing is installed. The script (`graph.ts`) comes from this repository at the workflow's own commit.
+- **Direct and indirect, runtime and development, and what each depends on,** are the lockfile's: Syft marks every package direct and at runtime, and gives as a package's dependencies the packages that depend on it, so the script sets a package direct when an importer names it, at runtime when an importer's dependencies or optional dependencies reach it, and depending on what its entry in the lockfile names. pnpm itself, which the lockfile also resolves, is a direct development dependency.
+- **One snapshot replaces the last:** each names the commit, the ref and the correlator `dependency-graph.yml`, from a job whose token has `contents: write` alone and which refuses any event but a push to the default branch.
+- **A change to it proves itself** on its own pull request, as the scan does: the same snapshot of the base's checkout, in a job with `contents: read` alone, that submits nothing, installs each lockfile as the scan's coverage does, and fails if the snapshot lacks a package `pnpm list --depth Infinity` names, calls one direct or indirect where pnpm lists it the other way, or names no indirect package. Its log gives both counts.
+- **Dependency review** compares a pull request's manifests with the base's graph, so it sees a submitted indirect package on the base's side alone: it can find one removed, never added. What a change adds to a lockfile is the lockfile scan's to judge.
 
 ## The daily scan
 

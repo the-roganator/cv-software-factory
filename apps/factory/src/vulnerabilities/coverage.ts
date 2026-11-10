@@ -28,7 +28,7 @@ export function pnpmVersion(lock: string | undefined, toml: string | undefined) 
   return toml?.match(/^pnpm = "(\d+\.\d+\.\d+)"$/m)?.[1];
 }
 
-interface Listed {
+export interface Listed {
   from?: string;
   version?: string;
   dependencies?: Record<string, Listed>;
@@ -100,6 +100,42 @@ export function missing(fromPnpm: Set<string>, fromTrivy: Set<string>) {
   });
 }
 
+/**
+ * pnpm in a checkout as data: its `.npmrc` files removed and an empty one of ours instead, no pnpmfile and no script of
+ * its own, and the pnpm this repository installed. The function it returns installs the project at a directory of the
+ * checkout and gives `pnpm list`'s projects.
+ */
+export async function pnpmIn(checkout: string, work: string) {
+  // No .npmrc of the checkout's: nothing it says chooses a registry, a token or a script. An empty one of ours instead.
+  const { stdout } = await run('git', ['-C', checkout, 'ls-files', '-z', '--', '*.npmrc', '.npmrc'], {
+    encoding: 'utf-8',
+  });
+  for (const file of stdout.split('\0').filter(Boolean)) rmSync(join(checkout, file), { force: true });
+  const npmrc = join(work, 'npmrc');
+  writeFileSync(npmrc, '');
+  const env = {
+    PATH: process.env.PATH ?? '',
+    HOME: work,
+    CI: 'true',
+    npm_config_userconfig: npmrc,
+    npm_config_globalconfig: npmrc,
+    pnpm_config_userconfig: npmrc,
+    pnpm_config_globalconfig: npmrc,
+    // No pnpmfile of the checkout's, on any command: pnpm loads one on `list` as on `install`.
+    npm_config_ignore_pnpmfile: 'true',
+    pnpm_config_ignore_pnpmfile: 'true',
+    // The pnpm this repository installed, never one the checkout's packageManager names.
+    npm_config_manage_package_manager_versions: 'false',
+    pnpm_config_manage_package_manager_versions: 'false',
+  };
+
+  return async (dir: string) => {
+    await run('pnpm', INSTALL, { cwd: dir, env, maxBuffer: 64 * 1024 * 1024 });
+    const list = await run('pnpm', LIST, { cwd: dir, env, maxBuffer: 512 * 1024 * 1024 });
+    return JSON.parse(list.stdout) as (Listed & { name?: string })[];
+  };
+}
+
 export async function main(args: string[]): Promise<number> {
   const option = (name: string) => {
     const at = args.indexOf(name);
@@ -142,29 +178,8 @@ export async function main(args: string[]): Promise<number> {
     console.error('::error::The list names no lockfile.');
     return 1;
   }
-  // No .npmrc of the checkout's: nothing it says chooses a registry, a token or a script. An empty one of ours instead.
-  const { stdout } = await run('git', ['-C', checkout, 'ls-files', '-z', '--', '*.npmrc', '.npmrc'], {
-    encoding: 'utf-8',
-  });
-  for (const file of stdout.split('\0').filter(Boolean)) rmSync(join(checkout, file), { force: true });
   const work = mkdtempSync(join(resolve(out), 'coverage-'));
-  const npmrc = join(work, 'npmrc');
-  writeFileSync(npmrc, '');
-  const env = {
-    PATH: process.env.PATH ?? '',
-    HOME: work,
-    CI: 'true',
-    npm_config_userconfig: npmrc,
-    npm_config_globalconfig: npmrc,
-    pnpm_config_userconfig: npmrc,
-    pnpm_config_globalconfig: npmrc,
-    // No pnpmfile of the checkout's, on any command: pnpm loads one on `list` as on `install`.
-    npm_config_ignore_pnpmfile: 'true',
-    pnpm_config_ignore_pnpmfile: 'true',
-    // The pnpm this repository installed, never one the checkout's packageManager names.
-    npm_config_manage_package_manager_versions: 'false',
-    pnpm_config_manage_package_manager_versions: 'false',
-  };
+  const pnpm = await pnpmIn(checkout, work);
 
   let failed = false;
   for (const [index, lockfile] of lockfiles.entries()) {
@@ -194,17 +209,7 @@ export async function main(args: string[]): Promise<number> {
         ],
         { maxBuffer: 64 * 1024 * 1024 },
       );
-      await run('pnpm', INSTALL, {
-        cwd: dir,
-        env,
-        maxBuffer: 64 * 1024 * 1024,
-      });
-      const list = await run('pnpm', LIST, {
-        cwd: dir,
-        env,
-        maxBuffer: 512 * 1024 * 1024,
-      });
-      const fromPnpm = listed(JSON.parse(list.stdout));
+      const fromPnpm = listed(await pnpm(dir));
       const fromTrivy = inSbom(JSON.parse(readFileSync(join(work, sbom), 'utf-8')));
       const gone = missing(fromPnpm, fromTrivy);
       console.log(

@@ -5,6 +5,7 @@ import {
   DAYS,
   dockerfileOf,
   firstFixed,
+  k3sLine,
   k3sReleaseOf,
   newestOnLine,
   npmUrl,
@@ -125,9 +126,8 @@ function sourcesOf(world: World) {
     },
     async k3s(release) {
       asked.push(`k3s ${release}`);
-      const found = world.k3s?.[release];
-      if (!found) throw new Error(`${release}: no such release`);
-      return found;
+      // A tag with no release published, as the real source answers it.
+      return world.k3s?.[release];
     },
     file: (path) => world.files?.[path],
     alerts: async () => world.alerts ?? [],
@@ -461,6 +461,54 @@ describe('an image’s fix', () => {
       expect(rows[0]?.installable).toBe(at('2026-11-03T12:00:00Z'));
     });
 
+    it('dates the fix from the first release that ships it fixed, past one not yet published', async () => {
+      const fixedCopy = 'docker.io/rancher/mirrored-metrics-server:v0.9.2';
+      const base = world([inK3s]);
+      const { rows, asked } = await judge({
+        ...base,
+        tags: {
+          ...base.tags,
+          'rancher/k3s': [
+            'v1.37.1-k3s1',
+            'v1.37.2-k3s1',
+            'v1.37.2-k3s2',
+            'v1.37.3-k3s1',
+            'v1.37.4-k3s1',
+            'v1.38.0-k3s1',
+          ],
+        },
+        k3s: {
+          'v1.37.2+k3s1': { published: '2026-11-03T12:00:00Z', images: ['rancher/mirrored-metrics-server:v0.9.0'] },
+          'v1.37.2+k3s2': { published: '2026-11-05T00:00:00Z', images: [fixedCopy] },
+          'v1.37.4+k3s1': { published: '2026-11-08T00:00:00Z', images: [fixedCopy] },
+        },
+        images: {
+          'rancher/mirrored-metrics-server:v0.9.0': imageReport('2026-10-30T00:00:00Z', [inK3s]),
+          // A reproducible build's 1970: the release's day counts, not the image's.
+          [fixedCopy]: imageReport('1970-01-01T00:00:00Z'),
+        },
+      });
+      expect(rows[0]?.installable).toBe(at('2026-11-05T00:00:00Z'));
+      expect(asked).toEqual([
+        'tags rancher/k3s',
+        'k3s v1.37.2+k3s1',
+        'image rancher/mirrored-metrics-server:v0.9.0',
+        'k3s v1.37.2+k3s2',
+        `image ${fixedCopy}`,
+      ]);
+    });
+
+    it('skips a tag with no release published, and never crosses to another Kubernetes minor', async () => {
+      const base = world([]);
+      const { rows, asked } = await judge({
+        ...base,
+        tags: { ...base.tags, 'rancher/k3s': ['v1.37.1-k3s1', 'v1.37.2-k3s1', 'v1.37.3-k3s1', 'v1.38.0-k3s1'] },
+        k3s: {},
+      });
+      expect(rows[0]?.installable).toBeUndefined();
+      expect(asked).toEqual(['tags rancher/k3s', 'k3s v1.37.2+k3s1', 'k3s v1.37.3+k3s1']);
+    });
+
     it('has no deadline while that release still ships it, whatever the image’s own newest tag', async () => {
       const { rows } = await judge(world([inK3s]));
       expect(rows[0]?.installable).toBeUndefined();
@@ -677,6 +725,20 @@ describe('the parts', () => {
     expect(npmUrl('example-a')).toBe('https://registry.npmjs.org/example-a');
     expect(npmUrl('@types/node')).toBe('https://registry.npmjs.org/@types%2Fnode');
     expect(npmUrl('a/b/../c?d#e')).toBe('https://registry.npmjs.org/a%2Fb%2F..%2Fc%3Fd%23e');
+  });
+
+  it('lists the k3s releases after a pin on its Kubernetes minor, any build, oldest first', () => {
+    const tags = [
+      'v1.36.9-k3s1',
+      'v1.37.1-k3s1',
+      'v1.37.1-k3s2',
+      'v1.37.10-k3s1',
+      'v1.37.2-k3s1',
+      'v1.37.3-rc1-k3s1',
+      'v1.38.0-k3s1',
+    ];
+    expect(k3sLine('v1.37.1+k3s1', tags)).toEqual(['v1.37.1+k3s2', 'v1.37.2+k3s1', 'v1.37.10+k3s1']);
+    expect(k3sLine('not a release', tags)).toEqual([]);
   });
 
   it('reads a k3s release from its list’s URL', () => {

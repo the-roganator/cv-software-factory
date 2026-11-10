@@ -14,8 +14,8 @@
  *   the creation of the newest image on the line of the pin that brings it (the runtime stage of its Dockerfile, for an
  *   image of ours), found as `scripts/ci-images.sh`'s `newest` finds it, or the tag's current image for a tag that is
  *   not a version, once that image no longer has the finding. An image that arrives only with a k3s release is
- *   installable from the newest k3s release on the pin's line (its node image's tags), once the copy its
- *   `k3s-images.txt` lists no longer has the finding, from the day it was published. In an image of ours, only what its runtime stage's image
+ *   installable from the day the first k3s release after the pin on its Kubernetes minor (its node image's tags) was
+ *   published whose `k3s-images.txt` lists a copy without the finding. In an image of ours, only what its runtime stage's image
  *   has comes that way; anything else its Dockerfile adds, but an npm package, has no fix to count from. A package in
  *   several versions is installable once every copy's fix is, and Node's fix is a release on the major installed. Only
  *   an image with such a finding that Trivy says is fixed has its line's newest scanned, each once, and nothing is
@@ -66,6 +66,22 @@ const NPM_TYPES = new Set(['pnpm', 'npm', 'yarn', 'node-pkg']);
 /** k3s's node image, whose tags name its releases (`v1.37.1-k3s1` for `v1.37.1+k3s1`). */
 const K3S_IMAGE = 'rancher/k3s';
 
+/**
+ * The k3s releases after a pinned one on its line, oldest first, from the node image's tags (`v1.37.2-k3s1` is
+ * `v1.37.2+k3s1`): the same Kubernetes minor, any build, no release candidate. Moving to another minor is an upgrade
+ * of Kubernetes, not the fix.
+ */
+export function k3sLine(pinned: string, tags: string[]) {
+  const [, minor, patch, build] = /^(v\d+\.\d+)\.(\d+)\+k3s(\d+)$/.exec(pinned) ?? [];
+  if (!minor) return [];
+  const after = (p: number, b: number) => p > Number(patch) || (p === Number(patch) && b > Number(build));
+  return tags
+    .map((tag) => /^(v\d+\.\d+)\.(\d+)-k3s(\d+)$/.exec(tag))
+    .filter((m): m is RegExpExecArray => m !== null && m[1] === minor && after(Number(m[2]), Number(m[3])))
+    .sort((a, b) => Number(a[2]) - Number(b[2]) || Number(a[3]) - Number(b[3]))
+    .map((m) => `${m[1]}.${m[2]}+k3s${m[3]}`);
+}
+
 /** Whether two references name one repository, Docker Hub's written with its registry or without. */
 const sameRepository = (a: string, b: string) => {
   const bare = (reference: string) => repositoryOf(reference).replace(/^docker\.io\/(library\/)?/, '');
@@ -89,7 +105,7 @@ export interface Sources {
   /** Trivy's report of an image. */
   image(reference: string): Promise<TrivyReport>;
   /** A k3s release (`v1.37.2+k3s1`): when it was published, and the images its `k3s-images.txt` lists. */
-  k3s(release: string): Promise<{ published: string; images: string[] }>;
+  k3s(release: string): Promise<{ published: string; images: string[] } | undefined>;
   /** A file of the scanned checkout, or undefined. */
   file(path: string): string | undefined;
   /** The scan's alerts, open and dismissed, and those fixed since the time given. */
@@ -283,7 +299,7 @@ export async function installable(
 ) {
   const kinds = new Map(targets.map((target) => [target.key, target]));
   const at: (number | undefined)[] = findings.map(() => undefined);
-  const lines = { npm: 0, images: 0 };
+  const lines = { npm: 0, images: 0, k3s: { fixed: 0, none: 0 } };
   const has = (pkg: string, advisory: string) => JSON.stringify([pkg, advisory]);
   // What each image the scan read has, by its reference without its tag, so an image of ours can tell what its
   // runtime stage brings from what its Dockerfile adds.
@@ -317,22 +333,76 @@ export async function installable(
     return pin;
   };
   // Each k3s line's newest release, once: found as the node image's newest tag on the line, read as scan.ts reads one.
-  const k3s = new Map<string, Promise<{ published: string; images: string[] } | undefined>>();
-  const k3sNewestOf = (list: string) => {
-    let once = k3s.get(list);
+  // The k3s releases after a pinned one on its line, oldest first, each read once.
+  const k3sLines = new Map<string, Promise<string[]>>();
+  const k3sReleases = new Map<string, Promise<{ published: string; images: string[] } | undefined>>();
+  const k3sAfter = (list: string) => {
+    let once = k3sLines.get(list);
     if (!once) {
       once = (async () => {
         const pinned = k3sReleaseOf(list);
-        if (!pinned) return undefined;
+        if (!pinned) {
+          log(`::warning::No k3s release could be read from ${list}: the images it lists have no fix to count from.`);
+          return [];
+        }
         let listed = tags.get(K3S_IMAGE);
         if (!listed) {
           listed = sources.tags(K3S_IMAGE);
           tags.set(K3S_IMAGE, listed);
         }
-        const latest = newestOnLine(pinned.replace('+', '-'), await listed) ?? pinned.replace('+', '-');
-        return sources.k3s(latest.replace(/-(k3s\d+)$/, '+$1'));
+        return k3sLine(pinned, await listed);
       })();
-      k3s.set(list, once);
+      k3sLines.set(list, once);
+    }
+    return once;
+  };
+  const k3sRelease = (release: string) => {
+    let once = k3sReleases.get(release);
+    if (!once) {
+      once = sources.k3s(release);
+      k3sReleases.set(release, once);
+    }
+    return once;
+  };
+  /** The first k3s release after the pinned one whose copy of the image no longer has the finding, and its day. */
+  const k3sFix = async (target: ReadTarget, finding: Finding) => {
+    let listedLast = true;
+    for (const release of await k3sAfter(target.list ?? '')) {
+      // A tag with no release published yet is not one to install.
+      const read = await k3sRelease(release);
+      if (!read) continue;
+      const reference = read.images.find((image) => sameRepository(image, target.image ?? ''));
+      listedLast = reference !== undefined;
+      if (!reference) continue;
+      const image = await scanned(reference, false);
+      if (!image.has.has(has(finding.package, finding.advisory))) {
+        const published = time(read.published);
+        return Number.isNaN(published) ? undefined : published;
+      }
+    }
+    if (!listedLast) dropped.add(repositoryOf(target.image ?? ''));
+    return undefined;
+  };
+  const dropped = new Set<string>();
+  /** An image scanned once: what it has, and when it was made, where the day is wanted. */
+  const scanned = (reference: string, dated: boolean) => {
+    let once = newest.get(reference);
+    if (!once) {
+      lines.images++;
+      once = sources.image(reference).then((report) => {
+        let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
+        // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
+        if (Number.isNaN(created) || created < EARLIEST) {
+          if (dated) log(`::warning::${reference} gives no time it was made: its fixes have no day to count from.`);
+          created = undefined;
+        }
+        const found = new Set<string>();
+        for (const result of report.Results ?? [])
+          for (const v of result.Vulnerabilities ?? [])
+            if (v.PkgName && v.VulnerabilityID) found.add(has(v.PkgName, v.VulnerabilityID));
+        return { created, has: found };
+      });
+      newest.set(reference, once);
     }
     return once;
   };
@@ -411,39 +481,24 @@ export async function installable(
         if (days.length) at[index] = Math.min(...days);
         return;
       }
-      // An image that arrives only with a k3s release: the newest release on the pin's line, and its copy of the image.
-      let released: number | undefined;
-      let reference: string | undefined;
+      // An image that arrives only with a k3s release: from the first release after the pin that ships it fixed.
       if (target.kind === 'k3s-release') {
-        const release = await k3sNewestOf(target.list ?? '');
-        reference = release?.images.find((image) => sameRepository(image, target.image ?? ''));
-        released = time(release?.published);
-        if (!reference || Number.isNaN(released)) return;
-      } else reference = await newestOf(pin ?? pinOf(target) ?? '');
-      if (!reference) return;
-      let once = newest.get(reference);
-      if (!once) {
-        lines.images++;
-        once = sources.image(reference).then((report) => {
-          let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
-          // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
-          if (Number.isNaN(created) || created < EARLIEST) {
-            log(`::warning::${reference} gives no time it was made: its fixes have no day to count from.`);
-            created = undefined;
-          }
-          const found = new Set<string>();
-          for (const result of report.Results ?? [])
-            for (const v of result.Vulnerabilities ?? [])
-              if (v.PkgName && v.VulnerabilityID) found.add(has(v.PkgName, v.VulnerabilityID));
-          return { created, has: found };
-        });
-        newest.set(reference, once);
+        const fixed = await k3sFix(target, finding);
+        lines.k3s[fixed === undefined ? 'none' : 'fixed']++;
+        if (fixed !== undefined) at[index] = fixed;
+        return;
       }
-      const image = await once;
-      const from = target.kind === 'k3s-release' ? released : image.created;
-      if (from !== undefined && !image.has.has(has(finding.package, finding.advisory))) at[index] = from;
+      const reference = await newestOf(pin ?? pinOf(target) ?? '');
+      if (!reference) return;
+      const image = await scanned(reference, true);
+      if (image.created !== undefined && !image.has.has(has(finding.package, finding.advisory)))
+        at[index] = image.created;
     }),
   );
+  for (const repository of dropped)
+    log(
+      `::warning::The newest k3s release on the pin's line no longer lists ${repository}: its findings have no fix to count from.`,
+    );
   return { at, looked: lines };
 }
 
@@ -633,18 +688,23 @@ export function realSources(
           redirect: 'follow',
           signal: AbortSignal.timeout(60_000),
         });
+        if (response.status === 404) return undefined;
         if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status} for its images`);
         return response.text();
       });
+      // A tag whose release is not published yet: nothing to install.
+      if (list === undefined) return undefined;
       const about = (await tools.retry(async () => {
         const response = await fetch(`https://api.github.com/repos/k3s-io/k3s/releases/tags/${tag}`, {
           headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
           signal: AbortSignal.timeout(60_000),
         });
+        if (response.status === 404) return {};
         if (!response.ok) throw new Error(`k3s's release ${release} answered ${response.status}`);
         return response.json();
       })) as { published_at?: unknown };
-      if (typeof about.published_at !== 'string') throw new Error(`k3s's release ${release} gives no publish time`);
+      // A draft, or a release not yet published: nothing to install.
+      if (typeof about.published_at !== 'string') return undefined;
       const images = list
         .split('\n')
         .map((line) => line.trim())
@@ -712,7 +772,7 @@ export async function main(args: string[]): Promise<number> {
     return 1;
   }
   const { lines, bySeverity, byBucket, fresh, passes } = verdict(judged.rows, prove);
-  const looked = `Read the publish times of ${judged.looked.npm} npm versions, and the newest image on ${judged.looked.images} image lines.`;
+  const looked = `Read the publish times of ${judged.looked.npm} npm versions, and ${judged.looked.images} newer images. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet.`;
   for (const line of [looked, ...lines]) console.log(line);
   if (!passes) console.log(`::error::${lines.at(-1)}`);
   if (process.env.GITHUB_STEP_SUMMARY)

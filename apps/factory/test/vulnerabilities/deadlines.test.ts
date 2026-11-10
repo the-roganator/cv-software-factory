@@ -1,21 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import type { Alert } from '../../src/vulnerabilities/alerts.ts';
 import {
+  aquaRepository,
   assess,
   DAYS,
   dockerfileOf,
   firstFixed,
   k3sLine,
   k3sReleaseOf,
+  miseTools,
   newestOnLine,
   npmUrl,
+  rewrite,
   runtimeStage,
   type Sources,
   severityOf,
   skopeoName,
+  toolOf,
+  toolUrl,
+  UNBUILT_DAYS,
   verdict,
 } from '../../src/vulnerabilities/deadlines.ts';
-import { alertKey, type Finding, merge, messageOf } from '../../src/vulnerabilities/sarif.ts';
+import type { Target } from '../../src/vulnerabilities/fixes.ts';
+import { moves } from '../../src/vulnerabilities/moves.ts';
+import { alertKey, type Finding, merge, messageOf, sarif } from '../../src/vulnerabilities/sarif.ts';
 import {
   type Handoff,
   minimumReleaseAge,
@@ -923,5 +931,324 @@ describe('the parts', () => {
     expect(skopeoName('node')).toBe('docker://docker.io/library/node');
     expect(skopeoName('rancher/k3s')).toBe('docker://docker.io/rancher/k3s');
     expect(skopeoName('ghcr.io/open-feature/flagd')).toBe('docker://ghcr.io/open-feature/flagd');
+  });
+});
+
+/**
+ * What fixes each finding, as its message ends (fixes.ts), and the day that never moves forward: task 31's first pull
+ * request (docs/PLAN/M07-ADMIN-AND-GUARDRAILS.md).
+ */
+describe('what fixes it', () => {
+  const tags = { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] };
+  const NEWEST = 'node:24.23.0-trixie-slim';
+  const INDEX = `sha256:${'c'.repeat(64)}`;
+
+  it('names a newer image by its tag and index digest, dated from its making', async () => {
+    const finding = os();
+    const { fixes } = await judge({
+      findings: [finding],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      tags,
+      images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
+      digests: { [NEWEST]: INDEX },
+    });
+    expect(fixes[0]).toEqual({
+      target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: INDEX },
+      day: at('2026-11-01T00:00:00Z'),
+    });
+  });
+
+  it('keeps the first day a rebuilt tag was seen fixed, from the alert, open or dismissed', async () => {
+    const finding = os();
+    // The alert as the last run wrote it: fixed by the same tag's earlier image, first seen on 3 November.
+    const said = {
+      ...finding,
+      fix: {
+        target: { kind: 'image', tag: '24.23.0-trixie-slim', digest: INDEX } as Target,
+        day: at('2026-11-03T00:00:00Z'),
+      },
+    };
+    for (const state of ['open', 'dismissed']) {
+      const { fixes, rows } = await judge({
+        findings: [finding],
+        alerts: [alertOf(said, '2026-10-01T00:00:00Z', { state })],
+        tags,
+        // Rebuilt since: its image is newer, and its digest another.
+        images: { [NEWEST]: imageReport('2026-11-08T00:00:00Z') },
+      });
+      expect(fixes[0]?.day, state).toBe(at('2026-11-03T00:00:00Z'));
+      expect(fixes[0]?.target, state).toEqual({
+        kind: 'image',
+        tag: '24.23.0-trixie-slim',
+        digest: `sha256:${'d'.repeat(64)}`,
+      });
+      expect(rows[0]?.due, state).toBe(at('2026-11-10T00:00:00Z'));
+    }
+  });
+
+  it('never takes a later day from the alert than the sources give', async () => {
+    const finding = os();
+    const said = {
+      ...finding,
+      fix: { target: { kind: 'version', versions: ['9'] } as Target, day: at('2026-11-09T00:00:00Z') },
+    };
+    const { fixes } = await judge({
+      findings: [finding],
+      alerts: [alertOf(said, '2026-10-01T00:00:00Z')],
+      tags,
+      images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
+    });
+    expect(fixes[0]?.day).toBe(at('2026-11-01T00:00:00Z'));
+  });
+
+  it('reads the day afresh from an alert whose ending does not parse, and says so', async () => {
+    const finding = os();
+    const alert = alertOf(finding, '2026-10-01T00:00:00Z');
+    if (alert.most_recent_instance?.message)
+      alert.most_recent_instance.message.text += ' Fixed by something else, first seen 2020-01-01T00:00:00Z.';
+    const { fixes } = await judge({
+      findings: [finding],
+      alerts: [alert],
+      tags,
+      images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
+    });
+    expect(fixes[0]?.day).toBe(at('2026-11-01T00:00:00Z'));
+  });
+
+  it('names each copy’s version for a package in two versions, and Node’s release for Node', async () => {
+    const two = npm({ installed: '1.2.0, 2.0.0', fixed: '1.2.5, 2.0.3' });
+    const node: Finding = { ...os(), type: 'node', package: 'node', installed: '24.22.0', fixed: '^24.22.1' };
+    const { fixes } = await judge({
+      findings: [two, node],
+      published: { 'example-a@1.2.5': '2026-10-01T00:00:00Z', 'example-a@2.0.3': '2026-10-02T00:00:00Z' },
+      releases: [
+        { version: 'v24.22.2', date: '2026-11-03' },
+        { version: 'v24.22.1', date: '2026-10-20' },
+      ],
+      alerts: [alertOf(two, '2026-10-01T00:00:00Z'), alertOf(node, '2026-10-01T00:00:00Z')],
+    });
+    expect(fixes[0]?.target).toEqual({ kind: 'version', versions: ['1.2.5', '2.0.3'] });
+    expect(fixes[1]?.target).toEqual({ kind: 'version', versions: ['24.22.1'] });
+  });
+
+  it('names no fix still inside pnpm’s day', async () => {
+    const finding = npm();
+    const { fixes } = await judge({
+      findings: [finding],
+      published: { 'example-a@1.0.1': new Date(NOW - 3_600_000).toISOString() },
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+    });
+    expect(fixes[0]).toBeUndefined();
+  });
+
+  describe('a chart’s image', () => {
+    const CHART = {
+      repo: 'https://charts.example.test',
+      chart: 'example',
+      version: '13.2.7',
+      release: 'example',
+      values: [],
+    };
+    const OLD = 'quay.io/example/sidecar:2.11.2';
+    const target: ReadTarget = {
+      key: `chart example quay.io/example/sidecar`,
+      kind: 'chart',
+      file: 'deploy/base/example.yaml',
+      label: OLD,
+      image: OLD,
+      chart: CHART,
+    };
+    const inChart = (over: Partial<Finding> = {}) =>
+      os({ item: target.key, file: target.file, line: 14, label: OLD, listed: 'example', ...over });
+    const render = (tag: string) => `spec:\n  containers:\n    - image: quay.io/example/sidecar:${tag}\n`;
+    const world = (finding: Finding, images: Record<string, TrivyReport>) => ({
+      findings: [finding],
+      targets: [target],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      charts: {
+        example: [
+          { version: '13.2.7', created: '2026-09-01T00:00:00Z' },
+          { version: '13.7.0', created: '2026-10-05T00:00:00Z' },
+          { version: '14.3.1', created: '2026-10-20T00:00:00Z' },
+          { version: '15.0.0-rc.1', created: '2026-11-01T00:00:00Z' },
+        ],
+      },
+      renders: {
+        'example@13.7.0': render('2.14.1'),
+        'example@14.3.1': render('2.14.3'),
+      },
+      images,
+      kubeVersion: '1.37.2',
+    });
+
+    it('is fixed by the newest chart on the pinned major whose image lacks it, dated from the chart', async () => {
+      const finding = inChart();
+      const { fixes, asked } = await judge(
+        world(finding, { 'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z') }),
+      );
+      expect(fixes[0]).toEqual({
+        target: { kind: 'chart', chart: 'example', version: '13.7.0', major: false },
+        day: at('2026-10-05T00:00:00Z'),
+      });
+      // No later major rendered once the pinned major has it.
+      expect(asked).not.toContain('render example@14.3.1');
+    });
+
+    it('is fixed by the first later major that lacks it when no chart on the major does, marked a major', async () => {
+      const finding = inChart();
+      const { fixes } = await judge(
+        world(finding, {
+          'quay.io/example/sidecar:2.14.1': imageReport('2026-10-01T00:00:00Z', [finding]),
+          'quay.io/example/sidecar:2.14.3': imageReport('2026-10-15T00:00:00Z'),
+        }),
+      );
+      expect(fixes[0]).toEqual({
+        target: { kind: 'chart', chart: 'example', version: '14.3.1', major: true },
+        day: at('2026-10-20T00:00:00Z'),
+      });
+    });
+
+    it('is a value’s pin when a values file pins the image: the image moves, on its line', async () => {
+      const finding = inChart({ file: 'deploy/base/values/example.yaml', line: 32 });
+      const pinned: ReadTarget = { ...target, pin: { file: 'deploy/base/values/example.yaml', line: 32 } };
+      const { fixes, judged, asked } = await judge({
+        ...world(finding, { 'quay.io/example/sidecar:2.14.3': imageReport('2026-10-15T00:00:00Z') }),
+        targets: [pinned],
+        tags: { 'quay.io/example/sidecar': ['2.11.2', '2.14.3'] },
+      });
+      expect(fixes[0]?.target).toEqual({ kind: 'image', tag: '2.14.3', digest: `sha256:${'d'.repeat(64)}` });
+      expect(asked.some((each) => each.startsWith('render'))).toBe(false);
+      expect(judged[0]).toMatchObject({
+        name: 'example: quay.io/example/sidecar',
+        pin: { file: 'deploy/base/values/example.yaml', line: 32 },
+        from: '2.11.2',
+      });
+    });
+  });
+
+  it('dates a package a tool brings into an image of ours from the tool’s release that lacks it', async () => {
+    const OURS = `ghcr.io/the-roganator/cv-software-factory/factory-runner@sha256:${'1'.repeat(64)}`;
+    const ours: ReadTarget = {
+      key: 'ours runner',
+      kind: 'ours',
+      file: 'deploy/overlays/local/runner-image/kustomization.yaml',
+      label: OURS,
+      image: OURS,
+    };
+    const finding = os({
+      item: ours.key,
+      file: ours.file,
+      label: OURS,
+      type: 'node-pkg',
+      package: 'example-bundled',
+      path: 'opt/pnpm/dist/node_modules/example-bundled/index.js',
+    });
+    const lock = '[[tools.pnpm]]\nversion = "12.16.1"\nbackend = "aqua:pnpm/pnpm"\n';
+    const { fixes, judged } = await judge({
+      findings: [finding],
+      targets: [ours],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      files: { 'mise.lock': lock, 'apps/factory-runner/Dockerfile': 'FROM node:24.22.1-trixie-slim AS base\n' },
+      toolReleases: {
+        pnpm: [
+          { version: '12.17.0', published: '2026-11-02T00:00:00Z' },
+          { version: '13.0.0', published: '2026-11-05T00:00:00Z' },
+        ],
+      },
+      toolReports: { 'pnpm@12.17.0': imageReport('1970-01-01T00:00:00Z') },
+    });
+    expect(fixes[0]).toEqual({
+      target: { kind: 'tool', tool: 'pnpm', version: '12.17.0' },
+      day: at('2026-11-02T00:00:00Z'),
+    });
+    expect(judged[0]).toMatchObject({ name: 'pnpm', pin: { file: 'mise.lock', line: 2 }, from: '12.16.1' });
+  });
+
+  it('reports a tag that is not a version, made more than 180 days ago, as a line no longer built, with no deadline', async () => {
+    const BASE = 'mcr.example.test/devcontainers/base:ubuntu-24.04';
+    const image: ReadTarget = {
+      key: '.devcontainer/Dockerfile base',
+      kind: 'dockerfile',
+      file: '.devcontainer/Dockerfile',
+      label: BASE,
+      image: BASE,
+    };
+    const finding = os({ item: image.key, file: image.file, label: BASE, listed: BASE });
+    const made = new Date(NOW - (UNBUILT_DAYS + 30) * DAY).toISOString();
+    const {
+      fixes,
+      rows,
+      verdict: judgedVerdict,
+    } = await judge({
+      findings: [finding],
+      targets: [image],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+      images: { [BASE]: imageReport(made, [finding]) },
+    });
+    expect(fixes[0]).toEqual({ target: { kind: 'unbuilt', built: at(made) }, day: NOW });
+    expect(rows[0]?.bucket).toBe('none');
+    expect(judgedVerdict.passes).toBe(true);
+  });
+
+  it('names, in the run’s last lines, the moves that hold each reason it fails on', async () => {
+    const finding = os({ severity: 'CRITICAL' });
+    const handoff: Handoff = {
+      repository: REPOSITORY,
+      started: new Date(NOW - 600_000).toISOString(),
+      cache: '/nowhere',
+      findings: [finding],
+      excepted: [],
+      targets: [LOCKFILE, IMAGE],
+    };
+    const { sources } = sourcesOf({
+      findings: [finding],
+      alerts: [alertOf(finding, '2026-11-08T05:00:00Z')],
+      tags,
+      images: { [NEWEST]: imageReport('2026-11-01T00:00:00Z') },
+    });
+    const { rows, judged } = await assess(handoff, sources, NOW);
+    const list = moves(judged, { repository: REPOSITORY, app: false, dependabot: [], direct: new Set(), now: NOW });
+    const { lines, passes } = verdict(rows, false, list);
+    expect(passes).toBe(false);
+    expect(lines.at(-1)).toBe('Due within a day: 1, held by node 24.22.1-trixie-slim.');
+  });
+
+  it('ends each uploaded result’s message with its fix, and keys the excepted alerts by the message they will carry', () => {
+    const plain = npm();
+    const fixed = {
+      ...plain,
+      fix: { target: { kind: 'version', versions: ['1.0.1'] } as Target, day: at('2026-11-01T00:00:00Z') },
+    };
+    const file = sarif([plain]);
+    const { file: written, excepted } = rewrite(file, { [alertKey(plain)]: 'why, until when' }, [fixed]);
+    const result = written.runs[0]?.results[0];
+    expect(result?.message.text).toBe(messageOf(fixed));
+    expect(result?.message.text.endsWith('Fixed by version 1.0.1, first seen 2026-11-01T00:00:00Z.')).toBe(true);
+    expect(excepted).toEqual({ [alertKey(fixed)]: 'why, until when' });
+  });
+
+  it('finds a tool’s release from mise.lock: its repository, and its download at another version', () => {
+    const lock = [
+      '[[tools.pnpm]]',
+      'version = "12.16.1"',
+      'backend = "aqua:pnpm/pnpm"',
+      '',
+      '[tools.pnpm."platforms.linux-x64"]',
+      'url = "https://github.com/pnpm/pnpm/releases/download/v12.16.1/pnpm-linux-x64.tar.gz"',
+      '',
+      '[[tools.yq]]',
+      'version = "4.47.1"',
+    ].join('\n');
+    expect(aquaRepository(lock, 'pnpm')).toBe('pnpm/pnpm');
+    expect(toolUrl(lock, 'pnpm', '12.17.0')).toBe(
+      'https://github.com/pnpm/pnpm/releases/download/v12.17.0/pnpm-linux-x64.tar.gz',
+    );
+    expect(toolUrl(lock, 'pnpm', '12.17.0/../x')).toBeUndefined();
+    expect([...miseTools(lock)]).toEqual([
+      ['pnpm', '12.16.1'],
+      ['yq', '4.47.1'],
+    ]);
+    expect(toolOf('opt/pnpm/dist/node_modules/x/index.js', ['pnpm'])).toBe('pnpm');
+    expect(toolOf('usr/lib/node_modules/x/index.js', ['pnpm'])).toBeUndefined();
   });
 });

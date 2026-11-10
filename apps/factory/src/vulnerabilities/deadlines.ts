@@ -509,6 +509,9 @@ async function pool(tasks: (() => Promise<void>)[], size = 8) {
   if (failed) throw failed;
 }
 
+/** A package's document in npm's registry: its whole name encoded, the scope's `@` kept, as the registry writes it. */
+export const npmUrl = (name: string) => `https://registry.npmjs.org/${encodeURIComponent(name).replace(/^%40/, '@')}`;
+
 /** A repository as skopeo names it: Docker Hub's official images under docker.io/library/. */
 export function skopeoName(repository: string) {
   const first = repository.split('/')[0] ?? '';
@@ -539,9 +542,7 @@ export function realSources(
       let once = times.get(name);
       if (!once) {
         once = tools.retry(async () => {
-          const body = (await get(`https://registry.npmjs.org/${name.replace('/', '%2f')}`, "npm's registry")) as
-            | { time?: Record<string, string> }
-            | undefined;
+          const body = (await get(npmUrl(name), "npm's registry")) as { time?: Record<string, string> } | undefined;
           return body?.time ?? {};
         });
         times.set(name, once);

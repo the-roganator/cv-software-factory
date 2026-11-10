@@ -6,6 +6,7 @@ import {
   dockerfileOf,
   firstFixed,
   newestOnLine,
+  npmUrl,
   runtimeStage,
   type Sources,
   severityOf,
@@ -589,6 +590,12 @@ describe('the parts', () => {
     expect(dockerfileOf('ghcr.io/x/y/factory-browser@sha256:aa', exists)).toBe('apps/factory/Dockerfile.browser');
     expect(dockerfileOf('ghcr.io/x/y/factory-runner@sha256:aa', exists)).toBe('apps/runner/Dockerfile');
     expect(dockerfileOf('ghcr.io/x/website/website@sha256:aa', exists)).toBe('Dockerfile');
+  });
+
+  it('asks npm for a package by its whole name, encoded', () => {
+    expect(npmUrl('example-a')).toBe('https://registry.npmjs.org/example-a');
+    expect(npmUrl('@types/node')).toBe('https://registry.npmjs.org/@types%2Fnode');
+    expect(npmUrl('a/b/../c?d#e')).toBe('https://registry.npmjs.org/a%2Fb%2F..%2Fc%3Fd%23e');
   });
 
   it('names a repository as skopeo reads it', () => {

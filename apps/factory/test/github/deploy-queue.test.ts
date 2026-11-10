@@ -12,6 +12,7 @@ import {
   type DeployQueueDependencies,
   deployPullWait,
   deployQueueWatch,
+  MAX_TRIES,
   QUEUED_DEPLOYS,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
@@ -188,7 +189,7 @@ describe('the deploy queue watch', () => {
 
   it('never queues a head the gate held, judged by another rule, has not judged, or judged at another head', async () => {
     const verdicts = [
-      verdict(HEAD, { rule: 'held', tags: [{ tag: 'release', because: ['CHANGELOG.md'] }] }),
+      verdict(HEAD, { rule: 'held', tags: [{ tag: 'release', because: ['release-please--branches--main'] }] }),
       verdict(HEAD, { rule: 'held', pending: 'cosign did not answer' }),
       verdict(HEAD, { rule: 'low-risk' }),
       verdict(HEAD, { rule: 'martin-approved-head' }),
@@ -221,6 +222,8 @@ describe('the deploy queue watch', () => {
     expect(checksWait(missing, REQUIRED)?.waits).toBe('checks');
     // The factory's App's own run of a required check's name counts for nothing.
     const forged = [...missing, run('pull request title', 'success', 'mrogan-software-factory')];
+    // No required check read is no check passed.
+    expect(checksWait(green(), [])?.waits).toBe('checks');
     expect(checksWait(forged, REQUIRED)?.waits).toBe('checks');
     // A failure re-run green, at the same head, passes: the latest run of each name is read.
     expect(checksWait([...red, run('lockfile scan')], REQUIRED)).toBeUndefined();
@@ -273,23 +276,59 @@ describe('the deploy queue watch', () => {
     ]);
   });
 
-  it('reads again after a head that moved before it was queued (409)', async () => {
-    let moved = true;
+  it('tries again after a failure that may pass, up to MAX_TRIES, then leaves the head for Martin', async () => {
+    const failures = [
+      new GitHubError('conflict', 'Pull request #973 is at bbbbbbb, not aaaaaaa.', 409),
+      new GitHubError('conflict', 'Expected head is stale'),
+      new GitHubError('server', 'Bad gateway', 502),
+      new GitHubError('network', 'socket hang up'),
+      new GitHubError('rate-limited', 'API rate limit exceeded', 429),
+    ];
+    let failing = 2;
+    const recovers = harness({
+      enqueue: async () => {
+        const failure = failures[failing];
+        if (failing-- > 0 && failure) throw failure;
+        return { position: 1, state: 'QUEUED' };
+      },
+    });
+    for (let i = 0; i < 4; i++) await recovers.pass();
+    expect(recovers.enqueued).toHaveLength(3);
+
+    for (const failure of failures) {
+      const { pass, enqueued } = harness({
+        enqueue: async () => {
+          throw failure;
+        },
+      });
+      for (let i = 0; i < MAX_TRIES + 2; i++) await pass();
+      expect(enqueued, failure.message).toHaveLength(MAX_TRIES);
+    }
+  });
+
+  it('leaves a head for Martin at once after a failure that will not pass', async () => {
     const { pass, enqueued } = harness({
       enqueue: async () => {
-        if (moved) {
-          moved = false;
-          throw new GitHubError('conflict', 'Pull request #973 is at bbbbbbb, not aaaaaaa.', 409);
-        }
-        return { position: 1, state: 'QUEUED' };
+        throw new GitHubError('not-found', 'Could not resolve to a PullRequest', 404);
       },
     });
     await pass();
     await pass();
-    expect(enqueued).toEqual([
-      [973, HEAD],
-      [973, HEAD],
-    ]);
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it('keeps only the head it is on: a head it left is tried afresh if the branch comes back to it', async () => {
+    let head = HEAD;
+    const { pass, enqueued } = harness({
+      pulls: () => [pull({ head: { ...pull().head, sha: head } })],
+      verdict: () => verdict(head),
+    });
+    await pass();
+    head = NEWER;
+    await pass();
+    head = HEAD;
+    await pass();
+    expect(enqueued.map(([, h]) => h)).toEqual([HEAD, NEWER, HEAD]);
   });
 
   it('in a dry run, records the enqueue and sends GitHub nothing but reads', async () => {

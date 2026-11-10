@@ -64,7 +64,7 @@ The GitHub worker adds this repository's local deploy pull request to the merge 
 - every other check `main`'s rulesets require has a latest run on the head that finished and did not fail, by anyone but the factory's App;
 - it does not conflict with `main`, and is not queued already.
 
-It enqueues at that head, through the line's action and guards (`enqueuePullRequest`). A refusal, the guard's or GitHub's 403, is kept, signed and logged as the worker keeps its others; a head that moved first is read again; any other failure is logged and leaves the head for Martin, as does the queue taking it out. A dry run records the enqueue and changes nothing. The app's deploy pull request stays the line's, a release and anything else Martin's.
+It enqueues at that head, through the line's action and guards (`enqueuePullRequest`). A failure that may pass (the head moved, a rate limit, an outage) is tried again on the next pass, up to five times; a refusal, the guard's or GitHub's 403, is kept, signed and logged as the worker keeps its others, and it or any other failure leaves the head for Martin, as does the queue taking it out. A dry run reads GitHub as it is and records the enqueue it would make, changing nothing. The app's deploy pull request stays the line's, a release and anything else Martin's.
 
 ## The verdict
 

@@ -33,9 +33,8 @@
  * (409) is no refusal: nothing is recorded, and the next pass reads the new head.
  *
  * Only the app's deploy pull requests: the line does not watch the factory's own, whose local one the GitHub worker
- * adds to the queue itself (`github/deploy-queue.ts`). Acting
- * on one work item (`only`), the line adds one only when it carries no other (`worker.ts`). A
- * pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
+ * adds to the queue itself (`github/deploy-queue.ts`). Acting on one work item (`only`), the line adds one only when it
+ * carries no other (`worker.ts`). A pull request recorded for a work item that is no longer the proposal (merged and gone, closed, or not known yet to a
  * GitHub worker that restarted) is read by its number, and only what GitHub says of it is recorded: an empty proposal
  * is never taken for a merge or a close. A dry run's deploy pull request, which GitHub never had, is never recorded.
  *

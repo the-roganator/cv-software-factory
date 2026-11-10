@@ -18,15 +18,19 @@
  *   failed waits for a re-run or a newer build;
  * - GitHub says it does not conflict with main, and it is not in the queue already.
  *
- * It tries once for each head. The enqueue is the one the line uses (`enqueuePullRequest`): the issue guard asks
- * whether the App opened it, the queue's guard whether it is from a branch the factory owns at the head named, and
- * GitHub takes it only at that head (`expectedHeadOid`), so a push after the verdict cannot ride it. A refusal, the
- * guard's or GitHub's 403, is kept in the artifact store, signed and logged as the worker's HTTP door keeps one
- * (`refusalOf`, `refusals.ts`), with no worker asking to relay it; any other failure is logged, and the head waits
- * for Martin. A head that moved first (409) is read again next pass. The queue then merges it, or takes it out, which GitHub shows on the pull request, and the
- * worker does not add that head again; a worker that restarts may, once, and the queue tests it again as before.
+ * It adds each head once. The enqueue is the one the line uses (`enqueuePullRequest`): the issue guard asks whether
+ * the App opened it, the queue's guard whether it is from a branch the factory owns at the head named, and GitHub
+ * takes it only at that head (`expectedHeadOid`), so a push after the verdict cannot ride it. A failure that may pass
+ * (the head moved, a rate limit, an outage, GitHub saying the request does not fit the state it found) is tried again
+ * on the next pass, up to `MAX_TRIES`. A refusal, the guard's or GitHub's 403, is kept in the artifact store, signed
+ * and logged as the worker's HTTP door keeps one (`refusalOf`, `refusals.ts`), with no worker asking to relay it; it,
+ * and any other failure, leaves the head for Martin. The queue then merges it, or takes it out, which GitHub shows on
+ * the pull request, and the worker does not add that head again; a worker that restarts may, once, and the queue tests
+ * it again as before.
  *
- * In a dry run the actions record the enqueue in the artifact store and change nothing in GitHub (`DryRunActions`).
+ * In a dry run the watch reads GitHub as it is, and the actions record the enqueue it would make of the App's deploy
+ * pull request there in the artifact store, changing nothing (`DryRunActions`). A dry run's own deploy pull request,
+ * which GitHub never had, is not seen here: the dry run's reads merge it on their own clock (`dry-run-reads.ts`).
  */
 import type { Logger } from 'pino';
 import { z } from 'zod';
@@ -35,7 +39,7 @@ import { APP_LOGIN } from './actions.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
 import { APP_USER, IssueRefused } from './issues.ts';
-import { type Mergeability, REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
+import { REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
 import type { Watch } from './poller.ts';
 import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -105,6 +109,8 @@ export function verdictWait(verdict: Pick<ReviewVerdict, 'head' | 'judged' | 'pr
 export function checksWait(runs: readonly CheckRun[], required: readonly string[]): QueueWait | undefined {
   const latest = new Map<string, CheckRun>();
   for (const run of [...runs].sort((a, b) => a.id - b.id)) if (run.app !== FACTORY_APP) latest.set(run.name, run);
+  // No required check read is no check passed: a ruleset that could not be read, or moved, queues nothing.
+  if (!required.length) return { waits: 'checks', why: "main's rulesets name no required check" };
   const names = required.filter((name) => name !== REVIEW_CHECK);
   const failed = names.filter((name) => {
     const run = latest.get(name);
@@ -115,6 +121,12 @@ export function checksWait(runs: readonly CheckRun[], required: readonly string[
   if (running.length) return { waits: 'checks', why: `waiting for ${running.join(', ')}` };
   return undefined;
 }
+
+/** How often a head is tried after a failure that may pass, before it is left for Martin. */
+export const MAX_TRIES = 5;
+
+/** The failures that may pass: a 409, or a GraphQL error that does not fit the state now; a limit; an outage. */
+const PASSING: readonly string[] = ['conflict', 'rate-limited', 'server', 'network'];
 
 export interface DeployQueueDependencies {
   github: GitHub;
@@ -130,8 +142,11 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
   const { github, reads, actions, recorder, log } = deps;
   const { repo } = target;
   if (!QUEUED_DEPLOYS.includes(target)) throw new Error(`The worker does not queue ${repo}'s ${target.branch}.`);
-  /** The heads it has tried to add, or found queued: each once. */
-  const tried = new Set<string>();
+  /**
+   * The head it last tried to add, and how often a failure that may pass was met there. Done once it is added, found
+   * queued, refused, or out of tries; only the current head is kept.
+   */
+  let tried: { at: string; failures: number; done: boolean } | undefined;
   /** What it last said of each head's wait, so it says each once. */
   let said: string | undefined;
 
@@ -154,38 +169,43 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
     const { number } = pull;
     const head = pull.head.sha;
     const at = `${number} ${head}`;
-    if (tried.has(at)) return;
+    if (tried?.at !== at) tried = { at, failures: 0, done: false };
+    if (tried.done) return;
+    const attempt = tried;
     const notOne = deployPullWait(target, pull);
     if (notOne) return wait(number, head, notOne);
 
-    const verdict = await reads.reviewVerdict(repo, number);
+    // Each a conditional request, read together: one that has not changed costs nothing against the rate limit.
+    const [verdict, runs, required, mergeable] = await Promise.all([
+      reads.reviewVerdict(repo, number),
+      reads.checkRuns(repo, head),
+      reads.requiredChecks(repo, 'main'),
+      reads.mergeability(repo, number),
+    ]);
     const gate = verdictWait(verdict, head);
     if (gate) return wait(number, head, gate);
-    const [runs, required] = await Promise.all([reads.checkRuns(repo, head), reads.requiredChecks(repo, 'main')]);
     const checks = checksWait(runs, required);
     if (checks) return wait(number, head, checks);
-    const mergeable: Mergeability = await reads.mergeability(repo, number);
     if (mergeable.head !== head || mergeable.conflicts !== false) {
       const why = mergeable.conflicts ? 'it conflicts with main' : 'GitHub has not said whether it conflicts';
       return wait(number, head, { waits: 'conflict', why });
     }
     const queue = await reads.mergeQueue(repo, number);
     if (queue.head === head && queue.queued) {
-      tried.add(at);
+      attempt.done = true;
       return;
     }
 
-    tried.add(at);
     try {
       const entry = await actions.enqueuePullRequest(repo, number, head);
+      attempt.done = true;
       log.info({ repo, number, head, position: entry.position }, 'added the deploy pull request to the merge queue');
     } catch (error) {
-      if (error instanceof GitHubError && error.status === 409) {
-        // It moved, or closed, before it was queued: read again next pass.
-        tried.delete(at);
-        log.info({ repo, number, head, err: error }, 'the deploy pull request moved before it was queued');
+      if (error instanceof GitHubError && PASSING.includes(error.kind) && ++attempt.failures < MAX_TRIES) {
+        log.info({ repo, number, head, err: error }, 'the deploy pull request was not queued yet: tries again');
         return;
       }
+      attempt.done = true;
       // The guard's refusal of an issue the App did not open is kept by the guard; a branch's, a deploy's or GitHub's
       // 403 is kept here, as the worker's door keeps one.
       const refusal =

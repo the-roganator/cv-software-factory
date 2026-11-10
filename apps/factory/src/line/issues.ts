@@ -4,6 +4,7 @@
  * longer change, is left as it is, and logged: asking again would not help, and the work item closes all the same.
  * Any other failure is thrown, for the caller to try again later; the GitHub worker never says a comment twice.
  */
+import { redactSecrets } from '@software-factory/events/public';
 import type { Logger } from 'pino';
 import type { ActionArgs } from '../github/server.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
@@ -32,7 +33,10 @@ export async function closeIssue(
  * The comment on a work item's pull request as the line closes it unmerged on Martin's answer: why it closed, in the
  * close's own reason, with his words when he gave them and may share them (`fold`), and that its issue goes with it.
  */
-export function rejectedPullComment(reason: string, workItem: string): string {
+export function rejectedPullComment(given: string, workItem: string): string {
+  // The comment is public, as the close's event is in the public view: anything secret-shaped in his words is redacted,
+  // as the public view redacts it.
+  const reason = redactSecrets(given);
   // A full stop only after a word: a reason cut to fit ends in an ellipsis, and his words may end in their own mark.
   const said = /[\p{L}\p{N}]$/u.test(reason) ? `${reason}.` : reason;
   return [

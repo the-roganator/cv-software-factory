@@ -921,6 +921,12 @@ describe('Martin’s Reject of a held work item with an open pull request', () =
     expect(await payloads(workItem, 'work-item.closed')).toHaveLength(1);
   });
 
+  it('redacts anything secret-shaped in his words before the public comment', () => {
+    const comment = rejectedPullComment('Martin rejected it: the token=abc123def456 leaked', '1');
+    expect(comment).toContain('token=[redacted]');
+    expect(comment).not.toContain('abc123def456');
+  });
+
   it('ends the comment with his words’ own mark, or the ellipsis of a reason cut to fit', () => {
     expect(rejectedPullComment('Martin rejected it: why (again)?', '1')).toMatch(/^.*why \(again\)\?\n/);
     expect(rejectedPullComment('Martin rejected it: a long story…', '1')).toMatch(/a long story…\n/);

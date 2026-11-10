@@ -167,7 +167,7 @@ flowchart TD
 - **A spec written again** once there is a pull request sends the work back to the coder, held to the new spec, and sets aside the review of the old one, so the change is reviewed again. The line keeps the spec in force at the latest push, the one the branch was built to, and tells the coder each of its criteria the new spec no longer has, by its given, when and expect, so the branch's work for them comes out.
 - **The merge.** A change that passed its gates, review and its description merges through the merge queue, by the line or by Martin ([below](#the-merge)).
 - **The end of a pull request.**
-  - A pull request closed unmerged closes its work item: as verified while a look again that cleared stands on its hold (below), and with no change otherwise. One the line closes on Martin's Reject closes with his reason ([holds](#holds-and-martins-answers)).
+  - A pull request closed unmerged closes its work item: as verified while a look again that cleared stands on its hold (below), and with no change otherwise. A pull request the line closes on Martin's Reject closes its work item with his reason ([holds](#holds-and-martins-answers)).
   - A work item whose pull request merges, or that closes, has its runners' volume deleted, since a later pass starts afresh from main.
 
 ## The merge

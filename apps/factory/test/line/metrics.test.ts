@@ -517,16 +517,16 @@ describe('the line’s metrics', () => {
       try {
         // Minutes ago by the store's clock, which stamped the work items' moves and reads the time: the Mac's may be
         // ahead of or behind the clock of the VM Postgres runs in, and a millisecond behind would read 19 minutes.
-        const ago = async (minutes: number) =>
-          new Date(Date.parse(await storeClock(database.owner)) - minutes * 60_000).toISOString();
+        const store = Date.parse(await storeClock(database.owner));
+        const ago = (minutes: number) => new Date(store - minutes * 60_000).toISOString();
         // Started again twenty minutes ago, after a stop longer than both work items' time.
-        await martin.append([{ ...event(null, 'line.started', {}, 'martin'), ts: await ago(20) }]);
+        await martin.append([{ ...event(null, 'line.started', {}, 'martin'), ts: ago(20) }]);
         expect(await read('gates', 'build')).toEqual([
           [1, 20],
           [1, 20],
         ]);
         // A day's cap cleared five minutes ago: the build's time runs from then, the gates' does not.
-        await events.append([{ ...event(null, 'spend.cleared', { cap: 'day' }), ts: await ago(5) }]);
+        await events.append([{ ...event(null, 'spend.cleared', { cap: 'day' }), ts: ago(5) }]);
         expect(await read('gates', 'build')).toEqual([
           [1, 20],
           [1, 5],

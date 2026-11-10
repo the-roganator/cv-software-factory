@@ -113,8 +113,9 @@ test.describe('the Canary panel', () => {
       .locator('td.mono')
       .first();
     await expect(cell).toHaveText('301baseline 599');
+    // Paused a minute on, whatever the time it takes to ask: the clock never goes back.
     const now = await page.evaluate(() => Date.now());
-    await page.clock.pauseAt(now + 1000);
+    await page.clock.pauseAt(now + 60_000);
     await cell.evaluate((_, data) => {
       const held = (globalThis as { held?: { onmessage: ((event: MessageEvent) => void) | null } }).held;
       held?.onmessage?.(new MessageEvent('message', { data }));
@@ -122,7 +123,7 @@ test.describe('the Canary panel', () => {
     // The console takes what the stream sent on its next frame, and the cell lands as the count begins.
     await page.clock.runFor(16);
     await expect(cell).toHaveClass(/landed/);
-    // A quarter of the way through its 650ms, read from the text node React drew.
+    // 160ms into its count (Canary.tsx's COUNT_MS, 650ms), eased past halfway, read from the text node React drew.
     await page.clock.runFor(160);
     const between = Number(await cell.evaluate((td) => td.firstChild?.nodeValue));
     expect(between).toBeGreaterThan(301);

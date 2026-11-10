@@ -1,4 +1,4 @@
-import { describe, expect, inject, it, vi } from 'vitest';
+import { describe, expect, inject, it } from 'vitest';
 import { createDatabase } from './postgres.ts';
 
 const server = () => inject('databaseUrl');
@@ -27,22 +27,27 @@ describe("each test's database", () => {
   });
 
   it('says, naming the cause, when making it takes longer than a copy should, and is made all the same', async () => {
-    const said = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const said: string[] = [];
+    const db = await createDatabase(server(), 'slow', inject('databaseTemplate'), {
+      slowMs: 0,
+      say: (line) => said.push(line),
+    });
     try {
-      const db = await createDatabase(server(), 'slow', inject('databaseTemplate'), 0);
-      try {
-        const [me] = await db.as.line<{ me: string }[]>`select current_user as me`;
-        expect(me?.me).toBe('factory_line');
-      } finally {
-        await db.end();
-      }
-      expect(said).toHaveBeenCalledWith(
-        expect.stringMatching(
-          /Making the test database slow_\d+_\d+ took \d+ ms, over the 0 ms a copy of the template takes/,
-        ),
-      );
+      const [me] = await db.as.line<{ me: string }[]>`select current_user as me`;
+      expect(me?.me).toBe('factory_line');
     } finally {
-      said.mockRestore();
+      await db.end();
     }
+    expect(said).toEqual([
+      expect.stringMatching(
+        /^Making the test database slow_\d+_\d+ took \d+ ms, over the 0 ms a copy of the template takes/,
+      ),
+    ]);
+  });
+
+  it('fails, naming the cause, when making it takes as long as a queue would', async () => {
+    await expect(createDatabase(server(), 'queued', inject('databaseTemplate'), { limitMs: 0 })).rejects.toThrow(
+      /Making the test database queued_\d+_\d+ took \d+ ms, over the 0 ms a copy of the template may take/,
+    );
   });
 });

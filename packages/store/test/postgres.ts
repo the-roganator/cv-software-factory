@@ -162,12 +162,18 @@ export default async function setup(project: TestProject) {
 /**
  * How long a copy of the template takes before `createDatabase` says so. A copy takes 60 to 90 ms at the median and
  * half a second at worst while the whole run copies at once, up to a second and a half with two runs side by side on
- * one machine, and past two seconds under a full `make check` beside other work. When each test migrated its own,
- * under one lock for the server, the wait for that lock alone was over two seconds for one database in ten, and up to
- * seven. A slow machine reaches the same figures as that queue, so a copy over the limit is said, not failed: the test
- * goes on, and if it then times out, the line beside it names the wait.
+ * one machine, and past two seconds under a full `make check` beside other work. A slow machine reaches that, so a
+ * copy over it is said, beside the test that made it, and the test goes on.
  */
-export const CREATE_LIMIT_MS = 2000;
+export const SLOW_COPY_MS = 2000;
+
+/**
+ * How long a copy may take before `createDatabase` fails. When each test migrated its own, under one lock for the
+ * server, the wait for that lock alone was over two seconds for one database in ten, and up to seven: a queue like
+ * that, come back, fails here, naming the cause, before a test's hook times out at ten seconds on a wait that is not
+ * its own. A busy machine's copies stay well inside it.
+ */
+export const COPY_LIMIT_MS = 8000;
 
 const connectTo = (server: string, database: string) => {
   const url = new URL(server);
@@ -247,14 +253,18 @@ export async function createTemplate(server: string): Promise<{ name: string; dr
  * A fresh database on a given Postgres, with a connection as each role: a copy of the run's template, or, with none, one
  * migrated for itself, for a caller that makes just one (the console's browser tests).
  *
- * A copy that takes longer than `limitMs` is said on stderr, naming the likely cause, so a test that then times out
- * on a wait that is not its own says why; the copy is kept, and the test goes on.
+ * A copy that takes longer than `slowMs` is said, through `say` (by default a warning vitest prints beside the test),
+ * and kept; one that takes longer than `limitMs` is dropped and fails, naming the cause.
  */
 export async function createDatabase(
   server: string,
   name: string,
   template?: string,
-  limitMs = CREATE_LIMIT_MS,
+  {
+    slowMs = SLOW_COPY_MS,
+    limitMs = COPY_LIMIT_MS,
+    say = (line: string) => console.warn(line),
+  }: { slowMs?: number; limitMs?: number; say?: (line: string) => void } = {},
 ): Promise<Database> {
   const database = `${name}_${process.pid}_${Date.now()}`;
   if (template) {
@@ -270,10 +280,17 @@ export async function createDatabase(
       await admin.end();
     }
     if (took > limitMs) {
-      process.stderr.write(
-        `Making the test database ${database} took ${Math.round(took)} ms, over the ${limitMs} ms a copy of the ` +
+      await dropDatabase(server, database).catch(() => {});
+      throw new Error(
+        `Making the test database ${database} took ${Math.round(took)} ms, over the ${limitMs} ms a copy of ` +
+          'the template may take: something is making test databases wait again (packages/store/test/postgres.ts)',
+      );
+    }
+    if (took > slowMs) {
+      say(
+        `Making the test database ${database} took ${Math.round(took)} ms, over the ${slowMs} ms a copy of the ` +
           'template takes: the machine is busy, or something is making test databases wait again ' +
-          '(packages/store/test/postgres.ts)\n',
+          '(packages/store/test/postgres.ts)',
       );
     }
   } else {

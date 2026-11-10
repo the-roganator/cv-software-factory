@@ -427,7 +427,8 @@ describe('vulnerabilities.yml', () => {
     expect(workflow.permissions).toEqual({});
     expect(jobs.coverage?.permissions).toEqual({ contents: 'read' });
     expect(jobs.scan?.permissions).toEqual({ contents: 'read', packages: 'read', 'security-events': 'write' });
-    expect(jobs.prove?.permissions).toEqual({ contents: 'read', packages: 'read' });
+    // The proving run reads the alerts, for the deadlines' counts, and writes nothing.
+    expect(jobs.prove?.permissions).toEqual({ contents: 'read', packages: 'read', 'security-events': 'read' });
     expect(jobs.scan?.if).toBe(expression("github.event_name != 'pull_request'"));
     expect(jobs.prove?.if).toBe(expression("github.event_name == 'pull_request'"));
     // Only the scan uploads, and only from the default branch's push, the schedule or a run by hand.
@@ -459,6 +460,19 @@ describe('vulnerabilities.yml', () => {
       expect(refuses('coverage', event, 'refs/heads/main'), event).toBe(false);
     for (const event of ['pull_request_target', 'merge_group', 'workflow_run'])
       expect(refuses('coverage', event, 'refs/heads/main'), event).toBe(true);
+  });
+
+  it('judges the deadlines after the upload and the exceptions, and fails a proving run on none of them', () => {
+    const steps = jobs.scan?.steps ?? [];
+    const at = (name: string) => steps.findIndex((step) => step.name === name);
+    const upload = steps.findIndex((step) => step.uses?.includes('upload-sarif'));
+    expect(at('Deadlines')).toBeGreaterThan(at('Hold the alerts to the policy'));
+    expect(at('Hold the alerts to the policy')).toBeGreaterThan(upload);
+    expect(steps[at('Deadlines')]?.run).toContain('deadlines.ts');
+    expect(steps[at('Deadlines')]?.run).not.toContain('--prove');
+    const proving = (jobs.prove?.steps ?? []).at(-1);
+    expect(proving?.name).toBe('Deadlines, failing on none');
+    expect(proving?.run).toContain('--prove');
   });
 
   it('proves itself only on a change to the scan, against the base, as data', () => {

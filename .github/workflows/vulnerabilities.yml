@@ -10,13 +10,15 @@
 #
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
-#   fails and uploads nothing, so no alert closes because its item went unread. It fails on nothing else: a finding is
-#   an alert, not a failed run. After the upload it holds its categories' alerts to policy/vulnerabilities.ts, read
-#   from this repository's main alone: each excepted result's alert dismissed as won't fix, and any dismissed with no
-#   exception in force reopened (alerts.ts).
+#   fails and uploads nothing, so no alert closes because its item went unread. After the upload it holds its
+#   categories' alerts to policy/vulnerabilities.ts, read from this repository's main alone: each excepted result's
+#   alert dismissed as won't fix, and any dismissed with no exception in force reopened (alerts.ts). Then each open
+#   finding's deadline (deadlines.ts), and the run fails on a new High or Critical, one due within a day, or one past
+#   its deadline; it reads code scanning for when each alert was made.
 # - scan (proving): on a pull request that changes the scan itself, the same scan of the base's checkout, with no
 #   permission to upload: it fails as the real one would, on an unreadable item, a stale database, or the proof image
-#   not showing CVE-2026-111497, and its log carries the counts. Every job that writes refuses any event but a push to
+#   not showing CVE-2026-111497, and its log carries the counts, the deadlines' too, read against the repository's alerts
+#   and failing on none of them. Every job that writes refuses any event but a push to
 #   the default branch, the schedule or a run by hand there; this one writes nothing, and runs on a pull request alone.
 name: vulnerabilities
 
@@ -203,6 +205,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node factory/apps/factory/src/vulnerabilities/alerts.ts "$RUNNER_TEMP/scan/exceptions.json"
+      # Each open finding's deadline, once its alert exists: fails on a new High or Critical, one due within a day, or one
+      # past its deadline (deadlines.ts). It reads code scanning with the job's token, npm's registry, Node's release
+      # index, and the newest image on each line with a fixed finding (skopeo for the tags, Trivy on the scan's database).
+      - name: Deadlines
+        if: ${{ steps.scan.outputs.sarif == 'true' && github.event_name != 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
+            --trivy-pin factory/deploy/images/trivy/Dockerfile
 
   # The same scan, of the pull request's base, with no permission to write anything: a pull request proves a change to
   # the scan by its own run, and nothing it does reaches code scanning.
@@ -215,6 +227,7 @@ jobs:
     permissions:
       contents: read
       packages: read # the advisory database and the images in GHCR, with the job's token
+      security-events: read # when each alert was made, for the deadlines' counts
     steps:
       - name: Refuse a privileged context
         run: |
@@ -273,3 +286,10 @@ jobs:
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" \
             --repository "$GITHUB_REPOSITORY"
+      # The deadlines' counts against the repository's alerts as they stand, failing on none of them.
+      - name: Deadlines, failing on none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --prove

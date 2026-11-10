@@ -1,0 +1,505 @@
+import { describe, expect, it } from 'vitest';
+import type { Alert } from '../../src/vulnerabilities/alerts.ts';
+import {
+  assess,
+  DAYS,
+  dockerfileOf,
+  firstFixed,
+  newestOnLine,
+  runtimeStage,
+  type Sources,
+  severityOf,
+  skopeoName,
+  verdict,
+} from '../../src/vulnerabilities/deadlines.ts';
+import { alertKey, type Finding, messageOf } from '../../src/vulnerabilities/sarif.ts';
+import {
+  type Handoff,
+  minimumReleaseAge,
+  publisherOf,
+  type ReadTarget,
+  type TrivyReport,
+} from '../../src/vulnerabilities/scan.ts';
+
+/**
+ * Each finding's deadline (deadlines.ts), on invented findings, alerts in the shape code scanning's API gives them, and
+ * the registries' answers: the plan's list of tests (docs/PLAN/M07-ADMIN-AND-GUARDRAILS.md, task 30), in its order.
+ */
+const DAY = 86_400_000;
+const NOW = Date.parse('2026-11-10T04:30:00Z');
+const at = (iso: string) => Date.parse(iso);
+const REPOSITORY = 'the-roganator/cv-software-factory';
+
+const LOCKFILE: ReadTarget = {
+  key: 'lockfile pnpm-lock.yaml',
+  kind: 'lockfile',
+  file: 'pnpm-lock.yaml',
+  label: 'pnpm-lock.yaml',
+};
+const NODE_IMAGE = `node:24.22.1-trixie-slim@sha256:${'b'.repeat(64)}`;
+const IMAGE: ReadTarget = {
+  key: '.devcontainer/Dockerfile node',
+  kind: 'dockerfile',
+  file: '.devcontainer/Dockerfile',
+  label: NODE_IMAGE,
+  image: NODE_IMAGE,
+};
+
+const npm = (over: Partial<Finding> = {}): Finding => ({
+  item: LOCKFILE.key,
+  listed: 'pnpm-lock.yaml',
+  label: 'pnpm-lock.yaml',
+  file: 'pnpm-lock.yaml',
+  line: 120,
+  type: 'pnpm',
+  package: 'example-a',
+  installed: '1.0.0',
+  fixed: '1.0.1',
+  advisory: 'CVE-2099-20001',
+  severity: 'HIGH',
+  ...over,
+});
+const os = (over: Partial<Finding> = {}): Finding => ({
+  item: IMAGE.key,
+  listed: NODE_IMAGE,
+  label: NODE_IMAGE,
+  file: IMAGE.file,
+  line: 2,
+  type: 'debian',
+  package: 'libexample',
+  installed: '1.0-1',
+  fixed: '1.0-2',
+  advisory: 'CVE-2099-20002',
+  severity: 'HIGH',
+  ...over,
+});
+
+let alertNumber = 0;
+/** The alert code scanning keeps for a finding, made at the time given. */
+const alertOf = (finding: Finding, created: string, over: Partial<Alert> = {}): Alert => ({
+  number: ++alertNumber,
+  state: 'open',
+  created_at: created,
+  updated_at: created,
+  tool: { name: 'Trivy' },
+  rule: { id: finding.advisory },
+  most_recent_instance: {
+    category: 'vulnerabilities/01',
+    message: { text: messageOf(finding) },
+    location: { path: finding.file, start_line: finding.line },
+  },
+  ...over,
+});
+
+interface World {
+  findings: Finding[];
+  targets?: ReadTarget[];
+  excepted?: Finding[];
+  alerts?: Alert[];
+  published?: Record<string, string>;
+  releases?: { version: string; date: string }[];
+  tags?: Record<string, string[]>;
+  images?: Record<string, TrivyReport>;
+  files?: Record<string, string>;
+  minimumReleaseAge?: number;
+}
+
+/** The sources as the world has them, and what was asked of them. */
+function sourcesOf(world: World) {
+  const asked: string[] = [];
+  const sources: Sources = {
+    published: async (name, version) => world.published?.[`${name}@${version}`],
+    releases: async () => world.releases ?? [],
+    async tags(repository) {
+      asked.push(`tags ${repository}`);
+      return world.tags?.[repository] ?? [];
+    },
+    async image(reference) {
+      asked.push(`image ${reference}`);
+      const report = world.images?.[reference];
+      if (!report) throw new Error(`${reference}: no such image`);
+      return report;
+    },
+    file: (path) => world.files?.[path],
+    alerts: async () => world.alerts ?? [],
+  };
+  return { sources, asked };
+}
+
+async function judge(world: World, now = NOW) {
+  const handoff: Handoff = {
+    repository: REPOSITORY,
+    started: new Date(now - 600_000).toISOString(),
+    cache: '/nowhere',
+    minimumReleaseAge: world.minimumReleaseAge,
+    findings: world.findings,
+    excepted: (world.excepted ?? []).map(alertKey),
+    targets: world.targets ?? [LOCKFILE, IMAGE],
+  };
+  const { sources, asked } = sourcesOf(world);
+  const { rows } = await assess(handoff, sources, now);
+  return { rows, asked, verdict: verdict(rows) };
+}
+
+/** A Trivy report of an image made at the time given, with the findings given. */
+const imageReport = (created: string, found: { package: string; advisory: string }[] = []): TrivyReport => ({
+  Metadata: { ImageID: 'sha256:image', ImageConfig: { created } },
+  Results: [
+    {
+      Class: 'os-pkgs',
+      Type: 'debian',
+      Vulnerabilities: found.map((f) => ({ PkgName: f.package, VulnerabilityID: f.advisory })),
+    },
+  ],
+});
+
+describe('a finding’s deadline', () => {
+  it('gives each severity its days from the clock’s start: critical 2, high 7, medium 30, low 90', async () => {
+    const seen = '2026-10-01T00:00:00Z';
+    for (const severity of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as const) {
+      const finding = npm({ severity });
+      const { rows } = await judge({
+        findings: [finding],
+        published: { 'example-a@1.0.1': '2026-09-01T00:00:00Z' },
+        alerts: [alertOf(finding, seen)],
+      });
+      expect(rows[0]?.due, severity).toBe(at(seen) + DAYS[severity] * DAY);
+    }
+    expect(DAYS).toMatchObject({ CRITICAL: 2, HIGH: 7, MEDIUM: 30, LOW: 90 });
+  });
+
+  it('takes the publisher’s higher rating, and not a lower one', () => {
+    expect(severityOf({ severity: 'MEDIUM', publisher: 'CRITICAL' })).toBe('CRITICAL');
+    expect(severityOf({ severity: 'HIGH', publisher: 'LOW' })).toBe('HIGH');
+    expect(severityOf({ severity: 'UNKNOWN', publisher: 'LOW' })).toBe('LOW');
+    expect(severityOf({ severity: 'HIGH' })).toBe('HIGH');
+  });
+
+  it('counts a fix published before the first scan from the first scan', async () => {
+    const finding = npm({ severity: 'MEDIUM' });
+    const { rows } = await judge({
+      findings: [finding],
+      published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' },
+      alerts: [alertOf(finding, '2026-11-09T04:30:00Z')],
+    });
+    expect(rows[0]?.due).toBe(at('2026-11-09T04:30:00Z') + 30 * DAY);
+    expect(rows[0]?.bucket).toBe('later');
+  });
+
+  it('counts a fix published after the first scan from its publish time and pnpm’s day', async () => {
+    const finding = npm({ severity: 'HIGH' });
+    const { rows } = await judge({
+      findings: [finding],
+      published: { 'example-a@1.0.1': '2026-11-05T12:00:00Z' },
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+    });
+    expect(rows[0]?.due).toBe(at('2026-11-06T12:00:00Z') + 7 * DAY);
+    expect(rows[0]?.bucket).toBe('week');
+  });
+
+  it('holds a fix still inside pnpm’s day, or the repository’s own wait, not yet installable', async () => {
+    const finding = npm({ severity: 'CRITICAL' });
+    const published = { 'example-a@1.0.1': '2026-11-09T12:00:00Z' };
+    const alerts = [alertOf(finding, '2026-10-01T00:00:00Z')];
+    const inside = await judge({ findings: [finding], published, alerts });
+    // Installable at 12:00 on the 10th, after the run: no deadline yet.
+    expect(inside.rows[0]?.installable).toBe(at('2026-11-10T12:00:00Z'));
+    expect(inside.rows[0]?.due).toBeUndefined();
+    expect(inside.rows[0]?.bucket).toBe('none');
+    const after = await judge({ findings: [finding], published, alerts }, at('2026-11-10T13:00:00Z'));
+    expect(after.rows[0]?.due).toBe(at('2026-11-12T12:00:00Z'));
+    const longer = await judge({ findings: [finding], published, alerts, minimumReleaseAge: 3 * 24 * 60 });
+    expect(longer.rows[0]?.installable).toBe(at('2026-11-12T12:00:00Z'));
+  });
+
+  it('gives a fix npm does not have, or none at all, no deadline', async () => {
+    const { rows } = await judge({
+      findings: [npm(), npm({ package: 'example-b', fixed: undefined })],
+      alerts: [],
+    });
+    expect(rows.map((row) => row.bucket)).toEqual(['none', 'none']);
+  });
+
+  it('dates Node’s fix by its first patched release in Node’s index', async () => {
+    const finding: Finding = {
+      ...os(),
+      type: 'node',
+      package: 'node',
+      installed: '24.22.0',
+      fixed: '^24.22.1 || ^22.30.1',
+      severity: 'HIGH',
+      publisher: 'HIGH',
+    };
+    const { rows } = await judge({
+      findings: [finding],
+      releases: [
+        { version: 'v24.22.2', date: '2026-11-03' },
+        { version: 'v24.22.1', date: '2026-10-20' },
+        { version: 'v22.30.1', date: '2026-10-01' },
+        { version: 'v24.22.0', date: '2026-10-01' },
+      ],
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z')],
+    });
+    expect(rows[0]?.installable).toBe(at('2026-10-20T00:00:00Z'));
+  });
+});
+
+describe('an image’s fix', () => {
+  const finding = os();
+  const alerts = [alertOf(finding, '2026-10-01T00:00:00Z')];
+  const tags = { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim', '24.23.0-alpine3.24', '25.0.0-trixie-slim'] };
+
+  it('is installable from the newest image on the pin’s line once that image no longer has the finding', async () => {
+    const { rows, asked } = await judge({
+      findings: [finding],
+      alerts,
+      tags,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+    });
+    expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim']);
+    expect(rows[0]?.installable).toBe(at('2026-11-01T00:00:00Z'));
+    expect(rows[0]?.due).toBe(at('2026-11-08T00:00:00Z'));
+  });
+
+  it('has no deadline when the line has no patched image', async () => {
+    const { rows } = await judge({
+      findings: [finding],
+      alerts,
+      tags,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z', [finding]) },
+    });
+    expect(rows[0]?.installable).toBeUndefined();
+    expect(rows[0]?.bucket).toBe('none');
+  });
+
+  it('scans no newest for a finding Trivy says has no fix, and each line’s newest once', async () => {
+    const { asked } = await judge({
+      findings: [os({ fixed: undefined }), os({ advisory: 'CVE-2099-20003' }), os({ advisory: 'CVE-2099-20004' })],
+      alerts,
+      tags,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-11-01T00:00:00Z') },
+    });
+    expect(asked).toEqual(['tags node', 'image node:24.23.0-trixie-slim']);
+  });
+
+  it('looks along an image of ours by its Dockerfile’s runtime stage, and a tag that is no version at its image now', async () => {
+    const ours: ReadTarget = {
+      key: 'deploy/x.yaml ghcr.io/example/factory',
+      kind: 'ours',
+      file: 'deploy/x.yaml',
+      label: `ghcr.io/example/factory@sha256:${'c'.repeat(64)}`,
+      image: `ghcr.io/example/factory@sha256:${'c'.repeat(64)}`,
+    };
+    const inOurs = os({ item: ours.key, file: ours.file, label: ours.label, listed: ours.label });
+    const { rows, asked } = await judge({
+      findings: [inOurs],
+      targets: [ours],
+      alerts: [alertOf(inOurs, '2026-10-01T00:00:00Z')],
+      files: {
+        'apps/factory/Dockerfile': [
+          'FROM node:24.22.1-alpine3.24@sha256:aa AS base',
+          'FROM base AS deps',
+          `FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:${'d'.repeat(64)} AS runtime`,
+        ].join('\n'),
+      },
+      images: { 'gcr.io/distroless/nodejs24-debian13:nonroot': imageReport('2026-11-02T00:00:00Z') },
+    });
+    expect(asked).toEqual(['image gcr.io/distroless/nodejs24-debian13:nonroot']);
+    expect(rows[0]?.installable).toBe(at('2026-11-02T00:00:00Z'));
+  });
+
+  it('fails the read when the newest image cannot be scanned', async () => {
+    await expect(judge({ findings: [finding], alerts, tags, images: {} })).rejects.toThrow(/no such image/);
+  });
+});
+
+describe('the clock', () => {
+  it('excepts an excepted finding from any deadline, and it fails nothing', async () => {
+    const finding = npm({ severity: 'CRITICAL' });
+    const { rows, verdict: v } = await judge({
+      findings: [finding],
+      excepted: [finding],
+      published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' },
+      alerts: [alertOf(finding, '2026-01-01T00:00:00Z', { state: 'dismissed' })],
+    });
+    expect(rows[0]?.excepted).toBe(true);
+    expect(rows[0]?.due).toBeUndefined();
+    expect(v.passes).toBe(true);
+    expect(v.lines[0]).toContain('0 open results, 1 excepted');
+  });
+
+  it('returns an expired exception’s finding with the deadline it always had', async () => {
+    const finding = npm({ severity: 'HIGH' });
+    // Excepted from 1 October to 1 November: its alert dismissed, then reopened when the exception lapsed.
+    const { rows, verdict: v } = await judge({
+      findings: [finding],
+      published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' },
+      alerts: [alertOf(finding, '2026-10-01T00:00:00Z', { updated_at: '2026-11-02T04:30:00Z' })],
+    });
+    expect(rows[0]?.due).toBe(at('2026-10-08T00:00:00Z'));
+    expect(rows[0]?.bucket).toBe('overdue');
+    expect(v.passes).toBe(false);
+  });
+
+  it('keeps a renamed item’s clock, and starts its own for the same package in another item that is no rename', async () => {
+    const moved = npm({
+      item: 'lockfile apps/new/pnpm-lock.yaml',
+      label: 'apps/new/pnpm-lock.yaml',
+      file: 'apps/new/pnpm-lock.yaml',
+    });
+    const old = npm({
+      item: 'lockfile apps/old/pnpm-lock.yaml',
+      label: 'apps/old/pnpm-lock.yaml',
+      file: 'apps/old/pnpm-lock.yaml',
+    });
+    const other = npm({
+      item: 'lockfile apps/other/pnpm-lock.yaml',
+      label: 'apps/other/pnpm-lock.yaml',
+      file: 'apps/other/pnpm-lock.yaml',
+    });
+    const target = (file: string): ReadTarget => ({ key: `lockfile ${file}`, kind: 'lockfile', file, label: file });
+    const { rows } = await judge({
+      findings: [moved, other],
+      targets: [target('apps/new/pnpm-lock.yaml'), target('apps/other/pnpm-lock.yaml')],
+      published: { 'example-a@1.0.1': '2025-01-01T00:00:00Z' },
+      alerts: [
+        // The old item's alert, closed by today's upload; the new item's, made by it.
+        alertOf(old, '2026-10-01T00:00:00Z', {
+          state: 'fixed',
+          fixed_at: '2026-11-10T04:25:00Z',
+          updated_at: '2026-11-10T04:25:00Z',
+        }),
+        alertOf(moved, '2026-11-10T04:25:00Z'),
+        // The other item was on the list before, with an alert of its own: its new finding is its own.
+        alertOf(npm({ ...other, package: 'example-z', advisory: 'CVE-2099-20009' }), '2026-09-01T00:00:00Z'),
+        alertOf(other, '2026-11-10T04:25:00Z'),
+      ],
+    });
+    expect(rows[0]?.seen).toBe(at('2026-10-01T00:00:00Z'));
+    expect(rows[0]?.firstSeenToday).toBe(false);
+    expect(rows[1]?.firstSeenToday).toBe(true);
+    expect(rows[1]?.seen).toBe(at('2026-11-10T04:25:00Z'));
+  });
+
+  it('matches an alert whose pin has moved since, by its item, package and advisory, never its line or version', async () => {
+    const finding = npm({ line: 400, installed: '1.0.0' });
+    const before = npm({ line: 120, installed: '0.9.0' });
+    const { rows } = await judge({ findings: [finding], alerts: [alertOf(before, '2026-10-01T00:00:00Z')] });
+    expect(rows[0]?.seen).toBe(at('2026-10-01T00:00:00Z'));
+  });
+});
+
+describe('the run', () => {
+  const published = { 'example-a@1.0.1': '2025-01-01T00:00:00Z' };
+
+  it('fails on a new high or critical, first seen today, even with no fix', async () => {
+    const finding = npm({ severity: 'HIGH', fixed: undefined });
+    const { verdict: v } = await judge({ findings: [finding], alerts: [alertOf(finding, '2026-11-10T04:25:00Z')] });
+    expect(v.fresh).toBe(1);
+    expect(v.passes).toBe(false);
+    const medium = npm({ severity: 'MEDIUM', fixed: undefined });
+    expect((await judge({ findings: [medium], alerts: [] })).verdict.passes).toBe(true);
+  });
+
+  it('fails on one due within a day', async () => {
+    const finding = npm({ severity: 'CRITICAL' });
+    const { verdict: v } = await judge({
+      findings: [finding],
+      published,
+      alerts: [alertOf(finding, '2026-11-08T12:00:00Z')],
+    });
+    expect(v.byBucket.day).toBe(1);
+    expect(v.passes).toBe(false);
+  });
+
+  it('fails on one past its deadline', async () => {
+    const finding = npm({ severity: 'LOW' });
+    const { verdict: v } = await judge({
+      findings: [finding],
+      published,
+      alerts: [alertOf(finding, '2026-08-01T00:00:00Z')],
+    });
+    expect(v.byBucket.overdue).toBe(1);
+    expect(v.passes).toBe(false);
+  });
+
+  it('passes on findings due later, and a proving run on any of them, giving counts alone', async () => {
+    const later = npm({ severity: 'MEDIUM' });
+    const late = npm({ severity: 'LOW', package: 'example-b' });
+    const world = {
+      findings: [later, late],
+      published: { ...published, 'example-b@1.0.1': '2025-01-01T00:00:00Z' },
+      alerts: [alertOf(later, '2026-11-01T00:00:00Z'), alertOf(late, '2026-01-01T00:00:00Z')],
+    };
+    const { rows } = await judge({ ...world, findings: [later] });
+    expect(verdict(rows).passes).toBe(true);
+    const both = await judge(world);
+    const proving = verdict(both.rows, true);
+    expect(proving.passes).toBe(true);
+    expect(proving.lines.join('\n')).toContain('a proving run fails on none');
+    expect(proving.lines.join('\n')).not.toMatch(/example-|CVE-/);
+    expect(proving.lines[1]).toBe('By deadline: overdue 1, due within a day 0, within a week 0, later 1, no fix 0.');
+  });
+});
+
+describe('the parts', () => {
+  it('reads the publisher’s rating from the advisory’s own source, and the repository’s wait from its workspace', () => {
+    expect(publisherOf({ DataSource: { ID: 'ghsa' }, VendorSeverity: { ghsa: 4, nvd: 2 } })).toBe('CRITICAL');
+    expect(publisherOf({ DataSource: { ID: 'debian' }, VendorSeverity: { nvd: 4, debian: 1 } })).toBe('LOW');
+    expect(publisherOf({ DataSource: { ID: 'debian' }, VendorSeverity: { nvd: 4 } })).toBeUndefined();
+    expect(publisherOf({ VendorSeverity: { nvd: 4 } })).toBeUndefined();
+    expect(minimumReleaseAge('packages:\n  - apps/*\nminimumReleaseAge: 4320 # three days\n')).toBe(4320);
+    expect(minimumReleaseAge('# pnpm already waits a day (minimumReleaseAge)\npackages: []\n')).toBeUndefined();
+  });
+
+  it('takes the first fixed version above what is installed', () => {
+    expect(firstFixed('1.2.0', '1.2.5, 2.0.1, 1.3.0')).toBe('1.2.5');
+    expect(firstFixed('2.0.0', '1.2.5, 2.0.1')).toBe('2.0.1');
+    expect(firstFixed('1.0.0', undefined)).toBeUndefined();
+  });
+
+  it('finds the newest tag on a line as ci-images.sh does', () => {
+    const tags = [
+      '24.21.0-alpine3.24',
+      '24.22.2-alpine3.24',
+      '24.9.0-alpine3.24',
+      '25.0.0-alpine3.24',
+      '24.22.3-trixie-slim',
+    ];
+    expect(newestOnLine('24.21.0-alpine3.24', tags)).toBe('24.22.2-alpine3.24');
+    expect(newestOnLine('v1.64.1-noble', ['v1.64.1-noble', 'v1.65.0-noble', 'v2.0.0-noble', 'v1.66.0-jammy'])).toBe(
+      'v1.65.0-noble',
+    );
+    expect(newestOnLine('nonroot', tags)).toBeUndefined();
+  });
+
+  it('follows a Dockerfile’s last stage back to the image it names', () => {
+    const file = [
+      'FROM node:24@sha256:aa AS node',
+      'FROM mcr.microsoft.com/playwright:v1 AS browsers',
+      'FROM browsers AS playwright',
+      'FROM playwright AS runtime',
+    ].join('\n');
+    expect(runtimeStage(file)).toBe('mcr.microsoft.com/playwright:v1');
+  });
+
+  it('finds the Dockerfile of an image of ours by build.yml’s names', () => {
+    const files = new Set([
+      'apps/factory/Dockerfile',
+      'apps/factory/Dockerfile.browser',
+      'apps/runner/Dockerfile',
+      'Dockerfile',
+    ]);
+    const exists = (path: string) => files.has(path);
+    expect(dockerfileOf('ghcr.io/x/y/factory@sha256:aa', exists)).toBe('apps/factory/Dockerfile');
+    expect(dockerfileOf('ghcr.io/x/y/factory-browser@sha256:aa', exists)).toBe('apps/factory/Dockerfile.browser');
+    expect(dockerfileOf('ghcr.io/x/y/factory-runner@sha256:aa', exists)).toBe('apps/runner/Dockerfile');
+    expect(dockerfileOf('ghcr.io/x/website/website@sha256:aa', exists)).toBe('Dockerfile');
+  });
+
+  it('names a repository as skopeo reads it', () => {
+    expect(skopeoName('node')).toBe('docker://docker.io/library/node');
+    expect(skopeoName('rancher/k3s')).toBe('docker://docker.io/rancher/k3s');
+    expect(skopeoName('ghcr.io/open-feature/flagd')).toBe('docker://ghcr.io/open-feature/flagd');
+  });
+});

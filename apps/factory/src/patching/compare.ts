@@ -15,20 +15,10 @@
  * manifest's, so the list gives every digest the scan saw of each image.
  */
 import type { Kind } from '../vulnerabilities/inventory.ts';
-import type { Pin } from '../vulnerabilities/moves.ts';
+import type { Pin, ScannedImage } from '../vulnerabilities/moves.ts';
 import type { RunningContainer } from './running.ts';
 
-/** An image the scan read, as `moves.json` lists it (`scanned`). */
-export interface ScannedImage {
-  kind: Kind;
-  /** The list's item, as it names it. */
-  item: string;
-  /** The reference the scan read, as pinned or rendered. */
-  image: string;
-  /** Every digest the scan saw for it: the index's, and each platform manifest's. */
-  digests: string[];
-  pin: Pin;
-}
+export type { ScannedImage };
 
 /** The list of one repository: its images, by the repository that pins them. */
 export interface Listed {

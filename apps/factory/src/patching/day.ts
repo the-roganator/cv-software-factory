@@ -119,7 +119,7 @@ function repositoryDay({ moves, pulls }: RepositoryRead): Day['repositories'][nu
 
 /** The images a repository's scan read, from its `moves.json`; none when the run wrote none. */
 export function scannedOf(moves: Moves) {
-  return (moves.file as { scanned?: import('./compare.ts').ScannedImage[] } | null)?.scanned ?? [];
+  return moves.file?.scanned ?? [];
 }
 
 /** The day: each repository, in order, the containers compared, and the rows, or null when none could be made. */

@@ -80,7 +80,7 @@ export function factoryMoves(scanned: ScannedImage[] = FACTORY_SCANNED): Moves {
         lanes: { line: 0, worker: 1, dependabot: 1, approval: 0, cluster: 0, issue: 0, none: 0 },
       },
       scanned,
-    } as Moves['file'],
+    },
     moves: [
       {
         index: 1,
@@ -139,7 +139,7 @@ export function appMoves(scanned: ScannedImage[] = APP_SCANNED): Moves {
         lanes: { line: 0, worker: 0, dependabot: 0, approval: 0, cluster: 0, issue: 0, none: 0 },
       },
       scanned,
-    } as Moves['file'],
+    },
     moves: [],
   };
 }

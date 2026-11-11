@@ -40,6 +40,7 @@ import { GUARDRAIL_HOLDS, IMPROVEMENT_STEP_UP, SHARE_STEP_UP } from '../access.t
 import { APP_REPO, AUTONOMY, clock, duration, jobUrl, money, shortVersion, startOfDay } from '../format.ts';
 import { deployWords } from './fixing.ts';
 import { deployRecord, deployWaitsForMartin, type Hold, type ItemState } from './items.ts';
+import type { PatchNeed } from './patch-needs.ts';
 import { judgedSaid, judgedWords, type Release } from './release.ts';
 
 /** The one piece of evidence that explains a hold: a check's or the fence's own output, a question, or words. */
@@ -179,6 +180,8 @@ export interface NeedsView {
   holds: Need[];
   /** The canary paused for Martin, if one is. */
   canary: CanaryNeed | undefined;
+  /** Each move of the sense's last day that waits on Martin (`patch-needs.ts`), oldest first. */
+  patches: PatchNeed[];
   /** Today's answers, the viewer's own day, newest first. */
   answered: Answered[];
 }
@@ -604,9 +607,14 @@ function canaryNeed(flight: Release | undefined, t: number): CanaryNeed | undefi
 
 /**
  * Needs you at t: every open hold, oldest first, the canary paused for Martin among them, and his answers since the
- * viewer's day began. `flight` is the release in flight, if one is.
+ * viewer's day began. `flight` is the release in flight, if one is; `patches`, the moves that wait on him.
  */
-export function needsView(items: readonly ItemState[], t: number, flight?: Release): NeedsView {
+export function needsView(
+  items: readonly ItemState[],
+  t: number,
+  flight?: Release,
+  patches: PatchNeed[] = [],
+): NeedsView {
   const holds = items
     .flatMap((item): Need[] => {
       const hold = item.hold;
@@ -699,7 +707,7 @@ export function needsView(items: readonly ItemState[], t: number, flight?: Relea
     }
   }
   answered.sort((a, b) => b.at - a.at);
-  return { holds, canary: canaryNeed(flight, t), answered };
+  return { holds, canary: canaryNeed(flight, t), patches, answered };
 }
 
 /** What a report's ticket points at, as a card says it; undefined for any other work item's. */

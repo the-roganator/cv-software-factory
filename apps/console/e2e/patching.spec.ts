@@ -3,7 +3,8 @@
  * by deadline; a row opens in place, one at a time; a visitor reads it read-only, a lockfile's package withheld until
  * its pull request is open, and Martin reads it whole, with code scanning a link away. The panel's code arrives as a
  * chunk of its own after the first view, and an event it does not read renders nothing there, while a new day renders
- * it once. Snapshots are `visual.spec.ts`'s.
+ * it once. Each move that waits on Martin is a card in Needs you too, which opens its row here. Snapshots are
+ * `visual.spec.ts`'s.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -172,4 +173,42 @@ test('an event Patching does not read renders nothing there, and a new day rende
   await send(after(2, day, payload));
   await expect(panel(page).locator('.panel-head .label')).toHaveText('11 moves · 3 wait on Martin · Read only');
   expect(await renders()).toBe(before + 1);
+});
+
+test('each move that waits on Martin is a card in Needs you, which opens its row in Patching', async ({ page }) => {
+  await adminService(page, 'martin');
+  await page.goto(consoleUrl());
+  await ready(page);
+  const cards = page.locator('#needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
+  await expect(cards.locator('h3')).toHaveText([
+    'example-cd needs moving by hand',
+    'example-logs waits for a review',
+    'k3s needs the cluster moved',
+    'An image no list names is running',
+  ]);
+  await expect(cards.locator('.kick b')).toHaveText([
+    'Patch · an issue',
+    'Patch · your approval',
+    'Patch · your cluster',
+    'Patch · your cluster',
+  ]);
+  const logs = cards.filter({ hasText: 'example-logs waits for a review' });
+  await expect(logs.locator('.ev')).toHaveText(
+    'Clears 1 Critical and 21 High. It changes more than a pin, or its fix is a major on, so the review gate passes its pull request only with your approval.',
+  );
+  // A card has no answer of its own: the move is moved on GitHub or the cluster, and the card goes with the next day.
+  await expect(logs.locator('.answers')).toHaveCount(0);
+  await rows(page).first().waitFor();
+  await logs.getByRole('button', { name: 'Open its row in Patching' }).click();
+  await expect(row(page, 'example-logs')).toHaveAttribute('aria-expanded', 'true');
+  await expect(panel(page)).toBeInViewport();
+});
+
+test('a visitor reads the same cards, as Waiting on Martin, and who moves each', async ({ page }) => {
+  await patching(page);
+  const cards = page.locator('#needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
+  await expect(cards).toHaveCount(4);
+  await expect(cards.locator('.kick b').nth(1)).toHaveText('Patch · Martin’s approval');
+  await expect(cards.first().locator('.need-foot')).toContainText('Martin moves it, on GitHub or his cluster');
+  await expect(page.locator('#needs .count-attn')).toContainText('waiting');
 });

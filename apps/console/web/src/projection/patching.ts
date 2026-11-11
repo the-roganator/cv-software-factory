@@ -13,9 +13,20 @@
  */
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
 import type { ItemState } from './items.ts';
+import { DAY, HIS, moveKeys, PATCHING_ROLE, runningKey } from './patch-needs.ts';
 
-/** The role that appends the sense's day: a `patching.read` from any other is not read. */
-export const PATCHING_ROLE = 'factory_patching';
+export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE } from './patch-needs.ts';
+
+/** The sense's last day by t, from its own role. */
+export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event?.type !== 'patching.read' || event.appended_by !== PATCHING_ROLE) continue;
+    if (Date.parse(event.ts) <= t) return event;
+  }
+  return undefined;
+}
+
 /** The app's repository, whose moves go down the line and whose pins read "the app's". */
 export const APP_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
 
@@ -23,9 +34,6 @@ type Day = PayloadOf<'patching.read'>;
 type Repository = Day['repositories'][number];
 type ScanMove = Repository['moves'][number];
 type Running = Day['rows'][number];
-
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
 
 /** A row's state, each a glyph and a word in the design system: who moves it, or where its pull request is. */
 export type MoveState =
@@ -127,16 +135,6 @@ export type PatchingView =
       containers: number;
     };
 
-/** The sense's last day by t, from its own role. */
-export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i];
-    if (event?.type !== 'patching.read' || event.appended_by !== PATCHING_ROLE) continue;
-    if (Date.parse(event.ts) <= t) return event;
-  }
-  return undefined;
-}
-
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
 export const total = (counts: Counts) => SEVERITIES.reduce((n, s) => n + counts[s], 0);
 
@@ -161,9 +159,6 @@ export function targetWords(to: string): string {
   if (m?.[1] && m[2]) return `${m[1]} ${m[2]}`;
   return shortDigests(to).trim();
 }
-
-/** The lanes only Martin moves: his approval, his cluster's own command, and what no pull request of the App's can write. */
-const HIS: readonly MoveLane[] = ['approval', 'cluster', 'issue'];
 
 /**
  * The line's work item that carries an app's move: open, and naming the same package or image. Only the app's moves go
@@ -240,7 +235,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unlisted ${row.namespace}/${row.pod}/${row.container}`,
+        key: runningKey(row),
         repository: undefined,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -252,7 +247,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unscanned ${row.namespace}/${row.pod}/${row.container}`,
+        key: runningKey(row),
         repository: row.repository,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -267,7 +262,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `not-running ${row.repository} ${row.item}`,
+        key: runningKey(row),
         repository: row.repository,
         name: shortDigests(row.image).trim(),
         where: row.pin,
@@ -306,17 +301,10 @@ export function patchingView(events: readonly PublicEvent[], items: readonly Ite
 
 /** One day's view at t. */
 export function dayView(day: Day, at: number, items: readonly ItemState[], t: number): PatchingView {
-  const moves = day.repositories.flatMap((r) => {
-    let lockfiles = 0;
-    return r.moves.map((move) =>
-      moveRow(
-        r.repository,
-        move,
-        items,
-        move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`,
-      ),
-    );
-  });
+  const keys = moveKeys(day);
+  const moves = day.repositories.flatMap((r, i) =>
+    r.moves.map((move, j) => moveRow(r.repository, move, items, keys[i]?.[j] ?? '')),
+  );
   const rows = ordered([...moves, ...day.rows.map(runningRow)]);
   const running = { 'unscanned-digest': 0, 'unlisted-image': 0, 'not-running': 0 };
   for (const row of day.rows) running[row.row]++;
@@ -363,25 +351,3 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
     containers: day.containers,
   };
 }
-
-/**
- * A deadline as a row says it: "in 40 min", "in 21 h", "in 1 day 20 h", "in 4 days", or how long past. Each unit is
- * counted down, never rounded up, so a row never says a deadline is further off, or longer past, than it is.
- */
-export function dueWords(deadline: number | undefined, t: number): string {
-  if (deadline === undefined) return 'none';
-  const left = deadline - t;
-  const span = Math.abs(left);
-  const words =
-    span < HOUR
-      ? `${Math.max(1, Math.floor(span / 60_000))} min`
-      : span < DAY
-        ? `${Math.floor(span / HOUR)} h`
-        : span < 2 * DAY
-          ? `1 day${Math.floor((span - DAY) / HOUR) ? ` ${Math.floor((span - DAY) / HOUR)} h` : ''}`
-          : `${Math.floor(span / DAY)} days`;
-  return left > 0 ? `in ${words}` : `${words} past`;
-}
-
-/** Whether a deadline is within a day or past: the one place a deadline takes the warm colour. */
-export const dueSoon = (deadline: number | undefined, t: number) => deadline !== undefined && deadline - t <= DAY;

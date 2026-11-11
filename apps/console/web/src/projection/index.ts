@@ -27,6 +27,7 @@ import {
   ticketWaits,
 } from './line.ts';
 import { type NeedsView, needsView } from './needs.ts';
+import { type PatchNeed, patchNeeds } from './patch-needs.ts';
 import { type AppVersions, appVersions, type Card, card, type Timeline, timeline } from './reel.ts';
 import { type Checks, type FoldedRefusals, foldRefusals, type LastRollback, lastRollback } from './refusals.ts';
 import {
@@ -84,6 +85,7 @@ export type {
 export { whileSending } from './line.ts';
 export type { Answered, CanaryNeed, Evidence, Need, NeedsView, WayThere } from './needs.ts';
 export { SAMPLE_PULL } from './needs.ts';
+export { dueSoon, dueWords, OPEN_ROW, type PatchNeed } from './patch-needs.ts';
 export type { Card, Picture, Refused, Source, Tag, Timeline, Versions } from './reel.ts';
 export { QUARANTINE_AT, segmentsLabel } from './reel.ts';
 export type { Check, Checks, LastRollback, RefusalLine, RefusalsView, Standing } from './refusals.ts';
@@ -158,6 +160,8 @@ export interface Fold {
   refusals: FoldedRefusals;
   /** The line's last rollback, which proves guardrail 9 where nothing refuses. */
   rollback: LastRollback | undefined;
+  /** The moves of the sense's last day that wait on Martin, each a card in Needs you. */
+  patches: PatchNeed[];
   /** Every return, newest first: which are in the last day is a matter of t. */
   returns: Return[];
   versions: AppVersions;
@@ -208,6 +212,7 @@ export function fold(seen: readonly PublicEvent[]): Fold {
     proofs: foldProofs(seen),
     refusals: foldRefusals(seen),
     rollback: lastRollback(seen),
+    patches: patchNeeds(seen),
     returns: everyReturn(seen),
     versions,
     closed: items.map((item) => (item.closedAt === undefined ? undefined : card(item, versions, item.closedAt))),
@@ -286,7 +291,7 @@ export function viewAt(
     canary: canaryView(shipped),
     cards: items.map((item, i) => folded.closed[i] ?? card(item, folded.versions, t)),
     timeline: folded.timeline,
-    needs: needsView(items, t, inFlight(shipped)),
+    needs: needsView(items, t, inFlight(shipped), folded.patches),
     controls: folded.controls,
     flags: flagsView(folded.flags, items, shipped, t),
     improve: folded.improve,

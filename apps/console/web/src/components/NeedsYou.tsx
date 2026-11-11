@@ -18,6 +18,11 @@
  * A flag waiting for Martin to widen it has a card among them (`FlagCard`): Widen to the next stage, dashed with its
  * reason when it can't be taken now, and Turn off, each opening the slider's confirmation (`Flags.tsx`).
  *
+ * A move that waits on Martin has a card among them (`PatchCard`): a pin the review gate holds for his approval, one
+ * only his cluster's own command applies, one no pull request of the App's can write, or what the sense found running
+ * that nothing scanned. It names the move, what it clears and when it is due, and opens its row in the Patching panel,
+ * where the rest of it is: a move is not a work item.
+ *
  * A work item's sheet heads with the same cards for it (`WaitsOnMartin`), drawn by the same components, so answering
  * there is answering here; only the title, which the sheet has already, and "Open the work item" are left off.
  */
@@ -26,10 +31,11 @@ import { Fragment, type ReactNode, Suspense, useEffect, useId, useRef, useState 
 import { STAGE_NAME as STATION_NAME } from '../../../../../docs/design/system/station.ts';
 import { FLAG_STEP_UP } from '../access.ts';
 import type { Admin } from '../admin.ts';
-import { clock, inWords, shortVersion } from '../format.ts';
+import { clock, count, inWords, shortVersion, when } from '../format.ts';
 import { previewHref } from '../profile.ts';
 import {
   type CanaryNeed,
+  dueWords,
   type FlagNeed,
   type FlagRow,
   type FlagStage,
@@ -37,6 +43,8 @@ import {
   type Move,
   type Need,
   type NeedsView,
+  OPEN_ROW,
+  type PatchNeed,
   SAMPLE_PULL,
   STAGE_NAME,
   type WayThere,
@@ -520,6 +528,83 @@ function CanaryCard({ need, admin, onOpen }: { need: CanaryNeed; admin: Admin } 
   );
 }
 
+/**
+ * What a move's card says, by what waits: whose it is, its title from what moves, and why it waits, each in Martin's
+ * words or a visitor's (`his`: "your" or "Martin’s"). Kept short: Needs you is in the first view, and its words are.
+ */
+const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: string) => string, why: string]> = {
+  approval: [
+    '{his} approval',
+    (name) => `${name} waits for a review`,
+    'It changes more than a pin, or its fix is a major on, so the review gate passes its pull request only with {his} approval.',
+  ],
+  cluster: [
+    '{his} cluster',
+    (name) => `${name} needs the cluster moved`,
+    'Only make upgrade-cluster applies it, with the line stopped: no pull request can show it works.',
+  ],
+  issue: [
+    'an issue',
+    (name) => `${name} needs moving by hand`,
+    'No pull request of the App’s can write it: mise pins it, or it is a workflow or a lockfile.',
+  ],
+  'unlisted-image': [
+    '{his} cluster',
+    () => 'An image no list names is running',
+    'A pod runs an image no pin names, so the daily scan never sees it.',
+  ],
+  'unscanned-digest': [
+    '{his} cluster',
+    () => 'A running digest no scan read',
+    'A pod runs a digest the scan never read: what runs there is not what was scanned.',
+  ],
+  'not-running': [
+    '{his} cluster',
+    () => 'A pin the cluster does not run yet',
+    'main pins it, and {his} cluster runs another of the same image.',
+  ],
+};
+
+/**
+ * A move that waits on Martin: what it is and why it waits, from the sense's day, and the way to its row in Patching,
+ * which holds its pins, what it clears in full, and what to do. The same for a visitor, who reads who moves it.
+ */
+function PatchCard({ need, now, martin }: { need: PatchNeed; now: number; martin: boolean }) {
+  const id = useId();
+  const his = (words: string) => words.replace('{his}', martin ? 'your' : 'Martin’s');
+  const [whose, title, why] = PATCH_WORDS[need.kind];
+  const name = need.name ?? 'A package in the lockfile';
+  const c = need.clears;
+  return (
+    <article className="need raised ruled" aria-labelledby={id}>
+      <div className="kick">
+        <b>Patch · {his(whose)}</b>
+        <span>
+          {need.runs ? `running in ${need.runs.namespace}` : name} ·{' '}
+          {need.deadline === undefined ? 'no deadline' : `due ${dueWords(need.deadline, now)}`}
+        </span>
+      </div>
+      <h3 id={id}>{title(name)}</h3>
+      <p className="ev">
+        {c && `Clears ${count(c.critical)} Critical and ${count(c.high)} High. `}
+        {his(why)}
+      </p>
+      {(need.runs || need.to) && <p className="words">{need.runs ? need.runs.image : `${need.from} → ${need.to}`}</p>}
+      {need.deadline !== undefined && <p className="help">Left as it is, the scan fails from {when(need.deadline)}.</p>}
+      <div className="need-foot">
+        <button
+          type="button"
+          className="linkish"
+          onClick={() => window.dispatchEvent(new CustomEvent(OPEN_ROW, { detail: need.key }))}
+        >
+          Open its row in Patching
+        </button>
+        {!martin && <span>Martin moves it, on GitHub or his cluster</span>}
+      </div>
+    </article>
+  );
+}
+
 /** An answer to a flag's card: a button, dashed when it can't be taken now, or a visitor's label, beside what it does. */
 function FlagAnswer({
   label,
@@ -656,19 +741,23 @@ interface NeedsYouProps {
   admin: Admin;
   /** The app's origin, which a flag's preview opens. */
   app: string | undefined;
+  /** The time the view is at, which a move's deadline is said from. */
+  now: number;
   onOpen: (item: string) => void;
   /** A flag was moved: the page asks again soon whether the app holds it. */
   onMoved: () => void;
 }
 
-export function NeedsYou({ needs, flags, admin, app, onOpen, onMoved }: NeedsYouProps) {
+export function NeedsYou({ needs, flags, admin, app, now, onOpen, onMoved }: NeedsYouProps) {
   const martin = admin.kind === 'martin';
-  const { holds, canary, answered } = needs;
+  const { holds, canary, patches, answered } = needs;
   // A deploy that is not his to merge yet keeps its card, but does not wait on him.
-  const waiting = holds.filter((need) => need.forMartin).length + flags.needs.length + (canary ? 1 : 0);
-  // Holds, the canary and flags together, oldest first.
-  const none = { hold: undefined, flag: undefined, canary: undefined };
+  const waiting =
+    holds.filter((need) => need.forMartin).length + flags.needs.length + (canary ? 1 : 0) + patches.length;
+  // The moves that wait on him, holds, the canary and flags together, oldest first.
+  const none = { hold: undefined, flag: undefined, canary: undefined, patch: undefined };
   const cards = [
+    ...patches.map((need) => ({ ...none, since: need.since, key: `patch-${need.key}`, patch: need })),
     ...holds.map((need) => ({ ...none, since: need.since, key: need.hold, hold: need })),
     ...(canary ? [{ ...none, since: canary.since, key: `canary-${canary.release.id}`, canary }] : []),
     ...flags.needs.map((need) => ({ ...none, since: need.since, key: `flag-${need.flag}`, flag: need })),
@@ -681,8 +770,10 @@ export function NeedsYou({ needs, flags, admin, app, onOpen, onMoved }: NeedsYou
       </div>
       {cards.length ? (
         <div className="needs-list">
-          {cards.map(({ key, hold, flag, canary }) =>
-            canary ? (
+          {cards.map(({ key, hold, flag, canary, patch }) =>
+            patch ? (
+              <PatchCard key={key} need={patch} now={now} martin={martin} />
+            ) : canary ? (
               <CanaryCard key={key} need={canary} admin={admin} onOpen={onOpen} />
             ) : flag ? (
               <FlagCard

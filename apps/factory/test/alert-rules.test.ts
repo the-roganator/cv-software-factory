@@ -38,6 +38,7 @@ import { describer } from '../src/line/agents/describer.ts';
 import { planner } from '../src/line/agents/planner.ts';
 import { reviewer } from '../src/line/agents/reviewer.ts';
 import { NUMBER_PATTERN, OPEN_STAGES } from '../src/line/metrics.ts';
+import { PATCHING_KINDS } from '../src/line/patching-alerts.ts';
 import { SECURITY_KINDS } from '../src/line/security.ts';
 import { leaseFor } from '../src/line/worker.ts';
 import { METRICS_FROM_THE_LINE } from '../src/provenance.ts';
@@ -257,6 +258,19 @@ describe('the alerts to Martin', () => {
         `max(increase(line_security_events_total{kind="${rule.labels.kind}", ${METRICS_FROM_THE_LINE}}[5m])) > 0`,
       );
       expect(rule.annotations.summary).toBeTruthy();
+    }
+  });
+
+  it('notify of each move Martin hears of, once each, from the line’s count, and never of a finding with no fix', () => {
+    const patching = rules.filter((rule) => rule.alert === 'PatchingMove');
+    expect(patching.map((rule) => rule.labels.kind)).toEqual([...PATCHING_KINDS]);
+    for (const rule of patching) {
+      expect(rule.labels.level).toBe('notify');
+      expect(rule.for).toBe('0s');
+      expect(rule.expr).toBe(
+        `max(increase(line_patching_moves_total{kind="${rule.labels.kind}", ${METRICS_FROM_THE_LINE}}[5m])) > 0`,
+      );
+      expect(`${rule.annotations.summary} ${rule.annotations.description}`).not.toMatch(/no fix/i);
     }
   });
 

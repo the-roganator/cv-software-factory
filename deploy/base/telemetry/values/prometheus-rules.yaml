@@ -300,6 +300,51 @@ serverFiles:
             annotations:
               summary: "A red-team attack was not refused as it should be"
               description: "The harness says an attack you launched was refused, but the line, reading the refusals it cites again, cannot agree: one is missing, by another mechanism, from a role that may not record it, unverified, or about something else. The line’s log says why."
+          - alert: PatchingMove
+            expr: "max(increase(line_patching_moves_total{kind=\"move-fix\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "move-fix"
+            annotations:
+              summary: "A move clears a new High or Critical"
+              description: "The day’s scan found a fix for a High or Critical finding, and a move has it, with a deadline by its severity. Patching in the console says which, and who moves it."
+          - alert: PatchingMove
+            expr: "max(increase(line_patching_moves_total{kind=\"move-waits\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "move-waits"
+            annotations:
+              summary: "A move waits on you"
+              description: "A pin only you can move: the review gate holds it for your approval, only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you."
+          - alert: PatchingMove
+            expr: "max(increase(line_patching_moves_total{kind=\"move-due-soon\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "move-due-soon"
+            annotations:
+              summary: "A move is due within a day"
+              description: "A move has not merged, and its deadline is within a day: the scan fails from it. Patching in the console says which."
+          - alert: PatchingMove
+            expr: "max(increase(line_patching_moves_total{kind=\"move-overdue\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "move-overdue"
+            annotations:
+              summary: "A move is past its deadline"
+              description: "A move passed its deadline unmerged, so the scan fails until it moves or is excepted. Patching in the console says which."
+          - alert: PatchingMove
+            expr: "max(increase(line_patching_moves_total{kind=\"app-fix-merged\", k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[5m])) > 0"
+            for: 0s
+            labels:
+              level: "notify"
+              kind: "app-fix-merged"
+            annotations:
+              summary: "A fix for the app’s vulnerable dependency merged without you"
+              description: "The line merged a work item’s fix for a vulnerable dependency of the app, by the review gate’s rule, with nobody’s approval. The canary still guards it, and its sheet in the console says which."
           - alert: SecurityEventsUncounted
             expr: "(count(last_over_time(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}[6h])) unless count(line_security_events_total{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"})) or max(line_security_events_counting{k8s_namespace_name=\"factory\", k8s_pod_label_app_kubernetes_io_name=\"line\"}) == 0"
             for: 5m

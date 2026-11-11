@@ -586,7 +586,8 @@ function PatchCard({ need, now, martin }: { need: PatchNeed; now: number; martin
       </div>
       <h3 id={id}>{title(name)}</h3>
       <p className="ev">
-        {c && `Clears ${count(c.critical)} Critical and ${count(c.high)} High. `}
+        {c &&
+          `Clears ${[c.critical && `${count(c.critical)} Critical`, c.high && `${count(c.high)} High`].filter(Boolean).join(' and ') || 'nothing at High or Critical'}. `}
         {his(why)}
       </p>
       {(need.runs || need.to) && <p className="words">{need.runs ? need.runs.image : `${need.from} → ${need.to}`}</p>}

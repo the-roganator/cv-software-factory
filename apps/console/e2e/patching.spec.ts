@@ -179,7 +179,7 @@ test('each move that waits on Martin is a card in Needs you, which opens its row
   await adminService(page, 'martin');
   await page.goto(consoleUrl());
   await ready(page);
-  const cards = page.locator('#needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
+  const cards = page.locator('article.needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
   await expect(cards.locator('h3')).toHaveText([
     'example-cd needs moving by hand',
     'example-logs waits for a review',
@@ -206,9 +206,9 @@ test('each move that waits on Martin is a card in Needs you, which opens its row
 
 test('a visitor reads the same cards, as Waiting on Martin, and who moves each', async ({ page }) => {
   await patching(page);
-  const cards = page.locator('#needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
+  const cards = page.locator('article.needs .need').filter({ has: page.locator('.kick b', { hasText: /^Patch · / }) });
   await expect(cards).toHaveCount(4);
   await expect(cards.locator('.kick b').nth(1)).toHaveText('Patch · Martin’s approval');
   await expect(cards.first().locator('.need-foot')).toContainText('Martin moves it, on GitHub or his cluster');
-  await expect(page.locator('#needs .count-attn')).toContainText('waiting');
+  await expect(page.locator('article.needs .count-attn')).toContainText('waiting');
 });

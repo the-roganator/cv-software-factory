@@ -1474,7 +1474,7 @@ async function patchCardAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' 
   await adminService(page, as);
   await page.goto(consoleUrl({ theme }));
   await ready(page);
-  const card = page.locator('#needs .need').filter({ has: page.locator('h3', { hasText: title }) });
+  const card = page.locator('article.needs .need').filter({ has: page.locator('h3', { hasText: title }) });
   await card.scrollIntoViewIfNeeded();
   await page.evaluate(() => document.fonts.ready);
   return card;

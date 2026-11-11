@@ -43,13 +43,22 @@ const repository = z
  * What a dependency's pin names, and what it pins: a package's name, an image's repository, `node`; a version, or an
  * image's tag with its digest, which is long.
  */
-const dependencyName = text(200);
-const dependencyVersion = text(200);
+/**
+ * One word, with no space, control character or backtick, as every package, image, version and path is: a dependency's
+ * words reach an agent's prompt and a public issue, where a line break or a backtick could pass for something else.
+ */
+const word = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .regex(/^[^\s`\p{Cc}]+$/u, 'one word, with no space, control character or backtick');
+const dependencyName = word(200);
+const dependencyVersion = word(200);
 
 /**
  * A move: one pin's name in one repository, from what it pins now to what fixes it, written on every line that pins it.
- * It is the unit of a dependency's work, as the scan groups its findings (`apps/factory/src/vulnerabilities/moves.ts`):
- * one move clears every finding the old version had.
+ * It is the unit of a dependency's work, as the vulnerability scan groups its findings into moves, with the same
+ * fields: one move clears every finding the old version had.
  */
 const move = z.strictObject({
   repository,
@@ -59,15 +68,16 @@ const move = z.strictObject({
   to: dependencyVersion,
   /** Every line that pins it, in order of file and line. */
   pins: z
-    .array(z.strictObject({ file: text(PATH_CHARS), line: z.number().int().positive() }))
+    .array(z.strictObject({ file: word(PATH_CHARS), line: z.number().int().positive() }))
     .min(1)
     .max(40),
 });
 
 /**
- * A scan's findings on a move's pins: the worst at most eight, worst first, each with its advisory, its package, each
- * rating it has, the version that fixes it and its deadline where it has them; and how many more there are, by the
- * worse of their ratings.
+ * A scan's findings on a move's pins: at most eight, those the move fixes before those it does not, each worst first,
+ * each with its advisory, its package, each rating it has, the version that fixes it and its deadline where it has
+ * them; and how many more there are, by the worse of their ratings. So the move's worst finding with a fix, which sets
+ * its ticket's severity (`policy/triage.ts`), is always among the eight.
  */
 const scanEvidence = z.strictObject({
   kind: z.literal('scan'),
@@ -82,8 +92,12 @@ const scanEvidence = z.strictObject({
           scanner: z.enum(V.ADVISORY_SEVERITIES),
           publisher: z.enum(V.ADVISORY_SEVERITIES).optional(),
         }),
-        /** The versions that fix it, as the advisory gives them; absent when none does. */
-        fixed: dependencyVersion.optional(),
+        /** The versions that fix it, as the advisory gives them, joined by `, `; absent when none does. */
+        fixed: z
+          .string()
+          .max(200)
+          .regex(/^[^\s`\p{Cc},]+(, [^\s`\p{Cc},]+)*$/u, 'versions, joined by ", "')
+          .optional(),
         deadline: timestamp.optional(),
       }),
     )
@@ -567,13 +581,16 @@ export const PAYLOADS = {
     category: z.enum(V.CATEGORIES).optional(),
     /** The visitor whose key started it. Their key is a credential, so no public view carries it. */
     visitor: z.strictObject({ key: z.string().regex(/^[a-z]+-[a-z]+$/) }).optional(),
-    /** A dependency update's pin: what moves, from what, to what, and whether a vulnerability is why. */
+    /**
+     * A dependency update's pin: what moves, from what, to what, and whether a vulnerability is why. Free text, as
+     * version 2 had it, long enough for an image's tag with its digest.
+     */
     dependency: z
       .strictObject({
-        name: dependencyName,
+        name: text(200),
         ecosystem: z.enum(V.ECOSYSTEMS),
-        from: dependencyVersion,
-        to: dependencyVersion,
+        from: text(200),
+        to: text(200),
         security: z.boolean(),
       })
       .optional(),
@@ -749,17 +766,26 @@ export const PAYLOADS = {
    * report is about the whole page, Jev chose none or the page could not be read. A version 1 ticket never said, and
    * no other ticket does.
    */
-  'ticket.opened': z.strictObject({
-    title: text(120),
-    category: z.enum(V.TICKET_CATEGORIES),
-    severity: z.enum(V.SEVERITIES),
-    fingerprint,
-    traces: z.array(traceId).max(10),
-    points: z
-      .strictObject({ page, passage: text(200).optional(), element: pageElement.optional() })
-      .refine((p) => !(p.passage && p.element), 'a ticket points at a passage or an element, not both')
-      .optional(),
-  }),
+  'ticket.opened': z
+    .strictObject({
+      title: text(120),
+      category: z.enum(V.TICKET_CATEGORIES),
+      severity: z.enum(V.SEVERITIES),
+      fingerprint,
+      traces: z.array(traceId).max(10),
+      points: z
+        .strictObject({ page, passage: text(200).optional(), element: pageElement.optional() })
+        .refine((p) => !(p.passage && p.element), 'a ticket points at a passage or an element, not both')
+        .optional(),
+    })
+    // A move is a vulnerability's, security, or a routine update's, dependency; and only a move is a routine update.
+    .refine(
+      (t) =>
+        'ecosystem' in t.fingerprint
+          ? t.category === 'security' || t.category === 'dependency'
+          : t.category !== 'dependency',
+      { message: 'a move’s ticket is security or dependency, and only a move’s is dependency', path: ['category'] },
+    ),
 
   /**
    * The planner's spec. An improvement's names its title, which replaces the one made from Martin's words, the flag its

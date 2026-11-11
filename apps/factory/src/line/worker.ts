@@ -600,10 +600,8 @@ export class Line {
         this.#o.log.warn({ workItem }, 'a ticket a dry run verified has no signal to reopen it on');
         return;
       }
-      if (first.sense === 'dependency') {
-        this.#o.log.warn({ workItem }, 'a dependency’s ticket a dry run verified names no route to reopen it on');
-        return;
-      }
+      // #firstSignal gives a route's alone, so never the dependency sense's.
+      if (first.sense === 'dependency') return;
       await this.#append(workItem, [
         {
           type: 'work-item.reopened',
@@ -1690,11 +1688,19 @@ export class Line {
   /** The ticket's first signal: its sense, check, route and evidence, never a report's words. */
   async #firstSignal(workItem: string): Promise<FirstSignal | undefined> {
     const [row] = await this.#o.sql<
-      { sense: SignalSource; check: string; route: string; symptom: SymptomClass | null; evidence: Evidence[] | null }[]
+      {
+        sense: SignalSource;
+        check: string;
+        route: string | null;
+        symptom: SymptomClass | null;
+        evidence: Evidence[] | null;
+      }[]
     >`
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
              payload->>'symptom' as symptom, payload->'evidence' as evidence
       from events where work_item = ${workItem} and type = 'signal.received' order by seq limit 1`;
+    // A dependency's first signal names a move, no route: none of Verify's senses can look at it again.
+    if (row?.route === null) return undefined;
     return (
       row && {
         sense: row.sense,

@@ -1145,7 +1145,9 @@ export const everyRoute = (ticket: SignalSource | undefined, found: SignalSource
   ticket !== 'canary' && found !== 'canary';
 
 function defectCategory(ticket: Ticket): DefectCategory {
-  if (ticket.category === 'dependency') throw new Error(`Ticket #${ticket.workItem} is a dependency's, on no page`);
+  if ('ecosystem' in ticket.fingerprint || ticket.category === 'dependency') {
+    throw new Error(`Ticket #${ticket.workItem} is a dependency's, on no page`);
+  }
   return ticket.category;
 }
 

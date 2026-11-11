@@ -11,7 +11,6 @@ import {
   type DefectCategory,
   type DefectSymptom,
   elementWords,
-  isDependencySymptom,
   type PageElement,
   REPORT_CATEGORIES,
   type ReportCategory,
@@ -139,7 +138,7 @@ export function triageQuestions(candidates: readonly Candidate[]): Record<string
 }
 
 const describe = (ticket: Candidate) =>
-  `${ticket.title} (${ticket.category}${ticket.symptom && !isDependencySymptom(ticket.symptom) ? `: ${SYMPTOM[ticket.symptom].toLowerCase()}` : ''})`;
+  `${ticket.title} (${ticket.category}${ticket.symptom ? `: ${SYMPTOM[ticket.symptom].toLowerCase()}` : ''})`;
 
 /** The label a passage is offered under. */
 export const passageKey = (index: number) => `p${index + 1}`;

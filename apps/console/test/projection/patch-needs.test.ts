@@ -56,6 +56,12 @@ describe('Needs you’s moves, projected from the samples', () => {
     expect(pod?.runs).toMatchObject({ namespace: 'default', pod: 'debug-shell-7c9f' });
   });
 
+  it('writes a target as the Patching row does, in its few characters', () => {
+    const logs = needs.find((need) => need.name === 'example-logs');
+    expect([logs?.from, logs?.to]).toEqual(['18.13.7', '21.1.1, a major']);
+    expect(needs.find((need) => need.name === 'k3s')?.to).toBe('v1.34.5+k3s1');
+  });
+
   it('counts each in Needs you’s view, beside the holds', () => {
     const items = foldItems(SAMPLES);
     expect(needsView(items, END, undefined, needs).patches).toHaveLength(4);
@@ -88,6 +94,22 @@ describe('Needs you’s moves, over the days', () => {
     ]);
     expect(needs.find((need) => need.name === 'k3s')?.since).toBe(Date.parse('2026-10-06T04:20:00.000Z'));
     expect(needs.find((need) => need.name === 'example-cd')?.since).toBe(Date.parse('2026-10-04T04:20:00.000Z'));
+  });
+
+  it('keeps a move’s wait through a day whose run judged nothing of its repository', () => {
+    const failed: Day = {
+      ...day,
+      repositories: day.repositories.map((r) => ({ ...r, judged: null, totals: null, moves: [] })),
+      compared: false,
+      rows: [],
+    };
+    const needs = patchNeeds([
+      readAt('2026-10-04T04:20:00.000Z', day),
+      readAt('2026-10-05T04:20:00.000Z', failed),
+      readAt('2026-10-06T04:20:00.000Z', day),
+    ]);
+    expect(needs).toHaveLength(4);
+    expect(needs.every((need) => need.since === Date.parse('2026-10-04T04:20:00.000Z'))).toBe(true);
   });
 
   it('reads only the sense’s own role, and has nothing before its first day', () => {

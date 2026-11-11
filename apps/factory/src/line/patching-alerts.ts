@@ -8,11 +8,15 @@
  * - `move-waits`: a move first waits on him: its lane is his approval, his cluster's own command or an issue, or it is a
  *   row the sense made of what the cluster runs;
  * - `move-due-soon`: a move still in the sense's last day comes within a day of its deadline. One first seen within a
- *   day of it is told by `move-fix` alone, which says it is due;
- * - `move-overdue`: a move still in the sense's last day passes its deadline;
- * - `app-fix-merged`: the line merges, without him, the pull request of a work item opened for a vulnerable dependency
- *   of the app (`work-item.opened`'s `dependency.security`), which at Guarded only the review gate's rule for a
- *   Critical fix lets it do.
+ *   day of it, or past it, is told by `move-fix` alone, which says it is due; one that passes its deadline unjudged
+ *   before (the line was down) is counted here as it is counted overdue, so a line that reads the store again counts
+ *   the same;
+ * - `move-overdue`: a move still in the sense's last day passes its deadline. The sense's day is the scan's, once a
+ *   day: a move merged since the last is still in it until the next, and may be told of until then;
+ * - `app-fix-merged`: the line merges (its role's `pull-request.merged`, queued by it) the pull request of a work item
+ *   opened for a vulnerable dependency of the app (`work-item.opened`'s `dependency.security`), with no merge hold on
+ *   that work item before it: a merge Martin approved after a hold is his, and not told. At Guarded only the review
+ *   gate's rule for a Critical fix lets the line do so.
  *
  * A deadline is judged at the time each day arrives, for the moves of the day before, and at the clock's time for the
  * last day's, so a line that restarts and reads the store again counts what the line before it counted: a move leaves
@@ -23,6 +27,9 @@ import type { PayloadOf } from '@software-factory/events';
 
 export const PATCHING_KINDS = ['move-fix', 'move-waits', 'move-due-soon', 'move-overdue', 'app-fix-merged'] as const;
 export type PatchingKind = (typeof PATCHING_KINDS)[number];
+
+/** The one role whose merges are read: the line's (0023's `line_only_event`). */
+export const LINE_ROLE = 'factory_line';
 
 /** The one role whose days are read (0050_patching.sql). */
 export const PATCHING_ROLE = 'factory_patching';
@@ -59,35 +66,49 @@ function once(tally: PatchingTally, kind: PatchingKind, key: string) {
 }
 
 /**
- * A move's key across days: its repository and what moves, the package for a lockfile's (the store's day has it), or
- * its place among the repository's lockfile moves where the day gives none.
+ * A move's key across days: its repository and what moves; for a lockfile's, its file and package (the store's day has
+ * it), or its place among the repository's lockfile moves where the day gives none.
  */
 const moveKey = (repository: string, move: Move, lockfiles: number) =>
-  `${repository} ${move.lockfile ? (move.package?.name ?? `lockfile ${lockfiles}`) : move.name}`;
+  `${repository} ${
+    move.lockfile ? `${move.pins[0]?.file ?? ''} ${move.package?.name ?? `lockfile ${lockfiles}`}` : move.name
+  }`;
 
-/** A row the sense made, by what it found and where. */
+/**
+ * A row the sense made, by what it found and what runs, never by its pod, whose name a rollout changes: the same image
+ * in a new pod is the same thing to move.
+ */
 function rowKey(row: Day['rows'][number]): string {
   return row.row === 'not-running'
     ? `not-running ${row.repository} ${row.item}`
-    : `${row.row} ${row.namespace}/${row.pod}/${row.container}`;
+    : `${row.row} ${row.namespace} ${row.image}@${row.digest}`;
 }
 
 /** Each deadline of the last day's moves judged at t: within a day, or past. */
 export function judgeDeadlines(tally: PatchingTally, t: number): void {
   for (const [key, deadline] of tally.deadlines) {
     if (deadline <= t) {
+      // Past it is past the day before it too: counted now if it was not, as a line running then would have.
+      once(tally, 'move-due-soon', key);
       once(tally, 'move-overdue', key);
-      // One past its deadline has passed the day before it too, so it is not told of again as due within a day.
-      tally.counted['move-due-soon'].add(key);
     } else if (deadline - t <= DAY) once(tally, 'move-due-soon', key);
   }
 }
 
-/** Adds the sense's day, which arrived at `at`: the day before's deadlines judged then, and this day's moves. */
+/**
+ * Adds the sense's day, which arrived at `at`: the day before's deadlines judged then, and this day's moves. A
+ * repository whose run judged no moves (it failed early) keeps the deadlines it had: its moves did not go.
+ */
 export function addDay(tally: PatchingTally, day: Day, at: number): void {
   judgeDeadlines(tally, at);
   const deadlines = new Map<string, number>();
   for (const repository of day.repositories) {
+    if (repository.judged === null) {
+      for (const [key, deadline] of tally.deadlines) {
+        if (key.startsWith(`${repository.repository} `)) deadlines.set(key, deadline);
+      }
+      continue;
+    }
     let lockfiles = 0;
     for (const move of repository.moves) {
       const key = moveKey(repository.repository, move, move.lockfile ? ++lockfiles : lockfiles);
@@ -96,8 +117,8 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
       if (HIS.includes(move.lane)) once(tally, 'move-waits', key);
       if (move.deadline === undefined) continue;
       const deadline = Date.parse(move.deadline);
-      // A move first seen within a day of its deadline is told of by its fix, which says when it is due.
-      if (first && tally.counted['move-fix'].has(key) && deadline - at <= DAY && deadline > at) {
+      // A move first seen within a day of its deadline, or past it, is told of by its fix, which says when it is due.
+      if (first && tally.counted['move-fix'].has(key) && deadline - at <= DAY) {
         tally.counted['move-due-soon'].add(key);
       }
       deadlines.set(key, deadline);
@@ -107,9 +128,18 @@ export function addDay(tally: PatchingTally, day: Day, at: number): void {
   tally.deadlines = deadlines;
 }
 
-/** Adds one of the line's merges: counted when the line merged a vulnerable dependency's fix for the app. */
-export function addMerge(tally: PatchingTally, workItem: string, by: unknown, securityFix: unknown): void {
-  if (by === 'factory' && securityFix === true) once(tally, 'app-fix-merged', workItem);
+/**
+ * Adds one of the line's merges: counted when the line queued and merged a vulnerable dependency's fix for the app that
+ * no merge hold had waited on Martin for.
+ */
+export function addMerge(
+  tally: PatchingTally,
+  merge: { workItem: string; by: unknown; appendedBy: unknown; securityFix: unknown; held: unknown },
+): void {
+  const { workItem, by, appendedBy, securityFix, held } = merge;
+  if (by === 'factory' && appendedBy === LINE_ROLE && securityFix === true && held === false) {
+    once(tally, 'app-fix-merged', workItem);
+  }
 }
 
 /** A copy that a read can change and drop, so a read that fails leaves the tally as it was. */

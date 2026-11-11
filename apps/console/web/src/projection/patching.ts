@@ -13,9 +13,9 @@
  */
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
 import type { ItemState } from './items.ts';
-import { DAY, HIS, moveKeys, PATCHING_ROLE, runningKey } from './patch-needs.ts';
+import { DAY, HIS, moveKeys, PATCHING_ROLE, runningKey, shortDigests, targetWords } from './patch-needs.ts';
 
-export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE } from './patch-needs.ts';
+export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE, targetWords } from './patch-needs.ts';
 
 /** The sense's last day by t, from its own role. */
 export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {
@@ -137,28 +137,6 @@ export type PatchingView =
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
 export const total = (counts: Counts) => SEVERITIES.reduce((n, s) => n + counts[s], 0);
-
-/** A digest shortened to its first eight, as the console writes a commit's seven. */
-const shortDigests = (text: string) => text.replace(/@?sha256:([0-9a-f]{8})[0-9a-f]{56}/g, ' $1');
-
-/**
- * A target in a row's few characters, from the scan's grammar (`apps/factory/src/vulnerabilities/fixes.ts`): the
- * version, the image's tag and its digest's first eight, the chart's version and whether it is a major, the tool's.
- * What the grammar does not read is shown as it is.
- */
-export function targetWords(to: string): string {
-  let m = /^versions? (.+)$/.exec(to);
-  if (m?.[1]) return m[1].split(' and ').join(', ');
-  m = /^image (\S+)$/.exec(to);
-  if (m?.[1]) return shortDigests(m[1]).trim();
-  m = /^chart \S+ (\S+)( \(a major\))?$/.exec(to);
-  if (m?.[1]) return m[2] ? `${m[1]}, a major` : m[1];
-  m = /^k3s (\S+)$/.exec(to);
-  if (m?.[1]) return m[1];
-  m = /^tool (\S+) (\S+)$/.exec(to);
-  if (m?.[1] && m[2]) return `${m[1]} ${m[2]}`;
-  return shortDigests(to).trim();
-}
 
 /**
  * The line's work item that carries an app's move: open, and naming the same package or image. Only the app's moves go

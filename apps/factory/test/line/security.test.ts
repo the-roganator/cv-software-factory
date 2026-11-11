@@ -539,6 +539,25 @@ describe('the moves Martin hears of, read from the store', () => {
       'WI-40',
     );
     await append(database.as.line, 'work-item.opened', { kind: 'ticket', title: 'A defect', sample: false }, 'WI-41');
+    // One held for Martin's merge, which he approved: the line queued it, and it is his.
+    await append(
+      database.as.line,
+      'work-item.opened',
+      {
+        kind: 'ticket',
+        title: 'The parser has a fix',
+        sample: false,
+        dependency: { name: 'example-parser', ecosystem: 'npm', from: '1.0', to: '1.1', security: true },
+      },
+      'WI-42',
+    );
+    await append(database.as.line, 'hold.started', { cause: 'merge' }, 'WI-42');
+    await append(
+      database.as.line,
+      'pull-request.merged',
+      { number: 63, commit: 'c'.repeat(40), by: 'factory' },
+      'WI-42',
+    );
     await append(
       database.as.line,
       'pull-request.merged',

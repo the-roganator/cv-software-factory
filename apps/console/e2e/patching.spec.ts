@@ -201,7 +201,7 @@ test('each move that waits on Martin is a card in Needs you, which opens its row
   await rows(page).first().waitFor();
   await logs.getByRole('button', { name: 'Open its row in Patching' }).click();
   await expect(row(page, 'example-logs')).toHaveAttribute('aria-expanded', 'true');
-  await expect(panel(page)).toBeInViewport();
+  await expect(row(page, 'example-logs')).toBeInViewport();
 });
 
 test('a visitor reads the same cards, as Waiting on Martin, and who moves each', async ({ page }) => {

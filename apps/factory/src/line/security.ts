@@ -375,6 +375,7 @@ export async function readOn(
       day: PayloadOf<'patching.read'> | null;
       merged_by: string | null;
       security_fix: boolean | null;
+      merge_held: boolean | null;
     }[]
   >`
     with upto as (select max(seq) as last from events)
@@ -393,7 +394,12 @@ export async function readOn(
            case when e.type = 'pull-request.merged' then (
              select (o.payload->'dependency'->>'security')::boolean from events o
              where o.work_item = e.work_item and o.type = 'work-item.opened' order by o.seq limit 1
-           ) end as security_fix
+           ) end as security_fix,
+           case when e.type = 'pull-request.merged' then exists (
+             select 1 from events h
+             where h.work_item = e.work_item and h.type = 'hold.started' and h.seq < e.seq
+               and h.payload->>'cause' = 'merge'
+           ) end as merge_held
     from upto
     left join events e
       on e.seq > ${tally.seq}::bigint and e.seq <= upto.last and e.type in ${sql([...TYPES])} and not e.sample
@@ -442,7 +448,15 @@ export async function readOn(
       continue;
     }
     if (row.type === 'pull-request.merged') {
-      if (row.work_item) addMerge(next.patching, row.work_item, row.merged_by, row.security_fix);
+      if (row.work_item) {
+        addMerge(next.patching, {
+          workItem: row.work_item,
+          by: row.merged_by,
+          appendedBy: row.appended_by,
+          securityFix: row.security_fix,
+          held: row.merge_held,
+        });
+      }
       continue;
     }
     const stored: Stored = {

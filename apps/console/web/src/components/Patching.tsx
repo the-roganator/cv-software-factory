@@ -431,17 +431,25 @@ const Panel = memo(function Panel({
   const who: Who = { martin };
   const [open, setOpen] = useState<string | undefined>(asked);
   const panel = useRef<HTMLElement>(null);
-  // A card in Needs you asks for its row: it opens, as a click on it would, and the panel comes into view.
+  const asking = useRef(false);
+  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has.
   useEffect(() => {
     const ask = (event: Event) => {
       const key = (event as CustomEvent<unknown>).detail;
       if (typeof key !== 'string') return;
+      asking.current = true;
       setOpen(key);
-      panel.current?.scrollIntoView({ block: 'start' });
     };
     window.addEventListener(OPEN_ROW, ask);
     return () => window.removeEventListener(OPEN_ROW, ask);
   }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the row to bring into view is the one just opened
+  useEffect(() => {
+    if (!asking.current) return;
+    asking.current = false;
+    const row = panel.current?.querySelector('.pm > button[aria-expanded="true"]') ?? panel.current;
+    row?.scrollIntoView({ block: 'start' });
+  }, [open]);
   const readOnly = !martin && <> · Read only</>;
   if (view.state === 'unread') {
     return (

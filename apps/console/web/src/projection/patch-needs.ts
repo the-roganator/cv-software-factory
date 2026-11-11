@@ -100,7 +100,26 @@ export interface PatchNeed {
 }
 
 /** A digest shortened to its first eight, as the console writes a commit's seven. */
-const shortDigests = (text: string) => text.replace(/@?sha256:([0-9a-f]{8})[0-9a-f]{56}/g, ' $1').trim();
+export const shortDigests = (text: string) => text.replace(/@?sha256:([0-9a-f]{8})[0-9a-f]{56}/g, ' $1');
+
+/**
+ * A target in a row's few characters, from the scan's grammar (`apps/factory/src/vulnerabilities/fixes.ts`): the
+ * version, the image's tag and its digest's first eight, the chart's version and whether it is a major, the tool's.
+ * What the grammar does not read is shown as it is.
+ */
+export function targetWords(to: string): string {
+  let m = /^versions? (.+)$/.exec(to);
+  if (m?.[1]) return m[1].split(' and ').join(', ');
+  m = /^image (\S+)$/.exec(to);
+  if (m?.[1]) return shortDigests(m[1]).trim();
+  m = /^chart \S+ (\S+)( \(a major\))?$/.exec(to);
+  if (m?.[1]) return m[2] ? `${m[1]}, a major` : m[1];
+  m = /^k3s (\S+)$/.exec(to);
+  if (m?.[1]) return m[1];
+  m = /^tool (\S+) (\S+)$/.exec(to);
+  if (m?.[1] && m[2]) return `${m[1]} ${m[2]}`;
+  return shortDigests(to).trim();
+}
 
 function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
   const keys = moveKeys(day);
@@ -113,8 +132,13 @@ function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
           key: keys[i]?.[j] ?? '',
           kind: move.lane as PatchNeed['kind'],
           name: move.lockfile ? shown?.name : move.name,
-          from: move.lockfile ? shown?.from : shortDigests(move.from) || undefined,
-          to: move.lockfile ? shown?.to || undefined : move.to || undefined,
+          from: move.lockfile ? shown?.from : shortDigests(move.from).trim() || undefined,
+          // A line nobody builds any more has nothing to move to, as its row says.
+          to: move.lockfile
+            ? shown?.to || undefined
+            : move.to && !move.to.startsWith('another line')
+              ? targetWords(move.to)
+              : undefined,
           clears: { critical: move.clears.critical, high: move.clears.high },
           deadline: move.deadline === undefined ? undefined : Date.parse(move.deadline),
           runs: undefined,
@@ -126,7 +150,7 @@ function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
     (row): Omit<PatchNeed, 'since'> => ({
       key: runningKey(row),
       kind: row.row,
-      name: shortDigests(row.image),
+      name: shortDigests(row.image).trim(),
       from: undefined,
       to: undefined,
       clears: undefined,
@@ -134,7 +158,7 @@ function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
       runs:
         row.row === 'not-running'
           ? undefined
-          : { namespace: row.namespace, pod: row.pod, image: shortDigests(`${row.image}@${row.digest}`) },
+          : { namespace: row.namespace, pod: row.pod, image: shortDigests(`${row.image}@${row.digest}`).trim() },
     }),
   );
   return [...moves, ...running];
@@ -150,9 +174,16 @@ export function patchNeeds(events: readonly PublicEvent[]): PatchNeed[] {
   for (const event of events) {
     if (event.type !== 'patching.read' || event.appended_by !== PATCHING_ROLE) continue;
     const at = Date.parse(event.ts);
-    last = needsOf(event.payload);
+    const day = event.payload;
+    last = needsOf(day);
     const now = new Set(last.map((need) => need.key));
-    for (const key of since.keys()) if (!now.has(key)) since.delete(key);
+    // A day that judged nothing of a repository, or compared nothing of the cluster, is not a day without its moves:
+    // their waits go on from where they began.
+    const unread = day.repositories.filter((r) => r.judged === null).map((r) => `${r.repository} `);
+    const kept = (key: string) =>
+      unread.some((prefix) => key.startsWith(prefix)) ||
+      (!day.compared && /^(unlisted|unscanned|not-running) /.test(key));
+    for (const key of since.keys()) if (!now.has(key) && !kept(key)) since.delete(key);
     for (const key of now) if (!since.has(key)) since.set(key, at);
   }
   return last.map((need) => ({ ...need, since: since.get(need.key) ?? 0 })).sort((a, b) => a.since - b.since);

@@ -148,14 +148,103 @@ describe('the moves Martin hears of, on the sense’s day', () => {
 });
 
 describe('the app’s vulnerable dependency, fixed without Martin', () => {
-  it('counts the line’s merge of one, once for its work item, and no merge of his, or of any other work item', () => {
+  const merge = (workItem: string, change: object = {}) => ({
+    workItem,
+    by: 'factory',
+    appendedBy: 'factory_line',
+    securityFix: true,
+    held: false,
+    ...change,
+  });
+
+  it('counts the line’s merge of one, once for its work item', () => {
     const tally = emptyPatchingTally();
-    addMerge(tally, '1412', 'factory', true);
-    addMerge(tally, '1412', 'factory', true);
-    addMerge(tally, '1413', 'martin', true);
-    addMerge(tally, '1414', 'factory', false);
-    addMerge(tally, '1415', 'factory', null);
+    addMerge(tally, merge('1412'));
+    addMerge(tally, merge('1412'));
     expect(tally.kinds['app-fix-merged']).toBe(1);
+  });
+
+  it('counts none Martin merged, approved after a hold, or that any role but the line’s recorded, nor any other work item', () => {
+    const tally = emptyPatchingTally();
+    addMerge(tally, merge('1413', { by: 'martin' }));
+    addMerge(tally, merge('1414', { held: true }));
+    addMerge(tally, merge('1415', { appendedBy: 'factory_triage' }));
+    addMerge(tally, merge('1416', { securityFix: false }));
+    addMerge(tally, merge('1417', { securityFix: null }));
+    expect(tally.kinds['app-fix-merged']).toBe(0);
+  });
+});
+
+describe('a move across days', () => {
+  it('counts a deadline passed while the line was down as the line running then would have: due, then past', () => {
+    const live = emptyPatchingTally();
+    addDay(live, DAY, READ);
+    for (let hour = 1; hour <= 6 * 24; hour++) judgeDeadlines(live, READ + hour * H);
+    const again = emptyPatchingTally();
+    addDay(again, DAY, READ);
+    judgeDeadlines(again, READ + 6 * 24 * H);
+    expect(kinds(again)).toEqual(kinds(live));
+  });
+
+  it('is the same row of the sense’s in a new pod: a rollout is told of no more', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    const waits = tally.kinds['move-waits'];
+    const rolled: Day = {
+      ...DAY,
+      rows: DAY.rows.map((row) => (row.row === 'not-running' ? row : { ...row, pod: `${row.pod}-rolled` })),
+    };
+    addDay(tally, rolled, READ + 24 * H);
+    expect(tally.kinds['move-waits']).toBe(waits);
+  });
+
+  it('keeps two lockfiles’ moves of one package apart, each with its own deadline', () => {
+    const tally = emptyPatchingTally();
+    const lockfile = (file: string, deadline: string) => ({
+      name: 'pnpm-lock.yaml',
+      pins: [{ file, line: 0 }],
+      from: '',
+      to: '',
+      major: false,
+      clears: { critical: 0, high: 2, medium: 0, low: 0, unknown: 0 },
+      leaves: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+      deadline,
+      newToday: 0,
+      lane: 'issue' as const,
+      lockfile: true,
+      package: { name: 'example-parser', from: '1.0.0', to: '1.0.1', pins: [{ file, line: 12 }] },
+    });
+    const day: Day = {
+      ...DAY,
+      rows: [],
+      repositories: [
+        {
+          ...(DAY.repositories[0] as Day['repositories'][number]),
+          moves: [
+            lockfile('pnpm-lock.yaml', '2026-11-13T05:00:00Z'),
+            lockfile('docs/pnpm-lock.yaml', '2026-11-21T05:00:00Z'),
+          ],
+        },
+      ],
+    };
+    addDay(tally, day, READ);
+    expect(tally.kinds['move-waits']).toBe(2);
+    expect(tally.deadlines.size).toBe(2);
+  });
+
+  it('keeps the deadlines of a repository whose run judged nothing, so one passing then is still told', () => {
+    const tally = emptyPatchingTally();
+    addDay(tally, DAY, READ);
+    const failed: Day = {
+      ...DAY,
+      rows: [],
+      compared: false,
+      repositories: DAY.repositories.map((r) => ({ ...r, judged: null, totals: null, moves: [] })),
+    };
+    addDay(tally, failed, READ + 24 * H);
+    judgeDeadlines(tally, at('2026-11-16T18:00:00Z'));
+    // The sidecar's and k3s's deadlines passed while the runs judged nothing.
+    expect(tally.kinds['move-overdue']).toBe(2);
   });
 });
 

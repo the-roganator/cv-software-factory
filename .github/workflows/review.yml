@@ -2,7 +2,8 @@
 # App, on a pull request's head and on the merge queue's commit for it (scripts/review-gate.ts). It passes, by the
 # first rule that holds (scripts/review-routing.ts): when Martin opened the pull request, or approved its head after the
 # last push; an exact pin of the factory's App's, every changed line a digest of an image build.yml signed on main,
-# from a commit that descends from the one it replaces; and, in the app's repository alone, the App's pull request with
+# from a commit that descends from the one it replaces; here, the App's pin move, one pin of the vulnerability scan's
+# list moved forward, proved from its two commits (below); and, in the app's repository alone, the App's pull request with
 # no risk tags, which the gate works out from the diff and test integrity's run, or, while the caller's AUTONOMY
 # variable is `lights-out`, one whose tags are not a release, an improvement or a path CODEOWNERS on main gives Martin.
 # Anything else is held for Martin. Its summary names the rule and the tags in a block the line reads
@@ -35,7 +36,8 @@
 # the key is in the `review` environment, which only main may use: a run on any other ref, a pull request's merge ref
 # included, is refused it. It reads the pull request's metadata through the API and never checks out, builds or runs
 # its code: the diff, the files an exact pin changes and CODEOWNERS come through the API, the images' signatures from
-# GHCR through cosign. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
+# GHCR through cosign. The pin move job, which holds no secret, fetches the pull request's two commits as data, and
+# runs none of them. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
 # review-requested.yml, which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and
 # holds nothing; its run starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's
 # default event policy blocks in public repositories.
@@ -135,7 +137,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AUTONOMY: ${{ vars.AUTONOMY }}
-        run: node scripts/review-gate.ts --pin-moves
+        run: node scripts/pin-moves.ts --pin-moves
 
   review:
     name: review gate

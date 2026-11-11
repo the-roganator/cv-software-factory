@@ -34,15 +34,24 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { compareVersions, newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import { readTarget, type Target, targetText } from '../apps/factory/src/vulnerabilities/fixes.ts';
-import type { Chart, Item, Kind, Unlisted } from '../apps/factory/src/vulnerabilities/inventory.ts';
+import {
+  type Chart,
+  type Item,
+  inventory,
+  type Kind,
+  type Unlisted,
+  unlisted,
+} from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
+import { databases, realTools } from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
+import { PROFILE, RECORDS, type RecordName, render, taken } from './policy-hash.ts';
 
 /** A place in a file: where a pin is written. */
 export interface Place {
@@ -755,13 +764,11 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
   const dirs: Record<Side, string> = { base: join(work, 'base'), head: join(work, 'head') };
   await git('worktree', 'add', '--quiet', '--detach', dirs.base, options.base);
   await git('worktree', 'add', '--quiet', '--detach', dirs.head, options.head);
-  const inventory = await import('../apps/factory/src/vulnerabilities/inventory.ts');
-  const scanning = await import('../apps/factory/src/vulnerabilities/scan.ts');
-  const tools = scanning.realTools(trivyImage(), join(work, 'cache'), work);
+  const tools = realTools(trivyImage(), join(work, 'cache'), work);
   mkdirSync(join(work, 'cache'));
-  let databases: Promise<unknown> | undefined;
+  let pulled: Promise<unknown> | undefined;
   return {
-    close: () => {},
+    close: () => rmSync(work, { recursive: true, force: true }),
     async diff() {
       const [raw, patch] = await Promise.all([
         git('diff', '--raw', '--no-renames', '--no-abbrev', options.base, options.head),
@@ -769,8 +776,8 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
       ]);
       return { raw: raw.stdout, patch: patch.stdout };
     },
-    list: async (side) => inventory.inventory(dirs[side]).items,
-    unlisted: async () => inventory.unlisted(dirs.head),
+    list: async (side) => inventory(dirs[side]).items,
+    unlisted: async () => unlisted(dirs.head),
     async tags(repository) {
       const tags: string[] = [];
       let path = 'tags/list?n=1000';
@@ -825,8 +832,8 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
     },
     hashes: (side) => hashesOf(dirs[side]),
     async scan(reference) {
-      databases ??= scanning.databases(tools, trivyImage(), join(work, 'cache'));
-      await databases;
+      pulled ??= databases(tools, trivyImage(), join(work, 'cache'));
+      await pulled;
       const { digest } = tagAndDigest(reference);
       const report = await tools.retry(() =>
         tools.trivy([
@@ -863,13 +870,9 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
  * a record holds, so a move that changes one stales that record.
  */
 export async function hashesOf(root: string): Promise<Record<string, string>> {
-  const hash = await import('./policy-hash.ts');
-  const manifests = hash.render(hash.PROFILE, root);
+  const manifests = render(PROFILE, root);
   return Object.fromEntries(
-    (Object.keys(hash.RECORDS) as (keyof typeof hash.RECORDS)[]).map((record) => [
-      record,
-      hash.taken(record, manifests).policyHash,
-    ]),
+    (Object.keys(RECORDS) as RecordName[]).map((record) => [record, taken(record, manifests).policyHash]),
   );
 }
 

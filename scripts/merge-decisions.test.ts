@@ -20,6 +20,8 @@ const DECIDES = [
   ...readdirSync(join(ROOT, 'apps/factory/src/gates')).map((f) => `apps/factory/src/gates/${f}`),
   'apps/factory/src/line/gates.ts',
   'scripts/review-gate.ts',
+  // The review gate's pin moves, which review.yml's pin move job works out for it.
+  'scripts/pin-moves.ts',
 ];
 
 /** What it must never reach, each with why. A path ending in `/` is everything under it. */

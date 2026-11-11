@@ -5,7 +5,7 @@
  * is the same in both.
  */
 import { type HoldAnswer, type RawEvent, WORDED_ANSWERS } from '@software-factory/events';
-import { PATCHING } from '../../../packages/samples/src/patching.ts';
+import { WITHHELD } from '../../../packages/samples/src/patching-withheld.ts';
 
 /** What the samples' visitor wrote, with a link, an address and markup, which the console leaves out. */
 export const REPORT_TEXT =
@@ -22,8 +22,16 @@ export const MARTINS_WORDS = 'Worth having: I’ll ask for colour in search from
  * day whole.
  */
 export function full<T extends RawEvent>(event: T): T {
-  if (event.type === 'patching.read' && (event as { id?: string }).id === PATCHING.id)
-    return { ...event, payload: PATCHING.payload };
+  if (event.type === 'patching.read') {
+    type Day = { repositories: { repository: string; moves: { lockfile: boolean; package?: unknown }[] }[] };
+    const day = event.payload as Day;
+    const repositories = day.repositories.map((r) =>
+      r.repository === 'the-roganator/cv-worlds-worst-website'
+        ? { ...r, moves: r.moves.map((m) => (m.lockfile && !m.package ? { ...m, package: WITHHELD } : m)) }
+        : r,
+    );
+    return { ...event, payload: { ...day, repositories } };
+  }
   const payload = event.payload as { report?: { page: string }; state?: { report?: { page: string } } };
   if (event.type === 'signal.received' && payload.report) {
     return { ...event, payload: { ...payload, report: { ...payload.report, text: REPORT_TEXT } } };

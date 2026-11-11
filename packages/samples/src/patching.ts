@@ -7,6 +7,7 @@
  */
 import type { NewEvent } from '@software-factory/events';
 import { commitFor, digestFor, uuidFor } from './build.ts';
+import { WITHHELD } from './patching-withheld.ts';
 
 const FACTORY = 'the-roganator/cv-software-factory';
 const APP = 'the-roganator/cv-worlds-worst-website';
@@ -218,12 +219,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
             newToday: 0,
             lane: 'line',
             lockfile: true,
-            package: {
-              name: '@example/parser',
-              from: '4.2.0',
-              to: '4.2.3',
-              pins: [{ file: 'pnpm-lock.yaml', line: 812 }],
-            },
+            package: WITHHELD,
           },
           {
             name: 'example/node-base',

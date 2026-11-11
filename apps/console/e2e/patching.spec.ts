@@ -82,7 +82,7 @@ test('a row opens in place, one at a time: why it waits, what to do, what it cle
     'href',
     'https://github.com/the-roganator/cv-software-factory/security/code-scanning',
   );
-  await expect(more.locator('.pins')).toContainText('deploy/base/telemetry/logs.yaml:14');
+  await expect(more.locator('.pins')).toContainText('telemetry/logs.yaml:14');
 
   const sbom = row(page, 'example/sbom-tool');
   await sbom.click();

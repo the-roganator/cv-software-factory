@@ -19,9 +19,18 @@
 import { z } from 'zod';
 import { isOurs } from '../vulnerabilities/alerts.ts';
 import { dayText, type Fix, readMove, type Target, targetText } from '../vulnerabilities/fixes.ts';
-import { furthest, LANES, MOVES_VERSION, type MovesFile, type PublicMove } from '../vulnerabilities/moves.ts';
+import type { Kind } from '../vulnerabilities/inventory.ts';
+import {
+  furthest,
+  LANES,
+  MOVES_VERSION,
+  type MovesFile,
+  type PublicMove,
+  type ScannedImage,
+} from '../vulnerabilities/moves.ts';
 import { readMessage, SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
 import { type GitHub, GitHubError } from './client.ts';
+import { DIGEST } from './registry.ts';
 import { type ZipError, zipEntry } from './zip.ts';
 
 /** The scan's workflow, in both repositories: the app's calls the factory's. */
@@ -153,6 +162,43 @@ const COUNTS = z.strictObject(
 );
 const DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 
+/** Every kind of item inventory.ts lists: the compiler holds this to its `Kind`, both ways. */
+const KINDS = [
+  'lockfile',
+  'ours',
+  'third-party',
+  'chart',
+  'k3s',
+  'k3s-release',
+  'k3d',
+  'dockerfile',
+  'workflow',
+] as const satisfies readonly Kind[];
+const ALL_KINDS: Exclude<Kind, (typeof KINDS)[number]> extends never ? true : never = true;
+void ALL_KINDS;
+
+/**
+ * An image reference by the distribution grammar (`[domain/]path[:tag][@digest]`), its digest a sha256 alone: what
+ * the scan writes is an image GitHub's runner pulled, and anything else in its place is not one.
+ */
+const DOMAIN = String.raw`(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::\d+)?/)`;
+const COMPONENT = String.raw`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*`;
+export const IMAGE_REFERENCE = new RegExp(
+  String.raw`^${DOMAIN}?${COMPONENT}(?:/${COMPONENT})*(?::[\w][\w.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$`,
+);
+
+/** One image the scan read, as moves.ts writes `ScannedImage`. */
+const SCANNED = z.strictObject({
+  kind: z.enum(KINDS),
+  item: z.string().min(1).max(1024),
+  image: z.string().max(512).regex(IMAGE_REFERENCE),
+  digests: z
+    .array(z.string().regex(DIGEST))
+    .min(1)
+    .refine((list) => new Set(list).size === list.length, 'a digest twice'),
+  pin: z.strictObject({ file: z.string().min(1), line: z.number().int().nonnegative() }),
+}) satisfies z.ZodType<ScannedImage>;
+
 /** `moves.json`, as moves.ts writes it: a reader refuses a version it does not know. */
 const MOVES_FILE_SCHEMA = z.strictObject({
   version: z.literal(MOVES_VERSION),
@@ -185,6 +231,7 @@ const MOVES_FILE_SCHEMA = z.strictObject({
       lockfile: z.boolean(),
     }),
   ),
+  scanned: z.array(SCANNED),
 });
 
 type Alerts = z.infer<typeof ALERTS>;

@@ -18,9 +18,6 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
-  # The measurement runs on the branch that builds this check; taken out before its pull request opens.
-  push:
-    branches: [ci/platform-check]
 
 permissions: {}
 
@@ -45,7 +42,7 @@ jobs:
       - name: Refuse a privileged context
         run: |
           case "$GITHUB_EVENT_NAME" in
-            pull_request | merge_group | push) ;;
+            pull_request | merge_group) ;;
             *) echo "::error::The platform check runs on a pull request or the merge queue's commit, not $GITHUB_EVENT_NAME."; exit 1 ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,7 +56,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           platform=$(scripts/check-kind.sh platform)
-          if [ "$GITHUB_EVENT_NAME" = push ]; then platform=cluster; fi
           echo "$platform"
           echo "platform=$platform" >> "$GITHUB_OUTPUT"
 
@@ -75,13 +71,14 @@ jobs:
       - name: Refuse a privileged context
         run: |
           case "$GITHUB_EVENT_NAME" in
-            pull_request | merge_group | push) ;;
+            pull_request | merge_group) ;;
             *) echo "::error::The platform check runs on a pull request or the merge queue's commit, not $GITHUB_EVENT_NAME."; exit 1 ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The measurement: the runner's memory in use every five seconds, for the peak, and its disk at the end.
+      # What the cluster costs the runner: its memory in use every five seconds, for the peak, and its disk at the end
+      # (the last step). The whole of `make up` used 7.8 GiB of the runner's 16 at its peak, and 15 GB of disk.
       - name: Measure
         run: |
           mkdir -p "$RUNNER_TEMP/measure"

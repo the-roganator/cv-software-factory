@@ -125,7 +125,9 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory judgements-token
 	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
-	sed -E -e 's|^( *targetRevision: )main$$|\1$(REVISION)|' -e 's|^( *value: )main$$|\1$(REVISION)|' deploy/argocd/root.yaml | \
+	@# The revision quoted whole, then with what a sed replacement reads (`&`, `\`, the `|` it is delimited by) escaped.
+	revision='$(subst ','\'',$(REVISION))'; revision="$$(printf '%s' "$$revision" | sed 's/[&|\\]/\\&/g')" && \
+		sed -E -e "s|^( *targetRevision: )main$$|\\1$$revision|" -e "s|^( *value: )main$$|\\1$$revision|" deploy/argocd/root.yaml | \
 		$(KUBECTL) apply -f -
 	$(deployed)
 

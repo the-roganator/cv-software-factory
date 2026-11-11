@@ -6,6 +6,12 @@
   "totals": {
     "fixed": 4,
     "moves": 2,
+    "noFix": 1,
+    "excepted": 0,
+    "overdue": 0,
+    "dueWithinDay": 0,
+    "newHighWithFix": 1,
+    "newHighWithoutFix": 0,
     "lanes": {
       "line": 2,
       "worker": 0,

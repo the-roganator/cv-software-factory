@@ -21,6 +21,7 @@ import { isOurs } from '../vulnerabilities/alerts.ts';
 import { dayText, type Fix, readMove, type Target, targetText } from '../vulnerabilities/fixes.ts';
 import type { Kind } from '../vulnerabilities/inventory.ts';
 import {
+  type DayCounts,
   furthest,
   LANES,
   MOVES_VERSION,
@@ -217,6 +218,20 @@ const SCANNED = (
     return pinned === undefined || entry.digests.includes(pinned);
   }, 'an image whose digest is not among those read');
 
+/** The day's figures beside the moves, as moves.ts writes `DayCounts`: each a count. */
+const COUNT = z.number().int().nonnegative();
+const DAY_COUNTS = {
+  noFix: COUNT,
+  excepted: COUNT,
+  overdue: COUNT,
+  dueWithinDay: COUNT,
+  newHighWithFix: COUNT,
+  newHighWithoutFix: COUNT,
+} satisfies Record<keyof DayCounts, z.ZodNumber>;
+// Every figure moves.ts writes is read: one it adds and this lacks does not compile.
+const ALL_COUNTS: Exclude<keyof DayCounts, keyof typeof DAY_COUNTS> extends never ? true : never = true;
+void ALL_COUNTS;
+
 /** `moves.json`, as moves.ts writes it: a reader refuses a version it does not know. */
 const MOVES_FILE_SCHEMA = z.strictObject({
   version: z.literal(MOVES_VERSION),
@@ -227,12 +242,7 @@ const MOVES_FILE_SCHEMA = z.strictObject({
     fixed: z.number().int().nonnegative(),
     moves: z.number().int().nonnegative(),
     // The day's other figures, as the Patching panel shows them.
-    noFix: z.number().int().nonnegative(),
-    excepted: z.number().int().nonnegative(),
-    overdue: z.number().int().nonnegative(),
-    dueWithinDay: z.number().int().nonnegative(),
-    newHighWithFix: z.number().int().nonnegative(),
-    newHighWithoutFix: z.number().int().nonnegative(),
+    ...DAY_COUNTS,
     lanes: z.strictObject(
       Object.fromEntries(LANES.map((lane) => [lane, z.number().int().nonnegative()])) as Record<
         (typeof LANES)[number],

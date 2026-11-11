@@ -31,9 +31,6 @@ export interface ScanCounts {
   after: Counts;
 }
 
-/** The most a count may be: more than any scan finds, and few enough digits to read plainly. */
-const MOST = 999_999;
-
 /** Each finding's severity, as Trivy rates it (`CRITICAL`, `HIGH`, …), counted. */
 export function countBySeverity(severities: readonly string[]): Counts {
   const counts: Counts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
@@ -52,6 +49,7 @@ export function countsNote(scan: Scan, { before, after }: ScanCounts): string {
   return `${SCANS[scan]} counted, before: ${side(before)}; after: ${side(after)}`;
 }
 
+// Each count is at most six digits, 999,999: more than any scan finds, and few enough to read plainly.
 const SIDE = SEVERITIES.map((s) => `${s} (0|[1-9]\\d{0,5})`).join(', ');
 const NOTE = new RegExp(`^(${Object.values(SCANS).join('|')}) counted, before: ${SIDE}; after: ${SIDE}$`);
 
@@ -61,7 +59,7 @@ export function parseCounts(message: string): { scan: Scan; counts: ScanCounts }
   if (!match) return undefined;
   const scan = (Object.keys(SCANS) as Scan[]).find((s) => SCANS[s] === match[1]);
   const numbers = match.slice(2).map(Number);
-  if (!scan || numbers.length !== SEVERITIES.length * 2 || numbers.some((n) => !(n <= MOST))) return undefined;
+  if (!scan) return undefined;
   const of = (offset: number) =>
     Object.fromEntries(SEVERITIES.map((s, i) => [s, numbers[offset + i] as number])) as Counts;
   return { scan, counts: { before: of(0), after: of(SEVERITIES.length) } };

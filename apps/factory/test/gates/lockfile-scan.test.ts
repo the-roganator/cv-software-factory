@@ -75,6 +75,23 @@ describe('the lockfile gate', () => {
     expect(Object.values(counts.after).every((n) => n === 0)).toBe(true);
   });
 
+  it('counts a vulnerability once, however many versions and ways it is reached', () => {
+    const LODASH_21 = { name: 'lodash', version: '4.17.21' };
+    const both = lockfiles({
+      [ROOT]: report(
+        [LODASH, { ...LODASH_21, dev: true }],
+        [
+          LODASH_CVE,
+          { ...LODASH_CVE, version: '4.17.21' },
+          { id: 'CVE-9', pkg: 'lodash', version: '4.17.20', severity: 'LOW' },
+        ],
+      ),
+    });
+    const { counts } = judge(both, both);
+    expect(counts.after).toEqual({ critical: 0, high: 1, medium: 0, low: 1, unknown: 0 });
+    expect(counts.before).toEqual(counts.after);
+  });
+
   it('passes a vulnerability both have', () => {
     const both = lockfiles({ [ROOT]: report([LODASH], [LODASH_CVE]) });
     expect(judge(both, both)).toMatchObject({ added: [], unread: [], total: 1 });

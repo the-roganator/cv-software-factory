@@ -149,11 +149,11 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
   const added = [...after.values()].filter(
     (f) => !before.has(key(f)) && !(f.dev && before.has(key({ ...f, dev: false }))),
   );
-  // What each side has in all, by severity: the counts the gate's notice gives, each finding once.
-  const counts = {
-    before: countBySeverity([...based.values()].map((f) => f.severity)),
-    after: countBySeverity([...after.values()].map((f) => f.severity)),
-  };
+  // What each side has in all, by severity: the counts the gate's notice gives, each finding once, by its lockfile,
+  // advisory and package, however it is reached.
+  const once = (findings: Iterable<Finding>) =>
+    countBySeverity([...new Map([...findings].map((f) => [key({ ...f, dev: false }), f.severity])).values()]);
+  const counts = { before: once(based.values()), after: once(after.values()) };
   return { added, unread, total: after.size, counts };
 }
 

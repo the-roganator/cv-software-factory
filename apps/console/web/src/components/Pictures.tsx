@@ -631,37 +631,32 @@ function Package({ dependency, small = false }: { dependency: Dependency; small?
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 
-type Findings = Extract<PictureData, { type: 'scan' }>['scans'][number]['findings'];
+type Side = Extract<PictureData, { type: 'scan' }>['scans'][number]['findings']['before'];
 
-/** A scan's name as its check gives it, without the workflow it was called from: `gates / image scan` is Image scan. */
-const scanName = (check: string) => capital(check.split(' / ').at(-1) ?? check);
-
-/** One scan's counts, by severity, before and after: unrated findings only when the scan counted some. */
-function ScanCounts({ check, findings }: { check: string; findings: Findings }) {
-  const unknown = (findings.before.unknown ?? 0) + (findings.after.unknown ?? 0) > 0;
+/** One scan's counts, by severity, before and after, with a row for unrated findings when any scan beside it has one. */
+function ScanCounts({ check, before, after, unknown }: { check: string; before: Side; after: Side; unknown: boolean }) {
   const rows = unknown ? [...SEVERITIES, 'unknown' as const] : SEVERITIES;
-  const count = (side: Findings['before'], s: (typeof rows)[number]) => side[s] ?? 0;
-  const most = Math.max(1, ...rows.flatMap((s) => [count(findings.before, s), count(findings.after, s)]));
+  const most = Math.max(1, ...rows.flatMap((s) => [before[s] ?? 0, after[s] ?? 0]));
   return (
     <div>
       <div className="row cap">
         <LogoMark name="trivy" className="logo small" />
-        {scanName(check)}, before and after
+        {/* The job's name, without the workflow that called it: `gates / image scan` is Image scan. */}
+        {capital(check.split(' / ').at(-1) ?? check)}, before and after
       </div>
       <div className="sev">
         {rows.map((s) => (
           <div className="sev-row" key={s}>
             <span>{s === 'unknown' ? 'Unrated' : capital(s)}</span>
             <span className="bars" aria-hidden="true">
-              <i style={{ width: `${(count(findings.before, s) / most) * 100}%` }} />
-              {count(findings.after, s) ? (
-                <i className="after" style={{ width: `${(count(findings.after, s) / most) * 100}%` }} />
-              ) : (
-                <i className="after zero" />
-              )}
+              <i style={{ width: `${((before[s] ?? 0) / most) * 100}%` }} />
+              <i
+                className={after[s] ? 'after' : 'after zero'}
+                style={after[s] ? { width: `${((after[s] ?? 0) / most) * 100}%` } : undefined}
+              />
             </span>
             <span className="n">
-              {count(findings.before, s)} → {count(findings.after, s)}
+              {before[s] ?? 0} → {after[s] ?? 0}
             </span>
           </div>
         ))}
@@ -671,12 +666,16 @@ function ScanCounts({ check, findings }: { check: string; findings: Findings }) 
 }
 
 function ScanPicture({ dependency, scans, unchanged }: Extract<PictureData, { type: 'scan' }>) {
+  const unknown = scans.some(({ findings: f }) => (f.before.unknown ?? 0) + (f.after.unknown ?? 0) > 0);
   return (
     <div className="pad">
       <Package dependency={dependency} />
-      {scans.map((scan) => (
-        <ScanCounts key={scan.check} {...scan} />
-      ))}
+      {/* Side by side when there are two, so the pages below still fit on the card. */}
+      <div className="scans">
+        {scans.map(({ check, findings }) => (
+          <ScanCounts key={check} check={check} {...findings} unknown={unknown} />
+        ))}
+      </div>
       <Unchanged pages={unchanged} />
     </div>
   );

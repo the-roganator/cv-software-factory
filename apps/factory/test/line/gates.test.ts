@@ -131,6 +131,8 @@ describe('the gates, as events', () => {
       { ...run(3, 'gates / tests', 'success'), notices: [note] },
       // Another app's run of a scan's name is not GitHub Actions': its notice is not taken.
       { ...run(4, 'image scan', 'success', 'some-other-app'), notices: [countsNote('image scan', counts)] },
+      // Nor does another app's later run of the same name hide Actions' own counts.
+      { ...run(5, 'gates / image scan', 'success', 'some-other-app') },
     ];
     const required = ['gates / image scan', 'gates / lockfile scan', 'gates / tests'];
     const drafts = gateEvents(pr(), runs, required, nothing);

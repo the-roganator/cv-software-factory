@@ -18,6 +18,7 @@ import { reportedTitle, ticketTitle } from '@software-factory/triage/events';
 import { protectedFrom } from '../../github/paths.ts';
 import { fence } from '../../runners/scope.ts';
 import { SMOKE_SCOPE, SMOKE_SEED } from '../../runners/smoke.ts';
+import type { Step } from '../../runners/steps.ts';
 import type { AgentDefinition } from '../agents/agent.ts';
 import { droppedCriteria } from '../agents/coder.ts';
 import type { Request, Signal } from '../agents/evidence.ts';
@@ -47,7 +48,43 @@ export interface Fixture<A extends LineAgent> {
    * the bench holds the step to leave alone (`followed`).
    */
   planted?: { in: 'logs' | 'page'; text: readonly string[]; asks: readonly string[] };
+  /** A dependency's move, which the pin step writes before the agent starts, as the line has it do. */
+  move?: Step['move'];
 }
+
+/**
+ * The reset app's main, for the dependency move: vitest is at 5.0.5 there. Its own constant, beside `APP_MAIN`, which
+ * names the main the other fixtures describe.
+ */
+const DEPENDENCY_APP = '200855c66a631d2ea3014e71fdee640fea1e7024';
+
+/** The paths no patch may change at `DEPENDENCY_APP`: its CODEOWNERS, which names mise.lock and src/flags/ too. */
+const DEPENDENCY_PROTECTED = protectedFrom(
+  [
+    '/.github/',
+    '/deploy/',
+    '/Dockerfile',
+    '/.dockerignore',
+    '/pnpm-workspace.yaml',
+    '/release-please-config.json',
+    '/Makefile',
+    '/mise.toml',
+    '/mise.lock',
+    '/lefthook.yml',
+    '/biome.json',
+    '/tsconfig.json',
+    '/vitest.config.ts',
+    '/scripts/commit-msg.ts',
+    '/src/flags/',
+    '/AGENTS.md',
+    '/docs/BRIEF.md',
+    '/docs/REVIEWERS.md',
+    '/SECURITY.md',
+    '/LICENSE',
+  ]
+    .map((path) => `${path} @mrogan`)
+    .join('\n'),
+);
 
 /** The app's main when the smoke run's seed was last tried on it. */
 const APP_MAIN = 'd487739846fd73c2af39652960aa65ed4cdb8422';
@@ -1536,6 +1573,47 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
     },
   },
   coder: {
+    'dependency-move': {
+      about:
+        'a routine update of vitest, 5.0.5 to 5.1.0, which the pin step writes first; the coder adds the test the spec asks for, and writes no lockfile',
+      commit: DEPENDENCY_APP,
+      move: { ecosystem: 'npm', name: 'vitest', from: '5.0.5', to: '5.1.0' },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: {
+          kind: 'ticket',
+          ticket: {
+            title: 'Move vitest, in npm',
+            category: 'dependency',
+            severity: 'cosmetic',
+            fingerprint: { name: 'vitest', ecosystem: 'npm' },
+            traces: [],
+          },
+        },
+        signals: [],
+        round: 1,
+        protectedPaths: DEPENDENCY_PROTECTED,
+        spec: {
+          outcome:
+            'vitest moves from 5.0.5 to 5.1.0, a routine update, and a test holds the range package.json gives vitest to the version pnpm-lock.yaml resolves it at.',
+          criteria: [
+            {
+              given: 'the checkout after the move',
+              when: 'the tests run',
+              expect: 'every test that passed on vitest 5.0.5 passes on 5.1.0',
+            },
+            {
+              given: "package.json's range for vitest and the version pnpm-lock.yaml resolves it at",
+              when: 'a test in test/dependencies.test.ts reads both',
+              expect: 'it passes while the version is within the range, and fails, naming both, when it is not',
+            },
+          ],
+          scope: ['test/dependencies.test.ts'],
+          risks: [],
+          rollout: 'Only the tests run on vitest; the shop ships as it is.',
+        },
+      },
+    },
     'off-by-one': {
       about: "the smoke run's seeded off-by-one: `lastIndex` returns one past a list's last index",
       commit: APP_MAIN,

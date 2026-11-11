@@ -32,8 +32,8 @@
  */
 import { setTimeout as wait } from 'node:timers/promises';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
-import type { Evidence, PayloadOf, Sense, SignalSource, SymptomClass } from '@software-factory/events';
-import { COLOR_SCHEMES, clearedOnWords, cutAt, SENSES, sameVersion } from '@software-factory/events';
+import type { Evidence, PayloadOf, RouteSense, SignalSource, SymptomClass } from '@software-factory/events';
+import { COLOR_SCHEMES, clearedOnWords, cutAt, ROUTE_SENSES, sameVersion } from '@software-factory/events';
 import { artifactRef, evidence as evidenceSchema } from '@software-factory/events/schemas';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
 import { z } from 'zod';
@@ -149,6 +149,7 @@ const BY_SOURCE: Record<SignalSource, ByOne> = {
       : byPattern(signal, target, c),
   canary: byAnalysis,
   report: async () => ({ kind: 'hold', reason: NO_SENSE.report }),
+  dependency: async () => ({ kind: 'hold', reason: NO_SENSE.dependency }),
   planner: async () => ({ kind: 'hold', reason: NO_SENSE.planner }),
 };
 
@@ -157,6 +158,7 @@ const NO_SENSE = {
     'Only a visitor’s report saw this defect, and no sense can look at it again: Martin judges whether the fix cleared it',
   planner:
     'Only the planner noticed this defect, and no sense can look at it again: Martin judges whether the fix cleared it',
+  dependency: 'Verify does not read the scan yet: Martin judges whether the move cleared what it fixes',
 };
 
 /** Looks once at the target by the sense that saw the defect. */
@@ -187,12 +189,15 @@ export async function look(signal: FirstSignal | undefined, target: Target, opti
   return BY_SOURCE[signal.sense](signal, target, c);
 }
 
-const senseOf = (signal: FirstSignal | undefined): Sense | undefined => SENSES.find((sense) => sense === signal?.sense);
+const senseOf = (signal: FirstSignal | undefined): RouteSense | undefined =>
+  ROUTE_SENSES.find((sense) => sense === signal?.sense);
 
 /** A verification of the target, by the signal's sense. */
 function finished(signal: FirstSignal, target: Target, outcome: 'cleared' | 'persists', evidence?: Evidence): Look {
   const sense = senseOf(signal);
-  const kept = evidence && evidenceSchema.safeParse(evidence).success ? evidence : undefined;
+  // A verification keeps the evidence any check gives, which a scan's is not.
+  const parsed = evidence && evidenceSchema.safeParse(evidence);
+  const kept = parsed?.success ? parsed.data : undefined;
   return {
     kind: 'finished',
     verification: {

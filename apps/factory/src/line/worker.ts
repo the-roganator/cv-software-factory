@@ -105,8 +105,8 @@ import {
   cutTo,
   pointsAtSomething,
   pointWords,
+  ROUTE_SENSES,
   returnWords,
-  SENSES,
   scopesOverlap,
   upcast,
   WORDS_LEAVE_HELD,
@@ -598,6 +598,10 @@ export class Line {
       const first = await this.#firstSignal(workItem);
       if (!first) {
         this.#o.log.warn({ workItem }, 'a ticket a dry run verified has no signal to reopen it on');
+        return;
+      }
+      if (first.sense === 'dependency') {
+        this.#o.log.warn({ workItem }, 'a dependency’s ticket a dry run verified names no route to reopen it on');
         return;
       }
       await this.#append(workItem, [
@@ -1434,7 +1438,7 @@ export class Line {
   ): Promise<void> {
     const now = this.#o.now();
     const first = await this.#firstSignal(workItem);
-    const sense = SENSES.find((one) => one === first?.sense);
+    const sense = ROUTE_SENSES.find((one) => one === first?.sense);
     const base = {
       for: occasion,
       ...(sense ? { sense } : {}),
@@ -1971,7 +1975,9 @@ export class Line {
     const where =
       'class' in ticket.fingerprint
         ? `\`${ticket.fingerprint.class}\` on \`${ticket.fingerprint.route}\``
-        : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
+        : 'ecosystem' in ticket.fingerprint
+          ? `the move of \`${ticket.fingerprint.name}\`, in ${ticket.fingerprint.ecosystem}`
+          : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
     const body = [
       `The factory’s ticket #${workItem}: ${where}.`,
       '',

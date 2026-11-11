@@ -34,6 +34,68 @@ const appVersion = z.string().regex(/^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/, 'a vers
 const pullRequest = z.number().int().positive();
 const stage = z.enum(V.STAGES);
 const severities = z.strictObject({ critical: count, high: count, medium: count, low: count });
+/** A repository on GitHub, as `owner/name`. */
+const repository = z
+  .string()
+  .regex(/^[\w.-]+\/[\w.-]+$/, 'owner/name')
+  .max(140);
+/**
+ * What a dependency's pin names, and what it pins: a package's name, an image's repository, `node`; a version, or an
+ * image's tag with its digest, which is long.
+ */
+const dependencyName = text(200);
+const dependencyVersion = text(200);
+
+/**
+ * A move: one pin's name in one repository, from what it pins now to what fixes it, written on every line that pins it.
+ * It is the unit of a dependency's work, as the scan groups its findings (`apps/factory/src/vulnerabilities/moves.ts`):
+ * one move clears every finding the old version had.
+ */
+const move = z.strictObject({
+  repository,
+  name: dependencyName,
+  ecosystem: z.enum(V.ECOSYSTEMS),
+  from: dependencyVersion,
+  to: dependencyVersion,
+  /** Every line that pins it, in order of file and line. */
+  pins: z
+    .array(z.strictObject({ file: text(PATH_CHARS), line: z.number().int().positive() }))
+    .min(1)
+    .max(40),
+});
+
+/**
+ * A scan's findings on a move's pins: the worst at most eight, worst first, each with its advisory, its package, each
+ * rating it has, the version that fixes it and its deadline where it has them; and how many more there are, by the
+ * worse of their ratings.
+ */
+const scanEvidence = z.strictObject({
+  kind: z.literal('scan'),
+  findings: z
+    .array(
+      z.strictObject({
+        /** The advisory's id, such as GHSA-…, CVE-… or a distribution's own. */
+        advisory: z.string().regex(/^[A-Za-z][A-Za-z0-9._:-]{2,63}$/, 'an advisory id, such as GHSA-xxxx-xxxx-xxxx'),
+        package: dependencyName,
+        /** The scanner's rating, and the advisory's publisher's where it gives one: the worse of them sets its deadline. */
+        severity: z.strictObject({
+          scanner: z.enum(V.ADVISORY_SEVERITIES),
+          publisher: z.enum(V.ADVISORY_SEVERITIES).optional(),
+        }),
+        /** The versions that fix it, as the advisory gives them; absent when none does. */
+        fixed: dependencyVersion.optional(),
+        deadline: timestamp.optional(),
+      }),
+    )
+    .min(1)
+    .max(8),
+  rest: z.strictObject(
+    Object.fromEntries(V.ADVISORY_SEVERITIES.map((rating) => [rating, count])) as Record<
+      V.AdvisorySeverity,
+      typeof count
+    >,
+  ),
+});
 
 /**
  * What the line takes: every ticket; the next few, counted from when Martin chose it (`since`); or just one work item.
@@ -331,7 +393,7 @@ export const evidence = z.discriminatedUnion('kind', [
           sense: z.enum(['probe', 'crawler']),
           check: text(80),
           route: routeOrEvery,
-          symptom: z.enum(V.SYMPTOM_CLASSES).optional(),
+          symptom: z.enum(V.DEFECT_SYMPTOMS).optional(),
           message: text(300).optional(),
         }),
       )
@@ -374,7 +436,7 @@ const candidate = z.strictObject({
   workItem,
   title: text(120),
   category: z.enum(V.DEFECT_CATEGORIES),
-  symptom: z.enum(V.SYMPTOM_CLASSES).optional(),
+  symptom: z.enum(V.DEFECT_SYMPTOMS).optional(),
 });
 
 /** A passage of a page's text, as the factory read the page itself, offered as the one a report is about. */
@@ -404,9 +466,19 @@ const offeredElement = z.strictObject({ key: slug, element: pageElement });
  * What identifies a defect from outside: a route and a symptom class, or, for content, the page and the passage of its
  * text that is wrong, as the factory read it.
  */
-const fingerprint = z.union([
-  z.strictObject({ route: routeOrEvery, class: z.enum(V.SYMPTOM_CLASSES) }),
+const defectFingerprint = z.union([
+  z.strictObject({ route: routeOrEvery, class: z.enum(V.DEFECT_SYMPTOMS) }),
   z.strictObject({ page: route, text: text(200) }),
+]);
+
+/** What identifies a ticket's problem: a defect's fingerprint, or a dependency's. */
+const fingerprint = z.union([
+  ...defectFingerprint.options,
+  /**
+   * A dependency's: its move's name and ecosystem, with no version and no advisory, so every finding of the move, and
+   * every later target of it, is the one ticket's (`moveFingerprint`).
+   */
+  z.strictObject({ name: dependencyName, ecosystem: z.enum(V.ECOSYSTEMS) }),
 ]);
 
 /** A canary against its baseline, on the same measure. */
@@ -421,6 +493,70 @@ const figures = z.strictObject({
   journeys: z.tuple([count, count]).nullable(),
 });
 
+/** A signal's evidence: any other event's, or a scan's, which only a dependency's signal carries. */
+export const signalEvidence = z.discriminatedUnion('kind', [...evidence.options, scanEvidence]);
+
+/**
+ * What a sense found, what a visitor reported, or what the planner noticed outside its ticket. A sense's signal
+ * names the symptom class it saw; a report's, or a planner's finding, is for triage to judge, and its words are in
+ * `report`, which no public view and no generative agent ever reads. On an open ticket, the first signal from each
+ * sense in each version of the app adds its evidence. The dependency sense's names its `move` in place of a route,
+ * and its evidence is the scan's; `version` is the commit of the move's repository the scan read.
+ */
+const signal = z.strictObject({
+  sense: z.enum(V.SIGNAL_SOURCES),
+  check: text(80),
+  route: routeOrEvery.optional(),
+  move: move.optional(),
+  version: appVersion,
+  symptom: z.enum(V.SYMPTOM_CLASSES).optional(),
+  report: report.optional(),
+  evidence: z.array(signalEvidence).max(8).optional(),
+  /** For a planner's finding: the work item whose ticket it was planning, which the finding is not about. */
+  planning: workItem.optional(),
+  /**
+   * For a sense's signal: how what the sense reads besides the app stood when it saw this, as triage looked, at a
+   * time within a minute of it. Each dependency is healthy, not, or null when triage could not tell, with what it
+   * saw. Triage writes it, never the sense; a signal triage took with nothing to look at has none.
+   */
+  environment: z
+    .strictObject({
+      at: timestamp,
+      dependencies: z
+        .array(z.strictObject({ name: z.enum(V.DEPENDENCIES), healthy: z.boolean().nullable(), saw: text(160) }))
+        .min(1)
+        .max(V.DEPENDENCIES.length),
+    })
+    .optional(),
+});
+
+/**
+ * A dependency's signal names a move where every other names a route, and only it: the dependency sense's, with one of
+ * the two dependency classes, and the scan's evidence on no other.
+ */
+function routeOrMove(found: z.infer<typeof signal>, context: z.core.$RefinementCtx) {
+  const dependency = found.sense === 'dependency';
+  if (dependency !== (found.move !== undefined)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['move'],
+      message: 'a dependency’s signal, and only one, names its move',
+    });
+  }
+  if (dependency === (found.route !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['route'], message: 'every signal but a dependency’s names a route' });
+  }
+  if (found.symptom && dependency !== V.isDependencySymptom(found.symptom)) {
+    const message = dependency
+      ? 'a dependency’s signal is a vulnerable or an outdated dependency'
+      : 'only the dependency sense sees a dependency’s symptom';
+    context.addIssue({ code: 'custom', path: ['symptom'], message });
+  }
+  if (!dependency && found.evidence?.some((each) => each.kind === 'scan')) {
+    context.addIssue({ code: 'custom', path: ['evidence'], message: 'only a dependency’s signal carries a scan' });
+  }
+}
+
 /** The payload of each event type, at its current version. */
 export const PAYLOADS = {
   'work-item.opened': z.strictObject({
@@ -431,12 +567,13 @@ export const PAYLOADS = {
     category: z.enum(V.CATEGORIES).optional(),
     /** The visitor whose key started it. Their key is a credential, so no public view carries it. */
     visitor: z.strictObject({ key: z.string().regex(/^[a-z]+-[a-z]+$/) }).optional(),
+    /** A dependency update's pin: what moves, from what, to what, and whether a vulnerability is why. */
     dependency: z
       .strictObject({
-        name: text(120),
-        ecosystem: z.enum(['npm', 'docker']),
-        from: text(40),
-        to: text(40),
+        name: dependencyName,
+        ecosystem: z.enum(V.ECOSYSTEMS),
+        from: dependencyVersion,
+        to: dependencyVersion,
         security: z.boolean(),
       })
       .optional(),
@@ -479,7 +616,7 @@ export const PAYLOADS = {
    */
   'work-item.reopened': z
     .strictObject({
-      sense: z.enum(V.SIGNAL_SOURCES),
+      sense: z.enum(V.ROUTE_SOURCES),
       check: text(80),
       route: routeOrEvery,
       version: appVersion,
@@ -579,37 +716,7 @@ export const PAYLOADS = {
       path: ['control'],
     }),
 
-  /**
-   * What a sense found, what a visitor reported, or what the planner noticed outside its ticket. A sense's signal
-   * names the symptom class it saw; a report's, or a planner's finding, is for triage to judge, and its words are in
-   * `report`, which no public view and no generative agent ever reads. On an open ticket, the first signal from each
-   * sense in each version of the app adds its evidence.
-   */
-  'signal.received': z.strictObject({
-    sense: z.enum(V.SIGNAL_SOURCES),
-    check: text(80),
-    route: routeOrEvery,
-    version: appVersion,
-    symptom: z.enum(V.SYMPTOM_CLASSES).optional(),
-    report: report.optional(),
-    evidence: z.array(evidence).max(8).optional(),
-    /** For a planner's finding: the work item whose ticket it was planning, which the finding is not about. */
-    planning: workItem.optional(),
-    /**
-     * For a sense's signal: how what the sense reads besides the app stood when it saw this, as triage looked, at a
-     * time within a minute of it. Each dependency is healthy, not, or null when triage could not tell, with what it
-     * saw. Triage writes it, never the sense; a signal triage took with nothing to look at has none.
-     */
-    environment: z
-      .strictObject({
-        at: timestamp,
-        dependencies: z
-          .array(z.strictObject({ name: z.enum(V.DEPENDENCIES), healthy: z.boolean().nullable(), saw: text(160) }))
-          .min(1)
-          .max(V.DEPENDENCIES.length),
-      })
-      .optional(),
-  }),
+  'signal.received': signal.superRefine(routeOrMove),
   /**
    * One request to Jev about a report: what it was asked and answered. The request that routes the report records
    * where it went; one that only chooses the passage or the element of its page a report points at has no route. A
@@ -644,7 +751,7 @@ export const PAYLOADS = {
    */
   'ticket.opened': z.strictObject({
     title: text(120),
-    category: z.enum(V.DEFECT_CATEGORIES),
+    category: z.enum(V.TICKET_CATEGORIES),
     severity: z.enum(V.SEVERITIES),
     fingerprint,
     traces: z.array(traceId).max(10),
@@ -1152,7 +1259,7 @@ export const PAYLOADS = {
   'verification.finished': z.strictObject({
     outcome: z.enum(['cleared', 'persists']),
     /** The sense that verified it: the one whose signal opened the ticket. A version 1 verification never said. */
-    sense: z.enum(V.SENSES).optional(),
+    sense: z.enum(V.ROUTE_SENSES).optional(),
     check: text(120),
     /** The version verified: the release live when the sense looked. A version 1 verification never said. */
     version: appVersion.optional(),
@@ -1199,7 +1306,7 @@ export const PAYLOADS = {
       for: z.enum(['release', 'wait', 'take', 'fix']),
       outcome: z.enum(['cleared', 'persists', 'unsure']),
       /** The sense that looked: the one whose signal opened the ticket. */
-      sense: z.enum(V.SENSES).optional(),
+      sense: z.enum(V.ROUTE_SENSES).optional(),
       check: text(120),
       /** The release looked at, the version it runs, and the version before it. */
       release: releaseId.optional(),
@@ -1261,7 +1368,7 @@ export const PAYLOADS = {
        * named and the symptom Jev judged, or for wrong words the passage of the page), and the symptom. A ticket
        * with the same fingerprint closes it, and Martin's approval opens its ticket.
        */
-      defect: z.strictObject({ fingerprint, symptom: z.enum(V.SYMPTOM_CLASSES) }).optional(),
+      defect: z.strictObject({ fingerprint: defectFingerprint, symptom: z.enum(V.DEFECT_SYMPTOMS) }).optional(),
       /**
        * A `scope` hold the coder asked for, rather than the fence: each file outside the spec's scope that it needs to
        * change and may not, with why, and whether no scope may name it (`barred`). Approving sends them to the
@@ -1812,7 +1919,7 @@ export type Validated = { ok: true } | { ok: false; problems: string[] };
 export const inboxSignal = z
   .intersection(
     // Triage's look at what the sense reads, which `validateSignal` refuses from a sense.
-    PAYLOADS['signal.received'].omit({ environment: true }),
+    signal.omit({ environment: true }),
     z.object({
       observedAt: timestamp,
       /** What the sense saw, in a line, for the event's summary. A report has none: its text is never a summary. */
@@ -1821,6 +1928,7 @@ export const inboxSignal = z
     }),
   )
   .superRefine((signal, context) => {
+    routeOrMove(signal, context);
     // A report is its text, as a planner's finding is: one without any is nothing to judge, and nothing to answer.
     const judged = signal.sense === 'report' || signal.sense === 'planner';
     if (judged && !signal.report?.text) {

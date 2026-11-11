@@ -26,7 +26,7 @@ function opened(item: string, sample = false): NewEvent<'work-item.opened'> {
     ts: '2026-10-04T09:00:00.000Z',
     work_item: item,
     type: 'work-item.opened',
-    version: 2,
+    version: 3,
     actor: 'triage',
     summary: 'The crawler opened a work item',
     payload: { kind: 'defect-fix', title: 'A link on the about page leads nowhere', sample },

@@ -6,7 +6,7 @@
 import type { Evidence, PayloadOf } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
-import { askedLines, type Signal, ticketLines } from '../../src/line/agents/evidence.ts';
+import { askedLines, type Signal, seen, ticketLines } from '../../src/line/agents/evidence.ts';
 import { AGENTS } from '../../src/line/agents/index.ts';
 import { followed } from '../../src/line/bench/bench.ts';
 import { FIXTURES, type Fixture, type InputOf } from '../../src/line/bench/fixtures.ts';
@@ -228,5 +228,56 @@ describe('a report’s ticket, as every agent is told it', () => {
       const input = { ...found.input, asked: { kind: 'ticket', ticket: pointed } } as InputOf<typeof agent>;
       expect(promptOf(agent, input), `${agent} (${name})`).toContain(line);
     }
+  });
+});
+
+describe('a dependency’s ticket, as an agent is told it', () => {
+  const move = {
+    repository: 'the-roganator/cv-worlds-worst-website',
+    name: '@invented/glob-walker',
+    ecosystem: 'npm' as const,
+    from: '3.0.1',
+    to: '3.0.2',
+    pins: [{ file: 'pnpm-lock.yaml', line: 120 }],
+  };
+
+  it('names the move, its pins, and each of the scan’s findings with its ratings, fix and deadline', () => {
+    const ticket: PayloadOf<'ticket.opened'> = {
+      title: 'Move @invented/glob-walker, in npm',
+      category: 'security',
+      severity: 'degraded',
+      fingerprint: { name: move.name, ecosystem: move.ecosystem },
+      traces: [],
+    };
+    expect(ticketLines(ticket)[0]).toBe(
+      'It is the move of @invented/glob-walker, in npm, to whatever version fixes it. Category security, severity degraded.',
+    );
+    const signal: Signal = {
+      sense: 'dependency',
+      check: 'vulnerabilities',
+      move,
+      version: 'd487739',
+      symptom: 'vulnerable-dependency',
+      evidence: [
+        {
+          kind: 'scan',
+          findings: [
+            {
+              advisory: 'CVE-2099-0001',
+              package: '@invented/glob-walker',
+              severity: { scanner: 'medium', publisher: 'high' },
+              fixed: '3.0.2',
+              deadline: '2026-11-18T06:00:00.000Z',
+            },
+          ],
+          rest: { critical: 0, high: 0, medium: 0, low: 2, unknown: 0 },
+        },
+      ],
+    };
+    expect(seen(signal)).toEqual([
+      '- The dependency sense\'s check "vulnerabilities" on @invented/glob-walker (npm) in the-roganator/cv-worlds-worst-website, from 3.0.1 to 3.0.2, on pnpm-lock.yaml:120 in version d487739, vulnerable-dependency',
+      "  - the scan's CVE-2099-0001 in @invented/glob-walker: medium, high by its publisher; fixed in 3.0.2, due 2026-11-18T06:00:00.000Z",
+      '  -   and more findings: 2 low',
+    ]);
   });
 });

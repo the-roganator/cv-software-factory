@@ -11,7 +11,13 @@
  * by its id and timings. Every route an agent is told is cut at its query. Everything else the senses keep is the
  * app's answer to a request the sense made itself.
  */
-import { elementWords, GIVEAWAY_WORDS, type PayloadOf, SECURITY_HEADER_ASKS } from '@software-factory/events';
+import {
+  ADVISORY_SEVERITIES,
+  elementWords,
+  GIVEAWAY_WORDS,
+  type PayloadOf,
+  SECURITY_HEADER_ASKS,
+} from '@software-factory/events';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
 import { count } from './agent.ts';
 
@@ -103,7 +109,9 @@ export function ticketLines(ticket: PayloadOf<'ticket.opened'>, signals: readonl
   const where =
     'class' in fingerprint
       ? `It is a ${fingerprint.class} on ${fingerprint.route === '*' ? anywhere : routeOf(fingerprint.route)}.`
-      : `It is about the words "${fingerprint.text}" on ${routeOf(fingerprint.page)}, as the factory read the page.`;
+      : 'ecosystem' in fingerprint
+        ? `It is the move of ${fingerprint.name}, in ${fingerprint.ecosystem}, to whatever version fixes it.`
+        : `It is about the words "${fingerprint.text}" on ${routeOf(fingerprint.page)}, as the factory read the page.`;
   return [
     `${where} Category ${ticket.category}, severity ${ticket.severity}.`,
     ...pointsLines(ticket),
@@ -118,6 +126,7 @@ const SENSE: Record<Signal['sense'], string> = {
   logs: 'The log watcher',
   canary: 'The canary',
   report: 'A report',
+  dependency: 'The dependency sense',
   planner: 'The planner',
 };
 
@@ -192,14 +201,33 @@ export function evidenceLines(evidence: Evidence): string[] {
         ) ?? []),
       ];
     }
+    case 'scan': {
+      const rest = ADVISORY_SEVERITIES.flatMap((rating) =>
+        evidence.rest[rating] ? [`${evidence.rest[rating]} ${rating}`] : [],
+      );
+      return [
+        ...evidence.findings.map((f) => {
+          const publisher = f.severity.publisher ? `, ${f.severity.publisher} by its publisher` : '';
+          const due = f.deadline ? `, due ${f.deadline}` : '';
+          return `the scan's ${f.advisory} in ${f.package}: ${f.severity.scanner}${publisher}; fixed in ${f.fixed ?? 'no version yet'}${due}`;
+        }),
+        ...(rest.length ? [`  and more findings: ${rest.join(', ')}`] : []),
+      ];
+    }
   }
 }
 
 /** A sense's signal, as lines of a prompt: what it checked and where, then each piece of its evidence. */
 export function seen(signal: Signal): string[] {
   const symptom = signal.symptom ? `, ${signal.symptom}` : '';
-  const where =
-    signal.route !== '*' ? routeOf(signal.route) : signal.sense === 'canary' ? CANARY_ANY_ROUTE : 'every page';
+  const { move } = signal;
+  const where = move
+    ? `${move.name} (${move.ecosystem}) in ${move.repository}, from ${move.from} to ${move.to}, on ${move.pins.map((pin) => `${pin.file}:${pin.line}`).join(', ')}`
+    : signal.route === undefined || signal.route === '*'
+      ? signal.sense === 'canary'
+        ? CANARY_ANY_ROUTE
+        : 'every page'
+      : routeOf(signal.route);
   return [
     `- ${SENSE[signal.sense]}'s check "${signal.check}" on ${where} in version ${signal.version}${symptom}`,
     ...(signal.evidence ?? []).flatMap(evidenceLines).map((line) => `  - ${line}`),

@@ -324,6 +324,30 @@ export interface ScannedImage {
   pin: Pin;
 }
 
+/** The day's counts, as deadlines.ts's verdict counts them for the log: never computed a second time. */
+export interface DayCounts {
+  /** Open results with no fix installable. */
+  noFix: number;
+  /** Results an exception in force excepts. */
+  excepted: number;
+  /** Open results past their deadline. */
+  overdue: number;
+  /** Open results due within a day. */
+  dueWithinDay: number;
+  /** New High or Critical today (first seen today) with a fix to install, and with none the scan can date. */
+  newHighWithFix: number;
+  newHighWithoutFix: number;
+}
+
+const NO_COUNTS: DayCounts = {
+  noFix: 0,
+  excepted: 0,
+  overdue: 0,
+  dueWithinDay: 0,
+  newHighWithFix: 0,
+  newHighWithoutFix: 0,
+};
+
 /** The shape of `moves.json`. */
 export interface MovesFile {
   version: typeof MOVES_VERSION;
@@ -332,8 +356,11 @@ export interface MovesFile {
   judged: string;
   /** The run that made it (GITHUB_RUN_ID), which each of its results' messages names after its move's place. */
   run?: string | undefined;
-  /** How many results have a fix and are not excepted, how many moves, and the moves in each lane. */
-  totals: { fixed: number; moves: number; lanes: Record<Lane, number> };
+  /**
+   * How many results have a fix and are not excepted, how many moves, and the moves in each lane; and the day's counts
+   * the scan's log prints (`DayCounts`), plain numbers, by no package or advisory.
+   */
+  totals: { fixed: number; moves: number; lanes: Record<Lane, number> } & DayCounts;
   moves: PublicMove[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];
@@ -364,6 +391,7 @@ export function movesFile(
   context: Pick<Context, 'repository' | 'now'>,
   run?: string,
   scanned: ScannedImage[] = [],
+  day: DayCounts = NO_COUNTS,
 ): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
@@ -375,7 +403,7 @@ export function movesFile(
     repository: context.repository,
     judged: dayText(context.now),
     ...(run ? { run } : {}),
-    totals: { fixed, moves: list.length, lanes },
+    totals: { fixed, moves: list.length, lanes, ...day },
     moves: list.map(publicMove),
     scanned: [...scanned].sort(
       (a, b) => order(a.pin.file, b.pin.file) || a.pin.line - b.pin.line || order(a.image, b.image),

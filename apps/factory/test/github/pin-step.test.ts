@@ -4,7 +4,9 @@
  * change none of those. Each neighbour of what the pin step may do is refused here, one test each.
  */
 import { describe, expect, it } from 'vitest';
+import { LOCKFILES as RUNNER_LOCKFILES, PNPM_SETTINGS as RUNNER_SETTINGS } from '../../../runner/src/pins.ts';
 import { DryRunActions } from '../../src/github/actions.ts';
+import { LOCKFILE_NAMES, PNPM_SETTINGS } from '../../src/github/paths.ts';
 import { quiet, REPO, SHA } from './fake.ts';
 
 const FILES: Record<string, string> = {
@@ -157,5 +159,10 @@ describe('the pin step’s patches, as the GitHub worker guards them', () => {
     const npmrc =
       'diff --git a/.npmrc b/.npmrc\nnew file mode 100644\n--- /dev/null\n+++ b/.npmrc\n@@ -0,0 +1 @@\n+x=1\n';
     await expect(worker().apply({ patch: npmrc })).rejects.toThrow(/\.npmrc, which no patch may/);
+  });
+
+  it('names the lockfiles and pnpm’s settings the runner’s pin step names', () => {
+    expect(LOCKFILE_NAMES).toEqual(RUNNER_LOCKFILES);
+    expect(PNPM_SETTINGS).toEqual(RUNNER_SETTINGS.flatMap((entry) => [entry, `**/${entry}`]));
   });
 });

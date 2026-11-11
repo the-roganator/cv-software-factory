@@ -41,15 +41,31 @@ describe('the files a release changes', () => {
       /version/i.test(readFileSync(file, 'utf-8')),
     );
     expect(readers).toEqual([
+      // The pin step's rule for a manifest's lines in the GitHub worker's guard: a dependency's range, and not its
+      // version line, whose value is no pin.
+      'apps/factory/src/github/paths.ts',
+      // The coder's prompt, which tells it to move a dependency's range in package.json and never the lockfile.
+      'apps/factory/src/line/agents/coder.ts',
+      // The bench's dependency move, whose spec names package.json's range for a package and its locked version.
+      'apps/factory/src/line/bench/fixtures.ts',
+      // The pin step's guard and the bench's, on invented manifests' dependency ranges.
+      'apps/factory/test/github/pin-step.test.ts',
+      'apps/factory/test/line/bench.test.ts',
       // flagd's evaluation library's own package.json, for the version the sides were recorded with.
       'apps/factory/test/line/compare.test.ts',
+      // A step's patch that changes a manifest, for the pin step's lockfile after it.
+      'apps/factory/test/runners.test.ts',
       // package.json's packageManager, for another pnpm of its major, and a package.json of its own, written for a
       // scratch repository to run the runner image's prepare step on.
       'apps/runner/scripts/image-check.sh',
+      // The pin step, which moves a dependency's range in a checkout's manifests to a version, and not its own version.
+      'apps/runner/src/pins.ts',
       // A checkout's packageManager, for the pnpm it asks for, and not its version line.
       'apps/runner/src/prepare.ts',
       // package.json's packageManager, beside mise.lock's pnpm, and not its version line.
       'apps/runner/test/install-pnpm.test.ts',
+      // The pin step's tests, on invented manifests' ranges.
+      'apps/runner/test/pins.test.ts',
       // A package.json of its own, written for a scratch copy.
       'apps/runner/test/prepare.test.ts',
       // Invented work items, whose changed files are named and whose releases have versions.

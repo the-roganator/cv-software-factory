@@ -36,6 +36,8 @@ export const REPOSITORIES: Record<string, string[]> = {
     'image builds',
     'lockfile scan',
     'pull request title',
+    // A change to what the cluster runs, made into a cluster in CI (platform.yml); skipped, and so passed, for any other.
+    'platform',
   ],
   // The app's gates come from this repository (app-gates.yml); tests first is a signal, not a requirement.
   'the-roganator/cv-worlds-worst-website': [

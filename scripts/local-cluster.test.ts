@@ -1,6 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
+import { parse, parseAllDocuments, stringify } from 'yaml';
 
 /*
  * The local cluster publishes on the Mac alone. Each port k3d maps and the Kubernetes API bind to 127.0.0.1: a port
@@ -54,3 +57,73 @@ describe('the local cluster', () => {
     expect(cluster.token).toBeUndefined();
   });
 });
+
+/*
+ * `make up REVISION=` deploys deploy/ and every chart's values from one revision, a branch or the commit platform.yml
+ * makes a cluster from: the Makefile writes it into root, and root's patch points each Application's values there.
+ */
+describe('root, at a revision', () => {
+  const REVISION = '0123456789abcdef0123456789abcdef01234567';
+  const sed = /^\tsed -E '([^']+)' deploy\/argocd\/root\.yaml \| \$\(KUBECTL\) apply -f -$/m.exec(makefile)?.[1];
+  const written = () =>
+    execFileSync(
+      'sed',
+      ['-E', (sed ?? '').replaceAll('$$', '$').replace('$(REVISION)', REVISION), 'deploy/argocd/root.yaml'],
+      {
+        encoding: 'utf-8',
+      },
+    );
+
+  it('is written by the Makefile with the revision in both places, and main nowhere', () => {
+    expect(sed).toBeDefined();
+    const root = parse(written()) as {
+      spec: { source: { targetRevision: string; kustomize: { patches: { patch: string }[] } } };
+    };
+    expect(root.spec.source.targetRevision).toBe(REVISION);
+    expect(root.spec.source.kustomize.patches).toHaveLength(1);
+    expect(parse(root.spec.source.kustomize.patches[0]?.patch ?? '')).toEqual([
+      { op: 'replace', path: '/spec/sources/1/targetRevision', value: REVISION },
+    ]);
+    expect(written()).not.toMatch(/: main$/m);
+  });
+
+  it("points every Application's values from this repository at it, and leaves the app's own repository alone", () => {
+    const root = parse(written()) as {
+      spec: { source: { path: string; kustomize: { patches: { target: unknown; patch: string }[] } } };
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'root-'));
+    try {
+      cpSync('deploy', join(dir, 'deploy'), { recursive: true });
+      writeFileSync(
+        join(dir, 'kustomization.yaml'),
+        stringify({ resources: [root.spec.source.path], patches: root.spec.source.kustomize.patches }),
+      );
+      const applications = parseAllDocuments(execFileSync('kustomize', ['build', dir], { encoding: 'utf-8' }))
+        .map((d) => d.toJS() as Application)
+        .filter((d) => d?.kind === 'Application');
+      expect(applications.length).toBeGreaterThan(1);
+      for (const { metadata, spec } of applications) {
+        if (metadata.name === 'website') {
+          expect(metadata.labels?.['software-factory/repository']).toBe('app');
+          expect(spec.source?.repoURL).toBe('https://github.com/the-roganator/cv-worlds-worst-website.git');
+          continue;
+        }
+        const values = spec.sources?.[1];
+        expect(values, metadata.name).toEqual({ repoURL: THIS_REPOSITORY, targetRevision: REVISION, ref: 'values' });
+        expect(
+          spec.sources?.filter((s) => s.repoURL === THIS_REPOSITORY),
+          metadata.name,
+        ).toHaveLength(1);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+const THIS_REPOSITORY = 'https://github.com/the-roganator/cv-software-factory.git';
+interface Application {
+  kind: string;
+  metadata: { name: string; labels?: Record<string, string> };
+  spec: { source?: { repoURL: string }; sources?: { repoURL: string; targetRevision: string; ref?: string }[] };
+}

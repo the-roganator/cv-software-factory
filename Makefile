@@ -60,14 +60,18 @@ password = $(call namespace,$(1)) && \
 		$(KUBECTL) -n $(1) create secret generic $(2) --from-file=$(or $(3),password)=/dev/stdin $(4) --dry-run=client -o yaml | \
 		$(apply-secret) >/dev/null; }; }; }
 
+# How long `make up` waits for root, and then every Application, to sync: a cluster that pulls every image afresh, as
+# platform.yml's does, takes longer than one that has them.
+SYNC_TIMEOUT ?= 5m
+
 # $(deployed): wait for Argo CD to have deployed everything, then say where it is. An Application reads healthy before
 # it has deployed anything, so wait for each to sync before its health; root syncs first, and then every other
 # Application exists. Then everything healthy, except the website, whose health is its release's
 # (scripts/wait-deployed.sh).
 define deployed
 @echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
-@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
-@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
+@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null
+@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null
 @KUBECTL="$(KUBECTL)" scripts/wait-deployed.sh
 @$(MAKE) --no-print-directory status
 endef

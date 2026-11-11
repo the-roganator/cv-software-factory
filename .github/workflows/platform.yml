@@ -89,12 +89,12 @@ jobs:
             > "$RUNNER_TEMP/measure/memory" 2>/dev/null &
           df -h / | tail -1
           nproc; free -m
-      # The toolchain the change pins, k3d's among them. Its cache is main's, read and never written: no pull request
-      # saves one that main would read.
+      # The toolchain the change pins, k3d's among them, from main's cache (toolchain-cache.yml): saved on main alone,
+      # where this never runs, so no run here saves one.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
-          cache_save: false
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm kubectl k3d helm kustomize cosign step yq
       - run: pnpm install --frozen-lockfile
       # `make up`, at the change's commit, with a stand-in for each key it would take from the Keychain: made here, of
@@ -107,7 +107,7 @@ jobs:
           export GITHUB_APP_PRIVATE_KEY
           export TYPESAFE_API_KEY=stand-in-not-a-key ANTHROPIC_API_KEY=stand-in-not-a-key
           export PUSHOVER_APP_TOKEN=stand-in-not-a-token PUSHOVER_USER_KEY=stand-in-not-a-key
-          time make up REVISION="$REVISION"
+          time make up REVISION="$REVISION" SYNC_TIMEOUT=15m TIMEOUT=900
       - name: Every Application Synced and Healthy
         run: |
           kubectl --context k3d-software-factory -n argocd get applications \
@@ -145,5 +145,11 @@ jobs:
           echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
           df -h / | tail -1
           docker system df || true
+          kubectl --context k3d-software-factory -n argocd get applications \
+            -o custom-columns='APPLICATION:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,PHASE:.status.operationState.phase,MESSAGE:.status.operationState.message' || true
+          kubectl --context k3d-software-factory -n argocd get applications -o json | jq -r '.items[] | .metadata.name as $app |
+            (.status.conditions[]? | "\($app) condition \(.type): \(.message)"),
+            (.status.resources[]? | select(.status != "Synced" or (.health.status // "Healthy") != "Healthy") |
+              "\($app) \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")' || true
           kubectl --context k3d-software-factory get pods -A -o wide || true
           kubectl --context k3d-software-factory get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -40 || true

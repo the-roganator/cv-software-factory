@@ -116,6 +116,17 @@ const ARGS = {
       .string()
       .min(1)
       .max(2 * 1024 * 1024),
+    /** The pin step's, on either side of the agent's: the guard holds each to the pin step's own rule. */
+    pins: z
+      .string()
+      .min(1)
+      .max(2 * 1024 * 1024)
+      .optional(),
+    lockfile: z
+      .string()
+      .min(1)
+      .max(2 * 1024 * 1024)
+      .optional(),
     message: text(10_000).min(1),
   }),
   openPullRequest: z.strictObject({

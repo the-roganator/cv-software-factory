@@ -18,6 +18,7 @@
  */
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { Move } from './pins.ts';
 
 export interface Step {
   /** The agent: planner, coder, reviewer or describer. */
@@ -53,6 +54,15 @@ export interface Step {
   result?: boolean;
   /** Fields of the result the agent writes as files of their own beside it, by field: their file names in `out/`. */
   resultFiles?: Record<string, string>;
+  /**
+   * A dependency's move, which the pin step writes before the agent starts and commits as its base (`pins.ts`): only
+   * on a dependency's work item, before its pull request has the move.
+   */
+  move?: Move;
+  /** For the lockfile step (`runner lockfile`): the pin step's earlier patch, committed on the commit first. */
+  pins?: string;
+  /** For the lockfile step: the coder's patch, applied on the pins, whose manifests the lockfile is written for. */
+  change?: string;
 }
 
 export type Ending = 'finished' | 'max-turns' | 'failed';
@@ -111,6 +121,26 @@ const STEP = z
       .record(z.string().regex(/^[a-z][A-Za-z]{0,30}$/), z.string().regex(/^[a-z][a-z0-9-]{0,40}\.md$/, 'a file name'))
       .refine((files) => Object.keys(files).length <= RESULT_FILES, `at most ${RESULT_FILES} files`)
       .optional(),
+    move: z
+      .strictObject({
+        ecosystem: z.enum(['npm', 'node', 'docker']),
+        // One word each, as the work item names them: they reach a command line as arguments, never a shell.
+        name: z
+          .string()
+          .regex(/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w./:-]*$/, 'a package, an image or node')
+          .max(200),
+        from: z
+          .string()
+          .regex(/^[\w.:@+-]+$/, 'a version, or a tag and its digest')
+          .max(200),
+        to: z
+          .string()
+          .regex(/^[\w.:@+-]+$/, 'a version, or a tag and its digest')
+          .max(200),
+      })
+      .optional(),
+    pins: z.string().min(1).optional(),
+    change: z.string().min(1).optional(),
   })
   // A seed is committed on the commit, so `git diff base` would show it as part of the change.
   .refine((step) => !(step.seed && step.base), { message: 'a step with a base reads a change, and takes no seed' })

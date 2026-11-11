@@ -69,3 +69,80 @@ export const protectedWords = (paths: readonly string[]): string[] =>
 export function protectedFrom(codeowners: string | null): string[] {
   return [...new Set([...NEVER, ...ownedPaths(codeowners ?? '')])];
 }
+
+/** The lockfiles' names: the pin step writes them, and a patch of an agent's never does (`apps/runner/src/pins.ts`). */
+export const LOCKFILE_NAMES = ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'mise.lock'];
+/** The lockfiles, as scope entries: at the root and below it. */
+export const LOCKFILES = LOCKFILE_NAMES.flatMap((name) => [name, `**/${name}`]);
+/** Where pnpm reads its settings or a resolution's override, which neither an agent nor the pin step writes. */
+export const PNPM_SETTINGS = ['.npmrc', 'pnpm-workspace.yaml', '.pnpmfile.cjs', '.pnpmfile.mjs', 'patches/'].flatMap(
+  (entry) => [entry, `**/${entry}`],
+);
+
+/** Whether a path is a manifest, whose dependencies' ranges the pin step moves. */
+const isManifest = (path: string) => path === 'package.json' || path.endsWith('/package.json');
+
+/** Whether a unified diff changes a manifest, so the pin step writes the lockfile after it. */
+export const changesManifest = (patch: string): boolean =>
+  [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].some(([, a = '', b = '']) => isManifest(a) || isManifest(b));
+
+/** A version (`24.22.2`, `5.1.0`, a tag's `3.24`) or a SHA-256 digest, as a pin's line names them. */
+const PIN_VALUE = /sha256:[0-9a-f]{64}|\d+(?:\.\d+){1,3}/g;
+
+/** A line with its versions and digests taken out: two lines of a pin that moved read the same, and name one. */
+const masked = (line: string) => line.replace(PIN_VALUE, '\0');
+
+/**
+ * Why a hunk of the pin step's is not a pin's move: each line it removes is replaced by one line, in order, that
+ * differs from it only in its versions and digests, and changes one. Nothing when it is.
+ */
+function notPinLines(lines: readonly string[]): string | undefined {
+  let removed: string[] = [];
+  let added: string[] = [];
+  const pairs: [string, string][] = [];
+  const flush = (): string | undefined => {
+    if (removed.length !== added.length) return 'adds or removes a line';
+    for (const [i, line] of removed.entries()) pairs.push([line, added[i] as string]);
+    removed = [];
+    added = [];
+    return undefined;
+  };
+  for (const line of lines) {
+    if (line.startsWith('-')) {
+      if (added.length && flush()) return 'adds or removes a line';
+      removed.push(line.slice(1));
+    } else if (line.startsWith('+')) added.push(line.slice(1));
+    else if (flush()) return 'adds or removes a line';
+  }
+  if (flush()) return 'adds or removes a line';
+  for (const [before, after] of pairs) {
+    if (!before.match(PIN_VALUE)) return `changes ${JSON.stringify(before.trim())}, which names no version or digest`;
+    if (masked(before) !== masked(after))
+      return `changes ${JSON.stringify(before.trim())} to ${JSON.stringify(after.trim())}, not only its version or digest`;
+  }
+  return undefined;
+}
+
+/**
+ * Why the pin step's patch may not go on GitHub: the reasons, one for each file, or none. It may change the version or
+ * digest on a pin's line in a file a person owns (`owned`, and every manifest), and the lockfiles pnpm writes, whole,
+ * and nothing else: never the workflows or the deployment, pnpm's settings, another line, or a file it adds or
+ * deletes. A lockfile it writes after the coder (`lockfileOnly`) is a pnpm lockfile and nothing more.
+ */
+export function pinStepRefusals(
+  files: readonly { path: string; change: 'add' | 'modify' | 'delete'; lines: readonly string[][] }[],
+  owned: readonly string[],
+  { lockfileOnly = false } = {},
+): string[] {
+  const pnpmLock = ['pnpm-lock.yaml', '**/pnpm-lock.yaml'];
+  return files.flatMap(({ path, change, lines }) => {
+    if (lockfileOnly && !inScope(path, pnpmLock)) return [`${path}: the lockfile step writes pnpm's lockfile alone`];
+    if (inScope(path, [...NEVER, ...PNPM_SETTINGS])) return [`${path}: the pin step never writes it`];
+    if (change !== 'modify') return [`${path}: the pin step adds or deletes no file`];
+    if (inScope(path, pnpmLock) && !inScope(path, owned)) return [];
+    if (!inScope(path, owned) && !isManifest(path))
+      return [`${path}: the pin step writes pins, ranges and lockfiles alone`];
+    const why = lines.map(notPinLines).find(Boolean);
+    return why ? [`${path}: the pin step ${why}`] : [];
+  });
+}

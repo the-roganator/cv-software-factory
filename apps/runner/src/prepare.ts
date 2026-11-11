@@ -24,16 +24,34 @@
  * real work never comes with such a hint. For the same reason every file of the checkout is given that time too,
  * since the agent's searches list files by when they changed.
  *
+ * A dependency's work item names its move, and the pin step (`pins.ts`) writes it after the checkout and before the
+ * install, committing it by a fixed author under a message that names the move: the agent starts from the moved pins,
+ * and its patch never holds them. The step prints the pins as a patch, which the line reads from this pod's log before
+ * the agent starts, or that they wait for Martin, and then ends without installing anything, since no agent runs on
+ * them. `runner lockfile` (`lockfile`) is the pin step after a coder's step that changed a manifest, in a prepare pod
+ * of its own: it prints only the lockfile pnpm wrote.
+ *
  * pnpm is the image's own, this repository's (`apps/runner/Dockerfile`), whatever the checkout's `packageManager`
  * names: the app pins pnpm on its own, and nothing here may fetch another. The step says which it runs beside the one
  * the checkout names, and stops at a different major, which the lockfile may not be read by.
  */
 import { execFile } from 'node:child_process';
 import { lutimes, mkdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { git, gitInput, gitWith } from './git.ts';
-import { runnerLog } from './log.ts';
+import { bounded, type Log, runnerLog } from './log.ts';
+import {
+  type Move,
+  OWN_PNPM,
+  OWN_PNPM_FLAG,
+  PinsHeld,
+  type PinTools,
+  pnpmIn,
+  writeLockfile,
+  writePins,
+} from './pins.ts';
 import { repoDir, stepFrom } from './step.ts';
 
 const exec = promisify(execFile);
@@ -44,8 +62,83 @@ const SEED_DATE = '2026-01-01T00:00:00Z';
 export const SEED_MESSAGE = 'chore: the starting point';
 
 /** Prepares the checkout, printing a JSON line as each part is done (`log.ts`) to `write`. */
-export async function prepare(env = process.env, write = (line: string) => console.log(line)): Promise<void> {
+export async function prepare(
+  env = process.env,
+  write = (line: string) => console.log(line),
+  tools: Partial<PinTools> = {},
+): Promise<void> {
   const log = runnerLog(env, 'prepare', write);
+  const { step, dir, pnpmEnv } = await checkout(env, log);
+  if (step.move) {
+    // Before the agent, on the checkout it starts from: the pins are its base, and never part of its patch.
+    const pins = await pinsOf(dir, step.move, { ...pinTools(env, pnpmEnv), ...tools }, log);
+    if (pins === undefined) return;
+    if (pins) await commitPatch(dir, pins, { message: pinsMessage(step.move), author: 'pins' }, { applied: true });
+  }
+  const install = ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile', '--reporter=silent'];
+  await exec('pnpm', [OWN_PNPM_FLAG, ...install], { cwd: dir, env: pnpmEnv, maxBuffer: 64 * 1024 * 1024 });
+  log('installed the dependencies');
+}
+
+/** The pin step's commit message, which the agent sees among the latest commits: what moved, and to what. */
+export const pinsMessage = (move: Move) => `chore(deps): move ${move.name} from ${move.from} to ${move.to}`;
+
+/**
+ * The pins of a move, written and printed (`the pins`, with the patch), or printed as held (`the pins wait for
+ * Martin`, with the file and why), when they are undefined: the step ends there, and no agent runs on it. An empty
+ * patch is a move already made.
+ */
+async function pinsOf(dir: string, move: Move, tools: PinTools, log: Log): Promise<string | undefined> {
+  try {
+    await writePins(dir, move, tools);
+  } catch (error) {
+    if (!(error instanceof PinsHeld)) throw error;
+    log('the pins wait for Martin', { held: { path: error.path, reason: bounded(error.message) } });
+    return undefined;
+  }
+  await git(dir, 'add', '--all');
+  const pins = await git(dir, 'diff', '--cached', '--no-renames', '--no-ext-diff', '--no-color', 'HEAD');
+  log('the pins', { move, pins });
+  return pins;
+}
+
+/**
+ * The lockfile after a coder's step that changed a manifest: on a fresh checkout of the step's commit, with the pins
+ * committed on it and the coder's patch applied, `pnpm install --lockfile-only`, and only the lockfile's change
+ * printed (`the lockfile`, with the patch: empty when it needs none).
+ */
+export async function lockfile(
+  env = process.env,
+  write = (line: string) => console.log(line),
+  tools: Partial<PinTools> = {},
+): Promise<void> {
+  const log = runnerLog(env, 'prepare', write);
+  const { step, dir, pnpmEnv } = await checkout(env, log);
+  if (!step.change) throw new Error('A lockfile step names the change it writes the lockfile for.');
+  if (step.pins) await commitPatch(dir, step.pins, { message: 'chore(deps): the pins', author: 'pins' });
+  await writeLockfile(dir, step.change, { ...pinTools(env, pnpmEnv), ...tools });
+  const written = await git(
+    dir,
+    'diff',
+    '--no-renames',
+    '--no-ext-diff',
+    '--no-color',
+    'HEAD',
+    '--',
+    'pnpm-lock.yaml',
+    '**/pnpm-lock.yaml',
+  );
+  log('the lockfile', { lockfile: written });
+}
+
+const pinTools = (env: NodeJS.ProcessEnv, pnpmEnv: NodeJS.ProcessEnv): PinTools => ({
+  pnpm: pnpmIn(pnpmEnv),
+  get: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(60_000) }),
+  aside: env.PREPARE ?? tmpdir(),
+});
+
+/** A fresh checkout of the step's commit, with its base, a dry run's commits and its seed, and the pnpm that runs. */
+async function checkout(env: NodeJS.ProcessEnv, log: Log) {
   const step = stepFrom(env);
   const dir = repoDir(env);
   // Only `rm`, which reads nothing it deletes, touches what the agent left.
@@ -74,18 +167,8 @@ export async function prepare(env = process.env, write = (line: string) => conso
   const named = await namedPnpm(dir);
   log('runs its own pnpm', { pnpm: runs, packageManager: named ?? null });
   samePnpmMajor(named, runs);
-  const install = ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile', '--reporter=silent'];
-  await exec('pnpm', [OWN_PNPM_FLAG, ...install], { cwd: dir, env: pnpmEnv, maxBuffer: 64 * 1024 * 1024 });
-  log('installed the dependencies');
+  return { step, dir, pnpmEnv };
 }
-
-/**
- * pnpm runs as itself, and does not switch to the version a checkout names, which it would fetch. The image sets the
- * same for both pods; the step sets it again, so that on a host, as the bench runs it, the pnpm it names is the pnpm
- * that installs, and gives it on the command line too, which no setting of the checkout's own can override.
- */
-const OWN_PNPM = { npm_config_manage_package_manager_versions: 'false' };
-const OWN_PNPM_FLAG = '--config.manage-package-manager-versions=false';
 
 /**
  * The pnpm version a checkout names, if it names pnpm: by `packageManager`, or by `devEngines.packageManager`, whose
@@ -144,14 +227,16 @@ async function shallowRoots(dir: string): Promise<string[]> {
 /**
  * Commits a patch on the checkout's head, by `author`, at the seed's time and under `message`, and gives every file
  * that time: the same patch on the same commit makes the same sha on every run. The patch reaches `git apply` on its
- * standard input, so no file is written for it.
+ * standard input, so no file is written for it; one `applied` already, as the pin step writes its pins, is committed
+ * as the checkout has it.
  */
 export async function commitPatch(
   dir: string,
   patch: string,
   { message, author }: { message: string; author: string },
+  { applied = false } = {},
 ): Promise<void> {
-  await gitInput(patch, dir, 'apply', '--whitespace=nowarn', '-');
+  if (!applied) await gitInput(patch, dir, 'apply', '--whitespace=nowarn', '-');
   await git(dir, 'add', '--all');
   await gitWith(
     { GIT_AUTHOR_DATE: SEED_DATE, GIT_COMMITTER_DATE: SEED_DATE },

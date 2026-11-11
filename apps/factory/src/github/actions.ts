@@ -39,7 +39,7 @@ import {
 import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
-import { CODEOWNERS_PATHS, inScope, protectedFrom } from './paths.ts';
+import { CODEOWNERS_PATHS, inScope, LOCKFILES, PNPM_SETTINGS, pinStepRefusals, protectedFrom } from './paths.ts';
 import { RefusalRecorder } from './refusals.ts';
 
 /** How the App appears as a pull request's author, and as whoever merged one or added it to the merge queue. */
@@ -65,8 +65,15 @@ export interface PatchCommit {
   branch: string;
   /** The branch's head, which the patch was made against and goes on. */
   expectedHead: string;
-  /** A unified diff, as `git diff` writes one. */
+  /** A unified diff, as `git diff` writes one: an agent's, made on the pins when there are any. */
   patch: string;
+  /**
+   * The pin step's patch, made on the head before the agent ran, which the agent's goes on: a dependency's move. Held
+   * to the pin step's own rule (`pinStepRefusals`), and never to be an agent's.
+   */
+  pins?: string | undefined;
+  /** The lockfile the pin step wrote after the agent's patch changed a manifest, which goes on that patch. */
+  lockfile?: string | undefined;
   message: string;
 }
 
@@ -115,17 +122,59 @@ export function contentsReader(github: GitHub): ReadFile {
 }
 
 /**
- * Refuses a patch that changes a path no patch may: the workflows, the deployment, or one the repository's
- * CODEOWNERS (at the commit the patch goes on) gives a person. The line's fence asks the same; this is the last word.
+ * Refuses a patch that changes a path no patch may: the workflows, the deployment, one the repository's CODEOWNERS (at
+ * the commit the patch goes on) gives a person, a lockfile, or pnpm's settings. The line's fence asks the same; this
+ * is the last word. The pin step's patches, beside it, may change only a pin's version or digest in a file a person
+ * owns, a manifest's ranges and the lockfile (`pinStepRefusals`), and are refused whole otherwise.
  */
-export async function guard(patch: string, read: (path: string) => Promise<string | null>): Promise<void> {
+export async function guard(
+  patch: string,
+  read: (path: string) => Promise<string | null>,
+  { pins, lockfile }: { pins?: string | undefined; lockfile?: string | undefined } = {},
+): Promise<void> {
   const owners = (await Promise.all(CODEOWNERS_PATHS.map(read))).find((text) => text !== null) ?? null;
   const forbidden = protectedFrom(owners);
   const blocked = filesIn(patch)
     .map((f) => f.path)
-    .filter((path) => inScope(path, forbidden));
+    .filter((path) => inScope(path, [...forbidden, ...LOCKFILES, ...PNPM_SETTINGS]));
   if (blocked.length)
     throw new PatchRefused('protected', `The patch changes ${blocked.join(', ')}, which no patch may.`);
+  const lines = (text: string) =>
+    filesIn(text).map(({ path, change, patch: file }) => ({ path, change, lines: file.hunks.map((h) => h.lines) }));
+  const refused = [
+    ...(pins ? pinStepRefusals(lines(pins), forbidden) : []),
+    ...(lockfile ? pinStepRefusals(lines(lockfile), forbidden, { lockfileOnly: true }) : []),
+  ];
+  if (refused.length) throw new PatchRefused('protected', `The pin step's patch is refused: ${refused.join('; ')}.`);
+}
+
+/**
+ * The pin step's patch, the agent's on it and the lockfile on that, applied in that order to the files at the commit,
+ * as one commit's additions and deletions. Each reads the files as those before it left them.
+ */
+export async function applyInTurn(
+  patches: readonly (string | undefined)[],
+  read: (path: string) => Promise<string | null>,
+): Promise<FileChanges> {
+  const files = new Map<string, Uint8Array | null>();
+  const decoder = new TextDecoder();
+  const reading = async (path: string) => {
+    if (!files.has(path)) return read(path);
+    const contents = files.get(path);
+    return contents ? decoder.decode(contents) : null;
+  };
+  for (const patch of patches) {
+    if (!patch) continue;
+    const { additions, deletions } = await applyTo(patch, reading);
+    for (const { path, contents } of additions) files.set(path, contents);
+    for (const path of deletions) files.set(path, null);
+  }
+  const changes: FileChanges = { additions: [], deletions: [] };
+  for (const [path, contents] of files) {
+    if (contents) changes.additions.push({ path, contents });
+    else changes.deletions.push(path);
+  }
+  return changes;
 }
 
 export interface PullRequestDraft {
@@ -420,11 +469,14 @@ export class LiveActions implements Actions {
     this.#guard = guard ?? new IssueGuard({ openedBy: openedBy(github) });
   }
 
-  async applyPatch(repo: string, { branch, expectedHead, patch, message }: PatchCommit): Promise<string> {
+  async applyPatch(
+    repo: string,
+    { branch, expectedHead, patch, pins, lockfile, message }: PatchCommit,
+  ): Promise<string> {
     guardBranch(branch);
     const read = (path: string) => this.#read(repo, path, expectedHead);
-    await guard(patch, read);
-    const changes = await applyTo(patch, read);
+    await guard(patch, read, { pins, lockfile });
+    const changes = await applyInTurn([pins, patch, lockfile], read);
     return this.commit(repo, { branch, expectedHead, message, changes });
   }
 
@@ -899,12 +951,16 @@ export class DryRunActions implements Actions {
     return this.#read(repo, path, at);
   }
 
-  async applyPatch(repo: string, { branch, expectedHead, patch, message }: PatchCommit): Promise<string> {
+  async applyPatch(
+    repo: string,
+    { branch, expectedHead, patch, pins, lockfile, message }: PatchCommit,
+  ): Promise<string> {
     guardBranch(branch);
     const read = (path: string) => this.file(repo, path, expectedHead);
-    await guard(patch, read);
-    const changes = await applyTo(patch, read);
-    return this.#commit(repo, { branch, expectedHead, message, changes }, patch);
+    await guard(patch, read, { pins, lockfile });
+    const changes = await applyInTurn([pins, patch, lockfile], read);
+    // A commit of several patches is replayed from its files, as one GitHub has would be (`dry-run-reads.ts`).
+    return this.#commit(repo, { branch, expectedHead, message, changes }, pins || lockfile ? undefined : patch);
   }
 
   async #record(action: DryRunRecord['action'], repo: string, args: unknown): Promise<string> {

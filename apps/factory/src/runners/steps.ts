@@ -1,7 +1,14 @@
 /**
  * Running one step of one work item in a runner, and taking its handback.
  *
- *     token → volume → prepare Job → agent Job → handback (or the job failing, or its deadline) → token ended
+ *     token → volume → prepare Job (the pins) → agent Job → handback → lockfile Job → token ended
+ *
+ * (or a Job failing, or its deadline). On a dependency's work item the prepare pod writes the move's pins before the
+ * agent starts and prints them, and the line reads them from its log as soon as it has finished, before the agent
+ * pod is made, so nothing the agent does can reach them; pins that wait for Martin end the step there, `held`. After a
+ * coder's patch that changes a `package.json`, a lockfile Job writes the lockfile for it on a fresh checkout and
+ * prints it, read the same way. Neither pod holds the job token. Both patches go beside the agent's in the outcome,
+ * for the GitHub worker to apply around it (`PatchCommit`), and are never part of it.
  *
  * The job token is made before the agent pod starts and ended when the step is over, however it ends, so the gateway
  * and the handback refuse it from then on. It keeps the step's span, the one active as `run` is called, so the
@@ -22,7 +29,7 @@ import { lookup } from 'node:dns/promises';
 import type { IncomingMessage, RequestListener } from 'node:http';
 import { isIP } from 'node:net';
 import { type Context, context, propagation, ROOT_CONTEXT } from '@opentelemetry/api';
-import { cutTo } from '@software-factory/events';
+import { cutTo, inScope } from '@software-factory/events';
 import { endJobToken, issueJobToken, jobForToken } from '@software-factory/store';
 import type { Logger } from 'pino';
 import type { Sql } from 'postgres';
@@ -32,7 +39,18 @@ import type { Handback, Step } from '../../../runner/src/step.ts';
 
 export type { Handback, Step };
 
-import { agentJob, isRedTeam, jobName, NAMESPACE, NOT_RED_TEAM, prepareJob, volume } from './jobs.ts';
+import { changesManifest, LOCKFILES, PNPM_SETTINGS } from '../github/paths.ts';
+import {
+  agentJob,
+  isRedTeam,
+  JOB_PARTS,
+  jobName,
+  lockfileJob,
+  NAMESPACE,
+  NOT_RED_TEAM,
+  prepareJob,
+  volume,
+} from './jobs.ts';
 import type { Kube } from './kube.ts';
 import type { StepEnding, StepLogs } from './logs.ts';
 
@@ -72,7 +90,17 @@ export interface StepRequest extends Step {
 }
 
 export type StepOutcome =
-  | { kind: 'handed-back'; job: string; handback: Handback }
+  | {
+      kind: 'handed-back';
+      job: string;
+      handback: Handback;
+      /** The pin step's patch, made before the agent ran, which the agent's patch goes on: a dependency's move. */
+      pins?: string;
+      /** The lockfile the pin step wrote after the agent's patch changed a manifest, which goes on that patch. */
+      lockfile?: string;
+    }
+  /** The move's pins need a file only Martin may change: no agent ran. */
+  | { kind: 'held'; job: string; path: string; reason: string }
   /** The prepare or agent pod failed, or ran out of time, without handing anything back. */
   | { kind: 'failed'; job: string; reason: string }
   /** The line stopped while the step ran: its Jobs were deleted, and nothing it did counts. */
@@ -186,7 +214,7 @@ export class Runners {
       const [ending, reason] = outcome ? endingOf(outcome) : (['errored', messageOf(thrown)] as const);
       await this.#keepLogsWithin(job, { workItem, agent: step.agent }, ending, reason);
       this.#keeping.delete(job);
-      for (const part of ['prepare', 'agent']) {
+      for (const part of JOB_PARTS) {
         await kube
           .remove(`${jobs}/${job}-${part}`)
           .catch((error: Error) => log.warn({ job, err: error }, 'could not delete a job'));
@@ -214,6 +242,20 @@ export class Runners {
     const prepared = await this.#finished(`${jobs}/${job}-prepare`, PREPARE_SECONDS);
     if (this.#stopped.has(job)) return { kind: 'stopped', job };
     if (prepared !== 'succeeded') return { kind: 'failed', job, reason: `The prepare pod ${prepared}.` };
+    let pins: string | undefined;
+    if (step.move) {
+      const said = await this.#printed(`${job}-prepare`, ['the pins', 'the pins wait for Martin']);
+      if (this.#stopped.has(job)) return { kind: 'stopped', job };
+      if (!said) return { kind: 'failed', job, reason: 'The prepare pod printed no pins for the move.' };
+      if (said.msg === 'the pins wait for Martin') {
+        const held = HELD.safeParse(said.held);
+        if (!held.success) return { kind: 'failed', job, reason: 'The prepare pod held the pins without saying why.' };
+        return { kind: 'held', job, ...held.data };
+      }
+      if (typeof said.pins !== 'string')
+        return { kind: 'failed', job, reason: 'The prepare pod printed no pins for the move.' };
+      pins = said.pins || undefined;
+    }
 
     const handedBack = new Promise<Handback>((resolve) => this.#waiting.set(job, resolve));
     if (this.#stopped.has(job)) return { kind: 'stopped', job };
@@ -243,9 +285,84 @@ export class Runners {
       // A pod hands back, then ends: its log is kept whole once it has, or after the grace.
       await Promise.race([ended, this.#sleep(this.#o.graceMs ?? 2_000)]);
       if (this.#stopped.has(job)) return { kind: 'stopped', job };
-      return { kind: 'handed-back', job, handback: first.handback };
+      const { handback } = first;
+      const written = await this.#lockfile(names, step, pins, handback.patch);
+      if (this.#stopped.has(job)) return { kind: 'stopped', job };
+      if (typeof written === 'object') return written;
+      return {
+        kind: 'handed-back',
+        job,
+        handback,
+        ...(pins ? { pins } : {}),
+        ...(written ? { lockfile: written } : {}),
+      };
     }
     return { kind: 'failed', job, reason: `The agent pod ${first.state} without handing anything back.` };
+  }
+
+  /**
+   * The lockfile for a patch that changes a manifest, written by the pin step in a Job of its own: its patch, empty
+   * when the lockfile needs no change, or the step's failure. None for a patch that changes no manifest, or one that
+   * also changes a lockfile or pnpm's settings, which the scope fence refuses whole.
+   */
+  async #lockfile(
+    names: { job: string; workItem: string },
+    step: Step,
+    pins: string | undefined,
+    patch: string,
+  ): Promise<string | undefined | StepOutcome> {
+    if (!patch || !changesManifest(patch)) return undefined;
+    if (touchesSettings(patch)) return undefined;
+    const { job } = names;
+    const jobs = `/apis/batch/v1/namespaces/${NAMESPACE}/jobs`;
+    // The checkout the agent started from, less the move, which the pins already are, and with the patch.
+    const { move: _move, base: _base, resume: _resume, ...rest } = step;
+    const lockfileStep: Step = { ...rest, ...(pins ? { pins } : {}), change: patch };
+    await this.#o.kube.create(
+      jobs,
+      lockfileJob(names, lockfileStep, { image: this.#o.image, deadlineSeconds: PREPARE_SECONDS }),
+    );
+    this.#o.log.info({ job, workItem: names.workItem }, 'writing the lockfile');
+    const state = await this.#finished(`${jobs}/${job}-lockfile`, PREPARE_SECONDS);
+    if (this.#stopped.has(job)) return { kind: 'stopped', job };
+    const said = await this.#printed(`${job}-lockfile`, [
+      'the lockfile',
+      'the prepare step failed',
+      'the lockfile step failed',
+    ]);
+    if (state !== 'succeeded' || said?.msg !== 'the lockfile' || typeof said.lockfile !== 'string') {
+      const why = typeof said?.error === 'string' ? `: ${said.error}` : '.';
+      return {
+        kind: 'failed',
+        job,
+        reason: cutTo(`The lockfile pod ${state === 'succeeded' ? 'printed no lockfile' : state}${why}`, 4000),
+      };
+    }
+    return said.lockfile;
+  }
+
+  /**
+   * The last line a finished Job's pod printed with one of `messages`, as JSON: read whole from its log, since the pins
+   * it prints may be longer than the lines the step keeps. Nothing when the pod or the line is not there.
+   */
+  async #printed(jobName: string, messages: readonly string[]): Promise<Record<string, unknown> | undefined> {
+    const pods = `/api/v1/namespaces/${NAMESPACE}/pods`;
+    const selector = encodeURIComponent(`job-name=${jobName},${NOT_RED_TEAM}`);
+    const found = await this.#o.kube.get(`${pods}?labelSelector=${selector}`, PODS);
+    const pod = found?.items.find((item) => !isRedTeam(item.metadata.labels));
+    if (!pod) return undefined;
+    const text = await this.#o.kube.text(`${pods}/${encodeURIComponent(pod.metadata.name)}/log`);
+    let said: Record<string, unknown> | undefined;
+    for (const line of (text ?? '').split('\n')) {
+      if (!line.startsWith('{')) continue;
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (typeof parsed.msg === 'string' && messages.includes(parsed.msg)) said = parsed;
+      } catch {
+        // A line that is not JSON is no line of the runner's.
+      }
+    }
+    return said;
   }
 
   /** Keeps a step's logs, waiting no longer than `LOG_WAIT_MS` for them; they go on being kept after that. */
@@ -325,7 +442,7 @@ export class Runners {
     );
     await this.#keepLogsWithin(job, whose, 'stopped', null);
     const jobs = `/apis/batch/v1/namespaces/${NAMESPACE}/jobs`;
-    for (const part of ['prepare', 'agent']) {
+    for (const part of JOB_PARTS) {
       await this.#o.kube
         .remove(`${jobs}/${job}-${part}`)
         .catch((error: Error) => this.#o.log.warn({ job, err: error }, 'could not delete a job'));
@@ -429,9 +546,20 @@ function traceOf(active: Context): { traceparent?: string } {
   return carrier;
 }
 
+/** What the prepare pod prints when the pins wait for Martin: the file he alone may change, and why. */
+const HELD = z.strictObject({ path: z.string().min(1).max(200), reason: z.string().min(1).max(4000) });
+
+/** Whether a patch changes a lockfile or pnpm's settings, which the pin step does not resolve a manifest with. */
+const touchesSettings = (patch: string): boolean =>
+  [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)]
+    .flatMap(([, a = '', b = '']) => [a, b])
+    .some((path) => inScope(path, [...LOCKFILES, ...PNPM_SETTINGS]));
+
 /** How a step ended, as its logs are kept with it, and why when it failed. */
 function endingOf(outcome: StepOutcome): [StepEnding, string | null] {
   if (outcome.kind === 'failed') return ['failed', outcome.reason];
+  // No agent ran: the step stopped at the pins, which wait for Martin.
+  if (outcome.kind === 'held') return ['stopped', outcome.reason];
   return [outcome.kind, null];
 }
 

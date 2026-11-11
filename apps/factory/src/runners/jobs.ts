@@ -6,8 +6,12 @@
  * - The prepare Job checks out the commit and installs it. Its pod may reach GitHub and the npm registry, so it keeps
  *   its home, its settings and pnpm's store in an empty folder of its own, and runs nothing the agent could have left
  *   on the volume (apps/runner/src/prepare.ts).
+ * - On a dependency's work item, the prepare pod also writes the move's pins before the agent starts, and prints
+ *   them for the line (apps/runner/src/pins.ts).
  * - The agent Job runs the agent. Its pod reaches the gateway and the line's handback, and nothing else, and has no
  *   DNS; it holds its job token, which is not a credential anywhere else.
+ * - After a coder's step that changed a manifest, a lockfile Job, a prepare pod by its label and its fence, writes
+ *   the lockfile for it with pnpm, and prints it for the line (`runner lockfile`). It holds no token either.
  * - The volume goes when the work item merges, or is over unmerged (`Runners.finish`).
  *
  * Both run the `factory-runner` image under the restricted Pod Security Standard, with no service account token and
@@ -84,13 +88,18 @@ export const JOB_GRACE_SECONDS = 60;
 
 const env = (values: Record<string, string>) => Object.entries(values).map(([name, value]) => ({ name, value }));
 
+/** The Jobs of a step, by the command each runs: the lockfile's is a prepare pod, by its label and its fence. */
+export const JOB_PARTS = ['prepare', 'agent', 'lockfile'] as const;
+export type JobPart = (typeof JOB_PARTS)[number];
+
 function job(
   names: JobNames,
-  part: 'prepare' | 'agent',
+  command: JobPart,
   settings: JobSettings,
   variables: Record<string, string>,
   pod: Record<string, unknown> = {},
 ) {
+  const part = command === 'agent' ? 'agent' : 'prepare';
   const labels = {
     'app.kubernetes.io/part-of': 'software-factory',
     'app.kubernetes.io/component': 'runner',
@@ -101,7 +110,7 @@ function job(
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
-    metadata: { name: `${names.job}-${part}`, namespace: NAMESPACE, labels },
+    metadata: { name: `${names.job}-${command}`, namespace: NAMESPACE, labels },
     spec: {
       backoffLimit: 0,
       // The deadline is the pod's, so a pod out of time fails and stays, with its log, until the line has kept it.
@@ -125,9 +134,9 @@ function job(
           },
           containers: [
             {
-              name: part,
+              name: command,
               image: settings.image,
-              args: [part],
+              args: [command],
               env: env({
                 WORK: '/work',
                 // Named on each line the pod prints (apps/runner/src/log.ts).
@@ -164,6 +173,10 @@ function job(
 
 export const prepareJob = (names: JobNames, step: Step, settings: JobSettings) =>
   job(names, 'prepare', settings, { RUNNER_STEP: JSON.stringify(step) });
+
+/** The pin step after a coder's step that changed a manifest: its patch, on the pins, is in the step it is given. */
+export const lockfileJob = (names: JobNames, step: Step, settings: JobSettings) =>
+  job(names, 'lockfile', settings, { RUNNER_STEP: JSON.stringify(step) });
 
 export const agentJob = (names: JobNames, step: Step, settings: AgentSettings) =>
   job(

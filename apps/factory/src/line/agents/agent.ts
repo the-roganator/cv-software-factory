@@ -97,6 +97,11 @@ export interface EffectsContext extends StepContext {
   leaveSignal(key: string, signal: Omit<InboxSignal, 'observedAt'>): Promise<void>;
   /** Keeps the agent's session, for its next round to resume. */
   keepSession(session: string | null): Promise<void>;
+  /**
+   * What the pin step wrote around the agent's patch, for the GitHub worker to apply with it: the move's pins before,
+   * the lockfile after. Nothing when it wrote neither.
+   */
+  pinned: { pins?: string; lockfile?: string };
   /** The line's log, for what a result does that its events do not say in full. */
   log: Pick<Logger, 'warn'>;
 }
@@ -239,6 +244,8 @@ export interface StepOf {
   seed?: string | undefined;
   /** A dry run's commits on `commit`, which GitHub never had, for the step to make before it starts. */
   commits?: { message: string; patch: string }[] | undefined;
+  /** A dependency's move, for the pin step to write before the agent starts (`apps/runner/src/pins.ts`). */
+  move?: Step['move'] | undefined;
 }
 
 /**
@@ -247,7 +254,7 @@ export interface StepOf {
  */
 export function stepFrom(
   definition: Pick<Agent, 'agent' | 'skill' | 'maxTurns' | 'resultFiles'>,
-  { repository, commit, base, prompt, resume, seed, commits }: StepOf,
+  { repository, commit, base, prompt, resume, seed, commits, move }: StepOf,
 ): Step {
   return {
     agent: definition.agent,
@@ -262,6 +269,7 @@ export function stepFrom(
     ...(seed ? { seed } : {}),
     ...(commits?.length ? { commits } : {}),
     ...(resume ? { resume } : {}),
+    ...(move ? { move } : {}),
   };
 }
 

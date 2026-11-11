@@ -505,6 +505,7 @@ function first(input: CoderInput): string[] {
     `4. ${CHECKS}`,
     '',
     'Change only what the criteria need. The app is bad on purpose, so you may see other things wrong: leave them, even in a file the scope allows, and mention them in your note. The line refuses a patch that changes any file outside the scope, whole. Leave your changes in the checkout: the line takes them from there.',
+    LOCKFILE,
     TEST_INTEGRITY,
     ...contradictedLines(input.spec),
     '',
@@ -543,6 +544,7 @@ function firstImprovement(input: CoderInput): string[] {
     ...behindTheFlag(flag),
     '',
     'Build only what the criteria need. You may see other things wrong with the app: leave them, even in a file the scope allows, and mention them in your note. The line refuses a patch that changes any file outside the scope, whole. Leave your changes in the checkout: the line takes them from there.',
+    LOCKFILE,
     TEST_INTEGRITY,
     ...contradictedLines(input.spec),
     '',
@@ -551,6 +553,13 @@ function firstImprovement(input: CoderInput): string[] {
     needsLine(input),
   ];
 }
+
+/**
+ * The coder has no registry, and never writes a lockfile: the pin step does, after its step, from the manifests it
+ * changed (`apps/runner/src/pins.ts`), and the fence refuses a patch that changes one.
+ */
+const LOCKFILE =
+  'Never change a lockfile (pnpm-lock.yaml) or pnpm’s settings (.npmrc, pnpm-workspace.yaml), and do not run pnpm install or pnpm update: there is no registry in reach. If the criteria need a dependency added or moved, change its range in package.json alone, to a version from the npm registry; after your step the line writes the lockfile for it. The line refuses a patch that changes a lockfile, whole. A commit before yours that moves a dependency is the line’s: build on it.';
 
 /** A later step: why it came back, from review or the gates, from the fence, or both. */
 function again(input: CoderInput): string[] {
@@ -761,9 +770,14 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       // A first round starts the branch at the commit; so does a push that was begun and may have been made, so
       // the patch is never applied on top of itself.
       if (!state.pullRequest || again) await context.act('setBranch', { branch, sha: commit, force: true });
-      return context.act('applyPatch', { branch, expectedHead: commit, patch, message }).catch((error: unknown) => {
-        throw judged(error);
-      });
+      // The pin step's patches go on either side of the coder's: the move's pins under it, the lockfile over it.
+      const { pins, lockfile } = context.pinned;
+      const pinned = { ...(pins ? { pins } : {}), ...(lockfile ? { lockfile } : {}) };
+      return context
+        .act('applyPatch', { branch, expectedHead: commit, patch, ...pinned, message })
+        .catch((error: unknown) => {
+          throw judged(error);
+        });
     });
     const number =
       state.pullRequest?.number ??

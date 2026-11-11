@@ -1,0 +1,298 @@
+/*
+ * Patching: full width above Guardrails, for everyone. One row for each move, what waits on Martin first, then by
+ * deadline. A row is Guardrails' row with more columns: state, what and its pin, from and to, what it clears, due, who
+ * moves it. Severity has no colour: `attn` marks only two things, each on its own: a row that waits on Martin (its left
+ * rule, whatever its deadline) and a deadline within a day or past (its due). It arrives with the panel's chunk, so the
+ * first view's stylesheet carries none of it.
+ */
+.patching {
+  margin-top: 20px;
+  gap: 14px;
+}
+.patching .tone-attn {
+  color: var(--attn);
+}
+.patching .zero {
+  color: var(--text-muted);
+}
+.patch-day {
+  margin: 0;
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.patch-day .v {
+  font: 500 11px / 1.4 var(--font-mono);
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+.patch-day a {
+  color: var(--text);
+}
+.pins > div {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.pins > div span {
+  overflow-wrap: anywhere;
+}
+.pins > div .mono {
+  font: 11px var(--font-mono);
+  color: var(--text-muted);
+}
+.pins > div span:last-child {
+  font: 12px var(--font-mono);
+  color: var(--text-2);
+}
+.patch-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.patch-counts b {
+  display: block;
+  font: 400 20px / 1.2 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.patch-counts .label {
+  display: block;
+  margin: 2px 0;
+}
+.patch-counts .help {
+  margin: 0;
+}
+.patch-empty {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-2);
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.pm-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.pm {
+  border-bottom: 1px solid var(--line);
+}
+.pm > button {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 190px 152px 104px 172px 16px;
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pm .v {
+  font-size: 12.5px;
+}
+.pm .v.tone-faint .glyph {
+  color: var(--text-faint);
+}
+.pm .what {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pm .name {
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.pm > button:hover .name {
+  text-decoration: underline 1px var(--line-strong);
+  text-underline-offset: 4px;
+}
+.pm .pin {
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.pm .pin .sans {
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.pm .facts {
+  display: contents;
+}
+.pm .ft,
+.pm .clr {
+  font: 12px / 1.4 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+.pm .ft {
+  overflow-wrap: anywhere;
+}
+.pm .ft .to {
+  color: var(--text);
+}
+.pm .clr {
+  display: grid;
+  grid-template-columns: 3ch 5ch 5ch 5ch;
+  gap: 4px;
+}
+.pm .clr span {
+  text-align: right;
+  white-space: nowrap;
+}
+.pm .clr i {
+  font-style: normal;
+  color: var(--text-muted);
+}
+.pm .clr.none {
+  display: block;
+  color: var(--text-muted);
+}
+.pm .due {
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pm .due.tone-attn {
+  color: var(--attn);
+}
+.pm .route {
+  justify-self: start;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.pm .chev {
+  width: 12px;
+  height: 12px;
+  align-self: center;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.pm > button[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+.pm.wait {
+  border-left: var(--stroke-rule) solid var(--attn);
+  padding-left: 10px;
+  margin-left: -12px;
+}
+.pm .more {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 0 16px 162px;
+  max-width: 900px;
+}
+.pm .more p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.pm .more p.help {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pm .more .label {
+  display: block;
+  margin-bottom: 4px;
+}
+.pm .more a {
+  color: var(--text);
+}
+/* A move's row in two lines: its state, what and who on the first; from, to, what it clears and due under what. */
+@media (max-width: 1179.98px) {
+  .pm > button {
+    grid-template-columns: 150px minmax(0, 1fr) auto 16px;
+    gap: 4px 12px;
+  }
+  .pm .v {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .pm .what {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .pm .route {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .pm .chev {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .pm .facts {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 6px;
+    align-items: baseline;
+  }
+  .pm .facts > * + *::before {
+    content: "· ";
+    color: var(--text-muted);
+  }
+  .pm .clr {
+    display: inline-flex;
+    gap: 5px;
+  }
+}
+
+/* A move's row in three lines: state and who; what; from, to, what it clears and due. The pin is in the opened row. */
+@media (max-width: 720px) {
+  .pm > button {
+    grid-template-columns: minmax(0, 1fr) auto 14px;
+    gap: 4px 8px;
+  }
+  .pm .route {
+    grid-column: 2;
+  }
+  .pm .chev {
+    grid-column: 3;
+  }
+  .pm .what {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .pm .pin {
+    display: none;
+  }
+  .pm .facts {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .pm .ft,
+  .pm .clr {
+    font-size: 11px;
+  }
+  .pm .more {
+    padding-left: 0;
+  }
+  .pins > div {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .patch-counts {
+    grid-template-columns: 1fr 1fr;
+  }
+}

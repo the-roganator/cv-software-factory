@@ -44,6 +44,12 @@ const Settings = lazy(() => import('./components/Settings.tsx').then((module) =>
 /** The audit log's code arrives only on its page. */
 const AuditLog = lazy(() => import('./components/AuditLog.tsx').then((module) => ({ default: module.AuditLog })));
 
+/**
+ * The Patching panel's code, its stylesheet and its projection arrive once the first view has shown: it sits under the
+ * bottom row, so the first view needs none of it.
+ */
+const Patching = lazy(() => import('./components/Patching.tsx').then((module) => ({ default: module.Patching })));
+
 /** The privacy page's too. */
 const Privacy = lazy(() => import('./components/Privacy.tsx').then((module) => ({ default: module.Privacy })));
 
@@ -315,6 +321,13 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                 <SpendPanel spend={settings.spend} admin={admin} />
               </div>
             </section>
+          )}
+          {/* What must move, and who moves it: one row for each move, full width under the bottom row. Its chunk
+              arrives once the store has answered, after the first view; until then, nothing holds its place. */}
+          {settled && (
+            <Suspense fallback={null}>
+              <Patching view={view} admin={admin} />
+            </Suspense>
           )}
           {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under the bottom row. */}
           {settled && <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />}

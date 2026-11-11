@@ -18,7 +18,8 @@
  *   its `lockfileVersion`:
  *   an unread lockfile would otherwise pass for one with nothing in it. So does one whose report is empty or cannot be
  *   parsed, and a `pnpm-lock.yaml` git tracks as anything but a regular file: pnpm follows a symbolic link, which
- *   could stand in for a vulnerable tree.
+ *   could stand in for a vulnerable tree. So does any other symbolic link git tracks: `lockfileDir` pointed through a
+ *   link to a directory installs from a lockfile outside the checkout, which nothing reads.
  * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
  *
  * Its exceptions are the daily scan's: the entries of `policy/vulnerabilities.ts` in force, read from this repository's
@@ -251,21 +252,33 @@ export function forTrivy(doc: string) {
 
 /**
  * Every lockfile a checkout tracks, at any depth, fixtures included: the regular files, which are scanned, and
- * the rest (a symbolic link, 120000, which pnpm would follow, or a submodule, 160000), which fail.
+ * the rest (a symbolic link, 120000, which pnpm would follow, or a submodule, 160000), which fail. And every other
+ * symbolic link it tracks, which fails too: pnpm follows a link to a directory, so `lockfileDir` pointed through one
+ * installs from a lockfile outside the checkout, which nothing here reads, and git cannot say where a link leads. The
+ * daily scan reads the same (../vulnerabilities/scan.ts).
  */
 export function trackedLockfiles(root: string) {
   const regular: string[] = [];
   const irregular: string[] = [];
+  const links: string[] = [];
   for (const entry of execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-s', '-z'], {
     encoding: 'utf-8',
     maxBuffer: 64 * 1024 * 1024,
   }).split('\0')) {
     const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
-    if (!file || !LOCKFILE.test(file)) continue;
+    if (!file) continue;
+    if (!LOCKFILE.test(file)) {
+      if (mode === '120000') links.push(file);
+      continue;
+    }
     (mode === '100644' || mode === '100755' ? regular : irregular).push(file);
   }
-  return { regular, irregular };
+  return { regular, irregular, links };
 }
+
+/** Why a symbolic link git tracks fails the gate and the daily scan. */
+export const LINK =
+  'git tracks it as a symbolic link, which pnpm follows: lockfileDir through it would install from a lockfile nothing reads';
 
 /** A lockfile that holds nothing but its version: pnpm installs nothing from it, and Trivy rightly reads nothing. */
 export function isEmptyLockfile(text: string) {
@@ -273,6 +286,32 @@ export function isEmptyLockfile(text: string) {
     .split(/\r?\n|\r/)
     .filter((line) => line.trim() && !line.trim().startsWith('#'))
     .every((line) => /^(---|lockfileVersion:\s*\S+)\s*$/.test(line));
+}
+
+/**
+ * Why Trivy's report on one document of a lockfile cannot be trusted, or undefined when it can: it read no package
+ * from a document that holds more than its `lockfileVersion`; the document cannot be read plainly; or it did not read
+ * every package the document lists under `packages:`, since Trivy builds its list from other sections, which a
+ * lockfile can leave a package out of (a config dependency outside `snapshots:`) while pnpm still installs it. `which`
+ * names the document in the reason. The daily scan judges each document by this too (../vulnerabilities/scan.ts).
+ */
+export function unreadDocument(
+  doc: string,
+  report: { Results?: { Packages?: { Name?: string; Version?: string }[] | null }[] | null },
+  which: string,
+): string | undefined {
+  const read = Array.isArray(report?.Results) ? report.Results : [];
+  if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
+    return `Trivy read no packages from ${which}`;
+  const listed = packageKeys(doc);
+  if (typeof listed === 'string') return `${which} cannot be read plainly: ${listed}`;
+  const seen = new Set(
+    read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
+  );
+  const unread = listed.filter((key) => !seen.has(key));
+  if (unread.length)
+    return `Trivy did not read ${unread.length} of the packages ${which} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`;
+  return undefined;
 }
 
 /** Where the advisory database is pulled from: GHCR, as the daily scan pulls it (../vulnerabilities/scan.ts). */
@@ -339,23 +378,9 @@ function trivy(image: string, cache: string) {
         } catch {
           return { unscannable: `Trivy's report on its document ${index + 1} could not be parsed` };
         }
-        const read = Array.isArray(report?.Results) ? report.Results : [];
-        if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
-          return { unscannable: `Trivy read no packages from its document ${index + 1} of ${docs.length}` };
-        // Every package the document lists, Trivy must have read: it builds its list from other sections, which a
-        // lockfile can leave a package out of while pnpm still installs it.
-        const listed = packageKeys(doc);
-        if (typeof listed === 'string')
-          return { unscannable: `its document ${index + 1} of ${docs.length} cannot be read plainly: ${listed}` };
-        const seen = new Set(
-          read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
-        );
-        const unread = listed.filter((key) => !seen.has(key));
-        if (unread.length)
-          return {
-            unscannable: `Trivy did not read ${unread.length} of the packages its document ${index + 1} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`,
-          };
-        results.push(...read);
+        const why = unreadDocument(doc, report, `its document ${index + 1} of ${docs.length}`);
+        if (why) return { unscannable: why };
+        results.push(...(Array.isArray(report?.Results) ? report.Results : []));
       }
       return { report: JSON.stringify({ Results: results }), empty: isEmptyLockfile(text) };
     },
@@ -426,7 +451,7 @@ export async function main(args: string[]): Promise<number> {
     const text = (root: string, lockfile: string) => readFileSync(join(root, lockfile), 'utf-8');
     const scanAll = async (root: string, same?: { root: string; scans: Map<string, Scanned> }) => {
       const scans = new Map<string, Scanned>();
-      const { regular, irregular } = trackedLockfiles(root);
+      const { regular, irregular, links } = trackedLockfiles(root);
       for (const lockfile of regular) {
         if (!existsSync(join(root, lockfile))) {
           scans.set(lockfile, { unscannable: 'it is tracked but was not checked out' });
@@ -444,6 +469,7 @@ export async function main(args: string[]): Promise<number> {
         scans.set(lockfile, {
           unscannable: 'git tracks it as something other than a regular file, which is not scanned',
         });
+      for (const link of links) scans.set(link, { unscannable: LINK });
       return scans;
     };
     const base = await scanAll(basePath);

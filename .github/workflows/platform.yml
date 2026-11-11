@@ -141,9 +141,11 @@ jobs:
           name: refusal-records
           path: ${{ runner.temp }}/records
           if-no-files-found: warn
+      # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}
         run: |
+          exec > >(tee "$RUNNER_TEMP/measure/cluster.txt") 2>&1
           echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
           df -h / | tail -1
           docker system df || true
@@ -155,3 +157,9 @@ jobs:
               "\($app) \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")' || true
           kubectl --context k3d-software-factory get pods -A -o wide || true
           kubectl --context k3d-software-factory get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -40 || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: cluster
+          path: ${{ runner.temp }}/measure
+          if-no-files-found: warn

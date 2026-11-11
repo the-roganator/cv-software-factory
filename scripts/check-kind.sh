@@ -90,8 +90,10 @@ queued() {
 }
 
 # Whether HEAD changes from HEAD^1 anything the platform check's cluster is made from or runs: both sides of a rename.
+# The modules the scripts import are named file by file, as scripts/check-kind.test.ts finds them: a directory would
+# give a cluster to every change beside one of them.
 # A diff it cannot read counts as a change.
-PLATFORM='^(deploy/|Makefile$|mise\.(toml|lock)$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|answer-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/|apps/factory/src/scoreboard/|apps/factory/src/github/(registry|signatures)\.ts$)'
+PLATFORM='^(deploy/|Makefile$|mise\.(toml|lock)$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|answer-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/(flags|scoreboard)\.ts$|apps/factory/src/scoreboard/key\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
 changes_platform() {
   local files
   files=$(git diff --name-only --no-renames HEAD^1 HEAD) || return 0

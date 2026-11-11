@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -311,8 +311,10 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
     );
   });
 
-  it('runs none for a change a cluster cannot see', () => {
+  it('runs none for a change a cluster cannot see, a module beside one the scripts import among them', () => {
     expect(platform({ 'apps/console/src/main.ts': 'export const x = 1;\n' }, anyone)).toBe('none');
+    expect(platform({ 'policy/triage.ts': 'export {};\n' }, anyone)).toBe('none');
+    expect(platform({ 'apps/factory/src/scoreboard/figures.ts': 'export {};\n' }, anyone)).toBe('none');
     expect(platform({ 'scripts/review-gate.ts': 'x\n' }, anyone)).toBe('none');
     expect(platform({ 'CHANGELOG.md': '# Changelog\n\n## 1.0.1\n' }, anyone)).toBe('none');
   });
@@ -329,5 +331,42 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
   it('refuses a mode it does not know', () => {
     const repo = repository({});
     expect(spawnSync(SCRIPT, ['other'], { cwd: repo, encoding: 'utf-8', env: GIT_ENV }).status).toBe(2);
+  });
+});
+
+describe('what the platform check runs', () => {
+  /** The scripts the cluster's job runs on the host, each a file the rule names. */
+  const RUNS = [
+    'scripts/admission-ready.sh',
+    'scripts/wait-deployed.sh',
+    'scripts/local-ca.ts',
+    'scripts/share-key.ts',
+    'scripts/answer-key.ts',
+    ...readdirSync('scripts')
+      .filter((f) => /-refusals\.(sh|ts)$/.test(f))
+      .map((f) => `scripts/${f}`),
+  ];
+  const rule = new RegExp(/^PLATFORM='(.+)'$/m.exec(readFileSync(SCRIPT, 'utf-8'))?.[1] ?? '^$');
+
+  /** Every file of this repository each script reaches: the scripts a shell script runs, and a module's imports. */
+  function reached(files: string[]) {
+    const seen = new Set<string>();
+    const queue = [...files];
+    for (let file = queue.shift(); file; file = queue.shift()) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const text = readFileSync(file, 'utf-8');
+      const named = file.endsWith('.sh')
+        ? [...text.matchAll(/\$here\/([\w-]+\.ts)\b|\bscripts\/([\w-]+\.ts)\b/g)].map((m) => `scripts/${m[1] ?? m[2]}`)
+        : [...text.matchAll(/^import [^;]*?from '(\.{1,2}\/[^']+)';$/gms)].map((m) => join(dirname(file), m[1] ?? ''));
+      queue.push(...named);
+    }
+    return [...seen];
+  }
+
+  it('names every file the scripts it runs reach, file by file', () => {
+    const files = reached(RUNS);
+    expect(files).toEqual(expect.arrayContaining(['scripts/signed-by.ts', 'policy/flags.ts']));
+    for (const file of files) expect(file, file).toMatch(rule);
   });
 });

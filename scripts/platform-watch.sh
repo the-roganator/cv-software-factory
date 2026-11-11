@@ -21,6 +21,9 @@
 set -uo pipefail
 
 read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
+# Every request to the API ends within READ_TIMEOUT (default 10s), so an API that does not answer cannot hold the watch
+# past its ceiling. A read that fails or times out tells it nothing: no Application is taken for healthy, nor for broken.
+kubectl+=(--request-timeout="${READ_TIMEOUT:-10s}")
 deadline=$((SECONDS + ${DEADLINE:-1200}))
 interval=${INTERVAL:-15}
 degraded_for=${DEGRADED:-300}

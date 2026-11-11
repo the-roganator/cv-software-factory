@@ -52,8 +52,13 @@ function kubectl(looks: App[][]) {
     `#!/usr/bin/env bash
 n=$(cat "${dir}/n" 2>/dev/null || echo 0)
 look="${dir}/look-$(( n < ${last} ? n : ${last} )).json"
-if [ "$3" = annotate ]; then echo "$*" >> "${dir}/asked"; exit 0; fi
-if [ "$4" = applications ]; then echo $((n + 1)) > "${dir}/n"; cat "$look"; fi
+# An API that does not answer: a read given a request timeout ends when it runs out, and one with none hangs.
+if [ -n "$HANG" ]; then case " $* " in *" --request-timeout="*) sleep "$HANG" ;; *) sleep 60 ;; esac; exit 1; fi
+case " $* " in *" --request-timeout="*) ;; *) echo "no --request-timeout" >&2; exit 2 ;; esac
+case " $* " in
+  *" annotate "*) echo "$*" | sed 's/--request-timeout=[^ ]* *//' >> "${dir}/asked" ;;
+  *" get applications "*) echo $((n + 1)) > "${dir}/n"; cat "$look" ;;
+esac
 `,
   );
   chmodSync(join(dir, 'kubectl'), 0o755);
@@ -131,6 +136,16 @@ describe('the watch of make up', () => {
     ];
     expect(watch([settled], { DEGRADED: '0', DEADLINE: '2', INTERVAL: '1' }).out).toMatch(/^ceiling: /);
   });
+
+  it('keeps to its ceiling when the API does not answer, each read ending at its request timeout', () => {
+    // The fake stands for an API that never answers: a read takes as long as the request timeout the watch gives it,
+    // then fails; a read with none would hang for a minute, past this test's bound.
+    const started = Date.now();
+    const { status, out } = watch([healthy], { HANG: '1', READ_TIMEOUT: '1s', DEADLINE: '2', INTERVAL: '0' });
+    expect(status).toBe(1);
+    expect(out).toMatch(/^ceiling: the cluster did not come up within 2 seconds/);
+    expect(Date.now() - started).toBeLessThan(8_000);
+  }, 15_000);
 
   it('ends quietly when what it watches has ended', () => {
     // Started by a shell that ends at once, so the system reaps it when it ends: a child of this test would wait as a

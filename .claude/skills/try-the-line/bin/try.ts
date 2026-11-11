@@ -108,6 +108,10 @@ export interface Ops {
   commit(branch: string): string | undefined;
   /** The paths the commit changes against origin/main. */
   changed(commit: string): string[];
+  /** The commit the branch left main at, which its render is compared with. */
+  mergeBase(commit: string): string;
+  /** The paths the commit adds against origin/main. */
+  added(commit: string): string[];
   /** Every object of the root overlay (deploy/overlays/local) as the commit renders it. */
   render(commit: string): K8sObject[];
   /** The live object, or undefined when there is none. */
@@ -204,7 +208,9 @@ const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(isS
 /** What is wrong with a state file's shape, or undefined when it is a try's, every field `try end` reads checked. */
 function shapeProblem(v: unknown): string | undefined {
   if (!isRecord(v)) return 'is not an object';
-  if (v.version !== VERSION) return `is version ${String(v.version)}, not ${VERSION}`;
+  // A try begun before objects were applied has none: read as such, so it can still be ended.
+  if (v.version === 1 && v.applied === undefined) v.applied = [];
+  else if (v.version !== VERSION) return `is version ${String(v.version)}, not ${VERSION}`;
   for (const k of ['phase', 'holder', 'user', 'host', 'began', 'branch', 'commit', 'tag'] as const) {
     if (!isString(v[k])) return `lacks ${k}`;
   }
@@ -283,6 +289,10 @@ export interface BeginOptions {
   apply: string[];
 }
 
+/** An apiVersion's group, empty for a core kind: as Argo CD's tracking id and kubectl's resource names take it. */
+export const groupOf = (apiVersion: string): string =>
+  apiVersion.includes('/') ? (apiVersion.split('/')[0] ?? '') : '';
+
 const refOf = (o: K8sObject): ObjectRef => ({
   apiVersion: o.apiVersion,
   kind: o.kind,
@@ -298,7 +308,8 @@ function content(o: K8sObject): unknown {
   const { name, namespace, labels, annotations } = metadata as Record<string, unknown>;
   const kept = { ...((annotations as Record<string, string> | undefined) ?? {}) };
   for (const k of Object.keys(kept)) {
-    if (k.startsWith('argocd.argoproj.io/') || k === 'kubectl.kubernetes.io/last-applied-configuration') delete kept[k];
+    // What Argo CD, kubectl and the Deployment controller write themselves (the revision rises on each template change).
+    if (/^(argocd\.argoproj\.io|kubectl\.kubernetes\.io|deployment\.kubernetes\.io)\//.test(k)) delete kept[k];
   }
   return { ...rest, metadata: { name, namespace, labels, annotations: kept } };
 }
@@ -319,7 +330,7 @@ export function restorable(o: K8sObject): K8sObject {
 
 /** The render's object with root's tracking id, so root's prune removes it if `try end` never runs. */
 function tracked(o: K8sObject): K8sObject {
-  const group = o.apiVersion.includes('/') ? o.apiVersion.split('/')[0] : '';
+  const group = groupOf(o.apiVersion);
   const id = `root:${group}/${o.kind}:${o.metadata.namespace ?? 'argocd'}/${o.metadata.name}`;
   return {
     ...o,
@@ -338,6 +349,41 @@ export function renderDiff(branch: K8sObject[], main: K8sObject[]): { differs: K
   return { differs, dropped: main.filter((o) => !ours.has(keyOf(refOf(o)))).map(refOf) };
 }
 
+/** Kinds `--apply` never takes: admission, the store's secrets and migrations, namespaces, CRDs, Argo CD's own. */
+const NEVER_APPLIED = new Set([
+  'Secret',
+  'Namespace',
+  'CustomResourceDefinition',
+  'Job',
+  'ImageValidatingPolicy',
+  'ValidatingPolicy',
+  'MutatingPolicy',
+  'GeneratingPolicy',
+  'DeletingPolicy',
+  'ClusterPolicy',
+  'Policy',
+  'PolicyException',
+  'ValidatingAdmissionPolicy',
+  'ValidatingAdmissionPolicyBinding',
+  'MutatingAdmissionPolicy',
+  'MutatingAdmissionPolicyBinding',
+  'ValidatingWebhookConfiguration',
+  'MutatingWebhookConfiguration',
+  'Application',
+  'AppProject',
+]);
+/** The only cluster-wide kinds a try applies: a new worker's own RBAC. */
+const CLUSTER_KINDS = new Set(['ClusterRole', 'ClusterRoleBinding']);
+
+/** Why `--apply` refuses an object, or undefined when a try may apply it and put it back. */
+export function unappliable(o: K8sObject): string | undefined {
+  if (NEVER_APPLIED.has(o.kind)) return `is a ${o.kind}, which a try never applies (by hand, as the skill says)`;
+  const ns = o.metadata.namespace;
+  if (!ns) return CLUSTER_KINDS.has(o.kind) ? undefined : 'is cluster-wide, which a try never applies';
+  if (UNTOUCHED_NAMESPACES.has(ns)) return `is in ${ns}, where a try applies nothing`;
+  return undefined;
+}
+
 /** The objects `--apply` names in the branch's render, each refused where a try applies nothing. */
 export function chooseApplied(render: K8sObject[], names: string[]): K8sObject[] {
   const chosen: K8sObject[] = [];
@@ -347,11 +393,8 @@ export function chooseApplied(render: K8sObject[], names: string[]): K8sObject[]
     const found = render.filter((o) => o.kind === m[1] && o.metadata.name === m[2]);
     if (!found.length) throw new Refused(`--apply ${spec}: the branch's render has no ${m[1]} ${m[2]}`);
     for (const o of found) {
-      if (o.kind === 'ImageValidatingPolicy')
-        throw new Refused(`--apply ${spec}: a try changes no image policy by hand`);
-      if (UNTOUCHED_NAMESPACES.has(o.metadata.namespace ?? '')) {
-        throw new Refused(`--apply ${spec}: a try applies nothing in ${o.metadata.namespace}`);
-      }
+      const why = unappliable(o);
+      if (why) throw new Refused(`--apply ${spec}: ${describeRef(refOf(o))} ${why}`);
       if (!chosen.includes(o)) chosen.push(o);
     }
   }
@@ -519,11 +562,14 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   // What the branch's render differs on that the try does not apply, which `try end` cannot put back: by hand.
   const unapplied: string[] = [];
   if (deployChanged) {
-    const { differs, dropped } = renderDiff(render, ops.render('origin/main'));
+    const { differs, dropped } = renderDiff(render, ops.render(ops.mergeBase(commit)));
     unapplied.push(
       ...differs
         .filter((o) => !toApply.includes(o))
-        .map((o) => `${describeRef(refOf(o))} (--apply ${o.kind}/${o.metadata.name})`),
+        .map((o) => {
+          const why = unappliable(o);
+          return `${describeRef(refOf(o))} (${why ? `${why.replace(/^is /, '')}` : `--apply ${o.kind}/${o.metadata.name}`})`;
+        }),
     );
     unapplied.push(...dropped.map((r) => `${describeRef(r)}, which the branch removes`));
   }
@@ -536,9 +582,10 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
         'name each object with --apply, or apply it as the skill says, list it in your undo list, and pass --by-hand',
     );
   }
+  const addedFiles = changed.some((p) => p.startsWith(MIGRATIONS)) ? ops.added(commit) : [];
   const warnings = migrationWarnings(
-    changed,
-    changed.some((p) => p.startsWith(MIGRATIONS)) ? ops.migrations() : new Map(),
+    addedFiles,
+    addedFiles.some((p) => p.startsWith(MIGRATIONS)) ? ops.migrations() : new Map(),
   );
   for (const w of warnings) ops.say(`Warning: ${w}`);
   // A Deployment the try adds is moved as a live one is, from its rendered copy.
@@ -640,7 +687,9 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   // After root is paused, whose prune would take an added object straight away; before the deployments are pointed,
   // since a rendered Deployment names main's images.
   for (const o of toApply) {
-    ops.applyObject(tracked(o));
+    // A changed object is replaced whole, so a field the branch drops is gone for the try, as it will be after merge.
+    if (state.applied.find((x) => keyOf(x.ref) === keyOf(refOf(o)))?.before) ops.replaceObject(tracked(o));
+    else ops.applyObject(tracked(o));
     const a = state.applied.find((x) => keyOf(x.ref) === keyOf(refOf(o)));
     ops.say(`${a?.before ? 'Changed' : 'Added'} ${describeRef(refOf(o))} from the branch's render.`);
   }
@@ -791,8 +840,9 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   // Each object the try applied: an added one deleted, a changed one put back whole, last applied first.
   for (const a of [...state.applied].reverse()) {
     try {
-      if (a.before) ops.replaceObject(restorable(a.before));
-      else ops.deleteObject(a.ref);
+      if (!a.before) ops.deleteObject(a.ref);
+      else if (ops.getObject(a.ref)) ops.replaceObject(restorable(a.before));
+      else ops.applyObject(restorable(a.before));
       ops.say(`${a.before ? 'Put back' : 'Deleted'} ${describeRef(a.ref)}.`);
     } catch (e) {
       ops.say(
@@ -802,7 +852,13 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   }
   // Each deployment back on the images it had, then each variable as it was: the images first, so the rollout the
   // variables make runs main's image, which Deny admits.
-  const current = new Map(ops.deployments().map((d) => [d.name, d]));
+  const removed = new Set(state.applied.filter((a) => !a.before && a.ref.kind === 'Deployment').map((a) => a.ref.name));
+  const current = new Map(
+    ops
+      .deployments()
+      .filter((d) => !removed.has(d.name))
+      .map((d) => [d.name, d]),
+  );
   for (const d of state.deployments) {
     const now = current.get(d.name);
     if (!now) continue;
@@ -905,9 +961,9 @@ export function status(ops: Ops, path: string): void {
     );
   }
   try {
-    const changed = ops.changed(state.commit);
-    if (changed.some((p) => p.startsWith(MIGRATIONS))) {
-      for (const w of migrationWarnings(changed, ops.migrations())) ops.say(`Warning: ${w}`);
+    const added = ops.added(state.commit);
+    if (added.some((p) => p.startsWith(MIGRATIONS))) {
+      for (const w of migrationWarnings(added, ops.migrations())) ops.say(`Warning: ${w}`);
     }
   } catch (e) {
     ops.say(`The branch's migrations could not be compared with the store's: ${(e as Error).message}`);

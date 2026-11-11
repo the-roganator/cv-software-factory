@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse, parseAllDocuments } from 'yaml';
 import type { Deployment, K8sObject, Line, ObjectRef, Ops, Root, Workload } from './try.ts';
-import { asDeployment, NAMESPACES, POLICY } from './try.ts';
+import { asDeployment, groupOf, NAMESPACES, POLICY } from './try.ts';
 
 /** Only the fields of Kubernetes' objects that are read here. */
 interface K8sContainer {
@@ -113,7 +113,7 @@ function inTree<T>(commit: string, use: (tree: string) => T): T {
 
 /** The resource kubectl names an object's kind by: `rolebinding.rbac.authorization.k8s.io`, `serviceaccount`. */
 const resource = (ref: ObjectRef): string => {
-  const group = ref.apiVersion.includes('/') ? ref.apiVersion.split('/')[0] : '';
+  const group = groupOf(ref.apiVersion);
   return `${ref.kind.toLowerCase()}${group ? `.${group}` : ''}`;
 };
 const scope = (ref: ObjectRef): string[] => (ref.namespace ? ['-n', ref.namespace] : []);
@@ -279,6 +279,14 @@ export const ops: Ops = {
     }
     return undefined;
   },
+  mergeBase(commit) {
+    return run('git', ['-C', checkout(), 'merge-base', 'origin/main', commit]).trim();
+  },
+  added(commit) {
+    return run('git', ['-C', checkout(), 'diff', '--name-only', '--diff-filter=A', `origin/main...${commit}`])
+      .split('\n')
+      .filter(Boolean);
+  },
   changed(commit) {
     return run('git', ['-C', checkout(), 'diff', '--name-only', `origin/main...${commit}`])
       .split('\n')
@@ -305,7 +313,13 @@ export const ops: Ops = {
     );
   },
   replaceObject(object) {
-    run('kubectl', ['--context', CONTEXT, 'replace', '-f', '-'], { input: JSON.stringify(object) });
+    const input = JSON.stringify(object);
+    try {
+      run('kubectl', ['--context', CONTEXT, 'replace', '-f', '-'], { input });
+    } catch {
+      // A field the API will not change in place (a Service's clusterIP, a selector): delete and make it again.
+      run('kubectl', ['--context', CONTEXT, 'replace', '--force', '-f', '-'], { input });
+    }
   },
   deleteObject(ref) {
     // In the foreground, so the object stays, and try end waits, until what it owns (a Deployment's pods) is gone too.

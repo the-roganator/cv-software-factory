@@ -3,7 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Deployment, K8sObject, Line, ObjectRef, Ops, State, Workload } from './try.ts';
-import { asDeployment, main, migrationWarnings, parse, plan, REGISTRY, Refused, readState, writeState } from './try.ts';
+import {
+  asDeployment,
+  main,
+  migrationWarnings,
+  parse,
+  plan,
+  REGISTRY,
+  Refused,
+  readState,
+  unappliable,
+  writeState,
+} from './try.ts';
 
 const MAIN = `${REGISTRY}/factory@sha256:${'a'.repeat(64)}`;
 const RUNNER = `${REGISTRY}/factory-runner@sha256:${'b'.repeat(64)}`;
@@ -153,6 +164,8 @@ class Cluster implements Ops {
   workItemsSince = () => this.moved;
   commit = (branch: string) => this.branches[branch];
   changed = () => this.changes;
+  mergeBase = () => 'origin/main';
+  added = () => this.changes;
   render = (commit: string) => structuredClone(this.renders[commit] ?? []);
   getObject = (ref: ObjectRef) => structuredClone(this.objects.get(key(ref)));
   applyObject(o: K8sObject) {
@@ -323,6 +336,9 @@ describe('the state file', () => {
     const { applied: _a, ...noApplied } = state;
     writeFileSync(path, JSON.stringify(noApplied));
     expect(() => readState(path)).toThrow(/lacks applied/);
+    // A try begun by the script before it applied objects is still read, with none, so it can be ended.
+    writeFileSync(path, JSON.stringify({ ...noApplied, version: 1 }));
+    expect(readState(path)?.applied).toEqual([]);
     writeFileSync(path, JSON.stringify({ ...state, nodeRefs: [1] }));
     expect(() => readState(path)).toThrow(/lacks nodeRefs/);
     writeFileSync(path, JSON.stringify({ ...state, images: [{ image: 'factory' }] }));
@@ -875,6 +891,67 @@ describe("objects from the branch's render", () => {
     expect(existsSync(path)).toBe(true);
   });
 
+  it("applies no admission, secret, namespace, Job or cluster-wide object but a worker's own RBAC", () => {
+    const cases: [K8sObject, RegExp | undefined][] = [
+      [object('Namespace', 'website', undefined), /Namespace, which a try never applies/],
+      [object('ValidatingPolicy', 'website-mark', undefined), /ValidatingPolicy/],
+      [object('ValidatingAdmissionPolicy', 'flagd-flags', undefined), /ValidatingAdmissionPolicy/],
+      [object('ImageValidatingPolicy', 'factory-images', undefined), /ImageValidatingPolicy/],
+      [object('Secret', 'postgres-patching', 'factory'), /Secret/],
+      [object('Job', 'migrate', 'factory'), /Job/],
+      [object('ClusterAnalysisTemplate', 'website-step', undefined), /cluster-wide/],
+      [object('RoleBinding', 'patching-lists-pods', 'website'), /in website, where a try applies nothing/],
+      [object('ConfigMap', 'x', 'argocd'), /in argocd/],
+      [object('ClusterRole', 'patching-lists-pods', undefined), undefined],
+      [object('RoleBinding', 'patching-lists-pods', 'telemetry'), undefined],
+      [object('NetworkPolicy', 'github', 'factory'), undefined],
+    ];
+    for (const [o, why] of cases) {
+      if (why) expect(unappliable(o)).toMatch(why);
+      else expect(unappliable(o)).toBeUndefined();
+    }
+  });
+
+  it('names an object it will not apply as by hand, never with an --apply that would be refused', async () => {
+    const c = branchWithWorker();
+    c.renders[COMMIT]?.push(object('ValidatingPolicy', 'factory-red-team-pods', undefined, { spec: {} }));
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(2);
+    expect(said(c)).toMatch(/ValidatingPolicy factory-red-team-pods \(a ValidatingPolicy, which a try never applies/);
+    expect(said(c)).not.toMatch(/--apply ValidatingPolicy/);
+  });
+
+  it('replaces a changed object whole, so a field the branch drops is gone for the try', async () => {
+    const c = branchWithWorker();
+    const live = c.objects.get('NetworkPolicy/factory/github') as K8sObject;
+    (live.spec as Record<string, unknown>).egress = [{}];
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+    expect(c.calls).toContain('replaceObject NetworkPolicy/factory/github');
+    expect(
+      (c.objects.get('NetworkPolicy/factory/github')?.spec as Record<string, unknown> | undefined)?.egress,
+    ).toBeUndefined();
+    const after = fresh(c);
+    expect(await end(after)).toBe(0);
+    expect(
+      (after.objects.get('NetworkPolicy/factory/github')?.spec as Record<string, unknown> | undefined)?.egress,
+    ).toEqual([{}]);
+  });
+
+  it('makes a changed object again if it was deleted during the try, and counts what the API writes as back', async () => {
+    const c = branchWithWorker();
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+    const after = fresh(c);
+    after.objects.delete('NetworkPolicy/factory/github');
+    const apply = after.applyObject.bind(after);
+    after.applyObject = (o: K8sObject) => {
+      apply(o);
+      const put = after.objects.get('NetworkPolicy/factory/github');
+      if (put) put.metadata.annotations = { ...put.metadata.annotations, 'deployment.kubernetes.io/revision': '9' };
+    };
+    expect(await end(after)).toBe(0);
+    expect(after.calls).toContain('applyObject NetworkPolicy/factory/github');
+    expect(after.calls.some((x) => x.startsWith('setImages patching') || x.startsWith('rollout patching'))).toBe(false);
+  });
+
   describe('refuses, changing nothing', () => {
     const cases: [string, string[], RegExp][] = [
       [
@@ -886,9 +963,13 @@ describe("objects from the branch's render", () => {
       [
         'an object in a namespace a try leaves alone',
         ['--apply', 'Service/website', '--by-hand'],
-        /applies nothing in website/,
+        /in website, where a try applies nothing/,
       ],
-      ['an image policy', ['--apply', 'ImageValidatingPolicy/website-images', '--by-hand'], /no image policy/],
+      [
+        'an image policy',
+        ['--apply', 'ImageValidatingPolicy/website-images', '--by-hand'],
+        /ImageValidatingPolicy, which a try never applies/,
+      ],
       ['a Deployment main lacks, without --apply', ['--only', 'patching', '--by-hand'], /no deployment patching/],
     ];
     for (const [what, args, message] of cases) {

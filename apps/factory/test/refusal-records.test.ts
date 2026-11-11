@@ -210,9 +210,11 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
     const moved = admissionHashWith((m) => {
       for (const name of ['factory-images', 'flagd-images']) {
         const v = allowedOf(imagePolicy(m, name));
+        const before = v.expression;
         v.expression = v.expression
           .replace(/(flagd):v[\d.]+@sha256:[0-9a-f]{64}/, `$1:v9.9.9@sha256:${'0'.repeat(64)}`)
           .replace(/(postgres-exporter):v[\d.]+@sha256:[0-9a-f]{64}/, `$1:v9.9.9@sha256:${'1'.repeat(64)}`);
+        expect(v.expression, `${name}'s pin moved`).not.toBe(before);
       }
     });
     expect(moved).toBe(kept());
@@ -242,6 +244,15 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
       ['one fewer', (e) => `[${e.match(/'[^']*'/)?.[0]}]`],
       // Not a list of literals, which admits every image the pod names: read whole.
       ['an expression', () => 'variables.images'],
+      // The list the hash would read, written as CEL in double quotes: read whole, never alike.
+      [
+        'the hash’s own reading',
+        (e) => JSON.stringify([...e.matchAll(/'([^']*)'/g)].map((m) => repository(m[1] ?? ''))),
+      ],
+      // A tag where the digest was.
+      ['a tag alone', (e) => e.replace(/@sha256:[0-9a-f]{64}/, '')],
+      // A space CEL does not take, which would pass a test of spaces that JavaScript's \s reads.
+      ['a space CEL does not read', (e) => e.replace('[', '[\u00a0')],
     ];
     for (const [what, change] of cases) {
       const hash = admissionHashWith((m) => {
@@ -250,6 +261,12 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
       });
       expect(hash, what).not.toBe(kept());
     }
+    // A second `allowed` beside the first, admitting every image.
+    expect(
+      admissionHashWith((m) => {
+        imagePolicy(m, 'factory-images').spec.variables.push({ name: ADMITTED, expression: 'variables.images' });
+      }),
+    ).not.toBe(kept());
     // And in a copy that admits none, one admitted.
     expect(
       admissionHashWith((m) => {
@@ -260,15 +277,32 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
 
   it('admits only what a workload in a namespace the copy guards pins, image for image', () => {
     const manifests = profile();
+    type Pod = {
+      containers?: { image: string }[];
+      initContainers?: { image: string }[];
+      ephemeralContainers?: { image: string }[];
+      volumes?: { image?: { reference: string } }[];
+    };
+    // A Pod's own spec, a workload's template's, or a CronJob's job's template's.
+    const podOf = (m: Resource): Pod | undefined => {
+      const spec = m.spec as
+        | (Pod & { template?: { spec?: Pod }; jobTemplate?: { spec?: { template?: { spec?: Pod } } } })
+        | undefined;
+      if (m.kind === 'Pod') return spec;
+      return spec?.template?.spec ?? spec?.jobTemplate?.spec?.template?.spec;
+    };
     const pinned = (namespaces: string[]) =>
       new Set(
         manifests
           .filter((m) => namespaces.includes(m.metadata?.namespace ?? ''))
           .flatMap((m) => {
-            const pod = (m as { spec?: { template?: { spec?: unknown } } }).spec?.template?.spec as
-              | { containers?: { image: string }[]; initContainers?: { image: string }[] }
-              | undefined;
-            return [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])].map((c) => c.image);
+            const pod = podOf(m);
+            return [
+              ...[...(pod?.containers ?? []), ...(pod?.initContainers ?? []), ...(pod?.ephemeralContainers ?? [])].map(
+                (c) => c.image,
+              ),
+              ...(pod?.volumes ?? []).flatMap((v) => (v.image ? [v.image.reference] : [])),
+            ];
           }),
       );
     const copies = manifests.filter((m) => m.kind === 'ImageValidatingPolicy') as ImagePolicy[];
@@ -283,20 +317,22 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
       expect(references, `${copy.metadata?.name} lists its admitted images as literals`).toBeDefined();
       const guarded = copy.spec.matchConstraints.namespaceSelector.matchExpressions[0]?.values ?? [];
       expect(guarded.length, `${copy.metadata?.name} guards a namespace`).toBeGreaterThan(0);
+      const pins = [...pinned(guarded)];
       for (const reference of references ?? []) {
         expect(reference, copy.metadata?.name).toMatch(/@sha256:[0-9a-f]{64}$/);
-        expect([...pinned(guarded)], `${copy.metadata?.name} admits ${reference}`).toContain(reference);
+        expect(pins, `${copy.metadata?.name} admits ${reference}`).toContain(reference);
       }
     }
   });
 
-  it('cuts a reference to its repository', () => {
-    expect(repository('postgres:18.6-alpine3.24@sha256:abc')).toBe('postgres');
+  it('cuts a reference to its repository, and whether it is by digest', () => {
+    expect(repository('postgres:18.6-alpine3.24@sha256:abc')).toBe('postgres@sha256');
     expect(repository('quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:abc')).toBe(
-      'quay.io/prometheuscommunity/postgres-exporter',
+      'quay.io/prometheuscommunity/postgres-exporter@sha256',
     );
-    expect(repository('localhost:5000/flagd@sha256:abc')).toBe('localhost:5000/flagd');
-    expect(repository('localhost:5000/flagd')).toBe('localhost:5000/flagd');
+    expect(repository('localhost:5000/flagd@sha256:abc')).toBe('localhost:5000/flagd@sha256');
+    expect(repository('localhost:5000/flagd:v1')).toBe('localhost:5000/flagd');
+    expect(repository('postgres')).toBe('postgres');
   });
 });
 

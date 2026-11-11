@@ -76,3 +76,6 @@ read:
   replicas: 0
 write:
   replicas: 0
+
+# Broken on purpose: a throwaway that proves the platform check fails early on values that do not parse.
+singleBinary: [

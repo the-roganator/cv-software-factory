@@ -5,8 +5,8 @@
  * cannot be proved holds the pull request for Martin, with the reason:
  *
  * 1. **Pins only.** Every file it changes was there before, with its mode, and changes line for line, each line only
- *    in a version or a digest; nothing under `.github/` and neither of mise's files. The list worked out at the base and
- *    at the head (inventory.ts) has the same items at the same places, and differs in one move's pins alone: one image,
+ *    in a version or a digest; nothing under `.github/` and neither of mise's files. The change is what the merge makes,
+ *    the head merged onto main's tip, against that tip. The list worked out on both (inventory.ts) has the same items at the same places, and differs in one move's pins alone: one image,
  *    one chart or one value of a chart, from one pin to one other. Every line it changes is one of those pins, and
  *    `--unlisted` finds nothing at the head.
  * 2. **Not what judges.** Trivy's and Syft's own pins are Martin's: a scanner cannot vouch for its replacement.
@@ -19,8 +19,9 @@
  *    head, is the same.
  * 6. **Nothing else that runs changes.** For a chart, a value or an image the cluster runs, the manifests rendered at
  *    the base and at the head differ only in the moved image's references and the chart's own version labels.
- * 7. **The scans show it.** The pinned Trivy, on the image as it was and as it would be: a finding with a fix is gone,
- *    and nothing is new at High or above. A scan that read nothing proves nothing.
+ * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on
+ *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
+ *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
  * 8. **Something ran it.** GitHub Actions' latest run at the head of the job that runs what the pin runs succeeded,
  *    not skipped: `ZAP scan` for ZAP's image, `image builds` for a Dockerfile's stage, each shard of `tests` for
  *    Postgres, whose pin CI's own database is. What only a cluster runs is held until the `platform` check (task 34),
@@ -106,6 +107,7 @@ export interface Run {
 export interface Scan {
   /** Whether it read anything: a report with no results read nothing, and proves nothing. */
   read: boolean;
+  /** Each finding by its advisory and its package's name: where in the image it was found is never part of it. */
   findings: { id: string; pkg: string; severity: string; fixed: boolean }[];
 }
 
@@ -129,8 +131,8 @@ export interface PinMoveIO {
   overlay(side: Side): Promise<string>;
   /** Each refusal record's policy hash, from one side's tree. */
   hashes(side: Side): Promise<Record<string, string>>;
-  /** Trivy's report of an image. */
-  scan(reference: string): Promise<Scan>;
+  /** Trivy's report of an image on one platform; one the index does not have is an error, and holds. */
+  scan(reference: string, platform: string): Promise<Scan>;
   /** The check runs at the head. */
   runs(): Promise<Run[]>;
 }
@@ -138,6 +140,9 @@ export interface PinMoveIO {
 export type Side = 'base' | 'head';
 
 export type PinMoveResult = { move: Move; ran: string[]; fixed: number } | { reason: string };
+
+/** The platforms an image is scanned on: what CI runs (amd64) and what the local cluster runs (arm64). */
+export const PLATFORMS = ['linux/amd64', 'linux/arm64'];
 
 /** GitHub Actions, the one app whose check runs are the workflows'. */
 export const ACTIONS = 'github-actions';
@@ -435,6 +440,7 @@ export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersion
   const chart = move.pins[0]?.chart?.head;
   if (!chart) return `${move.name} names no chart`;
   if (compareVersions(move.to, move.from) <= 0) return `a move backwards, from ${move.from} to ${move.to}`;
+  if (!/^v?\d+(\.\d+)*$/.test(move.to)) return `${chart.chart} ${move.to} is a prerelease, not a release`;
   const target: Target = {
     kind: 'chart',
     chart: chart.chart,
@@ -505,7 +511,9 @@ export function normalised(rendered: string, references: readonly string[]): str
   return rendered.split('\n').map((line) => {
     let text = line;
     for (const ref of refs) text = text.split(ref).join('<image>');
-    return text.replace(/^(\s*(?:helm\.sh\/chart|chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>');
+    // The chart's own version labels, by their exact keys: any other key, a `chart:` an Application installs among
+    // them, is compared.
+    return text.replace(/^(\s*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>');
   });
 }
 
@@ -526,19 +534,21 @@ const HIGH = new Set(['HIGH', 'CRITICAL']);
 export function scansShow(
   pairs: readonly { from: string; to: string; was: Scan; now: Scan }[],
 ): { fixed: number } | { reason: string } {
-  let fixed = 0;
+  // Each finding fixed counted once, whichever platforms it was fixed on.
+  const gone = new Set<string>();
   for (const { from, to, was, now } of pairs) {
     if (!was.read) return { reason: `the scan of ${short(from)} read nothing` };
     if (!now.read) return { reason: `the scan of ${short(to)} read nothing` };
-    const key = (f: Scan['findings'][number]) => `${f.id}\0${f.pkg}`;
+    // A finding is its advisory and its package, never its path: one still there at another path is not gone.
+    const key = (f: Scan['findings'][number]) => `${f.id}\0${f.pkg.split(' ')[0]}`;
     const before = new Set(was.findings.map(key));
     const after = new Set(now.findings.map(key));
-    fixed += was.findings.filter((f) => f.fixed && !after.has(key(f))).length;
+    for (const f of was.findings) if (f.fixed && !after.has(key(f))) gone.add(key(f));
     const brought = now.findings.find((f) => HIGH.has(f.severity.toUpperCase()) && !before.has(key(f)));
     if (brought) return { reason: `a target that brings a new ${brought.severity.toUpperCase()}: ${short(to)}` };
   }
-  if (fixed === 0) return { reason: 'the scans show no finding with a fix gone: the move fixes nothing' };
-  return { fixed };
+  if (gone.size === 0) return { reason: 'the scans show no finding with a fix gone: the move fixes nothing' };
+  return { fixed: gone.size };
 }
 
 /** The image references before and after each moved image, for the scans and the renderings. */
@@ -655,8 +665,16 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
     if (differ) return { reason: differ };
   }
   // 7. The scans show it.
+  // Each platform we run apart, so a High new on one is never hidden by the other's findings.
   const scanned = await Promise.all(
-    pairs.map(async ({ from, to }) => ({ from, to, was: await io.scan(from), now: await io.scan(to) })),
+    pairs.flatMap(({ from, to }) =>
+      PLATFORMS.map(async (platform) => ({
+        from: `${from} (${platform})`,
+        to: `${to} (${platform})`,
+        was: await io.scan(from, platform),
+        now: await io.scan(to, platform),
+      })),
+    ),
   );
   const shown = scansShow(scanned);
   if ('reason' in shown) return shown;
@@ -739,9 +757,15 @@ const MANIFESTS = [
 
 export interface RealOptions {
   repo: string;
-  /** The merge base and the head, as full SHAs. */
+  /**
+   * The base branch's tip, the merge base and the head, as full SHAs. The move is proved on what the merge makes: the
+   * head's change merged onto the tip, against the tip, never against a merge base main has moved on from.
+   */
   base: string;
+  mergeBase: string;
   head: string;
+  /** Where the commits are fetched from: the repository on GitHub, unless a test names a local one. */
+  remote?: string;
   /** The check runs at the head, read through the API by the gate. */
   runs: () => Promise<Run[]>;
 }
@@ -761,26 +785,36 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
     '--quiet',
     '--depth=1',
     '--no-tags',
-    `https://github.com/${options.repo}.git`,
-    options.base,
-    options.head,
+    options.remote ?? `https://github.com/${options.repo}.git`,
+    ...new Set([options.base, options.mergeBase, options.head]),
   );
+  // What the merge makes: the head's change onto the base's tip, from their merge base. A conflict is no move to prove.
+  const tree = await git('merge-tree', '--write-tree', `--merge-base=${options.mergeBase}`, options.base, options.head)
+    .then(({ stdout }) => stdout.trim().split('\n')[0] ?? '')
+    .catch(() => {
+      throw new Error(`the head does not merge onto ${options.base.slice(0, 7)} without a conflict`);
+    });
+  if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error('git wrote no tree of the merge');
+  const merged = (
+    await git('-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', options.base, '-m', 'the merge, as data')
+  ).stdout.trim();
+  const sides: Record<Side, string> = { base: options.base, head: merged };
   const dirs: Record<Side, string> = { base: join(work, 'base'), head: join(work, 'head') };
-  await git('worktree', 'add', '--quiet', '--detach', dirs.base, options.base);
-  await git('worktree', 'add', '--quiet', '--detach', dirs.head, options.head);
+  await git('worktree', 'add', '--quiet', '--detach', dirs.base, sides.base);
+  await git('worktree', 'add', '--quiet', '--detach', dirs.head, sides.head);
   const tools = realTools(trivyImage(), join(work, 'cache'), work);
   mkdirSync(join(work, 'cache'));
   let pulled: Promise<unknown> | undefined;
   return {
     close: () => rmSync(work, { recursive: true, force: true }),
     async diff() {
-      const raw = (await git('diff', '--raw', '--no-renames', '--no-abbrev', options.base, options.head)).stdout;
+      const raw = (await git('diff', '--raw', '--no-renames', '--no-abbrev', sides.base, sides.head)).stdout;
       // Each modified file's blob at both commits, as bytes git stores: no patch to parse, no filter or driver run.
       const show = async (sha: string, path: string) => (await git('cat-file', 'blob', `${sha}:${path}`)).stdout;
       const files: Rewritten[] = [];
       for (const entry of raw.split('\n').filter((line) => / M\t/.test(line))) {
         const path = entry.split('\t').slice(1).join('\t');
-        files.push({ path, before: await show(options.base, path), after: await show(options.head, path) });
+        files.push({ path, before: await show(sides.base, path), after: await show(sides.head, path) });
       }
       return { raw, files };
     },
@@ -839,25 +873,16 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
       return stdout;
     },
     hashes: (side) => hashesOf(dirs[side]),
-    async scan(reference) {
+    async scan(reference, platform) {
       pulled ??= databases(tools, trivyImage(), join(work, 'cache'));
       // As the daily scan refuses one: findings read from a stale database prove nothing new is High.
       const age = await pulled;
       if (typeof age !== 'number' || age > DB_MAX_AGE_MS)
         throw new Error(`the advisory database is refused: ${typeof age === 'string' ? age : 'it is too old'}`);
       const { digest } = tagAndDigest(reference);
+      const target = digest ? `${repositoryOf(reference)}@${digest}` : reference;
       const report = await tools.retry(() =>
-        tools.trivy([
-          'image',
-          '--scanners',
-          'vuln',
-          '--image-src',
-          'remote',
-          '--platform',
-          'linux/amd64',
-          '--',
-          digest ? `${repositoryOf(reference)}@${digest}` : reference,
-        ]),
+        tools.trivy(['image', '--scanners', 'vuln', '--image-src', 'remote', '--platform', platform, '--', target]),
       );
       const results = report.Results ?? [];
       return {
@@ -865,7 +890,7 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
         findings: results.flatMap((result) =>
           (result.Vulnerabilities ?? []).map((v) => ({
             id: v.VulnerabilityID ?? '',
-            pkg: `${v.PkgName ?? ''} ${v.PkgPath ?? ''}`.trim(),
+            pkg: v.PkgName ?? '',
             severity: v.Severity ?? 'UNKNOWN',
             fixed: Boolean(v.FixedVersion),
           })),

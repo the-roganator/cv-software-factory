@@ -215,6 +215,8 @@ describe('approval routing: the rule, the first that holds', () => {
       pass: false,
       rule: 'held',
     });
+    // One whose base was ever changed: a check may have run for that other base.
+    expect(route({ ...here, pin, retargeted: true, pinMove: { title } })).toMatchObject({ pass: false, rule: 'held' });
     // A removed risk label, and a read that failed, hold it whatever the move.
     expect(route({ ...here, labelsRemoved: ['code-owned'], pinMove: { title } })).toMatchObject({ pass: false });
     expect(route({ ...here, unread: 'GET /files: 502', pinMove: { title } })).toMatchObject({ pass: false });

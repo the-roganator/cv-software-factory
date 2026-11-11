@@ -1,11 +1,14 @@
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
-import { PAYLOADS } from '@software-factory/events/schemas';
+import { MOST_PINS, PAYLOADS } from '@software-factory/events/schemas';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
+import type { DependencyPull } from '../../src/github/dependabot.ts';
+import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
+import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
 import { PatchingSense, type Senses } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
@@ -186,5 +189,74 @@ describe('the dependency sense', () => {
 describe("the event's lanes", () => {
   it('are the scan’s, in its order', () => {
     expect([...MOVE_LANES]).toEqual(LANES);
+  });
+});
+
+describe('the day, made from the reads', () => {
+  const read = (moves = factoryMoves(), pulls: DependencyPull[] = []) => [
+    { moves, pulls },
+    { moves: appMoves(), pulls: [] },
+  ];
+  const withMove = (change: Partial<ReadMove>) => {
+    const moves = factoryMoves();
+    return { ...moves, moves: [{ ...(moves.moves[0] as ReadMove), ...change }] };
+  };
+
+  it('is the same day when only the order of pods made again changes its rows', () => {
+    const row = (namespace: string, pod: string, image: string) =>
+      ({ row: 'unlisted-image', namespace, pod, container: 'c', image, digest: digest(13) }) as const;
+    const before = dayOf(read(), 2, [row('factory', 'a-1', 'nginx:1'), row('factory', 'b-2', 'redis:7')]);
+    const after = dayOf(read(), 2, [row('factory', 'b-2', 'redis:7'), row('factory', 'c-3', 'nginx:1')]);
+    expect(sameDay(after, before)).toBe(true);
+    expect(sameDay(dayOf(read(), 2, [row('factory', 'c-3', 'nginx:2')]), before)).toBe(false);
+  });
+
+  it('holds a move pinned in more places than the day keeps, and a lockfile move with no version to move to', () => {
+    const pins = Array.from({ length: MOST_PINS + 5 }, (_, i) => ({ file: `.github/workflows/w${i}.yml`, line: 3 }));
+    const many = dayOf(read(withMove({ pins })), 0, []);
+    expect(PAYLOADS['patching.read'].parse(many).repositories[0]?.moves[0]?.pins).toHaveLength(MOST_PINS);
+    const moves = factoryMoves();
+    const lockfile = moves.moves[1] as ReadMove;
+    const none = {
+      ...moves,
+      moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), to: '' } }],
+    };
+    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(none), 0, [])).success).toBe(true);
+  });
+
+  it('names the Dependabot pull request of the same ecosystem, dependency and directory, with a version', () => {
+    const pull = (change: Partial<DependencyPull>): DependencyPull => ({ ...PULL, ...change });
+    const workflow = withMove({
+      name: 'actions/checkout',
+      pins: [{ file: '.github/workflows/check.yml', line: 20 }],
+    });
+    const of = (moves: Moves, pulls: DependencyPull[]) =>
+      dayOf(read(moves, pulls), 0, []).repositories[0]?.moves[0]?.pullRequest;
+    const actions = pull({
+      number: 81,
+      ecosystem: 'github-actions',
+      directory: '/',
+      dependency: 'actions/checkout',
+      version: '5',
+    });
+    expect(of(workflow, [actions])).toEqual({ number: 81, version: '5' });
+    const image = withMove({ name: 'node', pins: [{ file: 'apps/x/Dockerfile', line: 1 }] });
+    const npmNode = pull({ number: 82, ecosystem: 'npm', directory: '/apps/x', dependency: 'node', version: '24.1.0' });
+    const dockerNode = pull({
+      number: 83,
+      ecosystem: 'docker',
+      directory: '/apps/x',
+      dependency: 'node',
+      version: '24.2.0',
+    });
+    const unversioned = pull({
+      number: 84,
+      ecosystem: 'docker',
+      directory: '/apps/x',
+      dependency: 'node',
+      version: null,
+    });
+    expect(of(image, [npmNode, unversioned, dockerNode])).toEqual({ number: 83, version: '24.2.0' });
+    expect(of(image, [npmNode])).toBeUndefined();
   });
 });

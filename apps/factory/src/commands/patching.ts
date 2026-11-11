@@ -15,6 +15,8 @@
  *     KUBE_API_URL                             on a host, what `kubectl proxy` serves; in the cluster the pod's account
  *     PATCHING_AT                              the day's read, HH:MM in UTC (05:30, once the scan has finished)
  *     PATCHING_REPOSITORIES                    the repositories, comma-separated (both public ones)
+ *     PATCHING_NAMESPACES                      the namespaces it lists pods in, comma-separated; unset, every one,
+ *                                              as `kubectl proxy` on a host may
  */
 import { REPOSITORIES } from '../github/config.ts';
 
@@ -22,15 +24,16 @@ export const USAGE = '  factory patching [--once]';
 
 export async function run(args: string[]): Promise<number> {
   const once = args[0] === '--once';
-  const { GITHUB_URL, PATCHING_AT = '05:30', PATCHING_REPOSITORIES } = process.env;
+  const { GITHUB_URL, PATCHING_AT = '05:30', PATCHING_REPOSITORIES, PATCHING_NAMESPACES } = process.env;
   if (args.length > (once ? 1 : 0) || !GITHUB_URL) {
     console.log(`Usage:\n${USAGE}\n\nSet GITHUB_URL to the GitHub worker's reads door.`);
     return 2;
   }
+  const namespaces = PATCHING_NAMESPACES?.trim() ? PATCHING_NAMESPACES.split(',').map((ns) => ns.trim()) : undefined;
   const repositories = PATCHING_REPOSITORIES?.trim()
     ? PATCHING_REPOSITORIES.split(',').map((repo) => repo.trim())
     : [...REPOSITORIES];
-  const { timeOfDay, everyDay } = await import('../patching/schedule.ts');
+  const { timeOfDay, everyDay, stale } = await import('../patching/schedule.ts');
   const at = timeOfDay(PATCHING_AT);
   const { shutdownTelemetry } = await import('../telemetry.ts');
   const { log } = await import('../log.ts');
@@ -53,7 +56,7 @@ export async function run(args: string[]): Promise<number> {
     senses: {
       moves: (repo) => github.read('moves', repo, {}),
       dependencyPulls: (repo) => github.read('dependencyPulls', repo, {}),
-      running: () => runningContainers(kube),
+      running: () => runningContainers(kube, namespaces),
     },
   });
   const pass = async () => {
@@ -70,7 +73,12 @@ export async function run(args: string[]): Promise<number> {
           result.pass === 'appended' ? 'patching: the day appended' : 'patching: nothing changed, nothing appended',
         );
       } else if (result.pass === 'not-real') log.warn('patching: the store holds samples; nothing appended');
-      return { failed: result.pass === 'failed' };
+      // A day read from yesterday's scan is read again within the hour, as a failure is, until today's has finished.
+      const old =
+        (result.pass === 'appended' || result.pass === 'unchanged') &&
+        result.day.repositories.some((r) => stale(r.run.finished, Date.now()));
+      if (old) log.info('patching: a scan read is older than today’s, so the day is read again within the hour');
+      return { failed: result.pass === 'failed' || old };
     } catch (error) {
       log.error({ err: error }, 'patching: the pass failed, so the day is not appended');
       return { failed: true };

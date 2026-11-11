@@ -89,17 +89,21 @@ export function compare(containers: RunningContainer[], lists: Listed[]): Row[] 
     scanned.map((image) => ({ repository, image, ref: parseReference(image.image) })),
   );
   const ranBy = new Map<(typeof images)[number], RunningContainer[]>();
-  const unmatched: RunningContainer[] = [];
+  const unmatched: { container: RunningContainer; repository: string }[] = [];
   const rows: Row[] = [];
 
   for (const container of containers) {
     const ran = parseReference(container.image);
     const matches = images.filter(({ image, ref }) => runs(container, ran, image, ref));
     if (!matches.length) {
-      unmatched.push(container);
+      unmatched.push({ container, repository: ran.repository });
       continue;
     }
-    for (const match of matches) ranBy.set(match, [...(ranBy.get(match) ?? []), container]);
+    for (const match of matches) {
+      const ran = ranBy.get(match);
+      if (ran) ran.push(container);
+      else ranBy.set(match, [container]);
+    }
     const seen = matches.some(({ image }) => image.digests.includes(container.digest));
     const first = matches[0];
     if (!seen && first)
@@ -119,7 +123,7 @@ export function compare(containers: RunningContainer[], lists: Listed[]): Row[] 
   const explained = new Set<RunningContainer>();
   for (const listed of images) {
     if (!RUN_IN_THE_CLUSTER.has(listed.image.kind) || ranBy.has(listed)) continue;
-    const instead = unmatched.filter((c) => parseReference(c.image).repository === listed.ref.repository);
+    const instead = unmatched.filter((u) => u.repository === listed.ref.repository).map((u) => u.container);
     if (!instead.length) continue;
     for (const c of instead) explained.add(c);
     rows.push({
@@ -131,7 +135,7 @@ export function compare(containers: RunningContainer[], lists: Listed[]): Row[] 
       running: instead.slice(0, 20).map((c) => ({ ...where(c), image: c.image })),
     });
   }
-  for (const container of unmatched) {
+  for (const { container } of unmatched) {
     if (explained.has(container)) continue;
     // An image of a repository the list names at other references only, or of none: the list does not have it.
     rows.push({ row: 'unlisted-image', ...where(container), image: container.image, digest: container.digest });

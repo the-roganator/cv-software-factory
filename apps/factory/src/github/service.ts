@@ -88,8 +88,31 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     recorder,
     log,
   });
-  // Nothing runs before it listens, so a port it cannot have leaves nothing to close.
-  await listenOn(server, config.port, config.host);
+  // The dependency sense's door (`factory patching`), on a port of its own: the scan's moves and Dependabot's pull
+  // requests, read as a live worker reads them, and no action. A NetworkPolicy opens the port to the sense's pod alone,
+  // so the sense reaches the worker's reads and cannot act in GitHub.
+  let patchingDoor: Server | undefined;
+  if (config.patchingPort !== undefined) {
+    patchingDoor = createWorkerServer({
+      actions,
+      reads: liveReads,
+      repositories: config.repositories,
+      health: () => ({ mode, door: 'patching' }),
+      only: PATCHING_READS,
+      log,
+    });
+    // Before the main port and the watches: a port it cannot have leaves nothing running.
+    await listenOn(patchingDoor, config.patchingPort, config.host);
+    log.info({ port: config.patchingPort }, "the dependency sense's door listening");
+  }
+
+  // Nothing runs before it listens, so a port it cannot have leaves nothing to close but the sense's door.
+  try {
+    await listenOn(server, config.port, config.host);
+  } catch (error) {
+    patchingDoor?.close();
+    throw error;
+  }
   poller.start();
   log.info(
     { host: config.host, port: config.port, mode, repositories: config.repositories },
@@ -128,23 +151,6 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         ? 'the worker cannot write'
         : 'the worker is not configured for both public repositories (GITHUB_REPOSITORIES)';
     log.warn(`ATTACK_PORT is set but ${why}: the attack door is not served.`);
-  }
-
-  // The dependency sense's door (`factory patching`), on a port of its own: the scan's moves and Dependabot's pull
-  // requests, read as a live worker reads them, and no action. A NetworkPolicy opens the port to the sense's pod alone,
-  // so the sense reaches the worker's reads and cannot act in GitHub.
-  let patchingDoor: Server | undefined;
-  if (config.patchingPort !== undefined) {
-    patchingDoor = createWorkerServer({
-      actions,
-      reads: liveReads,
-      repositories: config.repositories,
-      health: () => ({ mode, door: 'patching' }),
-      only: PATCHING_READS,
-      log,
-    });
-    await listenOn(patchingDoor, config.patchingPort, config.host);
-    log.info({ port: config.patchingPort }, "the dependency sense's door listening");
   }
 
   const stop = async () => {

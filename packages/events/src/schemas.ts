@@ -425,6 +425,8 @@ const figures = z.strictObject({
 const scanCounts = z.strictObject(
   Object.fromEntries(V.SCAN_SEVERITIES.map((s) => [s, count])) as Record<V.ScanSeverity, typeof count>,
 );
+/** The most pins a move's day holds: one action may be pinned in every workflow, and the sense keeps the first. */
+export const MOST_PINS = 2000;
 /** A pin: the file and line it is written at, in its repository. */
 const filePin = z.strictObject({ file: z.string().min(1).max(300), line: count });
 /** An image as a pod or a pin names it. */
@@ -443,7 +445,7 @@ const runsIn = { namespace: kubeName, pod: kubeName, container: kubeName };
 const patchingMove = z
   .strictObject({
     name: z.string().min(1).max(300),
-    pins: z.array(filePin).max(100),
+    pins: z.array(filePin).max(MOST_PINS),
     from: z.string().max(200),
     /** What fixes it, in the scan's grammar (fixes.ts); empty for a lockfile's, and for a line no longer built. */
     to: z.string().max(400),
@@ -458,8 +460,9 @@ const patchingMove = z
       .strictObject({
         name: z.string().min(1).max(214),
         from: z.string().min(1).max(100),
-        to: z.string().min(1).max(100),
-        pins: z.array(filePin).max(100),
+        /** Empty when no fix its alerts name resolves to a version. */
+        to: z.string().max(100),
+        pins: z.array(filePin).max(MOST_PINS),
       })
       .optional(),
     /** The pull request open at its pin, as Dependabot's branch names it, and the version it moves to. */

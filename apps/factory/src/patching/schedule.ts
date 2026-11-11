@@ -1,11 +1,24 @@
 /**
  * When the dependency sense reads: as it starts, then each day once the scan has had time to finish, and an hour after
- * a pass that failed, until the day's time comes round again. The scan runs at 04:17 UTC
+ * a pass that failed, or that found a repository's last scan older than the day's (GitHub's schedule runs late), until
+ * the day's time comes round again. The scan runs at 04:17 UTC
  * (`.github/workflows/vulnerabilities.yml`) and takes under an hour, so the day's read is at 05:30 UTC by default.
  */
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+
+/** When the scan starts each day (`vulnerabilities.yml`'s schedule), as milliseconds into a UTC day. */
+export const SCAN_AT = (4 * 60 + 17) * 60_000;
+
+/**
+ * Whether a scan that finished at `finished` is older than the day's: once the day's scan time has passed, a run that
+ * finished before it is yesterday's, and the day's may still be queued.
+ */
+export function stale(finished: string, now: number): boolean {
+  const today = Math.floor(now / DAY) * DAY + SCAN_AT;
+  return now >= today && Date.parse(finished) < today;
+}
 
 /** `HH:MM`, UTC, as milliseconds into the day. */
 export function timeOfDay(text: string): number {
@@ -37,15 +50,18 @@ export async function everyDay(
     const { failed } = await pass();
     if (signal.aborted) return;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, waitAfter(now(), at, failed));
-      signal.addEventListener(
-        'abort',
+      const stop = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(
         () => {
-          clearTimeout(timer);
+          signal.removeEventListener('abort', stop);
           resolve();
         },
-        { once: true },
+        waitAfter(now(), at, failed),
       );
+      signal.addEventListener('abort', stop, { once: true });
     });
   }
 }

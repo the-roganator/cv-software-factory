@@ -1,7 +1,8 @@
 /**
- * What the cluster runs, as the dependency sense reads it: every container of every pod in every namespace, by the
- * image its spec names and the digest its runtime resolved. Its ClusterRole lets it list pods and nothing else
- * (deploy/base/factory/patching.yaml), since an image the list lacks may run in any namespace.
+ * What the cluster runs, as the dependency sense reads it: every container of every pod in the namespaces it is given,
+ * or in every namespace when it is given none (on a host, through `kubectl proxy`), by the image its spec names and the
+ * digest its runtime resolved. In the cluster its account may list pods in each namespace but three, and do nothing
+ * else (deploy/base/patching-reads-pods).
  *
  * A pod that has finished (`Succeeded`, `Failed`) runs nothing, and a container not started yet has no digest: neither
  * is read. An init container that ran is read: it ran that image.
@@ -57,14 +58,23 @@ export function digestOf(imageID: string | undefined): string | undefined {
   return imageID ? DIGEST.exec(imageID)?.[0] : undefined;
 }
 
-/** Every container running in the cluster, in order of namespace, pod and container. */
-export async function runningContainers(kube: Kube): Promise<RunningContainer[]> {
+/** Every container running in the namespaces given, or in every one, in order of namespace, pod and container. */
+export async function runningContainers(kube: Kube, namespaces?: readonly string[]): Promise<RunningContainer[]> {
   const found: RunningContainer[] = [];
+  for (const namespace of namespaces ?? [undefined]) await listPods(kube, namespace, found);
+  return found.sort(
+    (a, b) =>
+      a.namespace.localeCompare(b.namespace) || a.pod.localeCompare(b.pod) || a.container.localeCompare(b.container),
+  );
+}
+
+async function listPods(kube: Kube, namespace: string | undefined, found: RunningContainer[]): Promise<void> {
+  const base = namespace ? `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods` : '/api/v1/pods';
   let next: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const query = `limit=${PAGE}${next ? `&continue=${encodeURIComponent(next)}` : ''}`;
-    const list = await kube.get(`/api/v1/pods?${query}`, PODS);
-    if (!list) throw new Error('The Kubernetes API has no pods to list');
+    const list = await kube.get(`${base}?${query}`, PODS);
+    if (!list) throw new Error(`The Kubernetes API has no pods to list${namespace ? ` in ${namespace}` : ''}`);
     for (const pod of list.items) {
       if (pod.status?.phase === 'Succeeded' || pod.status?.phase === 'Failed') continue;
       const specs = [...pod.spec.containers, ...(pod.spec.initContainers ?? [])];
@@ -82,14 +92,7 @@ export async function runningContainers(kube: Kube): Promise<RunningContainer[]>
       }
     }
     next = list.metadata?.continue || undefined;
-    if (!next) {
-      return found.sort(
-        (a, b) =>
-          a.namespace.localeCompare(b.namespace) ||
-          a.pod.localeCompare(b.pod) ||
-          a.container.localeCompare(b.container),
-      );
-    }
+    if (!next) return;
   }
-  throw new Error(`The cluster has more than ${PAGE * MAX_PAGES} pods: the sense reads no more`);
+  throw new Error(`More than ${PAGE * MAX_PAGES} pods${namespace ? ` in ${namespace}` : ''}: the sense reads no more`);
 }

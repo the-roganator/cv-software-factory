@@ -1,0 +1,9 @@
+# The dependency sense's list of pods in each namespace it reads (bindings.yaml). Each RoleBinding names its namespace
+# itself, so this sets none.
+#
+# Not listed in deploy/base/kustomization.yaml: it is the sense's, so a profile brings it in with the sense
+# (deploy/overlays/local/factory-image).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - bindings.yaml

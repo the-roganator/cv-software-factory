@@ -12,10 +12,11 @@
  * own words; the sense reads no log.
  */
 import type { MoveLane, PayloadOf, ScanFailure, ScanSeverity } from '@software-factory/events';
+import { MOST_PINS } from '@software-factory/events/schemas';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves, ReadMove } from '../github/scanning.ts';
 import type { Counts } from '../vulnerabilities/moves.ts';
-import type { Row } from './compare.ts';
+import { parseReference, type Row } from './compare.ts';
 
 export type Day = PayloadOf<'patching.read'>;
 type DayMove = Day['repositories'][number]['moves'][number];
@@ -36,18 +37,39 @@ const counts = (from: Counts): Record<ScanSeverity, number> => ({
   unknown: from.UNKNOWN,
 });
 
-/** A Dependabot branch's dependency as a move names it: an image without its registry's defaults. */
-const bare = (name: string) => name.replace(/^docker\.io\//, '').replace(/^library\//, '');
+/** A name as Docker would read it, so `node` and `docker.io/library/node` are one; a package's is itself. */
+const bare = (name: string) => parseReference(name).repository;
 
 /** A pin's directory as `dependabot.yml` writes one: `/` for the root. */
 const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
 
-/** The open Dependabot pull request that moves a move's pin, if one does. */
+/**
+ * The ecosystem a move's pins belong to, as Dependabot names it, and the directories its pull request may name: a
+ * lockfile's is npm's, a workflow's is GitHub Actions', which `dependabot.yml` reads from `/`, and any other a Dockerfile
+ * or a manifest's image, docker's, in the pin's own directory.
+ */
+function ecosystemOf(move: ReadMove): { ecosystems: string[]; directories: Set<string> } {
+  const pins = move.withheld?.pins ?? move.pins;
+  if (move.lockfile) return { ecosystems: ['npm'], directories: new Set(pins.map((p) => directoryOf(p.file))) };
+  if (pins.every((p) => p.file.startsWith('.github/')))
+    return { ecosystems: ['github-actions'], directories: new Set(['/']) };
+  return { ecosystems: ['docker', 'devcontainers'], directories: new Set(pins.map((p) => directoryOf(p.file))) };
+}
+
+/** The open Dependabot pull request that moves a move's pin, if one does: same ecosystem, dependency and directory. */
 function pullFor(move: ReadMove, pulls: DependencyPull[]): DayMove['pullRequest'] {
-  const name = bare(move.withheld?.package ?? move.name.split(/[:@]/)[0] ?? move.name);
-  const directories = new Set((move.withheld?.pins ?? move.pins).map((pin) => directoryOf(pin.file)));
+  const lockfile = move.withheld?.package;
+  const name = lockfile ?? bare(move.name.split('@')[0] ?? move.name);
+  const { ecosystems, directories } = ecosystemOf(move);
   const pull = pulls.find(
-    (p) => p.dependency !== null && bare(p.dependency) === name && p.directory !== null && directories.has(p.directory),
+    (p) =>
+      p.version !== null &&
+      p.dependency !== null &&
+      p.ecosystem !== null &&
+      ecosystems.includes(p.ecosystem) &&
+      (lockfile ? p.dependency === name : bare(p.dependency) === name) &&
+      p.directory !== null &&
+      directories.has(p.directory),
   );
   return pull?.version ? { number: pull.number, version: pull.version } : undefined;
 }
@@ -56,7 +78,7 @@ function dayMove(move: ReadMove, pulls: DependencyPull[]): DayMove {
   const pullRequest = pullFor(move, pulls);
   return {
     name: move.name,
-    pins: move.pins,
+    pins: move.pins.slice(0, MOST_PINS),
     from: move.from,
     to: move.to,
     major: move.major,
@@ -72,7 +94,7 @@ function dayMove(move: ReadMove, pulls: DependencyPull[]): DayMove {
             name: move.withheld.package,
             from: move.withheld.from,
             to: move.withheld.to,
-            pins: move.withheld.pins,
+            pins: move.withheld.pins.slice(0, MOST_PINS),
           },
         }
       : {}),
@@ -140,11 +162,18 @@ export function dayOf(reads: RepositoryRead[], containers: number, rows: Row[] |
  */
 export function sameDay(a: Day, b: Day | null): boolean {
   if (!b) return false;
+  // Without the pods' names the rows may come in another order, so they are compared as sorted.
   const plain = ({ containers: _, rows, ...day }: Day) => ({
     ...day,
-    rows: rows.map((row) =>
-      row.row === 'not-running' ? { ...row, running: row.running.map(withoutPod) } : withoutPod(row),
-    ),
+    rows: rows
+      .map((row) =>
+        canonical(
+          row.row === 'not-running'
+            ? { ...row, running: row.running.map(withoutPod).map(canonical).sort() }
+            : withoutPod(row),
+        ),
+      )
+      .sort(),
   });
   return canonical(plain(a)) === canonical(plain(b));
 }

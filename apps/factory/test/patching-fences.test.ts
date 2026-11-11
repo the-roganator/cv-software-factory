@@ -37,9 +37,17 @@ type Rbac = Manifest & {
   rules?: unknown[];
   subjects?: { kind: string; name: string; namespace?: string }[];
   roleRef?: { kind: string; name: string };
+  spec?: unknown;
 };
 
 const all = rendered() as { manifest: Rbac }[];
+
+/** The namespaces the sense lists no pod in, each with why (deploy/base/patching-reads-pods, PATCHING.md). */
+const LEFT_OUT: Record<string, string> = {
+  runners: 'its Jobs carry a step’s job token in their spec, as a value',
+  'red-team': 'only the harness’s two attack pods run there, held to two images by an admission rule',
+  scoreboard: 'the answer key’s namespace, where no role of ours but the line’s list of Events is bound',
+};
 const one = <M extends Manifest>(kind: string, name: string): M => {
   const found = all.find((m) => m.manifest.kind === kind && m.manifest.metadata?.name === name)?.manifest;
   if (!found) throw new Error(`no ${kind} named ${name} is rendered`);
@@ -58,18 +66,49 @@ describe('the dependency sense’s Deployment', () => {
     expect(deployment.spec.template.metadata.labels['app.kubernetes.io/component']).toBe('patching');
   });
 
-  it('lists pods in every namespace with an account that may do nothing else', () => {
+  it('lists pods with an account that may do nothing else, and nowhere cluster-wide', () => {
     expect(pod.serviceAccountName).toBe('patching');
     expect(pod.automountServiceAccountToken).toBe(true);
     const bindings = all.filter(({ manifest }) =>
       (manifest.subjects ?? []).some((s) => s.kind === 'ServiceAccount' && s.name === 'patching'),
     );
     expect(
-      bindings.map(({ manifest }) => `${manifest.kind} ${manifest.roleRef?.kind} ${manifest.roleRef?.name}`),
-    ).toEqual(['ClusterRoleBinding ClusterRole patching-lists-pods']);
+      new Set(bindings.map(({ manifest }) => `${manifest.kind} ${manifest.roleRef?.kind} ${manifest.roleRef?.name}`)),
+    ).toEqual(new Set(['RoleBinding ClusterRole patching-lists-pods']));
     expect(one<Rbac>('ClusterRole', 'patching-lists-pods').rules).toEqual([
       { apiGroups: [''], resources: ['pods'], verbs: ['list'] },
     ]);
+  });
+
+  it('lists pods in exactly the namespaces it is bound in, and every namespace is bound or left out by name', () => {
+    const bound = new Set(
+      all
+        .filter(
+          ({ manifest }) =>
+            manifest.kind === 'RoleBinding' &&
+            manifest.roleRef?.name === 'patching-lists-pods' &&
+            (manifest.subjects ?? []).some((s) => s.name === 'patching' && s.namespace === 'factory'),
+        )
+        .map(({ manifest }) => manifest.metadata?.namespace),
+    );
+    const listed = String(env.PATCHING_NAMESPACES).split(',');
+    expect(new Set(listed)).toEqual(bound);
+    // Every namespace the overlay makes or deploys a chart into, and the cluster's own (Traefik's is kube-system).
+    const made = all.flatMap(({ manifest }) => {
+      const spec = manifest.spec as { destination?: { namespace?: string } } | undefined;
+      return [
+        ...(manifest.kind === 'Namespace' ? [manifest.metadata?.name] : []),
+        ...(manifest.kind === 'Application' ? [spec?.destination?.namespace] : []),
+        ...(manifest.metadata?.namespace ? [manifest.metadata.namespace] : []),
+      ];
+    });
+    const CLUSTER_OWN = ['default', 'kube-system', 'kube-public', 'kube-node-lease', 'argocd', 'kyverno'];
+    for (const ns of new Set([...made, ...CLUSTER_OWN].filter((n): n is string => !!n))) {
+      expect(bound.has(ns) || Object.hasOwn(LEFT_OUT, ns), `${ns} is neither read nor left out`).toBe(true);
+    }
+    for (const ns of Object.keys(LEFT_OUT)) expect(bound.has(ns), ns).toBe(false);
+    // The owed try starts its pod in default.
+    expect(bound.has('default')).toBe(true);
   });
 });
 

@@ -1,0 +1,173 @@
+# The dependency sense's list of pods (apps/factory/src/patching/running.ts): in each namespace here, its account may
+# list pods, by the one ClusterRole `patching-lists-pods` (deploy/base/factory/patching.yaml), and nothing else. A
+# RoleBinding in each rather than one ClusterRoleBinding, so it reads no pod in `runners`, whose Jobs carry a step's
+# job token in their spec, nor in `red-team` or `scoreboard`: each of the three admits only images `build.yml` signed or
+# admission names (ADR 0010), so no image the list lacks can run there. A namespace made later is read once it is added
+# here and to the sense's PATCHING_NAMESPACES (patching.yaml); a test holds the two together.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: argo-rollouts
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: flagd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: kyverno
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: pod-logs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: telemetry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: website
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: kube-node-lease
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patching-lists-pods
+  namespace: kube-public
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory

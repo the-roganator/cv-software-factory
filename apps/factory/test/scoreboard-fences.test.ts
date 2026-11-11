@@ -50,10 +50,9 @@ describe('the scoreboard’s Secrets', () => {
     expect(namespace?.manifest.metadata?.labels).toEqual({ 'pod-security.kubernetes.io/enforce': 'restricted' });
   });
 
-  it('can be read by no role deploy/ makes: none names Secrets, and the one cluster-wide lists pods alone', async () => {
+  it('can be read by no role deploy/ makes: none names Secrets, and the one ClusterRole lists pods alone', async () => {
     const roles = (await manifests()).filter(({ manifest }) => ['Role', 'ClusterRole'].includes(manifest.kind ?? ''));
-    // The dependency sense's, which lists the pods of every namespace, since an image the scan's list lacks may run in
-    // any: a pod names the answer key's Secret only by reference, and listing it gives nothing of the key.
+    // The dependency sense's, which lists pods, bound only in the namespaces it reads, never this one (below).
     expect(
       roles
         .filter(({ manifest }) => manifest.kind === 'ClusterRole')
@@ -71,12 +70,7 @@ describe('the scoreboard’s Secrets', () => {
 
   it('are bound to no one: no role is granted in the scoreboard’s namespace but the line’s list of its Events', async () => {
     const bindings = (await manifests()).filter(({ manifest }) => manifest.kind?.endsWith('RoleBinding'));
-    // The dependency sense's list of pods, to its own account alone (above).
-    expect(
-      bindings
-        .filter(({ manifest }) => manifest.kind === 'ClusterRoleBinding')
-        .map(({ manifest }) => [manifest.roleRef?.name, manifest.subjects]),
-    ).toEqual([['patching-lists-pods', [{ kind: 'ServiceAccount', name: 'patching', namespace: 'factory' }]]]);
+    expect(bindings.filter(({ manifest }) => manifest.kind === 'ClusterRoleBinding')).toEqual([]);
     // The line lists the namespace's Events, for admission's denials (refusal-fences.test.ts): nothing else here.
     expect(
       bindings.filter(({ namespace }) => namespace === 'scoreboard').map(({ manifest }) => manifest.metadata?.name),

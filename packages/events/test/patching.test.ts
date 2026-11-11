@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { publicView } from '../src/public.ts';
 import { PAYLOADS } from '../src/schemas.ts';
 import { LINE_TYPES, PATCHING_ONLY_TYPES, VERSIONS } from '../src/versions.ts';
+import { RUNNING_ROWS } from '../src/vocabulary.ts';
 
 const DAY = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'patching-day.json'), 'utf8'));
 const schema = PAYLOADS['patching.read'];
@@ -19,6 +20,13 @@ describe("the day's moves", () => {
     expect(VERSIONS['patching.read']).toBe(1);
     expect(LINE_TYPES).toContain('patching.read');
     expect(PATCHING_ONLY_TYPES).toEqual(['patching.read']);
+  });
+
+  it('has a row of each kind the vocabulary names, and no other', () => {
+    const rows = schema.parse(DAY).rows.map((r) => r.row);
+    expect(rows).toEqual([...RUNNING_ROWS]);
+    const other = { ...DAY, rows: [{ ...DAY.rows[1], row: 'something-else' }] };
+    expect(schema.safeParse(other).success).toBe(false);
   });
 
   it('reads the sample day, with a row of each kind', () => {

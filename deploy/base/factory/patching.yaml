@@ -5,9 +5,10 @@
 # of the workers' role: its NetworkPolicy gives it the store, the collector, the API server and the GitHub worker's
 # door for its two reads, and nothing else (network-policies.yaml).
 #
-# An image the list lacks may run in any namespace, so its account may list pods in every one, and nothing else: not
-# get or watch them, nor read their logs, nor anything but pods. A pod's spec names Secrets only by reference here, so
-# listing it gives no Secret's value.
+# An image the list lacks may run in any namespace, so its account may list pods, and nothing else: not get or watch
+# them, nor read their logs, nor anything but pods. It may in every namespace but `runners`, whose Jobs carry a step's
+# job token in their spec, and `red-team` and `scoreboard`, each bound by a RoleBinding of its own
+# (../patching-reads-pods): those three admit only signed images, so no image the list lacks runs there.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -25,21 +26,6 @@ rules:
   - apiGroups: ['']
     resources: [pods]
     verbs: [list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: patching-lists-pods
-  annotations:
-    argocd.argoproj.io/sync-wave: "2"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: patching-lists-pods
-subjects:
-  - kind: ServiceAccount
-    name: patching
-    namespace: factory
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -105,6 +91,9 @@ spec:
             # The GitHub worker's door for the sense's two reads, on its own port: never its main port, which acts.
             - name: GITHUB_URL
               value: http://github:8083
+            # The namespaces it lists pods in: those ../patching-reads-pods binds it in, which a test holds to this.
+            - name: PATCHING_NAMESPACES
+              value: "argo-rollouts,argocd,default,factory,flagd,kube-node-lease,kube-public,kube-system,kyverno,pod-logs,telemetry,website"
             # The day's read, once the scan (04:17 UTC) has finished.
             - name: PATCHING_AT
               value: "05:30"

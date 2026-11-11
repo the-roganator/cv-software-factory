@@ -1,5 +1,6 @@
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
+import { MOVED_UNCHANGED } from '../../src/line/agents/coder.ts';
 import { CODED, database, event, events, handback, line, PATCH, payloads, SPEC, withLineStore } from './harness.ts';
 
 withLineStore();
@@ -96,5 +97,32 @@ describe('a dependency’s move on the line', () => {
     await pass();
     await pass();
     expect(steps.requests.some((r) => 'move' in r)).toBe(false);
+  });
+
+  it('pushes the pins alone when the coder needs to change nothing more, and sends back an unchanged one', async () => {
+    await moveTicket();
+    const { pass, github } = line({
+      planner,
+      coder: () => ({ kind: 'handed-back', handback: handback(CODED), pins: PINS }),
+    });
+    await pass();
+    await pass();
+    expect(github.acts.find((a) => a.action === 'applyPatch')?.args).toMatchObject({ patch: '', pins: PINS });
+
+    const workItem = await moveTicket();
+    const { pass: again } = line({
+      planner,
+      coder: () => ({
+        kind: 'handed-back',
+        handback: handback({ unchanged: 'The move needs nothing more.' }),
+        pins: PINS,
+      }),
+    });
+    const { failures, justOne } = await import('./harness.ts');
+    // This one alone, past the others' work in hand.
+    await justOne(workItem);
+    await again();
+    await again();
+    expect((await failures(workItem))?.failure).toBe(MOVED_UNCHANGED);
   });
 });

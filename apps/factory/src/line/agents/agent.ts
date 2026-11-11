@@ -101,7 +101,7 @@ export interface EffectsContext extends StepContext {
    * What the pin step wrote around the agent's patch, for the GitHub worker to apply with it: the move's pins before,
    * the lockfile after. Nothing when it wrote neither.
    */
-  pinned: { pins?: string; lockfile?: string };
+  pinned?: { pins?: string; lockfile?: string } | undefined;
   /** The line's log, for what a result does that its events do not say in full. */
   log: Pick<Logger, 'warn'>;
 }

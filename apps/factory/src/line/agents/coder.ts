@@ -558,8 +558,12 @@ function firstImprovement(input: CoderInput): string[] {
  * The coder has no registry, and never writes a lockfile: the pin step does, after its step, from the manifests it
  * changed (`apps/runner/src/pins.ts`), and the fence refuses a patch that changes one.
  */
+/** Why a coder that found nothing to change on a dependency's move is sent back: the move is the change. */
+export const MOVED_UNCHANGED =
+  'The coder said it changed nothing, but the line moved a dependency before its step: hand back a title and a note for the move, with no change of its own';
+
 const LOCKFILE =
-  'Never change a lockfile (pnpm-lock.yaml) or pnpm’s settings (.npmrc, pnpm-workspace.yaml), and do not run pnpm install or pnpm update: there is no registry in reach. If the criteria need a dependency added or moved, change its range in package.json alone, to a version from the npm registry; after your step the line writes the lockfile for it. The line refuses a patch that changes a lockfile, whole. A commit before yours that moves a dependency is the line’s: build on it.';
+  'Never change a lockfile (pnpm-lock.yaml) or pnpm’s settings (.npmrc, pnpm-workspace.yaml), and do not run pnpm install or pnpm update: there is no registry in reach. If the criteria need a dependency added or moved, change its range in package.json alone, to a version from the npm registry; after your step the line writes the lockfile for it. The line refuses a patch that changes a lockfile, whole. A commit before yours that moves a dependency is the line’s: build on it, and if the criteria need nothing more, hand back a title and a note for it with no change of your own, never that nothing needs changing.';
 
 /** A later step: why it came back, from review or the gates, from the fence, or both. */
 function again(input: CoderInput): string[] {
@@ -708,6 +712,8 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     }
     if ('unchanged' in result) {
       if (patch) throw new StepFailed('The coder said it changed nothing, but handed back a change');
+      // The pin step's move is a change, which needs its commit's title and note: the next attempt is told so.
+      if (context.pinned?.pins) throw new StepFailed(MOVED_UNCHANGED);
       // Its next round, after Martin's answer, resumes the session that found nothing to change.
       await context.keepSession(handback.session);
       const hold = holdDraft('coder', unchangedHold(state, result.unchanged));
@@ -731,7 +737,8 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       return [answeredDraft(pullRequest, suggestions, declined)];
     }
     const { title, note, declined = [] } = result;
-    if (!patch) {
+    // A move the pin step wrote is the change when the criteria need nothing more of the coder's.
+    if (!patch && !context.pinned?.pins) {
       // A narrowed round's change that changes nothing is refused as its result would be, so the next attempt is told why.
       if (pressed(input)) throw new StepFailed(`The coder handed back no change, but ${NARROWED_REFUSAL}`);
       throw new StepFailed('The coder handed back no change, and did not say why');
@@ -771,7 +778,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       // the patch is never applied on top of itself.
       if (!state.pullRequest || again) await context.act('setBranch', { branch, sha: commit, force: true });
       // The pin step's patches go on either side of the coder's: the move's pins under it, the lockfile over it.
-      const { pins, lockfile } = context.pinned;
+      const { pins, lockfile } = context.pinned ?? {};
       const pinned = { ...(pins ? { pins } : {}), ...(lockfile ? { lockfile } : {}) };
       return context
         .act('applyPatch', { branch, expectedHead: commit, patch, ...pinned, message })

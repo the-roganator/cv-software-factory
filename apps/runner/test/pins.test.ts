@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   admits,
   changesManifest,
+  compareVersions,
   digestOf,
   type Get,
   lockedVersions,
@@ -16,6 +17,7 @@ import {
   PinsRefused,
   type Pnpm,
   parentsAt,
+  registryOf,
   registryOnly,
   registryRange,
   releaseAge,
@@ -382,6 +384,9 @@ describe('the lockfile after a coder’s step', () => {
     const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
     const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.0', '4.2.1')));
     expect(changesManifest(change('^5.0.5', '^5.1.0'))).toBe(true);
+    // As the prepare step leaves a checkout: every file given the seed's time, which the index has not seen.
+    const at = new Date('2026-01-01T00:00:00Z');
+    for (const file of ['package.json', 'pnpm-lock.yaml']) utimesSync(join(dir, file), at, at);
     await writeLockfile(dir, change('^5.0.5', '^5.1.0'), tools(pnpm));
     expect(runs).toEqual([['install']]);
     expect(read(dir, 'pnpm-lock.yaml')).toBe(LOCK('5.1.0', '4.2.1'));
@@ -425,5 +430,98 @@ describe('the lockfile after a coder’s step', () => {
     await expect(writeLockfile(dir, change('^5.0.5', '^5.1.0'), tools(pnpm))).rejects.toThrow(
       /resolves something not from the registry/,
     );
+  });
+});
+
+describe('what the review sent back', () => {
+  const tools = (pnpm: Pnpm, get: Get = noRegistry) => ({ pnpm, get, aside: mkdtempSync(join(tmpdir(), 'aside-')) });
+
+  it('orders pre-releases as semver does, identifier by identifier', () => {
+    expect(compareVersions('1.0.0-beta.2', '1.0.0-beta.10')).toBeLessThan(0);
+    expect(compareVersions('1.0.0-rc-1', '1.0.0-rc-2')).toBeLessThan(0);
+    expect(compareVersions('1.0.0-alpha', '1.0.0-alpha.1')).toBeLessThan(0);
+    expect(compareVersions('1.0.0-1', '1.0.0-alpha')).toBeLessThan(0);
+    expect(compareVersions('1.0.0-rc.1', '1.0.0')).toBeLessThan(0);
+  });
+
+  it('leaves a peer’s range alone, whatever shape it has: it pins nothing', async () => {
+    const manifest = `${JSON.stringify({ devDependencies: { vitest: '^5.0.5' }, peerDependencies: { vitest: '>=4 || ^5' } }, null, 2)}\n`;
+    const dir = checkout({ 'package.json': manifest, 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const { pnpm } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.0', '4.2.1')));
+    await writePins(dir, { ecosystem: 'npm', name: 'vitest', from: '5.0.5', to: '5.1.0' }, tools(pnpm));
+    expect(read(dir, 'package.json')).toBe(manifest);
+  });
+
+  it('updates every project of a workspace', async () => {
+    const dir = checkout({
+      'package.json': MANIFEST('^5.0.5'),
+      'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1'),
+      'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+    });
+    const { pnpm, runs } = fakePnpm((d) => writeFileSync(join(d, 'pnpm-lock.yaml'), LOCK('5.1.0', '4.2.1')));
+    await writePins(dir, { ecosystem: 'npm', name: 'vitest', from: '5.0.5', to: '5.1.0' }, tools(pnpm));
+    expect(runs).toEqual([['update', '--recursive', 'vitest', '--depth', 'Infinity']]);
+  });
+
+  it('refuses a manifest the coder’s change adds that names a tarball, before pnpm runs', async () => {
+    const dir = checkout({ 'package.json': MANIFEST('^5.0.5'), 'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1') });
+    const added = `diff --git a/apps/x/package.json b/apps/x/package.json\nnew file mode 100644\n--- /dev/null\n+++ b/apps/x/package.json\n@@ -0,0 +1 @@\n+{"dependencies":{"evil":"https://example.com/evil.tgz"}}\n`;
+    const { pnpm, runs } = fakePnpm(() => {});
+    await expect(writeLockfile(dir, added, tools(pnpm))).rejects.toThrow(/apps\/x\/package\.json: evil/);
+    expect(runs).toEqual([]);
+  });
+
+  it('asks Docker Hub’s API for an image named by docker.io', () => {
+    expect(registryOf('docker.io/library/node')).toEqual({ host: 'registry-1.docker.io', repository: 'library/node' });
+    expect(registryOf('docker.io/node')).toEqual({ host: 'registry-1.docker.io', repository: 'library/node' });
+    expect(registryOf('index.docker.io/bitnami/redis')).toEqual({
+      host: 'registry-1.docker.io',
+      repository: 'bitnami/redis',
+    });
+    expect(registryOf('node')).toEqual({ host: 'registry-1.docker.io', repository: 'library/node' });
+    expect(registryOf('gcr.io/distroless/static')).toEqual({ host: 'gcr.io', repository: 'distroless/static' });
+  });
+
+  it('pins a base image to the digest it checked, asking its registry once for every line', async () => {
+    const OLD = `sha256:${'1'.repeat(64)}`;
+    const NEW = `sha256:${'2'.repeat(64)}`;
+    const dir = checkout({
+      Dockerfile: `FROM gcr.io/distroless/static:nonroot@${OLD}\nFROM gcr.io/distroless/static:nonroot@${OLD} AS two\n`,
+    });
+    let asked = 0;
+    // A tag that moves on after the first answer.
+    const get: Get = async () => {
+      asked++;
+      return new Response(null, {
+        headers: { 'docker-content-digest': asked === 1 ? NEW : `sha256:${'9'.repeat(64)}` },
+      });
+    };
+    const move = {
+      ecosystem: 'docker' as const,
+      name: 'gcr.io/distroless/static',
+      from: `nonroot@${OLD}`,
+      to: `nonroot@${NEW}`,
+    };
+    await writePins(dir, move, tools(fakePnpm(() => {}).pnpm, get));
+    expect(asked).toBe(1);
+    expect(read(dir, 'Dockerfile')).toBe(
+      `FROM gcr.io/distroless/static:nonroot@${NEW}\nFROM gcr.io/distroless/static:nonroot@${NEW} AS two\n`,
+    );
+  });
+
+  it('refuses a change to pnpm’s settings that git applies under a header the paths are not read from', async () => {
+    const dir = checkout({
+      'package.json': MANIFEST('^5.0.5'),
+      'pnpm-lock.yaml': LOCK('5.0.5', '4.2.1'),
+      'pnpm-workspace.yaml': 'trustPolicy: no-downgrade\n',
+    });
+    const range = checkout({ 'package.json': MANIFEST('^5.0.5') });
+    writeFileSync(join(range, 'package.json'), MANIFEST('^5.1.0'));
+    const moved = execFileSync('git', ['diff'], { cwd: range, encoding: 'utf8' });
+    // A plain block, with no `diff --git` header to name its file.
+    const hidden = `${moved}--- a/pnpm-workspace.yaml\n+++ b/pnpm-workspace.yaml\n@@ -1 +1,2 @@\n trustPolicy: no-downgrade\n+overrides: { vitest: 'https://example.com/v.tgz' }\n`;
+    const { pnpm, runs } = fakePnpm(() => {});
+    await expect(writeLockfile(dir, hidden, tools(pnpm))).rejects.toThrow(/pnpm-workspace\.yaml, which only/);
+    expect(runs).toEqual([]);
   });
 });

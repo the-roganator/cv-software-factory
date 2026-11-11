@@ -8,7 +8,7 @@ import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { RED_TEAM_LABEL } from '../../../policy/attacks.ts';
 import { RESULT_BYTES as RUNNER_RESULT_BYTES } from '../../runner/src/step.ts';
-import { agentJob, prepareJob } from '../src/runners/jobs.ts';
+import { agentJob, lockfileJob, prepareJob } from '../src/runners/jobs.ts';
 import { StepLogs } from '../src/runners/logs.ts';
 import { lineServers } from '../src/runners/serve.ts';
 import { RESULT_BYTES, type Runners } from '../src/runners/steps.ts';
@@ -37,6 +37,16 @@ describe('a runner’s jobs', () => {
     });
     expect(pod.volumes[0]).toEqual({ name: 'work', persistentVolumeClaim: { claimName: 'work-1001' } });
     expect(job.metadata.labels['factory.mrogan.dev/runner']).toBe('prepare');
+  });
+
+  it('give the lockfile pod a checkout of its own, and no part of the volume the agent may still write to', () => {
+    const job = lockfileJob(names, STEP, { image: 'runner', deadlineSeconds: 600 });
+    const pod = job.spec.template.spec;
+    expect(job.metadata.name).toBe('coder-1001-1-1-lockfile');
+    expect(job.metadata.labels['factory.mrogan.dev/runner']).toBe('prepare');
+    expect(pod.containers[0]?.args).toEqual(['lockfile']);
+    expect(pod.volumes.map((v) => v.name)).toEqual(['tmp', 'prepare']);
+    expect(pod.containers[0]?.env).toContainEqual({ name: 'WORK', value: '/prepare/work' });
   });
 
   it('give the agent pod the addresses it needs and no DNS, which would be a way out', () => {

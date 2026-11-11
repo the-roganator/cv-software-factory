@@ -79,12 +79,27 @@ export const PNPM_SETTINGS = ['.npmrc', 'pnpm-workspace.yaml', '.pnpmfile.cjs', 
   (entry) => [entry, `**/${entry}`],
 );
 
+/**
+ * Whether a pnpm lockfile's line resolves something other than a registry package: a tarball, a git source, a
+ * folder, or an importer's `link:` or `file:`. pnpm writes a registry package's resolution as its integrity alone. The
+ * runner's pin step refuses the same before it prints a lockfile (`registryOnly`); the worker asks again.
+ */
+const notFromRegistry = (line: string): boolean =>
+  (/\bresolution: \{/.test(line) && (!/\bintegrity: /.test(line) || /\b(tarball|type|repo|directory):/.test(line))) ||
+  /^\s+(version|specifier): ['"]?(link|file|git|git\+[a-z]+|https?|npm|github|workspace):/.test(line);
+
 /** Whether a path is a manifest, whose dependencies' ranges the pin step moves. */
 const isManifest = (path: string) => path === 'package.json' || path.endsWith('/package.json');
 
+/** Whether a path is a Dockerfile, whose `FROM`s the pin step moves, owned by a person or not. */
+const isDockerfile = (path: string) => /(^|\/)(Dockerfile|[^/]+\.Dockerfile)$/.test(path);
+
+/** The paths a unified diff's `diff --git` headers name, before and after. */
+export const pathsIn = (patch: string): string[] =>
+  [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].flatMap(([, a = '', b = '']) => (a === b ? [a] : [a, b]));
+
 /** Whether a unified diff changes a manifest, so the pin step writes the lockfile after it. */
-export const changesManifest = (patch: string): boolean =>
-  [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].some(([, a = '', b = '']) => isManifest(a) || isManifest(b));
+export const changesManifest = (patch: string): boolean => pathsIn(patch).some(isManifest);
 
 /** A version (`24.22.2`, `5.1.0`, a tag's `3.24`) or a SHA-256 digest, as a pin's line names them. */
 const PIN_VALUE = /sha256:[0-9a-f]{64}|\d+(?:\.\d+){1,3}/g;
@@ -139,8 +154,13 @@ export function pinStepRefusals(
     if (lockfileOnly && !inScope(path, pnpmLock)) return [`${path}: the lockfile step writes pnpm's lockfile alone`];
     if (inScope(path, [...NEVER, ...PNPM_SETTINGS])) return [`${path}: the pin step never writes it`];
     if (change !== 'modify') return [`${path}: the pin step adds or deletes no file`];
-    if (inScope(path, pnpmLock) && !inScope(path, owned)) return [];
-    if (!inScope(path, owned) && !isManifest(path))
+    if (inScope(path, pnpmLock) && !inScope(path, owned)) {
+      const resolved = lines.flat().filter((line) => line.startsWith('+') && notFromRegistry(line.slice(1)));
+      return resolved.length
+        ? [`${path}: the lockfile resolves ${resolved[0]?.slice(1).trim()}, not a registry package`]
+        : [];
+    }
+    if (!inScope(path, owned) && !isManifest(path) && !isDockerfile(path))
       return [`${path}: the pin step writes pins, ranges and lockfiles alone`];
     const why = lines.map(notPinLines).find(Boolean);
     return why ? [`${path}: the pin step ${why}`] : [];

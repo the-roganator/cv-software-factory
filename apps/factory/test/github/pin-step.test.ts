@@ -21,6 +21,7 @@ const FILES: Record<string, string> = {
   'pnpm-lock.yaml': "lockfileVersion: '9.0'\n\n  vitest@5.0.5:\n    resolution: {integrity: sha512-old}\n",
   'pnpm-workspace.yaml': 'trustPolicy: no-downgrade\n',
   'src/money.ts': 'export const pence = 1;\n',
+  'tools/seed.Dockerfile': `FROM node:24.22.1-alpine3.24@sha256:${'b'.repeat(64)}\n`,
 };
 
 /** A unified diff of one line of a file, as `git diff` writes one. */
@@ -164,5 +165,36 @@ describe('the pin step’s patches, as the GitHub worker guards them', () => {
   it('names the lockfiles and pnpm’s settings the runner’s pin step names', () => {
     expect(LOCKFILE_NAMES).toEqual(RUNNER_LOCKFILES);
     expect(PNPM_SETTINGS).toEqual(RUNNER_SETTINGS.flatMap((entry) => [entry, `**/${entry}`]));
+  });
+
+  it('may move a FROM in a Dockerfile nobody owns, under the same rule', async () => {
+    const pins = lineChange(
+      'tools/seed.Dockerfile',
+      `FROM node:24.22.1-alpine3.24@sha256:${'b'.repeat(64)}`,
+      `FROM node:24.22.2-alpine3.24@sha256:${'c'.repeat(64)}`,
+    );
+    await worker().apply({ patch: FIX, pins });
+    const other = lineChange(
+      'tools/seed.Dockerfile',
+      `FROM node:24.22.1-alpine3.24@sha256:${'b'.repeat(64)}`,
+      'FROM evil',
+    );
+    await expect(worker().apply({ patch: FIX, pins: other })).rejects.toThrow(/not only its version or digest/);
+  });
+
+  it('commits the pins alone when the move is the whole change', async () => {
+    const { apply, records } = worker();
+    await apply({ patch: '', pins: NODE_PIN });
+    expect(records.at(-1)?.args.changes.additions.map((a) => a.path)).toEqual(['mise.toml']);
+  });
+
+  it('refuses a lockfile that resolves anything but a registry package, whoever wrote it', async () => {
+    const tarball = lineChange(
+      'pnpm-lock.yaml',
+      '    resolution: {integrity: sha512-old}',
+      '    resolution: {tarball: https://example.com/vitest.tgz}',
+    );
+    await expect(worker().apply({ patch: FIX, lockfile: tarball })).rejects.toThrow(/not a registry package/);
+    await expect(worker().apply({ patch: FIX, pins: tarball })).rejects.toThrow(/not a registry package/);
   });
 });

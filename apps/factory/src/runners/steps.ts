@@ -39,7 +39,7 @@ import type { Handback, Step } from '../../../runner/src/step.ts';
 
 export type { Handback, Step };
 
-import { changesManifest, LOCKFILES, PNPM_SETTINGS } from '../github/paths.ts';
+import { changesManifest, LOCKFILES, PNPM_SETTINGS, pathsIn } from '../github/paths.ts';
 import {
   agentJob,
   isRedTeam,
@@ -321,6 +321,10 @@ export class Runners {
     // The checkout the agent started from, less the move, which the pins already are, and with the patch.
     const { move: _move, base: _base, resume: _resume, ...rest } = step;
     const lockfileStep: Step = { ...rest, ...(pins ? { pins } : {}), change: patch };
+    if (Buffer.byteLength(JSON.stringify(lockfileStep)) > LOCKFILE_STEP_BYTES) {
+      const reason = `The pins and the patch are over ${LOCKFILE_STEP_BYTES} bytes, more than a lockfile Job can be told.`;
+      return { kind: 'failed', job, reason };
+    }
     await this.#o.kube.create(
       jobs,
       lockfileJob(names, lockfileStep, { image: this.#o.image, deadlineSeconds: PREPARE_SECONDS }),
@@ -556,9 +560,13 @@ const HELD = z.strictObject({ path: z.string().min(1).max(200), reason: z.string
 
 /** Whether a patch changes a lockfile or pnpm's settings, which the pin step does not resolve a manifest with. */
 const touchesSettings = (patch: string): boolean =>
-  [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)]
-    .flatMap(([, a = '', b = '']) => [a, b])
-    .some((path) => inScope(path, [...LOCKFILES, ...PNPM_SETTINGS]));
+  pathsIn(patch).some((path) => inScope(path, [...LOCKFILES, ...PNPM_SETTINGS]));
+
+/**
+ * The most a lockfile Job's step may be, as JSON: the pins and the patch ride in its environment, in the Job's spec,
+ * which the API server keeps under its object limit of about 1.5 MB.
+ */
+const LOCKFILE_STEP_BYTES = 1024 * 1024;
 
 /** How a step ended, as its logs are kept with it, and why when it failed. */
 function endingOf(outcome: StepOutcome): [StepEnding, string | null] {

@@ -89,6 +89,8 @@ export const LOCKFILES = ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap
 
 /** A manifest's fields that name dependencies, by a range of the registry's. */
 const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
+/** Those whose ranges pin what is installed, which a move moves. */
+const PINNED_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
 /** A manifest's fields that change how anything resolves: the coder may not change them. */
 const RESOLUTION_FIELDS = [
   'pnpm',
@@ -204,10 +206,19 @@ export function parentsAt(lock: string, name: string, version: string): string[]
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Orders two versions as semver does, a pre-release before its release. */
+/** A version's release and its pre-release, split at its first hyphen, as semver reads it. */
+const parts = (version: string): [string, string | undefined] => {
+  const at = version.indexOf('-');
+  return at < 0 ? [version, undefined] : [version.slice(0, at), version.slice(at + 1)];
+};
+
+/**
+ * Orders two versions as semver does: by release, then a pre-release before its release, its identifiers compared
+ * one by one, a number's as a number and before any word.
+ */
 export function compareVersions(a: string, b: string): number {
-  const [mainA = '', preA] = a.split('-', 2);
-  const [mainB = '', preB] = b.split('-', 2);
+  const [mainA, preA] = parts(a);
+  const [mainB, preB] = parts(b);
   const partsA = mainA.split('.').map(Number);
   const partsB = mainB.split('.').map(Number);
   for (let i = 0; i < 3; i++) {
@@ -217,7 +228,21 @@ export function compareVersions(a: string, b: string): number {
   if (preA === preB) return 0;
   if (preA === undefined) return 1;
   if (preB === undefined) return -1;
-  return preA < preB ? -1 : 1;
+  const idsA = preA.split('.');
+  const idsB = preB.split('.');
+  for (let i = 0; i < Math.max(idsA.length, idsB.length); i++) {
+    const x = idsA[i];
+    const y = idsB[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (x === y) continue;
+    const numeric = /^\d+$/;
+    if (numeric.test(x) && numeric.test(y)) return Number(x) - Number(y);
+    if (numeric.test(x)) return -1;
+    if (numeric.test(y)) return 1;
+    return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 /**
@@ -259,7 +284,8 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
   const manifests = await manifestsOf(dir);
   for (const { path, json } of manifests) {
     let moved = false;
-    for (const field of DEPENDENCY_FIELDS) {
+    // A peer's range says what the package works with, and pins nothing: it is never moved.
+    for (const field of PINNED_FIELDS) {
       const spec = json[field]?.[move.name];
       if (typeof spec !== 'string' || admits(spec, move.to)) continue;
       (json[field] as Record<string, string>)[move.name] = movedRange(spec, move.to);
@@ -267,7 +293,9 @@ export async function movePackage(dir: string, move: Move, pnpm: Pnpm): Promise<
     }
     if (moved) await writeJson(join(dir, path), json);
   }
-  await pnpm(dir, ['update', move.name, '--depth', 'Infinity']);
+  // Every project of a workspace, when the checkout is one, so a nested project's copy moves too.
+  const workspace = /^packages:/m.test(await readFile(join(dir, 'pnpm-workspace.yaml'), 'utf8').catch(() => ''));
+  await pnpm(dir, ['update', ...(workspace ? ['--recursive'] : []), move.name, '--depth', 'Infinity']);
   const after = await readFile(lockPath, 'utf8');
   const below = lockedVersions(after, move.name).filter((v) => compareVersions(v, move.to) < 0);
   if (below.length) {
@@ -352,10 +380,12 @@ async function dockerfilesOf(dir: string): Promise<string[]> {
  */
 async function moveFroms(
   dir: string,
-  change: (image: string, tag: string, digest: string) => string | undefined,
+  change: (image: string, tag: string, digest: string) => { tag: string; digest?: string } | undefined,
   get: Get,
 ): Promise<number> {
   let moved = 0;
+  // Each image's tag is asked of its registry once, so every line that names it is pinned to the same answer.
+  const digests = new Map<string, Promise<string>>();
   for (const path of await dockerfilesOf(dir)) {
     const text = await readFile(join(dir, path), 'utf8');
     const lines = text.split('\n');
@@ -365,7 +395,10 @@ async function moveFroms(
       const [, start, image = '', tag = '', digest = '', rest] = m;
       const next = change(image, tag, digest);
       if (next === undefined) continue;
-      lines[i] = `${start}${image}:${next}@${await digestOf(image, next, get)}${rest}`;
+      const key = `${image}:${next.tag}`;
+      if (!digests.has(key))
+        digests.set(key, next.digest ? Promise.resolve(next.digest) : digestOf(image, next.tag, get));
+      lines[i] = `${start}${image}:${next.tag}@${await digests.get(key)}${rest}`;
       moved++;
     }
     const written = lines.join('\n');
@@ -402,7 +435,7 @@ export async function moveNode(dir: string, move: Move, get: Get, now = Date.now
     dir,
     (image, tag) => {
       if (!/^node/.test(image.split('/').at(-1) ?? '')) return undefined;
-      return tag.includes(move.from) ? tag.replace(move.from, move.to) : tag;
+      return { tag: tag.includes(move.from) ? tag.replace(move.from, move.to) : tag };
     },
     get,
   );
@@ -419,7 +452,9 @@ export async function moveImage(dir: string, move: Move, get: Get): Promise<void
   }
   const moved = await moveFroms(
     dir,
-    (image, tag, digest) => (image === move.name && `${tag}@${digest}` === move.from ? toTag : undefined),
+    // The digest the registry was just asked for, and agreed was the move's: never a second answer.
+    (image, tag, digest) =>
+      image === move.name && `${tag}@${digest}` === move.from ? { tag: toTag, digest: toDigest } : undefined,
     get,
   );
   if (!moved) throw new PinsRefused(`No FROM pins ${move.name} at ${move.from}.`);
@@ -435,9 +470,16 @@ const MANIFESTS = [
 /** An image's registry and repository there: Docker Hub's, by its own names, when the first part names no host. */
 export function registryOf(image: string): { host: string; repository: string } {
   const [first = '', ...rest] = image.split('/');
+  const hub = (path: string) => ({
+    host: 'registry-1.docker.io',
+    repository: path.includes('/') ? path : `library/${path}`,
+  });
+  // Docker Hub by the names it goes by, whose API is at registry-1.docker.io alone.
+  if (['docker.io', 'index.docker.io', 'registry-1.docker.io'].includes(first) && rest.length)
+    return hub(rest.join('/'));
   if (rest.length && (first.includes('.') || first.includes(':') || first === 'localhost'))
     return { host: first, repository: rest.join('/') };
-  return { host: 'registry-1.docker.io', repository: rest.length ? image : `library/${image}` };
+  return hub(image);
 }
 
 /**
@@ -571,7 +613,16 @@ export async function writeLockfile(dir: string, change: string, tools: PinTools
   if (touched.length)
     throw new PinsRefused(`The change writes ${touched.join(', ')}, which only the pin step writes, or no step does.`);
   const before = await manifestsOf(dir);
-  await gitInput(change, dir, 'apply', '--whitespace=nowarn', '-');
+  // Into the index too, so a manifest the change adds is one `manifestsOf` reads and refuses as any other, and the
+  // files it changed are git's to say, whatever its headers look like.
+  // The checkout's files were given the seed's time (`prepare.ts`): the index learns it first, or git takes them for changed.
+  await git(dir, 'update-index', '-q', '--refresh').catch(() => {});
+  await gitInput(change, dir, 'apply', '--index', '--whitespace=nowarn', '-');
+  const applied = (await git(dir, 'diff', '--cached', '--name-only', '-z', '--no-renames', 'HEAD'))
+    .split('\0')
+    .filter((path) => path && among(path, [...LOCKFILES, ...PNPM_SETTINGS]));
+  if (applied.length)
+    throw new PinsRefused(`The change writes ${applied.join(', ')}, which only the pin step writes, or no step does.`);
   const after = await manifestsOf(dir);
   for (const { path, json } of after) {
     const was = before.find((m) => m.path === path)?.json ?? {};

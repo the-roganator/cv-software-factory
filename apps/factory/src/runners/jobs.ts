@@ -11,7 +11,8 @@
  * - The agent Job runs the agent. Its pod reaches the gateway and the line's handback, and nothing else, and has no
  *   DNS; it holds its job token, which is not a credential anywhere else.
  * - After a coder's step that changed a manifest, a lockfile Job, a prepare pod by its label and its fence, writes
- *   the lockfile for it with pnpm, and prints it for the line (`runner lockfile`). It holds no token either.
+ *   the lockfile for it with pnpm, and prints it for the line (`runner lockfile`). It holds no token either, and has no
+ *   part of the work item's volume, which the agent, handed back but perhaps not ended, may still write to.
  * - The volume goes when the work item merges, or is over unmerged (`Runners.finish`).
  *
  * Both run the `factory-runner` image under the restricted Pod Security Standard, with no service account token and
@@ -145,6 +146,8 @@ function job(
                 ...(part === 'prepare'
                   ? { PREPARE: '/prepare', HOME: '/prepare/home', npm_config_store_dir: '/prepare/store' }
                   : { HOME: '/work/home' }),
+                // The lockfile's checkout is its own: the agent may still be writing to the work item's volume.
+                ...(command === 'lockfile' ? { WORK: '/prepare/work' } : {}),
                 ...variables,
               }),
               securityContext: {
@@ -154,14 +157,16 @@ function job(
               },
               resources: { requests: { cpu: '100m', memory: '512Mi' }, limits: { memory: '2Gi' } },
               volumeMounts: [
-                { name: 'work', mountPath: '/work' },
+                ...(command === 'lockfile' ? [] : [{ name: 'work', mountPath: '/work' }]),
                 { name: 'tmp', mountPath: '/tmp' },
                 ...(part === 'prepare' ? [{ name: 'prepare', mountPath: '/prepare' }] : []),
               ],
             },
           ],
           volumes: [
-            { name: 'work', persistentVolumeClaim: { claimName: volumeName(names.workItem) } },
+            ...(command === 'lockfile'
+              ? []
+              : [{ name: 'work', persistentVolumeClaim: { claimName: volumeName(names.workItem) } }]),
             { name: 'tmp', emptyDir: {} },
             ...(part === 'prepare' ? [{ name: 'prepare', emptyDir: {} }] : []),
           ],

@@ -70,10 +70,13 @@ export async function prepare(
   const log = runnerLog(env, 'prepare', write);
   const { step, dir, pnpmEnv } = await checkout(env, log);
   if (step.move) {
-    // Before the agent, on the checkout it starts from: the pins are its base, and never part of its patch.
-    const pins = await pinsOf(dir, step.move, { ...pinTools(env, pnpmEnv), ...tools }, log);
+    // Written on a checkout of their own, in this pod's own folder: the volume is the agents', and one of an earlier
+    // step's may not have ended yet. Then committed on the agent's checkout, as its base, never part of its patch.
+    const own = join(env.PREPARE ?? tmpdir(), 'pins');
+    await checkout(env, () => {}, own);
+    const pins = await pinsOf(own, step.move, { ...pinTools(env, pnpmEnv), ...tools }, log);
     if (pins === undefined) return;
-    if (pins) await commitPatch(dir, pins, { message: pinsMessage(step.move), author: 'pins' }, { applied: true });
+    if (pins) await commitPatch(dir, pins, { message: pinsMessage(step.move), author: 'pins' });
   }
   const install = ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile', '--reporter=silent'];
   await exec('pnpm', [OWN_PNPM_FLAG, ...install], { cwd: dir, env: pnpmEnv, maxBuffer: 64 * 1024 * 1024 });
@@ -97,13 +100,23 @@ async function pinsOf(dir: string, move: Move, tools: PinTools, log: Log): Promi
     return undefined;
   }
   await git(dir, 'add', '--all');
-  const pins = await git(dir, 'diff', '--cached', '--no-renames', '--no-ext-diff', '--no-color', 'HEAD');
+  const pins = await git(
+    dir,
+    'diff',
+    '--cached',
+    '--no-renames',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-color',
+    'HEAD',
+  );
   log('the pins', { move, pins });
   return pins;
 }
 
 /**
- * The lockfile after a coder's step that changed a manifest: on a fresh checkout of the step's commit, with the pins
+ * The lockfile after a coder's step that changed a manifest: in a pod whose `WORK` is a folder of its own, never the
+ * volume the agent may still be writing to (`apps/factory/src/runners/jobs.ts`), on a fresh checkout of the step's commit, with the pins
  * committed on it and the coder's patch applied, `pnpm install --lockfile-only`, and only the lockfile's change
  * printed (`the lockfile`, with the patch: empty when it needs none).
  */
@@ -122,6 +135,7 @@ export async function lockfile(
     'diff',
     '--no-renames',
     '--no-ext-diff',
+    '--no-textconv',
     '--no-color',
     'HEAD',
     '--',
@@ -137,10 +151,12 @@ const pinTools = (env: NodeJS.ProcessEnv, pnpmEnv: NodeJS.ProcessEnv): PinTools 
   aside: env.PREPARE ?? tmpdir(),
 });
 
-/** A fresh checkout of the step's commit, with its base, a dry run's commits and its seed, and the pnpm that runs. */
-async function checkout(env: NodeJS.ProcessEnv, log: Log) {
+/**
+ * A fresh checkout of the step's commit, with its base, a dry run's commits and its seed, and the pnpm that runs: on
+ * the volume (`repoDir`), or in `dir`.
+ */
+async function checkout(env: NodeJS.ProcessEnv, log: Log, dir = repoDir(env)) {
   const step = stepFrom(env);
-  const dir = repoDir(env);
   // Only `rm`, which reads nothing it deletes, touches what the agent left.
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });

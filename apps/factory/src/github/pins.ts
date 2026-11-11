@@ -251,6 +251,8 @@ export function editAt(
 
 /** What the scan's run is, in a sentence. */
 const runText = (moves: Moves) => `the scan of run [${moves.run.id}](${moves.run.url})`;
+/** The same, to start a sentence. */
+const RunText = (moves: Moves) => `T${runText(moves).slice(1)}`;
 
 /** Why a move waits for Martin, and what to do, by its lane and what it moves; undefined when the gate may pass it. */
 function waitsFor(move: ReadMove): string | undefined {
@@ -326,7 +328,7 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
   const body = [
     `<!-- factory: pin-issue ${key} -->`,
     `<!-- factory: pin-target ${move.to.replace(/-->/g, '')} -->`,
-    `${runText(moves)} lists a move the factory's pin watch cannot make with a pull request of its own: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
+    `${RunText(moves)} lists a move the factory's pin watch cannot make with a pull request of its own: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
     '',
     cannotWrite(move, why),
     '',
@@ -492,7 +494,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       if (move.lane === 'dependabot' && !move.lockfile)
         closeWith.set(
           pinBranchFor(move.name),
-          `${runText(day)} gives this pin to Dependabot now: nothing on a deadline at High or Critical needs it moved sooner. Closed, so the two do not both move it.`,
+          `${RunText(day)} gives this pin to Dependabot now: nothing on a deadline at High or Critical needs it moved sooner. Closed, so the two do not both move it.`,
         );
     }
 
@@ -631,7 +633,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       if (keep.has(pull.head.ref)) continue;
       const sentence =
         closeWith.get(pull.head.ref) ??
-        `${runText(day)} no longer lists this move as one a pull request of the factory's makes: \`main\` has moved its pin, the move needs more than its pins written, or nothing it cleared is left. Closed; the watch opens another if the scan lists one.`;
+        `${RunText(day)} no longer lists this move as one a pull request of the factory's makes: \`main\` has moved its pin, the move needs more than its pins written, or nothing it cleared is left. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
       log.info({ repo, number: pull.number }, 'closed a pin pull request whose move is gone');
     }
@@ -647,7 +649,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       if (found.state !== 'open') {
         // Closed by Martin, or by the watch: opened again only for a later target than it was written for.
         if (TARGET_MARK.exec(found.body ?? '')?.[1] === issue.target.replace(/-->/g, '')) continue;
-        await actions.reopenIssue(repo, found.number, `${runText(day)} lists this move again, to a later target.`);
+        await actions.reopenIssue(repo, found.number, `${RunText(day)} lists this move again, to a later target.`);
       }
       if ((found.body ?? '') !== issue.body || found.title !== issue.title)
         await actions.updateIssue(repo, found.number, { title: issue.title, body: issue.body });
@@ -658,7 +660,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         repo,
         issue.number,
         'completed',
-        `${runText(day)} no longer lists this move as one the App cannot make: it is moved, made by a pull request of the factory's, or nothing it cleared is left.`,
+        `${RunText(day)} no longer lists this move as one the App cannot make: it is moved, made by a pull request of the factory's, or nothing it cleared is left.`,
       );
       log.info({ repo, number: issue.number, key }, 'closed a pin issue whose move is gone');
     }

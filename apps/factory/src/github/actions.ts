@@ -987,7 +987,7 @@ export class DryRunActions implements Actions {
     this.#branches.delete(`${repo} ${branch}`);
   }
 
-  commit(repo: string, commit: Commit): Promise<string> {
+  async commit(repo: string, commit: Commit): Promise<string> {
     guardWritable(commit.branch);
     return this.#commit(repo, commit, undefined);
   }

@@ -24,8 +24,9 @@
 #   not showing CVE-2026-111497, and its log carries the counts, the deadlines' and the moves' too, read against the
 #   repository's alerts and failing on none of them; its `moves.json` is uploaded as the artifact `moves`. Every job
 #   that writes refuses any event but a push to the default branch, the schedule or a run by hand there; this one writes
-#   nothing, and runs on a pull request alone, from a branch of this repository: a fork's is refused before anything of
-#   it runs, since its token would read the alerts, which are not public.
+#   nothing, and runs on a pull request alone, from a branch of this repository: its first step refuses a fork's, whose
+#   token would read the alerts, which are not public. A fork supplies its own copy of this file, so the step binds a
+#   fork that keeps it; the repository's approval of fork runs, which no fork can change, binds one that does not.
 name: vulnerabilities
 
 on:
@@ -264,8 +265,9 @@ jobs:
       packages: read # the advisory database and the images in GHCR, with the job's token
       security-events: read # when each alert was made, for the deadlines' counts
     steps:
-      # A fork's pull request is refused before anything of it runs: its token reads this repository's alerts, which are
-      # not public, and its scripts would run with it. A change to the scan from a fork is proved from a branch here.
+      # A fork's pull request is refused before anything of it is checked out: its token reads this repository's alerts,
+      # which are not public, and its scripts would run with it. A change to the scan from a fork is proved from a branch
+      # here. A fork that removes this step from its copy is bound only by the repository's approval of fork runs.
       - name: Refuse a privileged context
         env:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}

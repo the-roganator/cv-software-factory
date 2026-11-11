@@ -98,6 +98,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # `make up`, at the change's commit, with a stand-in for each key it would take from the Keychain: made here, of
       # the shape the cluster needs, and opening nothing. The App's is a key GitHub has never seen; the others say so.
+      # scripts/platform-watch.sh watches it, and stops it at the 20-minute ceiling, or sooner on what waiting will not
+      # mend: an Application Argo CD cannot render, or one Degraded for five minutes.
       - name: Make the cluster
         env:
           REVISION: ${{ github.sha }}
@@ -106,7 +108,15 @@ jobs:
           export GITHUB_APP_PRIVATE_KEY
           export TYPESAFE_API_KEY=stand-in-not-a-key ANTHROPIC_API_KEY=stand-in-not-a-key
           export PUSHOVER_APP_TOKEN=stand-in-not-a-token PUSHOVER_USER_KEY=stand-in-not-a-key
-          time make up REVISION="$REVISION" SYNC_TIMEOUT=15m TIMEOUT=900
+          setsid make up REVISION="$REVISION" SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          make=$!
+          if ! WATCHED=$make scripts/platform-watch.sh; then
+            kill -- "-$make" 2>/dev/null || true
+            wait "$make" || true
+            echo "::error::The cluster did not come up: the line above says why."
+            exit 1
+          fi
+          wait "$make"
       # Every Application Synced, and Healthy but the website's, whose health is its release's, and root's, which rolls
       # the website's up: `make up` has waited for the website to settle, and for everything else root deploys to be
       # Healthy (scripts/wait-deployed.sh), so a canary in flight on the app's main holds no change here.
@@ -157,8 +167,10 @@ jobs:
               "\($app) \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")' || true
           kubectl --context k3d-software-factory get pods -A -o wide || true
           kubectl --context k3d-software-factory get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -40 || true
+      # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states and
+      # the runner's figures: no Secret is read, stand-in or not.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         with:
           name: cluster
           path: ${{ runner.temp }}/measure

@@ -731,7 +731,14 @@ describe('platform.yml', () => {
     expect(make?.run).toContain('make up REVISION="$REVISION"');
     expect((make as { env?: Record<string, string> } | undefined)?.env?.REVISION).toBe(expression('github.sha'));
     const runs = steps.map((step) => step.run ?? '').join('\n');
+    // Watched, and stopped at the ceiling or on what waiting will not mend (scripts/platform-watch.test.ts).
+    expect(make?.run).toContain('WATCHED=$make scripts/platform-watch.sh');
     expect(runs).toContain('make admission-ready');
+    // What the cluster showed, kept on every outcome but success, cancellation included.
+    const kept = steps.find((step) => step.with?.name === 'cluster');
+    expect(kept?.uses).toMatch(/^actions\/upload-artifact@/);
+    expect((kept as { if?: string } | undefined)?.if).toBe(expression('failure() || cancelled()'));
+    expect(runs).not.toMatch(/get secrets?\b/);
     // Each record the scripts take, with its own script, uploaded beside what the change checks in.
     for (const file of readdirSync('deploy/test').filter((f) => f.endsWith('-refusals.json'))) {
       const name = file.replace(/-refusals\.json$/, '');

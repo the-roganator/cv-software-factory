@@ -339,6 +339,7 @@ describe('what the platform check runs', () => {
   const RUNS = [
     'scripts/admission-ready.sh',
     'scripts/wait-deployed.sh',
+    'scripts/platform-watch.sh',
     'scripts/local-ca.ts',
     'scripts/share-key.ts',
     'scripts/answer-key.ts',

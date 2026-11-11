@@ -2,6 +2,8 @@
  * Starts the GitHub worker: the client with the App's key, the actions (live or a dry run), the poller and the HTTP
  * server, wired from a `GitHubConfig`. `factory github` is the entry point, and loads `telemetry.ts` before this module.
  */
+
+import type { Server } from 'node:http';
 import { DiskArtifacts } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { listenOn } from '../listen.ts';
@@ -18,7 +20,7 @@ import { LiveReads } from './reads.ts';
 import { RefusalRecorder } from './refusals.ts';
 import { Registry } from './registry.ts';
 import { quietReleasePlease, releaseWatch } from './releases.ts';
-import { createWorkerServer } from './server.ts';
+import { createWorkerServer, PATCHING_READS } from './server.ts';
 import { Signatures } from './signatures.ts';
 
 export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
@@ -128,8 +130,32 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     log.warn(`ATTACK_PORT is set but ${why}: the attack door is not served.`);
   }
 
+  // The dependency sense's door (`factory patching`), on a port of its own: the scan's moves and Dependabot's pull
+  // requests, read as a live worker reads them, and no action. A NetworkPolicy opens the port to the sense's pod alone,
+  // so the sense reaches the worker's reads and cannot act in GitHub.
+  let patchingDoor: Server | undefined;
+  if (config.patchingPort !== undefined) {
+    patchingDoor = createWorkerServer({
+      actions,
+      reads: liveReads,
+      repositories: config.repositories,
+      health: () => ({ mode, door: 'patching' }),
+      only: PATCHING_READS,
+      log,
+    });
+    await listenOn(patchingDoor, config.patchingPort, config.host);
+    log.info({ port: config.patchingPort }, "the dependency sense's door listening");
+  }
+
   const stop = async () => {
     await poller.stop();
+    if (patchingDoor) {
+      const door = patchingDoor;
+      await new Promise<void>((resolve) => {
+        door.close(() => resolve());
+        door.closeIdleConnections();
+      });
+    }
     if (attackDoor)
       await new Promise<void>((resolve) => {
         attackDoor.server.close(() => resolve());

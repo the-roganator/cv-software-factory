@@ -13,6 +13,7 @@ import {
   type InboxSignal,
   LINE_ONLY_TYPES,
   type NewEvent,
+  PATCHING_ONLY_TYPES,
   PROOFS_ONLY_TYPES,
   REDTEAM_ONLY_TYPES,
   REFUSAL_MECHANISMS,
@@ -26,6 +27,7 @@ import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../polic
 import {
   ATTACK_CLOSE_ROWS,
   MARTINS_ROLES,
+  PATCHING_ONLY_ROWS,
   PROOFS_ONLY_ROWS,
   REDTEAM_ONLY_ROWS,
   STORE_GRANTS,
@@ -199,6 +201,7 @@ describe('the grants', () => {
       factory_enrol: true,
       factory_proofs: true,
       factory_redteam: true,
+      factory_patching: true,
     });
     for (const worker of WORKERS) {
       const [me] = await db.as[worker]<{ me: string }[]>`select current_user as me`;
@@ -636,6 +639,7 @@ describe("a guardrail's proof", () => {
         ['factory_operator', real.operator],
         ['factory_enrol', real.enrol],
         ['factory_redteam', real.redteam],
+        ['factory_patching', real.patching],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
         ['metrics_reader', real.metrics],
@@ -728,6 +732,81 @@ describe("a guardrail's proof", () => {
   });
 });
 
+describe("the day's moves", () => {
+  /** An event of a type, inserted as it stands on the line, real or a sample, as any client could try. */
+  const insert = (sql: Sql, type: string, sample = false) => sql`
+    insert into events (id, ts, work_item, type, version, actor, summary, payload, artifacts, public, sample)
+    values (${crypto.randomUUID()}, now(), null, ${type}, 1, 'factory', 'The day', '{}', '[]', '{}', ${sample})`;
+
+  it('is the type the store holds to the sense', () => {
+    expect([...PATCHING_ONLY_TYPES]).toEqual(['patching.read']);
+  });
+
+  it('is appended by the sense alone, which appends nothing else and reads only its own, in a real store', async () => {
+    const real = await freshDatabase('patching_only');
+    try {
+      const roles: [string, Sql][] = [
+        ...Object.entries(real.as).map(([name, sql]): [string, Sql] => [`factory_${name}`, sql]),
+        ['factory_admin', real.admin],
+        ['factory_operator', real.operator],
+        ['factory_enrol', real.enrol],
+        ['factory_proofs', real.proofs],
+        ['factory_redteam', real.redteam],
+        ['scoreboard_writer', real.scoreboard],
+        ['console_reader', real.reader],
+        ['metrics_reader', real.metrics],
+      ];
+      for (const [role, sql] of roles) {
+        await expect(insert(sql, 'patching.read'), role).rejects.toThrow(
+          /row-level security|permission denied|the scoreboard appends its own figures/,
+        );
+      }
+      await insert(real.as.gateway, 'spend.cleared');
+      await insert(real.patching, 'patching.read');
+      for (const type of EVENT_TYPES.filter((type) => !PATCHING_ONLY_TYPES.includes(type))) {
+        await expect(insert(real.patching, type), type).rejects.toThrow('row-level security');
+      }
+      expect(await real.owner`select type, appended_by from events order by seq`).toEqual([
+        { type: 'spend.cleared', appended_by: 'factory_gateway' },
+        { type: 'patching.read', appended_by: 'factory_patching' },
+      ]);
+      // It reads its own day and nothing another role appended.
+      expect(await real.patching`select type from events`).toEqual([{ type: 'patching.read' }]);
+      // No other table.
+      for (const table of ['inbox', 'line', 'job_tokens', 'model_calls', 'passkeys', 'sessions']) {
+        await expect(real.patching.unsafe(`select 1 from ${table}`), table).rejects.toThrow('permission denied');
+      }
+      await expect(real.patching`update events set summary = 'Changed'`).rejects.toThrow('permission denied');
+      await expect(real.patching`delete from events`).rejects.toThrow('permission denied');
+      // Nor may another role take the sense's name.
+      await expect(real.as.line`set role factory_patching`).rejects.toThrow('permission denied');
+      await expect(real.admin`set role factory_patching`).rejects.toThrow('permission denied');
+    } finally {
+      await real.end();
+    }
+  });
+
+  it('comes from a sense the inbox knows by name, which nobody may yet send a signal as', async () => {
+    const signal = (sql: Sql, sense: string) =>
+      sql`insert into inbox (id, sense, fingerprint, signal) values (${crypto.randomUUID()}, ${sense}, 'f', '{}')`;
+    await signal(db.owner, 'dependency');
+    await expect(signal(db.owner, 'not-a-sense')).rejects.toThrow('inbox_sense_check');
+    await expect(signal(db.patching, 'dependency')).rejects.toThrow('permission denied');
+  });
+
+  it('is appended as a sample by Martin’s command line too, for `make samples`, and by no other role', async () => {
+    const samples = await freshDatabase('patching_samples');
+    try {
+      await insert(samples.operator, 'patching.read', true);
+      await insert(samples.patching, 'patching.read', true);
+      await expect(insert(samples.as.line, 'patching.read', true)).rejects.toThrow('row-level security');
+      await expect(insert(samples.admin, 'patching.read', true)).rejects.toThrow('row-level security');
+    } finally {
+      await samples.end();
+    }
+  });
+});
+
 describe("an attack's end", () => {
   /** An event of a type, inserted as it stands on a work item, real or a sample, as any client could try. */
   const insert = (sql: Sql, type: string, workItem: string, sample = false, payload: object = {}) => sql`
@@ -749,6 +828,7 @@ describe("an attack's end", () => {
         ['factory_operator', real.operator],
         ['factory_enrol', real.enrol],
         ['factory_proofs', real.proofs],
+        ['factory_patching', real.patching],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
         ['metrics_reader', real.metrics],
@@ -1020,6 +1100,13 @@ describe('a refusal', () => {
         check: PROOFS_ONLY_ROWS,
       },
       {
+        name: 'events_read_by_the_sense',
+        table: 'events',
+        command: 'insert',
+        roles: ['public'],
+        check: PATCHING_ONLY_ROWS,
+      },
+      {
         name: 'events_refused_as_it_reads',
         table: 'events',
         command: 'insert',
@@ -1091,6 +1178,7 @@ describe('a refusal', () => {
         ['factory_enrol', real.enrol],
         ['factory_proofs', real.proofs],
         ['factory_redteam', real.redteam],
+        ['factory_patching', real.patching],
         ['scoreboard_writer', real.scoreboard],
         ['console_reader', real.reader],
       ];

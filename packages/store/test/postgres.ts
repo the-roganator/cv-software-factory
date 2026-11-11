@@ -36,6 +36,8 @@ export interface Database {
   proofs: Sql;
   /** The red-team harness's. */
   redteam: Sql;
+  /** The dependency sense's. */
+  patching: Sql;
   /** A connection as each worker's own role. */
   as: Record<Worker, Sql>;
   end(): Promise<void>;
@@ -306,6 +308,7 @@ export async function createDatabase(
   const enrol = as(UNSET.enrol, 'enrol-test');
   const proofs = as('factory_proofs', PASSWORDS.proofs);
   const redteam = as('factory_redteam', PASSWORDS.redteam);
+  const patching = as('factory_patching', PASSWORDS.patching);
   const workers = Object.fromEntries(WORKERS.map((w) => [w, as(ROLES[w].role, PASSWORDS[w])])) as Record<Worker, Sql>;
   return {
     name: database,
@@ -318,6 +321,7 @@ export async function createDatabase(
     enrol,
     proofs,
     redteam,
+    patching,
     as: workers,
     end: async () => {
       const all = [
@@ -330,6 +334,7 @@ export async function createDatabase(
         enrol,
         proofs,
         redteam,
+        patching,
         ...Object.values(workers),
       ];
       await Promise.all(all.map((c) => c.end()));

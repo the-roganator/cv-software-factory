@@ -110,6 +110,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(call password,factory,postgres-proofs)
 	@# The red-team harness's role, which is no member of the workers'; the migrate Job sets it.
 	@$(call password,factory,postgres-redteam)
+	@# The dependency sense's role, which is no member of the workers' either; the migrate Job sets it.
+	@$(call password,factory,postgres-patching)
 	@$(MAKE) --no-print-directory worker-secrets
 	@$(MAKE) --no-print-directory gateway-key
 	@$(MAKE) --no-print-directory github-key

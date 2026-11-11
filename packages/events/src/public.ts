@@ -163,6 +163,21 @@ export const PUBLIC_VIEWS = {
   // His request for an improvement is everyone's to see, in his words, as Plan shows it to visitors, through the
   // redactor.
   'improvement.requested': redacted,
+  // The day's moves are public, as the scan's log is, but a lockfile's move's package, which its alerts name and the
+  // log does not: it shows once a pull request moving it is open, which names it anyway.
+  'patching.read': ({ payload, ...event }) =>
+    redacted({
+      ...event,
+      payload: {
+        ...payload,
+        repositories: payload.repositories.map((day) => ({
+          ...day,
+          moves: day.moves.map(({ package: withheld, ...move }) =>
+            withheld && move.pullRequest ? { ...move, package: withheld } : move,
+          ),
+        })),
+      },
+    }),
 } satisfies { [K in EventType]: PublicViewOf<K> };
 
 /** The public view of an event. Applying it twice changes nothing. */

@@ -264,6 +264,9 @@ const READS = {
 
 type ReadName = keyof typeof READS;
 
+/** The reads the dependency sense's door serves (`factory patching`): the scan's moves and Dependabot's pull requests. */
+export const PATCHING_READS: readonly ReadName[] = ['moves', 'dependencyPulls'];
+
 /** The reads a worker may ask for, each with its arguments after the repository, and what it gives back. */
 export type { ReadName };
 export type ReadArgs = { [K in ReadName]: z.input<(typeof READS)[K]> };
@@ -334,6 +337,11 @@ export interface WorkerServerOptions {
   repositories: readonly string[];
   /** What the worker says about itself at `/health`. */
   health: () => Record<string, unknown>;
+  /**
+   * The only reads a door serves, and no action: the dependency sense's door (`PATCHING_READS`), on a port of its own
+   * that a NetworkPolicy opens to the sense alone, so the sense reaches the worker's reads and cannot act in GitHub.
+   */
+  only?: readonly ReadName[] | undefined;
   /** What keeps, logs and signs each refusal, for the answer to carry; without it, a refusal is answered as it is. */
   recorder?: RefusalRecorder | undefined;
   log: Logger;
@@ -386,6 +394,7 @@ export function createWorkerServer({
   repositories,
   health,
   recorder,
+  only,
   log,
 }: WorkerServerOptions): Server {
   /** Each refusal kept for an action's failure, for its answer. */
@@ -415,8 +424,11 @@ export function createWorkerServer({
     const actions = dry && dryRun ? dryRun : live;
     const reads = dry && dryRunReads ? dryRunReads : liveReads;
     const [, kind, name = ''] = ROUTE.exec(pathname) ?? [];
-    const known =
-      kind === 'actions' ? Object.hasOwn(ARGS, name) : kind === 'reads' && reads && Object.hasOwn(READS, name);
+    const known = only
+      ? kind === 'reads' && reads && only.includes(name as ReadName)
+      : kind === 'actions'
+        ? Object.hasOwn(ARGS, name)
+        : kind === 'reads' && reads && Object.hasOwn(READS, name);
     if (!known)
       return send(res, 404, { error: 'not-found', message: `No such ${kind === 'reads' ? 'read' : 'action'}.` });
     if (req.method !== 'POST') return send(res, 405, { error: 'bad-request', message: 'Use POST.' });

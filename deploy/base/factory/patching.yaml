@@ -1,0 +1,125 @@
+# The dependency sense (apps/factory/src/patching, `factory patching`): as it starts, and each day after the scan, it
+# asks the GitHub worker for both repositories' moves, compares the images every pod runs with the scan's list, and
+# appends the day as `patching.read` when it differs from the last. It connects to the store as its own role,
+# `factory_patching`, which alone may append that event and appends nothing else (0050_patching.sql). It is no member
+# of the workers' role: its NetworkPolicy gives it the store, the collector, the API server and the GitHub worker's
+# door for its two reads, and nothing else (network-policies.yaml).
+#
+# An image the list lacks may run in any namespace, so its account may list pods in every one, and nothing else: not
+# get or watch them, nor read their logs, nor anything but pods. A pod's spec names Secrets only by reference here, so
+# listing it gives no Secret's value.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patching
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: patching-lists-pods
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: patching-lists-pods
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: patching-lists-pods
+subjects:
+  - kind: ServiceAccount
+    name: patching
+    namespace: factory
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patching
+  labels: &labels
+    app.kubernetes.io/name: patching
+    app.kubernetes.io/part-of: software-factory
+    # Not `worker`: the workers' NetworkPolicy would not give it the API server or the GitHub worker's door, and would
+    # give it what it does not need. Its own component, fenced by network-policies.yaml.
+    app.kubernetes.io/component: patching
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one at a time: two senses would append the same day twice
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patching
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      serviceAccountName: patching
+      # It lists pods through the Kubernetes API, so it holds its account's token, which lists pods and nothing else.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: patching
+          # Each profile pins the image by digest (kustomize `images:`), so a deploy is always a commit.
+          image: factory
+          args:
+            - --import
+            - ./src/telemetry.ts
+            - src/cli.ts
+            - patching
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.telemetry:4318"
+            - name: OTEL_SERVICE_NAME
+              value: "patching"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=software-factory"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
+            - name: PGHOST
+              value: postgres
+            - name: PGDATABASE
+              value: factory
+            - name: PGUSER
+              value: factory_patching
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-patching
+                  key: password
+            # The GitHub worker's door for the sense's two reads, on its own port: never its main port, which acts.
+            - name: GITHUB_URL
+              value: http://github:8083
+            # The day's read, once the scan (04:17 UTC) has finished.
+            - name: PATCHING_AT
+              value: "05:30"
+          readinessProbe:
+            exec:
+              command: [/nodejs/bin/node, -e, "process.exit(0)"]
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

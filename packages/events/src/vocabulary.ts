@@ -500,3 +500,32 @@ export const MARTIN_REASON_CHARS = 200;
  * takes its limit from here, and the console counts against it.
  */
 export const MARTIN_ANSWER_CHARS = 300;
+
+/**
+ * Who moves a move, as the vulnerability scan works it out (`apps/factory/src/vulnerabilities/moves.ts`, whose `LANES`
+ * a test holds to this): the app's line, the GitHub worker, Dependabot, Martin's approval, the cluster's own command,
+ * an issue, or nobody (a line no longer built).
+ */
+export const MOVE_LANES = ['line', 'worker', 'dependabot', 'approval', 'cluster', 'issue', 'none'] as const;
+export type MoveLane = (typeof MOVE_LANES)[number];
+
+/** A finding's severity, as the scan rates it: the publisher's, or none it could read. */
+export const SCAN_SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
+export type ScanSeverity = (typeof SCAN_SEVERITIES)[number];
+
+/**
+ * How the day's scan ended, as the dependency sense reads it (`patching.read`): it passed, or it failed for one of the
+ * scan's own reasons, which its moves show (a finding past its deadline, one due within a day, a new High or Critical
+ * with a fix), or for none of them (`other`: the run itself failed, or wrote no moves).
+ */
+export const SCAN_FAILURES = ['overdue', 'due-within-a-day', 'new-high-or-critical', 'other'] as const;
+export type ScanFailure = (typeof SCAN_FAILURES)[number];
+
+/**
+ * What the dependency sense found when it compared the images the cluster's pods run with the scan's list, each a row
+ * of `patching.read` that says the list or the cluster is wrong: a digest running that no scan read, under a reference
+ * the list has; an image the list does not have; and a pin `main` holds that the cluster does not run yet, while it
+ * runs another of the same image.
+ */
+export const RUNNING_ROWS = ['unscanned-digest', 'unlisted-image', 'not-running'] as const;
+export type RunningRow = (typeof RUNNING_ROWS)[number];

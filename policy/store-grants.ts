@@ -250,6 +250,14 @@ export const STORE_GRANTS = {
       },
     },
   },
+  factory_patching: {
+    for:
+      'The dependency sense: appends the day’s moves (`patching.read`), which no other role may append, and nothing ' +
+      'else; and reads only its own events, the last of which it compares the day with (0050_patching.sql). No other ' +
+      'table. Its password is in `postgres-patching`.',
+    on: { events: ['select', 'insert'], store: ['select', 'insert'] },
+    rows: { events: { select: "appended_by = 'factory_patching'", insert: "type = 'patching.read'" } },
+  },
   console_reader: {
     for:
       "The console's server: public views of events, with the role that appended each (0040_refusals-by-mechanism.sql), " +
@@ -302,6 +310,15 @@ export const ATTACK_CLOSE_ROWS =
  */
 export const REDTEAM_ONLY_ROWS =
   "(type <> 'attack.finished') OR (CURRENT_USER = 'factory_redteam'::name) OR " +
+  "((CURRENT_USER = 'factory_operator'::name) AND sample)";
+
+/**
+ * The restrictive insert policy on `events` that holds the day's moves to the dependency sense's role
+ * (`0050_patching.sql`), as the grants test reads it from the store: every role's insert must meet it as well as its
+ * own. Martin's command line appends one only as a sample.
+ */
+export const PATCHING_ONLY_ROWS =
+  "(type <> 'patching.read') OR (CURRENT_USER = 'factory_patching'::name) OR " +
   "((CURRENT_USER = 'factory_operator'::name) AND sample)";
 
 /**

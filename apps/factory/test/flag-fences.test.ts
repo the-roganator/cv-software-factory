@@ -232,11 +232,17 @@ describe('who may write flags', () => {
       ),
     );
     expect(mutating.map(({ file }) => file)).toEqual([]);
-    // And no binding of ours is cluster-wide, which would reach flagd's namespace from outside it.
+    // And no binding of ours is cluster-wide, which would reach flagd's namespace from outside it, but the dependency
+    // sense's list of pods, which touches no FeatureFlag.
     const clusterWide = (await manifests()).filter(({ manifest }) =>
       ['ClusterRole', 'ClusterRoleBinding'].includes(manifest.kind ?? ''),
     );
-    expect(clusterWide).toEqual([]);
+    expect(clusterWide.map(({ manifest }) => `${manifest.kind} ${manifest.metadata?.name}`)).toEqual([
+      'ClusterRole patching-lists-pods',
+      'ClusterRoleBinding patching-lists-pods',
+    ]);
+    const role = clusterWide.find(({ manifest }) => manifest.kind === 'ClusterRole')?.manifest;
+    expect(role?.rules).toEqual([{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }]);
   });
 });
 

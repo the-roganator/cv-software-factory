@@ -23,6 +23,7 @@ interface Manifest {
   metadata?: { name?: string; namespace?: string; labels?: Record<string, string> };
   rules?: Rule[];
   subjects?: { kind: string; name: string; namespace?: string }[];
+  roleRef?: { kind: string; name: string };
   spec?: Record<string, unknown>;
 }
 
@@ -49,9 +50,15 @@ describe('the scoreboard’s Secrets', () => {
     expect(namespace?.manifest.metadata?.labels).toEqual({ 'pod-security.kubernetes.io/enforce': 'restricted' });
   });
 
-  it('can be read by no role deploy/ makes: none names Secrets, and none is cluster-wide', async () => {
+  it('can be read by no role deploy/ makes: none names Secrets, and the one cluster-wide lists pods alone', async () => {
     const roles = (await manifests()).filter(({ manifest }) => ['Role', 'ClusterRole'].includes(manifest.kind ?? ''));
-    expect(roles.filter(({ manifest }) => manifest.kind === 'ClusterRole')).toEqual([]);
+    // The dependency sense's, which lists the pods of every namespace, since an image the scan's list lacks may run in
+    // any: a pod names the answer key's Secret only by reference, and listing it gives nothing of the key.
+    expect(
+      roles
+        .filter(({ manifest }) => manifest.kind === 'ClusterRole')
+        .map(({ manifest }) => [manifest.metadata?.name, manifest.rules]),
+    ).toEqual([['patching-lists-pods', [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }]]]);
     const secrets = roles.filter(({ manifest }) =>
       (manifest.rules ?? []).some(
         (rule) =>
@@ -64,7 +71,12 @@ describe('the scoreboard’s Secrets', () => {
 
   it('are bound to no one: no role is granted in the scoreboard’s namespace but the line’s list of its Events', async () => {
     const bindings = (await manifests()).filter(({ manifest }) => manifest.kind?.endsWith('RoleBinding'));
-    expect(bindings.filter(({ manifest }) => manifest.kind === 'ClusterRoleBinding')).toEqual([]);
+    // The dependency sense's list of pods, to its own account alone (above).
+    expect(
+      bindings
+        .filter(({ manifest }) => manifest.kind === 'ClusterRoleBinding')
+        .map(({ manifest }) => [manifest.roleRef?.name, manifest.subjects]),
+    ).toEqual([['patching-lists-pods', [{ kind: 'ServiceAccount', name: 'patching', namespace: 'factory' }]]]);
     // The line lists the namespace's Events, for admission's denials (refusal-fences.test.ts): nothing else here.
     expect(
       bindings.filter(({ namespace }) => namespace === 'scoreboard').map(({ manifest }) => manifest.metadata?.name),

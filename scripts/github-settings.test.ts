@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { APP_SLUG } from '../apps/factory/src/line/gates.ts';
 import { REVIEW_CHECK as REVIEWER_CHECK } from '../apps/factory/src/line/review.ts';
 import {
@@ -47,6 +49,23 @@ describe('the ruleset on main (ADR 0014)', () => {
       expect(required.filter((c) => c.context !== 'review').every((c) => c.integration_id === 15368)).toBe(true);
     }
     expect(REVIEW_APP).toBe(5470762);
+  });
+
+  it('requires the lockfile scan in both repositories, as each reports it', () => {
+    expect(REPOSITORIES['the-roganator/cv-software-factory']).toContain('lockfile scan');
+    expect(REPOSITORIES['the-roganator/cv-worlds-worst-website']).toContain('gates / lockfile scan');
+  });
+
+  it("requires of the app's gates only jobs app-gates.yml names, as its gates job reports them", () => {
+    const workflow = parse(readFileSync('.github/workflows/app-gates.yml', 'utf8')) as {
+      jobs: Record<string, { name?: string }>;
+    };
+    const jobs = Object.values(workflow.jobs).map((job) => job.name);
+    const gates = (REPOSITORIES['the-roganator/cv-worlds-worst-website'] ?? [])
+      .filter((check) => check.startsWith('gates / '))
+      .map((check) => check.slice('gates / '.length));
+    expect(gates).toEqual(['journeys', 'test integrity', 'dependency review', 'image scan', 'lockfile scan']);
+    for (const gate of gates) expect(jobs).toContain(gate);
   });
 
   it('merges through the queue, squashed, with no rule that a branch be up to date and no GitHub review rule', () => {

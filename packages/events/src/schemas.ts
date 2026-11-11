@@ -33,7 +33,17 @@ const workItem = z.string().regex(/^[1-9]\d{0,8}$/, 'a work item number, such as
 const appVersion = z.string().regex(/^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/, 'a version such as v0.9.3, or a commit');
 const pullRequest = z.number().int().positive();
 const stage = z.enum(V.STAGES);
-const severities = z.strictObject({ critical: count, high: count, medium: count, low: count });
+/**
+ * A scan's findings by severity. `unknown` counts those the scanner could not rate, absent from counts recorded
+ * before gate.finished version 3, which never counted them.
+ */
+const severities = z.strictObject({
+  critical: count,
+  high: count,
+  medium: count,
+  low: count,
+  unknown: count.optional(),
+});
 /** A repository on GitHub, as `owner/name`. */
 const repository = z
   .string()
@@ -904,6 +914,11 @@ export const PAYLOADS = {
     summary: text(200).optional(),
     /** The check's own output, verbatim. Public views redact anything secret-shaped. */
     output: z.string().max(4000).optional(),
+    /**
+     * What a scan gate counted, on the base and on the change: its own notice on GitHub Actions' run of it for this
+     * commit, as the line reads it (`apps/factory/src/gates/counts.ts`), never a number the pull request states.
+     * Absent from a check that is no scan, and from a scan whose notice is missing or does not parse.
+     */
     findings: z.strictObject({ before: severities, after: severities }).optional(),
     /**
      * What a check that failed said was wrong, each at the file it named: its annotations at the failure level, as

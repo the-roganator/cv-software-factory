@@ -2,9 +2,10 @@
 FROM mcr.microsoft.com/devcontainers/base:3.0.12-noble@sha256:ec556aed93f62aa6d13fe72c5db09da4e29a7c9b87c568dbca0ee5717466926a
 
 # mise from its GitHub release, at the version every workflow's mise-action pins (scripts/toolchain.test.ts holds them
-# together), for the platform being built. Each SHA-256 is copied from that release's SHASUMS256.txt, once its signature
-# (SHASUMS256.asc) is checked with jdx's key, 24853EC9F655CE80B48E6C3A8B81C9D17413A06D. The build checks the checksum, not
-# the signature, so a mise upgrade checks the signature again and moves the version and both checksums here with the workflows'.
+# together), for the platform being built. Each SHA-256 is copied from that release's SHASUMS256.txt once its
+# signature (SHASUMS256.asc) is checked with jdx's key, 24853EC9F655CE80B48E6C3A8B81C9D17413A06D. The build checks the
+# checksum, not the signature, so a mise upgrade checks the signature again and moves the version and both checksums
+# here with the workflows'.
 ARG MISE_VERSION=2026.10.17
 ARG MISE_SHA256_AMD64=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a
 ARG MISE_SHA256_ARM64=e90904144ba4377c5fbe385f429830282c68f3b4f9c690bf6c5a2ae9b74a809b

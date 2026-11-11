@@ -3,7 +3,7 @@
  * cannot drift; everything here is erased at runtime, so the browser can import it freely.
  */
 import type { z } from 'zod';
-import type { artifactRef, evidence, inboxSignal, PAYLOADS } from './schemas.ts';
+import type { artifactRef, inboxSignal, PAYLOADS, signalEvidence } from './schemas.ts';
 import type { EventType } from './versions.ts';
 import type { Actor } from './vocabulary.ts';
 
@@ -11,7 +11,8 @@ export type { EventType } from './versions.ts';
 
 export type ArtifactRef = z.infer<typeof artifactRef>;
 export type Screenshot = Extract<ArtifactRef, { kind: 'screenshot' }>;
-export type Evidence = z.infer<typeof evidence>;
+/** Evidence, as a signal carries it: a scan's only ever on a dependency's. */
+export type Evidence = z.infer<typeof signalEvidence>;
 /** A signal as a sense leaves it in the inbox (schemas.ts). */
 export type InboxSignal = z.infer<typeof inboxSignal>;
 /** How what a sense reads stood when it saw something, as triage looked. */

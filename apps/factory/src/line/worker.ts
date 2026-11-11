@@ -105,8 +105,8 @@ import {
   cutTo,
   pointsAtSomething,
   pointWords,
+  ROUTE_SENSES,
   returnWords,
-  SENSES,
   scopesOverlap,
   upcast,
   WORDS_LEAVE_HELD,
@@ -598,6 +598,11 @@ export class Line {
       const first = await this.#firstSignal(workItem);
       if (!first) {
         this.#o.log.warn({ workItem }, 'a ticket a dry run verified has no signal to reopen it on');
+        return;
+      }
+      // A move's ticket names no route to reopen it on, and work-item.reopened takes a route's sense alone.
+      if (first.sense === 'dependency') {
+        this.#o.log.warn({ workItem }, 'a dependency’s ticket a dry run verified names no route to reopen it on');
         return;
       }
       await this.#append(workItem, [
@@ -1434,7 +1439,7 @@ export class Line {
   ): Promise<void> {
     const now = this.#o.now();
     const first = await this.#firstSignal(workItem);
-    const sense = SENSES.find((one) => one === first?.sense);
+    const sense = ROUTE_SENSES.find((one) => one === first?.sense);
     const base = {
       for: occasion,
       ...(sense ? { sense } : {}),
@@ -1644,7 +1649,9 @@ export class Line {
     if (!pictures || promoted.dryRun) return { pages: [], artifacts: [] };
     // The ticket's own page: where its sense last boxed its check, with the elements it boxed, and its route.
     const ownOf = async (signal: FirstSignal | undefined): Promise<Own> => {
-      const look = signal && (await pictures.lookOf(signal.sense, signal.check, signal.route));
+      // A move is on no page: a dependency's ticket has no page of its own.
+      const look =
+        signal && signal.sense !== 'dependency' && (await pictures.lookOf(signal.sense, signal.check, signal.route));
       return {
         route: signal?.route ?? '*',
         ...(look && { path: look.path, selectors: look.elements.map((e) => e.selector) }),
@@ -1686,7 +1693,13 @@ export class Line {
   /** The ticket's first signal: its sense, check, route and evidence, never a report's words. */
   async #firstSignal(workItem: string): Promise<FirstSignal | undefined> {
     const [row] = await this.#o.sql<
-      { sense: SignalSource; check: string; route: string; symptom: SymptomClass | null; evidence: Evidence[] | null }[]
+      {
+        sense: SignalSource;
+        check: string;
+        route: string | null;
+        symptom: SymptomClass | null;
+        evidence: Evidence[] | null;
+      }[]
     >`
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
              payload->>'symptom' as symptom, payload->'evidence' as evidence
@@ -1695,7 +1708,8 @@ export class Line {
       row && {
         sense: row.sense,
         check: row.check,
-        route: row.route,
+        // A dependency's names a move, on no page: Verify holds its ticket for Martin before any route is read.
+        route: row.route ?? '*',
         ...(row.symptom ? { symptom: row.symptom } : {}),
         evidence: row.evidence ?? [],
       }
@@ -1971,7 +1985,9 @@ export class Line {
     const where =
       'class' in ticket.fingerprint
         ? `\`${ticket.fingerprint.class}\` on \`${ticket.fingerprint.route}\``
-        : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
+        : 'ecosystem' in ticket.fingerprint
+          ? `the move of \`${ticket.fingerprint.name}\`, in ${ticket.fingerprint.ecosystem}`
+          : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
     const body = [
       `The factory’s ticket #${workItem}: ${where}.`,
       '',

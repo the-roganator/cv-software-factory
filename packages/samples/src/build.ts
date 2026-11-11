@@ -8,12 +8,13 @@ import type {
   Actor,
   Agent,
   ArtifactRef,
+  DefectSymptom,
   EventType,
   Evidence,
   NewEvent,
   PayloadOf,
+  RouteSense,
   Screenshot,
-  Sense,
 } from '@software-factory/events';
 import { VERSIONS } from '@software-factory/events';
 import { release } from '../../../policy/release.ts';
@@ -671,7 +672,7 @@ interface ProbeTicket {
   check: string;
   route: string;
   version: string;
-  symptom: NonNullable<PayloadOf<'signal.received'>['symptom']>;
+  symptom: DefectSymptom;
   summary: string;
   exchange: Pick<Extract<Evidence, { kind: 'http' }>, 'method' | 'url' | 'status' | 'timings'>;
   title: string;
@@ -684,7 +685,7 @@ interface ProbeTicket {
 interface Verification {
   outcome?: PayloadOf<'verification.finished'>['outcome'];
   /** The sense that verified it: the one that saw the defect. */
-  sense?: Sense;
+  sense?: RouteSense;
   /** Who the event is by: the sense, as the line writes it now, or the factory, as the first samples have it. */
   actor?: Actor;
   check: string;

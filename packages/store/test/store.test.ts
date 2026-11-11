@@ -38,7 +38,7 @@ function opened(item: string, sample = true): NewEvent<'work-item.opened'> {
     ts: at(0),
     work_item: item,
     type: 'work-item.opened',
-    version: 2,
+    version: 3,
     actor: 'visitor',
     summary: 'A visitor sent a report',
     payload: { kind: 'visitor-report', title: 'A report on the clock', sample, visitor: { key: 'amber-otter' } },
@@ -52,7 +52,7 @@ function report(item: string): NewEvent<'signal.received'> {
     ts: at(1),
     work_item: item,
     type: 'signal.received',
-    version: 5,
+    version: 6,
     actor: 'widget',
     summary: 'Report: the clock says ten past four',
     payload: {
@@ -486,16 +486,16 @@ describe('reading', () => {
   it('upcasts an event stored at an older version', async () => {
     const item = nextItem();
     const [first] = await samples().append(opened(item));
-    // As if a test-only version 2 of work-item.opened had called its title `name`; version 3 renamed it.
+    // Stored at version 3, as if a test-only version 4 of work-item.opened had renamed its title `name`.
     const catalogue = {
-      versions: { 'work-item.opened': 3 },
+      versions: { 'work-item.opened': 4 },
       upcasters: {
-        'work-item.opened': { 2: ({ title, ...rest }: Record<string, unknown>) => ({ ...rest, name: title }) },
+        'work-item.opened': { 3: ({ title, ...rest }: Record<string, unknown>) => ({ ...rest, name: title }) },
       },
     };
     const [read] = await readPublic(reader, (first?.seq ?? 1) - 1, { limit: 1, catalogue });
     expect(read?.understood).toBe(true);
-    expect(read?.event).toMatchObject({ version: 3, payload: { name: 'A report on the clock' } });
+    expect(read?.event).toMatchObject({ version: 4, payload: { name: 'A report on the clock' } });
   });
 
   it('passes on an event written by a newer factory, marked as not understood', async () => {
@@ -503,7 +503,7 @@ describe('reading', () => {
     const [first] = await samples().append(opened(item));
     const catalogue = { versions: {}, upcasters: {} };
     const [read] = await readPublic(reader, (first?.seq ?? 1) - 1, { limit: 1, catalogue });
-    expect(read).toMatchObject({ understood: false, event: { type: 'work-item.opened', version: 2 } });
+    expect(read).toMatchObject({ understood: false, event: { type: 'work-item.opened', version: 3 } });
   });
 
   it('returns events after a seq, in order, up to a limit', async () => {

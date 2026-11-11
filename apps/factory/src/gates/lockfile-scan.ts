@@ -25,8 +25,9 @@
  *   counts the line records. It writes none when any lockfile on either side could not be judged.
  *
  * Its exceptions are the daily scan's: the entries of `policy/vulnerabilities.ts` in force, read from this repository's
- * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges (GITHUB_REPOSITORY), each for one lockfile, package and
- * advisory. A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
+ * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges
+ * (GITHUB_REPOSITORY), each for one lockfile, package and advisory, matched by the same function the image scan and
+ * dependency review use (./exceptions.ts). A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
  * excepted finding is not held by it. Nothing is read from the change that could except anything.
  *
  * Both checkouts are data: nothing in them runs. Trivy runs in its pinned image, the advisory database pulled once,
@@ -38,8 +39,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { EXCEPTIONS, type Exception, exceptionFor } from '../../../../policy/vulnerabilities.ts';
+import { EXCEPTIONS, type Exception } from '../../../../policy/vulnerabilities.ts';
 import { countBySeverity, countsNote } from './counts.ts';
+import { except as exceptAll, LOCKFILE } from './exceptions.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 const run = promisify(execFile);
@@ -159,7 +161,8 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
 }
 
 /**
- * What the change brings in, split into what fails and what an exception in force for the repository excepts: the
+ * What the change brings in, split into what fails and what an exception in force for the repository excepts, each
+ * for its own lockfile, by the shared reading the image scan and dependency review use too (./exceptions.ts): the
  * entries of policy/vulnerabilities.ts, which the workflow takes from `main`, or others, for the tests.
  */
 export function except(
@@ -168,14 +171,13 @@ export function except(
   entries: readonly Exception[] = EXCEPTIONS,
   today: Date | string = new Date(),
 ) {
-  const excepted: (Finding & { expires: string })[] = [];
-  const failing: Finding[] = [];
-  for (const f of added) {
-    const entry = exceptionFor(entries, { repository, item: f.lockfile, package: f.pkg, advisory: f.advisory }, today);
-    if (entry) excepted.push({ ...f, expires: entry.expires });
-    else failing.push(f);
-  }
-  return { excepted, failing };
+  return exceptAll(
+    added,
+    repository,
+    (f) => ({ item: f.lockfile, package: f.pkg, advisory: f.advisory }),
+    entries,
+    today,
+  );
 }
 
 /** The Trivy image a Dockerfile pins, by version and digest, as scripts/workflows.test.ts holds it. */
@@ -183,8 +185,7 @@ export function trivyPin(dockerfile: string) {
   return /^FROM (ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64})$/m.exec(dockerfile)?.[1];
 }
 
-/** A lockfile pnpm may install from: `pnpm-lock.yaml`, or a branch's `pnpm-lock.<name>.yaml`. */
-export const LOCKFILE = /(^|\/)pnpm-lock(\.[^/]+)?\.yaml$/;
+export { LOCKFILE };
 
 /**
  * A lockfile's YAML documents, each that holds more than blank lines and comments, split where a line is a document's

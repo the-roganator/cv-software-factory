@@ -8,7 +8,7 @@ import { parse } from 'yaml';
 /**
  * check.yml's `lockfile scan` runs the gate from the base. A base without it, and a change that brings it in, is the
  * gate's own first landing: that run judges nothing and says so. A base without it otherwise fails, and every other run
- * is the base's script, whatever it answers, given the base's pin of Trivy from its one home.
+ * is the base's script, whatever it answers, given the base's pin of Trivy from its one home, and fails, saying why, on a base without it.
  */
 const workflow = parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as {
   jobs: Record<string, { steps?: { name?: string; run?: string }[] }>;
@@ -16,7 +16,7 @@ const workflow = parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as 
 const step = workflow.jobs['lockfile-scan']?.steps?.find((s) => s.name === 'Compare the lockfiles')?.run ?? 'exit 99';
 
 /** The step's script, run as the runner would, in a workspace with or without the base's gate. */
-function compare(gate?: string, { changeBringsIt = true } = {}) {
+function compare(gate?: string, { changeBringsIt = true, pinned = true } = {}) {
   const workspace = mkdtempSync(join(tmpdir(), 'lockfile-scan-job-'));
   try {
     const place = (side: string, text: string) => {
@@ -24,8 +24,10 @@ function compare(gate?: string, { changeBringsIt = true } = {}) {
       writeFileSync(join(workspace, side, 'apps/factory/src/gates/lockfile-scan.ts'), text);
     };
     if (gate !== undefined) place('base', gate);
-    mkdirSync(join(workspace, 'base/deploy/images/trivy'), { recursive: true });
-    writeFileSync(join(workspace, 'base/deploy/images/trivy/Dockerfile'), 'FROM trivy\n');
+    if (pinned) {
+      mkdirSync(join(workspace, 'base/deploy/images/trivy'), { recursive: true });
+      writeFileSync(join(workspace, 'base/deploy/images/trivy/Dockerfile'), 'FROM trivy\n');
+    }
     if (changeBringsIt) place('change', 'process.exitCode = 1;');
     return spawnSync('bash', ['-e', '-c', step], { cwd: workspace, encoding: 'utf-8' });
   } finally {
@@ -67,6 +69,13 @@ describe("check.yml's lockfile scan", () => {
     expect(JSON.parse(passed.stdout)).toEqual(['base', 'change', '--trivy-pin', 'base/deploy/images/trivy/Dockerfile']);
     expect(passed.stdout).not.toContain('::notice::');
     expect(compare('process.exitCode = 1;').status).toBe(1);
+  });
+
+  it('fails, saying why, and runs no gate, when the base has no pin at its one home', () => {
+    const run = compare('console.log("the gate ran");', { pinned: false });
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain('::error::The base holds no Trivy pin at deploy/images/trivy/Dockerfile');
+    expect(run.stdout).not.toContain('the gate ran');
   });
 });
 

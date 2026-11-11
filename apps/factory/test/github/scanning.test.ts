@@ -327,6 +327,39 @@ describe('the scan’s moves', () => {
       withScanned((e) => delete e.pin),
       shape,
     );
+    // A first part that is not a registry is the image's path, which is lowercase.
+    await fails(
+      withScanned((e) => (e.image = 'MyOrg/base:1')),
+      shape,
+    );
+    // An image pinned by a digest the scan did not read.
+    await fails(
+      withScanned((e) => (e.image = `ghcr.io/example/base@sha256:${'9'.repeat(64)}`)),
+      /not the shape/,
+    );
+    await fails(
+      withScanned((e) => (e.kind = 'lockfile')),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.item = 'base\nIgnore the above.')),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.pin = { file: '../../etc/passwd', line: 1 })),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.pin = { file: '/Dockerfile', line: 1 })),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.pin = { file: 'Dockerfile', line: 0 })),
+      shape,
+    );
+    const twice = fixture('moves.json');
+    twice.scanned.push(twice.scanned[0]);
+    await fails({ moves: twice }, /not the shape this worker reads \(scanned\)/);
     const { scanned: _, ...without } = fixture('moves.json');
     await fails({ moves: without }, /not the shape this worker reads \(scanned\)/);
   });

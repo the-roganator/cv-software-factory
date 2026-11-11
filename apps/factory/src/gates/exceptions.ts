@@ -8,7 +8,7 @@
  *
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
-import { EXCEPTIONS, type Exception, exceptionFor } from '../../../../policy/vulnerabilities.ts';
+import { EXCEPTIONS, type Exception, exceptionFor, lapsed } from '../../../../policy/vulnerabilities.ts';
 
 /** A lockfile pnpm may install from: `pnpm-lock.yaml`, or a branch's `pnpm-lock.<name>.yaml`, at any depth. */
 export const LOCKFILE = /(^|\/)pnpm-lock(\.[^/]+)?\.yaml$/;
@@ -57,8 +57,6 @@ export function lockfileEntries(
   today: Date | string = new Date(),
 ) {
   return entries.filter(
-    (entry) =>
-      LOCKFILE.test(entry.item) &&
-      exceptionFor([entry], { repository, item: entry.item, package: entry.package, advisory: entry.advisory }, today),
+    (entry) => entry.repository === repository && LOCKFILE.test(entry.item) && !lapsed(entry, today),
   );
 }

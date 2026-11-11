@@ -98,6 +98,7 @@ describe("the exceptions, from main's policy alone", () => {
   ] as const;
 
   it("put main's policy/vulnerabilities.ts where the script imports it, before it runs, in every job that reads it", () => {
+    const takes = new Set<string | undefined>();
     for (const [file, name, into] of jobs) {
       const steps = (parse(readFileSync(file, 'utf-8')).jobs[name] as { steps: Step[] }).steps;
       const main = steps.findIndex((s) => s.uses?.startsWith('actions/checkout@') && s.with?.path === 'policy-main');
@@ -110,9 +111,12 @@ describe("the exceptions, from main's policy alone", () => {
       const take = steps.findIndex((s) => s.name === 'Take the exceptions from main');
       expect(take, `${file} ${name}`).toBeGreaterThan(main);
       expect(steps[take]?.run).toContain(`cp policy-main/policy/vulnerabilities.ts ${into}/policy/vulnerabilities.ts`);
+      if (file !== '.github/workflows/check.yml') takes.add(steps[take]?.run);
       const runs = steps.findIndex((s) => /lockfile-scan\.ts|scan\.ts|dependency-allow\.ts/.test(s.run ?? ''));
       expect(runs, `${file} ${name}`).toBeGreaterThan(take);
     }
+    // One step, the same in every job that takes the policy into `factory`, so no copy drifts.
+    expect(takes.size).toBe(1);
   });
 
   it("gives dependency review the advisories main's policy allows, read after main's copy is in place", () => {

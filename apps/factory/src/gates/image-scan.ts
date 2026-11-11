@@ -100,6 +100,29 @@ export function newIn(
   return { added, failing: failing.filter((v) => FAILING.has(v.Severity)), excepted, removed, total: after.length };
 }
 
+/** The run's summary: what the change's image brings in, each excepted finding in a table of its own. */
+export function summary({ added, failing, excepted, removed, total }: ReturnType<typeof newIn>) {
+  const shown = added.filter((v) => !excepted.some((e) => key(e) === key(v)));
+  const rows = shown
+    .map(
+      (v) =>
+        `| ${v.Severity} | ${v.VulnerabilityID} | ${cell(v.PkgName)} ${cell(v.InstalledVersion)} | ${cell(v.FixedVersion ?? 'none yet')} | ${cell(v.Title ?? '')} |`,
+    )
+    .join('\n');
+  return [
+    '## Image scan',
+    failing.length
+      ? `This change's image brings in ${failing.length} high or critical vulnerabilit${failing.length === 1 ? 'y' : 'ies'} the base's does not have.`
+      : `This change's image brings in no high or critical vulnerability${excepted.length ? ' but those excepted' : ''}. It has ${total} known in all, ${added.length} of them new and ${removed.length} fewer than the base's.`,
+    shown.length ? `| Severity | Vulnerability | Package | Fixed in | Title |\n|---|---|---|---|---|\n${rows}` : '',
+    excepted.length
+      ? `It brings in ${excepted.length} that policy/vulnerabilities.ts on main excepts, which fail nothing:\n\n| Vulnerability | Package | Excepted until |\n|---|---|---|\n${excepted.map((v) => `| ${v.VulnerabilityID} | ${cell(v.PkgName)} ${cell(v.InstalledVersion)} | ${v.expires} |`).join('\n')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 export async function main([basePath, changePath]: string[]): Promise<number> {
   if (!basePath || !changePath) {
     console.error('Usage: image-scan.ts <base trivy.json> <change trivy.json>');
@@ -109,27 +132,9 @@ export async function main([basePath, changePath]: string[]): Promise<number> {
   // reads is optional, so a report of another shape reads as no vulnerabilities rather than throwing.
   const read = async (path: string) => JSON.parse(await readFile(path, 'utf-8')) as TrivyReport;
   const [base, change] = [await read(basePath), await read(changePath)];
-  const { added, failing, excepted, removed, total } = newIn(base, change, process.env.GITHUB_REPOSITORY ?? '');
-  const rows = added
-    .map(
-      (v) =>
-        `| ${v.Severity} | ${v.VulnerabilityID} | ${cell(v.PkgName)} ${cell(v.InstalledVersion)} | ${cell(v.FixedVersion ?? 'none yet')} | ${cell(v.Title ?? '')} |`,
-    )
-    .join('\n');
-  await summarise(
-    [
-      '## Image scan',
-      failing.length
-        ? `This change's image brings in ${failing.length} high or critical vulnerabilit${failing.length === 1 ? 'y' : 'ies'} the base's does not have.`
-        : `This change's image brings in no high or critical vulnerability. It has ${total} known in all, ${added.length} of them new and ${removed.length} fewer than the base's.`,
-      added.length ? `| Severity | Vulnerability | Package | Fixed in | Title |\n|---|---|---|---|---|\n${rows}` : '',
-      excepted.length
-        ? `It brings in ${excepted.length} that policy/vulnerabilities.ts on main excepts, which fail nothing:\n\n| Vulnerability | Package | Excepted until |\n|---|---|---|\n${excepted.map((v) => `| ${v.VulnerabilityID} | ${cell(v.PkgName)} ${cell(v.InstalledVersion)} | ${v.expires} |`).join('\n')}`
-        : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n'),
-  );
+  const judged = newIn(base, change, process.env.GITHUB_REPOSITORY ?? '');
+  const { failing } = judged;
+  await summarise(summary(judged));
   const counts = countsOf(base, change);
   if (counts) annotate('notice', countsNote('image scan', counts));
   for (const v of failing)

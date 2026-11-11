@@ -24,8 +24,17 @@ export type Lookup = (advisory: string, pkg: string) => Promise<string[]>;
 
 const GHSA = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
 
-/** GitHub's global advisory database, asked once for each entry, three times before it gives up. */
-export function githubLookup(token: string | undefined, fetcher: typeof fetch = fetch): Lookup {
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * GitHub's global advisory database, asked once for each entry, three times before it gives up: a second, then four,
+ * apart, or as long as a rate limit's `retry-after` asks, up to a minute.
+ */
+export function githubLookup(
+  token: string | undefined,
+  fetcher: typeof fetch = fetch,
+  wait: (ms: number) => Promise<unknown> = pause,
+): Lookup {
   return async (advisory, pkg) => {
     const query = new URLSearchParams({
       [advisory.startsWith('GHSA-') ? 'ghsa_id' : 'cve_id']: advisory,
@@ -35,6 +44,7 @@ export function githubLookup(token: string | undefined, fetcher: typeof fetch = 
     });
     let last = '';
     for (let attempt = 0; attempt < 3; attempt++) {
+      let after = 1000 * 4 ** attempt;
       try {
         const response = await fetcher(`https://api.github.com/advisories?${query}`, {
           headers: {
@@ -48,9 +58,12 @@ export function githubLookup(token: string | undefined, fetcher: typeof fetch = 
           return Array.isArray(body) ? body.map((a) => (a as { ghsa_id?: unknown })?.ghsa_id).map(String) : [];
         }
         last = `${response.status} ${response.statusText}`;
+        const asked = Number(response.headers.get('retry-after'));
+        if (Number.isFinite(asked) && asked > 0) after = Math.min(asked, 60) * 1000;
       } catch (error) {
         last = error instanceof Error ? error.message : String(error);
       }
+      if (attempt < 2) await wait(after);
     }
     throw new Error(`GitHub's advisory database could not be read for ${advisory} in ${pkg}: ${last}`);
   };
@@ -69,13 +82,18 @@ export async function allowed(
   const ghsas = new Set<string>();
   const unknown: Exception[] = [];
   const used: Exception[] = [];
-  for (const entry of lockfileEntries(repository, entries, today)) {
-    if (!ADVISORY.test(entry.advisory)) continue;
-    const found = (await lookup(entry.advisory, entry.package)).filter((id) => GHSA.test(id));
-    if (!found.length) unknown.push(entry);
-    else used.push(entry);
+  const inForce = lockfileEntries(repository, entries, today);
+  // Each entry asked at once; an id that is not a CVE or GHSA id is not asked for, and allows nothing.
+  const answers = await Promise.all(
+    inForce.map(async (entry) =>
+      ADVISORY.test(entry.advisory) ? (await lookup(entry.advisory, entry.package)).filter((id) => GHSA.test(id)) : [],
+    ),
+  );
+  inForce.forEach((entry, at) => {
+    const found = answers[at] ?? [];
+    (found.length ? used : unknown).push(entry);
     for (const id of found) ghsas.add(id);
-  }
+  });
   return { ghsas: [...ghsas].sort(), used, unknown };
 }
 
@@ -92,7 +110,7 @@ export async function main(): Promise<number> {
   for (const entry of unknown)
     annotate(
       'warning',
-      `GitHub's advisory database holds no advisory ${entry.advisory} for ${entry.package} in npm: dependency review allows nothing for the exception for ${entry.item}.`,
+      `GitHub's advisory database holds no advisory ${entry.advisory} for ${entry.package} in npm, or it is not a CVE or GHSA id: dependency review allows nothing for the exception for ${entry.item}.`,
     );
   const line = `Dependency review allows ${ghsas.length} ${ghsas.length === 1 ? 'advisory' : 'advisories'}, for ${used.length} ${used.length === 1 ? 'exception' : 'exceptions'} in force for ${repository || 'no repository'}'s lockfiles in policy/vulnerabilities.ts on main${ghsas.length ? `: ${ghsas.join(', ')}` : ''}.`;
   console.log(line);

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Exception } from '../../../../policy/vulnerabilities.ts';
 import { allowed, githubLookup, type Lookup } from '../../src/gates/dependency-allow.ts';
 import { lockfileEntries, ownImage } from '../../src/gates/exceptions.ts';
-import { newIn } from '../../src/gates/image-scan.ts';
+import { newIn, summary } from '../../src/gates/image-scan.ts';
 import { except, type Finding } from '../../src/gates/lockfile-scan.ts';
 
 /**
@@ -126,6 +126,29 @@ describe("dependency review's advisories", () => {
     expect(unknown).toEqual([entries[2]]);
   });
 
+  it('wait as long as a rate limit asks, up to a minute', async () => {
+    const answers = [
+      new Response('slow down', { status: 429, headers: { 'retry-after': '7' } }),
+      new Response('slow down', { status: 403, headers: { 'retry-after': '3600' } }),
+      Response.json([{ ghsa_id: GHSA }]),
+    ];
+    const fetcher = (async () => answers.shift()) as unknown as typeof fetch;
+    const waits: number[] = [];
+    expect(await githubLookup(undefined, fetcher, async (ms) => void waits.push(ms))(CVE, PACKAGE)).toEqual([GHSA]);
+    expect(waits).toEqual([7000, 60_000]);
+  });
+
+  it('name an entry whose advisory is not a CVE or GHSA id, and ask nothing for it', async () => {
+    const asked: string[] = [];
+    const counting: Lookup = async (advisory, pkg) => {
+      asked.push(advisory);
+      return lookup(advisory, pkg);
+    };
+    const bad = entry({ advisory: 'cve-2099-20001' });
+    const { ghsas, unknown } = await allowed(APP, counting, [bad], TODAY);
+    expect([ghsas, unknown, asked]).toEqual([[], [bad], []]);
+  });
+
   it('take only what GitHub writes as a GHSA id, so nothing else reaches the action', async () => {
     const odd: Lookup = async () => ['GHSA-2222-3333-4444,GHSA-xxxx', 'not an id', GHSA];
     expect((await allowed(APP, odd, [entry()], TODAY)).ghsas).toEqual([GHSA]);
@@ -138,14 +161,33 @@ describe("dependency review's advisories", () => {
       asked.push(`${url} ${(init.headers as Record<string, string>).authorization}`);
       return answers.shift() ?? new Response('no', { status: 500 });
     }) as unknown as typeof fetch;
-    expect(await githubLookup('token', fetcher)(CVE, '@scope/pkg')).toEqual([GHSA]);
+    const waits: number[] = [];
+    const wait = async (ms: number) => void waits.push(ms);
+    expect(await githubLookup('token', fetcher, wait)(CVE, '@scope/pkg')).toEqual([GHSA]);
+    expect(waits).toEqual([1000]);
     expect(asked).toEqual([
       `https://api.github.com/advisories?cve_id=${CVE}&ecosystem=npm&affects=%40scope%2Fpkg&per_page=100 Bearer token`,
       `https://api.github.com/advisories?cve_id=${CVE}&ecosystem=npm&affects=%40scope%2Fpkg&per_page=100 Bearer token`,
     ]);
     asked.length = 0;
-    await expect(githubLookup(undefined, fetcher)(GHSA, PACKAGE)).rejects.toThrow(/could not be read.*500/);
+    waits.length = 0;
+    await expect(githubLookup(undefined, fetcher, wait)(GHSA, PACKAGE)).rejects.toThrow(/could not be read.*500/);
     expect(asked).toHaveLength(3);
+    // A second, then four, apart: never a third wait after the last try.
+    expect(waits).toEqual([1000, 4000]);
     expect(asked[0]).toContain(`ghsa_id=${GHSA}`);
+  });
+});
+
+describe('the image scan’s summary', () => {
+  it('lists an excepted finding as excepted alone, and says the change brings in none but those', () => {
+    const excepted = summary(newIn(imageBase, imageChange, APP, IN_FORCE, TODAY));
+    expect(excepted).toContain('brings in no high or critical vulnerability but those excepted');
+    expect(excepted).not.toContain(`| CRITICAL | ${CVE} |`);
+    expect(excepted).toContain(`| ${CVE} | ${PACKAGE} 1.2.3 | 2026-11-12 |`);
+    const expired = summary(newIn(imageBase, imageChange, APP, EXPIRED, TODAY));
+    expect(expired).toContain('brings in 1 high or critical vulnerability');
+    expect(expired).toContain(`| CRITICAL | ${CVE} |`);
+    expect(expired).not.toContain('excepts');
   });
 });

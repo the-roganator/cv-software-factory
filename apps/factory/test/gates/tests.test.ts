@@ -498,6 +498,22 @@ describe('the gates’ scripts, end to end', () => {
     }
   });
 
+  it('image scan: a report in Trivy’s schema with entries of another shape counts nothing, and does not throw', async () => {
+    const { countsOf } = await import('../../src/gates/image-scan.ts');
+    const fine = { SchemaVersion: 2, Results: [{ Target: 'os', Vulnerabilities: [] }] };
+    const odd = (Vulnerabilities: unknown[]) => ({
+      SchemaVersion: 2,
+      Results: [null, { Target: 'os', Vulnerabilities }],
+    });
+    expect(countsOf(fine, fine)).toEqual({
+      before: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+      after: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: a report of another shape, as Trivy would never write it
+    const reports = [odd([null, 7]), odd([{ VulnerabilityID: 'CVE-1', PkgName: 'zlib', Severity: 5 }])] as any[];
+    for (const report of reports) expect(countsOf(fine, report)).toBeUndefined();
+  });
+
   it('image scan: its notice counts what each image has in all, by severity, each vulnerability once', async () => {
     const { main } = await import('../../src/gates/image-scan.ts');
     const { parseCounts } = await import('../../src/gates/counts.ts');

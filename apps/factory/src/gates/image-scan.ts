@@ -36,17 +36,34 @@ const key = (v: Vulnerability) => `${v.VulnerabilityID} ${v.PkgName}`;
 
 export function vulnerabilities(report: TrivyReport): Vulnerability[] {
   const results = Array.isArray(report?.Results) ? report.Results : [];
-  const all = results.flatMap((r) => (Array.isArray(r?.Vulnerabilities) ? r.Vulnerabilities : []));
+  const all = results
+    .flatMap((r) => (Array.isArray(r?.Vulnerabilities) ? r.Vulnerabilities : []))
+    .filter((v): v is Vulnerability => typeof v === 'object' && v !== null);
   return [...new Map(all.map((v) => [key(v), v])).values()];
 }
 
-/** A report Trivy wrote, as far as counting it goes: its own schema, with a list of results. */
-export const countable = (report: TrivyReport) => report?.SchemaVersion === 2 && Array.isArray(report.Results);
+/**
+ * A report Trivy wrote, as far as counting it goes: its own schema, with a list of results, each vulnerability in them
+ * an object with its severity in words.
+ */
+export function countable(report: TrivyReport): boolean {
+  const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+  const results: unknown = report?.Results;
+  return (
+    report?.SchemaVersion === 2 &&
+    Array.isArray(results) &&
+    results.every((r) => {
+      if (!object(r)) return false;
+      const found = r.Vulnerabilities ?? [];
+      return Array.isArray(found) && found.every((v) => object(v) && typeof v.Severity === 'string');
+    })
+  );
+}
 
 /** What each image has in all, by severity, or nothing when either report cannot be counted. */
 export function countsOf(base: TrivyReport, change: TrivyReport) {
   if (!countable(base) || !countable(change)) return undefined;
-  const of = (report: TrivyReport) => countBySeverity(vulnerabilities(report).map((v) => v.Severity ?? 'UNKNOWN'));
+  const of = (report: TrivyReport) => countBySeverity(vulnerabilities(report).map((v) => v.Severity));
   return { before: of(base), after: of(change) };
 }
 

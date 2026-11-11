@@ -30,7 +30,7 @@ import {
   recordedPath,
   VERSIONS,
 } from '@software-factory/events';
-import { ACTIONS_APP, countsOfCheck } from '../gates/counts.ts';
+import { ACTIONS_APP, countsOfCheck, scanOfCheck } from '../gates/counts.ts';
 import { APP_LOGIN } from '../github/actions.ts';
 import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { whatClearedOnLook } from './verify.ts';
@@ -102,19 +102,9 @@ function annotationsOf(run: CheckRun): PayloadOf<'gate.finished'>['annotations']
  * What a scan's run counted, as `gate.finished` keeps it: from the notices on GitHub Actions' run alone, whatever its
  * conclusion, and nothing from any other app's run of the scan's name or from a notice that does not parse.
  */
-function findingsOf(run: CheckRun | undefined): PayloadOf<'gate.finished'>['findings'] {
-  if (run?.app !== ACTIONS_APP || run.status !== 'completed' || !run.notices) return undefined;
+function findingsOf(run: CheckRun): PayloadOf<'gate.finished'>['findings'] {
+  if (run.app !== ACTIONS_APP || !run.notices) return undefined;
   return countsOfCheck(run.name, run.notices);
-}
-
-/**
- * GitHub Actions' latest run of each check, by name: where a scan's counts come from, even when another app posted a
- * later run of the same name, which neither gives them nor hides Actions' own.
- */
-function actionsRuns(runs: readonly CheckRun[]): Map<string, CheckRun> {
-  const latest = new Map<string, CheckRun>();
-  for (const run of [...runs].sort((a, b) => a.id - b.id)) if (run.app === ACTIONS_APP) latest.set(run.name, run);
-  return latest;
 }
 
 const durationOf = (run: CheckRun) =>
@@ -199,7 +189,6 @@ function gateRun(
   required = gatesIn(required);
   const commit = pr.head.sha;
   const latest = latestRuns(runs);
-  const actions = actionsRuns(runs);
   if (latest.size === 0) return [];
   const drafts: Draft[] = [];
   const pullRequest = pr.number;
@@ -219,7 +208,7 @@ function gateRun(
     const title = run.title?.trim();
     const summary = title === undefined ? undefined : cutTo(title, 200);
     const annotations = annotationsOf(run);
-    const findings = findingsOf(actions.get(run.name));
+    const findings = findingsOf(run);
     drafts.push({
       type: 'gate.finished',
       actor: 'actions',
@@ -262,13 +251,15 @@ function gateRun(
 
 /**
  * The latest run of each check on a commit, by name: a check run again replaces the run before. The factory's own are
- * left out, and so is the review gate's.
+ * left out, and so is the review gate's; so is a scan's that GitHub Actions did not post, which neither counts nor
+ * hides Actions' own run of it (`../gates/counts.ts`).
  */
 export function latestRuns(runs: readonly CheckRun[]): Map<string, CheckRun> {
   const latest = new Map<string, CheckRun>();
   for (const run of [...runs].sort((a, b) => a.id - b.id)) {
-    const reviewGate = run.name === REVIEW_GATE_CHECK && run.app !== 'github-actions';
-    if (run.app !== APP_SLUG && !reviewGate) latest.set(run.name, run);
+    const reviewGate = run.name === REVIEW_GATE_CHECK && run.app !== ACTIONS_APP;
+    const foreignScan = Boolean(scanOfCheck(run.name)) && run.app !== ACTIONS_APP;
+    if (run.app !== APP_SLUG && !reviewGate && !foreignScan) latest.set(run.name, run);
   }
   return latest;
 }

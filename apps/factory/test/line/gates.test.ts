@@ -143,7 +143,12 @@ describe('the gates, as events', () => {
     expect(finished('gates / image scan')?.findings).toEqual(counts);
     expect(finished('gates / lockfile scan')).not.toHaveProperty('findings');
     expect(finished('gates / tests')).not.toHaveProperty('findings');
-    expect(finished('image scan')).not.toHaveProperty('findings');
+    // Another app's run of a scan's name is not recorded at all: the scan is Actions' run, conclusion and counts alike.
+    expect(finished('image scan')).toBeUndefined();
+    expect(drafts.filter((d) => d.type === 'gate.finished' && d.payload.check === 'gates / image scan')).toHaveLength(
+      1,
+    );
+    expect(finished('gates / image scan')?.conclusion).toBe('failure');
     for (const draft of drafts)
       expect(validate(asEvent('1015', draft, '2026-11-11T04:00:00.000Z'))).toEqual({ ok: true });
   });

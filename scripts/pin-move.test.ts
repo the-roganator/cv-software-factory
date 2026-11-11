@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -570,7 +570,9 @@ describe('the manifests and the records', () => {
     const text = readFileSync(file, 'utf-8');
     const pinned = /image: (postgres:\S+@sha256:[0-9a-f]{64})/.exec(text)?.[1] as string;
     writeFileSync(file, text.split(pinned.slice(-64)).join(hex('e')));
-    const [base, head] = (await Promise.all(dirs.map(hashesOf))) as [Record<string, string>, Record<string, string>];
+    const [base, head] = (await Promise.all(dirs.map(hashesOf)).finally(() => {
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    })) as [Record<string, string>, Record<string, string>];
     const moves = base['admission-refusals'] !== head['admission-refusals'];
     const io = { hashes: async (side: 'base' | 'head') => (side === 'base' ? base : head) };
     const reason = await reasonOf({ ...POSTGRES, io });

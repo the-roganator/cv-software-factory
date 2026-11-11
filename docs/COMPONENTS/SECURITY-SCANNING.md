@@ -99,7 +99,7 @@ A finding is evidence; a move is the unit of work. `apps/factory/src/vulnerabili
 | `dependabot` | Dependabot | a pin its docker entries read, with no High or Critical on a deadline, and a direct package of the lockfile within a day of its fix |
 | `worker` | the GitHub worker | every other pin: an image's digest, a value's pin, a chart within its major, a stage of a Dockerfile Dependabot does not read |
 
-The log and the step summary print the table of moves (name, from, to, what it clears and leaves, new today, deadline, lane) and the totals: results with a fix, moves, and moves by lane. The same is uploaded as the artifact `moves`, `moves.json` (`MovesFile`, with `version: 1`, the `MOVES_VERSION` a reader checks, and `run`, the run that made it), which holds nothing the log does not. A lockfile's move is "a package in `pnpm-lock.yaml`", with no package, version or line, which in a public lockfile would name it; its alerts hold the rest, for those who can read code scanning.
+The log and the step summary print the table of moves (name, from, to, what it clears and leaves, new today, deadline, lane) and the totals: results with a fix, moves, and moves by lane. The same is uploaded as the artifact `moves`, `moves.json` (`MovesFile`, with `version: 1`, the `MOVES_VERSION` a reader checks, and `run`, the run that made it), which holds nothing the log does not. A lockfile's move is "a package in `pnpm-lock.yaml`", marked `lockfile: true`, with no package, version or line, which in a public lockfile would name it; its alerts hold the rest, for those who can read code scanning.
 
 ## Exceptions
 

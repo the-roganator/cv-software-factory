@@ -4,9 +4,9 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse } from 'yaml';
-import type { Deployment, Line, Ops, Root, Workload } from './try.ts';
-import { NAMESPACES, POLICY } from './try.ts';
+import { parse, parseAllDocuments } from 'yaml';
+import type { Deployment, K8sObject, Line, ObjectRef, Ops, Root, Workload } from './try.ts';
+import { asDeployment, NAMESPACES, POLICY } from './try.ts';
 
 /** Only the fields of Kubernetes' objects that are read here. */
 interface K8sContainer {
@@ -98,32 +98,36 @@ function checkout(): string {
   return join(common, '..');
 }
 
+/** Runs `use` in a detached worktree of the commit, never anyone's checkout, removed after. */
+function inTree<T>(commit: string, use: (tree: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), 'try-tree-'));
+  const tree = join(dir, 'tree');
+  run('git', ['-C', checkout(), 'worktree', 'add', '-q', '--detach', tree, commit]);
+  try {
+    return use(tree);
+  } finally {
+    run('git', ['-C', checkout(), 'worktree', 'remove', '--force', tree]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The resource kubectl names an object's kind by: `rolebinding.rbac.authorization.k8s.io`, `serviceaccount`. */
+const resource = (ref: ObjectRef): string => {
+  const group = ref.apiVersion.includes('/') ? ref.apiVersion.split('/')[0] : '';
+  return `${ref.kind.toLowerCase()}${group ? `.${group}` : ''}`;
+};
+const scope = (ref: ObjectRef): string[] => (ref.namespace ? ['-n', ref.namespace] : []);
+
 function deployment(d: Item): Deployment {
-  const spec = d.spec.template.spec;
-  const all = [
-    ...(spec.initContainers ?? []).map((c) => ({ ...c, init: true })),
-    ...spec.containers.map((c) => ({ ...c, init: false })),
-  ];
   const s = d.status ?? {};
   const want = d.spec.replicas ?? 1;
-  return {
-    name: d.metadata.name,
-    containers: all.map((c) => ({ name: c.name, init: c.init, image: c.image })),
-    env: all.flatMap((c) =>
-      (c.env ?? []).map((e) => ({
-        container: c.name,
-        name: e.name,
-        // The API leaves out an empty value: a variable with neither is set to ''.
-        ...(e.valueFrom === undefined ? { value: e.value ?? '' } : {}),
-        fromRef: e.valueFrom !== undefined,
-      })),
-    ),
-    rolledOut:
-      (s.observedGeneration ?? 0) >= d.metadata.generation &&
+  return asDeployment(
+    d as unknown as K8sObject,
+    (s.observedGeneration ?? 0) >= d.metadata.generation &&
       (s.updatedReplicas ?? 0) === want &&
       (s.availableReplicas ?? 0) === want &&
       (s.replicas ?? 0) === want,
-  };
+  );
 }
 
 export const ops: Ops = {
@@ -280,24 +284,54 @@ export const ops: Ops = {
       .split('\n')
       .filter(Boolean);
   },
+  render(commit) {
+    return inTree(commit, (tree) =>
+      parseAllDocuments(run('kubectl', ['kustomize', 'deploy/overlays/local'], { cwd: tree, timeoutMs: 5 * 60_000 }))
+        .map((d) => d.toJS() as K8sObject | null)
+        .filter((o): o is K8sObject => Boolean(o?.kind)),
+    );
+  },
+  getObject(ref) {
+    const out = kubectl('get', resource(ref), ref.name, ...scope(ref), '--ignore-not-found', '-o', 'json').trim();
+    return out ? (JSON.parse(out) as K8sObject) : undefined;
+  },
+  applyObject(object) {
+    run(
+      'kubectl',
+      ['--context', CONTEXT, 'apply', '--server-side', '--field-manager=try', '--force-conflicts', '-f', '-'],
+      {
+        input: JSON.stringify(object),
+      },
+    );
+  },
+  replaceObject(object) {
+    run('kubectl', ['--context', CONTEXT, 'replace', '-f', '-'], { input: JSON.stringify(object) });
+  },
+  deleteObject(ref) {
+    kubectl('delete', resource(ref), ref.name, ...scope(ref), '--ignore-not-found', '--wait=false');
+  },
+  migrations() {
+    return new Map(
+      sql('select version, name from schema_migrations order by version')
+        .split('\n')
+        .filter(Boolean)
+        .map((row) => {
+          const [version = '', name = ''] = row.split('|');
+          return [Number(version), name] as const;
+        }),
+    );
+  },
   hasLocal(ref) {
     return ok('docker', ['image', 'inspect', ref]);
   },
   build(commit, dockerfile, ref) {
-    // From a detached worktree of the commit, never anyone's checkout, removed after.
-    const dir = mkdtempSync(join(tmpdir(), 'try-build-'));
-    const tree = join(dir, 'tree');
-    run('git', ['-C', checkout(), 'worktree', 'add', '-q', '--detach', tree, commit]);
-    try {
+    inTree(commit, (tree) =>
       run('docker', ['build', '-f', dockerfile, '--build-arg', `GIT_COMMIT=${commit}`, '-t', ref, '.'], {
         cwd: tree,
         timeoutMs: 20 * 60_000,
         show: true,
-      });
-    } finally {
-      run('git', ['-C', checkout(), 'worktree', 'remove', '--force', tree]);
-      rmSync(dir, { recursive: true, force: true });
-    }
+      }),
+    );
   },
   load(refs) {
     run('k3d', ['image', 'import', '-c', CLUSTER, ...refs], { timeoutMs: 10 * 60_000, show: true });

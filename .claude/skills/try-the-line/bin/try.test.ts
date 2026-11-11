@@ -2,8 +2,8 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Deployment, Line, Ops, State, Workload } from './try.ts';
-import { main, parse, plan, REGISTRY, Refused, readState, writeState } from './try.ts';
+import type { Deployment, K8sObject, Line, ObjectRef, Ops, State, Workload } from './try.ts';
+import { asDeployment, main, migrationWarnings, parse, plan, REGISTRY, Refused, readState, writeState } from './try.ts';
 
 const MAIN = `${REGISTRY}/factory@sha256:${'a'.repeat(64)}`;
 const RUNNER = `${REGISTRY}/factory-runner@sha256:${'b'.repeat(64)}`;
@@ -20,6 +20,25 @@ function deployment(name: string, containers: [string, string, boolean?][], env:
     rolledOut: true,
   };
 }
+
+const key = (r: { name: string; namespace?: string; kind?: string }, kind = r.kind): string =>
+  `${kind}/${r.namespace ?? ''}/${r.name}`;
+
+/** A rendered object, as kustomize gives it. */
+function object(
+  kind: string,
+  name: string,
+  namespace: string | undefined,
+  rest: Record<string, unknown> = {},
+): K8sObject {
+  const apiVersion =
+    { Deployment: 'apps/v1', RoleBinding: 'rbac.authorization.k8s.io/v1', NetworkPolicy: 'networking.k8s.io/v1' }[
+      kind
+    ] ?? 'v1';
+  return { apiVersion, kind, metadata: { name, ...(namespace ? { namespace } : {}) }, ...rest };
+}
+const rendered = (name: string, image: string) =>
+  object('Deployment', name, 'factory', { spec: { template: { spec: { containers: [{ name, image }] } } } });
 
 /** A cluster, a store, a node and a Mac, in memory, with every call written down. */
 class Cluster implements Ops {
@@ -61,6 +80,10 @@ class Cluster implements Ops {
   loads = true;
   /** Whether Argo CD would put back what root owns once root is automated again. */
   selfHeals = true;
+  /** The live objects the try may apply over, by kind, namespace and name; and each commit's render. */
+  objects = new Map<string, K8sObject>();
+  renders: Record<string, K8sObject[]> = {};
+  storeMigrations = new Map<number, string>([[49, 'admin-step-up-ended']]);
   calls: string[] = [];
   said: string[] = [];
   clock = 0;
@@ -130,6 +153,29 @@ class Cluster implements Ops {
   workItemsSince = () => this.moved;
   commit = (branch: string) => this.branches[branch];
   changed = () => this.changes;
+  render = (commit: string) => structuredClone(this.renders[commit] ?? []);
+  getObject = (ref: ObjectRef) => structuredClone(this.objects.get(key(ref)));
+  applyObject(o: K8sObject) {
+    this.call(`applyObject ${key(o.metadata as unknown as ObjectRef, o.kind)}`);
+    this.put(o);
+  }
+  replaceObject(o: K8sObject) {
+    this.call(`replaceObject ${key(o.metadata as unknown as ObjectRef, o.kind)}`);
+    if (o.metadata.resourceVersion) throw new Error('replace with a resourceVersion');
+    this.put(o);
+  }
+  deleteObject(ref: ObjectRef) {
+    this.call(`deleteObject ${key(ref)}`);
+    this.objects.delete(key(ref));
+    if (ref.kind === 'Deployment') this.deps = this.deps.filter((d) => d.name !== ref.name);
+  }
+  private put(o: K8sObject) {
+    this.objects.set(key(o.metadata as unknown as ObjectRef, o.kind), structuredClone(o));
+    if (o.kind === 'Deployment' && o.metadata.namespace === 'factory') {
+      this.deps = [...this.deps.filter((d) => d.name !== o.metadata.name), asDeployment(o, true)];
+    }
+  }
+  migrations = () => new Map(this.storeMigrations);
   hasLocal = (ref: string) => this.mac.has(ref);
   build(_: string, dockerfile: string, ref: string) {
     this.call(`build ${dockerfile} ${ref}`);
@@ -204,6 +250,9 @@ function fresh(c: Cluster): Cluster {
     'branches',
     'changes',
     'clock',
+    'objects',
+    'renders',
+    'storeMigrations',
   ] as const;
   for (const k of shared) Object.assign(d, { [k]: structuredClone(c[k]) });
   d.mac = new Set(c.mac);
@@ -213,7 +262,7 @@ function fresh(c: Cluster): Cluster {
 
 describe('the state file', () => {
   const state: State = {
-    version: 1,
+    version: 2,
     phase: 'open',
     holder: 'try-script',
     user: 'martin',
@@ -229,6 +278,13 @@ describe('the state file', () => {
     deployments: [{ name: 'github', images: { github: MAIN }, env: [] }],
     images: [{ image: 'factory', ref: `${REGISTRY}/factory:local-12345678`, existed: false }],
     nodeRefs: [],
+    applied: [
+      { ref: { apiVersion: 'apps/v1', kind: 'Deployment', name: 'patching', namespace: 'factory' }, before: null },
+      {
+        ref: { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', name: 'github', namespace: 'factory' },
+        before: object('NetworkPolicy', 'github', 'factory', { spec: {} }),
+      },
+    ],
   };
 
   it('reads back what it wrote, in a directory it makes, readable by its owner alone', () => {
@@ -250,13 +306,23 @@ describe('the state file', () => {
     writeState(path, state, true);
     writeFileSync(path, '{"version":1');
     expect(() => readState(path)).toThrow(Refused);
-    writeFileSync(path, JSON.stringify({ ...state, version: 2 }));
-    expect(() => readState(path)).toThrow(/version 2/);
+    writeFileSync(path, JSON.stringify({ ...state, version: 1 }));
+    expect(() => readState(path)).toThrow(/version 1, not 2/);
     const { root: _, ...noRoot } = state;
     writeFileSync(path, JSON.stringify(noRoot));
     expect(() => readState(path)).toThrow(/lacks root/);
     writeFileSync(path, JSON.stringify({ ...state, deployments: [{ name: 'github', images: null, env: [] }] }));
     expect(() => readState(path)).toThrow(/a deployment it cannot read/);
+    writeFileSync(
+      path,
+      JSON.stringify({ ...state, applied: [{ ref: { kind: 'Deployment', name: 'x' }, before: null }] }),
+    );
+    expect(() => readState(path)).toThrow(/an applied object it cannot read/);
+    writeFileSync(path, JSON.stringify({ ...state, applied: [{ ref: state.applied[1]?.ref }] }));
+    expect(() => readState(path)).toThrow(/without what was there before/);
+    const { applied: _a, ...noApplied } = state;
+    writeFileSync(path, JSON.stringify(noApplied));
+    expect(() => readState(path)).toThrow(/lacks applied/);
     writeFileSync(path, JSON.stringify({ ...state, nodeRefs: [1] }));
     expect(() => readState(path)).toThrow(/lacks nodeRefs/);
     writeFileSync(path, JSON.stringify({ ...state, images: [{ image: 'factory' }] }));
@@ -365,9 +431,12 @@ describe('try begin', () => {
       ['when root is not Synced', (c) => (c.sync = 'OutOfSync'), /OutOfSync/],
       ['when the branch is unknown', (c) => (c.branches = {}), /no branch feat\/x/],
       [
-        'when the branch changes deploy/',
-        (c) => c.changes.push('deploy/base/factory/line.yaml'),
-        /deploy\/base\/factory\/line\.yaml/,
+        "when the branch's render differs on what it does not apply",
+        (c) => {
+          c.changes.push('deploy/base/factory/line.yaml');
+          c.renders[COMMIT] = [object('ConfigMap', 'line', 'factory', { data: { a: '1' } })];
+        },
+        /ConfigMap factory\/line \(--apply ConfigMap\/line\)/,
       ],
       ['when the branch adds a migration', (c) => c.changes.push('packages/store/migrations/0099.sql'), /--by-hand/],
       ["when a deployment is not the factory's", () => {}, /no deployment scoreboard/, ['--only', 'scoreboard']],
@@ -683,11 +752,205 @@ describe('try status', () => {
   });
 });
 
+describe("objects from the branch's render", () => {
+  /** The branch adds a worker (its Deployment, ServiceAccount, a RoleBinding in two namespaces) and changes github's
+   * NetworkPolicy; main's render has only the NetworkPolicy as it is live. */
+  function branchWithWorker(): Cluster {
+    const c = new Cluster();
+    c.changes = ['deploy/base/factory/patching.yaml', 'apps/factory/src/patching/sense.ts'];
+    const mainsPolicy = object('NetworkPolicy', 'github', 'factory', { spec: { podSelector: {}, ingress: [] } });
+    const live = {
+      ...structuredClone(mainsPolicy),
+      metadata: { ...mainsPolicy.metadata, resourceVersion: '7', uid: 'u' },
+      status: {},
+    };
+    c.objects.set('NetworkPolicy/factory/github', live as K8sObject);
+    c.renders['origin/main'] = [mainsPolicy];
+    c.renders[COMMIT] = [
+      object('NetworkPolicy', 'github', 'factory', {
+        spec: { podSelector: {}, ingress: [{ from: [{ podSelector: { matchLabels: { app: 'patching' } } }] }] },
+      }),
+      rendered('patching', MAIN),
+      object('ServiceAccount', 'patching', 'factory'),
+      object('RoleBinding', 'patching-lists-pods', 'factory'),
+      object('RoleBinding', 'patching-lists-pods', 'telemetry'),
+    ];
+    return c;
+  }
+  const ALL = [
+    '--apply',
+    'Deployment/patching,ServiceAccount/patching',
+    '--apply',
+    'RoleBinding/patching-lists-pods,NetworkPolicy/github',
+  ];
+
+  it('applies the named objects after root is paused, records what was there, and moves a Deployment main lacks', async () => {
+    const c = branchWithWorker();
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+    const state = readState(path) as State;
+    expect(state.applied.map((a) => [a.ref.kind, a.ref.namespace, a.ref.name, a.before === null])).toEqual([
+      ['Deployment', 'factory', 'patching', true],
+      ['ServiceAccount', 'factory', 'patching', true],
+      ['RoleBinding', 'factory', 'patching-lists-pods', true],
+      ['RoleBinding', 'telemetry', 'patching-lists-pods', true],
+      ['NetworkPolicy', 'factory', 'github', false],
+    ]);
+    expect(state.applied[4]?.before?.metadata.resourceVersion).toBe('7');
+    const at = (p: string) => c.calls.findIndex((x) => x.startsWith(p));
+    expect(at('pauseRoot')).toBeLessThan(at('applyObject'));
+    expect(at('applyObject')).toBeLessThan(at('setImages patching'));
+    expect(c.objects.get('Deployment/factory/patching')?.metadata.annotations?.['argocd.argoproj.io/tracking-id']).toBe(
+      'root:apps/Deployment:factory/patching',
+    );
+    expect(
+      c.objects.get('ServiceAccount/factory/patching')?.metadata.annotations?.['argocd.argoproj.io/tracking-id'],
+    ).toBe('root:/ServiceAccount:factory/patching');
+    expect(c.deps.find((d) => d.name === 'patching')?.containers[0]?.image).toBe(
+      `${REGISTRY}/factory@sha256:${'d'.repeat(64)}`,
+    );
+  });
+
+  it('told only what to apply, moves no deployment and builds nothing', async () => {
+    const c = branchWithWorker();
+    expect(await begin(c, ...ALL)).toBe(0);
+    expect(c.calls.some((x) => /build|load|setImages|setEnv/.test(x))).toBe(false);
+    expect(readState(path)?.deployments).toEqual([]);
+    const after = fresh(c);
+    expect(await end(after)).toBe(0);
+    expect(after.objects.has('Deployment/factory/patching')).toBe(false);
+  });
+
+  it('names every object it added or changed in try status', async () => {
+    const c = branchWithWorker();
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+    const other = fresh(c);
+    await main(['status'], other, path);
+    const out = said(other);
+    for (const line of [
+      'added: Deployment factory/patching',
+      'added: ServiceAccount factory/patching',
+      'added: RoleBinding factory/patching-lists-pods',
+      'added: RoleBinding telemetry/patching-lists-pods',
+      'changed: NetworkPolicy factory/github',
+    ]) {
+      expect(out).toContain(line);
+    }
+    expect(out).toMatch(/Deployment factory\/patching, which the try added, is still there/);
+  });
+
+  it('removes what it added and puts back what it changed, from a fresh shell, leaving nothing to prune', async () => {
+    const c = branchWithWorker();
+    const before = structuredClone([...c.objects]);
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+    const after = fresh(c);
+    expect(await end(after)).toBe(0);
+    const stripped = (o: K8sObject) => {
+      const { resourceVersion: _r, uid: _u, ...metadata } = o.metadata as Record<string, unknown>;
+      const { status: _s, ...rest } = o;
+      return { ...rest, metadata };
+    };
+    expect([...after.objects].map(([k, o]) => [k, stripped(o)])).toEqual(before.map(([k, o]) => [k, stripped(o)]));
+    expect(after.deps.some((d) => d.name === 'patching')).toBe(false);
+    expect(existsSync(path)).toBe(false);
+    // The changed one goes back before the deployments, the last applied first.
+    expect(after.calls.filter((x) => /Object/.test(x))).toEqual([
+      'replaceObject NetworkPolicy/factory/github',
+      'deleteObject RoleBinding/telemetry/patching-lists-pods',
+      'deleteObject RoleBinding/factory/patching-lists-pods',
+      'deleteObject ServiceAccount/factory/patching',
+      'deleteObject Deployment/factory/patching',
+    ]);
+  });
+
+  it('keeps the state while an object is not back, and says which', async () => {
+    const c = branchWithWorker();
+    expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+    const stuck = fresh(c);
+    stuck.deleteObject = () => {
+      throw new Error('forbidden');
+    };
+    expect(await end(stuck)).toBe(1);
+    expect(said(stuck)).toMatch(/Could not put back Deployment factory\/patching \(forbidden\)/);
+    expect(said(stuck)).toMatch(/ServiceAccount factory\/patching, which the try added, is still there/);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  describe('refuses, changing nothing', () => {
+    const cases: [string, string[], RegExp][] = [
+      [
+        'what the render differs on and the try does not apply',
+        ['--apply', 'Deployment/patching'],
+        /ServiceAccount factory\/patching \(--apply ServiceAccount\/patching\)/,
+      ],
+      ['an object the render lacks', ['--apply', 'Deployment/nope'], /no Deployment nope/],
+      [
+        'an object in a namespace a try leaves alone',
+        ['--apply', 'Service/website', '--by-hand'],
+        /applies nothing in website/,
+      ],
+      ['an image policy', ['--apply', 'ImageValidatingPolicy/website-images', '--by-hand'], /no image policy/],
+      ['a Deployment main lacks, without --apply', ['--only', 'patching', '--by-hand'], /no deployment patching/],
+    ];
+    for (const [what, args, message] of cases) {
+      it(what, async () => {
+        const c = branchWithWorker();
+        c.renders[COMMIT]?.push(
+          object('Service', 'website', 'website'),
+          object('ImageValidatingPolicy', 'website-images', undefined),
+        );
+        expect(await begin(c, ...args)).toBe(2);
+        expect(said(c)).toMatch(message);
+        expect(c.calls).toEqual([]);
+        expect(existsSync(path)).toBe(false);
+      });
+    }
+
+    it('an object the branch removes, which only --by-hand takes', async () => {
+      const c = branchWithWorker();
+      c.renders['origin/main']?.push(object('ConfigMap', 'old', 'factory'));
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(2);
+      expect(said(c)).toMatch(/ConfigMap factory\/old, which the branch removes/);
+      expect(await begin(c, '--only', 'patching', ...ALL, '--by-hand')).toBe(0);
+    });
+  });
+});
+
+describe('a migration the branch adds', () => {
+  it('is named, with the risk of its number, when the store lacks it or holds it as another', () => {
+    const store = new Map([
+      [49, 'admin-step-up-ended'],
+      [50, 'something-else'],
+    ]);
+    expect(migrationWarnings(['packages/store/migrations/0049_admin-step-up-ended.sql', 'apps/x.ts'], store)).toEqual(
+      [],
+    );
+    expect(migrationWarnings(['packages/store/migrations/0051_patching.sql'], store)).toEqual([
+      "migration 0051_patching is not in the store: run there for the try, it records 51 as applied, and if a different 0051 merges first, main's 0051 never runs on this store until schema_migrations is put right by hand.",
+    ]);
+    expect(migrationWarnings(['packages/store/migrations/0050_patching.sql'], store)[0]).toMatch(
+      /already holds 50 as something-else, so this one would never run there/,
+    );
+  });
+
+  it('needs --by-hand, and begin and status warn of it, writing nothing to the store', async () => {
+    const c = new Cluster();
+    c.changes = ['packages/store/migrations/0050_patching.sql'];
+    expect(await begin(c, '--only', 'github')).toBe(2);
+    expect(said(c)).toMatch(/0050_patching.sql \(the skill's step 7: Martin's write\)/);
+    expect(await begin(c, '--only', 'github', '--by-hand')).toBe(0);
+    expect(said(c)).toMatch(/Warning: migration 0050_patching is not in the store/);
+    const other = fresh(c);
+    await main(['status'], other, path);
+    expect(said(other)).toMatch(/Warning: migration 0050_patching is not in the store/);
+    expect(other.storeMigrations).toEqual(new Map([[49, 'admin-step-up-ended']]));
+  });
+});
+
 describe('the command line', () => {
   it('takes --only one value at a time, comma-separated, so a branch after it stays the branch', () => {
     expect(parse(['begin', '--only', 'line,github', '--only', 'red-team', 'b', '--holder', 'k'])).toEqual({
       command: 'begin',
-      options: { branch: 'b', only: ['line', 'github', 'red-team'], env: [], holder: 'k', byHand: false },
+      options: { branch: 'b', only: ['line', 'github', 'red-team'], env: [], holder: 'k', byHand: false, apply: [] },
     });
   });
   it("bounds end's wait at twenty minutes", () => {

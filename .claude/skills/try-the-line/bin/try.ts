@@ -23,9 +23,28 @@ const DEFAULT_IMAGES = new Set(['factory', 'factory-runner']);
 export const POLICY = 'factory-images';
 /** Where the try's pods can be: the factory's deployments, the line's runners and the harness's attack pods. */
 export const NAMESPACES = ['factory', 'runners', 'red-team'] as const;
-/** What a branch can change that `try begin` does not apply, and so cannot put back. */
-const BY_HAND = ['deploy/', 'packages/store/migrations/'];
-const VERSION = 1;
+const MIGRATIONS = 'packages/store/migrations/';
+/** Where a try applies nothing, whatever the branch renders there (AGENTS.md): the app, the answer key, the flags. */
+const UNTOUCHED_NAMESPACES = new Set(['website', 'scoreboard', 'flagd', 'argocd']);
+const VERSION = 2;
+
+/** A Kubernetes object, as a render or the API gives it. */
+export type K8sObject = {
+  apiVersion: string;
+  kind: string;
+  metadata: { name: string; namespace?: string; annotations?: Record<string, string> } & Record<string, unknown>;
+} & Record<string, unknown>;
+export interface ObjectRef {
+  apiVersion: string;
+  kind: string;
+  name: string;
+  namespace?: string;
+}
+/** An object the try applied from the branch's render, with the live copy it replaced, or null when it added it. */
+export interface Applied {
+  ref: ObjectRef;
+  before: K8sObject | null;
+}
 
 export interface Container {
   name: string;
@@ -89,6 +108,16 @@ export interface Ops {
   commit(branch: string): string | undefined;
   /** The paths the commit changes against origin/main. */
   changed(commit: string): string[];
+  /** Every object of the root overlay (deploy/overlays/local) as the commit renders it. */
+  render(commit: string): K8sObject[];
+  /** The live object, or undefined when there is none. */
+  getObject(ref: ObjectRef): K8sObject | undefined;
+  applyObject(object: K8sObject): void;
+  /** Replaces the live object whole with this copy of it. */
+  replaceObject(object: K8sObject): void;
+  deleteObject(ref: ObjectRef): void;
+  /** The store's applied migrations, by number. Only read. */
+  migrations(): Map<number, string>;
   hasLocal(ref: string): boolean;
   build(commit: string, dockerfile: string, ref: string): void;
   load(refs: string[]): void;
@@ -133,6 +162,8 @@ export interface State {
   images: { image: string; ref: string; existed: boolean }[];
   /** The digest references made on the node, which the deployments are pointed at. */
   nodeRefs: string[];
+  /** Each object applied from the branch's render, in the order applied. */
+  applied: Applied[];
 }
 
 export class Refused extends Error {}
@@ -208,6 +239,17 @@ function shapeProblem(v: unknown): string | undefined {
       return 'has an image it cannot read';
   }
   if (!isStrings(v.nodeRefs)) return 'lacks nodeRefs';
+  if (!Array.isArray(v.applied)) return 'lacks applied';
+  for (const a of v.applied as unknown[]) {
+    const ref = isRecord(a) ? a.ref : undefined;
+    if (!isRecord(a) || !isRecord(ref) || !isString(ref.apiVersion) || !isString(ref.kind) || !isString(ref.name)) {
+      return 'has an applied object it cannot read';
+    }
+    if (ref.namespace !== undefined && !isString(ref.namespace)) return 'has an applied object it cannot read';
+    if (a.before !== null && !(isRecord(a.before) && isRecord(a.before.metadata))) {
+      return `has ${ref.kind}/${ref.name} without what was there before`;
+    }
+  }
   return undefined;
 }
 
@@ -237,12 +279,133 @@ export interface BeginOptions {
   env: string[];
   holder: string | undefined;
   byHand: boolean;
+  /** Objects of the branch's render to apply, each `Kind/name` (every namespace it is in). */
+  apply: string[];
+}
+
+const refOf = (o: K8sObject): ObjectRef => ({
+  apiVersion: o.apiVersion,
+  kind: o.kind,
+  name: o.metadata.name,
+  ...(o.metadata.namespace ? { namespace: o.metadata.namespace } : {}),
+});
+export const describeRef = (r: ObjectRef): string => `${r.kind} ${r.namespace ? `${r.namespace}/` : ''}${r.name}`;
+const keyOf = (r: ObjectRef): string => `${r.kind}/${r.namespace ?? ''}/${r.name}`;
+
+/** What an object says, without what the API adds to it: compared between renders, and with what was there. */
+function content(o: K8sObject): unknown {
+  const { metadata, status: _, ...rest } = o;
+  const { name, namespace, labels, annotations } = metadata as Record<string, unknown>;
+  const kept = { ...((annotations as Record<string, string> | undefined) ?? {}) };
+  for (const k of Object.keys(kept)) {
+    if (k.startsWith('argocd.argoproj.io/') || k === 'kubectl.kubernetes.io/last-applied-configuration') delete kept[k];
+  }
+  return { ...rest, metadata: { name, namespace, labels, annotations: kept } };
+}
+
+/** The object as it is put back: the live copy without what the API owns, so a replace takes it whole. */
+export function restorable(o: K8sObject): K8sObject {
+  const { status: _, ...rest } = o;
+  const {
+    resourceVersion: _r,
+    uid: _u,
+    creationTimestamp: _c,
+    generation: _g,
+    managedFields: _m,
+    ...metadata
+  } = o.metadata as Record<string, unknown>;
+  return { ...rest, metadata } as K8sObject;
+}
+
+/** The render's object with root's tracking id, so root's prune removes it if `try end` never runs. */
+function tracked(o: K8sObject): K8sObject {
+  const group = o.apiVersion.includes('/') ? o.apiVersion.split('/')[0] : '';
+  const id = `root:${group}/${o.kind}:${o.metadata.namespace ?? 'argocd'}/${o.metadata.name}`;
+  return {
+    ...o,
+    metadata: { ...o.metadata, annotations: { ...o.metadata.annotations, 'argocd.argoproj.io/tracking-id': id } },
+  };
+}
+
+/** Every object the branch's render adds or changes, and every one it drops, against main's. */
+export function renderDiff(branch: K8sObject[], main: K8sObject[]): { differs: K8sObject[]; dropped: ObjectRef[] } {
+  const mains = new Map(main.map((o) => [keyOf(refOf(o)), o]));
+  const ours = new Set(branch.map((o) => keyOf(refOf(o))));
+  const differs = branch.filter((o) => {
+    const m = mains.get(keyOf(refOf(o)));
+    return !m || !sameJSON(content(m), content(o));
+  });
+  return { differs, dropped: main.filter((o) => !ours.has(keyOf(refOf(o)))).map(refOf) };
+}
+
+/** The objects `--apply` names in the branch's render, each refused where a try applies nothing. */
+export function chooseApplied(render: K8sObject[], names: string[]): K8sObject[] {
+  const chosen: K8sObject[] = [];
+  for (const spec of names) {
+    const m = /^([A-Za-z]+)\/([a-z0-9.-]+)$/.exec(spec);
+    if (!m) throw new Refused(`--apply ${spec}: write it <Kind>/<name>, as the render names it`);
+    const found = render.filter((o) => o.kind === m[1] && o.metadata.name === m[2]);
+    if (!found.length) throw new Refused(`--apply ${spec}: the branch's render has no ${m[1]} ${m[2]}`);
+    for (const o of found) {
+      if (o.kind === 'ImageValidatingPolicy')
+        throw new Refused(`--apply ${spec}: a try changes no image policy by hand`);
+      if (UNTOUCHED_NAMESPACES.has(o.metadata.namespace ?? '')) {
+        throw new Refused(`--apply ${spec}: a try applies nothing in ${o.metadata.namespace}`);
+      }
+      if (!chosen.includes(o)) chosen.push(o);
+    }
+  }
+  return chosen;
+}
+
+/** A Deployment as the try moves it, from a live or rendered object. */
+export function asDeployment(o: K8sObject, rolledOut: boolean): Deployment {
+  type C = { name: string; image: string; env?: { name: string; value?: string; valueFrom?: unknown }[] };
+  const spec = (o.spec as { template: { spec: { initContainers?: C[]; containers: C[] } } }).template.spec;
+  const all = [
+    ...(spec.initContainers ?? []).map((c) => ({ ...c, init: true })),
+    ...spec.containers.map((c) => ({ ...c, init: false })),
+  ];
+  return {
+    name: o.metadata.name,
+    containers: all.map((c) => ({ name: c.name, init: c.init, image: c.image })),
+    env: all.flatMap((c) =>
+      (c.env ?? []).map((e) => ({
+        container: c.name,
+        name: e.name,
+        // The API leaves out an empty value: a variable with neither is set to ''.
+        ...(e.valueFrom === undefined ? { value: e.value ?? '' } : {}),
+        fromRef: e.valueFrom !== undefined,
+      })),
+    ),
+    rolledOut,
+  };
+}
+
+/** One sentence for each migration the branch adds that the store does not hold as the branch names it. */
+export function migrationWarnings(changed: string[], store: Map<number, string>): string[] {
+  return changed.flatMap((path) => {
+    const m = new RegExp(`^${MIGRATIONS}(\\d+)_(.+)\\.sql$`).exec(path);
+    if (!m) return [];
+    const [, digits = '', name = ''] = m;
+    const number = Number(digits);
+    const held = store.get(number);
+    if (held === name) return [];
+    if (held !== undefined) {
+      return [
+        `migration ${digits}_${name}: the store already holds ${number} as ${held}, so this one would never run there.`,
+      ];
+    }
+    return [
+      `migration ${digits}_${name} is not in the store: run there for the try, it records ${number} as applied, and if a different ${digits} merges first, main's ${digits} never runs on this store until schema_migrations is put right by hand.`,
+    ];
+  });
 }
 
 /** The moves a begin makes, worked out before anything changes. */
 export function plan(
   deployments: Deployment[],
-  options: Pick<BeginOptions, 'only' | 'env'>,
+  options: Pick<BeginOptions, 'only' | 'env'> & { apply?: string[] },
 ): { moves: { name: string; containers: Record<string, string> }[]; env: Record<string, Record<string, string>> } {
   const byName = new Map(deployments.map((d) => [d.name, d]));
   for (const name of options.only) {
@@ -250,9 +413,12 @@ export function plan(
     if (!d) throw new Refused(`no deployment ${name} in factory (a try moves only the factory's)`);
     if (!d.containers.some((c) => ours(c.image))) throw new Refused(`${name} runs none of this repository's images`);
   }
+  // Told only what to apply, a try moves no deployment: the objects are the try.
   const chosen = options.only.length
     ? options.only.map((n) => byName.get(n) as Deployment)
-    : deployments.filter((d) => d.containers.some((c) => DEFAULT_IMAGES.has(ours(c.image) ?? '')));
+    : options.apply?.length
+      ? []
+      : deployments.filter((d) => d.containers.some((c) => DEFAULT_IMAGES.has(ours(c.image) ?? '')));
   const moves = chosen.map((d) => ({
     name: d.name,
     containers: Object.fromEntries(
@@ -346,14 +512,42 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   }
   const commit = ops.commit(options.branch);
   if (!commit) throw new Refused(`no branch ${options.branch} here or on origin (git fetch?)`);
-  const byHand = ops.changed(commit).filter((p) => BY_HAND.some((d) => p.startsWith(d)));
-  if (byHand.length && !options.byHand) {
+  const changed = ops.changed(commit);
+  const deployChanged = changed.some((p) => p.startsWith('deploy/'));
+  const render = deployChanged || options.apply.length ? ops.render(commit) : [];
+  const toApply = chooseApplied(render, options.apply);
+  // What the branch's render differs on that the try does not apply, which `try end` cannot put back: by hand.
+  const unapplied: string[] = [];
+  if (deployChanged) {
+    const { differs, dropped } = renderDiff(render, ops.render('origin/main'));
+    unapplied.push(
+      ...differs
+        .filter((o) => !toApply.includes(o))
+        .map((o) => `${describeRef(refOf(o))} (--apply ${o.kind}/${o.metadata.name})`),
+    );
+    unapplied.push(...dropped.map((r) => `${describeRef(r)}, which the branch removes`));
+  }
+  unapplied.push(
+    ...changed.filter((p) => p.startsWith(MIGRATIONS)).map((p) => `${p} (the skill's step 7: Martin's write)`),
+  );
+  if (unapplied.length && !options.byHand) {
     throw new Refused(
-      `${options.branch} changes what a try applies by hand, which \`try end\` cannot put back:\n  ${byHand.join('\n  ')}\n` +
-        'apply them as the skill says (steps 7 and 8), list them in your undo list, and pass --by-hand',
+      `${options.branch} changes what this begin does not apply, which \`try end\` cannot put back:\n  ${unapplied.join('\n  ')}\n` +
+        'name each object with --apply, or apply it as the skill says, list it in your undo list, and pass --by-hand',
     );
   }
-  const deployments = ops.deployments();
+  const warnings = migrationWarnings(
+    changed,
+    changed.some((p) => p.startsWith(MIGRATIONS)) ? ops.migrations() : new Map(),
+  );
+  for (const w of warnings) ops.say(`Warning: ${w}`);
+  // A Deployment the try adds is moved as a live one is, from its rendered copy.
+  const live = ops.deployments();
+  const liveNames = new Set(live.map((d) => d.name));
+  const added = toApply
+    .filter((o) => o.kind === 'Deployment' && o.metadata.namespace === 'factory' && !liveNames.has(o.metadata.name))
+    .map((o) => asDeployment(o, true));
+  const deployments = [...live, ...added];
   const { moves, env } = plan(deployments, options);
   const tag = `local-${commit.slice(0, 8)}`;
   const images = [...new Set(moves.flatMap((m) => Object.values(m.containers)))].sort();
@@ -404,6 +598,7 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
       return { image, ref, existed: ops.hasLocal(ref) };
     }),
     nodeRefs: [],
+    applied: toApply.map((o) => ({ ref: refOf(o), before: ops.getObject(refOf(o)) ?? null })),
   };
   try {
     writeState(path, state, true);
@@ -419,7 +614,7 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   for (const i of state.images) {
     if (!i.existed) ops.build(commit, must(IMAGES[i.image], `${i.image}'s Dockerfile`), i.ref);
   }
-  ops.load(state.images.map((i) => i.ref));
+  if (state.images.length) ops.load(state.images.map((i) => i.ref));
   const to: Record<string, string> = {};
   for (const i of state.images) {
     const digest = ops.onNode(i.ref);
@@ -442,6 +637,13 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   ops.say('Argo CD root paused.');
   ops.setFactoryImages(['Audit']);
   ops.say(`${POLICY} on Audit; the other policies untouched.`);
+  // After root is paused, whose prune would take an added object straight away; before the deployments are pointed,
+  // since a rendered Deployment names main's images.
+  for (const o of toApply) {
+    ops.applyObject(tracked(o));
+    const a = state.applied.find((x) => keyOf(x.ref) === keyOf(refOf(o)));
+    ops.say(`${a?.before ? 'Changed' : 'Added'} ${describeRef(refOf(o))} from the branch's render.`);
+  }
   for (const d of recorded) {
     const move = moves.find((m) => m.name === d.name);
     if (move)
@@ -490,6 +692,13 @@ export function notBack(ops: Ops, state: State): string[] {
   for (const [name, actions] of Object.entries(state.policies)) {
     if (!sameJSON(policies[name], actions))
       wrong.push(`${name} is on ${JSON.stringify(policies[name] ?? null)}, was ${JSON.stringify(actions)}`);
+  }
+  for (const a of state.applied) {
+    const now = ops.getObject(a.ref);
+    if (!a.before && now) wrong.push(`${describeRef(a.ref)}, which the try added, is still there`);
+    if (a.before && (!now || !sameJSON(content(now), content(a.before)))) {
+      wrong.push(`${describeRef(a.ref)} is not as it was before the try`);
+    }
   }
   const deployments = new Map(ops.deployments().map((d) => [d.name, d]));
   for (const moved of state.deployments) {
@@ -578,6 +787,18 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
     throw new Refused(
       "the line was started while the try's runner Jobs were deleted: stop it, and run `try end` again. Only those Jobs are changed.",
     );
+  }
+  // Each object the try applied: an added one deleted, a changed one put back whole, last applied first.
+  for (const a of [...state.applied].reverse()) {
+    try {
+      if (a.before) ops.replaceObject(restorable(a.before));
+      else ops.deleteObject(a.ref);
+      ops.say(`${a.before ? 'Put back' : 'Deleted'} ${describeRef(a.ref)}.`);
+    } catch (e) {
+      ops.say(
+        `Could not put back ${describeRef(a.ref)} (${(e as Error).message}); the check below says if it is not back.`,
+      );
+    }
   }
   // Each deployment back on the images it had, then each variable as it was: the images first, so the rollout the
   // variables make runs main's image, which Deny admits.
@@ -678,6 +899,19 @@ export function status(ops: Ops, path: string): void {
     const vars = d.env.map((v) => `${v.name} (was ${v.was ?? 'unset'})`).join(', ');
     ops.say(`  ${d.name}: ${Object.keys(d.images).join(', ') || 'no image'} moved${vars ? `; ${vars}` : ''}`);
   }
+  for (const a of state.applied) {
+    ops.say(
+      `  ${a.before ? 'changed' : 'added'}: ${describeRef(a.ref)}${a.before ? ' (its copy from before is in the state)' : ''}`,
+    );
+  }
+  try {
+    const changed = ops.changed(state.commit);
+    if (changed.some((p) => p.startsWith(MIGRATIONS))) {
+      for (const w of migrationWarnings(changed, ops.migrations())) ops.say(`Warning: ${w}`);
+    }
+  } catch (e) {
+    ops.say(`The branch's migrations could not be compared with the store's: ${(e as Error).message}`);
+  }
   ops.say(
     `Recorded: root ${JSON.stringify(state.root)}; ${POLICY} ${JSON.stringify(state.policies[POLICY])}; the line ${state.line.state} at seq ${state.line.seq}.`,
   );
@@ -704,7 +938,14 @@ export function parse(
     return { command, options: { timeoutSeconds } };
   }
   if (command === 'begin') {
-    const options: BeginOptions = { branch: '', only: [], env: [], holder: process.env.TRY_HOLDER, byHand: false };
+    const options: BeginOptions = {
+      branch: '',
+      only: [],
+      env: [],
+      holder: process.env.TRY_HOLDER,
+      byHand: false,
+      apply: [],
+    };
     const args = [...rest];
     const value = (flag: string): string => {
       const v = args.shift();
@@ -717,6 +958,7 @@ export function parse(
       } else if (a === '--env') options.env.push(value(a));
       else if (a === '--holder') options.holder = value(a);
       else if (a === '--by-hand') options.byHand = true;
+      else if (a === '--apply') options.apply.push(...value(a).split(',').filter(Boolean));
       else if (!a.startsWith('--') && !options.branch) options.branch = a;
       else throw new Refused(`try begin: unknown ${a}`);
     }
@@ -724,7 +966,7 @@ export function parse(
     return { command, options };
   }
   throw new Refused(
-    'usage: try begin <branch> [--only <deployment>[,…]]… [--env <deployment>:<NAME>=<value>]… [--holder <key>] [--by-hand]\n' +
+    'usage: try begin <branch> [--only <deployment>[,…]]… [--env <deployment>:<NAME>=<value>]… [--apply <Kind>/<name>[,…]]… [--holder <key>] [--by-hand]\n' +
       '       try status\n       try end [--timeout <seconds>]',
   );
 }

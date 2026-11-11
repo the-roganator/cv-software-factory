@@ -9,8 +9,9 @@ KUBECTL := kubectl --context $(CONTEXT)
 ARGOCD_CHART := 10.15.0
 # The Postgres the console's live browser tests run beside, as in CI: the cluster's, whose one pin is its StatefulSet's.
 POSTGRES := $(shell sed -nE 's/^ +image: (postgres:[^ ]+@sha256:[0-9a-f]{64})$$/\1/p' deploy/base/postgres/statefulset.yaml | head -1)
-# The branch Argo CD deploys this repository's deploy/ from. `make up REVISION=my-branch` tries a change there
-# before it merges; the charts' values and the app's repository are still read from main.
+# The branch, or commit, Argo CD deploys this repository's deploy/ from, the charts' values with it (root's patch, in
+# deploy/argocd/root.yaml). `make up REVISION=my-branch` tries a change there before it merges, as platform.yml makes
+# a cluster from a pull request's commit; the app's repository is still read from its main.
 REVISION ?= main
 # The private checkout, which holds the answer key: `make up` gives the scoreboard each entry's id and fingerprint.
 PRIVATE_DIR ?= $(CURDIR)/../cv-software-factory-private
@@ -120,7 +121,7 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory judgements-token
 	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
-	sed 's|targetRevision: main|targetRevision: $(REVISION)|' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
+	sed -E 's/^( *(targetRevision|value): )main$$/\1$(REVISION)/' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
 	$(deployed)
 
 down: ## Delete the local cluster, and everything in it
@@ -169,23 +170,25 @@ gateway-key:
 				$(apply-secret) >/dev/null && echo "  The gateway has the Anthropic key, so agents' calls reach Claude."; \
 		else echo "  No Anthropic key (ANTHROPIC_API_KEY, or the Keychain's anthropic-api-key): agents' calls to Claude replay only."; fi
 
-# The factory's GitHub App key, from the macOS Keychain (base64, because the Keychain prints a value with newlines as
-# hex), goes to the cluster the same way: through stdin, decoded on the way. Without it the GitHub worker reads and
-# writes nothing. Restart the worker after changing the key.
+# The factory's GitHub App key, from the environment (GITHUB_APP_PRIVATE_KEY, as PEM) or the macOS Keychain (base64,
+# because the Keychain prints a value with newlines as hex), goes to the cluster the same way: through stdin, decoded on
+# the way. Without it the GitHub worker reads and writes nothing. Restart the worker after changing the key.
 github-key:
-	@if security find-generic-password -s factory-github-app-key >/dev/null 2>&1; then \
-			security find-generic-password -s factory-github-app-key -w | base64 -d | \
+	@if [ -n "$${GITHUB_APP_PRIVATE_KEY:-}" ] || security find-generic-password -s factory-github-app-key >/dev/null 2>&1; then \
+			{ if [ -n "$${GITHUB_APP_PRIVATE_KEY:-}" ]; then printf '%s\n' "$$GITHUB_APP_PRIVATE_KEY"; \
+				else security find-generic-password -s factory-github-app-key -w | base64 -d; fi; } | \
 				$(KUBECTL) -n factory create secret generic github-app --from-file=private-key=/dev/stdin --dry-run=client -o yaml | \
 				$(apply-secret) >/dev/null && echo "  The GitHub worker has the App's key, so it acts as the factory in GitHub."; \
-		else echo "  No App key (the Keychain's factory-github-app-key): the GitHub worker reads and writes nothing."; fi
+		else echo "  No App key (GITHUB_APP_PRIVATE_KEY, or the Keychain's factory-github-app-key): the GitHub worker reads and writes nothing."; fi
 
-# Pushover's application token and Martin's user key, from the macOS Keychain, go to Alertmanager the same way: through
+# Pushover's application token and Martin's user key, from the environment (PUSHOVER_APP_TOKEN, PUSHOVER_USER_KEY) or
+# the macOS Keychain, go to Alertmanager the same way: through
 # stdin, as one Secret's two entries, never written to a file or put on a command line. Without both there is no
 # Secret, and any made before is deleted: Alertmanager still comes up and still sends the app's objective alerts to the intake, but nothing reaches
 # Martin's phone. Alertmanager reads the keys each time it sends, so a change needs no restart.
 pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-app-token, pushover-user-key)
-	@token="$$(security find-generic-password -s pushover-app-token -w 2>/dev/null)"; \
-		user="$$(security find-generic-password -s pushover-user-key -w 2>/dev/null)"; \
+	@token="$${PUSHOVER_APP_TOKEN:-$$(security find-generic-password -s pushover-app-token -w 2>/dev/null)}"; \
+		user="$${PUSHOVER_USER_KEY:-$$(security find-generic-password -s pushover-user-key -w 2>/dev/null)}"; \
 		if [ -n "$$token" ] && [ -n "$$user" ]; then \
 			$(call namespace,telemetry) && \
 			printf 'app-token=%s\nuser-key=%s\n' "$$token" "$$user" | \
@@ -193,7 +196,7 @@ pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-a
 				$(apply-secret) >/dev/null && echo "  Alertmanager has Pushover's keys, so pages and notifications reach Martin's phone."; \
 		else $(KUBECTL) -n telemetry delete secret pushover --ignore-not-found >/dev/null || \
 				echo "  Could not delete the old pushover Secret: Alertmanager may still page with the keys it had."; \
-			echo "  No Pushover keys (the Keychain's pushover-app-token and pushover-user-key): nothing reaches Martin's phone."; fi
+			echo "  No Pushover keys (PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY, or the Keychain's pushover-app-token and pushover-user-key): nothing reaches Martin's phone."; fi
 
 # The scoreboard's Secrets (deploy/base/scoreboard). Its role's password, made once, is in two: `factory`'s, for the
 # migrations that set it, and the scoreboard's own, for its pod. The answer key, each entry's id and fingerprint and

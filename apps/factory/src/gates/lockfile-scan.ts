@@ -21,6 +21,8 @@
  *   could stand in for a vulnerable tree. So does any other symbolic link git tracks: `lockfileDir` pointed through a
  *   link to a directory installs from a lockfile outside the checkout, which nothing reads.
  * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
+ * - Its notice gives what each side has in all, by severity, each finding once, excepted ones too (./counts.ts): the
+ *   counts the line records. It writes none when any lockfile on either side could not be judged.
  *
  * Its exceptions are the daily scan's: the entries of `policy/vulnerabilities.ts` in force, read from this repository's
  * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges (GITHUB_REPOSITORY), each for one lockfile, package and
@@ -37,6 +39,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { EXCEPTIONS, type Exception, exceptionFor } from '../../../../policy/vulnerabilities.ts';
+import { countBySeverity, countsNote } from './counts.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 const run = promisify(execFile);
@@ -134,7 +137,8 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
       }
       return found;
     });
-  const before = new Set(read('base', base).map(key));
+  const based = new Map(read('base', base).map((f) => [key(f), f]));
+  const before = new Set(based.keys());
   // Each package and advisory once, naming every version of it the lockfile holds.
   const after = new Map<string, Finding>();
   for (const f of read('change', change)) {
@@ -146,7 +150,12 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
   const added = [...after.values()].filter(
     (f) => !before.has(key(f)) && !(f.dev && before.has(key({ ...f, dev: false }))),
   );
-  return { added, unread, total: after.size };
+  // What each side has in all, by severity: the counts the gate's notice gives, each finding once, by its lockfile,
+  // advisory and package, however it is reached.
+  const once = (findings: Iterable<Finding>) =>
+    countBySeverity([...new Map([...findings].map((f) => [key({ ...f, dev: false }), f.severity])).values()]);
+  const counts = { before: once(based.values()), after: once(after.values()) };
+  return { added, unread, total: after.size, counts };
 }
 
 /**
@@ -478,7 +487,7 @@ export async function main(args: string[]): Promise<number> {
       console.error('::error::The change tracks no lockfile to scan.');
       return 1;
     }
-    const { added: brought, unread, total } = judge(base, change);
+    const { added: brought, unread, total, counts } = judge(base, change);
     const { excepted, failing: added } = except(brought, repository);
     const rows = added
       .map(
@@ -503,6 +512,8 @@ export async function main(args: string[]): Promise<number> {
         .filter(Boolean)
         .join('\n\n'),
     );
+    // What it counted, which the line records (./counts.ts): only when it read every lockfile on both sides.
+    if (!unread.length) annotate('notice', countsNote('lockfile scan', counts));
     for (const u of unread)
       annotate('error', `The ${u.side}'s ${u.lockfile} could not be judged: ${u.why}`, u.lockfile);
     for (const f of added)

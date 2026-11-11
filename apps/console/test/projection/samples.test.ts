@@ -42,6 +42,32 @@ describe('the samples, projected', () => {
     );
   });
 
+  it('draw a security release’s scan picture from what each scan counted on its latest commit, by check', () => {
+    expect(card('1282')?.picture).toMatchObject({
+      type: 'scan',
+      scans: [
+        { check: 'Image scan', findings: { before: { high: 2, unknown: 2 }, after: { high: 0, unknown: 2 } } },
+        { check: 'Lockfile scan', findings: { before: { medium: 1 }, after: { medium: 1 } } },
+      ],
+    });
+    // A later commit's counts stand alone: nothing from the commit before is drawn beside them.
+    const counted = SAMPLES.filter((e) => e.work_item === '1282' && e.type === 'gate.finished').find(
+      (e) => (e.payload as { check: string }).check === 'Image scan',
+    );
+    if (!counted) throw new Error('The samples have no image scan of #1282');
+    const later = {
+      ...counted,
+      seq: counted.seq + 0.5,
+      payload: { ...counted.payload, commit: 'f'.repeat(40) },
+    } as typeof counted;
+    const at = SAMPLES.indexOf(counted) + 1;
+    const again = project([...SAMPLES.slice(0, at), later, ...SAMPLES.slice(at)], END);
+    expect(again.cards.find((c) => c.number === '1282')?.picture).toMatchObject({
+      type: 'scan',
+      scans: [{ check: 'Image scan' }],
+    });
+  });
+
   it('put every station in every state at some point, and send work back', { timeout: WHOLE_TIMELINE }, () => {
     const seen = new Set<string>();
     for (const event of SAMPLES) {

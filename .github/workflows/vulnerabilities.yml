@@ -32,8 +32,7 @@ on:
     paths:
       - .github/workflows/vulnerabilities.yml
       - apps/factory/src/vulnerabilities/**
-      - apps/factory/src/gates/lockfile-scan.ts
-      - apps/factory/src/gates/report.ts
+      - apps/factory/src/gates/**
       - deploy/images/trivy/**
 
 permissions: {}
@@ -138,8 +137,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            apps/factory/src/gates/lockfile-scan.ts
-            apps/factory/src/gates/report.ts
+            apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
             policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
@@ -241,8 +239,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
-            apps/factory/src/gates/lockfile-scan.ts
-            apps/factory/src/gates/report.ts
+            apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
             policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false

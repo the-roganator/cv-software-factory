@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -345,6 +354,14 @@ describe('the state file', () => {
       path,
       JSON.stringify({ ...state, byHand: [{ ref: { kind: 'RoleBinding', name: 'x' }, before: null }] }),
     );
+    expect(() => readState(path)).toThrow(/a by-hand copy it cannot read/);
+    const noApiVersion = {
+      ref: { kind: 'RoleBinding', name: 'x', namespace: 'flagd' },
+      before: null,
+      apply: 'a',
+      undo: 'u',
+    };
+    writeFileSync(path, JSON.stringify({ ...state, byHand: [noApiVersion] }));
     expect(() => readState(path)).toThrow(/a by-hand copy it cannot read/);
     writeFileSync(path, JSON.stringify({ ...state, nodeRefs: [1] }));
     expect(() => readState(path)).toThrow(/lacks nodeRefs/);
@@ -1028,6 +1045,54 @@ describe("objects from the branch's render", () => {
       expect(await end(undone)).toBe(0);
       expect(existsSync(join(dir, 'try', 'by-hand'))).toBe(false);
       expect(said(undone)).toMatch(/By hand, each undone as expected: RoleBinding flagd\/patching-lists-pods\./);
+    });
+
+    it("leaves out a refused copy the branch does not change, which is main's already", async () => {
+      const c = split();
+      c.renders['origin/main']?.push(object('RoleBinding', 'patching-lists-pods', 'flagd'));
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+      expect(readState(path)?.byHand).toEqual([]);
+      expect(existsSync(join(dir, 'try', 'by-hand'))).toBe(false);
+    });
+
+    it('says at once, without waiting out the deadline, which by-hand copy is not undone', async () => {
+      const c = split();
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+      const applied = fresh(c);
+      applied.objects.set(
+        'RoleBinding/flagd/patching-lists-pods',
+        object('RoleBinding', 'patching-lists-pods', 'flagd'),
+      );
+      const started = applied.clock;
+      expect(await end(applied)).toBe(1);
+      expect(applied.clock - started).toBeLessThan(60_000);
+    });
+
+    it("prints a changed copy's commands as delete and create, its paths quoted", async () => {
+      const c = split();
+      c.objects.set(
+        'RoleBinding/flagd/patching-lists-pods',
+        object('RoleBinding', 'patching-lists-pods', 'flagd', { roleRef: { name: 'old' } }),
+      );
+      path = join(dir, 'with space', 'state.json');
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+      const [b] = (readState(path) as State).byHand;
+      expect(b?.apply).toBe(
+        `kubectl --context k3d-software-factory replace --force -f '${join(dir, 'with space', 'by-hand', `${FLAGD}.json`)}'`,
+      );
+      expect(b?.undo).toBe(
+        `kubectl --context k3d-software-factory replace --force -f '${join(dir, 'with space', 'by-hand', `${FLAGD}.before.json`)}'`,
+      );
+      expect(readFileSync(join(dir, 'with space', 'by-hand', `${FLAGD}.before.json`), 'utf8')).toContain('"old"');
+    });
+
+    it('changes nothing, and leaves no state, when the files the commands read cannot be written', async () => {
+      const c = split();
+      mkdirSync(join(dir, 'try'), { recursive: true });
+      writeFileSync(join(dir, 'try', 'by-hand'), 'a file where the directory goes');
+      await expect(begin(c, '--only', 'patching', ...ALL)).rejects.toThrow();
+      expect(existsSync(path)).toBe(false);
+      expect(c.calls).toEqual([]);
     });
 
     it('refuses a name none of whose copies it may apply', async () => {

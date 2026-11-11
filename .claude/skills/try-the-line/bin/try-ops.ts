@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse, parseAllDocuments } from 'yaml';
 import type { Deployment, K8sObject, Line, ObjectRef, Ops, Root, Workload } from './try.ts';
-import { asDeployment, groupOf, NAMESPACES, POLICY } from './try.ts';
+import { asDeployment, CONTEXT, kubectlResource, NAMESPACES, POLICY } from './try.ts';
 
 /** Only the fields of Kubernetes' objects that are read here. */
 interface K8sContainer {
@@ -39,7 +39,6 @@ interface Item {
   };
 }
 
-const CONTEXT = 'k3d-software-factory';
 const CLUSTER = 'software-factory';
 const NODE = 'k3d-software-factory-server-0';
 
@@ -111,11 +110,7 @@ function inTree<T>(commit: string, use: (tree: string) => T): T {
   }
 }
 
-/** The resource kubectl names an object's kind by: `rolebinding.rbac.authorization.k8s.io`, `serviceaccount`. */
-const resource = (ref: ObjectRef): string => {
-  const group = groupOf(ref.apiVersion);
-  return `${ref.kind.toLowerCase()}${group ? `.${group}` : ''}`;
-};
+const resource = kubectlResource;
 const scope = (ref: ObjectRef): string[] => (ref.namespace ? ['-n', ref.namespace] : []);
 
 function deployment(d: Item): Deployment {

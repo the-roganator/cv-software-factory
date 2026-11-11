@@ -271,8 +271,10 @@ function shapeProblem(v: unknown): string | undefined {
     if (
       !isRecord(b) ||
       !isRecord(ref) ||
+      !isString(ref.apiVersion) ||
       !isString(ref.kind) ||
       !isString(ref.name) ||
+      (ref.namespace !== undefined && !isString(ref.namespace)) ||
       !isString(b.apply) ||
       !isString(b.undo)
     ) {
@@ -433,10 +435,17 @@ export function chooseApplied(render: K8sObject[], names: string[]): { chosen: K
   return { chosen, left };
 }
 
-const kubectlResource = (r: ObjectRef): string => {
+/** The cluster every try is on. */
+export const CONTEXT = 'k3d-software-factory';
+
+/** The resource kubectl names an object's kind by: `rolebinding.rbac.authorization.k8s.io`, `serviceaccount`. */
+export const kubectlResource = (r: ObjectRef): string => {
   const group = groupOf(r.apiVersion);
   return `${r.kind.toLowerCase()}${group ? `.${group}` : ''}`;
 };
+
+/** A word as a shell reads it back unchanged, for the commands printed for a person to run. */
+const quoted = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
 
 /** A by-hand copy's files beside the state, and the exact commands that apply it and put it back. */
 export function byHandEntry(
@@ -446,16 +455,18 @@ export function byHandEntry(
 ): { entry: ByHand; files: Record<string, unknown> } {
   const ref = refOf(o);
   const base = join(dir, `${o.kind}.${ref.namespace ?? '-'}.${ref.name}`);
-  const k = 'kubectl --context k3d-software-factory';
+  const k = `kubectl --context ${CONTEXT}`;
   const files: Record<string, unknown> = { [`${base}.json`]: tracked(o) };
   let undo = `${k} delete ${kubectlResource(ref)} ${ref.name}${ref.namespace ? ` -n ${ref.namespace}` : ''} --ignore-not-found`;
+  // Replaced by delete and create (--force), as try end replaces its own, so a field the API will not change in place
+  // (a RoleBinding's roleRef, a selector) does not stop either command.
   if (before) {
     files[`${base}.before.json`] = restorable(before);
-    undo = `${k} replace -f ${base}.before.json`;
+    undo = `${k} replace --force -f ${quoted(`${base}.before.json`)}`;
   }
   const apply = before
-    ? `${k} replace -f ${base}.json`
-    : `${k} apply --server-side --field-manager=try -f ${base}.json`;
+    ? `${k} replace --force -f ${quoted(`${base}.json`)}`
+    : `${k} apply --server-side --field-manager=try -f ${quoted(`${base}.json`)}`;
   return { entry: { ref, before, apply, undo }, files };
 }
 
@@ -630,8 +641,12 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   const { chosen: toApply, left: leftByHand } = chooseApplied(render, options.apply);
   // What the branch's render differs on that the try does not apply, which `try end` cannot put back: by hand.
   const unapplied: string[] = [];
+  const { differs, dropped } = deployChanged
+    ? renderDiff(render, ops.render(ops.mergeBase(commit)))
+    : { differs: [] as K8sObject[], dropped: [] as ObjectRef[] };
+  // A refused copy the branch does not change is main's already: nothing for a person to do.
+  const byHandCopies = leftByHand.filter((o) => differs.includes(o));
   if (deployChanged) {
-    const { differs, dropped } = renderDiff(render, ops.render(ops.mergeBase(commit)));
     unapplied.push(
       ...differs
         .filter((o) => !toApply.includes(o) && !leftByHand.includes(o))
@@ -718,7 +733,7 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
     byHand: [],
   };
   const byHandFiles: Record<string, unknown> = {};
-  for (const o of leftByHand) {
+  for (const o of byHandCopies) {
     const { entry, files } = byHandEntry(join(dirname(path), 'by-hand'), o, ops.getObject(refOf(o)) ?? null);
     state.byHand.push(entry);
     Object.assign(byHandFiles, files);
@@ -729,13 +744,20 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new Refused('another begin wrote its state first');
     throw e;
   }
-  ops.say(`Recorded what the try changes in ${path}. From here, \`try end\` puts it back.`);
-  if (state.byHand.length) {
-    mkdirSync(join(dirname(path), 'by-hand'), { recursive: true, mode: 0o700 });
-    for (const [file, o] of Object.entries(byHandFiles))
+  // The files the by-hand commands read, before anything changes: if they cannot be written, nothing has, and the
+  // state goes with them.
+  try {
+    if (state.byHand.length) mkdirSync(join(dirname(path), 'by-hand'), { recursive: true, mode: 0o700 });
+    for (const [file, o] of Object.entries(byHandFiles)) {
       writeFileSync(file, `${JSON.stringify(o, null, 2)}\n`, { mode: 0o600 });
-    ops.say(byHandLines(state).join('\n'));
+    }
+  } catch (e) {
+    rmSync(join(dirname(path), 'by-hand'), { recursive: true, force: true });
+    unlinkSync(path);
+    throw e;
   }
+  ops.say(`Recorded what the try changes in ${path}. From here, \`try end\` puts it back.`);
+  if (state.byHand.length) ops.say(byHandLines(state).join('\n'));
 
   // The images, built from the branch, loaded onto the node, and each found there by its tag before any deployment
   // is pointed at it. Deployments are pointed at a digest reference made from it, which admission's digest-only rules
@@ -991,7 +1013,9 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   for (const i of state.images) if (!i.existed && ops.hasLocal(i.ref)) ops.removeLocal(i.ref);
 
   let wrong = notBack(ops, state);
-  while (wrong.length && ops.now().getTime() < deadline) {
+  // What is wrong by hand only a person puts right: no use waiting on it.
+  const waiting = (w: string[]): boolean => w.some((x) => !/, (applied|changed) by hand, /.test(x));
+  while (wrong.length && waiting(wrong) && ops.now().getTime() < deadline) {
     ops.sleep(10_000);
     wrong = notBack(ops, state);
   }

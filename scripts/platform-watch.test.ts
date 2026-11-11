@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /*
@@ -52,20 +52,33 @@ function kubectl(looks: App[][]) {
     `#!/usr/bin/env bash
 n=$(cat "${dir}/n" 2>/dev/null || echo 0)
 look="${dir}/look-$(( n < ${last} ? n : ${last} )).json"
-if [ "$4" = applications ]; then echo $((n + 1)) > "${dir}/n"; cat "$look"; else jq ".items[] | select(.metadata.name == \\"$5\\")" "$look"; fi
+if [ "$3" = annotate ]; then echo "$*" >> "${dir}/asked"; exit 0; fi
+if [ "$4" = applications ]; then echo $((n + 1)) > "${dir}/n"; cat "$look"; fi
 `,
   );
   chmodSync(join(dir, 'kubectl'), 0o755);
   return join(dir, 'kubectl');
 }
 
+/** What the watch asked of Argo CD beyond reading: each annotate, as kubectl got it. */
+const asked = (kubectlPath: string) => {
+  try {
+    return readFileSync(join(dirname(kubectlPath), 'asked'), 'utf-8')
+      .split('\n')
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
 function watch(looks: App[][], env: Record<string, string> = {}) {
+  const fake = kubectl(looks);
   const result = spawnSync(SCRIPT, [], {
     encoding: 'utf-8',
     timeout: 20_000,
-    env: { PATH: process.env.PATH, KUBECTL: kubectl(looks), INTERVAL: '0', DEADLINE: '10', ...env },
+    env: { PATH: process.env.PATH, KUBECTL: fake, INTERVAL: '0', DEADLINE: '10', ...env },
   });
-  return { status: result.status, out: result.stdout };
+  return { status: result.status, out: result.stdout, asked: asked(fake) };
 }
 
 const healthy = [
@@ -86,9 +99,11 @@ describe('the watch of make up', () => {
     );
   });
 
-  it('stops on an Application Argo CD cannot render after comparing it twice, and says why', () => {
+  it('stops on an Application Argo CD still cannot render after a hard refresh, and says why', () => {
     const broken = { name: 'loki', health: 'Unknown', error: 'values do not render' };
-    const { status, out } = watch([[broken], [{ ...broken, compared: 'later' }]]);
+    const { status, out, asked } = watch([[broken], [broken], [{ ...broken, compared: 'later' }]]);
+    // Asked for once, on first seeing the error: a refresh renders again now, past the repo server's cached failure.
+    expect(asked).toEqual(['-n argocd annotate application loki argocd.argoproj.io/refresh=hard --overwrite']);
     expect(status).toBe(1);
     expect(out).toBe('comparison: Argo CD cannot render loki:\n  values do not render\n');
   });

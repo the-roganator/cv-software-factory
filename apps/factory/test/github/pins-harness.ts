@@ -35,6 +35,8 @@ export interface FakePull {
   from?: string;
   labels: string[];
   mergeable: boolean | null;
+  /** Who closed it: the App when it closed it through the API; a test closes it as Martin by setting `state`. */
+  closed_by?: string;
   /** For Dependabot's: each file's patch, or none where GitHub would not send one. */
   files?: { filename: string; patch?: string }[];
 }
@@ -47,6 +49,7 @@ export interface FakeIssue {
   user: string;
   labels: string[];
   comments: string[];
+  closed_by?: string;
 }
 
 const sha1 = (text: string) => createHash('sha1').update(text).digest('hex');
@@ -308,6 +311,8 @@ export class FakeRepo {
           const pull = this.pulls.find((p) => p.number === Number(path.split('/').at(-1)));
           if (!pull) return notFound;
           Object.assign(pull, body);
+          // Every write is the App's.
+          if ((body as { state?: string }).state === 'closed') pull.closed_by = APP_LOGIN;
           return { body: {} };
         },
       },
@@ -381,6 +386,7 @@ export class FakeRepo {
               state: made.state,
               closed_at: null,
               user: { id: made.user === APP_LOGIN ? APP_USER : 49_699_333 },
+              closed_by: made.state === 'closed' ? { login: made.closed_by ?? 'mrogan' } : null,
               ...(pull ? { pull_request: {} } : {}),
             },
           };
@@ -394,6 +400,8 @@ export class FakeRepo {
           if (!made) return notFound;
           const { state_reason: _, ...change } = body as Record<string, unknown>;
           Object.assign(made, change);
+          if (change.state === 'closed') made.closed_by = APP_LOGIN;
+          if (change.state === 'open') delete made.closed_by;
           return { body: {} };
         },
       },

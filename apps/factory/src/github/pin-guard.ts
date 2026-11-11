@@ -26,7 +26,7 @@ import { readTarget } from '../vulnerabilities/fixes.ts';
 import { BranchRefused, PIN_NEXT_PREFIX, PIN_PREFIX } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { PatchRefused } from './patches.ts';
-import { plainPath } from './paths.ts';
+import { CODEOWNERS_PATHS, inScope, plainPath, protectedFrom } from './paths.ts';
 
 /** One pin a commit moves: where it is, and the text it pins before and after (`2.14.2@sha256:…`, `13.7.0`). */
 export interface PinEdit {
@@ -77,7 +77,8 @@ export function pinBranchFor(name: string): string {
     .replace(/^[-.]+|[-.]+$/g, '')
     .slice(0, MAX_SEGMENT)
     .replace(/[-.]+$/, '');
-  return `${PIN_PREFIX}${segment.endsWith('.lock') ? `${segment}-` : segment}`;
+  // A ref may not end `.lock`: the segment ends in a word of its own instead, within the length the guard takes.
+  return `${PIN_PREFIX}${segment.endsWith('.lock') ? `${segment.slice(0, MAX_SEGMENT - 4)}-pin` : segment}`;
 }
 
 /** Where a pin branch's commit is made before the branch moves to it. */
@@ -93,15 +94,25 @@ export function guardPinBranch(branch: string): void {
   }
 }
 
-/** The files no pin move writes, by name: a workflow's, the policies', a lockfile, mise's. */
+/** The files no pin move writes, by name: a workflow's, the policies', a lockfile, mise's, the Makefile. */
 export function forbiddenPin(file: string): string | undefined {
   if (file.startsWith('.github/')) return 'a pin under .github/ is a workflow’s, and the App writes none';
   if (file.startsWith('policy/')) return 'policy/ holds the rules of the line, which no pin move writes';
+  if (file === 'Makefile') return 'the Makefile’s pins move with the toolchain, by hand';
   if (/(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/.test(file))
     return 'a lockfile moves by its package manager, and the App writes none';
   if (/(^|\/)\.?mise(\.[\w-]+)?\.(toml|lock)$/.test(file))
     return 'mise’s files move only when someone upgrades the toolchain';
   return undefined;
+}
+
+/**
+ * Whether a file CODEOWNERS gives a person (as `paths.ts` reads it) may hold a pin the watch moves: one under `deploy/`,
+ * where the cluster's pins are, or a `Dockerfile`'s. Any other such file (the worker's code, the gate's scripts,
+ * `AGENTS.md`, a config) holds the rules of the line, whose numbers are no pin, whatever a scan says.
+ */
+export function ownedPinPlace(file: string): boolean {
+  return file.startsWith('deploy/') || /(^|\/)Dockerfile$/.test(file);
 }
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -120,18 +131,23 @@ function shapeOf(text: string): 'image' | 'version' | undefined {
     : undefined;
 }
 
-/** A character a pin's text could run on into: a word's, or a reference's. */
-const WORDISH = /[A-Za-z0-9._+@:-]/;
+/** A character a pin's text could run on into: a word's, a reference's, or a path's. */
+const WORDISH = /[A-Za-z0-9._+@:~/-]/;
 
-/** Where a text is on a line as a word of its own, every time it is. */
-function spans(line: string, text: string): number[] {
+/**
+ * Where a text is on a line as a word of its own, every time it is: after the line's start, `:` (a tag, `syft:v1.54.0`)
+ * or a character no word has (a space, a quote, `=`), and before the line's end or such a character, or, with
+ * `digestAfter`, `@` (a tag the watch reads with its digest after it). The one rule for the watch's edit and the guard.
+ */
+export function spans(line: string, text: string, { digestAfter = false } = {}): number[] {
   const found: number[] = [];
+  if (!text) return found;
   for (let at = line.indexOf(text); at !== -1; at = line.indexOf(text, at + 1)) {
     const before = at === 0 ? '' : (line[at - 1] ?? '');
     const after = line[at + text.length] ?? '';
-    // A tag runs on after `:` (`syft:v1.54.0`), a version after a space or a quote; neither runs on into a word.
     const startsWord = before === '' || before === ':' || !WORDISH.test(before);
-    if (startsWord && (after === '' || !WORDISH.test(after))) found.push(at);
+    const endsWord = after === '' || !WORDISH.test(after) || (digestAfter && after === '@');
+    if (startsWord && endsWord) found.push(at);
   }
   return found;
 }
@@ -180,6 +196,15 @@ export async function pinChanges(
       409,
     );
 
+  // The rules of the line, as CODEOWNERS at main's head gives them, hold no pin but the cluster's and a Dockerfile's.
+  const owners = (await Promise.all(CODEOWNERS_PATHS.map((path) => source.file(repo, commit.base, path)))).find(
+    (found) => found !== null,
+  );
+  const owned = protectedFrom(owners?.text ?? null).filter((entry) => entry !== 'deploy/');
+  for (const pin of pins)
+    if (inScope(pin.file, owned) && !ownedPinPlace(pin.file))
+      refuse(`${pin.file} is a rule of the line CODEOWNERS gives a person, and holds no pin the watch moves.`);
+
   const out: { path: string; contents: Uint8Array }[] = [];
   for (const file of [...new Set(pins.map((pin) => pin.file))]) {
     const [now, then] = await Promise.all([
@@ -225,7 +250,8 @@ const TREE = z.object({
   tree: z.array(z.object({ path: z.string(), mode: z.string(), type: z.string(), sha: z.string() })),
 });
 const BLOB = z.object({ encoding: z.literal('base64'), content: z.string() });
-const UTF8 = new TextDecoder('utf-8', { fatal: true });
+// A byte-order mark is kept, so a file is written back with every byte but its pins' as it was.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 /**
  * The guard's reads, through GitHub: `main`'s head from its ref, and a file from a commit's whole tree, as git lists it

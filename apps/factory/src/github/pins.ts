@@ -31,6 +31,7 @@
  * Nothing acts on a day it could not read whole: a moves read that fails, or a run that wrote no moves, opens and closes
  * nothing. A pin whose line has changed since the scan read it waits for the next scan, and its pull request stays.
  */
+import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { compareVersions } from '../vulnerabilities/deadlines.ts';
@@ -41,7 +42,7 @@ import { BranchRefused, PIN_PREFIX } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { type DependencyPull, groupMovesTo } from './dependabot.ts';
 import { PatchRefused } from './patches.ts';
-import { type PinEdit, pinBranchFor } from './pin-guard.ts';
+import { type PinEdit, type PinSource, pinBranchFor, spans, treeSource } from './pin-guard.ts';
 import type { Watch } from './poller.ts';
 import type { Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -65,6 +66,7 @@ export interface PinWatchDependencies {
   reads: Pick<Reads, 'moves' | 'dependencyPulls'>;
   actions: Pick<
     Actions,
+    | 'dryRun'
     | 'commitPins'
     | 'openPullRequest'
     | 'updatePullRequest'
@@ -75,15 +77,15 @@ export interface PinWatchDependencies {
     | 'closeIssue'
     | 'reopenIssue'
   >;
+  /** What the watch reads of the tree to write its edits, as the guard reads it: git's trees by default. */
+  source?: PinSource;
   /** What keeps, logs and signs a refusal of the guard's; without it, a refusal is only logged. */
   recorder?: RefusalRecorder | undefined;
   log: Logger;
   now?: () => number;
 }
 
-const SHA = z.string().regex(/^[0-9a-f]{40}$/);
-const HEAD = z.object({ object: z.object({ sha: SHA }) });
-const CONTENT = z.object({ type: z.string(), encoding: z.string().optional(), content: z.string().optional() });
+const CLOSED_BY = z.object({ closed_by: z.object({ login: z.string() }).nullable().optional() });
 const PULLS = z.array(
   z.object({
     number: z.number().int().positive(),
@@ -116,6 +118,9 @@ const PAGES = 10;
 /** The mark that finds a move's issue again, and the target it was written for. */
 const ISSUE_MARK = /<!-- factory: pin-issue ([a-z0-9][a-z0-9.-]*) -->/;
 const TARGET_MARK = /<!-- factory: pin-target (.*?) -->/;
+/** The mark that says which edits a pull request's branch was committed with, so a change of pins commits again. */
+const EDITS_MARK = /<!-- factory: pin-edits ([0-9a-f]{64}) -->/;
+const editsHash = (edits: readonly PinEdit[]) => createHash('sha256').update(JSON.stringify(edits)).digest('hex');
 
 /** A move's name as code in a description: no backtick, no line break. */
 const code = (text: string) => `\`${text.replace(/[`\r\n]/g, '')}\``;
@@ -182,23 +187,6 @@ export function dependabotHas(
   return undefined;
 }
 
-const WORDISH = /[A-Za-z0-9._+@:-]/;
-
-/** Where a text is on a line as a word of its own (a tag may follow `:`), every time it is. */
-function wordsAt(line: string, text: string): number[] {
-  const found: number[] = [];
-  for (let at = line.indexOf(text); at !== -1 && text; at = line.indexOf(text, at + 1)) {
-    const before = at === 0 ? '' : (line[at - 1] ?? '');
-    const after = line[at + text.length] ?? '';
-    if (
-      (before === '' || before === ':' || !WORDISH.test(before)) &&
-      (after === '' || after === '@' || !WORDISH.test(after))
-    )
-      found.push(at);
-  }
-  return found;
-}
-
 /**
  * The edit a move makes at one pin's line, or why it cannot be written there: what it pins now, as the line writes it
  * (a tag and its digest, or a version), replaced by the target, in the same shape.
@@ -235,13 +223,13 @@ export function editAt(
       break;
   }
   for (const each of tries) {
-    const found = wordsAt(line, each.from);
+    const found = spans(line, each.from, { digestAfter: true });
     if (found.length !== 1) continue;
     const start = found[0] as number;
     const digest = /^@sha256:[0-9a-f]{64}/.exec(line.slice(start + each.from.length))?.[0];
     const written = `${each.from}${digest ?? ''}`;
-    const after = line[start + written.length] ?? '';
-    if (after !== '' && WORDISH.test(after)) continue;
+    // What the guard reads as a word of its own, the same rule: the span with its digest, once on the line.
+    if (spans(line, written).length !== 1) continue;
     const to = each.to(digest !== undefined);
     if (to === undefined) return { reason: `${at} pins a digest the target does not name` };
     return { file: pin.file, line: pin.line, from: written, to };
@@ -284,6 +272,8 @@ export function pullBody(move: ReadMove, edits: readonly PinEdit[], moves: Moves
     waits
       ? `**It waits for you.** ${waits}`
       : 'The review gate passes it as `pin-move` when it proves the move from this pull request alone. If it cannot, its `review` check says why it waits for you, and your approval of its head passes it.',
+    '',
+    `<!-- factory: pin-edits ${editsHash(edits)} -->`,
   );
   return `${lines.join('\n')}\n`;
 }
@@ -354,13 +344,19 @@ export function pullTitle(move: ReadMove, target: Target): string {
 
 /** Watches this repository's moves, and keeps one pull request, or one issue, for each. */
 export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
-  const { github, reads, actions, recorder, log, now = Date.now } = deps;
+  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github) } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The pin watch does not move ${repo}'s pins: its line does.`);
   let last: number | undefined;
-  /** The refusals kept, by the run, the branch and the words, so each is recorded once a day. */
+  /** The refusals kept, by the branch and the words, so each is recorded once a run; emptied as the run changes. */
   const kept = new Set<string>();
-  /** What each move's waiting said last, so it is said once. */
+  /** What each move's waiting said, so it is said once a run; emptied as the run changes. */
   const said = new Set<string>();
+  let keptFor: number | undefined;
+  /**
+   * A dry run's pull requests and issues, which GitHub never has: what it last recorded for each branch and issue, so
+   * a pass records each once, and again only when what it would write changes.
+   */
+  const recorded = new Map<string, string>();
 
   const say = (key: string, about: object, message: string) => {
     if (said.has(key)) return;
@@ -386,20 +382,25 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       .catch((err: unknown) => log.error({ repo, branch, err }, 'could not keep a refusal'));
   };
 
-  /** A file's lines at a commit, through the contents API: what the watch reads to write its edits, not the guard. */
+  /**
+   * A file's lines at a commit, from git's tree as the guard reads it, or undefined for one that is not an ordinary
+   * file there: the watch's edit and the guard's reading of it are of the same file.
+   */
   const linesAt = async (path: string, ref: string): Promise<string[] | undefined> => {
     try {
-      const file = await github.read(
-        repo,
-        `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${ref}`,
-        CONTENT,
-      );
-      if (file.type !== 'file' || file.encoding !== 'base64' || file.content === undefined) return undefined;
-      return Buffer.from(file.content, 'base64').toString('utf-8').split('\n');
+      const file = await source.file(repo, ref, path);
+      if (!file || (file.mode !== '100644' && file.mode !== '100755')) return undefined;
+      return file.text.split('\n');
     } catch (error) {
-      if (error instanceof GitHubError && (error.kind === 'not-found' || error.kind === 'malformed')) return undefined;
+      if (error instanceof PatchRefused) return undefined;
       throw error;
     }
+  };
+
+  /** Whether the App closed an issue or pull request itself, rather than Martin: only his close holds a target back. */
+  const closedByApp = async (number: number): Promise<boolean> => {
+    const { body } = await github.poll(repo, `/repos/${repo}/issues/${number}`, CLOSED_BY);
+    return body.closed_by?.login === APP_LOGIN;
   };
 
   const openPulls = async (): Promise<Pull[]> => {
@@ -416,14 +417,23 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     throw new GitHubError('malformed', `${repo} has more open pull requests than the pin watch reads.`);
   };
 
-  const closedOn = async (branch: string): Promise<Pull[]> => {
+  /** Whether Martin closed, without merging it, a pull request of the App's on this branch for the same target. */
+  const closedByMartin = async (branch: string, title: string): Promise<boolean> => {
     const [owner] = repo.split('/');
     const { body } = await github.poll(
       repo,
       `/repos/${repo}/pulls?state=closed&per_page=20&head=${owner}:${encodeURIComponent(branch)}`,
       PULLS,
     );
-    return body.filter((p) => p.user?.login === APP_LOGIN && p.head.repo?.full_name === repo);
+    for (const pull of body)
+      if (
+        pull.user?.login === APP_LOGIN &&
+        pull.head.repo?.full_name === repo &&
+        !pull.merged_at &&
+        pull.title === title
+      )
+        if (!(await closedByApp(pull.number))) return true;
+    return false;
   };
 
   const pinIssues = async (): Promise<Map<string, Issue>> => {
@@ -459,10 +469,14 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       return;
     }
     const [pulls, open, issues] = await Promise.all([reads.dependencyPulls(repo), openPulls(), pinIssues()]);
-    const { body: main } = await github.poll(repo, `/repos/${repo}/git/ref/heads/main`, HEAD);
-    const head = main.object.sha;
+    const head = await source.head(repo);
     const scanned = day.run.headSha;
     const run = day.run.id;
+    if (keptFor !== run) {
+      kept.clear();
+      said.clear();
+      keptFor = run;
+    }
     /** Whether the next poll reads the day again rather than wait the hour: main moved while a move was written. */
     let again = false;
 
@@ -490,7 +504,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     };
 
     for (const move of day.moves) {
-      if (ISSUE_LANES.has(move.lane)) want(move);
+      // A lockfile's move is only ever an issue, whatever its lane: a major's among them.
+      if (ISSUE_LANES.has(move.lane) || (move.lockfile && PULL_LANES.has(move.lane))) want(move);
       if (move.lane === 'dependabot' && !move.lockfile)
         closeWith.set(
           pinBranchFor(move.name),
@@ -581,13 +596,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       keep.add(branch);
       const title = pullTitle(move, target);
       const body = pullBody(move, edits, day);
+      const fingerprint = `${title}\n${editsHash(edits)}`;
+      if (!existing && actions.dryRun && recorded.get(branch) === fingerprint) continue;
       if (existing?.title === title) {
         if (!existing.labels.some((l) => l.name === PIN_LABEL))
           await actions.addLabels(repo, existing.number, [PIN_LABEL]);
-        if ((existing.body ?? '') !== body) await actions.updatePullRequest(repo, existing.number, { body });
-        const { body: pull } = await github.poll(repo, `/repos/${repo}/pulls/${existing.number}`, PULL);
-        if (pull.mergeable !== false) continue;
-      } else if (!existing && (await closedOn(branch)).some((p) => !p.merged_at && p.title === title)) {
+        // Its branch was committed with these edits: only its description, and a conflict with main, are left.
+        if (EDITS_MARK.exec(existing.body ?? '')?.[1] === editsHash(edits)) {
+          if ((existing.body ?? '') !== body) await actions.updatePullRequest(repo, existing.number, { body });
+          const { body: pull } = await github.poll(repo, `/repos/${repo}/pulls/${existing.number}`, PULL);
+          if (pull.mergeable !== false) continue;
+        }
+      } else if (!existing && (await closedByMartin(branch, title))) {
         say(
           `closed ${branch} ${title}`,
           { branch },
@@ -611,8 +631,10 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         }
         throw error;
       }
+      recorded.set(branch, fingerprint);
       if (existing?.title === title) {
-        log.info({ repo, number: existing.number, commit }, 'made the pin move again on main, as it conflicted');
+        await actions.updatePullRequest(repo, existing.number, { body });
+        log.info({ repo, number: existing.number, commit }, 'made the pin move again on main');
       } else if (existing) {
         await actions.updatePullRequest(repo, existing.number, { title, body });
         log.info({ repo, number: existing.number, commit }, 'moved the pin pull request to a later target');
@@ -642,14 +664,21 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     for (const [key, issue] of wanted) {
       const found = issues.get(key);
       if (!found) {
+        if (actions.dryRun && recorded.get(`issue ${key}`) === `${issue.title}\n${issue.body}`) continue;
+        recorded.set(`issue ${key}`, `${issue.title}\n${issue.body}`);
         const number = await actions.openIssue(repo, { title: issue.title, body: issue.body, labels: [PIN_LABEL] });
         log.info({ repo, number, key }, 'opened a pin issue');
         continue;
       }
       if (found.state !== 'open') {
-        // Closed by Martin, or by the watch: opened again only for a later target than it was written for.
-        if (TARGET_MARK.exec(found.body ?? '')?.[1] === issue.target.replace(/-->/g, '')) continue;
-        await actions.reopenIssue(repo, found.number, `${RunText(day)} lists this move again, to a later target.`);
+        // Closed by Martin: opened again only for a later target than it was written for. Closed by the watch: again.
+        const same = TARGET_MARK.exec(found.body ?? '')?.[1] === issue.target.replace(/-->/g, '');
+        if (same && !(await closedByApp(found.number))) continue;
+        await actions.reopenIssue(
+          repo,
+          found.number,
+          same ? `${RunText(day)} lists this move again.` : `${RunText(day)} lists this move again, to a later target.`,
+        );
       }
       if ((found.body ?? '') !== issue.body || found.title !== issue.title)
         await actions.updateIssue(repo, found.number, { title: issue.title, body: issue.body });

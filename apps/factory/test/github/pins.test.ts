@@ -470,3 +470,104 @@ describe('the pin watch’s refusals', () => {
     expect(repo.refs.get('main')).toBe(scanned);
   });
 });
+
+describe('the pin watch, as review found it', () => {
+  it('opens an issue for a lockfile’s move in any lane it would otherwise write, a major’s among them', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const lockfile = factoryMoves().find((m) => m.lockfile) as ReadMove;
+    await harness(repo, () => day(scanned, [{ ...lockfile, lane: 'approval', major: true }])).pass();
+    expect(appPulls(repo)).toEqual([]);
+    expect(repo.issues.map((i) => i.title)).toEqual([
+      'Move a package in pnpm-lock.yaml (code scanning alert #5120) to the version its alerts name',
+    ]);
+  });
+
+  it('opens again a target whose pull request it closed itself, once Dependabot’s that it gave way to is gone', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const urgent = [
+      move({
+        name: 'ghcr.io/example/sbom-tool',
+        pins: [{ file: 'deploy/images/sbom-tool/Dockerfile', line: 2 }],
+        from: 'v1.54.0',
+        to: `image v1.55.1@${digest('sbom-tool/new')}`,
+        lane: 'worker',
+      }),
+    ];
+    const w = harness(repo, () => day(scanned, urgent));
+    await w.pass();
+    const theirs = dependabotGroup(repo, 'v1.55.1');
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+    theirs.state = 'closed';
+    await w.pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual(['factory/pin/ghcr.io-example-sbom-tool']);
+  });
+
+  it('opens again an issue it closed itself when the same move comes back to it', async () => {
+    const repo = new FakeRepo({
+      ...FILES,
+      'deploy/base/telemetry/dashboards.yaml': 'targetRevision: 13.2.7 # was 13.2.7\n',
+    });
+    const scanned = repo.main;
+    const unwritable = factoryMoves()
+      .filter((m) => m.name === 'example-dashboards')
+      .map((m) => ({ ...m, pins: [{ file: 'deploy/base/telemetry/dashboards.yaml', line: 1 }] }));
+    let moves = unwritable;
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    moves = [];
+    await w.pass();
+    expect(repo.issues[0]?.state).toBe('closed');
+    moves = unwritable;
+    await w.pass();
+    expect(repo.issues).toHaveLength(1);
+    expect(repo.issues[0]?.state).toBe('open');
+  });
+
+  it('commits again when the same target gains a pin, so the branch holds what its description says', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    let moves = factoryMoves().map((m) =>
+      m.name === 'example/sidecar' ? { ...m, pins: [{ file: 'deploy/base/telemetry/values/logs.yaml', line: 4 }] } : m,
+    );
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    expect(changed(repo, 'factory/pin/example-sidecar')).toHaveLength(1);
+    moves = factoryMoves();
+    await w.pass();
+    expect(changed(repo, 'factory/pin/example-sidecar')).toHaveLength(2);
+    expect(openPins(repo).filter((p) => p.head === 'factory/pin/example-sidecar')).toHaveLength(1);
+  });
+
+  it('records a dry run’s pull requests and issues once, however many passes it makes', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const w = harness(repo, () => day(scanned, factoryMoves()), { dryRun: true });
+    await w.pass();
+    await w.pass();
+    await w.pass();
+    const actions = w.records().map((r) => r.action);
+    expect(actions.filter((a) => a === 'openPullRequest')).toHaveLength(5);
+    expect(actions.filter((a) => a === 'openIssue')).toHaveLength(3);
+  });
+
+  it('opens an issue, not a refusal, for a move whose pin’s file is a symbolic link', async () => {
+    const repo = new FakeRepo({
+      ...FILES,
+      'deploy/base/telemetry/dashboards.yaml': { mode: '120000', text: 'deploy/base/telemetry/logs.yaml' },
+    });
+    const scanned = repo.main;
+    const w = harness(repo, () =>
+      day(
+        scanned,
+        factoryMoves().filter((m) => m.name === 'example-dashboards'),
+      ),
+    );
+    await w.pass();
+    expect(appPulls(repo)).toEqual([]);
+    expect(repo.issues[0]?.body).toContain('is not a file the watch can read');
+    expect(w.records().filter((r) => r.payload?.mechanism === 'github-guard')).toEqual([]);
+  });
+});

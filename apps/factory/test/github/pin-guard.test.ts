@@ -273,3 +273,71 @@ describe('the pin guard', () => {
     expect(writes(sent)).toEqual([]);
   });
 });
+
+describe('the pin guard, as review found it', () => {
+  it('refuses a number in a rule of the line CODEOWNERS gives Martin, and takes a pin under deploy/ or in a Dockerfile', async () => {
+    const owners =
+      '/.github/ @mrogan\n/deploy/ @mrogan\n/apps/factory/src/github/ @mrogan\n/apps/console/Dockerfile @mrogan\n';
+    const repo = new FakeRepo({
+      ...FILES,
+      '.github/CODEOWNERS': owners,
+      'apps/factory/src/github/pin-guard.ts': 'export const MAX_PINS = 20;\n',
+      'apps/console/Dockerfile': `FROM node:24.1.0@${digest('node/old')}\n`,
+    });
+    await refuses(
+      repo,
+      { pins: [{ file: 'apps/factory/src/github/pin-guard.ts', line: 1, from: '20', to: '99' }] },
+      PatchRefused,
+      /a rule of the line CODEOWNERS gives a person/,
+    );
+    await live(repo).actions.commitPins(REPO, asked(repo));
+    await live(repo).actions.commitPins(
+      REPO,
+      asked(repo, {
+        branch: 'factory/pin/node',
+        pins: [
+          {
+            file: 'apps/console/Dockerfile',
+            line: 1,
+            from: `24.1.0@${digest('node/old')}`,
+            to: `24.1.1@${digest('node/new')}`,
+          },
+        ],
+      }),
+    );
+  });
+
+  it('refuses the Makefile by its name', async () => {
+    const repo = new FakeRepo(FILES);
+    await refuses(
+      repo,
+      { pins: [{ file: 'Makefile', line: 1, from: '10.9.5', to: '10.9.6' }] },
+      PatchRefused,
+      /Makefile/,
+    );
+  });
+
+  it('keeps a byte-order mark, and every byte but the pin', async () => {
+    const repo = new FakeRepo({ ...FILES, 'deploy/bom.yaml': '﻿tag: 1.0.0\n' });
+    const sha = await live(repo).actions.commitPins(
+      REPO,
+      asked(repo, { pins: [{ file: 'deploy/bom.yaml', line: 1, from: '1.0.0', to: '1.0.1' }] }),
+    );
+    expect(repo.file(sha, 'deploy/bom.yaml')).toBe('﻿tag: 1.0.1\n');
+  });
+
+  it('refuses a version that is part of a path, not a word of its own', async () => {
+    const repo = new FakeRepo({ ...FILES, 'deploy/url.yaml': 'url: https://example.test/v1.2.3/install.sh\n' });
+    await refuses(
+      repo,
+      { pins: [{ file: 'deploy/url.yaml', line: 1, from: 'v1.2.3', to: 'v1.2.4' }] },
+      PatchRefused,
+      /nowhere/,
+    );
+  });
+
+  it('gives a name ending .lock a branch the guard takes, within its length', () => {
+    for (const name of ['example/foo.lock', `${'a'.repeat(75)}.lock`, 'x.lock'])
+      expect(() => guardPinBranch(pinBranchFor(name))).not.toThrow();
+  });
+});

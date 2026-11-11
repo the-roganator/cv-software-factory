@@ -265,6 +265,7 @@ describe('the day’s moves', () => {
     });
     expect(file.moves.find((move) => move.name === 'example/image')?.lockfile).toBe(false);
     expect(file).toMatchObject({ version: MOVES_VERSION, repository: REPOSITORY, totals: { fixed: 2, moves: 2 } });
+    expect(file.scanned).toEqual([]);
     expect(table(file)).toContain(
       `| example/image | 2.17.0 | image 2.17.0@${DIGEST} | 1 high | nothing | 0 | 2026-11-14T04:30:00Z | worker |`,
     );

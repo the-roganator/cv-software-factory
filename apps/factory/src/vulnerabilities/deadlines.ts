@@ -56,6 +56,7 @@ import {
   movesFile,
   table as movesTable,
   publicMove,
+  type ScannedImage,
 } from './moves.ts';
 import { satisfies } from './node.ts';
 import {
@@ -143,6 +144,8 @@ export interface Sources {
   image(reference: string): Promise<TrivyReport>;
   /** An image's index digest, as `scripts/ci-images.sh current` reads one: the SHA-256 of its raw manifest. */
   digest(reference: string): Promise<string>;
+  /** An image's index digest, and every platform manifest it lists (none for a single manifest). */
+  manifests(reference: string): Promise<{ digest: string; platforms: string[] }>;
   /** A chart's versions in its repository's index, each with when it was published. */
   chartVersions(repo: string, chart: string): Promise<{ version: string; created: string }[]>;
   /** A chart, rendered as the scan renders it, with its values files from the checkout. */
@@ -1250,6 +1253,18 @@ export function realSources(
       );
       return `sha256:${createHash('sha256').update(stdout).digest('hex')}`;
     },
+    async manifests(reference) {
+      // The raw manifest, as the registry gives it to a pull: an index lists each platform's manifest by digest. With the
+      // job's registry credentials, so an image of ours in GHCR is read as it is pulled.
+      const { stdout } = await tools.retry(() =>
+        run('skopeo', ['inspect', '--raw', skopeoName(byDigest(reference))], {
+          encoding: 'buffer',
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 5 * 60 * 1000,
+        }),
+      );
+      return manifestDigests(stdout);
+    },
     async chartVersions(repo, chart) {
       const source = `the chart repository ${repo}`;
       if (!/^https:\/\/[\w.-]+(\/[\w.~-]+)*\/?$/.test(repo))
@@ -1360,6 +1375,59 @@ export function realSources(
       return [...open, ...dismissed, ...fixed];
     },
   };
+}
+
+/** A reference skopeo reads: one pinned by tag and digest is read by its digest alone, which skopeo requires. */
+export function byDigest(reference: string) {
+  const [name = '', digest] = reference.split('@');
+  return digest ? `${repositoryOf(name)}@${digest}` : reference;
+}
+
+/** A raw manifest's digest, and the digests of the platform manifests it lists when it is an index. */
+export function manifestDigests(raw: Buffer) {
+  const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
+  let body: unknown;
+  try {
+    body = JSON.parse(raw.toString('utf-8'));
+  } catch {
+    throw new Error('a registry gave a manifest that is not JSON');
+  }
+  const listed = (body as { manifests?: unknown }).manifests;
+  const platforms = (Array.isArray(listed) ? listed : [])
+    .map((each) => (each as { digest?: unknown }).digest)
+    .filter((each): each is string => typeof each === 'string' && /^sha256:[0-9a-f]{64}$/.test(each));
+  return { digest, platforms: [...new Set(platforms)].sort() };
+}
+
+/** Every image target the scan read, with its digests and its pin, for `moves.json`'s `scanned`. */
+export async function scannedImages(
+  targets: ReadTarget[],
+  sources: Pick<Sources, 'manifests'>,
+): Promise<ScannedImage[]> {
+  const read = new Map<string, Promise<{ digest: string; platforms: string[] }>>();
+  const out: ScannedImage[] = [];
+  await pool(
+    targets
+      .filter((target) => target.image)
+      .map((target) => async () => {
+        const image = target.image ?? '';
+        let once = read.get(image);
+        if (!once) {
+          once = sources.manifests(image);
+          read.set(image, once);
+        }
+        const { digest, platforms } = await once;
+        const pinned = image.split('@')[1];
+        out.push({
+          kind: target.kind,
+          item: target.name ?? target.label,
+          image,
+          digests: [...new Set([digest, ...(pinned ? [pinned] : []), ...platforms])],
+          pin: target.pin ?? { file: target.file, line: target.line ?? 1 },
+        });
+      }),
+  );
+  return out;
 }
 
 /** The scanned checkout's mise.lock. */
@@ -1516,7 +1584,16 @@ export async function main(args: string[]): Promise<number> {
   const list = moves(judged.judged, context);
   // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
   const run = /^\d+$/.test(process.env.GITHUB_RUN_ID ?? '') ? process.env.GITHUB_RUN_ID : undefined;
-  const file = movesFile(list, context, run);
+  let scanned: ScannedImage[];
+  try {
+    scanned = await scannedImages(handoff.targets, sources);
+  } catch (error) {
+    console.error(
+      `::error::The images scanned could not be listed with their digests: ${firstLine(error)}. The run fails${write ? ', and nothing is uploaded' : ''}.`,
+    );
+    return 1;
+  }
+  const file = movesFile(list, context, run, scanned);
   const tags = new Map<string, MoveTag>();
   if (run)
     for (const [index, move] of list.entries())
@@ -1524,7 +1601,8 @@ export async function main(args: string[]): Promise<number> {
   const { lines, bySeverity, byBucket, passes } = verdict(judged.rows, prove, list);
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
   const table = movesTable(file);
-  for (const line of [looked, ...table, '', ...lines]) console.log(line);
+  const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;
+  for (const line of [looked, images, ...table, '', ...lines]) console.log(line);
   writeFileSync(join(dir, 'moves.json'), `${JSON.stringify(file, null, 2)}\n`);
   if (write) {
     // What is uploaded carries each fix: the SARIF's messages, and the excepted alerts' keys, which name them.

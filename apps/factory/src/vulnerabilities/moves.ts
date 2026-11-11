@@ -307,6 +307,23 @@ export interface PublicMove {
   lockfile: boolean;
 }
 
+/**
+ * An image the scan read, whatever it found: every image target of the list, so what a cluster runs can be compared with
+ * what was scanned. Public: references from public files, with no package, advisory or count.
+ */
+export interface ScannedImage {
+  /** The item's kind (inventory.ts). */
+  kind: Kind;
+  /** The item as the list names it: an image's reference, a chart's Application, `k3s v1.37.2+k3s1`. */
+  item: string;
+  /** The image's reference as pinned or rendered, tag and digest as written. */
+  image: string;
+  /** Its index digest (or its one manifest's), then every platform manifest the index lists, `sha256:<64 hex>`. */
+  digests: string[];
+  /** The pin: the item's, or a values file's line for a chart's image one pins. */
+  pin: Pin;
+}
+
 /** The shape of `moves.json`. */
 export interface MovesFile {
   version: typeof MOVES_VERSION;
@@ -318,6 +335,8 @@ export interface MovesFile {
   /** How many results have a fix and are not excepted, how many moves, and the moves in each lane. */
   totals: { fixed: number; moves: number; lanes: Record<Lane, number> };
   moves: PublicMove[];
+  /** Every image the scan read, in order of pin and reference. */
+  scanned: ScannedImage[];
 }
 
 /** A move with nothing in it the log may not print. */
@@ -340,7 +359,12 @@ export function publicMove(move: Move): PublicMove {
   };
 }
 
-export function movesFile(list: Move[], context: Pick<Context, 'repository' | 'now'>, run?: string): MovesFile {
+export function movesFile(
+  list: Move[],
+  context: Pick<Context, 'repository' | 'now'>,
+  run?: string,
+  scanned: ScannedImage[] = [],
+): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
     number
@@ -353,6 +377,9 @@ export function movesFile(list: Move[], context: Pick<Context, 'repository' | 'n
     ...(run ? { run } : {}),
     totals: { fixed, moves: list.length, lanes },
     moves: list.map(publicMove),
+    scanned: [...scanned].sort(
+      (a, b) => order(a.pin.file, b.pin.file) || a.pin.line - b.pin.line || order(a.image, b.image),
+    ),
   };
 }
 

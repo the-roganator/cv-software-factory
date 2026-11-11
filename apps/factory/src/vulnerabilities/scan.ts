@@ -484,6 +484,9 @@ export interface ReadTarget {
   chart?: Chart | undefined;
   /** For a chart's image one of its values files pins, that pin's file and line. */
   pin?: { file: string; line: number } | undefined;
+  /** The item as the list names it (inventory.ts's `name`), and the line of its pin. */
+  name?: string | undefined;
+  line?: number | undefined;
 }
 
 export interface Outcome {
@@ -559,6 +562,8 @@ export async function scan(
         label: target.label,
         image: target.image,
         list: item.list,
+        name: item.name,
+        line: item.line,
         ...(item.chart ? { chart: item.chart } : {}),
         ...(target.pin ? { pin: target.pin } : {}),
       });

@@ -117,7 +117,9 @@ const PAGES = 10;
 
 /** The mark that finds a move's issue again, and the target it was written for. */
 const ISSUE_MARK = /<!-- factory: pin-issue ([a-z0-9][a-z0-9.-]*) -->/;
-const TARGET_MARK = /<!-- factory: pin-target (.*?) -->/;
+/** The target, URI-encoded, so nothing in it can end the comment it is in. */
+const TARGET_MARK = /<!-- factory: pin-target ([A-Za-z0-9%._~!*'()-]*) -->/;
+const targetMark = (target: string) => encodeURIComponent(target);
 /** The mark that says which edits a pull request's branch was committed with, so a change of pins commits again. */
 const EDITS_MARK = /<!-- factory: pin-edits ([0-9a-f]{64}) -->/;
 const editsHash = (edits: readonly PinEdit[]) => createHash('sha256').update(JSON.stringify(edits)).digest('hex');
@@ -317,7 +319,7 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
     : move.pins.map((pin) => `- ${code(`${pin.file}:${pin.line}`)}, pinning ${code(move.from)}`);
   const body = [
     `<!-- factory: pin-issue ${key} -->`,
-    `<!-- factory: pin-target ${move.to.replace(/-->/g, '')} -->`,
+    `<!-- factory: pin-target ${targetMark(move.to)} -->`,
     `${RunText(moves)} lists a move the factory's pin watch cannot make with a pull request of its own: ${code(move.name)}${move.lockfile ? '' : ` from ${code(move.from)}`} to ${move.lockfile ? to : code(to)}.`,
     '',
     cannotWrite(move, why),
@@ -672,7 +674,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       }
       if (found.state !== 'open') {
         // Closed by Martin: opened again only for a later target than it was written for. Closed by the watch: again.
-        const same = TARGET_MARK.exec(found.body ?? '')?.[1] === issue.target.replace(/-->/g, '');
+        const same = TARGET_MARK.exec(found.body ?? '')?.[1] === targetMark(issue.target);
         if (same && !(await closedByApp(found.number))) continue;
         await actions.reopenIssue(
           repo,

@@ -49,7 +49,8 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
         return { reason: 'its base was changed: a pin move is proved only into main from the start' };
       const compare = await github.api<{ merge_base_commit?: { sha?: string }; base_commit?: { sha?: string } }>(
         'GET',
-        `/repos/${each.repo}/compare/${pr.base.ref}...${pr.head.sha}`,
+        // Open, against main as it is now; closed (a replay by hand), against the tip it was judged on then.
+        `/repos/${each.repo}/compare/${pr.state === 'open' || !pr.base.sha ? pr.base.ref : pr.base.sha}...${pr.head.sha}`,
         each.read,
       );
       // The move is proved on what the merge makes against main's tip, never against a merge base main has left.

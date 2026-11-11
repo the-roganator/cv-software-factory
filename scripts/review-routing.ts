@@ -56,7 +56,7 @@ export interface PullRequest {
   state: string;
   user: { id: number } | null;
   head: { sha: string; ref: string; repo: { full_name: string } | null };
-  base: { ref: string; repo: { full_name: string } };
+  base: { ref: string; repo: { full_name: string }; sha?: string };
   /** How many files it changes, which the files API lists up to 3,000 of. */
   changed_files?: number;
 }

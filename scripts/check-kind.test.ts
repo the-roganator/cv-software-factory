@@ -300,6 +300,9 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
     ['the workflow', { '.github/workflows/platform.yml': 'name: platform\n' }],
     ['a script it runs', { 'scripts/mark-refusals.sh': '#!/bin/sh\n' }],
     ['a script that decides it', { 'scripts/check-kind.sh': '#!/bin/sh\n' }],
+    ['a module a record’s script imports', { 'policy/flags.ts': 'export {};\n' }],
+    ['the answer key’s shape', { 'apps/factory/src/scoreboard/key.ts': 'export {};\n' }],
+    ['how a signature is read', { 'apps/factory/src/github/signatures.ts': 'export {};\n' }],
     ['deploy/ alongside code', { 'deploy/base/console/deployment.yaml': 'x\n', 'apps/console/src/main.ts': 'x\n' }],
   ])('runs a cluster for a change of %s, anyone’s, in either place', (_, change) => {
     expect(platform(change, anyone)).toBe('cluster');

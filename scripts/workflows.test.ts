@@ -615,7 +615,10 @@ describe('platform.yml', () => {
     const decide = (jobs.which?.steps ?? []).map((step) => step.run ?? '').join('\n');
     expect(decide).toContain('scripts/check-kind.sh platform');
     expect(jobs.platform?.name).toBe('platform');
-    expect(jobs.platform?.if).toBe(expression("needs.which.outputs.platform == 'cluster'"));
+    // Skipped on `none` alone: the job deciding failing, or saying anything else, makes the cluster.
+    expect(jobs.platform?.if).toBe(
+      expression("!cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none')"),
+    );
     const steps = jobs.platform?.steps ?? [];
     const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));
     expect(make?.run).toContain('make up REVISION="$REVISION"');

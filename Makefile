@@ -125,7 +125,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory judgements-token
 	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
-	sed -E 's/^( *(targetRevision|value): )main$$/\1$(REVISION)/' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
+	sed -E -e 's|^( *targetRevision: )main$$|\1$(REVISION)|' -e 's|^( *value: )main$$|\1$(REVISION)|' deploy/argocd/root.yaml | \
+		$(KUBECTL) apply -f -
 	$(deployed)
 
 down: ## Delete the local cluster, and everything in it

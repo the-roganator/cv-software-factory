@@ -62,7 +62,9 @@ jobs:
   platform:
     name: platform
     needs: which
-    if: ${{ needs.which.outputs.platform == 'cluster' }}
+    # Skipped only when the job above said `none`: a skipped job passes the required check, so one that failed, or said
+    # nothing, makes the cluster, as check.yml's `kind` failing runs everything.
+    if: ${{ !cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -105,23 +107,27 @@ jobs:
           export TYPESAFE_API_KEY=stand-in-not-a-key ANTHROPIC_API_KEY=stand-in-not-a-key
           export PUSHOVER_APP_TOKEN=stand-in-not-a-token PUSHOVER_USER_KEY=stand-in-not-a-key
           time make up REVISION="$REVISION" SYNC_TIMEOUT=15m TIMEOUT=900
+      # Every Application Synced, and Healthy but the website's, whose health is its release's, and root's, which rolls
+      # the website's up: `make up` has waited for the website to settle, and for everything else root deploys to be
+      # Healthy (scripts/wait-deployed.sh), so a canary in flight on the app's main holds no change here.
       - name: Every Application Synced and Healthy
         run: |
           kubectl --context k3d-software-factory -n argocd get applications \
             -o custom-columns='APPLICATION:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision'
           unready=$(kubectl --context k3d-software-factory -n argocd get applications -o json |
-            jq -r '.items[] | select(.status.sync.status != "Synced" or .status.health.status != "Healthy") | .metadata.name')
+            jq -r '.items[] | select(.status.sync.status != "Synced" or
+              (.status.health.status != "Healthy" and (.metadata.name | IN("root", "website") | not))) | .metadata.name')
           if [ -n "$unready" ]; then echo "::error::Not Synced and Healthy: $(echo $unready)"; exit 1; fi
       - name: Every image policy enforcing, and admission ready
         run: |
-          for policy in factory-images website-images scoreboard-images flagd-images; do
-            actions=$(kubectl --context k3d-software-factory get imagevalidatingpolicy "$policy" -o jsonpath='{.spec.validationActions}')
-            echo "$policy: $actions"
-            [ "$actions" = '["Deny"]' ] || { echo "::error::$policy does not enforce: $actions"; exit 1; }
-          done
+          policies=$(kubectl --context k3d-software-factory get imagevalidatingpolicies -o json |
+            jq -r '.items[] | "\(.metadata.name) \(.spec.validationActions | join(","))"')
+          echo "$policies"
+          [ -n "$policies" ] || { echo "::error::No image policy on the cluster."; exit 1; }
+          if grep -v ' Deny$' <<< "$policies"; then echo "::error::An image policy does not enforce."; exit 1; fi
           make admission-ready
+      # Only from a cluster that came up: a record taken from one that did not would say nothing.
       - name: Take the refusal records
-        if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/records"
           failed=0
@@ -131,7 +137,6 @@ jobs:
           REFUSALS_OUT="$RUNNER_TEMP/records/flag-stages-refusals.json" node scripts/flag-stages-refusals.ts || { echo "::error::flag-stages-refusals failed"; failed=1; }
           exit "$failed"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() }}
         with:
           name: refusal-records
           path: ${{ runner.temp }}/records

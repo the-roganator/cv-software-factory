@@ -14,7 +14,7 @@
 #
 # `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
 # HEAD changes from HEAD^1 anything a cluster made from the change runs or makes it with (deploy/, the Makefile, mise's
-# pins, k3d's among them, the workflow and the scripts it runs), unless the kind is `deploy`, whose images were built
+# pins, k3d's among them, the workflow, the scripts it runs and the modules they import), unless the kind is `deploy`, whose images were built
 # from commits already merged and whose merge decides nothing (ADR 0017). Anything it cannot tell is `cluster`.
 #
 # The pull request's author and base come from the event on a pull request (AUTHOR, GITHUB_BASE_REF), and in the queue,
@@ -91,7 +91,7 @@ queued() {
 
 # Whether HEAD changes from HEAD^1 anything the platform check's cluster is made from or runs: both sides of a rename.
 # A diff it cannot read counts as a change.
-PLATFORM='^(deploy/|Makefile$|mise\.(toml|lock)$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|answer-key\.ts|signed-by\.ts|policy-hash\.ts)$)'
+PLATFORM='^(deploy/|Makefile$|mise\.(toml|lock)$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|answer-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/|apps/factory/src/scoreboard/|apps/factory/src/github/(registry|signatures)\.ts$)'
 changes_platform() {
   local files
   files=$(git diff --name-only --no-renames HEAD^1 HEAD) || return 0

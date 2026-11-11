@@ -64,15 +64,13 @@ describe('the local cluster', () => {
  */
 describe('root, at a revision', () => {
   const REVISION = '0123456789abcdef0123456789abcdef01234567';
-  const sed = /^\tsed -E '([^']+)' deploy\/argocd\/root\.yaml \| \$\(KUBECTL\) apply -f -$/m.exec(makefile)?.[1];
-  const written = () =>
-    execFileSync(
-      'sed',
-      ['-E', (sed ?? '').replaceAll('$$', '$').replace('$(REVISION)', REVISION), 'deploy/argocd/root.yaml'],
-      {
-        encoding: 'utf-8',
-      },
-    );
+  const BRANCH = 'ci/platform-check';
+  // The Makefile's line that writes root, up to the apply, as make hands it to the shell.
+  const sed = /^\t(sed -E .+ deploy\/argocd\/root\.yaml) \| \\\n\t\t\$\(KUBECTL\) apply -f -$/m.exec(makefile)?.[1];
+  const written = (revision = REVISION) =>
+    execFileSync('sh', ['-c', (sed ?? 'false').replaceAll('$$', '$').replaceAll('$(REVISION)', revision)], {
+      encoding: 'utf-8',
+    });
 
   it('is written by the Makefile with the revision in both places, and main nowhere', () => {
     expect(sed).toBeDefined();
@@ -85,6 +83,12 @@ describe('root, at a revision', () => {
       { op: 'replace', path: '/spec/sources/1/targetRevision', value: REVISION },
     ]);
     expect(written()).not.toMatch(/: main$/m);
+  });
+
+  it('takes a branch whose name has a slash, as most here do', () => {
+    const root = parse(written(BRANCH)) as { spec: { source: { targetRevision: string } } };
+    expect(root.spec.source.targetRevision).toBe(BRANCH);
+    expect(written(BRANCH)).toContain(`value: ${BRANCH}\n`);
   });
 
   it("points every Application's values from this repository at it, and leaves the app's own repository alone", () => {

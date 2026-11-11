@@ -3187,7 +3187,7 @@ const MOVES = [
     left: 'Left as it is, the scan fails from 16 Nov 17:49 UTC.',
     pins: [['deploy/k3d/cluster.yaml:8', 'image rancher/k3s v1.36.4+k3s1 → v1.36.5+k3s1']] },
   // One of the sense's rows: an image running that the list does not name. No target and no counts: nothing scanned it.
-  { key: 'offlist', st: 'wait', name: 'An image no list names', pin: 'running in default · pod debug-shell-7c9f', from: 'not on the list', c: null, due: 'none', route: 'cluster',
+  { key: 'offlist', st: 'wait', name: 'Unscanned image running', pin: 'running in default · pod debug-shell-7c9f', from: 'pinned nowhere', c: null, due: 'none', route: 'cluster',
     why: 'The sense found a pod running an image that no pin names, so the scan never sees it. It came from outside a merge: a pod started by hand.',
     left: 'Nothing to merge: add the image to the list in a pull request, or delete the pod. The sense reads again when it starts, and each day.',
     pins: [['default/debug-shell-7c9f', 'example/debug-shell@sha256:41c0…e2d9']] },
@@ -3231,7 +3231,8 @@ function renderPatching() {
   }
   // What waits on Martin first, then by earliest deadline, then rows with none.
   const order = [...MOVES].sort((a, b) => (b.st === 'wait') - (a.st === 'wait') || (a.h ?? Infinity) - (b.h ?? Infinity));
-  const waiting = MOVES.filter((m) => m.st === 'wait').length, moves = MOVES.filter((m) => m.from !== 'not on the list').length;
+  const unscanned = MOVES.filter((m) => m.from === 'pinned nowhere').length;
+  const waiting = MOVES.filter((m) => m.st === 'wait').length, moves = MOVES.filter((m) => m.from !== 'pinned nowhere').length;
   const cleared = MOVES.reduce((n, m) => n + (m.c ? m.c.reduce((a, b) => a + b, 0) : 0), 0).toLocaleString('en-GB');
   const row = (m) => {
     const [tone, gl, word] = MOVE_STATE[m.st](), open = S.openMove === m.key, [name, pin, shown] = moveName(m);
@@ -3248,7 +3249,7 @@ function renderPatching() {
       <span class="facts">${ft ? `<span class="ft">${ft}</span>` : ''}${moveClears(m.c, m.clrNote)}<span class="due ${m.soon ? 'tone-attn' : ''}">${m.due}</span></span>
       <span class="pill route">${MOVE_ROUTE[m.route]()}${m.pr ? ` · #${m.pr}` : ''}</span>${glyph('chev', 'glyph chev')}</button>${more}</div>`;
   };
-  el.innerHTML = `<div class="panel-head"><h2 id="patching-title">Patching</h2><span class="label">${moves} moves · 1 image off the list · <span class="tone-attn">${waiting} wait on ${v ? 'Martin' : 'you'}</span>${v ? ' · Read only' : ''}</span></div>
+  el.innerHTML = `<div class="panel-head"><h2 id="patching-title">Patching</h2><span class="label">${moves} moves · ${unscanned} unscanned image${unscanned === 1 ? '' : 's'} running · <span class="tone-attn">${waiting} wait on ${v ? 'Martin' : 'you'}</span>${v ? ' · Read only' : ''}</span></div>
     <p class="help">Everything the factory and the app build or run is scanned every day. A finding with a fix has a deadline by its severity. One row here is one pin to move, and what moving it clears.</p>
     <p class="patch-day"><span class="v tone-attn">${glyph('cross')}Scan failed today</span><span>· 04:17 UTC · 41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet · <span class="zero">0</span> overdue · <span class="tone-attn">6 due within a day (in 3 moves below)</span></span></p>
     <div class="pm-list">${order.map(row).join('')}</div>
@@ -3267,7 +3268,7 @@ const PATCH_CARD = {
   argocd: ['Patch · an issue', 'Argo CD v3.5.4 needs the toolchain moved', (m) => `Clears ${m.c[0]} Critical and ${m.c[1]} High. Its chart moves with its CLI, which mise pins, so no pull request of the App’s can write it.`],
   loki: ['Patch · {whose} approval', 'Loki’s fix is three majors on', (m) => `No 18.x chart has the fixed image. ${m.to} does, and its manifests change beyond the image.`, (m) => `${m.from} → ${m.to} · 14 manifests change · clears ${m.c[0]} Critical, ${m.c[1]} High`],
   k3s: ['Patch · {whose} cluster', 'k3s v1.36.5 needs the cluster moved', (m) => `Clears ${m.c[1]} High. Only <code>make upgrade-cluster</code> applies it, with the line stopped: #${m.pr} records the pin once it runs.`],
-  offlist: ['Patch · {whose} cluster', 'An image no list names is running', () => 'A pod in <code>default</code> runs <code>example/debug-shell</code>, which no pin names, so the daily scan never sees it.'],
+  offlist: ['Patch · {whose} cluster', 'An unscanned image is running', () => 'A pod in <code>default</code> runs <code>example/debug-shell</code>, which no pin names, so the daily scan never sees it.'],
 };
 function patchHolds() {
   if (q.get('patching') === 'none') return [];

@@ -107,7 +107,7 @@ jobs:
           REVISION: ${{ github.sha }}
         run: |
           unset TYPESAFE_API_KEY ANTHROPIC_API_KEY GITHUB_APP_PRIVATE_KEY PUSHOVER_APP_TOKEN PUSHOVER_USER_KEY
-          setsid make up REVISION="$REVISION" SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 SYNC_TIMEOUT=20m TIMEOUT=1200 &
           make=$!
           # make has a session of its own, so a cancelled step stops it here.
           trap 'kill -- "-$make" 2>/dev/null' TERM INT
@@ -168,9 +168,12 @@ jobs:
               "\($app) \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")' || true
           kubectl --context k3d-software-factory get pods -A -o wide || true
           kubectl --context k3d-software-factory get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -40 || true
-          # What the keys `make up` did not give would have reached: the gateway (no agent calls on a line not started),
-          # the GitHub worker (read-only, no App), and Alertmanager's sends to Pushover (none attempted with no token).
-          for worker in gateway github; do
+          # What would reach outside: the gateway (no key, and no agent calls on a line not started), the GitHub
+          # worker, which runs no pod here, and the line, which watches no release (deploy/argocd/platform-check.yaml),
+          # and Alertmanager's sends to Pushover (none attempted with no token).
+          kubectl --context k3d-software-factory -n factory get deployment github line \
+            -o custom-columns='DEPLOYMENT:.metadata.name,REPLICAS:.spec.replicas,RELEASE_ROLLOUT:.spec.template.spec.containers[0].env[?(@.name=="RELEASE_ROLLOUT")].value' || true
+          for worker in gateway line; do
             echo "--- $worker's log"
             kubectl --context k3d-software-factory -n factory logs "deploy/$worker" --tail=40 || true
           done

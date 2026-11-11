@@ -13,6 +13,9 @@ POSTGRES := $(shell sed -nE 's/^ +image: (postgres:[^ ]+@sha256:[0-9a-f]{64})$$/
 # deploy/argocd/root.yaml). `make up REVISION=my-branch` tries a change there before it merges, as platform.yml makes
 # a cluster from a pull request's commit; the app's repository is still read from its main.
 REVISION ?= main
+# Set by the platform check alone (.github/workflows/platform.yml): root also takes deploy/argocd/platform-check.yaml's
+# patches, which leave out what would read GitHub from the check's cluster. Never set on a cluster of Martin's.
+PLATFORM_CHECK ?=
 # The private checkout, which holds the answer key: `make up` gives the scoreboard each entry's id and fingerprint.
 PRIVATE_DIR ?= $(CURDIR)/../cv-software-factory-private
 # The workers that connect to the store, each as a role of its own (packages/store/migrations/0022_worker-roles.sql).
@@ -128,6 +131,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@# The revision quoted whole, then with what a sed replacement reads (`&`, `\`, the `|` it is delimited by) escaped.
 	revision='$(subst ','\'',$(REVISION))'; revision="$$(printf '%s' "$$revision" | sed 's/[&|\\]/\\&/g')" && \
 		sed -E -e "s|^( *targetRevision: )main$$|\\1$$revision|" -e "s|^( *value: )main$$|\\1$$revision|" deploy/argocd/root.yaml | \
+		{ if [ -n '$(PLATFORM_CHECK)' ]; then yq '.spec.source.kustomize.patches += load("deploy/argocd/platform-check.yaml")'; \
+		else cat; fi; } | \
 		$(KUBECTL) apply -f -
 	$(deployed)
 

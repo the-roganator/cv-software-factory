@@ -33,7 +33,7 @@
  * the same file mise reads. So nothing of the app's `mise.toml` runs here either.
  */
 import { execFile } from 'node:child_process';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { git, gitInput } from './git.ts';
@@ -493,17 +493,22 @@ export function pnpmIn(env: NodeJS.ProcessEnv): Pnpm {
  */
 async function withoutNpmrc<T>(dir: string, aside: string, work: () => Promise<T>): Promise<T> {
   const npmrc = join(dir, '.npmrc');
-  const moved = await rename(npmrc, aside).then(
+  // Copied, not renamed: the checkout and the pod's own folder are volumes of their own.
+  const moved = await copyFile(npmrc, aside).then(
     () => true,
     (error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return false;
       throw error;
     },
   );
+  if (moved) await rm(npmrc);
   try {
     return await work();
   } finally {
-    if (moved) await rename(aside, npmrc);
+    if (moved) {
+      await copyFile(aside, npmrc);
+      await rm(aside);
+    }
   }
 }
 

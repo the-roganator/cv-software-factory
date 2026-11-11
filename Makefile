@@ -77,7 +77,7 @@ define deployed
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -421,6 +421,13 @@ take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<
 close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
 	@only='$(subst ','\'',$(value ONLY))'; case "$$only" in ''|*[!0-9]*) echo "Give ONLY=<work item>, its number." >&2; exit 2;; esac; \
 	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
+
+# The vulnerability drill's pull requests, in order, and the two entries in policy/vulnerabilities.ts its pin needs,
+# checked as `make check` holds them and to expire the next day (UTC): it opens nothing (scripts/drill-vulnerability.ts).
+drill-vulnerability: node_modules ## Print a drill's pull requests and its exceptions: PACKAGE= VERSION= ADVISORY= RATING=critical|lower (EXPIRES= REASON=)
+	@node scripts/drill-vulnerability.ts --package '$(subst ','\'',$(value PACKAGE))' --version '$(subst ','\'',$(value VERSION))' \
+		--advisory '$(subst ','\'',$(value ADVISORY))' --rating '$(subst ','\'',$(value RATING))' \
+		$(if $(EXPIRES),--expires '$(subst ','\'',$(value EXPIRES))') $(if $(REASON),--reason '$(subst ','\'',$(value REASON))')
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

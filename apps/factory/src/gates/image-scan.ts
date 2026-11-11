@@ -8,12 +8,19 @@
  * A vulnerability is known by its id and the package it is in, so moving a package to another version that has the
  * same vulnerability brings nothing new.
  *
+ * Its exceptions are the lockfile scan's and dependency review's: the entries of `policy/vulnerabilities.ts` in force,
+ * read from this repository's `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository
+ * the gate judges (GITHUB_REPOSITORY) and its own image, by the reading the three share (./exceptions.ts). A finding
+ * one excepts is named in the summary and fails nothing. Nothing is read from the change that could except anything.
+ *
  * Its notice gives what each image has in all, by severity, each vulnerability once (./counts.ts): the counts the line
  * records. It writes none unless both reports are Trivy's own, `SchemaVersion` 2 with a list of results: a report of
  * another shape fails nothing here, so it must not count as an image with nothing in it.
  */
 import { readFile } from 'node:fs/promises';
+import { EXCEPTIONS, type Exception } from '../../../../policy/vulnerabilities.ts';
 import { countBySeverity, countsNote } from './counts.ts';
+import { except, ownImage } from './exceptions.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 interface Vulnerability {
@@ -67,12 +74,30 @@ export function countsOf(base: TrivyReport, change: TrivyReport) {
   return { before: of(base), after: of(change) };
 }
 
-export function newIn(base: TrivyReport, change: TrivyReport) {
+/**
+ * What the change's image brings in, the high or critical part of it that fails, and what an exception in force for the
+ * repository's own image excepts, which fails nothing: the entries of policy/vulnerabilities.ts, or others, for the tests.
+ */
+export function newIn(
+  base: TrivyReport,
+  change: TrivyReport,
+  repository = '',
+  entries: readonly Exception[] = EXCEPTIONS,
+  today: Date | string = new Date(),
+) {
   const before = new Set(vulnerabilities(base).map(key));
   const after = vulnerabilities(change);
   const added = after.filter((v) => !before.has(key(v)));
   const removed = vulnerabilities(base).filter((v) => !after.some((a) => key(a) === key(v)));
-  return { added, failing: added.filter((v) => FAILING.has(v.Severity)), removed, total: after.length };
+  const item = ownImage(repository);
+  const { excepted, failing } = except(
+    added,
+    repository,
+    (v) => ({ item, package: v.PkgName, advisory: v.VulnerabilityID }),
+    entries,
+    today,
+  );
+  return { added, failing: failing.filter((v) => FAILING.has(v.Severity)), excepted, removed, total: after.length };
 }
 
 export async function main([basePath, changePath]: string[]): Promise<number> {
@@ -84,7 +109,7 @@ export async function main([basePath, changePath]: string[]): Promise<number> {
   // reads is optional, so a report of another shape reads as no vulnerabilities rather than throwing.
   const read = async (path: string) => JSON.parse(await readFile(path, 'utf-8')) as TrivyReport;
   const [base, change] = [await read(basePath), await read(changePath)];
-  const { added, failing, removed, total } = newIn(base, change);
+  const { added, failing, excepted, removed, total } = newIn(base, change, process.env.GITHUB_REPOSITORY ?? '');
   const rows = added
     .map(
       (v) =>
@@ -98,7 +123,12 @@ export async function main([basePath, changePath]: string[]): Promise<number> {
         ? `This change's image brings in ${failing.length} high or critical vulnerabilit${failing.length === 1 ? 'y' : 'ies'} the base's does not have.`
         : `This change's image brings in no high or critical vulnerability. It has ${total} known in all, ${added.length} of them new and ${removed.length} fewer than the base's.`,
       added.length ? `| Severity | Vulnerability | Package | Fixed in | Title |\n|---|---|---|---|---|\n${rows}` : '',
-    ].join('\n\n'),
+      excepted.length
+        ? `It brings in ${excepted.length} that policy/vulnerabilities.ts on main excepts, which fail nothing:\n\n| Vulnerability | Package | Excepted until |\n|---|---|---|\n${excepted.map((v) => `| ${v.VulnerabilityID} | ${cell(v.PkgName)} ${cell(v.InstalledVersion)} | ${v.expires} |`).join('\n')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
   );
   const counts = countsOf(base, change);
   if (counts) annotate('notice', countsNote('image scan', counts));

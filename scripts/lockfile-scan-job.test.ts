@@ -87,10 +87,12 @@ describe("check.yml's lockfile scan", () => {
 });
 
 describe("the exceptions, from main's policy alone", () => {
-  type Step = { name?: string; uses?: string; run?: string; with?: Record<string, string> };
+  type Step = { id?: string; name?: string; uses?: string; run?: string; with?: Record<string, string> };
   const jobs = [
     ['.github/workflows/check.yml', 'lockfile-scan', 'base'],
     ['.github/workflows/app-gates.yml', 'lockfile-scan', 'factory'],
+    ['.github/workflows/app-gates.yml', 'image-scan', 'factory'],
+    ['.github/workflows/app-gates.yml', 'dependency-review', 'factory'],
     ['.github/workflows/vulnerabilities.yml', 'scan', 'factory'],
     ['.github/workflows/vulnerabilities.yml', 'prove', 'factory'],
   ] as const;
@@ -108,9 +110,23 @@ describe("the exceptions, from main's policy alone", () => {
       const take = steps.findIndex((s) => s.name === 'Take the exceptions from main');
       expect(take, `${file} ${name}`).toBeGreaterThan(main);
       expect(steps[take]?.run).toContain(`cp policy-main/policy/vulnerabilities.ts ${into}/policy/vulnerabilities.ts`);
-      const runs = steps.findIndex((s) => /lockfile-scan\.ts|scan\.ts/.test(s.run ?? ''));
+      const runs = steps.findIndex((s) => /lockfile-scan\.ts|scan\.ts|dependency-allow\.ts/.test(s.run ?? ''));
       expect(runs, `${file} ${name}`).toBeGreaterThan(take);
     }
+  });
+
+  it("gives dependency review the advisories main's policy allows, read after main's copy is in place", () => {
+    const steps = (
+      parse(readFileSync('.github/workflows/app-gates.yml', 'utf-8')).jobs['dependency-review'] as {
+        steps: Step[];
+      }
+    ).steps;
+    const allow = steps.findIndex((s) => s.run === 'node factory/apps/factory/src/gates/dependency-allow.ts');
+    const review = steps.findIndex((s) => s.uses?.startsWith('actions/dependency-review-action@'));
+    expect(allow).toBeGreaterThan(steps.findIndex((s) => s.name === 'Take the exceptions from main'));
+    expect(review).toBeGreaterThan(allow);
+    expect(steps[allow]?.id).toBe('allow');
+    expect(steps[review]?.with?.['allow-ghsas']).toBe(['${{', 'steps.allow.outputs.ghsas', '}}'].join(' '));
   });
 
   it("replaces the checkout's copy with main's, and keeps the checkout's only while main has none", () => {

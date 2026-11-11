@@ -17,8 +17,13 @@
 # - dependency review and image scan: fail only on a vulnerability the change brings in.
 # - lockfile scan: Trivy's findings on each lockfile of the base and of the change, each scanned alone with development
 #   dependencies; fails on any vulnerability, at any severity, the change's lockfiles have and the base's do not
-#   (apps/factory/src/gates/lockfile-scan.ts), but those policy/vulnerabilities.ts on this repository's main excepts.
-#   It reads the change's lockfiles alone, as data.
+#   (apps/factory/src/gates/lockfile-scan.ts). It reads the change's lockfiles alone, as data.
+#
+# The three that judge a dependency take their exceptions from policy/vulnerabilities.ts on this repository's main
+# alone, whatever commit the caller pins, and read them by one function (apps/factory/src/gates/exceptions.ts): the
+# lockfile scan for each lockfile, the image scan for the app's own image, and dependency review as the GHSA ids it
+# allows, of the entries for the app's lockfiles. An expired entry, or one for another item or repository, excepts
+# nothing in any of them.
 #
 # Every job is skipped for a deploy or release pull request the factory's App opened (`skip`), which changes nothing
 # they judge. In the merge queue every required job runs, since a merge group names no author to tell them apart by;
@@ -270,6 +275,50 @@ jobs:
             echo "::error::The app's gates run only on pull_request and merge_group, not $GITHUB_EVENT_NAME."
             exit 1
           fi
+      # This workflow's own repository and commit, for the script that reads the exceptions. Nothing of the change.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: |
+            mise.toml
+            mise.lock
+            apps/factory/src/gates/
+            policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          working_directory: factory
+          install_args: node
+      # The exceptions, from this repository's main alone, as the daily scan reads them: main's
+      # policy/vulnerabilities.ts, which imports nothing, in place of the pinned commit's (the gate imports it).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: main
+          path: policy-main
+          sparse-checkout: policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Take the exceptions from main
+        run: |
+          if [ -f policy-main/policy/vulnerabilities.ts ]; then
+            mkdir -p factory/policy
+            cp policy-main/policy/vulnerabilities.ts factory/policy/vulnerabilities.ts
+          else
+            echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
+          fi
+      # The GHSA id of each advisory an exception in force excepts in one of the repository's lockfiles, which the
+      # action allows, as the lockfile scan excepts each in its own (apps/factory/src/gates/dependency-allow.ts).
+      - name: Read what the exceptions allow
+        id: allow
+        run: node factory/apps/factory/src/gates/dependency-allow.ts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       # It compares the dependency graph of the base and the change, so it fails only on what the change brings in. It
       # takes them from the event, and compares from where the change left the base (`base...head`), so the event's
       # base being older than main changes nothing it sees.
@@ -277,6 +326,7 @@ jobs:
         with:
           fail-on-severity: low
           comment-summary-in-pr: never
+          allow-ghsas: ${{ steps.allow.outputs.ghsas }}
 
   image-scan:
     name: image scan
@@ -310,6 +360,7 @@ jobs:
             mise.lock
             apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
+            policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       # The commit the change is compared with, BASE_SHA for the rest of the job: the one it would merge into now
@@ -355,6 +406,24 @@ jobs:
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$RUNNER_TEMP/scan:/out" "$trivy" \
               image --quiet --scanners vuln --format json --output "/out/$image.json" "app:$image"
           done
+      # The exceptions, from this repository's main alone, as the daily scan reads them: main's
+      # policy/vulnerabilities.ts, which imports nothing, in place of the pinned commit's (the gate imports it).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: main
+          path: policy-main
+          sparse-checkout: policy/vulnerabilities.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Take the exceptions from main
+        run: |
+          if [ -f policy-main/policy/vulnerabilities.ts ]; then
+            mkdir -p factory/policy
+            cp policy-main/policy/vulnerabilities.ts factory/policy/vulnerabilities.ts
+          else
+            echo "::warning::main holds no policy/vulnerabilities.ts yet: the exceptions are this commit's."
+          fi
       - run: node factory/apps/factory/src/gates/image-scan.ts "$RUNNER_TEMP/scan/base.json" "$RUNNER_TEMP/scan/change.json"
 
   lockfile-scan:

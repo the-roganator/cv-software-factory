@@ -26,7 +26,7 @@ import {
   verdict,
 } from '../../src/vulnerabilities/deadlines.ts';
 import type { Target } from '../../src/vulnerabilities/fixes.ts';
-import { moves } from '../../src/vulnerabilities/moves.ts';
+import { moves, movesFile } from '../../src/vulnerabilities/moves.ts';
 import { alertKey, type Finding, merge, messageOf, sarif } from '../../src/vulnerabilities/sarif.ts';
 import {
   type Handoff,
@@ -1453,5 +1453,47 @@ describe('the images scanned, in moves.json', () => {
     expect(byDigest('docker.io/rancher/mirrored-coredns-coredns:1.14.7')).toBe(
       'docker.io/rancher/mirrored-coredns-coredns:1.14.7',
     );
+  });
+});
+
+describe('the day’s counts, in moves.json’s totals', () => {
+  it('holds each to the number the log prints', async () => {
+    const tags = { node: ['24.22.1-trixie-slim', '24.23.0-trixie-slim'] };
+    const fresh = os({ severity: 'CRITICAL' });
+    const overdue = os({ advisory: 'CVE-2099-20010', severity: 'MEDIUM' });
+    const noFix = os({ advisory: 'CVE-2099-20011', fixed: undefined, severity: 'HIGH' });
+    const waiting = os({ advisory: 'CVE-2099-20012', fixed: undefined, severity: 'CRITICAL' });
+    const excepted = os({ advisory: 'CVE-2099-20013' });
+    const { rows, judged } = await judge({
+      findings: [fresh, overdue, noFix, waiting, excepted],
+      excepted: [excepted],
+      alerts: [
+        alertOf(overdue, '2026-08-01T00:00:00Z'),
+        alertOf(noFix, '2026-10-01T00:00:00Z'),
+        alertOf(excepted, '2026-10-01T00:00:00Z'),
+      ],
+      tags,
+      images: { 'node:24.23.0-trixie-slim': imageReport('2026-07-01T00:00:00Z') },
+    });
+    const list = moves(judged, { repository: REPOSITORY, app: false, dependabot: [], direct: new Set(), now: NOW });
+    const { lines, counts } = verdict(rows, false, list);
+    const number = (pattern: RegExp) => Number(lines.join('\n').match(pattern)?.[1]);
+    expect(counts).toEqual({
+      noFix: number(/no fix (\d+)\./),
+      excepted: number(/open results, (\d+) excepted/),
+      overdue: number(/overdue (\d+),/),
+      dueWithinDay: number(/due within a day (\d+),/),
+      newHighWithFix: number(/(\d+) with a fix to install/),
+      newHighWithoutFix: number(/(\d+) with none the scan can date/),
+    });
+    expect(counts).toEqual({
+      noFix: 2,
+      excepted: 1,
+      overdue: 1,
+      dueWithinDay: 0,
+      newHighWithFix: 1,
+      newHighWithoutFix: 1,
+    });
+    expect(movesFile(list, { repository: REPOSITORY, now: NOW }, undefined, [], counts).totals).toMatchObject(counts);
   });
 });

@@ -22,7 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { type Fix, fixText, type MoveTag, moveText } from './fixes.ts';
+import { type Fix, fixText, type MoveTag, moveText, readFix, readMove } from './fixes.ts';
 
 /** A package and an advisory in one item, as the scan read it from Trivy's JSON. */
 export interface Finding {
@@ -227,6 +227,65 @@ export function groups(merged: Finding[], limit = LIMITS.results): Part[][] {
  */
 export const messageOf = (finding: Finding) =>
   `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.${finding.fix ? ` ${fixText(finding.fix)}` : ''}${finding.fix && finding.move ? ` ${moveText(finding.move)}` : ''}`;
+
+/** A result's message as `readMessage` reads it back: what `messageOf` wrote, no more. */
+export interface Message {
+  package: string;
+  /** Each version found, as the message lists them: `1.0.0`, or `1.0.0, 2.0.0`. */
+  installed: string;
+  label: string;
+  advisory: string;
+  severity: Severity;
+  /** What the advisory's source says fixes it, or undefined for `no fix yet`. */
+  fixed?: string | undefined;
+  fix?: Fix | undefined;
+  move?: MoveTag | undefined;
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A message `messageOf` wrote, read back, or undefined when it is anything else: the one reader of its grammar. The
+ * advisory is the alert's rule, which anchors the item's end, since an item's name may hold a colon. Its fix and its
+ * move are read by fixes.ts's readers, and must write back as the message has them, so nothing else trails.
+ */
+export function readMessage(text: string, advisory: string): Message | undefined {
+  let rest = text;
+  let move: MoveTag | undefined;
+  let fix: Fix | undefined;
+  try {
+    move = readMove(rest);
+    if (move) {
+      const written = ` ${moveText(move)}`;
+      if (!rest.endsWith(written)) return undefined;
+      rest = rest.slice(0, -written.length);
+    }
+    fix = readFix(rest);
+    if (fix) {
+      const written = ` ${fixText(fix)}`;
+      if (!rest.endsWith(written)) return undefined;
+      rest = rest.slice(0, -written.length);
+    }
+  } catch {
+    return undefined;
+  }
+  // A move is only ever written after a fix.
+  if (move && !fix) return undefined;
+  const head = new RegExp(
+    `^(\\S+) (\\S.*?) in (\\S.*): ${escapeRegExp(advisory)} \\((${SEVERITIES.map((s) => s.toLowerCase()).join('|')})\\), (?:fixed in (\\S.*)|no fix yet)\\.$`,
+  ).exec(rest);
+  if (!head?.[1] || !head[2] || !head[3] || !head[4]) return undefined;
+  return {
+    package: head[1],
+    installed: head[2],
+    label: head[3],
+    advisory,
+    severity: head[4].toUpperCase() as Severity,
+    fixed: head[5],
+    fix,
+    move,
+  };
+}
 
 /**
  * What tells a result's alert apart, as code scanning's API gives it back: the advisory (its rule), the file and line,

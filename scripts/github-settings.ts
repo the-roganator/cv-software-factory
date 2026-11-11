@@ -98,13 +98,25 @@ export type Permissions = Record<string, 'read' | 'write'>;
  * These say what each may hold; nothing here reads the installations.
  */
 export const APPS = {
-  /** The factory's (ADR 0005): it opens pull requests, and posts the reviewer's check run, which no ruleset requires. */
+  /**
+   * The factory's (ADR 0005): it opens pull requests, and posts the reviewer's check run, which no ruleset requires.
+   * It reads the vulnerability scan's day for the factory (apps/factory/src/github/scanning.ts): the scan's runs and
+   * their `moves` artifact (actions) and its code-scanning alerts (security events), and changes neither.
+   */
   factory: {
     slug: 'mrogan-software-factory',
     id: 5187559,
     clientId: 'Iv23liE1Dj3iYkwWX59z',
     holder: 'the GitHub worker (deploy/base/factory/github.yaml), alone',
-    permissions: { checks: 'write', contents: 'write', issues: 'write', metadata: 'read', pull_requests: 'write' },
+    permissions: {
+      actions: 'read',
+      checks: 'write',
+      contents: 'write',
+      issues: 'write',
+      metadata: 'read',
+      pull_requests: 'write',
+      security_events: 'read',
+    },
   },
   /** The review gate's (ADR 0014): it posts `review`, and reads the pull request it judges. */
   review: {

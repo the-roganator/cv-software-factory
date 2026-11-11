@@ -1747,6 +1747,8 @@ describe('the line', () => {
       reviewVerdict: no('such pull request'),
       mergeQueue: no('such pull request'),
       mergeability: no('such pull request'),
+      moves: no('scan'),
+      dependencyPulls: async () => [],
     };
     const files: Record<string, string> = { 'src/search.ts': 'old\n' };
     const recorded = mkdtempSync(join(tmpdir(), 'dry-run-'));
@@ -2402,6 +2404,8 @@ describe('the line', () => {
         reviewVerdict: no('such pull request'),
         mergeQueue: no('such pull request'),
         mergeability: no('such pull request'),
+        moves: no('scan'),
+        dependencyPulls: async () => [],
       };
       const dir = mkdtempSync(join(tmpdir(), 'dry-run-'));
       // Its pull request, #12, is the App's, as the GitHub worker's guard would read it from GitHub.

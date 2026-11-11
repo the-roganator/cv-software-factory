@@ -28,9 +28,11 @@ import { createHash } from 'node:crypto';
 import { structuredPatch } from 'diff';
 import { verdictBlock } from '../../../../policy/review-verdict.ts';
 import { APP_LOGIN, type DryRunActions, type DryRunPull } from './actions.ts';
+import type { DependencyPull } from './dependabot.ts';
 import { DEPLOYS, type DeployBuild, type DeployProposal } from './deploys.ts';
 import { type Mergeability, type MergeQueue, type ReviewCheck, type ReviewVerdict, verdictOf } from './merging.ts';
 import type { Checkout, CheckRun, Commits, Comparison, FileAt, PullRequestState, Reads, Signed } from './reads.ts';
+import type { Moves } from './scanning.ts';
 
 export interface DryRunTimes {
   /** How long after a commit the dry run's checks on it pass. */
@@ -281,6 +283,16 @@ export class DryRunReads implements Reads {
     if (!pull) return this.#live.mergeability(repo, number);
     // The dry run's commits go on main as it was, and nothing else moves its branches: none conflicts.
     return { number, head: this.#state(pull).head.sha, conflicts: false, state: pull.draft ? 'draft' : 'clean' };
+  }
+
+  /** The scan's moves, as GitHub has them: a dry run makes no scan. */
+  async moves(repo: string): Promise<Moves> {
+    return this.#live.moves(repo);
+  }
+
+  /** Dependabot's pull requests, as GitHub has them: a dry run opens none of Dependabot's. */
+  async dependencyPulls(repo: string): Promise<DependencyPull[]> {
+    return this.#live.dependencyPulls(repo);
   }
 
   #state(pull: DryRunPull): PullRequestState {

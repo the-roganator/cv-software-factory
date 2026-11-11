@@ -12,6 +12,7 @@ Its issues and pull requests are opened by its bot user, `mrogan-software-factor
 ## Permissions
 
 - **Allowed:** contents (branches), pull requests, checks, issues. Adding its own pull request to the merge queue, as the line does, uses contents and pull requests, and nothing more. None of its pull requests changes a workflow, which GitHub would not merge for a token without workflows.
+- **Read only:** Actions, to find the vulnerability scan's last run and download its `moves` artifact, and security events, to read the scan's code-scanning alerts ([the GitHub worker's `moves`](GITHUB-WORKER.md#for-patching)). It may neither start, re-run nor cancel a run, nor dismiss or reopen an alert: an alert's state is the exceptions policy's alone. Martin accepts these on the installation once `scripts/github-settings.ts` names them.
 - **Denied:** workflows, administration, variables, bypassing rulesets.
 
 `APPS` in `scripts/github-settings.ts` declares these, and the review App's and the drift check App's, and its test fails if any grants a write of variables or administration. `apps/factory/test/credentials.test.ts` fails if any pod in a profile's rendered manifests but the GitHub worker's holds a GitHub credential, or if the GitHub worker's is another App's.

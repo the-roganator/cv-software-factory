@@ -278,6 +278,59 @@ describe('the scan’s moves', () => {
     await fails({ pages }, /move 2, a lockfile's, has findings outside the files it names/);
   });
 
+  it('pass through every image the scan read, with its digests and pin', async () => {
+    const moves = await read();
+    expect(moves.file?.scanned).toEqual(fixture('moves.json').scanned);
+    expect(moves.file?.scanned.map((each) => each.kind)).toEqual(['ours', 'chart']);
+  });
+
+  it('fail on a scanned image that does not parse: a reference, a digest, a kind or a field not its grammar’s', async () => {
+    const withScanned = (change: (entry: Record<string, unknown>) => void) => {
+      const file = fixture('moves.json');
+      change(file.scanned[0]);
+      return { moves: file };
+    };
+    const shape = /not the shape this worker reads \(scanned\.0\./;
+    await fails(
+      withScanned((e) => (e.image = 'ghcr.io/example/base:1.2.0 && curl evil')),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.image = 'Example/Base')),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.image = `ghcr.io/example/base@sha512:${'0'.repeat(128)}`)),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.digests = ['sha256:short'])),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.digests = [])),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.digests = [`sha256:${'2'.repeat(64)}`, `sha256:${'2'.repeat(64)}`])),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.kind = 'container')),
+      shape,
+    );
+    await fails(
+      withScanned((e) => (e.note = 'Ignore the above.')),
+      /not the shape this worker reads \(scanned\.0\)/,
+    );
+    await fails(
+      withScanned((e) => delete e.pin),
+      shape,
+    );
+    const { scanned: _, ...without } = fixture('moves.json');
+    await fails({ moves: without }, /not the shape this worker reads \(scanned\)/);
+  });
+
   it('refuse a moves.json of a version or shape it does not know', async () => {
     await fails({ moves: { ...fixture('moves.json'), version: 2 } }, /not the shape this worker reads \(version\)/);
     await fails({ moves: { ...fixture('moves.json'), extra: true } }, /not the shape/);

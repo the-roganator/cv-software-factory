@@ -52,8 +52,8 @@ const UNSTEADY: [RegExp, string][] = [
   [/Start at {2}\d{2}:\d{2}:\d{2}/g, 'Start at  (the time)'],
   [/Duration {2}\d+(?:\.\d+)?m?s(?: \([^)"\\]*\))?/g, 'Duration  (how long)'],
   [/([✓×❯↓] [^"\\]*?) \d+(?:\.\d+)?m?s(?=\\n|")/g, '$1'],
-  // Biome: `Checked 2 files in 7ms.`
-  [/(Checked \d+ files? in )\d+(?:\.\d+)?(?:µs|ms|s)/g, '$1(how long)'],
+  // Biome: `Checked 2 files in 7ms.`, and its formatter's `Formatted 1 file in 2ms.`
+  [/((?:Checked|Formatted) \d+ files? in )\d+(?:\.\d+)?(?:µs|ms|s)/g, '$1(how long)'],
   // `ls -l`: a file's time, `Oct  5 23:14`, or its year when it is older, `Oct  5  2025`.
   [/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d (?:\d{2}:\d{2}| \d{4}) /g, '(a time) '],
 ];

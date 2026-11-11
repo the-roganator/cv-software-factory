@@ -1,0 +1,3 @@
+#!/bin/sh
+# A live try on the local cluster: try begin <branch> [--only <deployment>…], try status, try end. See try.ts.
+exec node "$(dirname "$0")/try-cli.ts" "$@"

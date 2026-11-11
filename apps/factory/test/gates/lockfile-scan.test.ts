@@ -199,10 +199,14 @@ describe('the lockfiles a checkout tracks', () => {
       writeFileSync(join(root, 'pnpm-lock.main.yaml'), "lockfileVersion: '9.0'\n");
       writeFileSync(join(root, 'pnpm-lock.yml'), "lockfileVersion: '9.0'\n");
       symlinkSync('deps/lock', join(root, 'pnpm-lock.yaml'));
+      // A link to a directory outside the checkout: `lockfileDir: vendor` installs from the lockfile it reaches (pnpm
+      // 12.16.1, a frozen install from a fresh clone), which no path git tracks names.
+      symlinkSync('../outside', join(root, 'vendor'));
       git('add', '.');
       expect(trackedLockfiles(root)).toEqual({
         regular: ['pnpm-lock.main.yaml', 'test/alt/pnpm-lock.yaml', 'tools/pnpm-lock.yaml'],
         irregular: ['pnpm-lock.yaml'],
+        links: ['vendor'],
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

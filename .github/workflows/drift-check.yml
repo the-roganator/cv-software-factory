@@ -1,8 +1,8 @@
 # The settings' drift check: weekly, and by hand, `scripts/github-settings.ts --check` reads both public repositories'
-# rulesets and key environments and fails if anything it can see differs from what the script makes them, or a ruleset
+# rulesets, key environments and fork-run approval and fails if anything it can see differs from what the script makes them, or a ruleset
 # was added beside them. A failed run reaches Martin as any failed scheduled run does, by GitHub's email.
 #
-# Rulesets, environments' branch policies and the names of their secrets need an admin's read, which no workflow token
+# Rulesets, the fork-run approval, environments' branch policies and the names of their secrets need an admin's read, which no workflow token
 # has. The job reads them as the drift check App, installed on both repositories, which may read administration,
 # environments and Actions and nothing else (APPS.driftCheck in scripts/github-settings.ts), so it can change nothing
 # it checks. Its key is the secret DRIFT_CHECK_APP_PRIVATE_KEY and its Client ID the variable DRIFT_CHECK_APP_CLIENT_ID,

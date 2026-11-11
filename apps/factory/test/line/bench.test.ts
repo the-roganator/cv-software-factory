@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jobForToken } from '@software-factory/store';
@@ -8,8 +8,17 @@ import { type Database, freshDatabase } from '../../../../packages/store/test/da
 import { commitPatch } from '../../../runner/src/prepare.ts';
 import { stepFrom } from '../../../runner/src/step.ts';
 import { coder, coderInputAfterRefusal } from '../../src/line/agents/coder.ts';
-import { BENCH_DIR, bench, followed, lastStep, passed, type RunnerSteps, stepsOf } from '../../src/line/bench/bench.ts';
-import { FIXTURE_WORK_ITEM, FIXTURES, type Fixture } from '../../src/line/bench/fixtures.ts';
+import {
+  BENCH_DIR,
+  bench,
+  followed,
+  lastStep,
+  passed,
+  protectedAsCheckedOut,
+  type RunnerSteps,
+  stepsOf,
+} from '../../src/line/bench/bench.ts';
+import { APP_CODEOWNERS, FIXTURE_WORK_ITEM, FIXTURES, type Fixture } from '../../src/line/bench/fixtures.ts';
 import { LIMITS } from '../../src/line/machine.ts';
 
 let database: Database;
@@ -42,6 +51,9 @@ function runner(answer: (env: NodeJS.ProcessEnv) => Promise<unknown>, patches: s
   const steps: RunnerSteps = {
     prepare: async (env) => {
       seen.prepare = env;
+      // The app's CODEOWNERS, as a checkout of the fixture's commit has it.
+      mkdirSync(join(String(env.WORK), 'repo', '.github'), { recursive: true });
+      writeFileSync(join(String(env.WORK), 'repo', '.github', 'CODEOWNERS'), APP_CODEOWNERS);
     },
     commitPatch,
     runAgent: async (env, options) => {
@@ -63,6 +75,26 @@ function runner(answer: (env: NodeJS.ProcessEnv) => Promise<unknown>, patches: s
 }
 
 describe('the bench', () => {
+  it('refuses a fixture whose protected paths are not its checkout’s CODEOWNERS, naming what differs', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bench-codeowners-'));
+    const input = FIXTURES.planner['wrong-price']?.input;
+    mkdirSync(join(repo, '.github'));
+    writeFileSync(join(repo, '.github', 'CODEOWNERS'), APP_CODEOWNERS);
+    await expect(protectedAsCheckedOut(repo, input)).resolves.toBeUndefined();
+    // The app gives another path to a person, or stops giving one: the copy is stale either way.
+    writeFileSync(join(repo, '.github', 'CODEOWNERS'), `${APP_CODEOWNERS}\n/src/money.ts @mrogan`);
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('(src/money.ts, src/money.ts/)');
+    writeFileSync(join(repo, '.github', 'CODEOWNERS'), APP_CODEOWNERS.replace('/mise.lock @mrogan\n', ''));
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('(mise.lock, mise.lock/)');
+    // An input with no protected paths has nothing to hold.
+    await expect(protectedAsCheckedOut(join(repo, 'none'), {})).resolves.toBeUndefined();
+    // A CODEOWNERS that cannot be read is an error of its own, not a file that is not there.
+    rmSync(join(repo, '.github', 'CODEOWNERS'));
+    mkdirSync(join(repo, '.github', 'CODEOWNERS'));
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('EISDIR');
+    rmSync(repo, { recursive: true });
+  });
+
   it("runs the agent's own step on a fixture, in a fixed folder with a fresh home, and ends its token", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bench-'));
     // What an earlier run, or the developer's own Claude Code, left in the agent's home.

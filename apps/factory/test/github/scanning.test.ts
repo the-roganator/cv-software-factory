@@ -364,6 +364,31 @@ describe('the scan’s moves', () => {
     await fails({ moves: without }, /not the shape this worker reads \(scanned\)/);
   });
 
+  it('pass on the day’s figures beside the moves, each a count, none missing and none more', async () => {
+    expect((await read()).file?.totals).toMatchObject({
+      noFix: 1,
+      excepted: 0,
+      overdue: 0,
+      dueWithinDay: 0,
+      newHighWithFix: 1,
+      newHighWithoutFix: 0,
+    });
+    const figures = ['noFix', 'excepted', 'overdue', 'dueWithinDay', 'newHighWithFix', 'newHighWithoutFix'];
+    for (const figure of figures) {
+      const missing = fixture('moves.json');
+      delete missing.totals[figure];
+      await fails({ moves: missing }, /not the shape this worker reads \(totals\./);
+      for (const bad of [-1, 1.5, '2']) {
+        const wrong = fixture('moves.json');
+        wrong.totals[figure] = bad;
+        await fails({ moves: wrong }, /not the shape this worker reads \(totals\./);
+      }
+    }
+    const more = fixture('moves.json');
+    more.totals.dueWithinWeek = 3;
+    await fails({ moves: more }, /not the shape this worker reads \(totals\)/);
+  });
+
   it('refuse a moves.json of a version or shape it does not know', async () => {
     await fails({ moves: { ...fixture('moves.json'), version: 2 } }, /not the shape this worker reads \(version\)/);
     await fails({ moves: { ...fixture('moves.json'), extra: true } }, /not the shape/);

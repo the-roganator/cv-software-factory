@@ -45,7 +45,8 @@
       },
       "deadline": "2026-11-17T06:00:00Z",
       "newToday": 0,
-      "lane": "line"
+      "lane": "line",
+      "lockfile": false
     },
     {
       "repository": "the-roganator/cv-worlds-worst-website",
@@ -75,7 +76,8 @@
       },
       "deadline": "2026-11-24T06:00:00Z",
       "newToday": 1,
-      "lane": "line"
+      "lane": "line",
+      "lockfile": true
     }
   ]
 }

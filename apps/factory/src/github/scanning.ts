@@ -74,10 +74,10 @@ export interface ReadMove extends PublicMove {
   /** Its place in `moves.json`, from 1. */
   index: number;
   /**
-   * A lockfile's move, which `moves.json` names only by its file: the package, its version, its target and its pins
-   * as the alerts give them. Absent for any other move, which the artifact names whole.
+   * What `moves.json` withholds of a lockfile's move, which it names only by its file: the package, its version, its
+   * target and its pins, as the alerts give them. Absent for any other move, which the artifact names whole.
    */
-  lockfile?: { package: string; from: string; to: string; pins: { file: string; line: number }[] } | undefined;
+  withheld?: { package: string; from: string; to: string; pins: { file: string; line: number }[] } | undefined;
   findings: MoveFinding[];
 }
 
@@ -182,9 +182,22 @@ const MOVES_FILE_SCHEMA = z.strictObject({
       deadline: DAY.optional(),
       newToday: z.number().int().nonnegative(),
       lane: z.enum(LANES as [(typeof LANES)[number], ...(typeof LANES)[number][]]),
+      lockfile: z.boolean(),
     }),
   ),
 });
+
+type Alerts = z.infer<typeof ALERTS>;
+
+/** Whether an alert is open and the scan's own (alerts.ts's `isOurs`): Trivy's, in its categories. */
+const ours = (alert: Alerts[number]) =>
+  alert.state === 'open' &&
+  isOurs({
+    number: alert.number,
+    state: alert.state,
+    tool: { name: alert.tool?.name ?? '' },
+    most_recent_instance: { category: alert.most_recent_instance?.category ?? '' },
+  });
 
 const total = (counts: Record<Severity, number>) => SEVERITIES.reduce((sum, s) => sum + counts[s], 0);
 
@@ -259,6 +272,7 @@ export class ScanReads {
   async #settled(repo: string, run: ScanRun, alerts: z.infer<typeof ALERTS>) {
     const others = new Set<string>();
     for (const alert of alerts) {
+      if (!ours(alert)) continue;
       const tag = readMove(alert.most_recent_instance?.message?.text ?? '');
       if (tag && tag.run !== String(run.id)) others.add(tag.run);
     }
@@ -380,14 +394,7 @@ export function joined(
   const findings: MoveFinding[][] = file.moves.map(() => []);
   const fixes: Fix[][] = file.moves.map(() => []);
   for (const alert of alerts) {
-    const instance = alert.most_recent_instance;
-    const ours = isOurs({
-      number: alert.number,
-      state: alert.state,
-      tool: { name: alert.tool?.name ?? '' },
-      most_recent_instance: { category: instance?.category ?? '' },
-    });
-    if (alert.state !== 'open' || !ours) continue;
+    if (!ours(alert)) continue;
     const advisory = alert.rule?.id ?? '';
     const message = readMessage(alert.most_recent_instance?.message?.text ?? '', advisory);
     if (!advisory || !message) throw disagrees(repo, `alert ${alert.number}'s message does not parse`);
@@ -430,9 +437,12 @@ export function joined(
   return { file: rest, moves };
 }
 
-/** What `moves.json` withholds of a lockfile's move, from its findings: one package at one version, as moves.ts groups it. */
+/**
+ * What `moves.json` withholds of a lockfile's move, from its findings: one package at one version, as moves.ts groups
+ * it, in the files the artifact names.
+ */
 function lockfileOf(repo: string, move: PublicMove, i: number, own: MoveFinding[], fixes: Fix[]) {
-  if (!move.name.startsWith('a package in ') || move.from !== '' || move.to !== '') return {};
+  if (!move.lockfile) return {};
   const packages = new Set(own.map((each) => each.package));
   const versions = new Set(own.map((each) => each.installed));
   const [name] = packages;
@@ -448,5 +458,5 @@ function lockfileOf(repo: string, move: PublicMove, i: number, own: MoveFinding[
   const named = [...new Set(move.pins.map((pin) => pin.file))].sort().join('\n');
   const found = [...new Set(pins.map((pin) => pin.file))].sort().join('\n');
   if (named !== found) throw disagrees(repo, `move ${i + 1}, a lockfile's, has findings outside the files it names`);
-  return { lockfile: { package: name, from, to: to ? targetText(to) : '', pins } };
+  return { withheld: { package: name, from, to: to ? targetText(to) : '', pins } };
 }

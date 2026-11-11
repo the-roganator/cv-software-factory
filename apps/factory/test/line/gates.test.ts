@@ -1,6 +1,7 @@
 import { GATE_ANNOTATION_CHARS, MAX_GATE_ANNOTATIONS, type PayloadOf } from '@software-factory/events';
 import { validate } from '@software-factory/events/schemas';
 import { describe, expect, it } from 'vitest';
+import { countsNote } from '../../src/gates/counts.ts';
 import type { CheckRun, PullRequestState } from '../../src/github/reads.ts';
 import { APP_SLUG, asEvent, gateEvents, gateRecord, REVIEW_GATE_CHECK } from '../../src/line/gates.ts';
 
@@ -113,6 +114,36 @@ describe('the gates, as events', () => {
     // The same runs again say nothing new: what a check said is recorded with it, once.
     const record = gateRecord(drafts.map(({ type, payload }) => ({ type, payload })));
     expect(gateEvents(pr(), runs, ['test integrity', 'types', 'lint', 'test'], record)).toEqual([]);
+  });
+
+  it('record what a scan counted from its own notice on GitHub Actions’ run alone, and nothing that does not parse', () => {
+    const counts = {
+      before: { critical: 0, high: 2, medium: 5, low: 11, unknown: 1 },
+      after: { critical: 0, high: 0, medium: 3, low: 9, unknown: 0 },
+    };
+    const note = countsNote('image scan', counts);
+    const lockfile = countsNote('lockfile scan', counts);
+    const runs: CheckRun[] = [
+      // Counted whatever the scan concluded: a failed scan's counts are what it saw.
+      { ...run(1, 'gates / image scan', 'failure'), notices: [note], annotations: [] },
+      { ...run(2, 'gates / lockfile scan', 'success'), notices: [lockfile.replace('high 2', 'high lots')] },
+      // A check that is no scan, with a scan's notice on it, counts nothing.
+      { ...run(3, 'gates / tests', 'success'), notices: [note] },
+      // Another app's run of a scan's name is not GitHub Actions': its notice is not taken.
+      { ...run(4, 'image scan', 'success', 'some-other-app'), notices: [countsNote('image scan', counts)] },
+    ];
+    const required = ['gates / image scan', 'gates / lockfile scan', 'gates / tests'];
+    const drafts = gateEvents(pr(), runs, required, nothing);
+    const finished = (check: string) =>
+      drafts.find((d) => d.type === 'gate.finished' && d.payload.check === check)?.payload as
+        | PayloadOf<'gate.finished'>
+        | undefined;
+    expect(finished('gates / image scan')?.findings).toEqual(counts);
+    expect(finished('gates / lockfile scan')).not.toHaveProperty('findings');
+    expect(finished('gates / tests')).not.toHaveProperty('findings');
+    expect(finished('image scan')).not.toHaveProperty('findings');
+    for (const draft of drafts)
+      expect(validate(asEvent('1015', draft, '2026-11-11T04:00:00.000Z'))).toEqual({ ok: true });
   });
 
   it('mark a path cut to fit what an event records, as a push marks one', () => {

@@ -497,6 +497,13 @@ export class LiveReads implements Reads {
     // attempt's is never recorded.
     const latest = new Map<string, number>();
     for (const run of body.check_runs) latest.set(run.name, Math.max(run.id, latest.get(run.name) ?? run.id));
+    // A scan's counts are taken from GitHub Actions' own latest run of it for this very commit: never from a run
+    // another app posted under the scan's name, which neither gives them nor hides Actions' own.
+    const actions = (run: (typeof body.check_runs)[number]) =>
+      run.app?.slug === ACTIONS_APP && run.head_sha === sha && Boolean(scanOfCheck(run.name));
+    const scans = new Map<string, number>();
+    for (const run of body.check_runs.filter(actions))
+      scans.set(run.name, Math.max(run.id, scans.get(run.name) ?? run.id));
     return Promise.all(
       body.check_runs.map(async (run) => {
         const read: CheckRun = {
@@ -509,11 +516,9 @@ export class LiveReads implements Reads {
           completedAt: run.completed_at ?? null,
           title: run.output?.title ?? null,
         };
-        if (run.status !== 'completed' || latest.get(run.name) !== run.id) return read;
-        const failed = outcomeOf(run.conclusion) === 'failure';
-        // A scan's counts are taken from GitHub Actions' own run of it for this very commit: never from a run another
-        // app posted under the scan's name.
-        const counted = Boolean(scanOfCheck(run.name)) && run.app?.slug === ACTIONS_APP && run.head_sha === sha;
+        if (run.status !== 'completed') return read;
+        const failed = outcomeOf(run.conclusion) === 'failure' && latest.get(run.name) === run.id;
+        const counted = actions(run) && scans.get(run.name) === run.id;
         if (!failed && !counted) return read;
         const said = await this.#annotations(repo, run.id);
         return {

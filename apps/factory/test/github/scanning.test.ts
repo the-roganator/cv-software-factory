@@ -236,6 +236,23 @@ describe('the scan’s moves', () => {
     );
   });
 
+  it('fail on a lockfile move whose findings are outside the files the artifact names', async () => {
+    const pages = [
+      alerts().map((a) =>
+        a.number === 104
+          ? {
+              ...a,
+              most_recent_instance: {
+                ...a.most_recent_instance,
+                location: { path: 'other/pnpm-lock.yaml', start_line: 9 },
+              },
+            }
+          : a,
+      ),
+    ];
+    await fails({ pages }, /move 2, a lockfile's, has findings outside the files it names/);
+  });
+
   it('refuse a moves.json of a version or shape it does not know', async () => {
     await fails({ moves: { ...fixture('moves.json'), version: 2 } }, /not the shape this worker reads \(version\)/);
     await fails({ moves: { ...fixture('moves.json'), extra: true } }, /not the shape/);

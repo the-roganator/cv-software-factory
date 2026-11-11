@@ -9,16 +9,16 @@
  * (sarif.ts's `readMessage`, through fixes.ts's readers), for what the artifact withholds: a lockfile move's package and
  * versions, and each move's findings.
  *
- * An alert's text is untrusted input. A message that does not parse, a result with a fix that names no move, a move
- * from another run than the artifact's or past its list, or a count that differs from the artifact's, fails the whole
- * read, and nothing of it is returned: no word of an advisory is shown or acted on unless the scan's own artifact
- * agrees with it. Only the parts the grammar reads are returned: an advisory's id, never its title or its text.
+ * An alert's text is untrusted input. A message that does not parse, a move from another run than the artifact's (or,
+ * while that run is still going, a read to try again) or past its list, or a count that differs from the artifact's,
+ * fails the whole read, and nothing of it is returned: no word of an advisory is shown or acted on unless the scan's
+ * own artifact agrees with it. Only the parts the grammar reads are returned: an advisory's id, never its title or its text.
  *
  * What the App lacks is named: a read refused for want of `actions: read` or `security_events: read` says which.
  */
 import { z } from 'zod';
 import { isOurs } from '../vulnerabilities/alerts.ts';
-import { dayText, type Fix, type Target, targetText } from '../vulnerabilities/fixes.ts';
+import { dayText, type Fix, readMove, type Target, targetText } from '../vulnerabilities/fixes.ts';
 import { furthest, LANES, MOVES_VERSION, type MovesFile, type PublicMove } from '../vulnerabilities/moves.ts';
 import { readMessage, SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
 import { type GitHub, GitHubError } from './client.ts';
@@ -95,6 +95,14 @@ export interface Moves {
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
 
 const REPOSITORY = z.object({ default_branch: z.string().min(1) });
+
+/** A repository's default branch: one conditional read, shared by every read of it. */
+export async function defaultBranch(github: GitHub, repo: string): Promise<string> {
+  const { body } = await github.poll(repo, `/repos/${repo}`, REPOSITORY);
+  return body.default_branch;
+}
+
+const RUN = z.object({ status: z.string().nullable() });
 
 const RUNS = z.object({
   workflow_runs: z.array(
@@ -194,9 +202,9 @@ const lacksError = (repo: string, lacks: string[]) =>
     403,
   );
 
-/** What the App lacks when GitHub refuses a read for it. */
+/** What the App lacks when GitHub refuses a read for it with a 403: a 404 is something missing, never a permission. */
 const lacking = (error: unknown, permission: string) =>
-  error instanceof GitHubError && (error.kind === 'refused' || error.kind === 'not-found') ? permission : undefined;
+  error instanceof GitHubError && error.kind === 'refused' && error.status === 403 ? permission : undefined;
 
 /** The scan's moves: see the module's comment. */
 export class ScanReads {
@@ -223,8 +231,7 @@ export class ScanReads {
           lacks.map((permission) => `\`${permission}: read\``),
         );
     }
-    const { body } = await this.#github.poll(repo, `/repos/${repo}`, REPOSITORY);
-    const branch = body.default_branch;
+    const branch = await defaultBranch(this.#github, repo);
     // Both reads first, so a read the App may not make names every permission it lacks, not only the first.
     const [runs, alerts] = await Promise.allSettled([this.#run(repo, branch), this.#alerts(repo)]);
     const missing = [
@@ -240,7 +247,30 @@ export class ScanReads {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
       return { repository: repo, run, file: null, moves: [] };
     }
+    await this.#settled(repo, run, alerts.value);
     return { repository: repo, run, ...joined(repo, run, file, alerts.value) };
+  }
+
+  /**
+   * A run uploads its artifact and then its results, and is still going while code scanning processes them and the
+   * alerts are held to the policy: alerts that name a run still going are a read to try again once it finishes, not a
+   * disagreement. Any other run than the artifact's fails the read in `joined`.
+   */
+  async #settled(repo: string, run: ScanRun, alerts: z.infer<typeof ALERTS>) {
+    const others = new Set<string>();
+    for (const alert of alerts) {
+      const tag = readMove(alert.most_recent_instance?.message?.text ?? '');
+      if (tag && tag.run !== String(run.id)) others.add(tag.run);
+    }
+    for (const other of others) {
+      const { body } = await this.#github.poll(repo, `/repos/${repo}/actions/runs/${other}`, RUN);
+      if (body.status !== 'completed')
+        throw new GitHubError(
+          'conflict',
+          `The scan's run ${other} in ${repo} has uploaded its results and has not finished: read its moves once it has.`,
+          409,
+        );
+    }
   }
 
   /** The last finished run of the scan on the default branch, by schedule, push or hand. */
@@ -363,7 +393,9 @@ export function joined(
     if (!advisory || !message) throw disagrees(repo, `alert ${alert.number}'s message does not parse`);
     if (!message.fix) continue;
     const move = message.move;
-    if (!move) throw disagrees(repo, `alert ${alert.number} has a fix and names no move`);
+    // A result with a fix and no move is excepted (moves.ts leaves those out), its alert open until the run's next step
+    // dismisses it: it is in no move. One the artifact counts and lacks fails the counts below.
+    if (!move) continue;
     if (move.run !== String(run.id))
       throw disagrees(repo, `alert ${alert.number} is from run ${move.run}, and the artifact from run ${run.id}`);
     const list = findings[move.index - 1];
@@ -412,5 +444,9 @@ function lockfileOf(repo: string, move: PublicMove, i: number, own: MoveFinding[
     ...new Map(own.map((each) => [`${each.file}:${each.line}`, { file: each.file, line: each.line }])).values(),
   ];
   pins.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line));
+  // The artifact names the move's files: its findings must be in exactly those.
+  const named = [...new Set(move.pins.map((pin) => pin.file))].sort().join('\n');
+  const found = [...new Set(pins.map((pin) => pin.file))].sort().join('\n');
+  if (named !== found) throw disagrees(repo, `move ${i + 1}, a lockfile's, has findings outside the files it names`);
   return { lockfile: { package: name, from, to: to ? targetText(to) : '', pins } };
 }

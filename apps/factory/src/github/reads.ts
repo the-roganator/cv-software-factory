@@ -44,7 +44,7 @@ import {
 import { CODEOWNERS_PATHS, protectedFrom } from './paths.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import type { Registry } from './registry.ts';
-import { type Moves, ScanReads } from './scanning.ts';
+import { defaultBranch, type Moves, ScanReads } from './scanning.ts';
 import { pipeline, type Signatures, UnsignedError } from './signatures.ts';
 
 export interface PullRequestState {
@@ -303,8 +303,6 @@ const RULES = z.array(
   }),
 );
 
-const DEFAULT_BRANCH = z.object({ default_branch: z.string().min(1) });
-
 const REF = z.object({ object: z.object({ sha: SHA }) });
 
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
@@ -387,8 +385,7 @@ export class LiveReads implements Reads {
 
   async dependencyPulls(repo: string): Promise<DependencyPull[]> {
     return dependencyPulls(this.#github, repo, async () => {
-      const { body } = await this.#github.poll(repo, `/repos/${repo}`, DEFAULT_BRANCH);
-      return this.#text(repo, '.github/dependabot.yml', body.default_branch);
+      return this.#text(repo, '.github/dependabot.yml', await defaultBranch(this.#github, repo));
     });
   }
 

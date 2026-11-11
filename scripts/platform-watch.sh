@@ -4,10 +4,11 @@
 #
 #   ceiling      DEADLINE seconds (default 1200) have passed since it started: the cluster did not come up in time. It
 #                names each Application not yet Synced and Healthy, and each of its resources that is not.
-#   comparison   an Application has had a ComparisonError (Argo CD could not render it: a chart or its values that do
-#                not render, a revision it cannot fetch) after two comparisons in a row: Argo CD keeps the condition
-#                until it compares again, minutes later, so the error must outlast a new `reconciledAt`. A fetch that
-#                fails once while the repo server starts is not taken for the change's fault.
+#   comparison   an Application has a ComparisonError (Argo CD could not render it: a chart or its values that do not
+#                render, a revision it cannot fetch) that outlasts a hard refresh. Argo CD keeps the condition, and the
+#                repo server the failed render, until its next resync, minutes later; so on first seeing one it asks
+#                for a hard refresh, which renders again now, and stops only if the error is still there once
+#                `reconciledAt` has moved past it. A fetch that failed once while the repo server started clears.
 #   degraded     an Application has stayed Degraded for DEGRADED seconds (default 300). While a cluster comes up a pod
 #                may crash until what it needs is ready; its Deployment is Progressing meanwhile, and Degraded only
 #                once its progress deadline has passed, so one Degraded for five more minutes is not coming up.
@@ -50,7 +51,10 @@ while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
         echo "  $message"
         exit 1
       fi
-      [ -e "$seen/$app.compared" ] || echo "$compared" >"$seen/$app.compared"
+      if [ ! -e "$seen/$app.compared" ]; then
+        echo "$compared" >"$seen/$app.compared"
+        "${kubectl[@]}" -n argocd annotate application "$app" argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+      fi
     else
       rm -f "$seen/$app.compared"
     fi

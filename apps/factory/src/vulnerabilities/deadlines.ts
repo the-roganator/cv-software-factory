@@ -1257,7 +1257,7 @@ export function realSources(
       // The raw manifest, as the registry gives it to a pull: an index lists each platform's manifest by digest. With the
       // job's registry credentials, so an image of ours in GHCR is read as it is pulled.
       const { stdout } = await tools.retry(() =>
-        run('skopeo', ['inspect', '--raw', skopeoName(reference)], {
+        run('skopeo', ['inspect', '--raw', skopeoName(byDigest(reference))], {
           encoding: 'buffer',
           maxBuffer: 16 * 1024 * 1024,
           timeout: 5 * 60 * 1000,
@@ -1375,6 +1375,12 @@ export function realSources(
       return [...open, ...dismissed, ...fixed];
     },
   };
+}
+
+/** A reference skopeo reads: one pinned by tag and digest is read by its digest alone, which skopeo requires. */
+export function byDigest(reference: string) {
+  const [name = '', digest] = reference.split('@');
+  return digest ? `${repositoryOf(name)}@${digest}` : reference;
 }
 
 /** A raw manifest's digest, and the digests of the platform manifests it lists when it is an index. */

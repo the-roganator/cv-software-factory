@@ -3,6 +3,7 @@ import type { Alert } from '../../src/vulnerabilities/alerts.ts';
 import {
   aquaRepository,
   assess,
+  byDigest,
   DAYS,
   dockerfileOf,
   firstFixed,
@@ -1446,5 +1447,11 @@ describe('the images scanned, in moves.json', () => {
     expect(manifestDigests(index).digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(manifestDigests(Buffer.from(JSON.stringify({ schemaVersion: 2, layers: [] }))).platforms).toEqual([]);
     expect(() => manifestDigests(Buffer.from('not json'))).toThrow();
+    // skopeo reads a reference pinned by tag and digest by its digest alone.
+    expect(byDigest(`quay.io/example/exporter:v0.20.1@${PINNED}`)).toBe(`quay.io/example/exporter@${PINNED}`);
+    expect(byDigest(`localhost:5000/example:1@${PINNED}`)).toBe(`localhost:5000/example@${PINNED}`);
+    expect(byDigest('docker.io/rancher/mirrored-coredns-coredns:1.14.7')).toBe(
+      'docker.io/rancher/mirrored-coredns-coredns:1.14.7',
+    );
   });
 });

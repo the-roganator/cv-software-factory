@@ -43,17 +43,25 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
       timer.unref?.();
     });
     try {
-      const compare = await github.api<{ merge_base_commit?: { sha?: string } }>(
+      // Never retargeted: a check that ran for another base, before the pull request moved to main, ran something else.
+      const events = await github.paged<{ event: string }>(`/repos/${each.repo}/issues/${pr.number}/events`, each.read);
+      if (events.some((e) => e.event === 'base_ref_changed'))
+        return { reason: 'its base was changed: a pin move is proved only into main from the start' };
+      const compare = await github.api<{ merge_base_commit?: { sha?: string }; base_commit?: { sha?: string } }>(
         'GET',
         `/repos/${each.repo}/compare/${pr.base.ref}...${pr.head.sha}`,
         each.read,
       );
-      const base = compare.merge_base_commit?.sha;
-      if (!base || !/^[0-9a-f]{40}$/.test(base)) return { reason: 'GitHub named no merge base to judge the move from' };
+      // The move is proved on what the merge makes against main's tip, never against a merge base main has left.
+      const mergeBase = compare.merge_base_commit?.sha;
+      const base = compare.base_commit?.sha;
+      if (!mergeBase || !base || ![mergeBase, base].every((sha) => /^[0-9a-f]{40}$/.test(sha)))
+        return { reason: 'GitHub named no tip and merge base to judge the move from' };
       const reader = await Promise.race([
         realPinMoveIO({
           repo: each.repo,
           base,
+          mergeBase,
           head: pr.head.sha,
           runs: () =>
             github.paged<CheckRun>(

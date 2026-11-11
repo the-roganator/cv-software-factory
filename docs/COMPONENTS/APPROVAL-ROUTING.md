@@ -58,17 +58,17 @@ A hold the gate marks `pending` ([the verdict](#the-verdict)) is a wait, not a r
 
 ### A pin move
 
-`scripts/pin-move.ts` ([ADR 0019](../architecture/adr/0019-the-gate-passes-a-pin-move-it-proves.md)) passes the App's pull request here, tried after the exact pin, when it proves each of these from its merge base and its head, in this order, and otherwise holds it, the first reason it could not prove named in the hold beside the exact pin's (`Not an exact pin (…), nor a pin move: …`):
+`scripts/pin-move.ts` ([ADR 0019](../architecture/adr/0019-the-gate-passes-a-pin-move-it-proves.md)) passes the App's pull request here into `main`, never retargeted, tried after the exact pin, when it proves each of these on what the merge makes (its head merged onto `main`'s tip, against that tip), in this order, and otherwise holds it, the first reason it could not prove named in the hold beside the exact pin's (`Not an exact pin (…), nor a pin move: …`):
 
 | Condition | Proved by |
 |---|---|
-| Pins only | every file modified in place, regular, with its mode, line for line, each line only in versions and digests; nothing under `.github/`, neither `mise.toml` nor `mise.lock`; the list (`inventory.ts`) the same at both but in one move's pins, one image, chart or chart's value from one pin to one other; every changed line one of them; `--unlisted` empty at the head |
+| Pins only | every file modified in place, regular, with its mode, line for line, each line only in versions and digests; nothing under `.github/`, neither `mise.toml` nor `mise.lock`; the list (`inventory.ts`) the same at both but in one move's pins, one image, chart or chart's value from one pin to one other; every changed line one of them, its old text with the pin's span alone replaced; `--unlisted` empty at the head |
 | Not what judges | not Trivy's pin nor Syft's |
 | Signed where its publisher signs | not an image of ours, which passes only as an exact pin; a third-party image by its digest, below |
-| Forward on its line | the tag's index digest now, at the same tag or the newest on its line (`newestOf`, as the scan resolves a fix), never back or a major; a chart's later version on its major, in its repository's index |
+| Forward on its line | the tag's index digest now, at the same tag or the newest on its line (`newestOf`, as the scan resolves a fix), never back or a major; a chart's later release on its major, never a prerelease, in its repository's index |
 | No record goes stale | each refusal record's policy hash (`policy-hash.ts`, `main`'s) the same at both |
-| Nothing else that runs changes | a chart's, a value's or `deploy/`'s rendering the same at both but the moved image's references and the chart's version labels |
-| The scans show it | the pinned Trivy on the image before and after: a finding with a fix gone, nothing new at High or above, each scan having read something |
+| Nothing else that runs changes | a chart's, a value's or `deploy/`'s rendering the same at both but the moved image's references and the chart's version labels (`helm.sh/chart`, `app.kubernetes.io/version`) |
+| The scans show it | the pinned Trivy, on a fresh database, on the image before and after on `linux/amd64` and `linux/arm64`, each apart: a finding (its advisory and package) with a fix gone, nothing new at High or above, each scan having read something |
 | Something ran it | GitHub Actions' latest run at the head succeeded: `ZAP scan` for ZAP's image, `image builds` for a Dockerfile's stage, each `tests` shard for Postgres; what only a cluster runs is held until a check makes one from the change, Argo CD's chart as `make up`'s, and k3s for Martin |
 
 The head is data: its lines are read as text first, and only a change of versions and digests on the base's own lines is rendered or scanned. `review.yml`'s `pin move` job, with read-only permissions and no secret, works each answer out (`scripts/pin-moves.ts`) from `main`'s whole checkout and hands it to the gate by number and head (`PIN_MOVES`); the gate takes it only for that pull request at that head, and holds one with no answer, or answers it cannot read. A fact not read is a hold. The gate runs again when `check.yml` finishes, for a pin move held only because the job that runs its pin had not. `GH_TOKEN="$(gh auth token)" mise exec -- node scripts/pin-moves.ts --print --as-app <owner/name> <number>` replays a pull request as the App's, with no say of Martin's, and works the move out on the Mac with Docker.

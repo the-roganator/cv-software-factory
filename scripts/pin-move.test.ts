@@ -1,25 +1,33 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import {
+  chartForward,
   hashesOf,
   IMAGE_CHECK,
   lineChanges,
+  listMoves,
+  type Move,
   manifestsDiffer,
   onlyPinsChange,
   type PinMoveIO,
+  PLATFORMS,
   POSTGRES_FILE,
   pinMove,
   type Rewritten,
   type Run,
+  realPinMoveIO,
   type Scan,
+  scansShow,
   staleRecords,
   TEST_SHARDS,
   ZAP_CHECK,
   ZAP_FILE,
 } from './pin-move.ts';
+import { readPinMove } from './pin-moves.ts';
 
 // The past pin changes of this repository, replayed as the App's: the same moves, as the pin watch would write them.
 
@@ -369,7 +377,9 @@ describe('a pin move holds, each for its one reason', () => {
           ? FIXED
           : { read: true, findings: [{ id: 'CVE-9', pkg: 'zlib', severity: 'HIGH', fixed: false }] },
     };
-    expect(await reasonOf({ ...ZAP_CASE, io })).toBe(`a target that brings a new HIGH: ${zap('2.17.0', 'b')}`);
+    expect(await reasonOf({ ...ZAP_CASE, io })).toBe(
+      `a target that brings a new HIGH: ${zap('2.17.0', 'b')} (linux/amd64)`,
+    );
   });
 
   it('a move that fixes nothing, and a scan that read nothing', async () => {
@@ -379,7 +389,7 @@ describe('a pin move holds, each for its one reason', () => {
     const io = {
       scan: async (reference: string) => (reference.endsWith(hex('a')) ? FIXED : { read: false, findings: [] }),
     };
-    expect(await reasonOf({ ...ZAP_CASE, io })).toBe(`the scan of ${zap('2.17.0', 'b')} read nothing`);
+    expect(await reasonOf({ ...ZAP_CASE, io })).toBe(`the scan of ${zap('2.17.0', 'b')} (linux/amd64) read nothing`);
   });
 
   it('a chart whose manifests change', async () => {
@@ -583,4 +593,144 @@ describe('the manifests and the records', () => {
     for (const record of Object.keys(base).filter((r) => r !== 'admission-refusals'))
       expect(head[record]).toBe(base[record]);
   }, 60_000);
+});
+
+// An adversarial read of the rule's inputs, each weakness it showed now a hold.
+describe('a pin move holds where an attacker would aim at its inputs', () => {
+  it('a pull request whose base was ever changed: a check may have run for another base', async () => {
+    const github = {
+      api: async () => {
+        throw new Error('not asked: the retarget holds first');
+      },
+      paged: async <T>() => [{ event: 'base_ref_changed' }] as T[],
+    };
+    const pr = {
+      number: 9,
+      state: 'open',
+      user: { id: 1 },
+      head: { sha: HEAD, ref: 'factory/pin/x', repo: { full_name: 'o/r' } },
+      base: { ref: 'main', repo: { full_name: 'o/r' } },
+    };
+    const run = { repo: 'o/r', read: 't', token: '', autonomy: '', print: true };
+    expect(await readPinMove(run, pr, github)).toEqual({
+      reason: 'its base was changed: a pin move is proved only into main from the start',
+    });
+    const unread = { ...github, paged: async () => Promise.reject(new Error('GET /events: 502')) };
+    expect(await readPinMove(run, pr, unread)).toMatchObject({ reason: /could not read .*502/ });
+  });
+
+  it('is proved on what the merge makes on main as it is, never on a merge base main has left', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pin-move-merge-'));
+    const git = (...args: string[]) =>
+      execFileSync(
+        'git',
+        ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...args],
+        {
+          encoding: 'utf-8',
+        },
+      );
+    const write = (file: string, body: string) => {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), body);
+    };
+    const from = `example/base:1.0.0@sha256:${hex('a')}`;
+    const to = `example/base:1.0.1@sha256:${hex('b')}`;
+    let reader: Awaited<ReturnType<typeof realPinMoveIO>> | undefined;
+    try {
+      git('init', '--quiet', '-b', 'main');
+      write('apps/a/Dockerfile', `FROM ${from} AS base\nRUN true\n`);
+      git('add', '-A');
+      git('commit', '--quiet', '-m', 'the merge base');
+      const mergeBase = git('rev-parse', 'HEAD').trim();
+      // main moves on: a second Dockerfile on the same image, which the pin's one line leaves behind.
+      write('apps/b/Dockerfile', `FROM ${from} AS base\nRUN true\n`);
+      git('add', '-A');
+      git('commit', '--quiet', '-m', 'main now');
+      const tip = git('rev-parse', 'HEAD').trim();
+      git('checkout', '--quiet', '--detach', mergeBase);
+      write('apps/a/Dockerfile', `FROM ${to} AS base\nRUN true\n`);
+      git('commit', '--quiet', '-am', 'the pin move, from the old merge base');
+      const head = git('rev-parse', 'HEAD').trim();
+      reader = await realPinMoveIO({ repo: 'o/r', remote: root, base: tip, mergeBase, head, runs: async () => [] });
+      const listed = listMoves(await reader.list('base'), await reader.list('head'));
+      expect(listed).toEqual({ reason: 'the list has 2 items at the head and 1 at the base: it adds or removes one' });
+    } finally {
+      reader?.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('a finding still there at another path is not a fix gone', () => {
+    const at = (path: string): Scan => ({
+      read: true,
+      findings: [{ id: 'CVE-9', pkg: `lib ${path}`, severity: 'MEDIUM', fixed: true }],
+    });
+    expect(
+      scansShow([{ from: 'x', to: 'y', was: at('usr/lib/a-1.0/lib.jar'), now: at('usr/lib/a-1.1/lib.jar') }]),
+    ).toEqual({
+      reason: 'the scans show no finding with a fix gone: the move fixes nothing',
+    });
+  });
+
+  it('scans every platform we run, each apart: a High new on arm64 alone, or no arm64 image, holds', async () => {
+    const asked: string[] = [];
+    const io = {
+      scan: async (reference: string, platform: string) => {
+        asked.push(platform);
+        if (reference.endsWith(hex('a'))) return FIXED;
+        return platform === 'linux/arm64'
+          ? { read: true, findings: [{ id: 'CVE-7', pkg: 'zlib', severity: 'CRITICAL', fixed: false }] }
+          : CLEAN;
+      },
+    };
+    expect(await reasonOf({ ...ZAP_CASE, io })).toBe(
+      `a target that brings a new CRITICAL: ${zap('2.17.0', 'b')} (linux/arm64)`,
+    );
+    expect([...new Set(asked)].sort()).toEqual([...PLATFORMS].sort());
+    const missing = {
+      scan: async (_: string, platform: string) =>
+        platform === 'linux/arm64' ? Promise.reject(new Error('no linux/arm64 in the index')) : FIXED,
+    };
+    await expect(judged({ ...ZAP_CASE, io: missing })).rejects.toThrow('no linux/arm64');
+  });
+
+  it("compares a rendered Application's chart: only the chart's own version labels are written the same", () => {
+    const rendering = (chart: string) =>
+      [
+        'kind: Application',
+        'metadata:',
+        '  labels:',
+        `    helm.sh/chart: x-${chart === 'prometheus' ? '1.0.0' : '1.0.1'}`,
+        'spec:',
+        '  source:',
+        `    chart: ${chart}`,
+      ].join('\n');
+    expect(manifestsDiffer(rendering('prometheus'), rendering('something-else'), [])).toBe(
+      'the manifests change beyond the image: chart: something-else',
+    );
+  });
+
+  it("a chart's prerelease, while a later release on its major passes", async () => {
+    const move = (to: string): Move => ({
+      what: 'chart',
+      name: 'grafana',
+      kind: 'chart',
+      from: '13.5.0',
+      to,
+      pins: [
+        {
+          what: 'chart',
+          kind: 'chart',
+          item: 'grafana',
+          place: { file: 'x', line: 1 },
+          from: '13.5.0',
+          to,
+          chart: { base: GRAFANA, head: GRAFANA },
+        },
+      ],
+    });
+    const io = { chartVersions: async () => ['13.5.0', '13.7.0', '13.8.0-rc.1'] };
+    expect(await chartForward(move('13.8.0-rc.1'), io)).toBe('grafana 13.8.0-rc.1 is a prerelease, not a release');
+    expect(await chartForward(move('13.7.0'), io)).toBeUndefined();
+  });
 });

@@ -675,6 +675,9 @@ export function route(facts: Facts): Decision {
   if (repo !== APP_REPO) {
     // Tried after the exact pin, and never in the app's repository, whose line moves its own pins.
     const move = facts.pinMove;
+    // A check that ran before a retarget ran for another base: a pin move is proved only into main from the start.
+    if (move && 'title' in move && repo === FACTORY_REPO && facts.retargeted)
+      return held('Not a pin move: its base was changed, and a pin move is proved only into main from the start');
     if (move && 'title' in move && repo === FACTORY_REPO)
       return { pass: true, title: move.title, rule: 'pin-move', tags };
     const exact = pin && 'reason' in pin ? pin.reason : undefined;

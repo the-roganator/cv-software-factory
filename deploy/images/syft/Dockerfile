@@ -3,4 +3,4 @@
 # checkout at the workflow's own commit; no workflow writes the version again (scripts/workflows.test.ts). Nothing
 # builds this file. Dependabot reads it (.github/dependabot.yml), here rather than under .github/, where its docker
 # updates may not write, so its bump of this file is the whole change.
-FROM ghcr.io/anchore/syft:v1.54.0@sha256:0356562f495d432056237fbea5cbc2d4839c9c75cd500784a66de2e7cc95ca7c
+FROM ghcr.io/anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060

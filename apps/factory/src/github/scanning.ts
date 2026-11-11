@@ -162,9 +162,8 @@ const COUNTS = z.strictObject(
 );
 const DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 
-/** Every kind of item inventory.ts lists: the compiler holds this to its `Kind`, both ways. */
+/** Every kind of item inventory.ts lists that is an image: the compiler holds this to its `Kind`, both ways. */
 const KINDS = [
-  'lockfile',
   'ours',
   'third-party',
   'chart',
@@ -174,30 +173,49 @@ const KINDS = [
   'dockerfile',
   'workflow',
 ] as const satisfies readonly Kind[];
-const ALL_KINDS: Exclude<Kind, (typeof KINDS)[number]> extends never ? true : never = true;
+const ALL_KINDS: Exclude<Kind, (typeof KINDS)[number] | 'lockfile'> extends never ? true : never = true;
 void ALL_KINDS;
 
 /**
  * An image reference by the distribution grammar (`[domain/]path[:tag][@digest]`), its digest a sha256 alone: what
  * the scan writes is an image GitHub's runner pulled, and anything else in its place is not one.
  */
-const DOMAIN = String.raw`(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::\d+)?/)`;
+const LABEL = String.raw`[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?`;
+/** A registry: a first part with a dot or a port, or `localhost`; anything else is the image's own path. */
+const DOMAIN = String.raw`(?:(?:localhost|${LABEL}(?:\.${LABEL})+)(?::\d+)?|${LABEL}:\d+)/`;
 const COMPONENT = String.raw`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*`;
 export const IMAGE_REFERENCE = new RegExp(
-  String.raw`^${DOMAIN}?${COMPONENT}(?:/${COMPONENT})*(?::[\w][\w.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$`,
+  String.raw`^(?:${DOMAIN})?${COMPONENT}(?:/${COMPONENT})*(?::[\w][\w.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$`,
 );
 
+/** Text with no control character in it: a line, never a second one. */
+const PLAIN = /^[^\p{Cc}]+$/u;
+/** A path in the repository, as a pin names one: relative, and never up out of it. */
+const PATH = z
+  .string()
+  .max(512)
+  .regex(PLAIN)
+  .refine((path) => !path.startsWith('/') && !path.split('/').includes('..'), 'a path out of the repository');
+
 /** One image the scan read, as moves.ts writes `ScannedImage`. */
-const SCANNED = z.strictObject({
-  kind: z.enum(KINDS),
-  item: z.string().min(1).max(1024),
-  image: z.string().max(512).regex(IMAGE_REFERENCE),
-  digests: z
-    .array(z.string().regex(DIGEST))
-    .min(1)
-    .refine((list) => new Set(list).size === list.length, 'a digest twice'),
-  pin: z.strictObject({ file: z.string().min(1), line: z.number().int().nonnegative() }),
-}) satisfies z.ZodType<ScannedImage>;
+const SCANNED = (
+  z.strictObject({
+    kind: z.enum(KINDS),
+    item: z.string().max(1024).regex(PLAIN),
+    image: z.string().max(512).regex(IMAGE_REFERENCE),
+    digests: z
+      .array(z.string().regex(DIGEST))
+      .min(1)
+      .refine((list) => new Set(list).size === list.length, 'a digest twice'),
+    // An image's pin is a line of a file: the scan writes none at 0.
+    pin: z.strictObject({ file: PATH, line: z.number().int().positive() }),
+  }) satisfies z.ZodType<ScannedImage>
+)
+  // An image pinned by its digest has it among those read.
+  .refine((entry) => {
+    const pinned = entry.image.split('@')[1];
+    return pinned === undefined || entry.digests.includes(pinned);
+  }, 'an image whose digest is not among those read');
 
 /** `moves.json`, as moves.ts writes it: a reader refuses a version it does not know. */
 const MOVES_FILE_SCHEMA = z.strictObject({
@@ -231,7 +249,9 @@ const MOVES_FILE_SCHEMA = z.strictObject({
       lockfile: z.boolean(),
     }),
   ),
-  scanned: z.array(SCANNED),
+  scanned: z
+    .array(SCANNED)
+    .refine((list) => new Set(list.map((each) => JSON.stringify(each))).size === list.length, 'an image twice'),
 });
 
 type Alerts = z.infer<typeof ALERTS>;

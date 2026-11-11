@@ -41,6 +41,9 @@ export const REVIEW_APP = 5470762;
 /** The factory's App's bot user (`mrogan-software-factory[bot]`), which opens its pull requests. */
 export const FACTORY_APP = 337765427;
 
+/** This repository, the factory's: the only one where the App's pin moves pass (ADR 0019). */
+export const FACTORY_REPO = 'the-roganator/cv-software-factory';
+
 /** The app's repository: the only one where Lights-out applies, and the App's pull requests may pass untagged. */
 export const APP_REPO = 'the-roganator/cv-worlds-worst-website';
 
@@ -672,7 +675,8 @@ export function route(facts: Facts): Decision {
   if (repo !== APP_REPO) {
     // Tried after the exact pin, and never in the app's repository, whose line moves its own pins.
     const move = facts.pinMove;
-    if (move && 'title' in move) return { pass: true, title: move.title, rule: 'pin-move', tags };
+    if (move && 'title' in move && repo === FACTORY_REPO)
+      return { pass: true, title: move.title, rule: 'pin-move', tags };
     const exact = pin && 'reason' in pin ? pin.reason : undefined;
     if (move && 'reason' in move)
       return held(

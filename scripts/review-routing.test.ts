@@ -223,6 +223,10 @@ describe('approval routing: the rule, the first that holds', () => {
   it('never passes a pin move in the app’s repository, whose line moves its own pins', () => {
     const there = facts({ tags: [tag('dependency-change')], pinMove: { title: 'A pin move of x' } });
     expect(route(there)).toMatchObject({ pass: false, rule: 'held' });
+    // Nor in any repository but this one, whatever calls the gate.
+    const other = 'someone/else';
+    const elsewhere = facts({ repo: other, pr: pr(FACTORY_APP, other), pinMove: { title: 'A pin move of x' } });
+    expect(route(elsewhere)).toMatchObject({ pass: false, rule: 'held' });
   });
 
   it('passes it at Lights-out, in the app’s repository, but never a release, an improvement or a code-owned path', () => {

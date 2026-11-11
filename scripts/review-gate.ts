@@ -45,7 +45,6 @@ import { promisify } from 'node:util';
 import { cutPending, type Found, type Judged, readVerdict, verdictBlock } from '../policy/review-verdict.ts';
 import {
   type Annotation,
-  APP_REPO,
   appOpened,
   type CheckRun,
   codeOwners,
@@ -53,6 +52,7 @@ import {
   exactPin,
   excusedTests,
   FACTORY_APP,
+  FACTORY_REPO,
   type Facts,
   type FileChange,
   type IssueEvent,
@@ -300,6 +300,9 @@ export function readAnswers(text: string | undefined): Map<string, PinMoveAnswer
 async function pinMoveOf(each: Run, pr: PullRequest): Promise<PinMoveAnswer> {
   const moves = each.moves ?? { kind: 'take', answers: undefined };
   if (moves.kind === 'take') {
+    // Proved against main's merge base: a pull request retargeted since is judged afresh, never by that answer.
+    if (pr.base.ref !== 'main')
+      return { reason: `it is into ${pr.base.ref}, and a pin move is judged into main alone` };
     if (!moves.answers) return { reason: 'the pin move job gave the gate no answers it could read' };
     return (
       moves.answers.get(answerKey(pr)) ?? {
@@ -670,7 +673,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     // Here, a pull request of the App's that is no exact pin may be a pin move: proved from its two commits, never
     // tried when the exact pin's check could not be made, which is a wait of its own.
     const wanted = working ? appOpened(judged) && !verdict(judged, reviews).pass : pin !== undefined && 'reason' in pin;
-    const pinMove = each.repo !== APP_REPO && wanted ? await pinMoveOf(each, judged) : undefined;
+    const pinMove = each.repo === FACTORY_REPO && wanted ? await pinMoveOf(each, judged) : undefined;
     return route({
       ...facts(),
       tags,

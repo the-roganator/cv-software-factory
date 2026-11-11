@@ -49,7 +49,7 @@ import {
   unlisted,
 } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
-import { databases, realTools, repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
+import { DB_MAX_AGE_MS, databases, realTools, repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
 import { PROFILE, RECORDS, type RecordName, render, taken } from './policy-hash.ts';
 
@@ -228,7 +228,7 @@ export function lineChanges(raw: string, files: readonly Rewritten[]): { lines: 
       return {
         reason: `${path} is ${status === 'A' ? 'added' : status === 'D' ? 'deleted' : `changed (${status})`}, not modified in place`,
       };
-    if (modeA !== modeB || !/^1006[04][04]$/.test(modeA ?? ''))
+    if (modeA !== modeB || !/^100(644|755)$/.test(modeA ?? ''))
       return { reason: `${path} changes its mode, or is not a regular file` };
     paths.push(path);
   }
@@ -356,9 +356,27 @@ export function onlyItsPins(lines: readonly LineChange[], move: Move): string | 
   const pins = new Set(move.pins.map((m) => placeKey(m.place)));
   const other = lines.find((line) => !pins.has(placeKey(line)));
   if (other) return `${placeKey(other)} is a line that is not a pin of ${move.name}: ${short(other.after.trim())}`;
-  const unwritten = move.pins.find((m) => !lines.some((line) => placeKey(line) === placeKey(m.place)));
-  if (unwritten) return `${placeKey(unwritten.place)}, a pin of ${move.name}, is not a line it rewrites`;
+  for (const m of move.pins) {
+    const line = lines.find((each) => placeKey(each) === placeKey(m.place));
+    if (!line) return `${placeKey(m.place)}, a pin of ${move.name}, is not a line it rewrites`;
+    // The pin's own text, and nothing else on its line: the line as it was, with that one span written anew.
+    if (!rewritesOnly(line, m))
+      return `${placeKey(m.place)} changes more than ${move.name}'s pin: ${short(line.after.trim())}`;
+  }
   return undefined;
+}
+
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Whether a line is its old text with the pin's span alone replaced: the reference, the version, or a value's tag and digest. */
+function rewritesOnly(line: LineChange, m: Moved): boolean {
+  const span = (text: string, value: string) => {
+    const found = [...text.matchAll(new RegExp(`${m.what === 'value' ? '(?:[\\w.-]+@)?' : ''}${literal(value)}`, 'g'))];
+    return found.length === 1 ? found[0]?.[0] : undefined;
+  };
+  const was = span(line.before, m.from);
+  const now = span(line.after, m.to);
+  return was !== undefined && now !== undefined && line.before.replace(was, now) === line.after;
 }
 
 /** The tag a value's line writes beside its digest (`tag: 2.14.3@sha256:…`), if it writes one. */
@@ -479,17 +497,15 @@ export function staleRecords(base: Record<string, string>, head: Record<string, 
 }
 
 /**
- * Two renderings with the moved image's references, every `image:` and the chart's own version labels written the
- * same, so that what is left of a difference is something else that runs.
+ * Two renderings with the moved image's references and the chart's own version labels written the same, so that what
+ * is left of a difference is something else that runs. Another image's line stays as it is: a change to it is a change.
  */
 export function normalised(rendered: string, references: readonly string[]): string[] {
   const refs = [...new Set(references.filter(Boolean))].sort((a, b) => b.length - a.length);
   return rendered.split('\n').map((line) => {
     let text = line;
     for (const ref of refs) text = text.split(ref).join('<image>');
-    return text
-      .replace(/^(\s*(?:-\s+)?image:\s*).*$/, '$1<image>')
-      .replace(/^(\s*(?:helm\.sh\/chart|chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>');
+    return text.replace(/^(\s*(?:helm\.sh\/chart|chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>');
   });
 }
 
@@ -825,7 +841,10 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
     hashes: (side) => hashesOf(dirs[side]),
     async scan(reference) {
       pulled ??= databases(tools, trivyImage(), join(work, 'cache'));
-      await pulled;
+      // As the daily scan refuses one: findings read from a stale database prove nothing new is High.
+      const age = await pulled;
+      if (typeof age !== 'number' || age > DB_MAX_AGE_MS)
+        throw new Error(`the advisory database is refused: ${typeof age === 'string' ? age : 'it is too old'}`);
       const { digest } = tagAndDigest(reference);
       const report = await tools.retry(() =>
         tools.trivy([

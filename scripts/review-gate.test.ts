@@ -669,6 +669,11 @@ describe('judging a pull request through the API', () => {
       const stale = await judge(taking(new Map([[`9@${EARLIER}`, { title }]])), here);
       expect(stale.title).toContain(`the pin move job gave no answer for #9 at ${HEAD.slice(0, 7)}`);
       expect((await judge(taking(undefined), here)).title).toContain('gave the gate no answers it could read');
+      // Retargeted since: the answer was proved against main, so it is not this pull request's.
+      const elsewhere = { ...here, base: { ...here.base, ref: 'feat/below' } };
+      expect((await judge(taking(new Map([[`9@${HEAD}`, { title }]])), elsewhere)).title).toContain(
+        'it is into feat/below, and a pin move is judged into main alone',
+      );
       // Nor is a run that says nothing of where its answers come from.
       expect((await judge({ ...run, repo: FACTORY }, here)).title).toContain('gave the gate no answers');
     });

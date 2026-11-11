@@ -83,8 +83,11 @@ function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
       })[reference] ?? `sha256:${hex('0')}`,
     chartVersions: async () => ['13.5.0', '13.7.0', '14.3.1'],
     render: async (side, chart) => rendered(side, chart),
-    overlay: async (side) =>
-      `kind: StatefulSet\nspec:\n  image: postgres:18.${side === 'base' ? '6' : '7'}-alpine3.24\n`,
+    // The overlay runs Postgres, and the admission policy copies its digest: both move with the pin, and nothing else.
+    overlay: async (side) => {
+      const pg = lines.some((l) => l.file === POSTGRES_FILE) && side === 'head' ? PG_B : PG_A;
+      return `kind: StatefulSet\nspec:\n  image: ${pg}\n---\nkind: ImageValidatingPolicy\nallowed: ['${pg.split('@')[1]}']\n`;
+    },
     hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
     scan: async (reference) =>
       reference.endsWith(hex('a')) || reference.endsWith(hex('d')) || reference.includes('2.11.2') ? FIXED : CLEAN,
@@ -309,6 +312,25 @@ describe('a pin move holds, each for its one reason', () => {
     };
     await reasonOf({ ...c, io });
     expect(read).toEqual(['base']);
+  });
+
+  it("a pin's line that changes another version beside the pin", async () => {
+    const line = (image: string, retries: number) => `  '${image}'; const RETRIES = ${retries};`;
+    const c: Case = {
+      ...ZAP_CASE,
+      lines: [{ ...ZAP_LINE, before: line(zap('2.17.0', 'a'), 1), after: line(zap('2.17.0', 'b'), 2) }],
+    };
+    expect(await reasonOf(c)).toMatch(
+      /^apps\/console\/zap\/scan\.ts:32 changes more than ghcr\.io\/zaproxy\/zaproxy's pin/,
+    );
+  });
+
+  it('another image whose rendered line changes beside a chart value\u2019s move', async () => {
+    const io = {
+      render: async (side: 'base' | 'head', chart: Chart) =>
+        `${rendered(side, chart)}\n        image: busybox:${side === 'base' ? '1.36' : '1.37'}`,
+    };
+    expect(await reasonOf({ ...SIDECAR, io })).toBe('the manifests change beyond the image: image: busybox:1.37');
   });
 
   it('a line that changes more than a version or a digest', async () => {

@@ -322,7 +322,7 @@ An **MR monogram**: Martin Rogan's initials in Instrument Serif, with the R set 
 
 One page, three widths. The console is designed to be read from top to bottom: *is it running → what is happening → what does it need from me*.
 
-The Canary panel sits full width directly under the line, at every width: it is the Release station opened up. The bottom row, Needs you on the left and Controls, Flags and Spend one above the other on the right, sits under the reel, for everyone; Try it yourself joins it for visitors in milestone 8. Guardrails sits full width under the bottom row, for everyone: a checklist of the eleven, in two columns from 1180 up and one below. Sign-in, enrolment, the settings and the audit log are pages of their own (see Admin).
+The Canary panel sits full width directly under the line, at every width: it is the Release station opened up. The bottom row, Needs you on the left and Controls, Flags and Spend one above the other on the right, sits under the reel, for everyone; Try it yourself joins it for visitors in milestone 8. Patching sits full width under the bottom row, and Guardrails full width under Patching, both for everyone. Guardrails is a checklist of the eleven, in two columns from 1180 up and one below. Sign-in, enrolment, the settings and the audit log are pages of their own (see Admin).
 
 | Width | The line | The Canary panel | The reel and the sheet | Bottom row |
 |---|---|---|---|---|
@@ -347,6 +347,7 @@ Each panel does one job:
 - **Controls:** autonomy, three switches and what the line takes. Guardrails that can't be switched off are not drawn as switches; one line says so, and points to Guardrails.
 - **Flags:** each feature flag an improvement ships behind, and its stage.
 - **Spend:** spend against the day's, the month's and a work item's caps; the models and the caps themselves are on the settings page.
+- **Patching:** what must move, and who moves it: one row for each move of a pin the daily scan found a fix for, what waits on Martin first. It is not a vulnerability browser: code scanning is one, and the panel links to it.
 - **Guardrails:** a checklist of spec 6's eleven, each held or not and how old its proof is; each opens in place to what holds it, its refusals and its red-team attack. It is how a visitor sees that the factory can be trusted, so it is on the console, not a page of its own, and kept short there.
 - **Left out on purpose:** placeholders for other apps, a live-feed ticker (the stations and the reel already show what is happening), an always-on feedback loop under the belt (production feeding Sense is a return like any other), sparklines, and help text that repeats itself.
 
@@ -501,6 +502,8 @@ One card per hold, the line's and triage's, oldest first, so what has waited lon
 
 **A merge held for its risk tags.** Under Guarded, the review gate passes the factory's pull request on its own only when it is low-risk. When it does not, the line holds the merge: **Held for its risk tags**, with the gate's summary as its evidence on the station face, as the gate wrote it for the line: the rule ("Guarded: the factory's App opened #1327, so it passes only if low-risk"), a cross in `station-led-attn` for each reason, with what in the diff gave it (`dependency-change` and the lockfile or manifest, `test-loosening` and the test, `security-headers`, a path CODEOWNERS gives Martin, a release, an improvement; `out-of-scope` is held before any code, at Plan), a tick for each it did not find, and what it waits for: his approval of its head commit, named. Under it, that his approval is his own review of the head commit on GitHub, so the console has no Approve, and that a push after he approves needs him again. Its way forward is **Review** and GitHub's mark, drawn as a merge's is, a link to the pull request (a screen reader hears "Review #1327 on GitHub (opens GitHub in a new tab)"), beside what to do there: approve its head commit, and the line adds it to the merge queue under Guarded with auto-merge on, or otherwise Martin merges it there; then Answer in words (back to the coder) and Reject. A visitor's card keeps the link, beside "Martin approves its head commit there, with his own review". Its picture on the reel is the waiting-for-merge panel, with a cross for each tag.
 
+**A move that waits on Martin** (Patching, below): **Patch ·** and who moves it ("Patch · your approval", "Patch · your cluster", "Patch · an issue"), and on the right the move and its deadline ("Loki chart · due in 21 h") in place of a work item. Its evidence says what it clears and why no pull request of the App's passes on its own. One answer, the way to its pull request or issue (**Review**, **Merge** or **Open**, and GitHub's mark), and under the answers, in `text-muted`, what happens if he leaves it ("Left as it is, the scan fails from 11 Nov 17:49 UTC."). No Hold and no Except: holding is not merging, and an exception is an entry in `policy/vulnerabilities.ts`, reviewed as a pull request. A row the dependency sense made of an image no list names has no pull request, so no answer, only that sentence. Its foot is **Open its row in Patching**, since a move is not a work item.
+
 **A canary paused for Martin** (auto-rollback off): **A canary paused for you**, "#1302 · Release · 50% · 3min", the analysis's words on the station face, what it judged bad and by how much, that it waits even with auto-rollback switched on again, and that Stop the line still aborts it; Promote fully, with the key, and Abort, in the alarm colour's outline, each as the Canary panel's own control. Abort says it counts as a rollback: the work item fails Release, and triage gets the analysis's verdict.
 
 The card keeps the `attn` rule on its left edge. A count in the panel's head says how many wait ("4 waiting"). Under the cards, under a `line-strong` hairline, **Answered today**: each answer's time, its work item, how he answered and his words, quoted; on a hold about a visitor's report, his words are not shown, and the row says why. Empty, the panel says "Nothing waits on you" and what lands here.
@@ -648,7 +651,7 @@ Spec 6's eleven guardrails, how each is held and when it was last proved, and th
 
 ### The panel
 
-Full width under the bottom row, headed **Guardrails** with how many hold on the right ("11 held", or "10 held · 1 did not" in `attn`), one line saying each is held by a mechanism and proved, then the checklist, and under it one line: only auto-rollback can be switched off, in Controls; Stop the line always works.
+Full width under Patching, headed **Guardrails** with how many hold on the right ("11 held", or "10 held · 1 did not" in `attn`), one line saying each is held by a mechanism and proved, then the checklist, and under it one line: only auto-rollback can be switched off, in Controls; Stop the line always works.
 
 - **A row** is one line and a button: a tick and **Held** in `ok`, or a cross and **Did not hold** in `attn`; the guardrail's number in mono and its name in spec 6's words; how old its last proof is, in mono; and a chevron. Eleven rows, in two columns from 1180 up (1 to 6, 7 to 11), one column below.
 - **Opening a row** shows its details in place, under it: not a popup or a drawer. The row has `aria-expanded`, and one is open at a time: opening another closes it. The chevron turns. Open, it says:
@@ -689,6 +692,55 @@ An attack is a work item of category red-team, its kind "Red-team attack by Mart
 - **The sheet:** the paragraph says what was attempted, from where, and what refused it; How it went has LAUNCHED, then each attempt and REFUSED (or NOT REFUSED and PAGED), and CLOSED where the GitHub worker closed what it opened; Gates shows the review gate's check for attack 3, tagged, and otherwise that the attack met its mechanism before any pull request; Agents and models says no model was called, as the attack is scripted, except the first, whose mechanism is Jev; attack 3's pull request is **The attack's pull request**, fixed content.
 
 The audit log has each launch (`attack.launched`, with no passkey asked) and each refusal, in `attn`, by the role that appended it.
+
+## Patching
+
+Everything the factory and the app build or run is scanned every day, and a finding with a fix has a deadline by its severity. There are thousands of findings and about ten moves, so the panel's unit is the move: one thing (an image, a chart, a package, Node, k3s) going from what is pinned to a target, in one repository, with every pin that names it. It answers three questions, in order: does anything wait on me, is anything about to be late, and why was the scan red today. The mockup draws it (`?move=`, `?patching=none`).
+
+### The panel
+
+Full width under the bottom row and above Guardrails, headed **Patching** with how many moves and how many wait on Martin on the right ("9 moves · 1 image off the list · 4 wait on you", the last part in `attn`); a line saying what is scanned and what a row is; then:
+
+- **The day's scan, in one line** of 11px mono: a cross and **Scan failed today** in `attn` (a tick and **Scan passed today** in `ok`), the time, then each of its three reasons with where it landed: new High or Critical, split into those with a fix (in how many moves below) and those with none yet; overdue; due within a day (in how many moves below), in `attn` when above zero. A zero is written `0` in `text-muted`, so a run of zeros reads as quiet.
+- **The rows,** what waits on Martin first, then every other row by earliest deadline, then those with none. Not by severity: a Critical a pull request is already clearing needs nobody.
+- **Four figures** under a hairline, each in 20px mono with a label and a line saying what it means: **No fix yet** (looked at again each day; a fix starts its deadline), **Cleared by the moves above** ("9 moves, not 2,092 rows"), **Excepted** (Martin's, in `policy/vulnerabilities.ts`, each for 90 days at most) and **Past their deadline** (the scan fails while there is one). No bars, sparklines or colour: nobody can act on a finding with no fix, and a bar would say the number is ours to lower.
+- **A foot:** a move the review gate can prove from its pull request merges by itself, and one that needs a cluster or changes more than a pin waits on Martin; each merge is in the audit log. Then Audit log, Code scanning ↗ (Martin only) and How patching works.
+- **Empty:** "0 moves", the day's line with its tick, and one sentence: "Nothing to move. Every finding with a fix has been cleared. 14,844 have no fix yet, and are looked at again tomorrow."
+
+### A row
+
+A row is a Guardrails row with more columns: one line and a button, opening in place, one at a time, its chevron turning. From 1180 up its columns are:
+
+| Column | Width | What it says |
+|---|---|---|
+| State | 150px | A glyph and a word (below) |
+| What | the rest | The name in 14px, and under it the pin's file and line in 11px mono `text-muted`, the place the scan's alert and the pull request name too |
+| From → to | 190px | 12px mono, the target in `text`, where it stands in `text-2` |
+| Clears | 152px | `2C 45H 60M 12L` in four fixed columns of tabular mono, so a column of rows reads down; the letters in `text-muted`, a zero wholly so. "not scanned" for a row with no findings to count |
+| Due | 104px | 11px mono `text-muted` ("in 6 days", "cleared 10 Nov", "none"), in `attn` within a day or past |
+| Who | 172px | An outlined pill, 1px `line-strong`: The line, Dependabot, The worker, Your approval, Your cluster, An issue, None yet, with its pull request's number |
+
+From 721 to 1179 a row is two lines: state, what and who on the first; from, to, clears and due under what, separated by `·`. On a phone, three: state and who; what; from, to, clears and due in 11px mono. The pin is dropped there, one tap away in the opened row. The four figures stack two by two.
+
+**Severity has no colour of its own.** The one warm colour marks a row that waits on Martin, with Needs you's 2px `attn` rule down its left edge, and a deadline within a day or past. A Critical in flight is ink like everything else in flight.
+
+**The states**, each a glyph and a word, so they read in greyscale:
+
+| State | Glyph | Tone |
+|---|---|---|
+| Waits on you (Waits on Martin) | ring | `attn`, and the row's rule |
+| Opened, Checks running, In the merge queue, In plan, In build, In review | ring | `signal` |
+| Merged, running | tick | `ok` |
+| Merged, not running yet | ring | `signal` |
+| Nothing to move to, No route yet | dash, in `text-faint` | `text-muted` |
+
+**Opened,** a row says, indented to the name: **Why it waits** (or **Where it is**), a sentence; for a row that waits, **What to do**: its one answer, drawn as Needs you's way to a pull request, and what happens if it is left; **Clears · n findings**, by severity in words, with the packages and advisories left to code scanning; and **Every pin**, each file and line in mono beside what changes there. A row the dependency sense made (an image the list does not name, a running digest no result names, a pin `main` holds that the cluster does not run yet) has no target and no counts, and says where it runs.
+
+Every row that waits on Martin is also a card in Needs you (above), and its card opens its row.
+
+### For visitors
+
+Everything, read-only, by "Read only": "Read only" in the head, "Martin" for "you" and "Martin's" for "your", the foot naming his passkey, and no link into code scanning. A row names no advisory, and a move in a lockfile reads "A package in the app's `pnpm-lock.yaml`", with no versions, until its pull request is open and its diff names it anyway.
 
 ## Not decided yet
 

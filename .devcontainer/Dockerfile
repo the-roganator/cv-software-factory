@@ -1,13 +1,28 @@
 # The dev container: the same toolchain as a laptop, installed by mise from mise.toml and mise.lock.
 FROM mcr.microsoft.com/devcontainers/base:3.0.12-noble@sha256:ec556aed93f62aa6d13fe72c5db09da4e29a7c9b87c568dbca0ee5717466926a
 
-# mise from its signed apt repository.
-RUN install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://mise.jdx.dev/gpg-key.pub | gpg --dearmor -o /etc/apt/keyrings/mise-archive-keyring.gpg \
- && echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.gpg] https://mise.jdx.dev/deb stable main" > /etc/apt/sources.list.d/mise.list \
- && apt-get update \
- && apt-get install --yes --no-install-recommends mise \
- && rm -rf /var/lib/apt/lists/*
+# mise from its GitHub release, at the version every workflow's mise-action pins (scripts/toolchain.test.ts holds them
+# together), for the platform being built. Each SHA-256 is copied from that release's SHASUMS256.txt once its
+# signature (SHASUMS256.asc) is checked with jdx's key, 24853EC9F655CE80B48E6C3A8B81C9D17413A06D. The build checks the
+# checksum, not the signature, so a mise upgrade checks the signature again and moves the version and both checksums
+# here with the workflows'.
+ARG MISE_VERSION=2026.10.17
+ARG MISE_SHA256_AMD64=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a
+ARG MISE_SHA256_ARM64=e90904144ba4377c5fbe385f429830282c68f3b4f9c690bf6c5a2ae9b74a809b
+ARG TARGETARCH
+RUN set -eu; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in \
+      amd64) platform=linux-x64; sha256="$MISE_SHA256_AMD64" ;; \
+      arm64) platform=linux-arm64; sha256="$MISE_SHA256_ARM64" ;; \
+      *) echo "no mise checksum for $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --proto '=https' --proto-redir '=https' -o /tmp/mise \
+      "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-${platform}"; \
+    echo "${sha256}  /tmp/mise" | sha256sum --check --strict; \
+    install -m 0755 /tmp/mise /usr/local/bin/mise; \
+    rm /tmp/mise; \
+    mise --version
 
 USER vscode
 ENV PATH=/home/vscode/.local/share/mise/shims:$PATH

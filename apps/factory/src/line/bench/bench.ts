@@ -27,7 +27,7 @@
  * alone (`followed`): its patch changes none, its spec's scope takes none, its findings name none.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -37,6 +37,7 @@ import type { Sql } from 'postgres';
 import type { AgentOptions } from '../../../../runner/src/agent.ts';
 import type { Handback } from '../../../../runner/src/step.ts';
 import { filesIn, PatchRefused } from '../../github/patches.ts';
+import { CODEOWNERS_PATHS, protectedFrom } from '../../github/paths.ts';
 import type { Fenced } from '../../runners/scope.ts';
 import { oneRunWorkItem } from '../../runners/smoke.ts';
 import { type AgentDefinition, stepFrom } from '../agents/agent.ts';
@@ -210,6 +211,8 @@ async function step<A extends LineAgent>(
     const started = Date.now();
     // The prepare step has the developer's environment, for pnpm's store; the agent never sees it.
     await o.runner.prepare({ ...process.env, ...shared, PREPARE: prepareDir }, o.log);
+    // At the base, before a change is committed on it, as the line reads them at the commit it starts from.
+    await protectedAsCheckedOut(join(shared.WORK, 'repo'), input);
     if (o.fixture.change) await commitChange(o.runner, join(shared.WORK, 'repo'), o.fixture.change);
     const prepared = Date.now();
     const handback = await o.runner.runAgent(
@@ -246,6 +249,31 @@ async function step<A extends LineAgent>(
 }
 
 const exec = promisify(execFile);
+
+/**
+ * Holds a fixture's protected paths to its checkout's CODEOWNERS, the first GitHub would find, as the line reads them
+ * from GitHub at the commit: a copy in the fixtures gone stale, by a pin moved or a CODEOWNERS changed, stops the step
+ * before its first call, naming the paths that differ.
+ */
+export async function protectedAsCheckedOut(repo: string, input: unknown): Promise<void> {
+  const told = (input as { protectedPaths?: readonly string[] }).protectedPaths;
+  if (!told) return;
+  let codeowners: string | null = null;
+  for (const path of CODEOWNERS_PATHS) {
+    codeowners = await readFile(join(repo, path), 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (codeowners !== null) break;
+  }
+  const owned = protectedFrom(codeowners);
+  const differ = [...owned.filter((p) => !told.includes(p)), ...told.filter((p) => !owned.includes(p))];
+  if (differ.length > 0) {
+    throw new Error(
+      `The fixture's protected paths are not its checkout's CODEOWNERS (${differ.join(', ')}): copy APP_CODEOWNERS again, or bench a commit whose CODEOWNERS is the fixture's.`,
+    );
+  }
+}
 
 /**
  * Commits a fixture's change on the base the prepare step left, as the pull request's head would be, and names the

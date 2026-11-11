@@ -8,6 +8,7 @@ import {
   firstFixed,
   k3sLine,
   k3sReleaseOf,
+  manifestDigests,
   miseRange,
   miseTools,
   newestOnLine,
@@ -15,6 +16,7 @@ import {
   rewrite,
   runtimeStage,
   type Sources,
+  scannedImages,
   severityOf,
   skopeoName,
   toolOf,
@@ -150,6 +152,10 @@ function sourcesOf(world: World) {
     async digest(reference) {
       asked.push(`digest ${reference}`);
       return world.digests?.[reference] ?? `sha256:${'d'.repeat(64)}`;
+    },
+    async manifests(reference) {
+      asked.push(`manifests ${reference}`);
+      return { digest: `sha256:${'f'.repeat(64)}`, platforms: [] };
     },
     async chartVersions(_repo, chart) {
       asked.push(`chart ${chart}`);
@@ -1376,5 +1382,69 @@ describe('what fixes it, kept and checked', () => {
     expect(miseRange(toml, 'kubectl')).toBe('1.37');
     expect(miseRange(toml, 'pnpm')).toBe('12');
     expect(miseRange(toml, 'yq')).toBeUndefined();
+  });
+});
+
+describe('the images scanned, in moves.json', () => {
+  const INDEX = `sha256:${'1'.repeat(64)}`;
+  const AMD = `sha256:${'2'.repeat(64)}`;
+  const ARM = `sha256:${'3'.repeat(64)}`;
+  const PINNED = `sha256:${'4'.repeat(64)}`;
+
+  it('lists every image target the scan read, with its digests and pin, and nothing else', async () => {
+    const chartImage: ReadTarget = {
+      key: 'chart grafana quay.io/kiwigrid/k8s-sidecar',
+      kind: 'chart',
+      file: 'deploy/base/telemetry/grafana.yaml',
+      line: 14,
+      name: 'grafana',
+      label: `quay.io/kiwigrid/k8s-sidecar:2.14.3@${PINNED}`,
+      image: `quay.io/kiwigrid/k8s-sidecar:2.14.3@${PINNED}`,
+      pin: { file: 'deploy/base/telemetry/values/grafana.yaml', line: 32 },
+    };
+    const k3s: ReadTarget = {
+      key: 'k3s rancher/mirrored-coredns-coredns',
+      kind: 'k3s-release',
+      file: 'deploy/k3d/cluster.yaml',
+      line: 3,
+      name: 'k3s v1.37.2+k3s1',
+      label: 'docker.io/rancher/mirrored-coredns-coredns:1.14.7',
+      image: 'docker.io/rancher/mirrored-coredns-coredns:1.14.7',
+    };
+    const image = { ...IMAGE, line: 2, name: NODE_IMAGE };
+    const asked: string[] = [];
+    const scanned = await scannedImages([LOCKFILE, image, chartImage, k3s, { ...image, key: 'again' }], {
+      async manifests(reference) {
+        asked.push(reference);
+        return { digest: INDEX, platforms: [AMD, ARM] };
+      },
+    });
+    expect(scanned.map((each) => each.image).sort()).toEqual(
+      [image.image, image.image, chartImage.image, k3s.image].sort() as string[],
+    );
+    // Each reference read once, however many items run it.
+    expect(asked.sort()).toEqual([chartImage.image, k3s.image, image.image].sort() as string[]);
+    expect(scanned.find((each) => each.kind === 'chart')).toEqual({
+      kind: 'chart',
+      item: 'grafana',
+      image: chartImage.image,
+      digests: [INDEX, PINNED, AMD, ARM],
+      pin: { file: 'deploy/base/telemetry/values/grafana.yaml', line: 32 },
+    });
+    expect(scanned.find((each) => each.kind === 'k3s-release')).toMatchObject({
+      item: 'k3s v1.37.2+k3s1',
+      digests: [INDEX, AMD, ARM],
+      pin: { file: 'deploy/k3d/cluster.yaml', line: 3 },
+    });
+  });
+
+  it('reads an index’s digest and every platform manifest it lists, and a single manifest’s digest alone', () => {
+    const index = Buffer.from(
+      JSON.stringify({ schemaVersion: 2, manifests: [{ digest: ARM }, { digest: AMD }, { digest: 'nonsense' }] }),
+    );
+    expect(manifestDigests(index).platforms).toEqual([AMD, ARM]);
+    expect(manifestDigests(index).digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(manifestDigests(Buffer.from(JSON.stringify({ schemaVersion: 2, layers: [] }))).platforms).toEqual([]);
+    expect(() => manifestDigests(Buffer.from('not json'))).toThrow();
   });
 });

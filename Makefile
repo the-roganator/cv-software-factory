@@ -399,11 +399,11 @@ real-store: node_modules ## Replace the cluster's store with an empty one for re
 
 stop-the-line: node_modules ## Stop the line: agents stop, workers take nothing new, a canary in flight aborts if its stable version has a pod (REASON="...")
 	@# Both halves run whichever fails: a canary is aborted even if the store cannot be reached, and the other way round.
-	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason='$(subst ','\'',$(value REASON))')); } || failed=1; \
+	@{ $(call as-operator,node apps/factory/src/cli.ts line stop $(if $(REASON),--reason '$(subst ','\'',$(value REASON))')); } || failed=1; \
 		KUBECTL="$(KUBECTL)" scripts/abort-canaries.sh || failed=1; exit $${failed:-0}
 
 start-the-line: node_modules ## Start the line, first on a new store or again; workers take what waited in the inbox (REASON="...")
-	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason='$(subst ','\'',$(value REASON))'))
+	@$(call as-operator,node apps/factory/src/cli.ts line start $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
 
 # What the line takes, as the console's Controls set it, through the same check, keeping every other control: one of
 # ONLY (a work item's number), NEXT (how many, from now) or EVERY=1. From Martin's command line, it needs no passkey.
@@ -420,7 +420,7 @@ take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<
 # and the number checked, before they reach a shell that holds Martin's role.
 close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
 	@only='$(subst ','\'',$(value ONLY))'; case "$$only" in ''|*[!0-9]*) echo "Give ONLY=<work item>, its number." >&2; exit 2;; esac; \
-	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason='$(subst ','\'',$(value REASON))'))
+	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
 
 # The vulnerability drill's pull requests, in order, and the two entries in policy/vulnerabilities.ts its pin needs,
 # checked as `make check` holds them and to expire the next day (UTC): it opens nothing (scripts/drill-vulnerability.ts).

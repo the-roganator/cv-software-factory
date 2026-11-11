@@ -182,9 +182,16 @@ const allowedOf = (p: ImagePolicy) => {
   if (!v) throw new Error(`${p.metadata?.name} has no ${ADMITTED} variable`);
   return v;
 };
+/** The profile, rendered once for the tests below: each render is a `kustomize build` of every overlay. */
+let once: Resource[] | undefined;
+const rendering = () => {
+  once ??= profile();
+  return once;
+};
 /** The record's hash, from the profile as rendered with one change made to a copy of the image policy. */
 const admissionHashWith = (change: (manifests: Resource[]) => void) => {
-  const manifests = structuredClone(profile());
+  // The image policies alone, all the record names: a clone of the whole profile for each case is slow.
+  const manifests = structuredClone(rendering().filter((m) => m.kind === 'ImageValidatingPolicy'));
   change(manifests);
   return taken('admission-refusals', manifests).policyHash;
 };
@@ -197,7 +204,7 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
     // #951, Dependabot's: postgres:18.6-alpine3.24 from 898c60c to 123b179, which took the record again on a cluster.
     const before = 'postgres:18.6-alpine3.24@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5';
     const after = 'postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395';
-    const now = allowedOf(imagePolicy(profile(), 'factory-images')).expression;
+    const now = allowedOf(imagePolicy(rendering(), 'factory-images')).expression;
     expect(now, 'the factory’s copy admits the Postgres #951 pinned').toContain(after);
     const replayed = admissionHashWith((m) => {
       const v = allowedOf(imagePolicy(m, 'factory-images'));
@@ -276,7 +283,7 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
   });
 
   it('admits only what a workload in a namespace the copy guards pins, image for image', () => {
-    const manifests = profile();
+    const manifests = rendering();
     type Pod = {
       containers?: { image: string }[];
       initContainers?: { image: string }[];

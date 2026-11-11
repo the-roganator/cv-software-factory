@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { GitHubError } from '../../src/github/client.ts';
-import { branchPin, directoriesOf } from '../../src/github/dependabot.ts';
+import { branchPin, ecosystemsOf } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
 import { zipEntry } from '../../src/github/zip.ts';
 import { client, REPO, type Route, type Sent } from './fake.ts';
@@ -134,7 +134,7 @@ describe('the scan’s moves', () => {
     expect(moves.file).toMatchObject({ judged: '2026-11-10T06:15:00Z', run: '42000000001', totals: { fixed: 4 } });
     const [image, lockfile] = moves.moves;
     expect(image).toMatchObject({ index: 1, name: 'ghcr.io/example/base', from: '1.2.0', lane: 'line' });
-    expect(image?.lockfile).toBeUndefined();
+    expect(image?.withheld).toBeUndefined();
     expect(image?.findings.map((f) => [f.alert, f.advisory, f.severity, f.file, f.line])).toEqual([
       [101, 'CVE-2099-0001', 'HIGH', 'deploy/website.yaml', 12],
       [102, 'CVE-2099-0002', 'MEDIUM', 'deploy/website.yaml', 12],
@@ -147,7 +147,7 @@ describe('the scan’s moves', () => {
     });
     // The artifact names a lockfile's move by its file alone; the alerts fill in the rest.
     expect(lockfile?.name).toBe('a package in `pnpm-lock.yaml`');
-    expect(lockfile?.lockfile).toEqual({
+    expect(lockfile?.withheld).toEqual({
       package: 'invented-pkg',
       from: '2.0.0',
       to: 'version 2.0.3',
@@ -205,16 +205,41 @@ describe('the scan’s moves', () => {
     expect(error.message).not.toMatch(/libexample|CVE-2099/);
   });
 
-  it('fail on a result with a fix that names no move, or a move past the list', async () => {
-    await fails({ pages: [withText(101, (t) => t.replace(/ Move .*$/, ''))] }, /alert 101 has a fix and names no move/);
+  it('leave a result with a fix and no move (excepted, not yet dismissed) out of every move, and fail on a move past the list', async () => {
+    // Excepted: open until the run's next step dismisses it, with a fix and no move.
+    const excepted = { ...alerts()[0], number: 109 };
+    const text = (alerts()[0]?.most_recent_instance.message.text ?? '').replace(/ Move .*$/, '');
+    excepted.most_recent_instance = { ...excepted.most_recent_instance, message: { text } };
+    const moves = await read({ pages: [[...alerts(), excepted]] });
+    expect(moves.moves.flatMap((m) => m.findings.map((f) => f.alert))).not.toContain(109);
+    // One the artifact counts and the alerts do not name fails the counts.
+    await fails(
+      { pages: [withText(101, (t) => t.replace(/ Move .*$/, ''))] },
+      /move 1 clears 2 results and 1 alerts name it/,
+    );
     await fails({ pages: [withText(101, (t) => t.replace('Move 1 of', 'Move 3 of'))] }, /alert 101 names move 3 of 2/);
   });
 
-  it('fail when the alerts are from another run than the artifact', async () => {
-    await fails(
-      { pages: [withText(101, (t) => t.replace('run 42000000001', 'run 42000000003'))] },
-      /alert 101 is from run 42000000003, and the artifact from run 42000000001/,
-    );
+  it('fail when the alerts are from another run than the artifact, and ask again while that run is still going', async () => {
+    const pages = (run: string) => [withText(101, (t) => t.replace('run 42000000001', `run ${run}`))];
+    const ran = (id: string, status: string): Route => ({
+      method: 'GET',
+      path: `/repos/${REPO}/actions/runs/${id}`,
+      answer: () => ({ body: { id: Number(id), status } }),
+    });
+    const going = await new LiveReads(
+      client([ran('42000000003', 'in_progress'), ...routes({ pages: pages('42000000003') })]).github,
+    )
+      .moves(REPO)
+      .catch((e) => e);
+    expect(going).toMatchObject({ kind: 'conflict', status: 409 });
+    expect(going.message).toMatch(/run 42000000003 .* has not finished/);
+    const done = await new LiveReads(
+      client([ran('42000000000', 'completed'), ...routes({ pages: pages('42000000000') })]).github,
+    )
+      .moves(REPO)
+      .catch((e) => e);
+    expect(done.message).toMatch(/alert 101 is from run 42000000000, and the artifact from run 42000000001/);
     await fails({ moves: { ...fixture('moves.json'), run: '42000000000' } }, /names run 42000000000/);
   });
 
@@ -285,6 +310,12 @@ describe('the scan’s moves', () => {
     );
   });
 
+  it('never take a missing run or code scanning switched off for a missing permission', async () => {
+    const error = await read({ runs: { total_count: 0, workflow_runs: [] } }).catch((e) => e);
+    expect(error).toMatchObject({ kind: 'not-found' });
+    expect(error.message).toMatch(/no finished run of vulnerabilities.yml on main/);
+  });
+
   it('need the App’s key, even on a public repository', async () => {
     const error = await new LiveReads(client(routes(), [], { keyless: true }).github).moves(REPO).catch((e) => e);
     expect(error).toMatchObject({ kind: 'read-only' });
@@ -347,21 +378,45 @@ describe('Dependabot’s pull requests', () => {
     expect(JSON.stringify(pulls)).not.toMatch(/never read/);
   });
 
-  it('read a branch against the directories dependabot.yml names, the longest first', () => {
-    const dirs = directoriesOf('updates:\n  - package-ecosystem: docker\n    directories: [/, /apps, /apps/console]\n');
-    expect(branchPin('dependabot/docker/apps/console/node-24.0.0', dirs)).toMatchObject({
+  it('read a branch against the directories and groups dependabot.yml names, the longest first', () => {
+    const config = ecosystemsOf(
+      'updates:\n  - package-ecosystem: docker\n    directories: [/, /apps, /apps/console]\n  - package-ecosystem: npm\n    directories: [/, /packages/*]\n    groups:\n      tooling: {}\n',
+    );
+    expect(branchPin('dependabot/docker/apps/console/node-24.0.0', config)).toMatchObject({
       directory: '/apps/console',
       dependency: 'node',
     });
-    expect(branchPin('dependabot/docker/apps/node-24.0.0', dirs)).toMatchObject({
+    expect(branchPin('dependabot/docker/apps/node-24.0.0', config)).toMatchObject({
       directory: '/apps',
       dependency: 'node',
     });
+    // The name ends at the last hyphen before the version, not the first before a digit.
+    expect(branchPin('dependabot/npm_and_yarn/utf-8-validate-6.0.5', config)).toMatchObject({
+      dependency: 'utf-8-validate',
+      version: '6.0.5',
+    });
+    expect(branchPin('dependabot/docker/node-24.11.0-trixie-20251110', config)).toMatchObject({
+      dependency: 'node',
+      version: '24.11.0-trixie-20251110',
+    });
+    // A group's hash of digits alone is still a group's, when dependabot.yml names the group.
+    expect(branchPin('dependabot/npm_and_yarn/tooling-4821930576', config)).toMatchObject({ dependency: null });
+    // Under a directory a glob names, the directory is not known for sure: no pin.
+    expect(branchPin('dependabot/npm_and_yarn/packages/web/lodash-4.17.21', config)).toMatchObject({
+      dependency: null,
+    });
+    // A directory dependabot.yml does not name is never read as the root's.
+    expect(
+      branchPin(
+        'dependabot/docker/elsewhere/node-24.0.0',
+        ecosystemsOf('updates:\n  - package-ecosystem: docker\n    directory: /apps\n'),
+      ),
+    ).toMatchObject({ dependency: null });
     // Without the file, only the root.
-    expect(branchPin('dependabot/docker/apps/console/node-24.0.0', directoriesOf(null))).toMatchObject({
+    expect(branchPin('dependabot/docker/apps/console/node-24.0.0', ecosystemsOf(null))).toMatchObject({
       directory: '/',
       dependency: 'apps/console/node',
     });
-    expect(directoriesOf('{not: [yaml')).toEqual(new Map());
+    expect(ecosystemsOf('{not: [yaml').directories).toEqual(new Map());
   });
 });

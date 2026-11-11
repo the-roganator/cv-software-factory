@@ -4,7 +4,8 @@
  *
  * It reads the central directory, finds the entry by its exact name, and inflates it only up to the size its caller
  * allows, so a malformed or oversized archive is an error, never a large allocation. It reads stored and deflated
- * entries, and checks its CRC, and refuses ZIP64, encryption and anything else as not what the factory's workflows upload.
+ * entries, checks each one's CRC, and refuses ZIP64, encryption and anything else as not what the factory's workflows
+ * upload.
  */
 import { crc32, inflateRawSync } from 'node:zlib';
 

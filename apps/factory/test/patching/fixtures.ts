@@ -174,6 +174,8 @@ export const PULL: DependencyPull = {
   directory: '/',
   dependency: 'example-parser',
   version: '1.0.1',
+  changed: [],
+  unread: [],
 };
 
 /** A pod as the API lists it: a container by its spec's image, and the digest its runtime resolved. */

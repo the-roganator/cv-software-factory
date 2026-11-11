@@ -48,6 +48,7 @@ export type IssueAction =
   | 'addLabels'
   | 'closeIssue'
   | 'reopenIssue'
+  | 'updateIssue'
   | 'updatePullRequest'
   | 'describeDeploy'
   | 'readyForReview'
@@ -97,6 +98,7 @@ const DOING: Record<IssueAction, string> = {
   addLabels: 'Label',
   closeIssue: 'Close',
   reopenIssue: 'Reopen',
+  updateIssue: 'Update',
   updatePullRequest: 'Update',
   describeDeploy: 'Describe the deploy on',
   readyForReview: 'Ready',

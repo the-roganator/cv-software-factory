@@ -54,6 +54,7 @@ flowchart TB
 | [Factory GitHub App](GITHUB-APP.md) | The factory's identity in GitHub, and its permissions |
 | [GitHub worker](GITHUB-WORKER.md) | The only pod with the App's key, and so the only thing that acts in GitHub as the factory |
 | [Scoreboard](SCOREBOARD.md) | Matches tickets to answer-key fingerprints |
+| [Patching](PATCHING.md) | The scan's moves, and the dependency sense that reads them each day beside what the cluster runs |
 | [Defect injector](DEFECT-INJECTOR.md) | Opens regression pull requests from the private catalogue |
 | [Red-team harness](RED-TEAM-HARNESS.md) | Runs curated attacks against real mechanisms and records the refusals |
 | [Guardrails](GUARDRAILS.md) | `make guardrails`: takes every guardrail's proof outside an attack, and records each |

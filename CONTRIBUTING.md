@@ -14,7 +14,7 @@ Small fixes (typos, broken links, clearer docs) are welcome as pull requests. Fo
 
 Because the repository is public, outside pull requests are treated as untrusted:
 
-- Workflows from a first-time contributor wait for my approval before they run.
+- Workflows from anyone outside the repository wait for my approval before they run, however many of their pull requests have merged.
 - Pull requests run with read-only permissions and no secrets (`pull_request`, never `pull_request_target`).
 - Nothing from outside is merged automatically.
 

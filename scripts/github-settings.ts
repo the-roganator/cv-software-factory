@@ -7,8 +7,8 @@
  *     node scripts/github-settings.ts --check          # change nothing: say where the live settings differ
  *     node scripts/github-settings.ts --check --see-bypass   # and fail on what it could not see
  *
- * `--check` reads each repository's rulesets, environments and fork-run approval and compares them with the ones here, and names any
- * ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
+ * `--check` reads each repository's rulesets, environments and fork-run approval and compares them with the ones
+ * here, and names any ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
  * drift-check.yml runs it weekly. GitHub shows who may bypass a ruleset only to a reader who may change it: with a
  * token that cannot, such as the drift check App's, `--check` warns that it did not compare that list, and compares
  * the rest; with an admin's `gh`, it compares that too, and fails if anyone may bypass. `--see-bypass` fails on what
@@ -225,7 +225,7 @@ export function forkApprovalProblems(live: unknown): Findings {
     };
   }
   const policy = (live as { approval_policy?: unknown } | null)?.approval_policy;
-  return matches(live, FORK_RUN_APPROVAL)
+  return policy === FORK_RUN_APPROVAL.approval_policy
     ? { problems: [], unseen: [] }
     : {
         problems: [

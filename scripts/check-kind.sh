@@ -10,7 +10,10 @@
 #              files of the local profile pin, on a pull request or in the queue.
 #   manifests  a pull request, anyone's, that changes only files under deploy/, but for the Postgres the console's
 #              browser tests run beside. On a pull request only.
-#   code       anything else: every check runs.
+#   code       anything else: every check runs. A pin move of the App's (scripts/pin-move.ts) is this kind: the review
+#              gate passes one only once the job that runs its pin (ZAP scan, image builds, tests) succeeded at its
+#              head, so none of them may be skipped for it. One under deploy/ that only a cluster runs is `manifests`,
+#              and the gate holds it until the platform check.
 #
 # The pull request's author and base come from the event on a pull request (AUTHOR, GITHUB_BASE_REF), and in the queue,
 # whose event names no pull request, from the API, for the pull request the queue's branch names (QUEUE_BRANCH,

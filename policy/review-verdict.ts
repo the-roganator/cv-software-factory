@@ -34,8 +34,20 @@
  * Human-owned: see `README.md`.
  */
 
-/** The rules the gate decides by, the first that holds; `held` when none does. */
-export const RULES = ['martin-opened', 'martin-approved-head', 'exact-pin', 'low-risk', 'lights-out', 'held'] as const;
+/**
+ * The rules the gate decides by, the first that holds; `held` when none does. `pin-move` is this repository's alone: a
+ * pull request of the factory's App that moves one pin of the scan's list forward, proved from the pull request
+ * (scripts/pin-move.ts, ADR 0019).
+ */
+export const RULES = [
+  'martin-opened',
+  'martin-approved-head',
+  'exact-pin',
+  'pin-move',
+  'low-risk',
+  'lights-out',
+  'held',
+] as const;
 export type Rule = (typeof RULES)[number];
 
 /** The risk tags the gate works out from a diff, never from labels. */

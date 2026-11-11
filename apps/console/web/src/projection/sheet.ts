@@ -687,6 +687,7 @@ const RULE_WORDS: Record<Exclude<GateRule, 'held'>, string> = {
   'martin-opened': 'as Martin opened it',
   'martin-approved-head': 'on Martin’s approval of its head commit',
   'exact-pin': 'as an exact pin',
+  'pin-move': 'as a pin move',
   'low-risk': 'as low-risk',
   'lights-out': 'at Lights-out',
 };

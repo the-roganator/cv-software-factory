@@ -346,6 +346,7 @@ export const GATE_RULES = [
   'martin-opened',
   'martin-approved-head',
   'exact-pin',
+  'pin-move',
   'low-risk',
   'lights-out',
   'held',

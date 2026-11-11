@@ -131,6 +131,9 @@ export interface RunnersOptions {
 
 const PREPARE_SECONDS = 600;
 
+/** The most of a prepare pod's log read for what it printed for the line: pins and a lockfile, as a patch each. */
+const PRINTED_BYTES = 8 * 1024 * 1024;
+
 /**
  * How much of a pod's log is kept: its last lines, which say how it ended. A byte limit would be taken from the start
  * of those lines and cut the end, so the runner bounds its own lines instead (`apps/runner/src/log.ts`).
@@ -351,7 +354,9 @@ export class Runners {
     const found = await this.#o.kube.get(`${pods}?labelSelector=${selector}`, PODS);
     const pod = found?.items.find((item) => !isRedTeam(item.metadata.labels));
     if (!pod) return undefined;
-    const text = await this.#o.kube.text(`${pods}/${encodeURIComponent(pod.metadata.name)}/log`);
+    const text = await this.#o.kube.text(
+      `${pods}/${encodeURIComponent(pod.metadata.name)}/log?limitBytes=${PRINTED_BYTES}`,
+    );
     let said: Record<string, unknown> | undefined;
     for (const line of (text ?? '').split('\n')) {
       if (!line.startsWith('{')) continue;

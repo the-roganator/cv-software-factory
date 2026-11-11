@@ -48,6 +48,7 @@ import { type Chart, identity, type Kind } from './inventory.ts';
 import {
   APP,
   type Context,
+  type DayCounts,
   dependabotDirectories,
   directPackages,
   type Judged,
@@ -1068,7 +1069,15 @@ export function verdict(all: Row[], prove = false, moves: Move[] = []) {
       lines.push(`${reason}: ${count}, held by ${names.length ? names.join('; ') : 'no move the scan could make'}.`);
     }
   }
-  return { lines, bySeverity, byBucket, fresh, waiting, passes: prove || failing === 0 };
+  const counts: DayCounts = {
+    noFix: byBucket.none,
+    excepted: all.length - open.length,
+    overdue: byBucket.overdue,
+    dueWithinDay: byBucket.day,
+    newHighWithFix: fresh,
+    newHighWithoutFix: waiting,
+  };
+  return { lines, bySeverity, byBucket, fresh, waiting, counts, passes: prove || failing === 0 };
 }
 
 /** The whole judgement of a scan's hand-off, against the time given: each result's row, its fix and its move. */
@@ -1593,12 +1602,12 @@ export async function main(args: string[]): Promise<number> {
     );
     return 1;
   }
-  const file = movesFile(list, context, run, scanned);
+  const { lines, bySeverity, byBucket, passes, counts } = verdict(judged.rows, prove, list);
+  const file = movesFile(list, context, run, scanned, counts);
   const tags = new Map<string, MoveTag>();
   if (run)
     for (const [index, move] of list.entries())
       for (const each of move.results) tags.set(each, { index: index + 1, run });
-  const { lines, bySeverity, byBucket, passes } = verdict(judged.rows, prove, list);
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
   const table = movesTable(file);
   const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;

@@ -600,8 +600,11 @@ export class Line {
         this.#o.log.warn({ workItem }, 'a ticket a dry run verified has no signal to reopen it on');
         return;
       }
-      // #firstSignal gives a route's alone, so never the dependency sense's.
-      if (first.sense === 'dependency') return;
+      // A move's ticket names no route to reopen it on, and work-item.reopened takes a route's sense alone.
+      if (first.sense === 'dependency') {
+        this.#o.log.warn({ workItem }, 'a dependency’s ticket a dry run verified names no route to reopen it on');
+        return;
+      }
       await this.#append(workItem, [
         {
           type: 'work-item.reopened',
@@ -1646,7 +1649,9 @@ export class Line {
     if (!pictures || promoted.dryRun) return { pages: [], artifacts: [] };
     // The ticket's own page: where its sense last boxed its check, with the elements it boxed, and its route.
     const ownOf = async (signal: FirstSignal | undefined): Promise<Own> => {
-      const look = signal && (await pictures.lookOf(signal.sense, signal.check, signal.route));
+      // A move is on no page: a dependency's ticket has no page of its own.
+      const look =
+        signal && signal.sense !== 'dependency' && (await pictures.lookOf(signal.sense, signal.check, signal.route));
       return {
         route: signal?.route ?? '*',
         ...(look && { path: look.path, selectors: look.elements.map((e) => e.selector) }),
@@ -1699,13 +1704,12 @@ export class Line {
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
              payload->>'symptom' as symptom, payload->'evidence' as evidence
       from events where work_item = ${workItem} and type = 'signal.received' order by seq limit 1`;
-    // A dependency's first signal names a move, no route: none of Verify's senses can look at it again.
-    if (row?.route === null) return undefined;
     return (
       row && {
         sense: row.sense,
         check: row.check,
-        route: row.route,
+        // A dependency's names a move, on no page: Verify holds its ticket for Martin before any route is read.
+        route: row.route ?? '*',
         ...(row.symptom ? { symptom: row.symptom } : {}),
         evidence: row.evidence ?? [],
       }

@@ -566,8 +566,11 @@ function routeOrMove(found: z.infer<typeof signal>, context: z.core.$RefinementC
       : 'only the dependency sense sees a dependency’s symptom';
     context.addIssue({ code: 'custom', path: ['symptom'], message });
   }
-  if (!dependency && found.evidence?.some((each) => each.kind === 'scan')) {
-    context.addIssue({ code: 'custom', path: ['evidence'], message: 'only a dependency’s signal carries a scan' });
+  if (found.evidence?.some((each) => (each.kind === 'scan') !== dependency)) {
+    const message = dependency
+      ? 'a dependency’s signal carries a scan alone'
+      : 'only a dependency’s signal carries a scan';
+    context.addIssue({ code: 'custom', path: ['evidence'], message });
   }
 }
 

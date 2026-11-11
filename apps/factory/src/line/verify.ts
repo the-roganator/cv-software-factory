@@ -73,6 +73,7 @@ import { requestLogs, routeTemplates } from '../routes.ts';
 export interface FirstSignal {
   sense: SignalSource;
   check: string;
+  /** `*` for a dependency's, which names a move and no route. */
   route: string;
   /** The class of defect the sense named, if it named one. */
   symptom?: SymptomClass;

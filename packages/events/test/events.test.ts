@@ -2309,6 +2309,18 @@ describe('a dependency’s signal, ticket and work item, which name a move', () 
     expect(problems({ ...probe, symptom: 'server-error', evidence: [scan] })).toEqual([
       'payload.evidence: only a dependency’s signal carries a scan',
     ]);
+    const http = {
+      kind: 'http',
+      method: 'GET',
+      url: '/',
+      status: 200,
+      headers: {},
+      timings: { firstByteMs: 1, totalMs: 2 },
+      redirects: [],
+    };
+    expect(problems({ evidence: [scan, http] })).toEqual([
+      'payload.evidence: a dependency’s signal carries a scan alone',
+    ]);
     expect(problems({ ...probe, symptom: 'server-error', move: MOVE })).toEqual([
       'payload.move: a dependency’s signal, and only one, names its move',
     ]);

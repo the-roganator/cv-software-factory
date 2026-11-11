@@ -58,7 +58,7 @@ A hold the gate marks `pending` ([the verdict](#the-verdict)) is a wait, not a r
 
 ### A pin move
 
-`scripts/pin-move.ts` ([ADR 0019](../architecture/adr/0019-the-gate-passes-a-pin-move-it-proves.md)) passes the App's pull request here into `main`, never retargeted, tried after the exact pin, when it proves each of these on what the merge makes (its head merged onto `main`'s tip, against that tip), in this order, and otherwise holds it, the first reason it could not prove named in the hold beside the exact pin's (`Not an exact pin (…), nor a pin move: …`):
+`scripts/pin-move.ts` ([ADR 0019](../architecture/adr/0019-the-gate-passes-a-pin-move-it-proves.md)) passes the App's pull request here into `main`, never retargeted, whose head no other pull request has had, tried after the exact pin, when it proves each of these on what the merge makes (its head merged onto `main`'s tip, against that tip), in this order, and otherwise holds it, the first reason it could not prove named in the hold beside the exact pin's (`Not an exact pin (…), nor a pin move: …`):
 
 | Condition | Proved by |
 |---|---|

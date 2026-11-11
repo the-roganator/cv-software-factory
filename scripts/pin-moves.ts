@@ -47,6 +47,11 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
       const events = await github.paged<{ event: string }>(`/repos/${each.repo}/issues/${pr.number}/events`, each.read);
       if (events.some((e) => e.event === 'base_ref_changed'))
         return { reason: 'its base was changed: a pin move is proved only into main from the start' };
+      // Nor ever the head of another pull request: a check run is the head's, whichever base it ran for.
+      const sharing = await github.paged<PullRequest>(`/repos/${each.repo}/commits/${pr.head.sha}/pulls`, each.read);
+      const other = sharing.find((one) => one.number !== pr.number && one.head.sha === pr.head.sha);
+      if (other)
+        return { reason: `#${other.number} has had the same head, so its checks may have run for another base` };
       const compare = await github.api<{ merge_base_commit?: { sha?: string }; base_commit?: { sha?: string } }>(
         'GET',
         // Open, against main as it is now; closed (a replay by hand), against the tip it was judged on then.

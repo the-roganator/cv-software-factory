@@ -619,6 +619,29 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
     expect(await readPinMove(run, pr, unread)).toMatchObject({ reason: /could not read .*502/ });
   });
 
+  it('a head another pull request has had: its checks may have run for another base', async () => {
+    const pr = {
+      number: 9,
+      state: 'open',
+      user: { id: 1 },
+      head: { sha: HEAD, ref: 'factory/pin/x', repo: { full_name: 'o/r' } },
+      base: { ref: 'main', repo: { full_name: 'o/r' } },
+    };
+    const github = {
+      api: async () => {
+        throw new Error('not asked: the shared head holds first');
+      },
+      paged: async <T>(path: string) =>
+        (path.includes('/pulls')
+          ? [pr, { ...pr, number: 10, state: 'closed', base: { ...pr.base, ref: 'gutted' } }]
+          : []) as T[],
+    };
+    const run = { repo: 'o/r', read: 't', token: '', autonomy: '', print: true };
+    expect(await readPinMove(run, pr, github)).toEqual({
+      reason: '#10 has had the same head, so its checks may have run for another base',
+    });
+  });
+
   it('is proved on what the merge makes on main as it is, never on a merge base main has left', async () => {
     const root = mkdtempSync(join(tmpdir(), 'pin-move-merge-'));
     const git = (...args: string[]) =>
@@ -659,6 +682,19 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('a High that appears at a new path is new, though its advisory and package were there before', () => {
+    const at = (path: string): Scan => ({
+      read: true,
+      findings: [{ id: 'CVE-8', pkg: 'lib', path, severity: 'HIGH', fixed: false }],
+    });
+    const was: Scan = {
+      read: true,
+      findings: [...at('a/lib.jar').findings, { id: 'CVE-1', pkg: 'x', severity: 'LOW', fixed: true }],
+    };
+    const now: Scan = { read: true, findings: [...at('a/lib.jar').findings, ...at('b/lib.jar').findings] };
+    expect(scansShow([{ from: 'x', to: 'y', was, now }])).toEqual({ reason: 'a target that brings a new HIGH: y' });
+  });
 
   it('a finding still there at another path is not a fix gone', () => {
     const at = (path: string): Scan => ({

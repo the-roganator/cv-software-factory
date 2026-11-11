@@ -10,7 +10,8 @@
  *
  * Its exceptions are the lockfile scan's and dependency review's: the entries of `policy/vulnerabilities.ts` in force,
  * read from this repository's `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository
- * the gate judges (GITHUB_REPOSITORY) and its own image, by the reading the three share (./exceptions.ts). A finding
+ * the gate judges (GITHUB_REPOSITORY) and its own image, matched by the same function the other two use
+ * (./exceptions.ts). A finding
  * one excepts is named in the summary and fails nothing. Nothing is read from the change that could except anything.
  *
  * Its notice gives what each image has in all, by severity, each vulnerability once (./counts.ts): the counts the line

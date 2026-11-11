@@ -26,8 +26,8 @@
  *
  * Its exceptions are the daily scan's: the entries of `policy/vulnerabilities.ts` in force, read from this repository's
  * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges
- * (GITHUB_REPOSITORY), each for one lockfile, package and advisory, by the reading the image scan and dependency review
- * share (./exceptions.ts). A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
+ * (GITHUB_REPOSITORY), each for one lockfile, package and advisory, matched by the same function the image scan and
+ * dependency review use (./exceptions.ts). A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
  * excepted finding is not held by it. Nothing is read from the change that could except anything.
  *
  * Both checkouts are data: nothing in them runs. Trivy runs in its pinned image, the advisory database pulled once,

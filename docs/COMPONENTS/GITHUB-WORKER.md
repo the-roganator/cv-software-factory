@@ -34,6 +34,7 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
   - only on an issue the App opened ([its issues and pull requests only](#its-issues-and-pull-requests-only));
   - closing one, as completed, with a comment once (which a fix verified in production gets);
   - reopening one with a comment (`reopenIssue`, only while it is closed, saying it once since it closed);
+  - retitling or rewriting one (`updateIssue`), which only the [pin watch](#pins) does, and no worker can ask;
   - a comment on its own (`comment`), as the line's hand-over of an improvement makes, made only when the issue does not say it already, word for word, so asking again after a failure or a crash says it once.
 
 ### Descriptions
@@ -71,6 +72,8 @@ It moves, deletes and commits to the factory's own branches only, and refuses an
 
 - those under `factory/`: a fix is `factory/<work item>-<a few words of its ticket's title>`;
 - the deploy branches.
+
+The pin watch's branches, `factory/pin/<move>` and `factory/pin-next/<move>`, are written by `commitPins` alone, which no worker can ask: every other action that moves, deletes or commits to a branch refuses one, so nothing but [its guard](#the-pin-guard)'s commit goes on it.
 
 A red-team attack's branch (`factory/red-team-…`, [the attack door](#the-attack-door)) is the factory's to make and delete, and never one it adds to the merge queue.
 
@@ -135,7 +138,7 @@ The line merges a pull request it may merge by adding it to the merge queue, and
 The factory learns of a vulnerability only here, from what the scan itself wrote, checked (`github/scanning.ts`, `github/dependabot.ts`). Reading is harmless, so a dry run reads both as a live worker does.
 
 - **`moves`** (`{}`): the last finished run of `vulnerabilities.yml` on the default branch, by schedule, push or hand (a pull request's run is never read, and a run still going is passed over), with its conclusion, and the `moves.json` it uploaded as the artifact `moves`, downloaded once for each artifact and read through a schema that refuses a version it does not know. Then every open alert of the scan's own categories, `vulnerabilities/01` to `vulnerabilities/20` (never CodeQL's or Scorecard's), a hundred to a page, each message read by its one grammar (`vulnerabilities/sarif.ts`'s `readMessage`, through `fixes.ts`'s readers). Each result with a fix names its place in that run's `moves.json` and the run, so each move gets its findings: the alert, the advisory's id, the package and version, where it is pinned, its fix and the day that was first seen. A lockfile's move (`lockfile: true`), which `moves.json` names only by its file, gets its package, version, target and pins from them (`withheld`), its findings all of one package at one version and in the files the artifact names. A result with a fix and no move is an excepted one, open until the run dismisses it, and is in no move. The answer passes on, as the file has them, its totals: beside the results with a fix, the moves and the moves in each lane, the day's figures the Patching panel shows (`noFix`, `excepted`, `overdue`, `dueWithinDay`, `newHighWithFix`, `newHighWithoutFix`), each a count, one missing or one more failing the read; and `scanned`: every image the scan read, its kind, item, reference, digests (the index's, then each platform's) and pin, which the dependency sense compares with what the cluster runs. Each is held to its grammar as strictly: a kind inventory.ts does not list for an image, a reference that is not one by the distribution grammar (a registry has a dot, a port or is `localhost`; the path is lowercase), a digest that is not a sha256 or is there twice, an image pinned by a digest not among those read, an item or pin with a control character in it, a pin's file outside the repository or at line 0, an entry twice, or any field more or less, fails the read. An alert's text is untrusted input: a message that does not parse, a move from another run than the artifact's or past its list, or a count that differs from the artifact's (a move's findings against what it clears, and the total against its results with a fix) fails the whole read, and nothing of it is returned. Alerts that name a run still going, which uploads its artifact and then its results, are a conflict (409), to read again once it finishes. No advisory's title or text is ever read. A run that failed before it uploaded `moves.json` answers its conclusion and no moves; a successful one without it fails the read. It names each of `actions: read` and `security_events: read` the App lacks, from the permissions GitHub states on the installation token, before asking for anything (a public repository's runs read without the first, and only the artifact's download would be refused), or from GitHub's refusal where the token does not say ([permissions](GITHUB-APP.md#permissions)).
-- **`dependencyPulls`** (`{}`): the open pull requests Dependabot opened from its own branches in the repository, each with its head, and the ecosystem, directory, dependency and version its branch names (`dependabot/npm_and_yarn/grpc/grpc-js-1.14.7` is `@grpc/grpc-js` at 1.14.7 in `/`), the directory told from the dependency by those `.github/dependabot.yml` names, the longest first, and the version from the name at the last hyphen before a digit whose version has a dot (`utf-8-validate-6.0.5`). A group's branch (`…/tooling-7ddd2f2d32`: a group `dependabot.yml` names, or a hash with a letter), a branch under a directory a glob names or one it does not name at all, names no pin it can be sure of, and is listed with none. Their titles and bodies are never read.
+- **`dependencyPulls`** (`{}`): the open pull requests Dependabot opened from its own branches in the repository, each with its head, and the ecosystem, directory, dependency and version its branch names (`dependabot/npm_and_yarn/grpc/grpc-js-1.14.7` is `@grpc/grpc-js` at 1.14.7 in `/`), the directory told from the dependency by those `.github/dependabot.yml` names, the longest first, and the version from the name at the last hyphen before a digit whose version has a dot (`utf-8-validate-6.0.5`). A group's branch (`…/tooling-7ddd2f2d32`, `…/docker-fa2ab4b861`: a group `dependabot.yml` names, or a hash with a letter), a branch under a directory a glob names or one it does not name at all, names no pin it can be sure of, and is listed with none; such a pull request is read by its files instead: each line it rewrites in place, by its number in the base, with its text before and after (`changed`), against which a move's pin finds the version it moves to (`groupMovesTo`), and each file whose patch GitHub did not send (`unread`), where nothing can be told. Their titles and bodies are never read.
 
 ## Talking to GitHub
 
@@ -152,7 +155,7 @@ A poller runs watches once a minute with conditional requests, so an unchanged a
 
 Each change goes to whatever waits for it, and one a handler failed on is handed over again, without holding back the rest. Watches act on what they see, in both repositories.
 
-Three watches act on their own: deploys, releases and outside issues. None runs without the key.
+Four watches act on their own: deploys, pins, releases and outside issues. None runs without the key.
 
 - **Outside issues:** the newest hundred open issues of each repository, once a minute, each opened by anyone but Martin or the App answered with [the outside reply](#the-outside-reply), and recorded instead in a dry run. Its first read logs `read the open issues`, with how many are open and how many are due a reply; each reply logs `replied to an issue opened outside the factory`.
 
@@ -216,6 +219,30 @@ A deploy pull request's body ends with what it carries, between markers: each wo
 - The line works that out, having the store ([what a deploy carries](RELEASE-AND-VERIFY.md#what-a-deploy-carries)), and asks for it to be written (`describeDeploy`).
 - The worker writes it only for a pull request open from the deploy branch into main for the commit the line named, and only when the body says something else.
 - The deploy watch keeps the section as it moves the pull request.
+
+### Pins
+
+`github/pins.ts`, beside the deploy watch, in this repository alone: the app's moves are its line's. At most hourly it reads the scan's day ([`moves`](#for-patching)) and Dependabot's open pull requests ([`dependencyPulls`](#for-patching)), and keeps, for each move of the day:
+
+- **in the `worker`, `approval` or `cluster` lane**, one pull request of the App's on `factory/pin/<move>` (the move's name made one segment, lower case: `docker.io/library/postgres` is `factory/pin/docker.io-library-postgres`), labelled `pin`, titled `chore(pin): move <name> to <version>`. Its commit replaces the version or digest at each of the move's pins and nothing else, made on `main`'s head through [the pin guard](#the-pin-guard), signed by GitHub as every commit of the App's is. Its description is the factory's own: each pin's file and line with what it pins before and after, what the move clears and leaves by severity, its deadline, and either that the review gate passes it as `pin-move` when it proves the move, or, for a major, k3s or a scanner's own pin, that it waits for Martin, why, and what to do. A move whose target moves on moves its branch in one forced update from `factory/pin-next/<move>`, and its title and description with it; a pull request that conflicts with `main` gets its commit again on `main`'s head; one Martin closed without merging is not opened again for the same target. A pin whose line has changed since the scan read it waits for the next scan, its pull request kept as it is. Two moves that name one line, or one branch, are both refused, and nothing opened for either.
+- **that Dependabot moves already**, nothing: an open pull request of Dependabot's whose branch names the move's dependency in its pin's directory, or a group's that rewrites the pin's line, at the same target or a newer one, or a group's whose patch of the pin's file GitHub did not send. The watch's own, if it has one, is closed with a sentence naming Dependabot's. It never pushes to Dependabot's branch or closes its pull request: its actions refuse both. A move in the `dependabot` lane (a pin `dependabot.yml` reads, with no High or Critical on a deadline) is Dependabot's, and the watch's own for it is closed.
+- **in the `issue` lane, a line no longer built, or one whose pins' lines it cannot write**, one issue, labelled `pin`, that `/implement` can take as it stands: its pins, its target, its counts, its deadline and why the App cannot make it (mise's files, a workflow, a lockfile, a line no longer built). A mark in its body (`<!-- factory: pin-issue <move> -->`) finds it again: it is updated, never opened twice, and one Martin closed is opened again only for a later target. A lockfile's move names its file and its first alert's number, never its package.
+- **that is gone**: its pull request, or its issue, closed with a sentence.
+
+What it writes names a move and its counts, never a package or advisory of an open finding. A moves read that fails, or a run that wrote no moves, opens and closes nothing. Each refusal of the guard is kept and signed as [the worker's others](#its-refusals-signed) are (`github-guard`, `branch` or `protected`), once a run. In a dry run it reads GitHub as it is and records each commit, pull request and issue it would make.
+
+#### The pin guard
+
+`github/pin-guard.ts`, the one way onto a pin branch (`commitPins`). It is what holds "nothing else", whatever the watch asks: it reads each pin from the repository itself, never from what the watch read, and refuses, before GitHub is asked to write, any commit unless:
+
+- its branch is `factory/pin/` and one segment of letters, digits, dots and dashes;
+- it names at most twenty pins, no two at one line, each in a plain path, none under `.github/` or `policy/`, in a lockfile, or in mise's files;
+- each pin's file is an ordinary file in git's tree at `main`'s head and at the commit the scan read (read from the tree, since the contents API follows a symbolic link; a symbolic link, a submodule, a folder or a tree GitHub cut short is refused);
+- each pin's line is the same at `main`'s head as at the commit the scan read;
+- what it pins before and after is a version, or a tag and its digest, by the scan's grammar (`fixes.ts`'s `readTarget`), the same shape on both sides, and different;
+- the line holds what it pins before exactly once, as a word of its own, and the commit's line is that line with that span alone replaced.
+
+`main` having moved since the watch read it is no refusal: the watch reads it again on its next poll.
 
 ### Releases
 

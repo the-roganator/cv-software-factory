@@ -50,7 +50,8 @@ export function verifyJwt(jwt: string): { iss: string; iat: number; exp: number 
 
 let tokens = 0;
 
-export function fakeGitHub(routes: Route[], sent: Sent[] = []) {
+/** `permissions`, when given, is what GitHub says each token it makes may do. */
+export function fakeGitHub(routes: Route[], sent: Sent[] = [], permissions?: Record<string, string>) {
   const all: Route[] = [
     {
       method: 'GET',
@@ -68,7 +69,11 @@ export function fakeGitHub(routes: Route[], sent: Sent[] = []) {
         tokens += 1;
         return {
           status: 201,
-          body: { token: `ghs_test${tokens}`, expires_at: new Date(Date.now() + 3600_000).toISOString() },
+          body: {
+            token: `ghs_test${tokens}`,
+            expires_at: new Date(Date.now() + 3600_000).toISOString(),
+            ...(permissions && { permissions }),
+          },
         };
       },
     },
@@ -111,9 +116,9 @@ export const quiet = pino({ level: 'silent' });
 export function client(
   routes: Route[],
   sent: Sent[] = [],
-  options: { keyless?: boolean; sleep?: (ms: number) => Promise<void> } = {},
+  options: { keyless?: boolean; sleep?: (ms: number) => Promise<void>; permissions?: Record<string, string> } = {},
 ) {
-  const fake = fakeGitHub(routes, sent);
+  const fake = fakeGitHub(routes, sent, options.permissions);
   const github = new GitHub({
     credentials: options.keyless ? undefined : { clientId: CLIENT_ID, privateKey: PRIVATE_KEY },
     api: 'https://api.github.test',

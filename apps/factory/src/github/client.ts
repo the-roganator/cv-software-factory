@@ -127,6 +127,11 @@ export class GitHub {
     return this.#tokens !== undefined;
   }
 
+  /** What the App's token for a repository may do, as GitHub stated it; undefined with no key, or when it did not say. */
+  async permissions(repo: string): Promise<Record<string, string> | undefined> {
+    return this.#tokens?.permissions(repo);
+  }
+
   /**
    * An installation token for one repository, for a library that makes its own calls (release-please). It stays in
    * memory and goes only to GitHub.

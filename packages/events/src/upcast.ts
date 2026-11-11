@@ -227,7 +227,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 3 marks a path in the whole change cut to what an event records; a version 2 push cut none.
   'pull-request.pushed': { 1: (payload) => ({ ...payload, whole: payload.files }), 2: (payload) => payload },
   // Version 2 adds what a failed check said was wrong, its annotations; a version 1 check's reason was never read.
-  'gate.finished': { 1: (payload) => payload },
+  // Version 3 counts a scan's unrated findings, `unknown`; a version 2 scan's counts read as they were, without them.
+  'gate.finished': { 1: (payload) => payload, 2: (payload) => payload },
   // Version 2 adds the round the return starts and what sent it back as figures; a version 1 return reads as it was.
   // Version 3 adds the suggestions an approving review sends back; a version 2 return sent none.
   'work.returned': { 1: (payload) => payload, 2: (payload) => payload },

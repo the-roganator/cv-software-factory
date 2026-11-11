@@ -631,34 +631,50 @@ function Package({ dependency, small = false }: { dependency: Dependency; small?
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 
-function ScanPicture({ dependency, findings, unchanged }: Extract<PictureData, { type: 'scan' }>) {
-  const most = Math.max(1, ...SEVERITIES.flatMap((s) => [findings.before[s], findings.after[s]]));
+type Side = Extract<PictureData, { type: 'scan' }>['scans'][number]['findings']['before'];
+
+/** One scan's counts, by severity, before and after, with a row for unrated findings when any scan beside it has one. */
+function ScanCounts({ check, before, after, unknown }: { check: string; before: Side; after: Side; unknown: boolean }) {
+  const rows = unknown ? [...SEVERITIES, 'unknown' as const] : SEVERITIES;
+  const most = Math.max(1, ...rows.flatMap((s) => [before[s] ?? 0, after[s] ?? 0]));
+  return (
+    <div>
+      <div className="row cap">
+        <LogoMark name="trivy" className="logo small" />
+        {/* The job's name, without the workflow that called it: `gates / image scan` is Image scan. */}
+        {capital(check.split(' / ').at(-1) ?? check)}, before and after
+      </div>
+      <div className="sev">
+        {rows.map((s) => (
+          <div className="sev-row" key={s}>
+            <span>{s === 'unknown' ? 'Unrated' : capital(s)}</span>
+            <span className="bars" aria-hidden="true">
+              <i style={{ width: `${((before[s] ?? 0) / most) * 100}%` }} />
+              <i
+                className={after[s] ? 'after' : 'after zero'}
+                style={after[s] ? { width: `${((after[s] ?? 0) / most) * 100}%` } : undefined}
+              />
+            </span>
+            <span className="n">
+              {before[s] ?? 0} → {after[s] ?? 0}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScanPicture({ dependency, scans, unchanged }: Extract<PictureData, { type: 'scan' }>) {
+  const unknown = scans.some(({ findings: f }) => (f.before.unknown ?? 0) + (f.after.unknown ?? 0) > 0);
   return (
     <div className="pad">
       <Package dependency={dependency} />
-      <div>
-        <div className="row cap">
-          <LogoMark name="trivy" className="logo small" />
-          Image scan, before and after
-        </div>
-        <div className="sev">
-          {SEVERITIES.map((s) => (
-            <div className="sev-row" key={s}>
-              <span>{capital(s)}</span>
-              <span className="bars" aria-hidden="true">
-                <i style={{ width: `${(findings.before[s] / most) * 100}%` }} />
-                {findings.after[s] ? (
-                  <i className="after" style={{ width: `${(findings.after[s] / most) * 100}%` }} />
-                ) : (
-                  <i className="after zero" />
-                )}
-              </span>
-              <span className="n">
-                {findings.before[s]} → {findings.after[s]}
-              </span>
-            </div>
-          ))}
-        </div>
+      {/* Side by side when there are two, so the pages below still fit on the card. */}
+      <div className="scans">
+        {scans.map(({ check, findings }) => (
+          <ScanCounts key={check} check={check} {...findings} unknown={unknown} />
+        ))}
       </div>
       <Unchanged pages={unchanged} />
     </div>

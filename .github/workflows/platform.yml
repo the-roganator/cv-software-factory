@@ -7,8 +7,8 @@
 # change's own cluster rather than edited.
 #
 # It runs the change's own scripts and manifests, so it holds nothing worth taking: its token reads the contents and
-# nothing else, no job names a secret, and the Keychain's keys `make up` would give the cluster are stand-ins made in
-# the job, which open nothing. It runs on a pull request and on the merge queue's commit, as check.yml's jobs do, and
+# nothing else, no job names a secret, and the cluster gets none of the keys `make up` takes from the Keychain, so it
+# opens nothing and attempts nothing outside. It runs on a pull request and on the merge queue's commit, as check.yml's jobs do, and
 # refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): one that changes
 # deploy/, the Makefile, mise's pins or what it runs, but never the factory's App's deploy pin of our own images, which
 # were built from commits already merged (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
@@ -96,17 +96,28 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm kubectl k3d helm kustomize cosign step yq
       - run: pnpm install --frozen-lockfile
-      # `make up`, at the change's commit, with a stand-in for each key it would take from the Keychain: made here, of
-      # the shape the cluster needs, and opening nothing. The App's is a key GitHub has never seen; the others say so.
+      # `make up`, at the change's commit, with none of the keys it would take from the Keychain, which the runner has
+      # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
+      # any kind would have it try: the GitHub worker, given one, acts as the App and polls GitHub each pass, and
+      # Alertmanager, given Pushover's, sends each alert with a level that fires while the cluster comes up.
+      # scripts/platform-watch.sh watches it, and stops it at the 20-minute ceiling, or sooner on what waiting will not
+      # mend: an Application Argo CD cannot render, or one Degraded for five minutes.
       - name: Make the cluster
         env:
           REVISION: ${{ github.sha }}
         run: |
-          GITHUB_APP_PRIVATE_KEY=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)
-          export GITHUB_APP_PRIVATE_KEY
-          export TYPESAFE_API_KEY=stand-in-not-a-key ANTHROPIC_API_KEY=stand-in-not-a-key
-          export PUSHOVER_APP_TOKEN=stand-in-not-a-token PUSHOVER_USER_KEY=stand-in-not-a-key
-          time make up REVISION="$REVISION" SYNC_TIMEOUT=15m TIMEOUT=900
+          unset TYPESAFE_API_KEY ANTHROPIC_API_KEY GITHUB_APP_PRIVATE_KEY PUSHOVER_APP_TOKEN PUSHOVER_USER_KEY
+          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          make=$!
+          # make has a session of its own, so a cancelled step stops it here.
+          trap 'kill -- "-$make" 2>/dev/null' TERM INT
+          if ! WATCHED=$make scripts/platform-watch.sh; then
+            kill -- "-$make" 2>/dev/null || true
+            wait "$make" || true
+            echo "::error::The cluster did not come up: the line above says why."
+            exit 1
+          fi
+          wait "$make"
       # Every Application Synced, and Healthy but the website's, whose health is its release's, and root's, which rolls
       # the website's up: `make up` has waited for the website to settle, and for everything else root deploys to be
       # Healthy (scripts/wait-deployed.sh), so a canary in flight on the app's main holds no change here.
@@ -141,9 +152,11 @@ jobs:
           name: refusal-records
           path: ${{ runner.temp }}/records
           if-no-files-found: warn
+      # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}
         run: |
+          exec > >(tee "$RUNNER_TEMP/measure/cluster.txt") 2>&1
           echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
           df -h / | tail -1
           docker system df || true
@@ -155,3 +168,26 @@ jobs:
               "\($app) \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")' || true
           kubectl --context k3d-software-factory get pods -A -o wide || true
           kubectl --context k3d-software-factory get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -40 || true
+          # What would reach outside: the gateway (no key, and no agent calls on a line not started), the GitHub
+          # worker, which runs no pod here, and the line, which watches no release (deploy/argocd/platform-check.yaml),
+          # and Alertmanager's sends to Pushover (none attempted with no token).
+          kubectl --context k3d-software-factory -n factory get deployment github line \
+            -o custom-columns='DEPLOYMENT:.metadata.name,REPLICAS:.spec.replicas,RELEASE_ROLLOUT:.spec.template.spec.containers[0].env[?(@.name=="RELEASE_ROLLOUT")].value' || true
+          for worker in gateway line; do
+            echo "--- $worker's log"
+            kubectl --context k3d-software-factory -n factory logs "deploy/$worker" --tail=40 || true
+          done
+          echo "--- Alertmanager's notifications, by integration"
+          kubectl --context k3d-software-factory get --raw \
+            '/api/v1/namespaces/telemetry/services/http:prometheus-alertmanager:9093/proxy/metrics' |
+            grep -E '^alertmanager_notification(s|_requests)(_failed)?_total' | grep -v ' 0$' || true
+          echo "--- Alertmanager's log"
+          kubectl --context k3d-software-factory -n telemetry logs statefulset/prometheus-alertmanager -c alertmanager --tail=40 || true
+      # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states and
+      # the runner's figures: no Secret is read.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() || cancelled() }}
+        with:
+          name: cluster
+          path: ${{ runner.temp }}/measure
+          if-no-files-found: warn

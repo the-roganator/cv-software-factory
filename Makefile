@@ -13,6 +13,9 @@ POSTGRES := $(shell sed -nE 's/^ +image: (postgres:[^ ]+@sha256:[0-9a-f]{64})$$/
 # deploy/argocd/root.yaml). `make up REVISION=my-branch` tries a change there before it merges, as platform.yml makes
 # a cluster from a pull request's commit; the app's repository is still read from its main.
 REVISION ?= main
+# Set by the platform check alone (.github/workflows/platform.yml): root also takes deploy/argocd/platform-check.yaml's
+# patches, which leave out what would read GitHub from the check's cluster. Never set on a cluster of Martin's.
+PLATFORM_CHECK ?=
 # The private checkout, which holds the answer key: `make up` gives the scoreboard each entry's id and fingerprint.
 PRIVATE_DIR ?= $(CURDIR)/../cv-software-factory-private
 # The workers that connect to the store, each as a role of its own (packages/store/migrations/0022_worker-roles.sql).
@@ -77,7 +80,7 @@ define deployed
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -128,6 +131,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@# The revision quoted whole, then with what a sed replacement reads (`&`, `\`, the `|` it is delimited by) escaped.
 	revision='$(subst ','\'',$(REVISION))'; revision="$$(printf '%s' "$$revision" | sed 's/[&|\\]/\\&/g')" && \
 		sed -E -e "s|^( *targetRevision: )main$$|\\1$$revision|" -e "s|^( *value: )main$$|\\1$$revision|" deploy/argocd/root.yaml | \
+		{ if [ -n '$(PLATFORM_CHECK)' ]; then yq '.spec.source.kustomize.patches += load("deploy/argocd/platform-check.yaml")'; \
+		else cat; fi; } | \
 		$(KUBECTL) apply -f -
 	$(deployed)
 
@@ -421,6 +426,13 @@ take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<
 close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
 	@only='$(subst ','\'',$(value ONLY))'; case "$$only" in ''|*[!0-9]*) echo "Give ONLY=<work item>, its number." >&2; exit 2;; esac; \
 	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
+
+# The vulnerability drill's pull requests, in order, and the two entries in policy/vulnerabilities.ts its pin needs,
+# checked as `make check` holds them and to expire the next day (UTC): it opens nothing (scripts/drill-vulnerability.ts).
+drill-vulnerability: node_modules ## Print a drill's pull requests and its exceptions: PACKAGE= VERSION= ADVISORY= RATING=critical|lower (EXPIRES= REASON=)
+	@node scripts/drill-vulnerability.ts --package='$(subst ','\'',$(value PACKAGE))' --version='$(subst ','\'',$(value VERSION))' \
+		--advisory='$(subst ','\'',$(value ADVISORY))' --rating='$(subst ','\'',$(value RATING))' \
+		$(if $(EXPIRES),--expires='$(subst ','\'',$(value EXPIRES))') $(if $(REASON),--reason='$(subst ','\'',$(value REASON))')
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

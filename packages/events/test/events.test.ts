@@ -1804,7 +1804,7 @@ describe('upcasting the real catalogue', () => {
   it('reads version 1 of gate.finished as a check that said nothing, and takes what one said from version 2', () => {
     const { annotations: _, ...v1 } = gate.payload;
     const read = upcast({ type: 'gate.finished', version: 1, payload: v1 });
-    expect(read).toMatchObject({ event: { version: 2, payload: v1 } });
+    expect(read).toMatchObject({ event: { version: 3, payload: v1 } });
     expect(read.ok && validate(asNew(read.event))).toEqual({ ok: true });
     const said = (annotations: unknown) => validate({ ...gate, payload: { ...gate.payload, annotations } });
     const one = { path: 'test/app.test.ts', message: '"files > keeps nothing of the other files" was deleted' };
@@ -1815,6 +1815,19 @@ describe('upcasting the real catalogue', () => {
     expect(said([{ ...one, message: 'x'.repeat(301) }]).ok).toBe(false);
     expect(said([{ ...one, path: 'x'.repeat(201) }]).ok).toBe(false);
     expect(said([{ message: one.message }]).ok).toBe(false);
+  });
+
+  it('reads version 2 of gate.finished’s counts as they were, and counts unrated findings from version 3', () => {
+    const four = { critical: 0, high: 2, medium: 5, low: 11 };
+    const v2 = { ...gate.payload, check: 'gates / image scan', findings: { before: four, after: four } };
+    const read = upcast({ type: 'gate.finished', version: 2, payload: v2 });
+    expect(read).toMatchObject({ event: { version: 3, payload: v2 } });
+    expect(read.ok && validate(asNew(read.event))).toEqual({ ok: true });
+    const counted = (findings: unknown) => validate({ ...gate, payload: { ...gate.payload, findings } });
+    const five = { ...four, unknown: 1 };
+    expect(counted({ before: five, after: five })).toEqual({ ok: true });
+    expect(counted({ before: { ...five, unknown: -1 }, after: five }).ok).toBe(false);
+    expect(counted({ before: { ...five, other: 1 }, after: five }).ok).toBe(false);
   });
 
   it('reads version 1 of verification.finished as a verification that ran, by a sense it never named', () => {

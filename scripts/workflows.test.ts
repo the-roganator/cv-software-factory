@@ -291,11 +291,6 @@ describe('reading a workflow', () => {
  */
 const TRIVY_PIN = 'deploy/images/trivy/Dockerfile';
 const BASE = expression('github.event.pull_request.base.sha || github.event.merge_group.base_sha');
-/**
- * Where a base from before the move out of `.github/` (#977) holds the pin. Only check.yml's lockfile scan, which reads
- * the base's, may name it, and reads it only when the base has no file at TRIVY_PIN.
- */
-const OLD_TRIVY_PIN = '.github/images/trivy/Dockerfile';
 /** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
 const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
 
@@ -371,14 +366,12 @@ describe("Trivy's pin", () => {
       // that may, left out of the file as written, from its name to the next line no deeper than it.
       const text = withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES);
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
-      // Every Trivy pin a workflow names is the one file, but the base's old one, in the lockfile scan alone.
+      // Every Trivy pin a workflow names is the one file.
       for (const [path] of text.matchAll(/[\w./-]*trivy[\w./-]*Dockerfile/gi)) {
         const named = path.replace(/^(?:[\w.-]*\/)*?(?:base|factory)\//, '');
-        if (file === 'check.yml' && named === OLD_TRIVY_PIN) continue;
         expect(named, file).toBe(TRIVY_PIN);
       }
       for (const [name, job] of Object.entries(workflow.jobs)) {
-        if (name !== 'lockfile-scan') expect(JSON.stringify(job), `${file} ${name}`).not.toContain(OLD_TRIVY_PIN);
         const steps = job.steps ?? [];
         const runs = steps
           .filter((step) => step.name !== SIGNATURES)
@@ -473,37 +466,19 @@ describe('vulnerabilities.yml', () => {
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/vulnerabilities/**',
-      'apps/factory/src/gates/lockfile-scan.ts',
-      'apps/factory/src/gates/report.ts',
+      'apps/factory/src/gates/**',
       'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
     expect(scanned?.with?.ref).toBe(expression('github.event.pull_request.base.sha'));
   });
 
-  it("checks out, in each job, every module its scripts import: the lockfile gate's reading of a lockfile too", () => {
-    const entries: Record<string, string[]> = {
-      coverage: ['apps/factory/src/vulnerabilities/coverage.ts'],
-      scan: ['apps/factory/src/vulnerabilities/scan.ts', 'apps/factory/src/vulnerabilities/alerts.ts'],
-      prove: ['apps/factory/src/vulnerabilities/scan.ts'],
-    };
-    for (const [id, scripts] of Object.entries(entries)) {
-      const own = jobs[id]?.steps?.find((step) => step.with?.path === 'factory');
-      const sparse = String(own?.with?.['sparse-checkout'] ?? '')
-        .split('\n')
-        .filter(Boolean);
-      const has = (file: string) =>
-        sparse.some((entry) => (entry.endsWith('/') ? file.startsWith(entry) : file === entry));
-      const seen = new Set<string>();
-      const walk = (file: string) => {
-        if (seen.has(file)) return;
-        seen.add(file);
-        expect(has(file), `${id}: ${file}`).toBe(true);
-        for (const [, path] of readFileSync(file, 'utf-8').matchAll(/^(?:import|export) [^;]*? from '(\.[^']+)';$/gms))
-          walk(new URL(path ?? '', new URL(file, 'file:///r/')).pathname.slice(3));
-      };
-      for (const script of scripts) walk(script);
-    }
+  it('proves itself on a change to anything its scan reads: every module scan.ts imports', () => {
+    const paths = (workflow.on as Record<string, { paths?: string[] } | null>).pull_request?.paths ?? [];
+    const watched = (file: string) =>
+      paths.some((p) => (p.endsWith('/**') ? file.startsWith(p.slice(0, -2)) : file === p));
+    for (const file of importClosure('apps/factory/src/vulnerabilities/scan.ts'))
+      if (!file.startsWith('policy/')) expect(watched(file), file).toBe(true);
   });
 });
 
@@ -728,10 +703,17 @@ describe('platform.yml', () => {
     );
     const steps = jobs.platform?.steps ?? [];
     const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));
-    expect(make?.run).toContain('make up REVISION="$REVISION"');
+    expect(make?.run).toContain('make up REVISION="$REVISION" PLATFORM_CHECK=1');
     expect((make as { env?: Record<string, string> } | undefined)?.env?.REVISION).toBe(expression('github.sha'));
     const runs = steps.map((step) => step.run ?? '').join('\n');
+    // Watched, and stopped at the ceiling or on what waiting will not mend (scripts/platform-watch.test.ts).
+    expect(make?.run).toContain('WATCHED=$make scripts/platform-watch.sh');
     expect(runs).toContain('make admission-ready');
+    // What the cluster showed, kept on every outcome but success, cancellation included.
+    const kept = steps.find((step) => step.with?.name === 'cluster');
+    expect(kept?.uses).toMatch(/^actions\/upload-artifact@/);
+    expect((kept as { if?: string } | undefined)?.if).toBe(expression('failure() || cancelled()'));
+    expect(runs).not.toMatch(/get secrets?\b/);
     // Each record the scripts take, with its own script, uploaded beside what the change checks in.
     for (const file of readdirSync('deploy/test').filter((f) => f.endsWith('-refusals.json'))) {
       const name = file.replace(/-refusals\.json$/, '');
@@ -740,7 +722,7 @@ describe('platform.yml', () => {
     expect(steps.some((step) => step.uses?.startsWith('actions/upload-artifact@'))).toBe(true);
   });
 
-  it('gives make up a stand-in for every key it reads from the Keychain, each made in the job', () => {
+  it('gives make up none of the keys it reads from the Keychain, so the cluster opens and attempts nothing', () => {
     const keychain = [
       ...readFileSync('Makefile', 'utf-8').matchAll(/security find-generic-password -s ([a-z-]+)/g),
     ].map((m) => m[1]);
@@ -754,14 +736,81 @@ describe('platform.yml', () => {
       ]),
     );
     const make = (jobs.platform?.steps ?? []).find((step) => /\bmake up\b/.test(step.run ?? ''))?.run ?? '';
-    for (const variable of [
+    // The variables make up would read in the Keychain's place, each unset, and none given anywhere in the job.
+    const variables = [
       'TYPESAFE_API_KEY',
       'ANTHROPIC_API_KEY',
       'GITHUB_APP_PRIVATE_KEY',
       'PUSHOVER_APP_TOKEN',
       'PUSHOVER_USER_KEY',
-    ])
-      expect(make, variable).toMatch(new RegExp(`\\b${variable}=`));
-    expect(make).not.toContain('secrets.');
+    ];
+    expect(make).toContain(`unset ${variables.join(' ')}`);
+    const job = JSON.stringify(jobs.platform);
+    for (const variable of variables) expect(job, variable).not.toMatch(new RegExp(`\\b${variable}=`));
+    expect(job).not.toContain('secrets.');
+  });
+});
+
+/**
+ * Every module a file reaches through its relative imports, itself included, as paths from the repository's root: what
+ * a sparse checkout that runs it must hold.
+ */
+function importClosure(start: string): Set<string> {
+  const seen = new Set<string>();
+  const walk = (file: string) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const source = readFileSync(file, 'utf-8');
+    for (const [, path] of source.matchAll(/^\s*(?:import|export)\b[^;]*?(?:from\s+)?'(\.[^']+)';?$/gm))
+      walk(new URL(path ?? '', new URL(file, 'file:///r/')).pathname.slice(3));
+  };
+  walk(start);
+  return seen;
+}
+
+/**
+ * A script a workflow runs from a sparse checkout runs only if every module it imports was checked out beside it: a new
+ * import fails here, not on a run of main's (as gates/counts.ts once did in the daily scan, imported through the
+ * lockfile gate it reads a lockfile with).
+ */
+describe('every workflow’s sparse checkouts', () => {
+  it('checks out, beside each script it runs with Node from a sparse checkout, every module that script imports', () => {
+    const NODE = /\bnode\s+(?:--\S+\s+)*"?(?:\$GITHUB_WORKSPACE\/)?([\w./-]+\.ts)\b/g;
+    let scripts = 0;
+    for (const { file, workflow } of workflows) {
+      for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+        // Each checkout of the job by where it puts the files: '' for the workspace itself.
+        const sparse = new Map<string, string[] | undefined>();
+        for (const step of job.steps ?? []) {
+          if (!step.uses?.startsWith('actions/checkout@')) continue;
+          const list = step.with?.['sparse-checkout'];
+          sparse.set(
+            String(step.with?.path ?? ''),
+            list === undefined
+              ? undefined
+              : String(list)
+                  .split('\n')
+                  .map((l) => l.trim())
+                  .filter(Boolean),
+          );
+        }
+        for (const step of job.steps ?? []) {
+          for (const [, ran] of (step.run ?? '').matchAll(NODE)) {
+            const at = [...sparse.keys()].find((path) => path && ran?.startsWith(`${path}/`)) ?? '';
+            const list = sparse.get(at);
+            // A whole checkout holds everything; a script of a checkout this job does not make is another's to hold.
+            if (!sparse.has(at) || list === undefined) continue;
+            scripts += 1;
+            const script = at ? (ran ?? '').slice(at.length + 1) : (ran ?? '');
+            const has = (path: string) =>
+              list.some((entry) => (entry.endsWith('/') ? path.startsWith(entry) : path === entry));
+            for (const module of importClosure(script))
+              expect(has(module), `${file} ${id}: ${script} imports ${module}, which is not checked out`).toBe(true);
+          }
+        }
+      }
+    }
+    // The gates', the daily scan's and the dependency graph's scripts, at least, are read here.
+    expect(scripts).toBeGreaterThanOrEqual(10);
   });
 });

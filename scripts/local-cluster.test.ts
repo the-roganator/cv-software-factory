@@ -67,14 +67,15 @@ describe('root, at a revision', () => {
   const BRANCH = 'ci/platform-check';
   // The Makefile's lines that write root, up to the apply, as make hands them to the shell, the revision quoted as
   // make quotes it.
-  const sed = /^\t(revision=.+ deploy\/argocd\/root\.yaml) \| \\\n\t\t\$\(KUBECTL\) apply -f -$/ms.exec(makefile)?.[1];
-  const written = (revision = REVISION) =>
+  const sed = /^\t(revision=.+?) \| \\\n\t\t\$\(KUBECTL\) apply -f -$/ms.exec(makefile)?.[1];
+  const written = (revision = REVISION, check = '') =>
     execFileSync(
       'sh',
       [
         '-c',
         (sed ?? 'false')
           .replace("$(subst ','\\'',$(REVISION))", revision.replaceAll("'", "'\\''"))
+          .replace('$(PLATFORM_CHECK)', check)
           .replaceAll('\\\n', '')
           .replaceAll('$$', '$'),
       ],
@@ -105,8 +106,9 @@ describe('root, at a revision', () => {
     },
   );
 
-  it("points every Application's values from this repository at it, and leaves the app's own repository alone", () => {
-    const root = parse(written()) as {
+  /** Everything root deploys, as Argo CD renders it with the patches the Makefile wrote into it. */
+  function rendered(check = '') {
+    const root = parse(written(REVISION, check)) as {
       spec: { source: { path: string; kustomize: { patches: { target: unknown; patch: string }[] } } };
     };
     const dir = mkdtempSync(join(tmpdir(), 'root-'));
@@ -116,25 +118,47 @@ describe('root, at a revision', () => {
         join(dir, 'kustomization.yaml'),
         stringify({ resources: [root.spec.source.path], patches: root.spec.source.kustomize.patches }),
       );
-      const applications = parseAllDocuments(execFileSync('kustomize', ['build', dir], { encoding: 'utf-8' }))
-        .map((d) => d.toJS() as Application)
-        .filter((d) => d?.kind === 'Application');
-      expect(applications.length).toBeGreaterThan(1);
-      for (const { metadata, spec } of applications) {
-        if (metadata.name === 'website') {
-          expect(metadata.labels?.['software-factory/repository']).toBe('app');
-          expect(spec.source?.repoURL).toBe('https://github.com/the-roganator/cv-worlds-worst-website.git');
-          continue;
-        }
-        const values = spec.sources?.[1];
-        expect(values, metadata.name).toEqual({ repoURL: THIS_REPOSITORY, targetRevision: REVISION, ref: 'values' });
-        expect(
-          spec.sources?.filter((s) => s.repoURL === THIS_REPOSITORY),
-          metadata.name,
-        ).toHaveLength(1);
-      }
+      return parseAllDocuments(execFileSync('kustomize', ['build', dir], { encoding: 'utf-8' })).map(
+        (d) => d.toJS() as Application & { spec: Record<string, unknown> },
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("leaves out, for the platform check alone, the GitHub worker and the line's watch of releases, and nothing else", () => {
+    const name = (d: { kind: string; metadata: { name: string; namespace?: string } }) =>
+      `${d.kind}/${d.metadata.namespace ?? ''}/${d.metadata.name}`;
+    const plain = new Map(rendered().map((d) => [name(d), d]));
+    const check = new Map(rendered('1').map((d) => [name(d), d]));
+    expect([...check.keys()].sort()).toEqual([...plain.keys()].sort());
+    const changed = [...check].filter(([k, d]) => JSON.stringify(d) !== JSON.stringify(plain.get(k))).map(([k]) => k);
+    expect(changed.sort()).toEqual(['Deployment/factory/github', 'Deployment/factory/line']);
+    const github = check.get('Deployment/factory/github') as unknown as { spec: { replicas: number } };
+    expect(github.spec.replicas).toBe(0);
+    type Pod = { spec: { template: { spec: { containers: { name: string; env: { name: string }[] }[] } } } };
+    const env = (d: unknown) => (d as Pod).spec.template.spec.containers[0]?.env.map((e) => e.name) ?? [];
+    const line = check.get('Deployment/factory/line');
+    expect(env(plain.get('Deployment/factory/line'))).toContain('RELEASE_ROLLOUT');
+    expect(env(line)).not.toContain('RELEASE_ROLLOUT');
+    expect(env(line)).toEqual(env(plain.get('Deployment/factory/line')).filter((e) => e !== 'RELEASE_ROLLOUT'));
+  });
+
+  it("points every Application's values from this repository at it, and leaves the app's own repository alone", () => {
+    const applications = rendered().filter((d) => d?.kind === 'Application');
+    expect(applications.length).toBeGreaterThan(1);
+    for (const { metadata, spec } of applications) {
+      if (metadata.name === 'website') {
+        expect(metadata.labels?.['software-factory/repository']).toBe('app');
+        expect(spec.source?.repoURL).toBe('https://github.com/the-roganator/cv-worlds-worst-website.git');
+        continue;
+      }
+      const values = spec.sources?.[1];
+      expect(values, metadata.name).toEqual({ repoURL: THIS_REPOSITORY, targetRevision: REVISION, ref: 'values' });
+      expect(
+        spec.sources?.filter((s) => s.repoURL === THIS_REPOSITORY),
+        metadata.name,
+      ).toHaveLength(1);
     }
   });
 });

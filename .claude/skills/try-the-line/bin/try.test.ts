@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -298,6 +298,7 @@ describe('the state file', () => {
         before: object('NetworkPolicy', 'github', 'factory', { spec: {} }),
       },
     ],
+    byHand: [],
   };
 
   it('reads back what it wrote, in a directory it makes, readable by its owner alone', () => {
@@ -339,6 +340,12 @@ describe('the state file', () => {
     // A try begun by the script before it applied objects is still read, with none, so it can be ended.
     writeFileSync(path, JSON.stringify({ ...noApplied, version: 1 }));
     expect(readState(path)?.applied).toEqual([]);
+    expect(readState(path)?.byHand).toEqual([]);
+    writeFileSync(
+      path,
+      JSON.stringify({ ...state, byHand: [{ ref: { kind: 'RoleBinding', name: 'x' }, before: null }] }),
+    );
+    expect(() => readState(path)).toThrow(/a by-hand copy it cannot read/);
     writeFileSync(path, JSON.stringify({ ...state, nodeRefs: [1] }));
     expect(() => readState(path)).toThrow(/lacks nodeRefs/);
     writeFileSync(path, JSON.stringify({ ...state, images: [{ image: 'factory' }] }));
@@ -950,6 +957,86 @@ describe("objects from the branch's render", () => {
     expect(await end(after)).toBe(0);
     expect(after.calls).toContain('applyObject NetworkPolicy/factory/github');
     expect(after.calls.some((x) => x.startsWith('setImages patching') || x.startsWith('rollout patching'))).toBe(false);
+  });
+
+  describe('a name with copies the allow-list takes and copies it leaves to a person', () => {
+    /** The sense's RoleBinding is in factory and telemetry, which a try may apply, and in flagd, which it may not. */
+    function split(): Cluster {
+      const c = branchWithWorker();
+      c.renders[COMMIT]?.push(object('RoleBinding', 'patching-lists-pods', 'flagd'));
+      return c;
+    }
+    const FLAGD = 'RoleBinding.flagd.patching-lists-pods';
+
+    it('applies the copies it may, records the rest with the exact commands, and applies none of those', async () => {
+      const c = split();
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+      const state = readState(path) as State;
+      expect(state.applied.filter((a) => a.ref.kind === 'RoleBinding').map((a) => a.ref.namespace)).toEqual([
+        'factory',
+        'telemetry',
+      ]);
+      expect(state.byHand).toEqual([
+        {
+          ref: {
+            apiVersion: 'rbac.authorization.k8s.io/v1',
+            kind: 'RoleBinding',
+            name: 'patching-lists-pods',
+            namespace: 'flagd',
+          },
+          before: null,
+          apply: `kubectl --context k3d-software-factory apply --server-side --field-manager=try -f ${join(dir, 'try', 'by-hand', `${FLAGD}.json`)}`,
+          undo: 'kubectl --context k3d-software-factory delete rolebinding.rbac.authorization.k8s.io patching-lists-pods -n flagd --ignore-not-found',
+        },
+      ]);
+      expect(c.calls.some((x) => x.includes('/flagd/'))).toBe(false);
+      const file = JSON.parse(readFileSync(join(dir, 'try', 'by-hand', `${FLAGD}.json`), 'utf8')) as K8sObject;
+      expect(file.metadata.annotations?.['argocd.argoproj.io/tracking-id']).toBe(
+        'root:rbac.authorization.k8s.io/RoleBinding:flagd/patching-lists-pods',
+      );
+      expect(said(c)).toMatch(
+        /By hand, which this try records but never applies \(1\)[\s\S]*RoleBinding flagd\/patching-lists-pods[\s\S]*apply: kubectl[\s\S]*undo: {2}kubectl/,
+      );
+    });
+
+    it('names them in try status, with whether each is there now', async () => {
+      const c = split();
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+      const other = fresh(c);
+      other.objects.set('RoleBinding/flagd/patching-lists-pods', object('RoleBinding', 'patching-lists-pods', 'flagd'));
+      await main(['status'], other, path);
+      expect(said(other)).toMatch(
+        /RoleBinding flagd\/patching-lists-pods \(there now\)\n {4}apply: [^\n]+\n {4}undo: {2}[^\n]+delete rolebinding/,
+      );
+    });
+
+    it('ends only once each is undone, naming any that is not, and removes their files', async () => {
+      const c = split();
+      expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
+      const applied = fresh(c);
+      applied.objects.set(
+        'RoleBinding/flagd/patching-lists-pods',
+        object('RoleBinding', 'patching-lists-pods', 'flagd'),
+      );
+      expect(await end(applied)).toBe(1);
+      expect(said(applied)).toMatch(
+        /RoleBinding flagd\/patching-lists-pods, applied by hand, is still there: kubectl [^\n]+ delete rolebinding/,
+      );
+      expect(existsSync(path)).toBe(true);
+      const undone = fresh(applied);
+      undone.objects.delete('RoleBinding/flagd/patching-lists-pods');
+      expect(await end(undone)).toBe(0);
+      expect(existsSync(join(dir, 'try', 'by-hand'))).toBe(false);
+      expect(said(undone)).toMatch(/By hand, each undone as expected: RoleBinding flagd\/patching-lists-pods\./);
+    });
+
+    it('refuses a name none of whose copies it may apply', async () => {
+      const c = split();
+      c.renders[COMMIT]?.push(object('RoleBinding', 'only-in-flagd', 'flagd'));
+      expect(await begin(c, '--apply', 'RoleBinding/only-in-flagd')).toBe(2);
+      expect(said(c)).toMatch(/RoleBinding flagd\/only-in-flagd is in flagd, where a try applies nothing/);
+      expect(c.calls).toEqual([]);
+    });
   });
 
   describe('refuses, changing nothing', () => {

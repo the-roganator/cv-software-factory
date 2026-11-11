@@ -5,7 +5,7 @@
 // flagd-images: the one image policy it changes is factory-images. The judgement (what to try, what to watch, a live
 // try's terms) is the try-the-line skill's; this is its mechanical half. The cluster is reached through Ops
 // (try-ops.ts), which the tests replace with a cluster of their own.
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -168,6 +168,13 @@ export interface State {
   nodeRefs: string[];
   /** Each object applied from the branch's render, in the order applied. */
   applied: Applied[];
+  /** The copies of an --apply name that only a person may apply: recorded, printed, and checked by `try end`. */
+  byHand: ByHand[];
+}
+/** A copy `--apply` leaves to a person, with the exact commands, which read the files written beside the state. */
+export interface ByHand extends Applied {
+  apply: string;
+  undo: string;
 }
 
 export class Refused extends Error {}
@@ -254,6 +261,25 @@ function shapeProblem(v: unknown): string | undefined {
     if (ref.namespace !== undefined && !isString(ref.namespace)) return 'has an applied object it cannot read';
     if (a.before !== null && !(isRecord(a.before) && isRecord(a.before.metadata))) {
       return `has ${ref.kind}/${ref.name} without what was there before`;
+    }
+  }
+  // A state from before by-hand copies were recorded has none.
+  if (v.byHand === undefined) v.byHand = [];
+  if (!Array.isArray(v.byHand)) return 'lacks byHand';
+  for (const b of v.byHand as unknown[]) {
+    const ref = isRecord(b) ? b.ref : undefined;
+    if (
+      !isRecord(b) ||
+      !isRecord(ref) ||
+      !isString(ref.kind) ||
+      !isString(ref.name) ||
+      !isString(b.apply) ||
+      !isString(b.undo)
+    ) {
+      return 'has a by-hand copy it cannot read';
+    }
+    if (b.before !== null && !(isRecord(b.before) && isRecord(b.before.metadata))) {
+      return `has ${ref.kind}/${ref.name} by hand without what was there before`;
     }
   }
   return undefined;
@@ -385,20 +411,52 @@ export function unappliable(o: K8sObject): string | undefined {
 }
 
 /** The objects `--apply` names in the branch's render, each refused where a try applies nothing. */
-export function chooseApplied(render: K8sObject[], names: string[]): K8sObject[] {
+export function chooseApplied(render: K8sObject[], names: string[]): { chosen: K8sObject[]; left: K8sObject[] } {
   const chosen: K8sObject[] = [];
+  const left: K8sObject[] = [];
   for (const spec of names) {
     const m = /^([A-Za-z]+)\/([a-z0-9.-]+)$/.exec(spec);
     if (!m) throw new Refused(`--apply ${spec}: write it <Kind>/<name>, as the render names it`);
     const found = render.filter((o) => o.kind === m[1] && o.metadata.name === m[2]);
     if (!found.length) throw new Refused(`--apply ${spec}: the branch's render has no ${m[1]} ${m[2]}`);
+    // The copies the allow-list takes are applied; the rest of the name is left to a person, recorded. A name with
+    // no copy it takes is refused whole.
+    const allowed = found.filter((o) => !unappliable(o));
+    if (!allowed.length) {
+      throw new Refused(found.map((o) => `--apply ${spec}: ${describeRef(refOf(o))} ${unappliable(o)}`).join('\n'));
+    }
     for (const o of found) {
-      const why = unappliable(o);
-      if (why) throw new Refused(`--apply ${spec}: ${describeRef(refOf(o))} ${why}`);
-      if (!chosen.includes(o)) chosen.push(o);
+      const into = allowed.includes(o) ? chosen : left;
+      if (!into.includes(o)) into.push(o);
     }
   }
-  return chosen;
+  return { chosen, left };
+}
+
+const kubectlResource = (r: ObjectRef): string => {
+  const group = groupOf(r.apiVersion);
+  return `${r.kind.toLowerCase()}${group ? `.${group}` : ''}`;
+};
+
+/** A by-hand copy's files beside the state, and the exact commands that apply it and put it back. */
+export function byHandEntry(
+  dir: string,
+  o: K8sObject,
+  before: K8sObject | null,
+): { entry: ByHand; files: Record<string, unknown> } {
+  const ref = refOf(o);
+  const base = join(dir, `${o.kind}.${ref.namespace ?? '-'}.${ref.name}`);
+  const k = 'kubectl --context k3d-software-factory';
+  const files: Record<string, unknown> = { [`${base}.json`]: tracked(o) };
+  let undo = `${k} delete ${kubectlResource(ref)} ${ref.name}${ref.namespace ? ` -n ${ref.namespace}` : ''} --ignore-not-found`;
+  if (before) {
+    files[`${base}.before.json`] = restorable(before);
+    undo = `${k} replace -f ${base}.before.json`;
+  }
+  const apply = before
+    ? `${k} replace -f ${base}.json`
+    : `${k} apply --server-side --field-manager=try -f ${base}.json`;
+  return { entry: { ref, before, apply, undo }, files };
 }
 
 /** A Deployment as the try moves it, from a live or rendered object. */
@@ -423,6 +481,17 @@ export function asDeployment(o: K8sObject, rolledOut: boolean): Deployment {
     ),
     rolledOut,
   };
+}
+
+/** The copies left to a person, each with the commands, and, given the cluster, whether it is there now. */
+function byHandLines(state: State, ops?: Ops): string[] {
+  return [
+    `By hand, which this try records but never applies (${state.byHand.length}); \`try end\` checks each is undone:`,
+    ...state.byHand.flatMap((b) => {
+      const now = ops ? (ops.getObject(b.ref) ? ' (there now)' : ' (not there now)') : '';
+      return [`  ${describeRef(b.ref)}${now}`, `    apply: ${b.apply}`, `    undo:  ${b.undo}`];
+    }),
+  ];
 }
 
 /** One sentence for each migration the branch adds that the store does not hold as the branch names it. */
@@ -558,14 +627,14 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
   const changed = ops.changed(commit);
   const deployChanged = changed.some((p) => p.startsWith('deploy/'));
   const render = deployChanged || options.apply.length ? ops.render(commit) : [];
-  const toApply = chooseApplied(render, options.apply);
+  const { chosen: toApply, left: leftByHand } = chooseApplied(render, options.apply);
   // What the branch's render differs on that the try does not apply, which `try end` cannot put back: by hand.
   const unapplied: string[] = [];
   if (deployChanged) {
     const { differs, dropped } = renderDiff(render, ops.render(ops.mergeBase(commit)));
     unapplied.push(
       ...differs
-        .filter((o) => !toApply.includes(o))
+        .filter((o) => !toApply.includes(o) && !leftByHand.includes(o))
         .map((o) => {
           const why = unappliable(o);
           return `${describeRef(refOf(o))} (${why ? `${why.replace(/^is /, '')}` : `--apply ${o.kind}/${o.metadata.name}`})`;
@@ -646,7 +715,14 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
     }),
     nodeRefs: [],
     applied: toApply.map((o) => ({ ref: refOf(o), before: ops.getObject(refOf(o)) ?? null })),
+    byHand: [],
   };
+  const byHandFiles: Record<string, unknown> = {};
+  for (const o of leftByHand) {
+    const { entry, files } = byHandEntry(join(dirname(path), 'by-hand'), o, ops.getObject(refOf(o)) ?? null);
+    state.byHand.push(entry);
+    Object.assign(byHandFiles, files);
+  }
   try {
     writeState(path, state, true);
   } catch (e) {
@@ -654,6 +730,12 @@ export function begin(ops: Ops, path: string, options: BeginOptions): void {
     throw e;
   }
   ops.say(`Recorded what the try changes in ${path}. From here, \`try end\` puts it back.`);
+  if (state.byHand.length) {
+    mkdirSync(join(dirname(path), 'by-hand'), { recursive: true, mode: 0o700 });
+    for (const [file, o] of Object.entries(byHandFiles))
+      writeFileSync(file, `${JSON.stringify(o, null, 2)}\n`, { mode: 0o600 });
+    ops.say(byHandLines(state).join('\n'));
+  }
 
   // The images, built from the branch, loaded onto the node, and each found there by its tag before any deployment
   // is pointed at it. Deployments are pointed at a digest reference made from it, which admission's digest-only rules
@@ -747,6 +829,13 @@ export function notBack(ops: Ops, state: State): string[] {
     if (!a.before && now) wrong.push(`${describeRef(a.ref)}, which the try added, is still there`);
     if (a.before && (!now || !sameJSON(content(now), content(a.before)))) {
       wrong.push(`${describeRef(a.ref)} is not as it was before the try`);
+    }
+  }
+  for (const b of state.byHand) {
+    const now = ops.getObject(b.ref);
+    if (!b.before && now) wrong.push(`${describeRef(b.ref)}, applied by hand, is still there: ${b.undo}`);
+    if (b.before && (!now || !sameJSON(content(now), content(b.before)))) {
+      wrong.push(`${describeRef(b.ref)}, changed by hand, is not as it was: ${b.undo}`);
     }
   }
   const deployments = new Map(ops.deployments().map((d) => [d.name, d]));
@@ -912,7 +1001,11 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
     );
     return false;
   }
+  if (state.byHand.length) {
+    ops.say(`By hand, each undone as expected: ${state.byHand.map((b) => describeRef(b.ref)).join(', ')}.`);
+  }
   unlinkSync(path);
+  rmSync(join(dirname(path), 'by-hand'), { recursive: true, force: true });
   ops.say(
     "Back as it was: root Synced and Healthy on its own policy, every image policy as recorded, no pod or Job on the try's images, its images off the node and the Mac.",
   );
@@ -960,6 +1053,7 @@ export function status(ops: Ops, path: string): void {
       `  ${a.before ? 'changed' : 'added'}: ${describeRef(a.ref)}${a.before ? ' (its copy from before is in the state)' : ''}`,
     );
   }
+  if (state.byHand.length) ops.say(byHandLines(state, ops).join('\n'));
   try {
     const added = ops.added(state.commit);
     if (added.some((p) => p.startsWith(MIGRATIONS))) {

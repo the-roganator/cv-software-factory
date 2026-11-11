@@ -40,10 +40,6 @@ const repository = z
   .regex(/^[\w.-]+\/[\w.-]+$/, 'owner/name')
   .max(140);
 /**
- * What a dependency's pin names, and what it pins: a package's name, an image's repository, `node`; a version, or an
- * image's tag with its digest, which is long.
- */
-/**
  * One word, with no space, control character or backtick, as every package, image, version and path is: a dependency's
  * words reach an agent's prompt and a public issue, where a line break or a backtick could pass for something else.
  */
@@ -52,6 +48,10 @@ const word = (max: number) =>
     .string()
     .max(max)
     .regex(/^[^\s`\p{Cc}]+$/u, 'one word, with no space, control character or backtick');
+/**
+ * What a dependency's pin names, and what it pins: a package's name, an image's repository, `node`; a version, or an
+ * image's tag with its digest, which is long.
+ */
 const dependencyName = word(200);
 const dependencyVersion = word(200);
 

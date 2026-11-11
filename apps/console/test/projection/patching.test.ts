@@ -34,7 +34,7 @@ describe('Patching, projected from the samples', () => {
       'k3s',
       'example/debug-shell:1.4',
       'example/scanner-proxy',
-      '(withheld) the-roganator/cv-worlds-worst-website a package in `pnpm-lock.yaml`',
+      '(withheld) the-roganator/cv-worlds-worst-website lockfile 1',
       'example-dashboards',
       'example/sbom-tool',
       'example/sidecar',
@@ -61,7 +61,7 @@ describe('Patching, projected from the samples', () => {
   });
 
   it('withholds a lockfile’s package from the public events until its pull request is open', () => {
-    const withheld = view.rows.find((row) => row.key.startsWith('the-roganator/cv-worlds-worst-website a package'));
+    const withheld = view.rows.find((row) => row.key === 'the-roganator/cv-worlds-worst-website lockfile 1');
     expect(withheld).toMatchObject({ name: undefined, from: undefined, to: undefined, pins: [] });
     // The factory's, whose Dependabot pull request is open, is named, as its diff names it.
     expect(view.rows.find((row) => row.name === '@example/tokens')).toMatchObject({ from: '3.0.1', to: '3.0.2' });
@@ -166,6 +166,77 @@ describe('an empty day', () => {
       },
     ]);
     expect(shown.compared).toBe(false);
+    expect(shown.day.broken).toEqual([]);
+  });
+
+  it('names a run that judged its moves and failed for none of the scan’s reasons, by its page', () => {
+    const broken: Day = {
+      ...empty,
+      repositories: empty.repositories.map((r, i) =>
+        i === 1 ? { ...r, run: { ...r.run, conclusion: 'failure', url: 'javascript:alert(1)' }, failed: ['other'] } : r,
+      ),
+    };
+    const shown = read(dayView(broken, END, [], END));
+    expect(shown.day.passed).toBe(false);
+    expect(shown.day.broken).toEqual([
+      {
+        repository: 'the-roganator/cv-worlds-worst-website',
+        url: 'https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/1834981',
+      },
+    ]);
+  });
+});
+
+describe('row keys', () => {
+  it('are one to a row, and the same for Martin and a visitor, for two lockfile moves in one repository', () => {
+    const sample = day();
+    if (!sample) throw new Error('the samples have no patching.read');
+    const app = sample.payload.repositories[1];
+    if (!app) throw new Error('the sample day has no app');
+    const lockfile = app.moves.find((m) => m.lockfile);
+    if (!lockfile) throw new Error('the app has no lockfile move');
+    const { package: _, ...withheld } = lockfile;
+    const twice: Day = {
+      ...sample.payload,
+      repositories: [{ ...app, moves: [withheld, { ...withheld, deadline: '2026-10-09T00:00:00.000Z' }] }],
+    };
+    const keys = read(dayView(twice, END, [], END)).rows.map((row) => row.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    const full: Day = {
+      ...twice,
+      repositories: [{ ...app, moves: [lockfile, { ...lockfile, deadline: '2026-10-09T00:00:00.000Z' }] }],
+    };
+    expect(read(dayView(full, END, [], END)).rows.map((row) => row.key)).toEqual(keys);
+  });
+});
+
+describe('a pin the cluster does not run yet', () => {
+  it('is placed at its pin, with what runs instead among its places', () => {
+    const sample = day();
+    if (!sample) throw new Error('the samples have no patching.read');
+    const pin = { file: 'deploy/base/postgres/statefulset.yaml', line: 40 };
+    const running = (pod: string) => ({ namespace: 'factory', pod, container: 'postgres', image: 'example/db:17.5' });
+    const withRow: Day = {
+      ...sample.payload,
+      rows: [
+        {
+          row: 'not-running',
+          repository: 'the-roganator/cv-software-factory',
+          item: 'example/db:17.6',
+          image: 'example/db:17.6',
+          pin,
+          running: [running('db-0'), running('db-1'), running('db-2')],
+        },
+      ],
+    };
+    const row = read(dayView(withRow, END, [], END)).rows.find((r) => r.source.kind === 'not-running');
+    expect(row).toMatchObject({ where: pin, from: 'example/db:17.5', to: 'example/db:17.6', waits: true });
+    expect(row?.pins.map((p) => p.at)).toEqual([
+      'deploy/base/postgres/statefulset.yaml:40',
+      'factory/db-0',
+      'factory/db-1',
+      'factory/db-2',
+    ]);
   });
 });
 
@@ -199,8 +270,10 @@ describe('a deadline in words', () => {
     expect(dueWords(t + 40 * 60_000, t)).toBe('in 40 min');
     expect(dueWords(t + 21 * h, t)).toBe('in 21 h');
     expect(dueWords(t + 44 * h, t)).toBe('in 1 day 20 h');
-    expect(dueWords(t + 117 * h, t)).toBe('in 5 days');
+    expect(dueWords(t + 117 * h, t)).toBe('in 4 days');
+    expect(dueWords(t + 61 * h, t)).toBe('in 2 days');
     expect(dueWords(t - 3 * h, t)).toBe('3 h past');
+    expect(dueWords(t - 60 * h, t)).toBe('2 days past');
   });
   it('is warm within a day or past, and only then', () => {
     expect(dueSoon(t + 23 * h, t)).toBe(true);

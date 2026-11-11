@@ -22,13 +22,14 @@ import type { ItemState } from '../projection/items.ts';
 import {
   APP_REPOSITORY,
   type Counts,
+  dayView,
   dueSoon,
   dueWords,
   lastRead,
   type MoveState,
   type PatchingRow,
   type PatchingView,
-  patchingView,
+  pinText,
   total,
 } from '../projection/patching.ts';
 import { renders } from '../renders.ts';
@@ -107,7 +108,7 @@ function named(row: PatchingRow): [name: string, where: string, app: boolean] {
     const running = where && 'namespace' in where;
     return [
       RUNNING_NAME[source.kind],
-      running ? `running in ${where.namespace} · pod ${where.pod}` : pinAt(row),
+      running ? `running in ${where.namespace} · pod ${where.pod}` : where ? pinText(where) : '',
       !running && isApp(row),
     ];
   }
@@ -119,7 +120,7 @@ function pinAt(row: PatchingRow): string {
   const { where } = row;
   if (!where || 'namespace' in where) return '';
   if (row.pins.length < 2) return where.line > 0 ? `${where.file}:${where.line}` : where.file;
-  const more = row.pins.length > 2 ? ` and ${plural(row.pins.length - 2, 'more')}` : '';
+  const more = row.pins.length > 2 ? ` and ${count(row.pins.length - 2)} more` : '';
   return `${row.pins
     .slice(0, 2)
     .map((pin) => pin.at)
@@ -219,12 +220,14 @@ function Row({
   onToggle,
   who,
   t,
+  onOpen,
 }: {
   row: PatchingRow;
   open: boolean;
   onToggle: () => void;
   who: Who;
   t: number;
+  onOpen: (item: string) => void;
 }) {
   const id = useId();
   const [word, tone, glyph] = reads(row, who);
@@ -307,17 +310,16 @@ function Row({
             <div>
               <span className="label">{row.link.kind === 'pull' ? 'Its pull request' : 'Its work item'}</span>
               <p>
-                <a
-                  href={
-                    row.link.kind === 'pull'
-                      ? `${repoUrl(row.repository)}/pull/${row.link.number}`
-                      : `?item=${row.link.number}&sheet`
-                  }
-                  {...(row.link.kind === 'pull' && { target: '_blank', rel: 'noopener' })}
-                >
-                  #{row.link.number}
-                  {row.link.kind === 'pull' ? ' on GitHub ↗' : ''}
-                </a>
+                {row.link.kind === 'pull' ? (
+                  <a href={`${repoUrl(row.repository)}/pull/${row.link.number}`} target="_blank" rel="noopener">
+                    #{row.link.number} on GitHub ↗
+                  </a>
+                ) : (
+                  // The work item's sheet, opened in place as Guardrails opens an attack's.
+                  <button type="button" className="linkish" onClick={() => onOpen(String(row.link?.number))}>
+                    #{row.link.number}
+                  </button>
+                )}
               </p>
             </div>
           )}
@@ -378,6 +380,15 @@ function DayLine({ view, t }: { view: Extract<PatchingView, { state: 'read' }>; 
         <span className={day.dueWithinDay > 0 ? 'tone-attn' : undefined}>
           <Figure n={day.dueWithinDay} warm /> due within a day{day.dueWithinDay > 0 && inMoves(day.movesDueWithinDay)}
         </span>
+        {day.broken.map((r) => (
+          <span key={`broken ${r.repository}`}>
+            {' '}
+            · {r.repository === APP_REPOSITORY ? 'the app’s' : 'the factory’s'} run itself failed:{' '}
+            <a href={r.url} target="_blank" rel="noopener">
+              its run ↗
+            </a>
+          </span>
+        ))}
         {day.unjudged.map((r) => (
           <span key={r.repository}>
             {' '}
@@ -398,13 +409,23 @@ function headWords(view: Extract<PatchingView, { state: 'read' }>) {
   const { running } = view;
   return [
     plural(view.moves, 'move'),
-    running['unlisted-image'] > 0 && plural(running['unlisted-image'], 'image') + ' off the list',
-    running['unscanned-digest'] > 0 && plural(running['unscanned-digest'], 'digest') + ' no scan read',
-    running['not-running'] > 0 && plural(running['not-running'], 'pin') + ' not running yet',
+    running['unlisted-image'] > 0 && `${plural(running['unlisted-image'], 'image')} off the list`,
+    running['unscanned-digest'] > 0 && `${plural(running['unscanned-digest'], 'digest')} no scan read`,
+    running['not-running'] > 0 && `${plural(running['not-running'], 'pin')} not running yet`,
   ].filter(Boolean) as string[];
 }
 
-const Panel = memo(function Panel({ view, t, martin }: { view: PatchingView; t: number; martin: boolean }) {
+const Panel = memo(function Panel({
+  view,
+  t,
+  martin,
+  onOpen,
+}: {
+  view: PatchingView;
+  t: number;
+  martin: boolean;
+  onOpen: (item: string) => void;
+}) {
   renders.patching = (renders.patching ?? 0) + 1;
   const who: Who = { martin };
   const [open, setOpen] = useState<string | undefined>(asked);
@@ -448,7 +469,13 @@ const Panel = memo(function Panel({ view, t, martin }: { view: PatchingView; t: 
         </p>
       )}
       <DayLine view={view} t={t} />
-      {empty ? (
+      {empty && view.day.unjudged.length > 0 ? (
+        // Nothing to show is not nothing to move: a run that wrote no moves judged nothing.
+        <p className="patch-empty">
+          No moves to show: the day’s scan wrote none, so nothing was judged. Its line above says which run, and links
+          it.
+        </p>
+      ) : empty ? (
         <p className="patch-empty">
           Nothing to move. Every finding with a fix has been cleared. {count(view.figures.noFix)}{' '}
           {view.figures.noFix === 1 ? 'has' : 'have'} no fix yet, and {view.figures.noFix === 1 ? 'is' : 'are'} looked
@@ -465,6 +492,7 @@ const Panel = memo(function Panel({ view, t, martin }: { view: PatchingView; t: 
                 onToggle={() => setOpen(open === row.key ? undefined : row.key)}
                 who={who}
                 t={t}
+                onOpen={onOpen}
               />
             ))}
           </div>
@@ -528,13 +556,26 @@ const carriedKey = (items: readonly ItemState[]) =>
 const MINUTE = 60_000;
 
 /** The panel, from the fold the console's view was drawn from: the events by its time and the work items. */
-export function Patching({ view: drawn, admin }: { view: View; admin: Admin }) {
+export function Patching({
+  view: drawn,
+  admin,
+  onOpen,
+}: {
+  view: View;
+  admin: Admin;
+  /** Opens a work item's sheet, as the console's other panels do. */
+  onOpen: (item: string) => void;
+}) {
   const { seen: events, items } = foldOf(drawn);
   const t = drawn.t;
+  // The fold holds the events by t already, so the newest day from the sense's role in it is the one to show.
   const read = lastRead(events, t);
   const carried = carriedKey(items);
   const minute = Math.floor(t / MINUTE) * MINUTE;
   // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads only the day, the carried work items and the minute, and is kept while they are the same
-  const view = useMemo(() => patchingView(read ? [read] : [], items, minute), [read, carried, minute]);
-  return <Panel view={view} t={minute} martin={admin.kind === 'martin'} />;
+  const view: PatchingView = useMemo(
+    () => (read ? dayView(read.payload, Date.parse(read.ts), items, minute) : { state: 'unread' }),
+    [read, carried, minute],
+  );
+  return <Panel view={view} t={minute} martin={admin.kind === 'martin'} onOpen={onOpen} />;
 }

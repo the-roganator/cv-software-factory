@@ -93,8 +93,22 @@ export interface ScanDay {
   movesOverdue: number;
   movesDueWithinDay: number;
   /** A repository whose run wrote no moves, with its run's page on GitHub to read why. */
-  unjudged: { repository: string; url: string }[];
+  unjudged: RunPage[];
+  /** A repository whose run judged its moves and failed for none of the scan's three reasons: the run itself failed. */
+  broken: RunPage[];
 }
+
+/** A repository's run, by its page on GitHub. */
+export interface RunPage {
+  repository: string;
+  url: string;
+}
+
+/** The run's page, built from what the schema holds to a shape, not from the event's own address. */
+const runPage = (r: Repository): RunPage => ({
+  repository: r.repository,
+  url: `https://github.com/${r.repository}/actions/runs/${r.run.id}`,
+});
 
 export type PatchingView =
   | { state: 'unread' }
@@ -151,16 +165,24 @@ export function targetWords(to: string): string {
 /** The lanes only Martin moves: his approval, his cluster's own command, and what no pull request of the App's can write. */
 const HIS: readonly MoveLane[] = ['approval', 'cluster', 'issue'];
 
-/** The line's work item that carries an app's move: open, and naming the same package or image. */
+/**
+ * The line's work item that carries an app's move: open, and naming the same package or image. Only the app's moves go
+ * down the line, and the line's work items are all the app's, so a move of the factory's is never matched; a lockfile's
+ * move whose package the public view withholds has no name to match, and reads as its lane until its pull request opens.
+ */
 function carrying(items: readonly ItemState[], name: string): ItemState | undefined {
   return items.find((item) => item.closedAt === undefined && item.dependency?.name === name);
 }
 
-function moveRow(repository: string, move: ScanMove, items: readonly ItemState[]): PatchingRow {
+/**
+ * A move's row. Its key is the same for Martin and a visitor, and while its pull request opens: a move's name, or, for a
+ * lockfile's, whose name is the file's for every one of them, its place among the repository's lockfile moves.
+ */
+function moveRow(repository: string, move: ScanMove, items: readonly ItemState[], key: string): PatchingRow {
   const shown = move.lockfile ? move.package : undefined;
   const name = move.lockfile ? shown?.name : move.name;
   const waits = HIS.includes(move.lane);
-  const item = move.lane === 'line' && name ? carrying(items, name) : undefined;
+  const item = move.lane === 'line' && repository === APP_REPOSITORY && name ? carrying(items, name) : undefined;
   const stage = item?.stage === 'plan' || item?.stage === 'build' || item?.stage === 'review' ? item.stage : undefined;
   const link: Link | undefined = move.pullRequest
     ? { kind: 'pull', ...move.pullRequest, number: move.pullRequest.number }
@@ -185,7 +207,7 @@ function moveRow(repository: string, move: ScanMove, items: readonly ItemState[]
   }));
   const first = (move.lockfile ? shown?.pins[0] : undefined) ?? move.pins[0];
   return {
-    key: `${repository} ${move.name}${shown ? ` ${shown.name}` : ''}`,
+    key,
     repository,
     source: { kind: 'move', lane: move.lane, lockfile: move.lockfile, major: move.major, unbuilt },
     state,
@@ -284,7 +306,17 @@ export function patchingView(events: readonly PublicEvent[], items: readonly Ite
 
 /** One day's view at t. */
 export function dayView(day: Day, at: number, items: readonly ItemState[], t: number): PatchingView {
-  const moves = day.repositories.flatMap((r) => r.moves.map((move) => moveRow(r.repository, move, items)));
+  const moves = day.repositories.flatMap((r) => {
+    let lockfiles = 0;
+    return r.moves.map((move) =>
+      moveRow(
+        r.repository,
+        move,
+        items,
+        move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`,
+      ),
+    );
+  });
   const rows = ordered([...moves, ...day.rows.map(runningRow)]);
   const running = { 'unscanned-digest': 0, 'unlisted-image': 0, 'not-running': 0 };
   for (const row of day.rows) running[row.row]++;
@@ -304,10 +336,13 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
     movesOverdue: moves.filter((row) => row.deadline !== undefined && row.deadline <= t).length,
     movesDueWithinDay: moves.filter((row) => row.deadline !== undefined && row.deadline > t && row.deadline - t <= DAY)
       .length,
-    unjudged: day.repositories
-      .filter((r) => r.judged === null)
-      // The run's page built from what the schema holds to a shape, not from the event's own address.
-      .map((r) => ({ repository: r.repository, url: `https://github.com/${r.repository}/actions/runs/${r.run.id}` })),
+    unjudged: day.repositories.filter((r) => r.judged === null).map(runPage),
+    broken: day.repositories
+      .filter(
+        (r) =>
+          r.judged !== null && r.run.conclusion !== 'success' && (r.failed.length === 0 || r.failed.includes('other')),
+      )
+      .map(runPage),
   };
   return {
     state: 'read',
@@ -329,19 +364,22 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
   };
 }
 
-/** A deadline as a row says it: "in 40 min", "in 21 h", "in 1 day 20 h", "in 5 days", or how long past. */
+/**
+ * A deadline as a row says it: "in 40 min", "in 21 h", "in 1 day 20 h", "in 4 days", or how long past. Each unit is
+ * counted down, never rounded up, so a row never says a deadline is further off, or longer past, than it is.
+ */
 export function dueWords(deadline: number | undefined, t: number): string {
   if (deadline === undefined) return 'none';
   const left = deadline - t;
   const span = Math.abs(left);
   const words =
     span < HOUR
-      ? `${Math.max(1, Math.round(span / 60_000))} min`
+      ? `${Math.max(1, Math.floor(span / 60_000))} min`
       : span < DAY
         ? `${Math.floor(span / HOUR)} h`
         : span < 2 * DAY
           ? `1 day${Math.floor((span - DAY) / HOUR) ? ` ${Math.floor((span - DAY) / HOUR)} h` : ''}`
-          : `${Math.round(span / DAY)} days`;
+          : `${Math.floor(span / DAY)} days`;
   return left > 0 ? `in ${words}` : `${words} past`;
 }
 

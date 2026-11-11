@@ -326,7 +326,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
               arrives once the store has answered, after the first view; until then, nothing holds its place. */}
           {settled && (
             <Suspense fallback={null}>
-              <Patching view={view} admin={admin} />
+              <Patching view={view} admin={admin} onOpen={setOpen} />
             </Suspense>
           )}
           {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under the bottom row. */}

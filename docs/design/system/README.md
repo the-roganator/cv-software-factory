@@ -722,7 +722,7 @@ A row is a Guardrails row with more columns: one line and a button, opening in p
 
 From 721 to 1179 a row is two lines: state, what and who on the first; from, to, clears and due under what, separated by `·`. On a phone, three: state and who; what; from, to, clears and due in 11px mono. The pin is dropped there, one tap away in the opened row. The four figures stack two by two.
 
-**Severity has no colour of its own.** The one warm colour marks a row that waits on Martin, with Needs you's 2px `attn` rule down its left edge, and a deadline within a day or past. A Critical in flight is ink like everything else in flight.
+**Severity has no colour of its own.** The one warm colour marks two things, each on its own: a row that waits on Martin, whatever its deadline, by Needs you's 2px `attn` rule down its left edge; and a deadline within a day or past, by its due in `attn`. A Critical in flight is ink like everything else in flight.
 
 **The states**, each a glyph and a word, so they read in greyscale:
 

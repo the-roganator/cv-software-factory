@@ -902,7 +902,8 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
 /* ---- Patching (milestone 7, Part D) ---------------------------------------------------- */
 /* Full width above Guardrails, for everyone: one row for each move, what waits on Martin first, then by deadline. A
    row is Guardrails' row with more columns: state, what and its pin, from and to, what it clears, due, who moves it.
-   Severity has no colour: attn marks only a row that waits on Martin and a deadline within a day. */
+   Severity has no colour: attn marks only two things, each on its own: a row that waits on Martin (its left rule, whatever its
+   deadline) and a deadline within a day or past (its due). */
 .patching { margin-top: 20px; gap: 14px; }
 .patching .panel-head .label .tone-attn, .patch-day .tone-attn, .pm .due.tone-attn { color: var(--attn); }
 .patching .zero { color: var(--text-muted); }

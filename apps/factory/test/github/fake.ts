@@ -88,11 +88,17 @@ export function fakeGitHub(routes: Route[], sent: Sent[] = []) {
     if (!route) throw new Error(`No fake answer for ${method} ${path}`);
     const answer = route.answer(request);
     const status = answer.status ?? 200;
+    // Bytes go as they are, as GitHub's storage sends an artifact; anything else as JSON.
+    const bytes = answer.body instanceof Uint8Array;
     return new Response(
-      status === 204 || status === 304 || answer.body === undefined ? null : JSON.stringify(answer.body),
+      status === 204 || status === 304 || answer.body === undefined
+        ? null
+        : bytes
+          ? (answer.body as Uint8Array<ArrayBuffer>)
+          : JSON.stringify(answer.body),
       {
         status,
-        headers: { 'content-type': 'application/json', ...answer.headers },
+        headers: { 'content-type': bytes ? 'application/zip' : 'application/json', ...answer.headers },
       },
     );
   }) as typeof fetch;

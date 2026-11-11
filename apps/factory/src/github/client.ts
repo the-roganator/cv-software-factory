@@ -183,6 +183,46 @@ export class GitHub {
     return { changed: true, body };
   }
 
+  /**
+   * A file GitHub hands out by redirect, such as a run's artifact: the API answers 302 with a short-lived link to its
+   * storage, which is followed without the token, since the link carries its own grant and the token belongs to
+   * GitHub alone. Its bytes, at most `maxBytes`, or a `GitHubError`.
+   */
+  async download(repo: string, path: string, maxBytes: number): Promise<Buffer> {
+    const response = await this.#authorised(repo, 'GET', path, undefined, undefined, 'manual');
+    const location = response.headers.get('location');
+    await response.body?.cancel();
+    if (response.status !== 302 || !location?.startsWith('https://')) {
+      throw new GitHubError('malformed', `GET ${path} answered ${response.status} with no link to follow`);
+    }
+    let stored: Response;
+    try {
+      stored = await this.#fetch(location, { signal: AbortSignal.timeout(this.#timeoutMs) });
+    } catch {
+      throw new GitHubError('network', `GET ${path}'s file failed to download`);
+    }
+    if (!stored.ok) {
+      await stored.body?.cancel();
+      throw new GitHubError(
+        stored.status >= 500 ? 'server' : 'not-found',
+        `GET ${path}'s file answered ${stored.status}`,
+      );
+    }
+    const declared = Number(stored.headers.get('content-length') ?? 0);
+    if (declared > maxBytes) {
+      await stored.body?.cancel();
+      throw new GitHubError('malformed', `GET ${path}'s file is over ${maxBytes} bytes`);
+    }
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for await (const chunk of stored.body ?? []) {
+      length += chunk.length;
+      if (length > maxBytes) throw new GitHubError('malformed', `GET ${path}'s file is over ${maxBytes} bytes`);
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+
   #forget(key: string) {
     const cached = this.#etags.get(key);
     if (!cached) return;
@@ -219,11 +259,18 @@ export class GitHub {
     return parse(schema, answer?.data, 'GraphQL');
   }
 
-  async #authorised(repo: string, method: Method, path: string, body?: unknown, etag?: string): Promise<Response> {
+  async #authorised(
+    repo: string,
+    method: Method,
+    path: string,
+    body?: unknown,
+    etag?: string,
+    redirect: 'follow' | 'manual' = 'follow',
+  ): Promise<Response> {
     for (let renewed = false; ; renewed = true) {
       const token = this.#tokens ? await this.#tokens.token(repo) : undefined;
       try {
-        return await this.#send(method, path, token && `token ${token}`, body, etag);
+        return await this.#send(method, path, token && `token ${token}`, body, etag, redirect);
       } catch (error) {
         // A token GitHub no longer accepts (revoked, or a clock that drifted) is made again, once.
         if (error instanceof GitHubError && error.status === 401 && this.#tokens && !renewed) {
@@ -235,7 +282,14 @@ export class GitHub {
     }
   }
 
-  async #send(method: Method, path: string, authorization?: string, body?: unknown, etag?: string) {
+  async #send(
+    method: Method,
+    path: string,
+    authorization?: string,
+    body?: unknown,
+    etag?: string,
+    redirect: 'follow' | 'manual' = 'follow',
+  ) {
     const url = `${this.api}${path}`;
     // Doing it twice is harmless: anything but a POST.
     const repeatable = method !== 'POST';
@@ -255,6 +309,7 @@ export class GitHub {
           method,
           headers,
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(redirect === 'follow' ? {} : { redirect }),
           signal: AbortSignal.timeout(this.#timeoutMs),
         });
       } catch (error) {
@@ -267,7 +322,7 @@ export class GitHub {
         throw failure;
       }
       this.#log.debug({ method, path, status: response.status, ms: this.#now() - started }, 'github');
-      if (response.ok || response.status === 304) return response;
+      if (response.ok || response.status === 304 || (redirect === 'manual' && response.status === 302)) return response;
 
       const failure = await errorOf(method, path, response, this.#now());
       const wait = failure.kind === 'rate-limited' ? failure.waitMs : BACKOFF_MS * 2 ** attempt;

@@ -272,6 +272,8 @@ const READS = {
   reviewVerdict: z.strictObject({ number }),
   mergeQueue: z.strictObject({ number }),
   mergeability: z.strictObject({ number }),
+  moves: z.strictObject({}),
+  dependencyPulls: z.strictObject({}),
 } satisfies Record<keyof Reads, z.ZodType>;
 
 type ReadName = keyof typeof READS;
@@ -301,6 +303,8 @@ const READ_CALLS: {
   reviewVerdict: (r, repo, { number }) => r.reviewVerdict(repo, number),
   mergeQueue: (r, repo, { number }) => r.mergeQueue(repo, number),
   mergeability: (r, repo, { number }) => r.mergeability(repo, number),
+  moves: (r, repo) => r.moves(repo),
+  dependencyPulls: (r, repo) => r.dependencyPulls(repo),
 };
 
 /** An object without its undefined fields, as the actions' optional fields expect: absent, never undefined. */

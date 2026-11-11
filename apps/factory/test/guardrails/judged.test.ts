@@ -129,7 +129,7 @@ describe('the Apps’ installations', () => {
     const { held, lines } = judgeInstallations(live);
     expect(held).toBe(true);
     expect(lines[0]).toBe(
-      '✓ mrogan-software-factory (0): checks write, contents write, issues write, metadata read, pull_requests write: as declared',
+      '✓ mrogan-software-factory (0): actions read, checks write, contents write, issues write, metadata read, pull_requests write, security_events read: as declared',
     );
   });
 

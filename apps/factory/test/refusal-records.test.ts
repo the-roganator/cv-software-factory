@@ -252,7 +252,7 @@ describe('the hash of the image policies leaves out the digests they admit (ADR 
       // A tag where the digest was.
       ['a tag alone', (e) => e.replace(/@sha256:[0-9a-f]{64}/, '')],
       // A space CEL does not take, which would pass a test of spaces that JavaScript's \s reads.
-      ['a space CEL does not read', (e) => e.replace('[', '[\u00a0')],
+      ['a space CEL does not read', (e) => `\u00a0${e}`],
     ];
     for (const [what, change] of cases) {
       const hash = admissionHashWith((m) => {

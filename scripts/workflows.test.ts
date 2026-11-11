@@ -291,11 +291,6 @@ describe('reading a workflow', () => {
  */
 const TRIVY_PIN = 'deploy/images/trivy/Dockerfile';
 const BASE = expression('github.event.pull_request.base.sha || github.event.merge_group.base_sha');
-/**
- * Where a base from before the move out of `.github/` (#977) holds the pin. Only check.yml's lockfile scan, which reads
- * the base's, may name it, and reads it only when the base has no file at TRIVY_PIN.
- */
-const OLD_TRIVY_PIN = '.github/images/trivy/Dockerfile';
 /** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
 const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
 
@@ -371,14 +366,12 @@ describe("Trivy's pin", () => {
       // that may, left out of the file as written, from its name to the next line no deeper than it.
       const text = withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES);
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
-      // Every Trivy pin a workflow names is the one file, but the base's old one, in the lockfile scan alone.
+      // Every Trivy pin a workflow names is the one file.
       for (const [path] of text.matchAll(/[\w./-]*trivy[\w./-]*Dockerfile/gi)) {
         const named = path.replace(/^(?:[\w.-]*\/)*?(?:base|factory)\//, '');
-        if (file === 'check.yml' && named === OLD_TRIVY_PIN) continue;
         expect(named, file).toBe(TRIVY_PIN);
       }
       for (const [name, job] of Object.entries(workflow.jobs)) {
-        if (name !== 'lockfile-scan') expect(JSON.stringify(job), `${file} ${name}`).not.toContain(OLD_TRIVY_PIN);
         const steps = job.steps ?? [];
         const runs = steps
           .filter((step) => step.name !== SIGNATURES)

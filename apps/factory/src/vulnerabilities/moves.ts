@@ -303,6 +303,8 @@ export interface PublicMove {
   deadline?: string | undefined;
   newToday: number;
   lane: Lane;
+  /** Whether it is a lockfile's, whose package, versions and lines are withheld: its name is "a package in <file>". */
+  lockfile: boolean;
 }
 
 /** The shape of `moves.json`. */
@@ -334,6 +336,7 @@ export function publicMove(move: Move): PublicMove {
     deadline: move.deadline === undefined ? undefined : dayText(move.deadline),
     newToday: move.newToday,
     lane: move.lane,
+    lockfile: hidden,
   };
 }
 

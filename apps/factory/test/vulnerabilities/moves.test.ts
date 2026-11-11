@@ -261,7 +261,9 @@ describe('the day’s moves', () => {
       pins: [{ file: 'pnpm-lock.yaml', line: 0 }],
       from: '',
       to: '',
+      lockfile: true,
     });
+    expect(file.moves.find((move) => move.name === 'example/image')?.lockfile).toBe(false);
     expect(file).toMatchObject({ version: MOVES_VERSION, repository: REPOSITORY, totals: { fixed: 2, moves: 2 } });
     expect(table(file)).toContain(
       `| example/image | 2.17.0 | image 2.17.0@${DIGEST} | 1 high | nothing | 0 | 2026-11-14T04:30:00Z | worker |`,

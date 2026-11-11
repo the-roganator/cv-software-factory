@@ -670,3 +670,98 @@ describe('dependency-graph.yml', () => {
     }
   });
 });
+
+describe('platform.yml', () => {
+  const workflow = read('platform.yml');
+  const jobs = workflow.jobs;
+
+  function refuses(job: string, event: string) {
+    const step = jobs[job]?.steps?.[0];
+    expect(step?.name, job).toBe('Refuse a privileged context');
+    try {
+      execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event },
+        stdio: 'pipe',
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  it('runs on a pull request and the merge queue’s commit alone, and refuses any other event in each job', () => {
+    expect(triggers(workflow).sort()).toEqual(['merge_group', 'pull_request']);
+    for (const job of Object.keys(jobs)) {
+      for (const event of ['pull_request', 'merge_group']) expect(refuses(job, event), `${job} ${event}`).toBe(false);
+      for (const event of [
+        'push',
+        'pull_request_target',
+        'workflow_run',
+        'workflow_dispatch',
+        'schedule',
+        'issue_comment',
+      ])
+        expect(refuses(job, event), `${job} ${event}`).toBe(true);
+    }
+  });
+
+  it('gives the cluster a read of the contents alone, and the job that decides a read of the queue’s pull request', () => {
+    expect(workflow.permissions).toEqual({});
+    expect(Object.keys(jobs).sort()).toEqual(['platform', 'which']);
+    expect(jobs.platform?.permissions).toEqual({ contents: 'read' });
+    expect(jobs.which?.permissions).toEqual({ contents: 'read', 'pull-requests': 'read' });
+    for (const [id, job] of Object.entries(jobs)) {
+      for (const step of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@')))
+        expect(step.with?.['persist-credentials'], id).toBe(false);
+      // No cache but mise's, which saves on main alone (scripts/toolchain.test.ts), where this never runs.
+      expect(JSON.stringify(job).includes('actions/cache'), id).toBe(false);
+    }
+  });
+
+  it('runs the cluster as check-kind.sh says, and makes it with make up at the commit it checks', () => {
+    const decide = (jobs.which?.steps ?? []).map((step) => step.run ?? '').join('\n');
+    expect(decide).toContain('scripts/check-kind.sh platform');
+    expect(jobs.platform?.name).toBe('platform');
+    // Skipped on `none` alone: the job deciding failing, or saying anything else, makes the cluster.
+    expect(jobs.platform?.if).toBe(
+      expression("!cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none')"),
+    );
+    const steps = jobs.platform?.steps ?? [];
+    const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));
+    expect(make?.run).toContain('make up REVISION="$REVISION"');
+    expect((make as { env?: Record<string, string> } | undefined)?.env?.REVISION).toBe(expression('github.sha'));
+    const runs = steps.map((step) => step.run ?? '').join('\n');
+    expect(runs).toContain('make admission-ready');
+    // Each record the scripts take, with its own script, uploaded beside what the change checks in.
+    for (const file of readdirSync('deploy/test').filter((f) => f.endsWith('-refusals.json'))) {
+      const name = file.replace(/-refusals\.json$/, '');
+      expect(runs, file).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+    expect(steps.some((step) => step.uses?.startsWith('actions/upload-artifact@'))).toBe(true);
+  });
+
+  it('gives make up a stand-in for every key it reads from the Keychain, each made in the job', () => {
+    const keychain = [
+      ...readFileSync('Makefile', 'utf-8').matchAll(/security find-generic-password -s ([a-z-]+)/g),
+    ].map((m) => m[1]);
+    expect(new Set(keychain)).toEqual(
+      new Set([
+        'typesafe-api-key',
+        'anthropic-api-key',
+        'factory-github-app-key',
+        'pushover-app-token',
+        'pushover-user-key',
+      ]),
+    );
+    const make = (jobs.platform?.steps ?? []).find((step) => /\bmake up\b/.test(step.run ?? ''))?.run ?? '';
+    for (const variable of [
+      'TYPESAFE_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'GITHUB_APP_PRIVATE_KEY',
+      'PUSHOVER_APP_TOKEN',
+      'PUSHOVER_USER_KEY',
+    ])
+      expect(make, variable).toMatch(new RegExp(`\\b${variable}=`));
+    expect(make).not.toContain('secrets.');
+  });
+});

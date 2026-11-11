@@ -16,8 +16,18 @@ Deterministic gates (spec 4.1). Part of the [GitHub plane](README.md#github-plan
 - the console's browser tests, in the pinned Playwright image, its visual snapshots among them, and its first meaningful view timed, within two seconds on a throttled phone, on a runner of its own;
 - ZAP's baseline scan of the console signed in as Martin;
 - each image built, and a runner's prepare step run in the runner image ([agent runners](AGENT-RUNNERS.md#trying-a-runner)).
+- for a change to what the cluster runs, the cluster made from the change ([the platform check](#the-platform-check)).
 
 Beside them, not on every pull request, the daily scan (`vulnerabilities.yml`, [security scanning](SECURITY-SCANNING.md#the-daily-scan)) runs each day, on each push to `main` and by hand; a pull request that changes the scan itself runs it in its proving mode, read-only, against its base, which uploads nothing.
+
+## The platform check
+
+A chart, a value, a third-party image, k3s, k3d or Argo CD's pin is proved before it merges by a cluster made from the change itself (`platform.yml`). It runs `make up` on the runner, at the commit it checks: the cluster from the change's `deploy/k3d/cluster.yaml`, with the k3d its `mise.toml` pins; Argo CD by the Makefile's own line; root, and every chart's values, at that commit (`make up REVISION=<commit>`, the same path a try of a branch takes on the Mac). It passes when every Application is Synced and Healthy (the website, from the app's `main`, settled as `make up` waits for it, its health being its release's), every image policy on the cluster enforces, and `make admission-ready` passes. Then, from a cluster that came up, it takes each refusal record with its own script, and uploads them as the run's artifact, `refusal-records`, so a record a change stales is taken again from a cluster made from the change, never edited.
+
+- **What runs it** is `scripts/check-kind.sh platform`: a change, on a pull request or in the merge queue, to anything the cluster is made from or runs (`deploy/`, the Makefile, mise's pins, the workflow, the scripts it runs and the modules they import). The factory's App's deploy pin of our own images never does: those images were built from commits already merged, so the merge decides nothing ([ADR 0017](../architecture/adr/0017-the-worker-queues-the-local-deploy-pins.md)). For anything else the job is skipped, which the ruleset counts as passed; `platform` is a required check.
+- **It holds nothing.** It runs the change's own scripts and manifests, so its token reads the contents and nothing else; the job that decides reads, too, the public pull request the queue's branch names, as `check.yml`'s does. No job names a secret, and each refuses any event but a pull request and the merge queue's. The keys `make up` takes from the Keychain are stand-ins made in the job, of the shape the cluster needs and opening nothing: a key GitHub has never seen for the App, and strings that say they are not keys for the rest. Its toolchain comes from `main`'s cache, which it never writes.
+- **What it costs.** It makes the whole cluster, the factory's workers included, as `make up` does: 9 to 13½ minutes to make it from nothing, every image pulled afresh, and 11 to 15 for the job, at a peak of 7.8 GiB of the hosted runner's 16 and 15 GB of its disk. A change that breaks a chart fails in about 23, as `make up` waits out its sync and health. `make up` waits 15 minutes for Argo CD to sync there (`SYNC_TIMEOUT`), and the job stops at 45.
+- **It fails safe.** A cluster that does not come up holds the pull request; it can fail for reasons that are not the change's, a registry's pull among them, and a run again is the answer to those.
 
 ## ZAP's baseline scan
 

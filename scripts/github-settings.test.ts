@@ -34,6 +34,17 @@ const parametersOf = (ruleset: ReturnType<typeof rules>, type: string) =>
 const parameters = (type: string) => parametersOf(rules(checks), type);
 
 describe('the ruleset on main (ADR 0014)', () => {
+  it('requires the platform check here, a job platform.yml runs on every pull request and on the queue’s commit', () => {
+    expect(REPOSITORIES['the-roganator/cv-software-factory']).toContain('platform');
+    expect(REPOSITORIES['the-roganator/cv-worlds-worst-website']).not.toContain('platform');
+    const workflow = parse(readFileSync('.github/workflows/platform.yml', 'utf-8')) as {
+      on: Record<string, unknown>;
+      jobs: Record<string, { name?: string; if?: string }>;
+    };
+    expect(Object.keys(workflow.on)).toEqual(expect.arrayContaining(['pull_request', 'merge_group']));
+    expect(Object.values(workflow.jobs).filter((job) => job.name === 'platform')).toHaveLength(1);
+  });
+
   it('lets nobody bypass the checks, signatures, history or queue', () => {
     for (const checks of Object.values(REPOSITORIES)) expect(rules(checks).bypass_actors).toEqual([]);
   });

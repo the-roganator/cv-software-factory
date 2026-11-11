@@ -308,7 +308,16 @@ export const ops: Ops = {
     run('kubectl', ['--context', CONTEXT, 'replace', '-f', '-'], { input: JSON.stringify(object) });
   },
   deleteObject(ref) {
-    kubectl('delete', resource(ref), ref.name, ...scope(ref), '--ignore-not-found', '--wait=false');
+    // In the foreground, so the object stays, and try end waits, until what it owns (a Deployment's pods) is gone too.
+    kubectl(
+      'delete',
+      resource(ref),
+      ref.name,
+      ...scope(ref),
+      '--ignore-not-found',
+      '--cascade=foreground',
+      '--wait=false',
+    );
   },
   migrations() {
     return new Map(

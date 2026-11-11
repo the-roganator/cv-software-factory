@@ -16,6 +16,7 @@
 #                The website's health is its release's, and root's rolls it up (scripts/wait-deployed.sh): neither is
 #                judged so.
 #
+# On first seeing a ComparisonError it says so, and that it asked for a refresh, on stderr, with when Argo CD compared.
 # It exits 0 once WATCHED, the process it watches, has ended. KUBECTL is the kubectl command with its context.
 set -uo pipefail
 
@@ -54,6 +55,7 @@ while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
       if [ ! -e "$seen/$app.compared" ]; then
         echo "$compared" >"$seen/$app.compared"
         "${kubectl[@]}" -n argocd annotate application "$app" argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+        echo "$app: a ComparisonError at its comparison of $compared; asked for a hard refresh" >&2
       fi
     else
       rm -f "$seen/$app.compared"

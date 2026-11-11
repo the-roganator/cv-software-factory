@@ -747,7 +747,7 @@ describe('platform.yml', () => {
     expect(steps.some((step) => step.uses?.startsWith('actions/upload-artifact@'))).toBe(true);
   });
 
-  it('gives make up a stand-in for every key it reads from the Keychain, each made in the job', () => {
+  it('gives make up none of the keys it reads from the Keychain, so the cluster opens and attempts nothing', () => {
     const keychain = [
       ...readFileSync('Makefile', 'utf-8').matchAll(/security find-generic-password -s ([a-z-]+)/g),
     ].map((m) => m[1]);
@@ -761,14 +761,17 @@ describe('platform.yml', () => {
       ]),
     );
     const make = (jobs.platform?.steps ?? []).find((step) => /\bmake up\b/.test(step.run ?? ''))?.run ?? '';
-    for (const variable of [
+    // The variables make up would read in the Keychain's place, each unset, and none given anywhere in the job.
+    const variables = [
       'TYPESAFE_API_KEY',
       'ANTHROPIC_API_KEY',
       'GITHUB_APP_PRIVATE_KEY',
       'PUSHOVER_APP_TOKEN',
       'PUSHOVER_USER_KEY',
-    ])
-      expect(make, variable).toMatch(new RegExp(`\\b${variable}=`));
-    expect(make).not.toContain('secrets.');
+    ];
+    expect(make).toContain(`unset ${variables.join(' ')}`);
+    const job = JSON.stringify(jobs.platform);
+    for (const variable of variables) expect(job, variable).not.toMatch(new RegExp(`\\b${variable}=`));
+    expect(job).not.toContain('secrets.');
   });
 });

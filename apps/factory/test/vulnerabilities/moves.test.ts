@@ -6,6 +6,7 @@ import {
   dependabotDirectories,
   directPackages,
   furthest,
+  isMajor,
   type Judged,
   MOVES_VERSION,
   moves,
@@ -166,7 +167,7 @@ describe('the day’s moves', () => {
         laneOf(result({ kind: 'k3s-release', name: 'k3s', target: { kind: 'k3s', release: 'v1.37.2+k3s1' } })),
       ).toBe('cluster');
     });
-    it('approval: a major, of any kind; a chart on its major is the worker’s, even in a directory Dependabot reads', () => {
+    it('approval: a major, of any kind; a chart within its major is the worker’s, even in a directory Dependabot reads', () => {
       const chart = (major: boolean) =>
         result({
           kind: 'chart',
@@ -359,5 +360,25 @@ describe('a pin’s target, joined', () => {
     expect(moves([result({ pin, severity: 'MEDIUM' })], context({ dependabot: ['/deploy/**'] }))[0]?.lane).toBe(
       'worker',
     );
+  });
+});
+
+describe('a major, of any kind', () => {
+  it('is a chart’s later major, or a version past every copy’s major', () => {
+    expect(isMajor({ kind: 'chart', chart: 'grafana', version: '14.3.1', major: true }, '13.2.7')).toBe(true);
+    expect(isMajor({ kind: 'version', versions: ['4.0.1'] }, '3.2.0')).toBe(true);
+    expect(isMajor({ kind: 'version', versions: ['1.0.5', '2.0.1'] }, '1.0.0, 2.0.0')).toBe(false);
+    expect(isMajor({ kind: 'version', versions: ['3.2.1'] }, '3.2.0')).toBe(false);
+    expect(isMajor({ kind: 'image', tag: '24.23.0-trixie-slim', digest: `sha256:${'a'.repeat(64)}` }, '24.22.1')).toBe(
+      false,
+    );
+    const npm = result({
+      kind: 'lockfile',
+      name: 'example-a',
+      from: '3.2.0',
+      pin: { file: 'pnpm-lock.yaml', line: 9 },
+      target: { kind: 'version', versions: ['4.0.1'] },
+    });
+    expect(moves([npm], context())[0]).toMatchObject({ major: true, lane: 'approval' });
   });
 });

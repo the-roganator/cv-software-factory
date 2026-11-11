@@ -15,11 +15,12 @@
  * - `issue`: what no pull request of the App's can write: anything mise or the Makefile pins (k3d, Argo CD's chart with
  *   its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a
  *   day of its fix, and an image whose other half is in the lockfile;
- * - `approval`: a major, of any kind, which needs more than its pins' lines written; whether a chart on its major changes
+ * - `approval`: a major, of any kind (a chart's, or a version past every copy's major), which needs more than its pins'
+ *   lines written; whether a chart within its major changes
  *   more than its images is the review gate's to prove from the pull request, not the scan's to assume;
  * - `dependabot`: a pin `dependabot.yml`'s docker entries read, with no High or Critical on a deadline, and a direct
  *   package of the lockfile within a day of its fix, which its security update moves;
- * - `worker`: every other pin, which the GitHub worker moves: a chart on its major among them.
+ * - `worker`: every other pin, which the GitHub worker moves: a chart within its major among them.
  *
  * `moves.json`, the scan's artifact, is `MovesFile`: what the log prints, no more. A lockfile's move is "a package in
  * `pnpm-lock.yaml`", with neither its versions nor its lines, which name the package in a public lockfile; the alerts
@@ -151,7 +152,8 @@ export function laneOf(
   // major changes more than its images is the gate's to prove from the pull request, not the scan's to assume.
   if (move.major) return 'approval';
   if (move.pins.some((pin) => pin.file.startsWith('.github/workflows/'))) return 'issue';
-  // An Application's chart, which no Dependabot ecosystem reads, on its major: the worker's.
+  // An Application's chart within its major, the worker's: Dependabot's docker entries read no Application's
+  // targetRevision, though they read the directory it is in.
   if (target.kind === 'chart') return 'worker';
   if (move.lockfile) {
     // An image of ours that carries the same package: its other half is the lockfile, which no pin move writes.
@@ -165,6 +167,14 @@ export function laneOf(
   );
   if (!urgent && move.pins.every((pin) => readByDependabot(pin, context.dependabot))) return 'dependabot';
   return 'worker';
+}
+
+/** Whether a move crosses a major: a chart's marked so, or a version whose major no copy now pinned has. */
+export function isMajor(target: Target, from: string) {
+  if (target.kind === 'chart') return target.major;
+  if (target.kind !== 'version') return false;
+  const pinnedMajors = new Set(from.split(', ').map((version) => numbers(version)[0]));
+  return target.versions.some((version) => !pinnedMajors.has(numbers(version)[0]));
 }
 
 /** A target's version, for telling which of two on one pin is further. */
@@ -256,7 +266,7 @@ export function moves(results: Judged[], context: Context): Move[] {
       pins: [...pins.values()].sort((a, b) => order(a.file, b.file) || a.line - b.line),
       from: first.from,
       to: target,
-      major: target.kind === 'chart' && target.major,
+      major: isMajor(target, first.from),
       clears,
       leaves,
       deadline: dues.length ? Math.min(...dues) : undefined,

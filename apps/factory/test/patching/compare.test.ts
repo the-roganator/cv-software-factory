@@ -152,7 +152,7 @@ describe('the comparison with the list', () => {
             item: `ghcr.io/the-roganator/cv-software-factory/factory-runner@${digest(15)}`,
             image: `ghcr.io/the-roganator/cv-software-factory/factory-runner@${digest(15)}`,
             digests: [digest(15)],
-            pin: { file: 'deploy/overlays/local/factory-image/kustomization.yaml', line: 23 },
+            pin: { file: 'deploy/example/images.yaml', line: 23 },
           },
         ],
       },

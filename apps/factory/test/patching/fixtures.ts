@@ -20,7 +20,7 @@ export const FACTORY_SCANNED: ScannedImage[] = [
     item: `ghcr.io/the-roganator/cv-software-factory/factory@${digest(1)}`,
     image: `ghcr.io/the-roganator/cv-software-factory/factory@${digest(1)}`,
     digests: [digest(1), digest(2), digest(3)],
-    pin: { file: 'deploy/overlays/local/factory-image/kustomization.yaml', line: 17 },
+    pin: { file: 'deploy/example/images.yaml', line: 17 },
   },
   {
     kind: 'third-party',
@@ -51,7 +51,7 @@ export const APP_SCANNED: ScannedImage[] = [
     item: `ghcr.io/the-roganator/cv-worlds-worst-website/website@${digest(9)}`,
     image: `ghcr.io/the-roganator/cv-worlds-worst-website/website@${digest(9)}`,
     digests: [digest(9), digest(10)],
-    pin: { file: 'deploy/overlays/local/website-image/kustomization.yaml', line: 5 },
+    pin: { file: 'deploy/example/website.yaml', line: 5 },
   },
 ];
 

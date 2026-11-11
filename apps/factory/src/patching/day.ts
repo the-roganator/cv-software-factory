@@ -15,7 +15,7 @@ import type { MoveLane, PayloadOf, ScanFailure, ScanSeverity } from '@software-f
 import { MOST_PINS } from '@software-factory/events/schemas';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves, ReadMove } from '../github/scanning.ts';
-import type { Counts } from '../vulnerabilities/moves.ts';
+import type { Counts, MovesFile } from '../vulnerabilities/moves.ts';
 import { parseReference, type Row } from './compare.ts';
 
 export type Day = PayloadOf<'patching.read'>;
@@ -117,11 +117,8 @@ export function failures(conclusion: string | null, judged: string | null, moves
   return found.length ? found : ['other'];
 }
 
-/**
- * The scan's totals, as `moves.json` gives them. Stand-in until #1009 passes the six counts through: `moves.ts`'s
- * `MovesFile['totals']` holds them then, and this type goes.
- */
-type ScanTotals = Day['repositories'][number]['totals'] & object;
+/** The scan's totals, as `moves.json` gives them (moves.ts's `MovesFile`). */
+type ScanTotals = MovesFile['totals'];
 
 /** The scan's totals, copied: the sense computes none of them. */
 const totalsOf = (t: ScanTotals): ScanTotals => ({
@@ -152,7 +149,7 @@ function repositoryDay({ moves, pulls }: RepositoryRead): Day['repositories'][nu
     },
     judged,
     failed: failures(moves.run.conclusion, judged, list),
-    totals: moves.file ? totalsOf(moves.file.totals as ScanTotals) : null,
+    totals: moves.file ? totalsOf(moves.file.totals) : null,
     scanned: scannedOf(moves).length,
     moves: list,
   };

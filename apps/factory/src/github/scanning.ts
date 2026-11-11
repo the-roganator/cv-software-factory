@@ -180,10 +180,10 @@ void ALL_KINDS;
  * An image reference by the distribution grammar (`[domain/]path[:tag][@digest]`), its digest a sha256 alone: what
  * the scan writes is an image GitHub's runner pulled, and anything else in its place is not one.
  */
-const LABEL = String.raw`[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?`;
+const LABEL = '[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?';
 /** A registry: a first part with a dot or a port, or `localhost`; anything else is the image's own path. */
 const DOMAIN = String.raw`(?:(?:localhost|${LABEL}(?:\.${LABEL})+)(?::\d+)?|${LABEL}:\d+)/`;
-const COMPONENT = String.raw`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*`;
+const COMPONENT = '[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*';
 export const IMAGE_REFERENCE = new RegExp(
   String.raw`^(?:${DOMAIN})?${COMPONENT}(?:/${COMPONENT})*(?::[\w][\w.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$`,
 );

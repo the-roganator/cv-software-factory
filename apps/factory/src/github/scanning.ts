@@ -184,6 +184,16 @@ const total = (counts: Record<Severity, number>) => SEVERITIES.reduce((sum, s) =
 const disagrees = (repo: string, why: string) =>
   new GitHubError('malformed', `The scan's moves in ${repo} cannot be read: ${why}.`);
 
+/** The permissions the read needs, as GitHub names them. */
+const NEEDED = ['actions', 'security_events'];
+
+const lacksError = (repo: string, lacks: string[]) =>
+  new GitHubError(
+    'refused',
+    `The factory's App cannot read the scan's moves in ${repo}: it lacks ${lacks.join(' and ')}.`,
+    403,
+  );
+
 /** What the App lacks when GitHub refuses a read for it. */
 const lacking = (error: unknown, permission: string) =>
   error instanceof GitHubError && (error.kind === 'refused' || error.kind === 'not-found') ? permission : undefined;
@@ -202,6 +212,17 @@ export class ScanReads {
     // Code scanning's alerts and a run's artifacts are read with the App's token alone, even on a public repository.
     if (!this.#github.writable)
       throw new GitHubError('read-only', `The worker has no App key, so it cannot read the scan's moves in ${repo}.`);
+    // What the token may do, as GitHub granted it: a public repository's runs read without `actions: read`, and only
+    // the artifact's download would be refused, so each permission is named before anything is asked.
+    const granted = await this.#github.permissions(repo);
+    if (granted) {
+      const lacks = NEEDED.filter((permission) => !['read', 'write'].includes(granted[permission] ?? ''));
+      if (lacks.length)
+        throw lacksError(
+          repo,
+          lacks.map((permission) => `\`${permission}: read\``),
+        );
+    }
     const { body } = await this.#github.poll(repo, `/repos/${repo}`, REPOSITORY);
     const branch = body.default_branch;
     // Both reads first, so a read the App may not make names every permission it lacks, not only the first.
@@ -210,12 +231,7 @@ export class ScanReads {
       runs.status === 'rejected' ? lacking(runs.reason, '`actions: read`') : undefined,
       alerts.status === 'rejected' ? lacking(alerts.reason, '`security_events: read`') : undefined,
     ].filter(Boolean);
-    if (missing.length)
-      throw new GitHubError(
-        'refused',
-        `The factory's App cannot read the scan's moves in ${repo}: it lacks ${missing.join(' and ')}.`,
-        403,
-      );
+    if (missing.length) throw lacksError(repo, missing as string[]);
     if (runs.status === 'rejected') throw runs.reason;
     if (alerts.status === 'rejected') throw alerts.reason;
     const run = runs.value;

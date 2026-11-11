@@ -255,6 +255,19 @@ describe('the scan’s moves', () => {
     await fails({ refuse: { actions: true, alerts: true } }, /lacks `actions: read` and `security_events: read`/);
   });
 
+  it('name each permission the token GitHub made lacks, before asking for anything', async () => {
+    const sent: Sent[] = [];
+    const permissions = { contents: 'write', metadata: 'read', pull_requests: 'write' };
+    const error = await new LiveReads(client(routes(), sent, { permissions }).github).moves(REPO).catch((e) => e);
+    expect(error).toMatchObject({ kind: 'refused', status: 403 });
+    expect(error.message).toMatch(/lacks `actions: read` and `security_events: read`\.$/);
+    expect(sent.filter((s) => s.path.startsWith(`/repos/${REPO}/`) && !s.path.endsWith('/installation'))).toEqual([]);
+    const granted = { ...permissions, actions: 'read', security_events: 'read' };
+    expect((await new LiveReads(client(routes(), [], { permissions: granted }).github).moves(REPO)).moves).toHaveLength(
+      2,
+    );
+  });
+
   it('need the App’s key, even on a public repository', async () => {
     const error = await new LiveReads(client(routes(), [], { keyless: true }).github).moves(REPO).catch((e) => e);
     expect(error).toMatchObject({ kind: 'read-only' });

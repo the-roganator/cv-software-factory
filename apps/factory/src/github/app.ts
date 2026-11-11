@@ -33,7 +33,12 @@ export function appJwt(clientId: string, key: KeyObject, nowMs: number): string 
 }
 
 const installation = z.object({ id: z.number().int().positive() });
-const accessToken = z.object({ token: z.string().min(1), expires_at: z.iso.datetime({ offset: true }) });
+const accessToken = z.object({
+  token: z.string().min(1),
+  expires_at: z.iso.datetime({ offset: true }),
+  // What the token may do, as GitHub granted it: the installation's permissions, as Martin accepted them.
+  permissions: z.record(z.string(), z.string()).optional(),
+});
 
 /** A token is made again this long before it expires, so none goes out in a request that outlives it. */
 const RENEW_BEFORE_MS = 5 * 60_000;
@@ -41,6 +46,7 @@ const RENEW_BEFORE_MS = 5 * 60_000;
 interface Cached {
   token: string;
   expiresMs: number;
+  permissions: Record<string, string> | undefined;
 }
 
 /** What `InstallationTokens` needs from the API: the two calls that are made as the App rather than an installation. */
@@ -76,6 +82,15 @@ export class InstallationTokens {
     return pending;
   }
 
+  /**
+   * What a repository's token may do, as GitHub stated when it made it (`contents: write`…), or undefined when it did
+   * not say. Makes the token if there is none yet.
+   */
+  async permissions(repo: string): Promise<Record<string, string> | undefined> {
+    await this.token(repo);
+    return this.#tokens.get(repo)?.permissions;
+  }
+
   /** Forgets a repository's token, after GitHub refused it as expired or revoked. */
   forget(repo: string): void {
     this.#tokens.delete(repo);
@@ -93,7 +108,11 @@ export class InstallationTokens {
     const made = tokenOf(
       await this.#request('POST', `/app/installations/${installation}/access_tokens`, jwt, { repositories: [name] }),
     );
-    this.#tokens.set(repo, { token: made.token, expiresMs: Date.parse(made.expires_at) });
+    this.#tokens.set(repo, {
+      token: made.token,
+      expiresMs: Date.parse(made.expires_at),
+      permissions: made.permissions,
+    });
     return made.token;
   }
 }

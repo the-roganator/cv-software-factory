@@ -92,7 +92,7 @@ export interface ScanDay {
   movesWithNew: number;
   movesOverdue: number;
   movesDueWithinDay: number;
-  /** A repository whose run wrote no moves, with the run to read why. */
+  /** A repository whose run wrote no moves, with its run's page on GitHub to read why. */
   unjudged: { repository: string; url: string }[];
 }
 
@@ -306,7 +306,8 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
       .length,
     unjudged: day.repositories
       .filter((r) => r.judged === null)
-      .map((r) => ({ repository: r.repository, url: r.run.url })),
+      // The run's page built from what the schema holds to a shape, not from the event's own address.
+      .map((r) => ({ repository: r.repository, url: `https://github.com/${r.repository}/actions/runs/${r.run.id}` })),
   };
   return {
     state: 'read',

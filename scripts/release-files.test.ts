@@ -41,6 +41,8 @@ describe('the files a release changes', () => {
       /version/i.test(readFileSync(file, 'utf-8')),
     );
     expect(readers).toEqual([
+      // The GitHub worker's guard, which reads a manifest the pin step changed for its dependencies' ranges alone.
+      'apps/factory/src/github/actions.ts',
       // The pin step's rule for a manifest's lines in the GitHub worker's guard: a dependency's range, and not its
       // version line, whose value is no pin.
       'apps/factory/src/github/paths.ts',

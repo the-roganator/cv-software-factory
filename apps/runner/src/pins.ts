@@ -85,7 +85,14 @@ export type Pnpm = (dir: string, args: string[]) => Promise<void>;
 /** The files pnpm reads its settings or a resolution's override from, which no coder's patch may change. */
 export const PNPM_SETTINGS = ['.npmrc', 'pnpm-workspace.yaml', '.pnpmfile.cjs', '.pnpmfile.mjs', 'patches/'];
 /** The lockfiles: written by the pin step, and never by an agent. */
-export const LOCKFILES = ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'mise.lock'];
+export const LOCKFILES = [
+  'pnpm-lock.yaml',
+  'pnpm-lock.*.yaml',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'mise.lock',
+];
 
 /** A manifest's fields that name dependencies, by a range of the registry's. */
 const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
@@ -357,7 +364,7 @@ export function releaseAge(miseToml: string): number {
 
 /** A `FROM` line of a Dockerfile that pins an image by its tag and digest, in parts. */
 const FROM =
-  /^(\s*FROM\s+(?:--platform=\S+\s+)?)([^\s:@]+(?::\d+)?(?:\/[^\s:@]+)*):([\w][\w.-]{0,127})@(sha256:[0-9a-f]{64})(.*)$/i;
+  /^(\s*FROM\s+(?:--platform=\S+\s+)?)([^\s:@/]+(?::\d+)?(?:\/[^\s:@/]+)*):([\w][\w.-]{0,127})@(sha256:[0-9a-f]{64})(.*)$/i;
 
 /** The Dockerfiles git tracks in a checkout. */
 async function dockerfilesOf(dir: string): Promise<string[]> {
@@ -589,11 +596,12 @@ async function refuseUnlessRegistryLock(dir: string): Promise<void> {
 
 /** Whether a path is one of `entries`: a file at any depth by its name, or under a folder ending in `/`. */
 const among = (path: string, entries: readonly string[]) =>
-  entries.some((entry) =>
-    entry.endsWith('/')
-      ? path.startsWith(entry) || path.includes(`/${entry}`)
-      : path === entry || path.endsWith(`/${entry}`),
-  );
+  entries.some((entry) => {
+    if (entry.endsWith('/')) return path.startsWith(entry) || path.includes(`/${entry}`);
+    // A `*` in a name is any characters but a slash: `pnpm-lock.*.yaml`, pnpm's lockfile for a branch.
+    const name = new RegExp(`(^|/)${entry.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '[^/]*')}$`);
+    return name.test(path);
+  });
 
 /** The files a unified diff changes, by its `diff --git` headers. */
 export const changedIn = (patch: string): string[] =>

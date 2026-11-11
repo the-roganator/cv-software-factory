@@ -37,7 +37,6 @@
  */
 import { execFile } from 'node:child_process';
 import { lutimes, mkdir, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { git, gitInput, gitWith } from './git.ts';
@@ -72,7 +71,7 @@ export async function prepare(
   if (step.move) {
     // Written on a checkout of their own, in this pod's own folder: the volume is the agents', and one of an earlier
     // step's may not have ended yet. Then committed on the agent's checkout, as its base, never part of its patch.
-    const own = join(env.PREPARE ?? tmpdir(), 'pins');
+    const own = join(prepareDir(env), 'pins');
     await checkout(env, () => {}, own);
     const pins = await pinsOf(own, step.move, { ...pinTools(env, pnpmEnv), ...tools }, log);
     if (pins === undefined) return;
@@ -148,8 +147,14 @@ export async function lockfile(
 const pinTools = (env: NodeJS.ProcessEnv, pnpmEnv: NodeJS.ProcessEnv): PinTools => ({
   pnpm: pnpmIn(pnpmEnv),
   get: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(60_000) }),
-  aside: env.PREPARE ?? tmpdir(),
+  aside: prepareDir(env),
 });
+
+/** The prepare pod's own folder, which only it can write: never a folder others share, such as the system's. */
+function prepareDir(env: NodeJS.ProcessEnv): string {
+  if (!env.PREPARE) throw new Error('PREPARE is not set: the prepare pod names its own folder there.');
+  return env.PREPARE;
+}
 
 /**
  * A fresh checkout of the step's commit, with its base, a dry run's commits and its seed, and the pnpm that runs: on

@@ -71,7 +71,14 @@ export function protectedFrom(codeowners: string | null): string[] {
 }
 
 /** The lockfiles' names: the pin step writes them, and a patch of an agent's never does (`apps/runner/src/pins.ts`). */
-export const LOCKFILE_NAMES = ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'mise.lock'];
+export const LOCKFILE_NAMES = [
+  'pnpm-lock.yaml',
+  'pnpm-lock.*.yaml',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'mise.lock',
+];
 /** The lockfiles, as scope entries: at the root and below it. */
 export const LOCKFILES = LOCKFILE_NAMES.flatMap((name) => [name, `**/${name}`]);
 /** Where pnpm reads its settings or a resolution's override, which neither an agent nor the pin step writes. */
@@ -84,7 +91,7 @@ export const PNPM_SETTINGS = ['.npmrc', 'pnpm-workspace.yaml', '.pnpmfile.cjs', 
  * folder, or an importer's `link:` or `file:`. pnpm writes a registry package's resolution as its integrity alone. The
  * runner's pin step refuses the same before it prints a lockfile (`registryOnly`); the worker asks again.
  */
-const notFromRegistry = (line: string): boolean =>
+export const notFromRegistry = (line: string): boolean =>
   (/\bresolution: \{/.test(line) && (!/\bintegrity: /.test(line) || /\b(tarball|type|repo|directory):/.test(line))) ||
   /^\s+(version|specifier): ['"]?(link|file|git|git\+[a-z]+|https?|npm|github|workspace):/.test(line);
 
@@ -164,5 +171,51 @@ export function pinStepRefusals(
       return [`${path}: the pin step writes pins, ranges and lockfiles alone`];
     const why = lines.map(notPinLines).find(Boolean);
     return why ? [`${path}: the pin step ${why}`] : [];
+  });
+}
+
+/** A manifest's fields whose ranges pin what is installed: the only ones the pin step's change to a manifest moves. */
+const PINNED_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
+
+/** One comparator of a range of the registry's versions, as the runner reads them (`apps/runner/src/pins.ts`). */
+const COMPARATOR = /^(?:[\^~]|[<>]=?|=)?\d+(?:\.(?:\d+|[xX*])){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const registryRange = (spec: unknown): boolean =>
+  typeof spec === 'string' &&
+  (spec.trim() === '*' ||
+    spec.split('||').every(
+      (part) =>
+        part.trim() !== '' &&
+        part
+          .trim()
+          .split(/\s+/)
+          .every((t) => COMPARATOR.test(t)),
+    ));
+
+/**
+ * Why the pin step's change to a manifest is not a move of dependencies' ranges, read as JSON: every field but the
+ * pinned ones is as it was, no dependency is added or removed, and each range it moves is a range of the registry's.
+ * Nothing when it is.
+ */
+export function manifestRefusals(path: string, before: string, after: string): string[] {
+  let was: Record<string, unknown>;
+  let now: Record<string, unknown>;
+  try {
+    was = JSON.parse(before) as Record<string, unknown>;
+    now = JSON.parse(after) as Record<string, unknown>;
+  } catch {
+    return [`${path}: the pin step leaves a manifest that is not JSON`];
+  }
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const fields = [...new Set([...Object.keys(was), ...Object.keys(now)])];
+  const moved = fields.filter((field) => !PINNED_FIELDS.includes(field) && !same(was[field], now[field]));
+  if (moved.length) return [`${path}: the pin step changes ${moved.join(', ')}, which pins no dependency`];
+  return PINNED_FIELDS.flatMap((field) => {
+    const a = (was[field] ?? {}) as Record<string, unknown>;
+    const b = (now[field] ?? {}) as Record<string, unknown>;
+    if (!same(Object.keys(a).sort(), Object.keys(b).sort()))
+      return [`${path}: the pin step adds or removes a dependency`];
+    return Object.keys(b)
+      .filter((name) => a[name] !== b[name] && !registryRange(b[name]))
+      .map((name) => `${path}: the pin step gives ${name} ${JSON.stringify(b[name])}, not a range of the registry's`);
   });
 }

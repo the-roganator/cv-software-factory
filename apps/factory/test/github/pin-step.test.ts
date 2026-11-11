@@ -57,7 +57,7 @@ const RANGE = lineChange('package.json', '    "vitest": "^5.0.5"', '    "vitest"
 const LOCKFILE = lineChange('pnpm-lock.yaml', '  vitest@5.0.5:', '  vitest@5.1.0:');
 const FIX = lineChange('src/money.ts', 'export const pence = 1;', 'export const pence = 100;');
 
-function worker() {
+function worker(files: Record<string, string> = FILES) {
   const records: { args: { changes: { additions: { path: string; text?: string }[] } } }[] = [];
   const actions = new DryRunActions(
     {
@@ -68,7 +68,7 @@ function worker() {
     } as never,
     quiet,
     () => new Date(),
-    async (_repo, path) => FILES[path] ?? null,
+    async (_repo, path) => files[path] ?? null,
   );
   const apply = (commit: { patch: string; pins?: string; lockfile?: string }) =>
     actions.applyPatch(REPO, { branch: 'factory/1-node', expectedHead: SHA, message: 'chore(deps): node', ...commit });
@@ -196,5 +196,30 @@ describe('the pin step’s patches, as the GitHub worker guards them', () => {
     );
     await expect(worker().apply({ patch: FIX, lockfile: tarball })).rejects.toThrow(/not a registry package/);
     await expect(worker().apply({ patch: FIX, pins: tarball })).rejects.toThrow(/not a registry package/);
+  });
+
+  it('refuses the pins’ change to a manifest’s field that pins nothing, read as JSON', async () => {
+    const manifest = '{\n  "packageManager": "pnpm@12.16.1",\n  "devDependencies": {\n    "vitest": "^5.0.5"\n  }\n}\n';
+    const files = { ...FILES, 'package.json': manifest };
+    const pnpm = `diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -2 +2 @@\n-  "packageManager": "pnpm@12.16.1",\n+  "packageManager": "pnpm@12.0.0",\n`;
+    await expect(worker(files).apply({ patch: FIX, pins: pnpm })).rejects.toThrow(
+      /changes packageManager, which pins no dependency/,
+    );
+  });
+
+  it('refuses a lockfile that still resolves a tarball after the patches, whatever lines they changed', async () => {
+    const files = {
+      ...FILES,
+      'pnpm-lock.yaml': `${FILES['pnpm-lock.yaml']}\n  evil@1.0.0:\n    resolution: {tarball: https://example.com/evil.tgz}\n`,
+    };
+    await expect(worker(files).apply({ patch: FIX, lockfile: LOCKFILE })).rejects.toThrow(
+      /resolves resolution: \{tarball: https:\/\/example\.com\/evil\.tgz\}, not a registry package/,
+    );
+  });
+
+  it('refuses an agent’s patch to a branch’s pnpm lockfile', async () => {
+    const branch =
+      'diff --git a/pnpm-lock.feature.yaml b/pnpm-lock.feature.yaml\nnew file mode 100644\n--- /dev/null\n+++ b/pnpm-lock.feature.yaml\n@@ -0,0 +1 @@\n+x\n';
+    await expect(worker().apply({ patch: branch })).rejects.toThrow(/pnpm-lock\.feature\.yaml, which no patch may/);
   });
 });

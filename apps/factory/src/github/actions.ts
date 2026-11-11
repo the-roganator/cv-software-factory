@@ -39,7 +39,16 @@ import {
 import { type IssueAction, IssueGuard, openedBy } from './issues.ts';
 import { type Enqueued, guardQueue, type QueueCandidate } from './merging.ts';
 import { applyTo, filesIn, PatchRefused } from './patches.ts';
-import { CODEOWNERS_PATHS, inScope, LOCKFILES, PNPM_SETTINGS, pinStepRefusals, protectedFrom } from './paths.ts';
+import {
+  CODEOWNERS_PATHS,
+  inScope,
+  LOCKFILES,
+  manifestRefusals,
+  notFromRegistry,
+  PNPM_SETTINGS,
+  pinStepRefusals,
+  protectedFrom,
+} from './paths.ts';
 import { RefusalRecorder } from './refusals.ts';
 
 /** How the App appears as a pull request's author, and as whoever merged one or added it to the merge queue. */
@@ -146,6 +155,30 @@ export async function guard(
     ...(lockfile ? pinStepRefusals(lines(lockfile), forbidden, { lockfileOnly: true }) : []),
   ];
   if (refused.length) throw new PatchRefused('protected', `The pin step's patch is refused: ${refused.join('; ')}.`);
+  if (!pins && !lockfile) return;
+  // Read whole, as they would be committed: each manifest the pins change moves dependencies' ranges and nothing
+  // else, and each pnpm lockfile, after everything, resolves registry packages alone, whatever lines a patch left.
+  const decoder = new TextDecoder();
+  const pinned = pins ? await applyInTurn([pins], read) : { additions: [] };
+  const whole = await applyInTurn([pins, patch, lockfile], read);
+  const after = [
+    ...(
+      await Promise.all(
+        pinned.additions
+          .filter(({ path }) => path === 'package.json' || path.endsWith('/package.json'))
+          .map(async ({ path, contents }) =>
+            manifestRefusals(path, (await read(path)) ?? '{}', decoder.decode(contents)),
+          ),
+      )
+    ).flat(),
+    ...whole.additions
+      .filter(({ path }) => inScope(path, LOCKFILES) && /pnpm-lock(\.[^/]+)?\.yaml$/.test(path))
+      .flatMap(({ path, contents }) => {
+        const line = decoder.decode(contents).split('\n').find(notFromRegistry);
+        return line ? [`${path}: the lockfile resolves ${line.trim()}, not a registry package`] : [];
+      }),
+  ];
+  if (after.length) throw new PatchRefused('protected', `The pin step's patch is refused: ${after.join('; ')}.`);
 }
 
 /**

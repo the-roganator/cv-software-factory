@@ -49,7 +49,7 @@ import {
   unlisted,
 } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
-import { databases, realTools } from '../apps/factory/src/vulnerabilities/scan.ts';
+import { databases, realTools, repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
 import { PROFILE, RECORDS, type RecordName, render, taken } from './policy-hash.ts';
 
@@ -111,8 +111,8 @@ export interface Scan {
 
 /** Everything the rule reads, so the tests give it answers instead. Each may throw: a fact not read holds. */
 export interface PinMoveIO {
-  /** The change from the merge base to the head, as git gives it: `--raw` and `--unified=0`. */
-  diff(): Promise<{ raw: string; patch: string }>;
+  /** The change from the merge base to the head: git's `--raw` list, and each modified file's text at both commits. */
+  diff(): Promise<{ raw: string; files: Rewritten[] }>;
   /** The scan's list, at the merge base or at the head. */
   list(side: Side): Promise<Item[]>;
   /** What the list does not read, at the head. */
@@ -173,14 +173,6 @@ const WORDS = /[A-Za-z0-9._+-]+/g;
 
 const short = (text: string) => (text.length > 120 ? `${text.slice(0, 117)}…` : text);
 
-/** An image reference's repository: its name without tag or digest. */
-export function repositoryOf(reference: string) {
-  const name = reference.split('@')[0] ?? '';
-  const slash = name.lastIndexOf('/');
-  const colon = name.lastIndexOf(':');
-  return colon > slash ? name.slice(0, colon) : name;
-}
-
 /** An image reference's tag and digest, each if it has one. */
 export function tagAndDigest(reference: string) {
   const [name = '', digest] = reference.split('@');
@@ -206,18 +198,28 @@ export function onlyPinsChange(before: string, after: string): boolean {
   });
 }
 
+/** A file the change modifies, whole, as each commit has it: blobs read by git, never a patch's text. */
+export interface Rewritten {
+  path: string;
+  before: string;
+  after: string;
+}
+
 /**
- * The lines a change rewrites, from git's `--raw` and `--unified=0` output, or why it is not a change of pins' lines:
- * each file modified in place with its mode, regular, and each hunk replacing as many lines as it removes at the same
- * place, each only in versions and digests. Nothing under `.github/`, and neither of mise's files.
+ * The lines a change rewrites, from git's `--raw` list of the files it changes and each modified file's text at both
+ * commits, or why it is not a change of pins' lines: each file modified in place, regular, with its mode, as many lines
+ * before as after, and each line that differs only in versions and digests. Nothing under `.github/`, and neither of
+ * mise's files. The two texts are compared line by line, never read from a patch, whose `+++` and `---` a line's own
+ * text could imitate.
  */
-export function lineChanges(raw: string, patch: string): { lines: LineChange[] } | { reason: string } {
+export function lineChanges(raw: string, files: readonly Rewritten[]): { lines: LineChange[] } | { reason: string } {
   const entries = raw.split('\n').filter((line) => line.startsWith(':'));
   if (entries.length === 0) return { reason: 'it changes no file' };
+  const paths: string[] = [];
   for (const entry of entries) {
-    const [meta = '', ...paths] = entry.split('\t');
+    const [meta = '', ...rest] = entry.split('\t');
     const [modeA, modeB, , , status] = meta.slice(1).split(' ');
-    const path = paths.join('\t');
+    const path = rest.join('\t');
     if (path.startsWith('.github/'))
       return { reason: `it changes ${path}: a pin under .github/ is a workflow's, and the App writes none` };
     if (MISE_FILES.has(path))
@@ -228,59 +230,28 @@ export function lineChanges(raw: string, patch: string): { lines: LineChange[] }
       };
     if (modeA !== modeB || !/^1006[04][04]$/.test(modeA ?? ''))
       return { reason: `${path} changes its mode, or is not a regular file` };
+    paths.push(path);
   }
   const lines: LineChange[] = [];
-  let file: string | undefined;
-  let removed: { line: number; text: string }[] = [];
-  let added: { line: number; text: string }[] = [];
-  const close = (): string | undefined => {
-    if (!removed.length && !added.length) return undefined;
-    if (removed.length !== added.length)
-      return `${file} adds or removes a line rather than rewriting one: ${short((added[0] ?? removed[0])?.text ?? '')}`;
-    for (const [i, was] of removed.entries()) {
-      const now = added[i] as { line: number; text: string };
-      if (now.line !== was.line) return `${file} moves a line from ${was.line} to ${now.line}`;
-      if (!onlyPinsChange(was.text, now.text))
-        return `${file}:${was.line} changes more than a version or a digest: ${short(now.text.trim())}`;
-      lines.push({ file: file as string, line: was.line, before: was.text, after: now.text });
+  for (const path of paths) {
+    const file = files.find((each) => each.path === path);
+    if (!file) return { reason: `the gate did not read ${path} at both commits` };
+    if (file.before.includes('\0') || file.after.includes('\0')) return { reason: `${path} is binary` };
+    const [a, b] = [file.before.split('\n'), file.after.split('\n')];
+    if (a.length !== b.length)
+      return {
+        reason: `${path} adds or removes a line rather than rewriting one (${a.length} lines before, ${b.length} after)`,
+      };
+    const before = lines.length;
+    for (const [i, was] of a.entries()) {
+      const now = b[i] as string;
+      if (was === now) continue;
+      if (!onlyPinsChange(was, now))
+        return { reason: `${path}:${i + 1} changes more than a version or a digest: ${short(now.trim())}` };
+      lines.push({ file: path, line: i + 1, before: was, after: now });
     }
-    removed = [];
-    added = [];
-    return undefined;
-  };
-  let a = 0;
-  let b = 0;
-  for (const text of patch.split('\n')) {
-    if (text.startsWith('diff --git ')) {
-      const wrong = close();
-      if (wrong) return { reason: wrong };
-      file = undefined;
-      continue;
-    }
-    if (text.startsWith('+++ ')) {
-      file = text.slice(4).replace(/^b\//, '');
-      continue;
-    }
-    if (text.startsWith('--- ') || text.startsWith('index ')) continue;
-    if (text.startsWith('Binary files ')) return { reason: `${file ?? 'a file'} is binary` };
-    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
-    if (hunk) {
-      const wrong = close();
-      if (wrong) return { reason: wrong };
-      a = Number(hunk[1]);
-      b = Number(hunk[3]);
-      continue;
-    }
-    if (text.startsWith('-')) removed.push({ line: a++, text: text.slice(1) });
-    else if (text.startsWith('+')) added.push({ line: b++, text: text.slice(1) });
-    else if (text.startsWith('\\')) return { reason: `${file ?? 'a file'} changes the newline at its end` };
+    if (lines.length === before) return { reason: `${path} rewrites no line` };
   }
-  const wrong = close();
-  if (wrong) return { reason: wrong };
-  if (!lines.length) return { reason: 'it rewrites no line' };
-  const changed = new Set(entries.map((entry) => entry.split('\t').slice(1).join('\t')));
-  for (const path of changed)
-    if (!lines.some((line) => line.file === path)) return { reason: `git shows no line ${path} rewrites` };
   return { lines };
 }
 
@@ -452,6 +423,7 @@ export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersion
     version: move.to,
     major: major(move.to) !== major(move.from),
   };
+  // The scan's rule for a chart's major is the flag its fix carries, set from the versions' first numbers as here.
   if (isMajor(target, move.from)) return `a major, from ${move.from} to ${move.to}`;
   const read = readTarget(targetText(target));
   if (read?.kind !== 'chart' || read.version !== move.to)
@@ -604,10 +576,15 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
     },
   };
   // 1. Pins only: the text first, so nothing renders a head that changes more than versions and digests.
-  const { raw, patch } = await io.diff();
-  const changes = lineChanges(raw, patch);
+  const { raw, files } = await io.diff();
+  const changes = lineChanges(raw, files);
   if ('reason' in changes) return changes;
-  const [base, now] = await Promise.all([io.list('base'), io.list('head')]);
+  // Each changed line one of the base's pins before the head is rendered at all: only a pin's line reaches kustomize.
+  const base = await io.list('base');
+  const pins = new Set(base.flatMap((item) => [placeKey(item), ...(item.pins ?? []).map(placeKey)]));
+  const stranger = changes.lines.find((line) => !pins.has(placeKey(line)));
+  if (stranger) return { reason: `${placeKey(stranger)} is a line that is not a pin: ${short(stranger.after.trim())}` };
+  const now = await io.list('head');
   const listed = listMoves(base, now);
   if ('reason' in listed) return listed;
   const one = oneMove(listed.moved);
@@ -707,7 +684,18 @@ async function registry(repository: string, path: string, accept?: string): Prom
       headers: { ...(accept ? { accept } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}) },
       signal: AbortSignal.timeout(30_000),
     });
-  let answer = await get();
+  // A registry's moment (a 429, a 5xx, a dropped connection) is asked again, as the scan's reads are.
+  let answer: Response | undefined;
+  for (const wait of [0, 5_000, 15_000]) {
+    if (wait) await new Promise((done) => setTimeout(done, wait));
+    try {
+      answer = await get();
+      if (answer.status !== 429 && answer.status < 500) break;
+    } catch (error) {
+      if (wait === 15_000) throw error;
+    }
+  }
+  if (!answer) throw new Error(`${host} did not answer for ${name}`);
   if (answer.status === 401) {
     const challenge = answer.headers.get('www-authenticate') ?? '';
     const field = (key: string) => new RegExp(`${key}="([^"]*)"`).exec(challenge)?.[1];
@@ -770,11 +758,15 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
   return {
     close: () => rmSync(work, { recursive: true, force: true }),
     async diff() {
-      const [raw, patch] = await Promise.all([
-        git('diff', '--raw', '--no-renames', '--no-abbrev', options.base, options.head),
-        git('diff', '--no-renames', '--no-ext-diff', '--no-textconv', '--unified=0', options.base, options.head),
-      ]);
-      return { raw: raw.stdout, patch: patch.stdout };
+      const raw = (await git('diff', '--raw', '--no-renames', '--no-abbrev', options.base, options.head)).stdout;
+      // Each modified file's blob at both commits, as bytes git stores: no patch to parse, no filter or driver run.
+      const show = async (sha: string, path: string) => (await git('cat-file', 'blob', `${sha}:${path}`)).stdout;
+      const files: Rewritten[] = [];
+      for (const entry of raw.split('\n').filter((line) => / M\t/.test(line))) {
+        const path = entry.split('\t').slice(1).join('\t');
+        files.push({ path, before: await show(options.base, path), after: await show(options.head, path) });
+      }
+      return { raw, files };
     },
     list: async (side) => inventory(dirs[side]).items,
     unlisted: async () => unlisted(dirs.head),

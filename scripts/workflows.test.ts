@@ -24,9 +24,6 @@ const WITH_A_SECRET: Record<string, string[]> = {
  * The files each of those checks out, and copilot-held-runs.yml, whose token may delete runs: the toolchain's pins and
  * its one script.
  */
-/** review.yml's job that works out the gate's pin moves (scripts/pin-move.ts), with no secret. */
-const PIN_MOVE_JOB = 'pin-move';
-
 const CHECKED_OUT: Record<string, string[]> = {
   'drift-check.yml': ['mise.toml', 'mise.lock', 'scripts/github-settings.ts'],
   'review.yml': [
@@ -38,6 +35,9 @@ const CHECKED_OUT: Record<string, string[]> = {
   ],
   'copilot-held-runs.yml': ['mise.toml', 'mise.lock', 'scripts/copilot-held-runs.ts'],
 };
+
+/** review.yml's job that works out the gate's pin moves (scripts/pin-moves.ts), with no secret. */
+const PIN_MOVE_JOB = 'pin-move';
 
 interface Step {
   name?: string;

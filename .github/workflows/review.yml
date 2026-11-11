@@ -127,6 +127,7 @@ jobs:
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.10.17
+          # Its own set of tools, so its own cache key, which toolchain-cache.yml warms on main: never the gate's.
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           # kustomize and yq for the list, helm for the charts, pnpm for policy-hash.ts's one dependency; Trivy runs in
           # its pinned image through Docker.

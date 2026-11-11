@@ -266,6 +266,7 @@ const answerKey = (pr: PullRequest) => `${pr.number}@${pr.head.sha}`;
 
 /** The most a pin move's answer may say: a reason, not a log. */
 const ANSWER_LIMIT = 1_000;
+const cutTo = (text: string) => (text.length > ANSWER_LIMIT ? `${text.slice(0, ANSWER_LIMIT - 1)}…` : text);
 
 /**
  * The `pin move` job's answers, as review.yml hands them to the gate, or undefined when they are not all well formed:
@@ -307,7 +308,9 @@ async function pinMoveOf(each: Run, pr: PullRequest): Promise<PinMoveAnswer> {
     );
   }
   const answer = await moves.read(each, pr, { api, paged });
-  if (moves.kind === 'work') WORKED.set(answerKey(pr), answer);
+  // Cut to what the gate reads, so one long reason (a path the head names) never spoils the others' answers.
+  if (moves.kind === 'work')
+    WORKED.set(answerKey(pr), 'title' in answer ? { title: cutTo(answer.title) } : { reason: cutTo(answer.reason) });
   return answer;
 }
 
@@ -944,15 +947,14 @@ async function gate({ each, event, name, number, asApp }: ReturnType<typeof aske
   console.log(`AUTONOMY is ${each.autonomy ? JSON.stringify(each.autonomy) : 'unset'} for ${repo}.`);
   if (number !== undefined) {
     // By hand, a pull request is judged alone at its head, merged or closed too, to compare with what main's gate said.
-    const read_ = await api<PullRequest>('GET', `/repos/${repo}/pulls/${number}`, read);
+    const pr = await api<PullRequest>('GET', `/repos/${repo}/pulls/${number}`, read);
     // `--as-app` replays a past pull request as if the factory's App had opened it, with no say of Martin's: what the
     // rules would have said of the same change.
     if (asApp) {
-      const said = await judge(each, { ...read_, user: { id: FACTORY_APP } }, true);
-      console.log(`#${number} as the App's, at ${short(read_.head.sha)}: ${said.rule}: ${said.title}.`);
+      const said = await judge(each, { ...pr, user: { id: FACTORY_APP } }, true);
+      console.log(`#${number} as the App's, at ${short(pr.head.sha)}: ${said.rule}: ${said.title}.`);
       return;
     }
-    const pr = read_;
     const judged = await judgeEach(each, [pr]);
     const said = together(judged);
     await settle(each, pr.head.sha, said, judged);

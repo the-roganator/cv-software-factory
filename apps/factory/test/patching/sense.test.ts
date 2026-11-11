@@ -13,7 +13,18 @@ import { runningContainers } from '../../src/patching/running.ts';
 import { PatchingSense, type Senses } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
-import { APP, agreeing, appMoves, digest, FACTORY, factoryMoves, PULL, pod } from './fixtures.ts';
+import {
+  APP,
+  APP_COUNTS,
+  agreeing,
+  appMoves,
+  digest,
+  FACTORY,
+  FACTORY_COUNTS,
+  factoryMoves,
+  PULL,
+  pod,
+} from './fixtures.ts';
 
 let database: Database;
 const logged: { level: number; msg: string; failed?: string[] }[] = [];
@@ -70,6 +81,12 @@ describe('the dependency sense', () => {
       [FACTORY, 2, 4, []],
       [APP, 0, 1, []],
     ]);
+    // The scan's own counts, copied as the read gives them.
+    expect(payload.repositories.map((r) => r.totals)).toEqual([
+      { ...factoryMoves().file?.totals, ...FACTORY_COUNTS },
+      { ...appMoves().file?.totals, ...APP_COUNTS },
+    ]);
+    expect(payload.repositories[0]?.totals).toMatchObject({ noFix: 412, dueWithinDay: 2, newHighWithoutFix: 5 });
     expect(payload.compared).toBe(true);
     expect(payload.containers).toBe(5);
     expect(payload.rows).toEqual([]);
@@ -107,6 +124,16 @@ describe('the dependency sense', () => {
     // The view of a view is the view.
     const view = { summary: 's', payload: PAYLOADS['patching.read'].parse(before?.payload), artifacts: [] };
     expect(publicView('patching.read', publicView('patching.read', view))).toEqual(publicView('patching.read', view));
+  });
+
+  it('appends a new day when only the scan’s counts change', async () => {
+    await sense(senses()).pass();
+    const moves = factoryMoves();
+    const later = { ...moves, file: moves.file && { ...moves.file, totals: { ...moves.file.totals, noFix: 413 } } };
+    expect((await sense(senses({ moves: async (repo) => (repo === FACTORY ? later : appMoves()) })).pass()).pass).toBe(
+      'appended',
+    );
+    expect(await days()).toHaveLength(2);
   });
 
   it('appends nothing when nothing changed, a pod made again and a scale included', async () => {

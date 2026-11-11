@@ -15,21 +15,53 @@
       "totals": {
         "fixed": 41,
         "moves": 3,
-        "lanes": { "line": 0, "worker": 1, "dependabot": 1, "approval": 0, "cluster": 1, "issue": 0, "none": 0 }
+        "lanes": {
+          "line": 0,
+          "worker": 1,
+          "dependabot": 1,
+          "approval": 0,
+          "cluster": 1,
+          "issue": 0,
+          "none": 0
+        },
+        "noFix": 9674,
+        "excepted": 2,
+        "overdue": 0,
+        "dueWithinDay": 9,
+        "newHighWithFix": 3,
+        "newHighWithoutFix": 118
       },
       "scanned": 52,
       "moves": [
         {
           "name": "ghcr.io/example/sidecar",
           "pins": [
-            { "file": "deploy/base/telemetry/values/grafana.yaml", "line": 12 },
-            { "file": "deploy/base/telemetry/values/loki.yaml", "line": 30 }
+            {
+              "file": "deploy/base/telemetry/values/grafana.yaml",
+              "line": 12
+            },
+            {
+              "file": "deploy/base/telemetry/values/loki.yaml",
+              "line": 30
+            }
           ],
           "from": "2.0.0",
           "to": "image 2.0.1@sha256:2222222222222222222222222222222222222222222222222222222222222222",
           "major": false,
-          "clears": { "critical": 2, "high": 3, "medium": 4, "low": 0, "unknown": 0 },
-          "leaves": { "critical": 0, "high": 0, "medium": 1, "low": 2, "unknown": 0 },
+          "clears": {
+            "critical": 2,
+            "high": 3,
+            "medium": 4,
+            "low": 0,
+            "unknown": 0
+          },
+          "leaves": {
+            "critical": 0,
+            "high": 0,
+            "medium": 1,
+            "low": 2,
+            "unknown": 0
+          },
           "deadline": "2026-11-12T04:57:00Z",
           "newToday": 0,
           "lane": "worker",
@@ -37,12 +69,29 @@
         },
         {
           "name": "k3s",
-          "pins": [{ "file": "deploy/k3d/cluster.yaml", "line": 9 }],
+          "pins": [
+            {
+              "file": "deploy/k3d/cluster.yaml",
+              "line": 9
+            }
+          ],
           "from": "v1.37.1+k3s1",
           "to": "k3s v1.37.2+k3s1",
           "major": false,
-          "clears": { "critical": 0, "high": 30, "medium": 0, "low": 0, "unknown": 0 },
-          "leaves": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
+          "clears": {
+            "critical": 0,
+            "high": 30,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0
+          },
+          "leaves": {
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0
+          },
           "deadline": "2026-11-16T17:49:00Z",
           "newToday": 0,
           "lane": "cluster",
@@ -50,12 +99,29 @@
         },
         {
           "name": "a package in `pnpm-lock.yaml`",
-          "pins": [{ "file": "pnpm-lock.yaml", "line": 0 }],
+          "pins": [
+            {
+              "file": "pnpm-lock.yaml",
+              "line": 0
+            }
+          ],
           "from": "",
           "to": "",
           "major": false,
-          "clears": { "critical": 0, "high": 0, "medium": 1, "low": 1, "unknown": 0 },
-          "leaves": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
+          "clears": {
+            "critical": 0,
+            "high": 0,
+            "medium": 1,
+            "low": 1,
+            "unknown": 0
+          },
+          "leaves": {
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0
+          },
           "deadline": "2027-02-09T04:57:00Z",
           "newToday": 2,
           "lane": "dependabot",
@@ -64,7 +130,12 @@
             "name": "example-parser",
             "from": "1.0.0",
             "to": "1.0.1",
-            "pins": [{ "file": "pnpm-lock.yaml", "line": 120 }]
+            "pins": [
+              {
+                "file": "pnpm-lock.yaml",
+                "line": 120
+              }
+            ]
           }
         }
       ]
@@ -84,18 +155,49 @@
       "totals": {
         "fixed": 1,
         "moves": 1,
-        "lanes": { "line": 1, "worker": 0, "dependabot": 0, "approval": 0, "cluster": 0, "issue": 0, "none": 0 }
+        "lanes": {
+          "line": 1,
+          "worker": 0,
+          "dependabot": 0,
+          "approval": 0,
+          "cluster": 0,
+          "issue": 0,
+          "none": 0
+        },
+        "noFix": 310,
+        "excepted": 0,
+        "overdue": 0,
+        "dueWithinDay": 0,
+        "newHighWithFix": 1,
+        "newHighWithoutFix": 4
       },
       "scanned": 6,
       "moves": [
         {
           "name": "ghcr.io/example/base",
-          "pins": [{ "file": "Dockerfile", "line": 3 }],
+          "pins": [
+            {
+              "file": "Dockerfile",
+              "line": 3
+            }
+          ],
           "from": "1.2.0",
           "to": "image 1.2.1@sha256:4444444444444444444444444444444444444444444444444444444444444444",
           "major": false,
-          "clears": { "critical": 0, "high": 1, "medium": 0, "low": 0, "unknown": 0 },
-          "leaves": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
+          "clears": {
+            "critical": 0,
+            "high": 1,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0
+          },
+          "leaves": {
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0
+          },
           "deadline": "2026-11-18T05:01:00Z",
           "newToday": 1,
           "lane": "line",
@@ -116,7 +218,10 @@
       "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
       "repository": "the-roganator/cv-software-factory",
       "item": "loki",
-      "pin": { "file": "deploy/base/telemetry/values/loki.yaml", "line": 30 }
+      "pin": {
+        "file": "deploy/base/telemetry/values/loki.yaml",
+        "line": 30
+      }
     },
     {
       "row": "unlisted-image",
@@ -131,7 +236,10 @@
       "repository": "the-roganator/cv-software-factory",
       "item": "postgres:17.6@sha256:7777777777777777777777777777777777777777777777777777777777777777",
       "image": "postgres:17.6@sha256:7777777777777777777777777777777777777777777777777777777777777777",
-      "pin": { "file": "deploy/base/postgres/statefulset.yaml", "line": 40 },
+      "pin": {
+        "file": "deploy/base/postgres/statefulset.yaml",
+        "line": 40
+      },
       "running": [
         {
           "namespace": "factory",

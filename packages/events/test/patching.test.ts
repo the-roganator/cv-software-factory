@@ -38,6 +38,16 @@ describe("the day's moves", () => {
     expect(day.rows.map((r) => r.row)).toEqual(['unscanned-digest', 'unlisted-image', 'not-running']);
   });
 
+  it('carries the scan’s own counts beside its totals, all public, and refuses totals without them', () => {
+    const [factory] = DAY.repositories;
+    expect((view(DAY) as typeof DAY).repositories[0].totals).toEqual(factory.totals);
+    const { noFix: _, ...without } = factory.totals;
+    expect(schema.safeParse({ ...DAY, repositories: [{ ...factory, totals: without }] }).success).toBe(false);
+    expect(
+      schema.safeParse({ ...DAY, repositories: [{ ...factory, totals: { ...factory.totals, overdue: -1 } }] }).success,
+    ).toBe(false);
+  });
+
   it('refuses a repository twice, a package on a move that is not a lockfile’s, and rows with no comparison', () => {
     const [factory] = DAY.repositories;
     expect(schema.safeParse({ ...DAY, repositories: [factory, factory] }).success).toBe(false);

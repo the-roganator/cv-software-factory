@@ -117,6 +117,25 @@ export function failures(conclusion: string | null, judged: string | null, moves
   return found.length ? found : ['other'];
 }
 
+/**
+ * The scan's totals, as `moves.json` gives them. Stand-in until #1009 passes the six counts through: `moves.ts`'s
+ * `MovesFile['totals']` holds them then, and this type goes.
+ */
+type ScanTotals = Day['repositories'][number]['totals'] & object;
+
+/** The scan's totals, copied: the sense computes none of them. */
+const totalsOf = (t: ScanTotals): ScanTotals => ({
+  fixed: t.fixed,
+  moves: t.moves,
+  lanes: t.lanes,
+  noFix: t.noFix,
+  excepted: t.excepted,
+  overdue: t.overdue,
+  dueWithinDay: t.dueWithinDay,
+  newHighWithFix: t.newHighWithFix,
+  newHighWithoutFix: t.newHighWithoutFix,
+});
+
 /** One repository's day. */
 function repositoryDay({ moves, pulls }: RepositoryRead): Day['repositories'][number] {
   const list = moves.moves.map((move) => dayMove(move, pulls));
@@ -133,7 +152,7 @@ function repositoryDay({ moves, pulls }: RepositoryRead): Day['repositories'][nu
     },
     judged,
     failed: failures(moves.run.conclusion, judged, list),
-    totals: moves.file ? moves.file.totals : null,
+    totals: moves.file ? totalsOf(moves.file.totals as ScanTotals) : null,
     scanned: scannedOf(moves).length,
     moves: list,
   };

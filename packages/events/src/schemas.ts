@@ -486,6 +486,11 @@ const patchingRepository = z.strictObject({
   judged: timestamp.nullable(),
   /** Why the scan failed, as its moves show it; empty when it passed. */
   failed: z.array(z.enum(V.SCAN_FAILURES)).max(V.SCAN_FAILURES.length),
+  /**
+   * The scan's own totals, as `moves.json` gives them, never worked out here: results with a fix and not excepted, the
+   * moves and the moves in each lane; and the findings nobody can act on by a move, and those that fail the scan: with
+   * no fix, excepted, past their deadline, due within a day, and new today at High or Critical, with a fix and without.
+   */
   totals: z
     .strictObject({
       fixed: count,
@@ -493,6 +498,12 @@ const patchingRepository = z.strictObject({
       lanes: z.strictObject(
         Object.fromEntries(V.MOVE_LANES.map((lane) => [lane, count])) as Record<V.MoveLane, typeof count>,
       ),
+      noFix: count,
+      excepted: count,
+      overdue: count,
+      dueWithinDay: count,
+      newHighWithFix: count,
+      newHighWithoutFix: count,
     })
     .nullable(),
   /** How many images the scan read, which the cluster's are compared with. */

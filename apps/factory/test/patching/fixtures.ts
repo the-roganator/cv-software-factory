@@ -55,6 +55,24 @@ export const APP_SCANNED: ScannedImage[] = [
   },
 ];
 
+/** The scan's own counts beside its moves, as `moves.json`'s totals give them, and the sense copies. */
+export const FACTORY_COUNTS = {
+  noFix: 412,
+  excepted: 1,
+  overdue: 0,
+  dueWithinDay: 2,
+  newHighWithFix: 1,
+  newHighWithoutFix: 5,
+};
+export const APP_COUNTS = {
+  noFix: 37,
+  excepted: 0,
+  overdue: 0,
+  dueWithinDay: 0,
+  newHighWithFix: 0,
+  newHighWithoutFix: 0,
+};
+
 const run = (id: number) => ({
   id,
   event: 'schedule',
@@ -78,6 +96,7 @@ export function factoryMoves(scanned: ScannedImage[] = FACTORY_SCANNED): Moves {
         fixed: 3,
         moves: 2,
         lanes: { line: 0, worker: 1, dependabot: 1, approval: 0, cluster: 0, issue: 0, none: 0 },
+        ...FACTORY_COUNTS,
       },
       scanned,
     },
@@ -137,6 +156,7 @@ export function appMoves(scanned: ScannedImage[] = APP_SCANNED): Moves {
         fixed: 0,
         moves: 0,
         lanes: { line: 0, worker: 0, dependabot: 0, approval: 0, cluster: 0, issue: 0, none: 0 },
+        ...APP_COUNTS,
       },
       scanned,
     },

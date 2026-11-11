@@ -108,7 +108,7 @@ export interface Scan {
   /** Whether it read anything: a report with no results read nothing, and proves nothing. */
   read: boolean;
   /** Each finding by its advisory and its package's name: where in the image it was found is never part of it. */
-  findings: { id: string; pkg: string; severity: string; fixed: boolean }[];
+  findings: { id: string; pkg: string; path?: string; severity: string; fixed: boolean }[];
 }
 
 /** Everything the rule reads, so the tests give it answers instead. Each may throw: a fact not read holds. */
@@ -541,10 +541,13 @@ export function scansShow(
     if (!now.read) return { reason: `the scan of ${short(to)} read nothing` };
     // A finding is its advisory and its package, never its path: one still there at another path is not gone.
     const key = (f: Scan['findings'][number]) => `${f.id}\0${f.pkg.split(' ')[0]}`;
-    const before = new Set(was.findings.map(key));
+    const _before = new Set(was.findings.map(key));
+    // New is strict: the same advisory in the same package at a path it was not at before is new.
+    const where = (f: Scan['findings'][number]) => `${key(f)}\0${f.path ?? ''}`;
+    const beforeAt = new Set(was.findings.map(where));
     const after = new Set(now.findings.map(key));
     for (const f of was.findings) if (f.fixed && !after.has(key(f))) gone.add(key(f));
-    const brought = now.findings.find((f) => HIGH.has(f.severity.toUpperCase()) && !before.has(key(f)));
+    const brought = now.findings.find((f) => HIGH.has(f.severity.toUpperCase()) && !beforeAt.has(where(f)));
     if (brought) return { reason: `a target that brings a new ${brought.severity.toUpperCase()}: ${short(to)}` };
   }
   if (gone.size === 0) return { reason: 'the scans show no finding with a fix gone: the move fixes nothing' };
@@ -796,7 +799,20 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
     });
   if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error('git wrote no tree of the merge');
   const merged = (
-    await git('-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', options.base, '-m', 'the merge, as data')
+    await git(
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'user.name=pin move',
+      '-c',
+      'user.email=pin-move@localhost',
+      'commit-tree',
+      tree,
+      '-p',
+      options.base,
+      '-m',
+      'the merge, as data',
+    )
   ).stdout.trim();
   const sides: Record<Side, string> = { base: options.base, head: merged };
   const dirs: Record<Side, string> = { base: join(work, 'base'), head: join(work, 'head') };
@@ -891,6 +907,7 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
           (result.Vulnerabilities ?? []).map((v) => ({
             id: v.VulnerabilityID ?? '',
             pkg: v.PkgName ?? '',
+            path: v.PkgPath ?? '',
             severity: v.Severity ?? 'UNKNOWN',
             fixed: Boolean(v.FixedVersion),
           })),

@@ -48,7 +48,7 @@ A check the gate could not make is no judgement. When GitHub, GHCR or Sigstore d
 | Guarded | `low-risk`, `exact-pin`, `martin-approved-head` |
 | Lights-out | Guarded's, and `lights-out` |
 
-The line adds the app's deploy pull request, which the App opens and every fix waits for at Release, to the queue the same way, once its checks have passed: only when the gate passed its head as `exact-pin`, at Guarded or Lights-out with auto-merge on, once for each head. Otherwise it waits for Martin, and the line records why ([the line adds it to the queue](RELEASE-AND-VERIFY.md#the-line-adds-it-to-the-queue)). The factory's own local deploy pull request the GitHub worker adds to the queue, whatever the level, once the gate passed its head as `exact-pin` and every required check is green ([below](#the-workers-part)).
+The line adds the app's deploy pull request, which the App opens and every fix waits for at Release, to the queue the same way, once its checks have passed: only when the gate passed its head as `exact-pin`, at Guarded or Lights-out with auto-merge on, once for each head. Otherwise it waits for Martin, and the line records why ([the line adds it to the queue](RELEASE-AND-VERIFY.md#the-line-adds-it-to-the-queue)). The factory's own local deploy pull request, and the pin watch's pull request for each move, the GitHub worker adds to the queue, whatever the level, once the gate passed its head as `exact-pin` or `pin-move` respectively and every required check is green ([below](#the-workers-part)).
 
 Anything else is held in Needs you, as a `merge` hold naming the gate's rule, its tags with what gave each, its words, and why the line does not merge it; where Martin's approval of the head on GitHub would send it to the queue, the hold says so. Only a pull request the gate refused (`held`) is recorded as a refusal, `review-gate`, once for each head, signed by the GitHub worker. A merge held because the level or auto-merge does not allow it is his ordinary merge.
 
@@ -81,6 +81,11 @@ The GitHub worker adds this repository's local deploy pull request to the merge 
 - the review App's `review` check on that head passed it as `exact-pin`: no other rule, and never a hold, a pending one, or a verdict for another head;
 - every other check `main`'s rulesets require has a latest run on the head that finished and did not fail, by anyone but the factory's App;
 - it does not conflict with `main`, and is not queued already.
+
+It adds the pin watch's pull request for a move ([the pins](GITHUB-WORKER.md#pins)) on the same terms, each open one on its own, with these in place of the first two:
+
+- the App opened it, from this repository's `factory/pin/<move>` (one segment) into `main`, not a draft, labelled `pin`, and nobody but the App ever gave it that label, by its events: the gate trusts no branch, so a pin move's content on any other branch passes the gate and is still not queued;
+- the review App's `review` check on that head passed it as `pin-move`: never another rule, so never a hold, and never `martin-approved-head`, his approval of a head the gate held, which leaves adding it his.
 
 It enqueues at that head, through the line's action and guards (`enqueuePullRequest`). A failure that may pass (the head moved, a rate limit, an outage) is tried again on the next pass, up to five times; a refusal, the guard's or GitHub's 403, is kept, signed and logged as the worker keeps its others, and it or any other failure leaves the head for Martin, as does the queue taking it out. A dry run reads GitHub as it is and records the enqueue it would make, changing nothing. The app's deploy pull request stays the line's, a release and anything else Martin's.
 

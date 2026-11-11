@@ -11,7 +11,7 @@ import { type Actions, contentsReader, DryRunActions, LiveActions, queueCandidat
 import { createAttackServer } from './attacks.ts';
 import { GitHub } from './client.ts';
 import { type GitHubConfig, REPOSITORIES } from './config.ts';
-import { deployQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
+import { deployQueueWatch, pinQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
@@ -82,8 +82,12 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     }
     // This repository's moves: one pull request of the App's for each it can write, one issue for each it cannot, each
     // recorded instead in a dry run. Its reads are the live ones: a dry run acts on the day as GitHub has it.
-    for (const repo of PIN_REPOS.filter((r) => config.repositories.includes(r)))
+    for (const repo of PIN_REPOS.filter((r) => config.repositories.includes(r))) {
       poller.watch(`pins in ${repo}`, pinWatch({ github, reads: liveReads, actions, recorder, log }, repo));
+      // Each of those pull requests is added to the merge queue once the gate passes it as a pin move and its checks
+      // are green (ADR 0017), recorded instead in a dry run; one the gate held is Martin's, as is all else.
+      poller.watch(`queue pins in ${repo}`, pinQueueWatch({ github, reads: liveReads, actions, recorder, log }, repo));
+    }
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.
     for (const repo of config.repositories)
       poller.watch(`issues in ${repo}`, outsideIssuesWatch(github, repo, actions, log));

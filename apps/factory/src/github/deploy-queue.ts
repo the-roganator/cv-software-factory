@@ -1,18 +1,26 @@
 /**
- * The local profile's deploy pins in this repository, added to the merge queue by the worker itself (ADR 0017). The
- * deploy watch (`deploys.ts`) opens and moves the factory's own deploy pull request; the review gate passes it as an
- * exact pin (`exact-pin`: every changed line a digest under `deploy/`, each image signed by `build.yml` on main, from a
- * commit ahead of the pin it replaces); and this watch adds it to the queue, so an image built on main reaches the
- * local cluster with nobody's hand on it. The app's deploy pull request is the line's, within Martin's autonomy level
- * and auto-merge (`line/deploy.ts`); a release, and anything else, is his.
+ * The App's own pin pull requests in this repository, added to the merge queue by the worker itself (ADR 0017): the
+ * local profile's deploy pin, and each pin move the gate proved (ADR 0019). The deploy watch (`deploys.ts`) opens and
+ * moves the factory's own deploy pull request, which the review gate passes as an exact pin (`exact-pin`: every changed
+ * line a digest under `deploy/`, each image signed by `build.yml` on main, from a commit ahead of the pin it replaces);
+ * the pin watch (`pins.ts`) opens one pull request for each move of the vulnerability scan's, which the gate passes as
+ * a pin move (`pin-move`) when it can prove the move from the pull request itself. These watches add each to the queue,
+ * so a pin the gate passed reaches `main` with nobody's hand on it. The app's deploy pull request is the line's, within
+ * Martin's autonomy level and auto-merge (`line/deploy.ts`); a pull request the gate held, even one Martin then
+ * approved, a release, and anything else, is his.
  *
- * Each pass reads the one open pull request from the deploy branch, and adds it to the queue at its head only when
- * every one of these holds; otherwise it waits, and says why once for each head:
+ * Each pass reads the open pull requests it watches, and adds each to the queue at its head only when every one of
+ * these holds; otherwise it waits, and says why once for each head:
  *
- * - it is the App's (`APP_USER`), from this repository's deploy branch into main, not a draft, with the profile's label
- *   (`deploy: local`) and a title the deploy watch writes (`chore(deploy): run … on the local cluster`);
- * - the review App's own `review` check on that head concluded with a verdict that passes it as `exact-pin` at that
- *   head (`merging.ts`): no other rule, and never a hold, a pending one, or one for another head;
+ * - **the deploy pin**: it is the App's (`APP_USER`), from this repository's deploy branch into main, not a draft, with
+ *   the profile's label (`deploy: local`) and a title the deploy watch writes (`chore(deploy): run … on the local
+ *   cluster`), and the gate's rule is `exact-pin`;
+ * - **a pin move**: it is the App's, from this repository's `factory/pin/<move>` (the pin watch's branch, one segment,
+ *   as `guardPinBranch` has it) into main, not a draft, labelled `pin` by the App and by nobody else, every time it was
+ *   labelled, and the gate's rule is `pin-move`. The gate trusts no branch, label or title (ADR 0019); the queue reads
+ *   them so that nothing but the pin watch's own pull request rides the rule, and the verdict is what passes it;
+ * - the review App's own `review` check on that head concluded with a verdict that passes it by that rule at that head
+ *   (`merging.ts`): no other rule, and never a hold, a pending one, Martin's approval, or one for another head;
  * - every other check main's rulesets require has a latest run on that head, by anyone but the factory's App, that
  *   finished and did not fail (a skipped one passes, as GitHub has it); one still running is waited for, and one that
  *   failed waits for a re-run or a newer build;
@@ -28,18 +36,22 @@
  * the pull request, and the worker does not add that head again; a worker that restarts may, once, and the queue tests
  * it again as before.
  *
- * In a dry run the watch reads GitHub as it is, and the actions record the enqueue it would make of the App's deploy
- * pull request there in the artifact store, changing nothing (`DryRunActions`). A dry run's own deploy pull request,
- * which GitHub never had, is not seen here: the dry run's reads merge it on their own clock (`dry-run-reads.ts`).
+ * In a dry run the watches read GitHub as it is, and the actions record the enqueue they would make of the App's pull
+ * requests there in the artifact store, changing nothing (`DryRunActions`). A dry run's own deploy and pin pull
+ * requests, which GitHub never had, are not seen here: the dry run's reads merge its deploy on their own clock
+ * (`dry-run-reads.ts`).
  */
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN } from './actions.ts';
+import { BranchRefused } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
 import { APP_USER, IssueRefused } from './issues.ts';
 import { REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
+import { guardPinBranch } from './pin-guard.ts';
+import { PIN_LABEL, PIN_REPOS } from './pins.ts';
 import type { Watch } from './poller.ts';
 import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -68,10 +80,13 @@ const PULLS = z.array(
   }),
 );
 export type DeployPull = z.infer<typeof PULLS>[number];
+/** A pull request as the queue reads it from GitHub's list: a deploy's or a pin move's. */
+export type QueuePull = DeployPull;
 
-/** Why a deploy pull request is not added to the queue now, in a few words, or undefined when it may be. */
+/** Why a pull request is not added to the queue now, in a few words, or undefined when it may be. */
 export type QueueWait =
   | { waits: 'not-a-deploy'; why: string }
+  | { waits: 'not-a-pin'; why: string }
   | { waits: 'verdict'; why: string }
   | { waits: 'checks'; why: string }
   | { waits: 'failed'; why: string }
@@ -91,14 +106,68 @@ export function deployPullWait(target: DeployTarget, pull: DeployPull): QueueWai
   return undefined;
 }
 
-/** Whether the gate passed a head as an exact pin: its own verdict on that head, by that rule, and not pending. */
-export function verdictWait(verdict: Pick<ReviewVerdict, 'head' | 'judged' | 'problem'>, head: string) {
+/**
+ * Whether a pull request is the pin watch's own in a repository, by what GitHub's list shows of it: the App's, from
+ * `factory/pin/<move>` of that repository into main, not a draft, labelled `pin`. Who labelled it is read apart
+ * (`labelledByApp`), from its events.
+ */
+export function pinPullWait(repo: string, pull: QueuePull): QueueWait | undefined {
+  const not = (why: string): QueueWait => ({ waits: 'not-a-pin', why });
+  if (pull.user?.id !== APP_USER) return not('the App did not open it');
+  if (pull.head.repo?.full_name !== repo) return not(`it is not from a branch of ${repo}`);
+  try {
+    guardPinBranch(pull.head.ref);
+  } catch (error) {
+    if (error instanceof BranchRefused) return not(`${pull.head.ref} is not a pin move's branch`);
+    throw error;
+  }
+  if (pull.base.ref !== 'main') return not(`it is into ${pull.base.ref}, not main`);
+  if (pull.draft) return not('it is a draft');
+  if (!pull.labels.some((l) => l.name === PIN_LABEL)) return not(`it has no ${PIN_LABEL} label`);
+  return undefined;
+}
+
+const LABEL_EVENTS = z.array(
+  z.object({
+    event: z.string(),
+    actor: z.object({ id: z.number().int() }).nullable(),
+    label: z.object({ name: z.string() }).optional(),
+  }),
+);
+export type LabelEvents = z.infer<typeof LABEL_EVENTS>;
+
+/** How many pages of a pull request's events are read before it is held as one that cannot be read whole. */
+const EVENT_PAGES = 5;
+
+/**
+ * Whether only the App ever gave a pull request the `pin` label, by its events: at least once, and never anyone else,
+ * so a label someone else put back after the App's was taken off is no pin's. A pull request whose events run past
+ * `EVENT_PAGES` pages is not read whole, and waits.
+ */
+export function labelWait(events: LabelEvents, whole: boolean): QueueWait | undefined {
+  const not = (why: string): QueueWait => ({ waits: 'not-a-pin', why });
+  if (!whole) return not('its events run past what is read');
+  const labelled = events.filter((e) => e.event === 'labeled' && e.label?.name === PIN_LABEL);
+  if (!labelled.length) return not(`nobody labelled it ${PIN_LABEL}`);
+  if (labelled.some((e) => e.actor?.id !== APP_USER)) return not(`someone but the App labelled it ${PIN_LABEL}`);
+  return undefined;
+}
+
+/** The gate's rules a pull request the worker queues may pass by: a deploy pin's and a pin move's. */
+export type QueueRule = 'exact-pin' | 'pin-move';
+
+/** Whether the gate passed a head by a rule: its own verdict on that head, by that rule alone, and not pending. */
+export function verdictWait(
+  verdict: Pick<ReviewVerdict, 'head' | 'judged' | 'problem'>,
+  head: string,
+  rule: QueueRule = 'exact-pin',
+) {
   const { judged } = verdict;
   if (verdict.head !== head || judged?.head !== head) {
     return { waits: 'verdict' as const, why: verdict.problem ?? 'the gate has not judged this head' };
   }
   if (judged.pending !== undefined) return { waits: 'verdict' as const, why: `the gate waits: ${judged.pending}` };
-  if (judged.rule !== 'exact-pin') return { waits: 'verdict' as const, why: `the gate's rule is ${judged.rule}` };
+  if (judged.rule !== rule) return { waits: 'verdict' as const, why: `the gate's rule is ${judged.rule}, not ${rule}` };
   return undefined;
 }
 
@@ -137,25 +206,117 @@ export interface DeployQueueDependencies {
   log: Logger;
 }
 
+/** A head the queue last tried to add, and how often a failure that may pass was met there. */
+interface Attempt {
+  at: string;
+  failures: number;
+  /** Once it is added, found queued, refused, or out of tries. */
+  done: boolean;
+}
+
+/**
+ * What one watch keeps of the pull requests it queues, each by number: the head it last tried and what it last said of
+ * it, so it tries each head once and says each wait once. Only the current head of each is kept.
+ */
+function queueState(deps: DeployQueueDependencies, repo: string, kind: string) {
+  const { log } = deps;
+  const tried = new Map<number, Attempt>();
+  const said = new Map<number, string>();
+  return {
+    attempt(number: number, head: string): Attempt {
+      const at = `${number} ${head}`;
+      const kept = tried.get(number);
+      if (kept?.at === at) return kept;
+      const attempt = { at, failures: 0, done: false };
+      tried.set(number, attempt);
+      return attempt;
+    },
+    wait(number: number, head: string, w: QueueWait) {
+      const key = `${head} ${w.waits} ${w.why}`;
+      if (said.get(number) === key) return;
+      said.set(number, key);
+      log.info({ repo, number, head, waits: w.waits, why: w.why }, `the ${kind} pull request waits to be queued`);
+    },
+    /** Forgets the pull requests no longer open, so a long-lived worker keeps nothing of them. */
+    keep(open: ReadonlySet<number>) {
+      for (const number of tried.keys()) if (!open.has(number)) tried.delete(number);
+      for (const number of said.keys()) if (!open.has(number)) said.delete(number);
+    },
+  };
+}
+
+/**
+ * Adds one pull request, already known to be the App's own of its kind, to the queue at its head once the gate passed
+ * that head by the rule and its checks are green; otherwise says why it waits.
+ */
+async function queueOne(
+  deps: DeployQueueDependencies,
+  state: ReturnType<typeof queueState>,
+  repo: string,
+  kind: string,
+  pull: QueuePull,
+  rule: QueueRule,
+  attempt: Attempt,
+): Promise<void> {
+  const { reads, actions, recorder, log } = deps;
+  const { number } = pull;
+  const head = pull.head.sha;
+  // Each a conditional request, read together: one that has not changed costs nothing against the rate limit.
+  const [verdict, runs, required, mergeable] = await Promise.all([
+    reads.reviewVerdict(repo, number),
+    reads.checkRuns(repo, head),
+    reads.requiredChecks(repo, 'main'),
+    reads.mergeability(repo, number),
+  ]);
+  const gate = verdictWait(verdict, head, rule);
+  if (gate) return state.wait(number, head, gate);
+  const checks = checksWait(runs, required);
+  if (checks) return state.wait(number, head, checks);
+  if (mergeable.head !== head || mergeable.conflicts !== false) {
+    const why = mergeable.conflicts ? 'it conflicts with main' : 'GitHub has not said whether it conflicts';
+    return state.wait(number, head, { waits: 'conflict', why });
+  }
+  const queue = await reads.mergeQueue(repo, number);
+  if (queue.head === head && queue.queued) {
+    attempt.done = true;
+    return;
+  }
+
+  try {
+    const entry = await actions.enqueuePullRequest(repo, number, head);
+    attempt.done = true;
+    log.info(
+      { repo, number, head, rule, position: entry.position },
+      `added the ${kind} pull request to the merge queue`,
+    );
+  } catch (error) {
+    if (error instanceof GitHubError && PASSING.includes(error.kind) && ++attempt.failures < MAX_TRIES) {
+      log.info({ repo, number, head, err: error }, `the ${kind} pull request was not queued yet: tries again`);
+      return;
+    }
+    attempt.done = true;
+    // The guard's refusal of an issue the App did not open is kept by the guard; a branch's, a deploy's or GitHub's
+    // 403 is kept here, as the worker's door keeps one.
+    const refusal =
+      error instanceof IssueRefused ? undefined : refusalOf(error, 'enqueuePullRequest', repo, { number });
+    if (refusal && recorder) {
+      await recorder.record(refusal).catch((kept: unknown) => {
+        log.error({ repo, number, err: kept }, 'could not keep a refusal');
+      });
+    }
+    log.warn(
+      { repo, number, head, err: error, refused: refusal !== undefined || error instanceof IssueRefused },
+      `the ${kind} pull request was not added to the merge queue: it waits for Martin`,
+    );
+  }
+}
+
 /** Watches one deploy's open pull request, and adds it to the merge queue once the gate and its checks pass it. */
 export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTarget): Watch {
-  const { github, reads, actions, recorder, log } = deps;
+  const { github } = deps;
   const { repo } = target;
   if (!QUEUED_DEPLOYS.includes(target)) throw new Error(`The worker does not queue ${repo}'s ${target.branch}.`);
-  /**
-   * The head it last tried to add, and how often a failure that may pass was met there. Done once it is added, found
-   * queued, refused, or out of tries; only the current head is kept.
-   */
-  let tried: { at: string; failures: number; done: boolean } | undefined;
-  /** What it last said of each head's wait, so it says each once. */
-  let said: string | undefined;
-
-  const wait = (number: number, head: string, w: QueueWait) => {
-    const key = `${number} ${head} ${w.waits} ${w.why}`;
-    if (said === key) return;
-    said = key;
-    log.info({ repo, number, head, waits: w.waits, why: w.why }, 'the deploy pull request waits to be queued');
-  };
+  const state = queueState(deps, repo, 'deploy');
 
   return async () => {
     const [owner] = repo.split('/');
@@ -166,60 +327,71 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
     );
     // The deploy watch's own, if GitHub lists another from the same branch into another base beside it.
     const pull = pulls.find((p) => deployPullWait(target, p) === undefined) ?? pulls[0];
+    state.keep(new Set(pull ? [pull.number] : []));
     if (!pull) return;
-    const { number } = pull;
-    const head = pull.head.sha;
-    const at = `${number} ${head}`;
-    if (tried?.at !== at) tried = { at, failures: 0, done: false };
-    if (tried.done) return;
-    const attempt = tried;
+    const attempt = state.attempt(pull.number, pull.head.sha);
+    if (attempt.done) return;
     const notOne = deployPullWait(target, pull);
-    if (notOne) return wait(number, head, notOne);
+    if (notOne) return state.wait(pull.number, pull.head.sha, notOne);
+    await queueOne(deps, state, repo, 'deploy', pull, 'exact-pin', attempt);
+  };
+}
 
-    // Each a conditional request, read together: one that has not changed costs nothing against the rate limit.
-    const [verdict, runs, required, mergeable] = await Promise.all([
-      reads.reviewVerdict(repo, number),
-      reads.checkRuns(repo, head),
-      reads.requiredChecks(repo, 'main'),
-      reads.mergeability(repo, number),
-    ]);
-    const gate = verdictWait(verdict, head);
-    if (gate) return wait(number, head, gate);
-    const checks = checksWait(runs, required);
-    if (checks) return wait(number, head, checks);
-    if (mergeable.head !== head || mergeable.conflicts !== false) {
-      const why = mergeable.conflicts ? 'it conflicts with main' : 'GitHub has not said whether it conflicts';
-      return wait(number, head, { waits: 'conflict', why });
-    }
-    const queue = await reads.mergeQueue(repo, number);
-    if (queue.head === head && queue.queued) {
-      attempt.done = true;
-      return;
-    }
+/** How many open pull requests a pass reads: the pin watch opens one for each move, and a day has a few. */
+const OPEN_PAGE = 100;
 
-    try {
-      const entry = await actions.enqueuePullRequest(repo, number, head);
-      attempt.done = true;
-      log.info({ repo, number, head, position: entry.position }, 'added the deploy pull request to the merge queue');
-    } catch (error) {
-      if (error instanceof GitHubError && PASSING.includes(error.kind) && ++attempt.failures < MAX_TRIES) {
-        log.info({ repo, number, head, err: error }, 'the deploy pull request was not queued yet: tries again');
-        return;
-      }
-      attempt.done = true;
-      // The guard's refusal of an issue the App did not open is kept by the guard; a branch's, a deploy's or GitHub's
-      // 403 is kept here, as the worker's door keeps one.
-      const refusal =
-        error instanceof IssueRefused ? undefined : refusalOf(error, 'enqueuePullRequest', repo, { number });
-      if (refusal && recorder) {
-        await recorder.record(refusal).catch((kept: unknown) => {
-          log.error({ repo, number, err: kept }, 'could not keep a refusal');
-        });
-      }
-      log.warn(
-        { repo, number, head, err: error, refused: refusal !== undefined || error instanceof IssueRefused },
-        'the deploy pull request was not added to the merge queue: it waits for Martin',
+/**
+ * Watches the pin watch's open pull requests in a repository, and adds each to the merge queue once the gate passed
+ * its head as a pin move and its checks are green. A pull request on a pin branch or labelled `pin` that is not the pin
+ * watch's own waits, and says why; every other open pull request is not read further.
+ */
+export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watch {
+  const { github } = deps;
+  if (!PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s pin moves.`);
+  const state = queueState(deps, repo, 'pin');
+
+  /** Every event of a pull request, page by page, up to `EVENT_PAGES`; whole is false past them. */
+  const eventsOf = async (number: number): Promise<{ events: LabelEvents; whole: boolean }> => {
+    const events: LabelEvents = [];
+    for (let page = 1; page <= EVENT_PAGES; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/issues/${number}/events?per_page=100&page=${page}`,
+        LABEL_EVENTS,
       );
+      events.push(...body);
+      if (body.length < 100) return { events, whole: true };
+    }
+    return { events, whole: false };
+  };
+
+  return async () => {
+    const { body: pulls } = await github.poll(
+      repo,
+      `/repos/${repo}/pulls?state=open&per_page=${OPEN_PAGE}&sort=created&direction=asc`,
+      PULLS,
+    );
+    const candidates = pulls.filter(
+      (p) => p.head.ref.startsWith('factory/pin') || p.labels.some((l) => l.name === PIN_LABEL),
+    );
+    state.keep(new Set(candidates.map((p) => p.number)));
+    for (const pull of candidates) {
+      const { number } = pull;
+      const head = pull.head.sha;
+      const attempt = state.attempt(number, head);
+      if (attempt.done) continue;
+      const notOne = pinPullWait(repo, pull);
+      if (notOne) {
+        state.wait(number, head, notOne);
+        continue;
+      }
+      const { events, whole } = await eventsOf(number);
+      const label = labelWait(events, whole);
+      if (label) {
+        state.wait(number, head, label);
+        continue;
+      }
+      await queueOne(deps, state, repo, 'pin', pull, 'pin-move', attempt);
     }
   };
 }

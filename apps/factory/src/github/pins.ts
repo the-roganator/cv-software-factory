@@ -273,7 +273,7 @@ export function pullBody(move: ReadMove, edits: readonly PinEdit[], moves: Moves
   lines.push(
     waits
       ? `**It waits for you.** ${waits}`
-      : 'The review gate passes it as `pin-move` when it proves the move from this pull request alone. If it cannot, its `review` check says why it waits for you, and your approval of its head passes it.',
+      : 'The review gate passes it as `pin-move` when it proves the move from this pull request alone, and the worker then adds it to the merge queue once its checks are green. If it cannot, its `review` check says why it waits for you: your approval of its head passes it, and adding it to the queue is yours.',
     '',
     `<!-- factory: pin-edits ${editsHash(edits)} -->`,
   );

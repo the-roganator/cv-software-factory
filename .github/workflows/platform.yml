@@ -110,6 +110,8 @@ jobs:
           export PUSHOVER_APP_TOKEN=stand-in-not-a-token PUSHOVER_USER_KEY=stand-in-not-a-key
           setsid make up REVISION="$REVISION" SYNC_TIMEOUT=20m TIMEOUT=1200 &
           make=$!
+          # make has a session of its own, so a cancelled step stops it here.
+          trap 'kill -- "-$make" 2>/dev/null' TERM INT
           if ! WATCHED=$make scripts/platform-watch.sh; then
             kill -- "-$make" 2>/dev/null || true
             wait "$make" || true

@@ -358,8 +358,14 @@ describe('what the platform check runs', () => {
       seen.add(file);
       const text = readFileSync(file, 'utf-8');
       const named = file.endsWith('.sh')
-        ? [...text.matchAll(/\$here\/([\w-]+\.ts)\b|\bscripts\/([\w-]+\.ts)\b/g)].map((m) => `scripts/${m[1] ?? m[2]}`)
-        : [...text.matchAll(/^import [^;]*?from '(\.{1,2}\/[^']+)';$/gms)].map((m) => join(dirname(file), m[1] ?? ''));
+        ? // A script beside it, however it is named: `$here/x.ts`, `$(dirname "$0")/x.ts` or `scripts/x.ts`.
+          [...text.matchAll(/(?:\$here|\$\(dirname "\$0"\)|\bscripts)\/([\w-]+\.(?:ts|sh))\b/g)].map(
+            (m) => `scripts/${m[1]}`,
+          )
+        : // Each module it imports or re-exports, or imports for its effect alone.
+          [...text.matchAll(/^(?:import|export) (?:[^;]*? from )?'(\.{1,2}\/[^']+)';$/gms)].map((m) =>
+            join(dirname(file), m[1] ?? ''),
+          );
       queue.push(...named);
     }
     return [...seen];
@@ -367,7 +373,9 @@ describe('what the platform check runs', () => {
 
   it('names every file the scripts it runs reach, file by file', () => {
     const files = reached(RUNS);
-    expect(files).toEqual(expect.arrayContaining(['scripts/signed-by.ts', 'policy/flags.ts']));
+    expect(files).toEqual(
+      expect.arrayContaining(['scripts/signed-by.ts', 'scripts/policy-hash.ts', 'policy/flags.ts']),
+    );
     for (const file of files) expect(file, file).toMatch(rule);
   });
 });

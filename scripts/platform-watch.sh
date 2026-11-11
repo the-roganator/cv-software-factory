@@ -2,13 +2,16 @@
 # Watches the cluster platform.yml makes while `make up` waits for it, and says when to stop waiting: the platform
 # check's ceiling, and the two faults that waiting longer will not mend. It prints one line and exits 1 on the first of:
 #
-#   ceiling      DEADLINE seconds (default 1200) have passed since it started: the cluster did not come up in time.
+#   ceiling      DEADLINE seconds (default 1200) have passed since it started: the cluster did not come up in time. It
+#                names each Application not yet Synced and Healthy, and each of its resources that is not.
 #   comparison   an Application has had a ComparisonError (Argo CD could not render it: a chart or its values that do
-#                not render, a revision it cannot fetch) on two looks in a row, INTERVAL seconds apart (default 15), so
-#                a fetch that fails once while the repo server starts is not taken for the change's fault.
+#                not render, a revision it cannot fetch) after two comparisons in a row: Argo CD keeps the condition
+#                until it compares again, minutes later, so the error must outlast a new `reconciledAt`. A fetch that
+#                fails once while the repo server starts is not taken for the change's fault.
 #   degraded     an Application has stayed Degraded for DEGRADED seconds (default 300). While a cluster comes up a pod
-#                may crash until what it needs is ready, and its Application is Degraded meanwhile; one Degraded for
-#                five minutes is not coming up. Restarts are not counted: a pod that cannot pull its image has none.
+#                may crash until what it needs is ready; its Deployment is Progressing meanwhile, and Degraded only
+#                once its progress deadline has passed, so one Degraded for five more minutes is not coming up.
+#                Restarts are not counted: a pod that cannot pull its image has none.
 #                The website's health is its release's, and root's rolls it up (scripts/wait-deployed.sh): neither is
 #                judged so.
 #
@@ -19,29 +22,35 @@ read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
 deadline=$((SECONDS + ${DEADLINE:-1200}))
 interval=${INTERVAL:-15}
 degraded_for=${DEGRADED:-300}
-# What it has seen of each Application, a file each: when it was first seen Degraded, and whether the last look found
-# a ComparisonError.
+# What it has seen of each Application, a file each: when it was first seen Degraded, and when Argo CD last compared
+# it, if that comparison found a ComparisonError.
 seen=$(mktemp -d)
 trap 'rm -rf "$seen"' EXIT
 
 while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
   if ((SECONDS >= deadline)); then
-    echo "ceiling: the cluster did not come up within ${DEADLINE:-1200} seconds"
+    echo "ceiling: the cluster did not come up within ${DEADLINE:-1200} seconds. Not yet Synced and Healthy:"
+    "${kubectl[@]}" -n argocd get applications -o json 2>/dev/null | jq -r '.items[] |
+      select(.status.sync.status != "Synced" or .status.health.status != "Healthy") | .metadata.name as $app |
+      "  \($app) \(.status.sync.status // "Unknown") \(.status.health.status // "Unknown")",
+      (.status.resources[]? | select(.status != "Synced" or (.health.status // "Healthy") != "Healthy") |
+        "    \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")'
     exit 1
   fi
-  # One line per Application: its name, its health, and how many ComparisonErrors it has now.
+  # One line per Application: its name, its health, how many ComparisonErrors it has now, when it was compared, and
+  # the first error's message, last, as the rest of the line.
   states=$("${kubectl[@]}" -n argocd get applications -o json 2>/dev/null | jq -r '.items[] |
-    "\(.metadata.name) \(.status.health.status // "Unknown") \([.status.conditions[]? | select(.type == "ComparisonError")] | length)"' || true)
-  while read -r app health errors; do
+    [.status.conditions[]? | select(.type == "ComparisonError") | .message | gsub("\n"; " ")] as $errors |
+    "\(.metadata.name) \(.status.health.status // "Unknown") \($errors | length) \(.status.reconciledAt // "never") \($errors[0] // "")"' || true)
+  while read -r app health errors compared message; do
     [ -n "$app" ] || continue
     if [ "$errors" -gt 0 ]; then
-      if [ -e "$seen/$app.compared" ]; then
+      if [ -e "$seen/$app.compared" ] && [ "$(<"$seen/$app.compared")" != "$compared" ]; then
         echo "comparison: Argo CD cannot render $app:"
-        "${kubectl[@]}" -n argocd get application "$app" -o json |
-          jq -r '.status.conditions[]? | select(.type == "ComparisonError") | "  \(.message)"'
+        echo "  $message"
         exit 1
       fi
-      touch "$seen/$app.compared"
+      [ -e "$seen/$app.compared" ] || echo "$compared" >"$seen/$app.compared"
     else
       rm -f "$seen/$app.compared"
     fi

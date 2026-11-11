@@ -16,11 +16,25 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-type App = { name: string; health: string; error?: string };
-const application = ({ name, health, error }: App) => ({
+type App = { name: string; health: string; error?: string; compared?: string };
+const application = ({ name, health, error, compared = 'then' }: App) => ({
   metadata: { name },
   status: {
     health: { status: health },
+    sync: { status: 'Synced' },
+    reconciledAt: compared,
+    resources:
+      health === 'Healthy'
+        ? []
+        : [
+            {
+              kind: 'StatefulSet',
+              namespace: 'telemetry',
+              name: name,
+              status: 'Synced',
+              health: { status: health, message: 'Waiting for 1 pods to be ready...' },
+            },
+          ],
     conditions: error ? [{ type: 'ComparisonError', message: error }] : [{ type: 'SyncError', message: 'not this' }],
   },
 });
@@ -60,24 +74,31 @@ const healthy = [
 ];
 
 describe('the watch of make up', () => {
-  it('stops at the ceiling a cluster that does not come up', () => {
-    const { status, out } = watch([[{ name: 'loki', health: 'Progressing' }]], { DEADLINE: '1', INTERVAL: '1' });
+  it('stops at the ceiling a cluster that does not come up, and names what it waited for', () => {
+    const { status, out } = watch([[{ name: 'loki', health: 'Progressing' }, ...healthy.slice(0, 1)]], {
+      DEADLINE: '1',
+      INTERVAL: '1',
+    });
     expect(status).toBe(1);
-    expect(out).toMatch(/^ceiling: /);
+    expect(out).toBe(
+      'ceiling: the cluster did not come up within 1 seconds. Not yet Synced and Healthy:\n' +
+        '  loki Synced Progressing\n    StatefulSet/telemetry/loki Synced Progressing Waiting for 1 pods to be ready...\n',
+    );
   });
 
-  it('stops on an Application Argo CD cannot render on two looks in a row, and says why', () => {
+  it('stops on an Application Argo CD cannot render after comparing it twice, and says why', () => {
     const broken = { name: 'loki', health: 'Unknown', error: 'values do not render' };
-    const { status, out } = watch([[broken], [broken]]);
+    const { status, out } = watch([[broken], [{ ...broken, compared: 'later' }]]);
     expect(status).toBe(1);
     expect(out).toBe('comparison: Argo CD cannot render loki:\n  values do not render\n');
   });
 
-  it('waits past a ComparisonError seen once, as when the repo server is starting', () => {
+  it('waits past a ComparisonError from one comparison, however long Argo CD keeps it, and one that clears', () => {
     const once = { name: 'loki', health: 'Unknown', error: 'connection refused' };
-    const { out } = watch([[once], healthy, [once], healthy], { DEADLINE: '2', INTERVAL: '1' });
-    expect(out).toMatch(/^ceiling: /);
-  });
+    expect(watch([[once]], { DEADLINE: '3', INTERVAL: '1' }).out).toMatch(/^ceiling: /);
+    const clears = [[once], healthy, [{ ...once, compared: 'later' }], healthy];
+    expect(watch(clears, { DEADLINE: '5', INTERVAL: '1' }).out).toMatch(/^ceiling: /);
+  }, 15_000);
 
   it('stops on an Application that stays Degraded, and waits on one that recovers', () => {
     const degraded = { name: 'loki', health: 'Degraded' };

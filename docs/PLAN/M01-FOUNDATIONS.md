@@ -48,7 +48,7 @@ Even the skeleton meets the console's bar: the page is titled "Software Factory 
 
 ### 6. GitHub settings
 
-Applied by a script in the repo, so they are reproducible and reviewable: ruleset on `main` (PRs only, required checks, linear history, no force-push), secret scanning with push protection, private vulnerability reporting, and approval required for first-time contributors' workflows.
+Applied by a script in the repo, so they are reproducible and reviewable: ruleset on `main` (PRs only, required checks, linear history, no force-push), secret scanning with push protection, private vulnerability reporting, and approval required for every outside contributor's workflows.
 
 `CODEOWNERS` names Martin for `.github/`, `deploy/` and policy files from the start, but the ruleset does not yet require an approving review. GitHub never counts an author's own approval, and until the factory has its own identity every PR is Martin's. Code-owner review is switched on in milestone 5, when the factory's GitHub App starts opening PRs and Martin reviews them. The README says so, so the gap is stated rather than hidden.
 

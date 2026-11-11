@@ -12,6 +12,8 @@ import {
   ENVIRONMENTS,
   environment,
   environmentProblems,
+  FORK_RUN_APPROVAL,
+  forkApprovalProblems,
   GITHUB_ACTIONS,
   inOrderOf,
   MERGE_QUEUE,
@@ -60,6 +62,23 @@ describe('the ruleset on main (ADR 0014)', () => {
       expect(required.filter((c) => c.context !== 'review').every((c) => c.integration_id === 15368)).toBe(true);
     }
     expect(REVIEW_APP).toBe(5470762);
+  });
+
+  it('requires the lockfile scan in both repositories, as each reports it', () => {
+    expect(REPOSITORIES['the-roganator/cv-software-factory']).toContain('lockfile scan');
+    expect(REPOSITORIES['the-roganator/cv-worlds-worst-website']).toContain('gates / lockfile scan');
+  });
+
+  it("requires of the app's gates only jobs app-gates.yml names, as its gates job reports them", () => {
+    const workflow = parse(readFileSync('.github/workflows/app-gates.yml', 'utf8')) as {
+      jobs: Record<string, { name?: string }>;
+    };
+    const jobs = Object.values(workflow.jobs).map((job) => job.name);
+    const gates = (REPOSITORIES['the-roganator/cv-worlds-worst-website'] ?? [])
+      .filter((check) => check.startsWith('gates / '))
+      .map((check) => check.slice('gates / '.length));
+    expect(gates).toEqual(['journeys', 'test integrity', 'dependency review', 'image scan', 'lockfile scan']);
+    for (const gate of gates) expect(jobs).toContain(gate);
   });
 
   it('merges through the queue, squashed, with no rule that a branch be up to date and no GitHub review rule', () => {
@@ -256,6 +275,31 @@ describe("--check's report", () => {
       '::error title=o/r::ruleset "x%0A::add-mask::y 100%25" is not one of these',
     ]);
     expect(reportLines('o:r,1', { problems: [], unseen: ['u'] }, true)[0]).toBe('::warning title=o%3Ar%2C1::u');
+  });
+});
+
+describe('workflows on fork pull requests', () => {
+  it('wait for approval for every outside contributor, not only a first-time one', () => {
+    expect(FORK_RUN_APPROVAL).toEqual({ approval_policy: 'all_external_contributors' });
+  });
+
+  it('are drift under any narrower policy', () => {
+    for (const policy of ['first_time_contributors', 'first_time_contributors_new_to_github']) {
+      expect(forkApprovalProblems({ approval_policy: policy })).toEqual({
+        problems: [`workflows on fork pull requests wait for approval for ${policy}, not all_external_contributors`],
+        unseen: [],
+      });
+    }
+    expect(forkApprovalProblems({ approval_policy: 'all_external_contributors' })).toEqual({
+      problems: [],
+      unseen: [],
+    });
+  });
+
+  it('are unseen, never taken as set, when the reader may not read the policy', () => {
+    const { problems, unseen } = forkApprovalProblems(undefined);
+    expect(problems).toEqual([]);
+    expect(unseen).toHaveLength(1);
   });
 });
 

@@ -68,7 +68,11 @@ describe('the lockfile gate', () => {
   it('passes a vulnerability only the base has', () => {
     const base = lockfiles({ [ROOT]: report([LODASH], [LODASH_CVE]) });
     const change = lockfiles({ [ROOT]: report([{ name: 'lodash', version: '4.17.21' }]) });
-    expect(judge(base, change)).toEqual({ added: [], unread: [], total: 0 });
+    expect(judge(base, change)).toMatchObject({ added: [], unread: [], total: 0 });
+    // Its notice counts what each side has in all: the base's one, and none on the change.
+    const { counts } = judge(base, change);
+    expect(Object.values(counts.before).reduce((a, b) => a + b)).toBe(1);
+    expect(Object.values(counts.after).every((n) => n === 0)).toBe(true);
   });
 
   it('passes a vulnerability both have', () => {
@@ -278,7 +282,7 @@ describe('an empty lockfile', () => {
     const none = { report: JSON.stringify({ Results: [{ Packages: [] }] }) };
     expect(
       judge(lockfiles({ [ROOT]: { ...none, empty: true } }), lockfiles({ [ROOT]: { ...none, empty: true } })),
-    ).toEqual({ added: [], unread: [], total: 0 });
+    ).toMatchObject({ added: [], unread: [], total: 0 });
     expect(judge(lockfiles({}), lockfiles({ [ROOT]: none })).unread).toMatchObject([{ side: 'change' }]);
   });
 

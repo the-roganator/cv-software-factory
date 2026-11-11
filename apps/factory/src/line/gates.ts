@@ -8,7 +8,9 @@
  * Martin did while it was held), and with no change otherwise.
  *
  * A check that failed is recorded with what it said was wrong (its annotations, which the worker reads with the
- * runs), so the coder is told why when the work comes back to it, not only which.
+ * runs), so the coder is told why when the work comes back to it, not only which. A scan gate's run is recorded with
+ * what it counted, by severity, on the base and on the change: from its own notice alone (`../gates/counts.ts`), on
+ * GitHub Actions' run of it, which the worker reads for the head; a run with no notice that parses records none.
  *
  * `gateEvents` is the decision, a pure function of what GitHub says and what the work item has already recorded, so
  * reading the same state again appends nothing. The gates are done when every check the ruleset requires has
@@ -28,6 +30,7 @@ import {
   recordedPath,
   VERSIONS,
 } from '@software-factory/events';
+import { ACTIONS_APP, countsOfCheck } from '../gates/counts.ts';
 import { APP_LOGIN } from '../github/actions.ts';
 import { type CheckRun, outcomeOf, type PullRequestState } from '../github/reads.ts';
 import { whatClearedOnLook } from './verify.ts';
@@ -93,6 +96,15 @@ function annotationsOf(run: CheckRun): PayloadOf<'gate.finished'>['annotations']
     .filter(({ path, message }) => path && message)
     .slice(0, MAX_GATE_ANNOTATIONS);
   return kept.length ? kept : undefined;
+}
+
+/**
+ * What a scan's run counted, as `gate.finished` keeps it: from the notices on GitHub Actions' run alone, whatever its
+ * conclusion, and nothing from any other app's run of the scan's name or from a notice that does not parse.
+ */
+function findingsOf(run: CheckRun): PayloadOf<'gate.finished'>['findings'] {
+  if (run.app !== ACTIONS_APP || !run.notices) return undefined;
+  return countsOfCheck(run.name, run.notices);
 }
 
 const durationOf = (run: CheckRun) =>
@@ -196,6 +208,7 @@ function gateRun(
     const title = run.title?.trim();
     const summary = title === undefined ? undefined : cutTo(title, 200);
     const annotations = annotationsOf(run);
+    const findings = findingsOf(run);
     drafts.push({
       type: 'gate.finished',
       actor: 'actions',
@@ -209,6 +222,7 @@ function gateRun(
         durationMs: durationOf(run),
         ...(summary ? { summary } : {}),
         ...(annotations ? { annotations } : {}),
+        ...(findings ? { findings } : {}),
       },
     });
   }

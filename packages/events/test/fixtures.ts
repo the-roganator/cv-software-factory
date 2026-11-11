@@ -77,7 +77,7 @@ export const gate: NewEvent<'gate.finished'> = {
   ts: '2026-10-02T12:20:00.000Z',
   work_item: '1284',
   type: 'gate.finished',
-  version: 2,
+  version: 3,
   actor: 'actions',
   summary: 'Unit tests failed',
   payload: {

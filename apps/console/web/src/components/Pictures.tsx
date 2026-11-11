@@ -631,35 +631,52 @@ function Package({ dependency, small = false }: { dependency: Dependency; small?
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 
-function ScanPicture({ dependency, findings, unchanged }: Extract<PictureData, { type: 'scan' }>) {
-  const most = Math.max(1, ...SEVERITIES.flatMap((s) => [findings.before[s], findings.after[s]]));
+type Findings = Extract<PictureData, { type: 'scan' }>['scans'][number]['findings'];
+
+/** A scan's name as its check gives it, without the workflow it was called from: `gates / image scan` is Image scan. */
+const scanName = (check: string) => capital(check.split(' / ').at(-1) ?? check);
+
+/** One scan's counts, by severity, before and after: unrated findings only when the scan counted some. */
+function ScanCounts({ check, findings }: { check: string; findings: Findings }) {
+  const unknown = (findings.before.unknown ?? 0) + (findings.after.unknown ?? 0) > 0;
+  const rows = unknown ? [...SEVERITIES, 'unknown' as const] : SEVERITIES;
+  const count = (side: Findings['before'], s: (typeof rows)[number]) => side[s] ?? 0;
+  const most = Math.max(1, ...rows.flatMap((s) => [count(findings.before, s), count(findings.after, s)]));
+  return (
+    <div>
+      <div className="row cap">
+        <LogoMark name="trivy" className="logo small" />
+        {scanName(check)}, before and after
+      </div>
+      <div className="sev">
+        {rows.map((s) => (
+          <div className="sev-row" key={s}>
+            <span>{s === 'unknown' ? 'Unrated' : capital(s)}</span>
+            <span className="bars" aria-hidden="true">
+              <i style={{ width: `${(count(findings.before, s) / most) * 100}%` }} />
+              {count(findings.after, s) ? (
+                <i className="after" style={{ width: `${(count(findings.after, s) / most) * 100}%` }} />
+              ) : (
+                <i className="after zero" />
+              )}
+            </span>
+            <span className="n">
+              {count(findings.before, s)} → {count(findings.after, s)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScanPicture({ dependency, scans, unchanged }: Extract<PictureData, { type: 'scan' }>) {
   return (
     <div className="pad">
       <Package dependency={dependency} />
-      <div>
-        <div className="row cap">
-          <LogoMark name="trivy" className="logo small" />
-          Image scan, before and after
-        </div>
-        <div className="sev">
-          {SEVERITIES.map((s) => (
-            <div className="sev-row" key={s}>
-              <span>{capital(s)}</span>
-              <span className="bars" aria-hidden="true">
-                <i style={{ width: `${(findings.before[s] / most) * 100}%` }} />
-                {findings.after[s] ? (
-                  <i className="after" style={{ width: `${(findings.after[s] / most) * 100}%` }} />
-                ) : (
-                  <i className="after zero" />
-                )}
-              </span>
-              <span className="n">
-                {findings.before[s]} → {findings.after[s]}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
+      {scans.map((scan) => (
+        <ScanCounts key={scan.check} {...scan} />
+      ))}
       <Unchanged pages={unchanged} />
     </div>
   );

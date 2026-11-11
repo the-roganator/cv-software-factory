@@ -45,7 +45,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN } from './actions.ts';
-import { BranchRefused } from './branches.ts';
+import { BranchRefused, pinBranch } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
 import { APP_USER, IssueRefused } from './issues.ts';
@@ -79,9 +79,8 @@ const PULLS = z.array(
     base: z.object({ ref: z.string() }),
   }),
 );
-export type DeployPull = z.infer<typeof PULLS>[number];
 /** A pull request as the queue reads it from GitHub's list: a deploy's or a pin move's. */
-export type QueuePull = DeployPull;
+export type QueuePull = z.infer<typeof PULLS>[number];
 
 /** Why a pull request is not added to the queue now, in a few words, or undefined when it may be. */
 export type QueueWait =
@@ -93,7 +92,7 @@ export type QueueWait =
   | { waits: 'conflict'; why: string };
 
 /** Whether a pull request is the deploy watch's own for a target: the App's, from its branch into main, labelled. */
-export function deployPullWait(target: DeployTarget, pull: DeployPull): QueueWait | undefined {
+export function deployPullWait(target: DeployTarget, pull: QueuePull): QueueWait | undefined {
   const not = (why: string): QueueWait => ({ waits: 'not-a-deploy', why });
   if (pull.user?.id !== APP_USER) return not('the App did not open it');
   if (pull.head.repo?.full_name !== target.repo || pull.head.ref !== target.branch) {
@@ -109,7 +108,7 @@ export function deployPullWait(target: DeployTarget, pull: DeployPull): QueueWai
 /**
  * Whether a pull request is the pin watch's own in a repository, by what GitHub's list shows of it: the App's, from
  * `factory/pin/<move>` of that repository into main, not a draft, labelled `pin`. Who labelled it is read apart
- * (`labelledByApp`), from its events.
+ * (`labelWait`), from its events.
  */
 export function pinPullWait(repo: string, pull: QueuePull): QueueWait | undefined {
   const not = (why: string): QueueWait => ({ waits: 'not-a-pin', why });
@@ -140,9 +139,10 @@ export type LabelEvents = z.infer<typeof LABEL_EVENTS>;
 const EVENT_PAGES = 5;
 
 /**
- * Whether only the App ever gave a pull request the `pin` label, by its events: at least once, and never anyone else,
- * so a label someone else put back after the App's was taken off is no pin's. A pull request whose events run past
- * `EVENT_PAGES` pages is not read whole, and waits.
+ * Whether only the App ever gave a pull request the `pin` label or took it off, by its events: given at least once,
+ * and never by anyone else, so a label someone else put back after the App's was taken off is no pin's; and never
+ * taken off by anyone else, so Martin holds a pin move by taking its label off, though the pin watch puts it back. A
+ * pull request whose events run past `EVENT_PAGES` pages is not read whole, and waits.
  */
 export function labelWait(events: LabelEvents, whole: boolean): QueueWait | undefined {
   const not = (why: string): QueueWait => ({ waits: 'not-a-pin', why });
@@ -150,6 +150,10 @@ export function labelWait(events: LabelEvents, whole: boolean): QueueWait | unde
   const labelled = events.filter((e) => e.event === 'labeled' && e.label?.name === PIN_LABEL);
   if (!labelled.length) return not(`nobody labelled it ${PIN_LABEL}`);
   if (labelled.some((e) => e.actor?.id !== APP_USER)) return not(`someone but the App labelled it ${PIN_LABEL}`);
+  const unlabelled = events.filter((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL);
+  if (unlabelled.some((e) => e.actor?.id !== APP_USER)) {
+    return not(`someone but the App took its ${PIN_LABEL} label off`);
+  }
   return undefined;
 }
 
@@ -160,7 +164,7 @@ export type QueueRule = 'exact-pin' | 'pin-move';
 export function verdictWait(
   verdict: Pick<ReviewVerdict, 'head' | 'judged' | 'problem'>,
   head: string,
-  rule: QueueRule = 'exact-pin',
+  rule: QueueRule,
 ) {
   const { judged } = verdict;
   if (verdict.head !== head || judged?.head !== head) {
@@ -247,7 +251,8 @@ function queueState(deps: DeployQueueDependencies, repo: string, kind: string) {
 
 /**
  * Adds one pull request, already known to be the App's own of its kind, to the queue at its head once the gate passed
- * that head by the rule and its checks are green; otherwise says why it waits.
+ * that head by the rule and its checks are green; otherwise says why it waits. `confirm`, when given, is what is read
+ * last, once all else passes, as it costs more: a wait it gives is said as the others are.
  */
 async function queueOne(
   deps: DeployQueueDependencies,
@@ -257,6 +262,7 @@ async function queueOne(
   pull: QueuePull,
   rule: QueueRule,
   attempt: Attempt,
+  confirm?: () => Promise<QueueWait | undefined>,
 ): Promise<void> {
   const { reads, actions, recorder, log } = deps;
   const { number } = pull;
@@ -276,6 +282,8 @@ async function queueOne(
     const why = mergeable.conflicts ? 'it conflicts with main' : 'GitHub has not said whether it conflicts';
     return state.wait(number, head, { waits: 'conflict', why });
   }
+  const confirmed = await confirm?.();
+  if (confirmed) return state.wait(number, head, confirmed);
   const queue = await reads.mergeQueue(repo, number);
   if (queue.head === head && queue.queued) {
     attempt.done = true;
@@ -337,8 +345,8 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
   };
 }
 
-/** How many open pull requests a pass reads: the pin watch opens one for each move, and a day has a few. */
-const OPEN_PAGE = 100;
+/** How many pages of a hundred open pull requests a pass reads: the pin watch opens one for each move. */
+const OPEN_PAGES = 5;
 
 /**
  * Watches the pin watch's open pull requests in a repository, and adds each to the merge queue once the gate passed
@@ -350,30 +358,43 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
   if (!PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s pin moves.`);
   const state = queueState(deps, repo, 'pin');
 
-  /** Every event of a pull request, page by page, up to `EVENT_PAGES`; whole is false past them. */
+  /** Every event of a pull request, page by page, up to `EVENT_PAGES`; whole only when no event lies past them. */
   const eventsOf = async (number: number): Promise<{ events: LabelEvents; whole: boolean }> => {
     const events: LabelEvents = [];
-    for (let page = 1; page <= EVENT_PAGES; page++) {
+    for (let page = 1; ; page++) {
       const { body } = await github.poll(
         repo,
         `/repos/${repo}/issues/${number}/events?per_page=100&page=${page}`,
         LABEL_EVENTS,
       );
+      if (page > EVENT_PAGES) return { events, whole: body.length === 0 };
       events.push(...body);
       if (body.length < 100) return { events, whole: true };
     }
-    return { events, whole: false };
+  };
+
+  /** The open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */
+  const openPulls = async (): Promise<QueuePull[]> => {
+    const pulls: QueuePull[] = [];
+    for (let page = 1; page <= OPEN_PAGES; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/pulls?state=open&per_page=100&sort=created&direction=asc&page=${page}`,
+        PULLS,
+      );
+      pulls.push(...body);
+      if (body.length < 100) return pulls;
+    }
+    deps.log.warn(
+      { repo, read: pulls.length },
+      'more pull requests are open than the pin queue reads: it reads the oldest',
+    );
+    return pulls;
   };
 
   return async () => {
-    const { body: pulls } = await github.poll(
-      repo,
-      `/repos/${repo}/pulls?state=open&per_page=${OPEN_PAGE}&sort=created&direction=asc`,
-      PULLS,
-    );
-    const candidates = pulls.filter(
-      (p) => p.head.ref.startsWith('factory/pin') || p.labels.some((l) => l.name === PIN_LABEL),
-    );
+    const pulls = await openPulls();
+    const candidates = pulls.filter((p) => pinBranch(p.head.ref) || p.labels.some((l) => l.name === PIN_LABEL));
     state.keep(new Set(candidates.map((p) => p.number)));
     for (const pull of candidates) {
       const { number } = pull;
@@ -385,13 +406,15 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
         state.wait(number, head, notOne);
         continue;
       }
-      const { events, whole } = await eventsOf(number);
-      const label = labelWait(events, whole);
-      if (label) {
-        state.wait(number, head, label);
-        continue;
-      }
-      await queueOne(deps, state, repo, 'pin', pull, 'pin-move', attempt);
+      // Who labelled it is read last, once the gate and the checks pass it: its events are the dearest read.
+      const labelled = async () => {
+        const { events, whole } = await eventsOf(number);
+        return labelWait(events, whole);
+      };
+      // One pull request that cannot be read (closed since the list, an answer that does not parse) holds only itself.
+      await queueOne(deps, state, repo, 'pin', pull, 'pin-move', attempt, labelled).catch((error: unknown) => {
+        deps.log.warn({ repo, number, head, err: error }, 'could not read the pin pull request: tries again next pass');
+      });
     }
   };
 }

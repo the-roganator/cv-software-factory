@@ -84,7 +84,7 @@ The GitHub worker adds this repository's local deploy pull request to the merge 
 
 It adds the pin watch's pull request for a move ([the pins](GITHUB-WORKER.md#pins)) on the same terms, each open one on its own, with these in place of the first two:
 
-- the App opened it, from this repository's `factory/pin/<move>` (one segment) into `main`, not a draft, labelled `pin`, and nobody but the App ever gave it that label, by its events: the gate trusts no branch, so a pin move's content on any other branch passes the gate and is still not queued;
+- the App opened it, from this repository's `factory/pin/<move>` (one segment) into `main`, not a draft, labelled `pin`, and nobody but the App ever gave it that label or took it off, by its events (Martin holds one by taking the label off): the gate trusts no branch, so a pin move's content on any other branch passes the gate and is still not queued;
 - the review App's `review` check on that head passed it as `pin-move`: never another rule, so never a hold, and never `martin-approved-head`, his approval of a head the gate held, which leaves adding it his.
 
 It enqueues at that head, through the line's action and guards (`enqueuePullRequest`). A failure that may pass (the head moved, a rate limit, an outage) is tried again on the next pass, up to five times; a refusal, the guard's or GitHub's 403, is kept, signed and logged as the worker keeps its others, and it or any other failure leaves the head for Martin, as does the queue taking it out. A dry run reads GitHub as it is and records the enqueue it would make, changing nothing. The app's deploy pull request stays the line's, a release and anything else Martin's.

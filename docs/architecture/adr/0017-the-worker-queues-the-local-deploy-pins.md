@@ -11,7 +11,7 @@ The factory's own deploy pull request for the local profile (`chore(deploy): run
 
 The pin watch's pull request for a move of the scan's (ADR 0013), which the gate passed as `pin-move` (ADR 0019), is added on the same terms, each open one on its own, when all of these hold:
 
-- the App opened it, from this repository's `factory/pin/<move>` (one segment, the pin watch's branch) into `main`, not a draft, labelled `pin`, and the App alone ever gave it that label, by its events;
+- the App opened it, from this repository's `factory/pin/<move>` (one segment, the pin watch's branch) into `main`, not a draft, labelled `pin`, and the App alone ever gave it that label or took it off, by its events, so Martin holds one by taking the label off, though the pin watch puts it back;
 - the review App's own `review` check on that head passed it as `pin-move`: no other rule, so not a hold, and not Martin's approval of a held one (`martin-approved-head`), which leaves adding it his;
 - every other required check, and the conflict and the queue, as for the deploy pin.
 

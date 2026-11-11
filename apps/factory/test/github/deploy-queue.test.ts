@@ -9,7 +9,6 @@ import { DryRunActions } from '../../src/github/actions.ts';
 import { GitHubError } from '../../src/github/client.ts';
 import {
   checksWait,
-  type DeployPull,
   type DeployQueueDependencies,
   deployPullWait,
   deployQueueWatch,
@@ -44,7 +43,7 @@ const REQUIRED = [
   'review',
 ];
 
-const pull = (over: Partial<DeployPull> = {}): DeployPull => ({
+const pull = (over: Partial<QueuePull> = {}): QueuePull => ({
   number: 973,
   title: TITLE,
   draft: false,
@@ -93,7 +92,7 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
 
 /** A worker's deploy queue watch against a deploy branch with these open pull requests, as each pass reads them. */
 function harness(o: {
-  pulls?: () => DeployPull[];
+  pulls?: () => QueuePull[];
   verdict?: () => ReviewVerdict;
   runs?: () => CheckRun[];
   conflicts?: boolean | null;
@@ -213,7 +212,7 @@ describe('the deploy queue watch', () => {
       { ...verdict(HEAD), judged: { number: 973, head: NEWER, rule: 'exact-pin' as const, tags: [] } },
     ];
     for (const v of verdicts) {
-      expect(verdictWait(v, HEAD)?.waits).toBe('verdict');
+      expect(verdictWait(v, HEAD, 'exact-pin')?.waits).toBe('verdict');
       const { pass, enqueued } = harness({ verdict: () => v });
       await pass();
       expect(enqueued, JSON.stringify(v.judged)).toEqual([]);
@@ -434,8 +433,11 @@ function pinHarness(o: {
     [
       {
         method: 'GET',
-        path: `/repos/${REPO}/pulls?state=open&per_page=100&sort=created&direction=asc`,
-        answer: () => ({ body: pulls() }),
+        path: /\/pulls\?state=open&per_page=100&sort=created&direction=asc&page=\d+$/,
+        answer: ({ path }) => {
+          const page = Number(/page=(\d+)$/.exec(path)?.[1]);
+          return { body: pulls().slice((page - 1) * 100, page * 100) };
+        },
       },
       {
         method: 'GET',
@@ -561,6 +563,60 @@ describe('the pin queue watch', () => {
       expect(enqueued).toEqual([]);
     });
   }
+  it('never queues a pull request whose pin label someone but the App took off, though the App put it back', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' } },
+              labelled(APP_USER),
+            ]
+          : [],
+    });
+    await pass();
+    expect(enqueued).toEqual([]);
+  });
+
+  it('reads exactly as many events as it reads whole, when no page follows', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) => (p <= 5 ? Array.from({ length: 100 }, () => labelled(APP_USER)) : []),
+    });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  it('reads the events last, never for a pull request the gate or its checks hold', async () => {
+    const { pass, sent } = pinHarness({ verdict: () => pinVerdict(PIN_HEAD, { rule: 'held', tags: [] }) });
+    await pass();
+    expect(calls(sent).some((s) => s.path.includes('/events'))).toBe(false);
+  });
+
+  it('finds the pin watch’s pull request past the first hundred open', async () => {
+    const others = Array.from({ length: 150 }, (_, i) =>
+      pinPull({ number: 2000 + i, labels: [], head: { ref: `feat/x${i}`, sha: OLDER, repo: { full_name: REPO } } }),
+    );
+    const { pass, enqueued } = pinHarness({ pulls: () => [...others, pinPull()] });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  it('queues the next pin move when one before it cannot be read', async () => {
+    const second = pinPull({
+      number: 1041,
+      head: { ref: 'factory/pin/postgres', sha: NEWER, repo: { full_name: REPO } },
+    });
+    const { pass, enqueued } = pinHarness({
+      pulls: () => [pinPull(), second],
+      events: (n, p) => {
+        if (n === 1040) throw new Error('not this one');
+        return p === 1 ? [labelled(APP_USER)] : [];
+      },
+    });
+    await pass();
+    expect(enqueued).toEqual([[1041, NEWER]]);
+  });
+
   it('reads the App’s label on a later page', async () => {
     const { pass, enqueued } = pinHarness({
       events: (_n, p) =>
@@ -597,7 +653,7 @@ describe('the pin queue watch', () => {
     });
   }
   it('never takes a pin move as a deploy pin, nor a deploy pin as a pin move', () => {
-    expect(verdictWait(pinVerdict(PIN_HEAD), PIN_HEAD)?.waits).toBe('verdict');
+    expect(verdictWait(pinVerdict(PIN_HEAD), PIN_HEAD, 'exact-pin')?.waits).toBe('verdict');
     expect(verdictWait(verdict(HEAD), HEAD, 'pin-move')?.waits).toBe('verdict');
   });
 

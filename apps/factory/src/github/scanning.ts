@@ -226,6 +226,13 @@ const MOVES_FILE_SCHEMA = z.strictObject({
   totals: z.strictObject({
     fixed: z.number().int().nonnegative(),
     moves: z.number().int().nonnegative(),
+    // The day's other figures, as the Patching panel shows them.
+    noFix: z.number().int().nonnegative(),
+    excepted: z.number().int().nonnegative(),
+    overdue: z.number().int().nonnegative(),
+    dueWithinDay: z.number().int().nonnegative(),
+    newHighWithFix: z.number().int().nonnegative(),
+    newHighWithoutFix: z.number().int().nonnegative(),
     lanes: z.strictObject(
       Object.fromEntries(LANES.map((lane) => [lane, z.number().int().nonnegative()])) as Record<
         (typeof LANES)[number],

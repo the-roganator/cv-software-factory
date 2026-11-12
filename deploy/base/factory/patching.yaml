@@ -6,8 +6,8 @@
 # door for its two reads, and nothing else (network-policies.yaml).
 #
 # An image the list lacks may run in any namespace, so its account may list pods, and nothing else: not get or watch
-# them, nor read their logs, nor anything but pods. It may in every namespace but `runners`, whose Jobs carry a step's
-# job token in their spec, and `red-team` and `scoreboard`, each bound by a RoleBinding of its own
+# them, nor read their logs, nor anything but pods. It may in every namespace but `runners`, whose agent steps' Jobs carry
+# a job token in their spec, and `red-team` and `scoreboard`, each bound by a RoleBinding of its own
 # (../patching-reads-pods): those three admit only signed images, so no image the list lacks runs there.
 apiVersion: v1
 kind: ServiceAccount

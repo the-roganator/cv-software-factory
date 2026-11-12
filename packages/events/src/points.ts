@@ -58,6 +58,9 @@ export const POINTED_BY: Record<SymptomClass, 'passage' | readonly ElementKind[]
   'leaks-detail': null,
   'missing-log': null,
   'wrong-metric': null,
+  // A move names no page: no report points at one.
+  'vulnerable-dependency': null,
+  'outdated-dependency': null,
 };
 
 const quoted = (words: string | null) => (words ? `“${words}”` : null);
@@ -95,7 +98,7 @@ export function ticketPoints({
   fingerprint,
   points,
 }: {
-  fingerprint: { page: string; text: string } | { route: string; class: string };
+  fingerprint: { page: string; text: string } | { route: string; class: string } | { name: string; ecosystem: string };
   points?: Points | undefined;
 }): Points | undefined {
   if (!('text' in fingerprint) || points?.passage || points?.element) return points;

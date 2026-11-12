@@ -32,12 +32,19 @@ export const DEFECT_CATEGORIES = [
 ] as const;
 export type DefectCategory = (typeof DEFECT_CATEGORIES)[number];
 
+/** A ticket's category: a defect's, or `dependency` for a routine update, which fixes no defect. */
+export const TICKET_CATEGORIES = [...DEFECT_CATEGORIES, 'dependency'] as const;
+export type TicketCategory = (typeof TICKET_CATEGORIES)[number];
+
 /** A card's category: a defect's, or the kind of work when there is no defect. */
 export const CATEGORIES = [...DEFECT_CATEGORIES, 'improvement', 'dependency', 'red-team', 'not-a-defect'] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-/** How a defect shows itself from outside. Tickets and the answer key share these, so matching needs no judgement. */
-export const SYMPTOM_CLASSES = [
+/**
+ * How a defect shows itself from outside, on a page or a route. Tickets and the answer key share these, so matching
+ * needs no judgement; a visitor's report is judged into one of them.
+ */
+export const DEFECT_SYMPTOMS = [
   'broken-link',
   'broken-image',
   'redirect-loop',
@@ -55,7 +62,23 @@ export const SYMPTOM_CLASSES = [
   'missing-log',
   'wrong-metric',
 ] as const;
+export type DefectSymptom = (typeof DEFECT_SYMPTOMS)[number];
+
+/**
+ * How a dependency shows itself, to the dependency sense alone, which names a move for it where the others name a
+ * route: a pin with a known vulnerability a move fixes, or one with a newer release and nothing to fix, a routine
+ * update.
+ */
+export const DEPENDENCY_SYMPTOMS = ['vulnerable-dependency', 'outdated-dependency'] as const;
+export type DependencySymptom = (typeof DEPENDENCY_SYMPTOMS)[number];
+
+/** Every symptom class a signal or a ticket names. */
+export const SYMPTOM_CLASSES = [...DEFECT_SYMPTOMS, ...DEPENDENCY_SYMPTOMS] as const;
 export type SymptomClass = (typeof SYMPTOM_CLASSES)[number];
+
+/** Whether a symptom is a dependency's. */
+export const isDependencySymptom = (symptom: SymptomClass): symptom is DependencySymptom =>
+  (DEPENDENCY_SYMPTOMS as readonly string[]).includes(symptom);
 
 /**
  * The security headers the crawler asks every page for (`missing-header`). Strict-Transport-Security is asked for only
@@ -111,6 +134,26 @@ export const GIVEAWAY_WORDS: Record<Giveaway, string> = {
 export const DEPENDENCIES = ['prometheus', 'loki', 'tempo', 'disk'] as const;
 export type Dependency = (typeof DEPENDENCIES)[number];
 
+/**
+ * What a dependency's move is in: a package of a lockfile, an image, or Node itself, whose pins are `mise.toml`'s and
+ * each `FROM`'s.
+ */
+export const ECOSYSTEMS = ['npm', 'docker', 'node'] as const;
+export type Ecosystem = (typeof ECOSYSTEMS)[number];
+
+/**
+ * A move's fingerprint: its name and its ecosystem, and nothing that changes as it is chased. With no version and no
+ * advisory in it, every finding the move clears, and every later target of the same move, is the one ticket's.
+ */
+export const moveFingerprint = ({ name, ecosystem }: { name: string; ecosystem: Ecosystem }) => ({ name, ecosystem });
+
+/**
+ * A finding's severity, as a scanner or an advisory's publisher rates it, worst first. `unknown` is a rating none gave,
+ * which the scan's deadlines treat as `low`.
+ */
+export const ADVISORY_SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
+export type AdvisorySeverity = (typeof ADVISORY_SEVERITIES)[number];
+
 /** A ticket's severity: how badly the problem hurts a visitor. */
 export const SEVERITIES = ['cosmetic', 'degraded', 'broken'] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -127,10 +170,17 @@ export const TRIAGE_ROUTES = ['ticket', 'repeat', 'park', 'quarantine', 'discard
 export type TriageRoute = (typeof TRIAGE_ROUTES)[number];
 
 /**
- * The factory's senses. Five watch the stable version; the canary is the release's analysis, which sees a new version
- * do worse than the one it would replace, and says so when it rolls it back.
+ * The senses that see the app, each naming a route. Five watch the stable version; the canary is the release's
+ * analysis, which sees a new version do worse than the one it would replace, and says so when it rolls it back.
  */
-export const SENSES = ['probe', 'crawler', 'metrics', 'logs', 'canary', 'report'] as const;
+export const ROUTE_SENSES = ['probe', 'crawler', 'metrics', 'logs', 'canary', 'report'] as const;
+export type RouteSense = (typeof ROUTE_SENSES)[number];
+
+/**
+ * The factory's senses: those that see the app, and the dependency sense, which reads the scan's moves, a pin to move
+ * and what it fixes, and names a move where the others name a route.
+ */
+export const SENSES = [...ROUTE_SENSES, 'dependency'] as const;
 export type Sense = (typeof SENSES)[number];
 
 /**
@@ -139,6 +189,10 @@ export type Sense = (typeof SENSES)[number];
  */
 export const SIGNAL_SOURCES = [...SENSES, 'planner'] as const;
 export type SignalSource = (typeof SIGNAL_SOURCES)[number];
+
+/** The sources whose signal names a route: every one but the dependency sense. */
+export const ROUTE_SOURCES = [...ROUTE_SENSES, 'planner'] as const;
+export type RouteSource = (typeof ROUTE_SOURCES)[number];
 
 /** Whether a signal came from one of the senses, not the planner. */
 export const isSense = (source: SignalSource): source is Sense => source !== 'planner';

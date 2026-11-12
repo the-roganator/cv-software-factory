@@ -36,7 +36,7 @@ A reference is compared by its repository, normalised as Docker does (`postgres`
 
 Every namespace the cluster has, `default` included, but three, which `PATCHING_NAMESPACES` lists and the RoleBindings bind; a test holds the two together, and fails for a namespace `deploy/` makes, or the cluster has of its own, until it is in one or named as left out. A namespace made later is not read until then.
 
-- **`runners`**: each runner's Job carries its step's job token in its spec, as a value, so whatever lists pods there can read live tokens; only the line may.
+- **`runners`**: an agent step's Job carries its job token in its spec, as a value (a pin step's and a lockfile's carry none), so whatever lists pods there can read live tokens; only the line may.
 - **`red-team`**: only the red-team harness's two attack pods run there, each held by an admission rule to one of two images and a pinned command, the unsigned one refused as it is created.
 - **`scoreboard`**: the answer key's namespace, where no role of ours is bound but the line's list of its Events, so that nothing can reach the key.
 

@@ -654,6 +654,14 @@ describe('Verify when no sense can look', () => {
     });
     expect(await look({ ...report, sense: 'planner' }, target, options())).toMatchObject({ kind: 'hold' });
   });
+
+  it('holds a dependency’s ticket for Martin, saying Verify does not read the scan yet', async () => {
+    const move: FirstSignal = { sense: 'dependency', check: 'vulnerabilities', route: '*', evidence: [] };
+    expect(await look(move, target, options())).toEqual({
+      kind: 'hold',
+      reason: 'Verify does not read the scan yet: Martin judges whether the move cleared what it fixes',
+    });
+  });
 });
 
 describe('a dry run’s verification', () => {

@@ -28,10 +28,14 @@ import type { StepOutcome, StepRequest } from '../../src/runners/steps.ts';
 
 export const MAIN = 'a'.repeat(40);
 
+/** A step's whole outcome but its job: the pin step's patches beside a handback, or pins that wait for Martin. */
+export type Outcome = DistributiveOmit<Extract<StepOutcome, { kind: 'handed-back' | 'held' }>, 'job'>;
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
 /** What an agent does with a step: hands something back, fails, or works until the line stops it. */
 export type Agent = (
   request: StepRequest,
-) => Handback | 'fails' | 'works on' | Promise<Handback | 'fails' | 'works on'>;
+) => Handback | Outcome | 'fails' | 'works on' | Promise<Handback | Outcome | 'fails' | 'works on'>;
 
 export class FakeSteps implements Steps {
   readonly requests: StepRequest[] = [];
@@ -84,6 +88,7 @@ export class FakeSteps implements Steps {
     }
     if (answer === 'fails')
       return { kind: 'failed', job, reason: 'The agent pod failed without handing anything back.' };
+    if ('kind' in answer) return { ...answer, job };
     return { kind: 'handed-back', job, handback: answer };
   }
 

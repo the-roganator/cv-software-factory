@@ -9,9 +9,13 @@ KUBECTL := kubectl --context $(CONTEXT)
 ARGOCD_CHART := 10.15.0
 # The Postgres the console's live browser tests run beside, as in CI: the cluster's, whose one pin is its StatefulSet's.
 POSTGRES := $(shell sed -nE 's/^ +image: (postgres:[^ ]+@sha256:[0-9a-f]{64})$$/\1/p' deploy/base/postgres/statefulset.yaml | head -1)
-# The branch Argo CD deploys this repository's deploy/ from. `make up REVISION=my-branch` tries a change there
-# before it merges; the charts' values and the app's repository are still read from main.
+# The branch, or commit, Argo CD deploys this repository's deploy/ from, the charts' values with it (root's patch, in
+# deploy/argocd/root.yaml). `make up REVISION=my-branch` tries a change there before it merges, as platform.yml makes
+# a cluster from a pull request's commit; the app's repository is still read from its main.
 REVISION ?= main
+# Set by the platform check alone (.github/workflows/platform.yml): root also takes deploy/argocd/platform-check.yaml's
+# patches, which leave out what would read GitHub from the check's cluster. Never set on a cluster of Martin's.
+PLATFORM_CHECK ?=
 # The private checkout, which holds the answer key: `make up` gives the scoreboard each entry's id and fingerprint.
 PRIVATE_DIR ?= $(CURDIR)/../cv-software-factory-private
 # The workers that connect to the store, each as a role of its own (packages/store/migrations/0022_worker-roles.sql).
@@ -59,20 +63,24 @@ password = $(call namespace,$(1)) && \
 		$(KUBECTL) -n $(1) create secret generic $(2) --from-file=$(or $(3),password)=/dev/stdin $(4) --dry-run=client -o yaml | \
 		$(apply-secret) >/dev/null; }; }; }
 
+# How long `make up` waits for root, and then every Application, to sync: a cluster that pulls every image afresh, as
+# platform.yml's does, takes longer than one that has them.
+SYNC_TIMEOUT ?= 5m
+
 # $(deployed): wait for Argo CD to have deployed everything, then say where it is. An Application reads healthy before
 # it has deployed anything, so wait for each to sync before its health; root syncs first, and then every other
 # Application exists. Then everything healthy, except the website, whose health is its release's
 # (scripts/wait-deployed.sh).
 define deployed
 @echo "Waiting for Argo CD to deploy everything (a few minutes the first time)..."
-@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
-@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=5m >/dev/null
+@$(KUBECTL) -n argocd wait application/root --for=jsonpath='{.status.sync.status}'=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null
+@$(KUBECTL) -n argocd wait applications --all --for=jsonpath='{.status.sync.status}'=Synced --timeout=$(SYNC_TIMEOUT) >/dev/null
 @KUBECTL="$(KUBECTL)" scripts/wait-deployed.sh
 @$(MAKE) --no-print-directory status
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -122,7 +130,12 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 	@$(MAKE) --no-print-directory judgements-token
 	@$(call password,telemetry,grafana-admin,admin-password,--from-literal=admin-user=admin)
 	@$(MAKE) --no-print-directory local-tls
-	sed 's|targetRevision: main|targetRevision: $(REVISION)|' deploy/argocd/root.yaml | $(KUBECTL) apply -f -
+	@# The revision quoted whole, then with what a sed replacement reads (`&`, `\`, the `|` it is delimited by) escaped.
+	revision='$(subst ','\'',$(REVISION))'; revision="$$(printf '%s' "$$revision" | sed 's/[&|\\]/\\&/g')" && \
+		sed -E -e "s|^( *targetRevision: )main$$|\\1$$revision|" -e "s|^( *value: )main$$|\\1$$revision|" deploy/argocd/root.yaml | \
+		{ if [ -n '$(PLATFORM_CHECK)' ]; then yq '.spec.source.kustomize.patches += load("deploy/argocd/platform-check.yaml")'; \
+		else cat; fi; } | \
+		$(KUBECTL) apply -f -
 	$(deployed)
 
 down: ## Delete the local cluster, and everything in it
@@ -171,23 +184,25 @@ gateway-key:
 				$(apply-secret) >/dev/null && echo "  The gateway has the Anthropic key, so agents' calls reach Claude."; \
 		else echo "  No Anthropic key (ANTHROPIC_API_KEY, or the Keychain's anthropic-api-key): agents' calls to Claude replay only."; fi
 
-# The factory's GitHub App key, from the macOS Keychain (base64, because the Keychain prints a value with newlines as
-# hex), goes to the cluster the same way: through stdin, decoded on the way. Without it the GitHub worker reads and
-# writes nothing. Restart the worker after changing the key.
+# The factory's GitHub App key, from the environment (GITHUB_APP_PRIVATE_KEY, as PEM) or the macOS Keychain (base64,
+# because the Keychain prints a value with newlines as hex), goes to the cluster the same way: through stdin, decoded on
+# the way. Without it the GitHub worker reads and writes nothing. Restart the worker after changing the key.
 github-key:
-	@if security find-generic-password -s factory-github-app-key >/dev/null 2>&1; then \
-			security find-generic-password -s factory-github-app-key -w | base64 -d | \
+	@if [ -n "$${GITHUB_APP_PRIVATE_KEY:-}" ] || security find-generic-password -s factory-github-app-key >/dev/null 2>&1; then \
+			{ if [ -n "$${GITHUB_APP_PRIVATE_KEY:-}" ]; then printf '%s\n' "$$GITHUB_APP_PRIVATE_KEY"; \
+				else security find-generic-password -s factory-github-app-key -w | base64 -d; fi; } | \
 				$(KUBECTL) -n factory create secret generic github-app --from-file=private-key=/dev/stdin --dry-run=client -o yaml | \
 				$(apply-secret) >/dev/null && echo "  The GitHub worker has the App's key, so it acts as the factory in GitHub."; \
-		else echo "  No App key (the Keychain's factory-github-app-key): the GitHub worker reads and writes nothing."; fi
+		else echo "  No App key (GITHUB_APP_PRIVATE_KEY, or the Keychain's factory-github-app-key): the GitHub worker reads and writes nothing."; fi
 
-# Pushover's application token and Martin's user key, from the macOS Keychain, go to Alertmanager the same way: through
+# Pushover's application token and Martin's user key, from the environment (PUSHOVER_APP_TOKEN, PUSHOVER_USER_KEY) or
+# the macOS Keychain, go to Alertmanager the same way: through
 # stdin, as one Secret's two entries, never written to a file or put on a command line. Without both there is no
 # Secret, and any made before is deleted: Alertmanager still comes up and still sends the app's objective alerts to the intake, but nothing reaches
 # Martin's phone. Alertmanager reads the keys each time it sends, so a change needs no restart.
 pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-app-token, pushover-user-key)
-	@token="$$(security find-generic-password -s pushover-app-token -w 2>/dev/null)"; \
-		user="$$(security find-generic-password -s pushover-user-key -w 2>/dev/null)"; \
+	@token="$${PUSHOVER_APP_TOKEN:-$$(security find-generic-password -s pushover-app-token -w 2>/dev/null)}"; \
+		user="$${PUSHOVER_USER_KEY:-$$(security find-generic-password -s pushover-user-key -w 2>/dev/null)}"; \
 		if [ -n "$$token" ] && [ -n "$$user" ]; then \
 			$(call namespace,telemetry) && \
 			printf 'app-token=%s\nuser-key=%s\n' "$$token" "$$user" | \
@@ -195,7 +210,7 @@ pushover-key: ## Give Alertmanager Pushover's keys from the Keychain (pushover-a
 				$(apply-secret) >/dev/null && echo "  Alertmanager has Pushover's keys, so pages and notifications reach Martin's phone."; \
 		else $(KUBECTL) -n telemetry delete secret pushover --ignore-not-found >/dev/null || \
 				echo "  Could not delete the old pushover Secret: Alertmanager may still page with the keys it had."; \
-			echo "  No Pushover keys (the Keychain's pushover-app-token and pushover-user-key): nothing reaches Martin's phone."; fi
+			echo "  No Pushover keys (PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY, or the Keychain's pushover-app-token and pushover-user-key): nothing reaches Martin's phone."; fi
 
 # The scoreboard's Secrets (deploy/base/scoreboard). Its role's password, made once, is in two: `factory`'s, for the
 # migrations that set it, and the scoreboard's own, for its pod. The answer key, each entry's id and fingerprint and
@@ -413,6 +428,13 @@ take-the-line: node_modules ## Set what the line takes: ONLY=<work item>, NEXT=<
 close-work-item: node_modules ## Close a work item the line has not taken, as Martin's: ONLY=<work item> (REASON="...")
 	@only='$(subst ','\'',$(value ONLY))'; case "$$only" in ''|*[!0-9]*) echo "Give ONLY=<work item>, its number." >&2; exit 2;; esac; \
 	$(call as-operator,node apps/factory/src/cli.ts line close "$$only" $(if $(REASON),--reason '$(subst ','\'',$(value REASON))'))
+
+# The vulnerability drill's pull requests, in order, and the two entries in policy/vulnerabilities.ts its pin needs,
+# checked as `make check` holds them and to expire the next day (UTC): it opens nothing (scripts/drill-vulnerability.ts).
+drill-vulnerability: node_modules ## Print a drill's pull requests and its exceptions: PACKAGE= VERSION= ADVISORY= RATING=critical|lower (EXPIRES= REASON=)
+	@node scripts/drill-vulnerability.ts --package='$(subst ','\'',$(value PACKAGE))' --version='$(subst ','\'',$(value VERSION))' \
+		--advisory='$(subst ','\'',$(value ADVISORY))' --rating='$(subst ','\'',$(value RATING))' \
+		$(if $(EXPIRES),--expires='$(subst ','\'',$(value EXPIRES))') $(if $(REASON),--reason='$(subst ','\'',$(value REASON))')
 
 # The proofs' role, through a port-forward of its own (as-martin's is 15432, which the drill's stop and start use), with
 # its password from the Secret `make up` makes. Every proof is taken from this checkout, which must be main's head,

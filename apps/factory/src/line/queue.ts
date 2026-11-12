@@ -53,6 +53,11 @@ export interface Pending {
   commit: string;
   base: string;
   handback: Handback;
+  /**
+   * What the pin step wrote around the agent's patch: the move's pins before it, and the lockfile after it. The
+   * line's, read from the step's prepare pods, never the agent's handback.
+   */
+  pinned?: { pins?: string; lockfile?: string };
   /** The step's `model.called`, appended with the effects' events. */
   called: Draft[];
   /** The writes begun, and what each one done gave back, by name. */

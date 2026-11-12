@@ -185,7 +185,13 @@ const ARGS = {
   closePullRequest: z.strictObject({ number, comment: text(65_535).min(1) }),
   comment: z.strictObject({ number, body: text(65_535).min(1) }),
   enqueuePullRequest: z.strictObject({ number, expectedHead: sha }),
-} satisfies Record<keyof Omit<Actions, 'dryRun'>, z.ZodType>;
+} satisfies Record<Exclude<keyof Actions, 'dryRun' | WatchOnly>, z.ZodType>;
+
+/**
+ * The actions only the worker's own watches take, never served: the pin watch's commit and its issues' rewrite
+ * (`pins.ts`). No worker that asks can write a pin branch, even within the pin guard.
+ */
+export type WatchOnly = 'commitPins' | 'updateIssue';
 
 export type Name = keyof typeof ARGS;
 

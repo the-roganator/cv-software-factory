@@ -13,7 +13,9 @@
  * App, which `main`'s ruleset requires, and the factory never runs git in a working tree it does not control.
  *
  * Both refuse to move, delete or commit to a branch the factory does not own (`branches.ts`), and to act on an issue
- * or pull request the App did not open (`issues.ts`), whatever they are asked: only opening one takes none.
+ * or pull request the App did not open (`issues.ts`), whatever they are asked: only opening one takes none. A pin
+ * watch's branch is written by `commitPins` alone, whose guard (`pin-guard.ts`) lets a commit replace the version or
+ * digest at each pin and nothing else; every other action that writes a branch refuses one.
  *
  * A pull request's description is where test integrity reads the tests its spec contradicts (`gates/contradicts.ts`).
  * Only the worker writes that section, rendered from the list the line gives it (`contradicts`), replacing any the
@@ -25,7 +27,7 @@ import type { ArtifactStore } from '@software-factory/store';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { type Contradicted, render, strip } from '../gates/contradicts.ts';
-import { guardBranch } from './branches.ts';
+import { guardBranch, guardWritable } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import {
   carriesIn,
@@ -49,6 +51,7 @@ import {
   pinStepRefusals,
   protectedFrom,
 } from './paths.ts';
+import { type PinCommit, type PinSource, pinChanges, pinNextBranch, treeSource } from './pin-guard.ts';
 import { RefusalRecorder } from './refusals.ts';
 
 /** How the App appears as a pull request's author, and as whoever merged one or added it to the merge queue. */
@@ -294,6 +297,12 @@ export interface Actions {
   commit(repo: string, commit: Commit): Promise<string>;
   /** Applies a runner's patch to the files at the branch's head, outside the sandbox, and commits it. */
   applyPatch(repo: string, patch: PatchCommit): Promise<string>;
+  /**
+   * Commits a pin move on `main`'s head and moves its branch, `factory/pin/<move>`, to the commit, in one forced update
+   * from a branch of its own, so an open pull request on it never has nothing to merge; returns the commit. Its guard
+   * (`pin-guard.ts`) reads each pin from the repository and refuses anything but a version or digest replaced at a pin.
+   */
+  commitPins(repo: string, commit: PinCommit): Promise<string>;
   openPullRequest(repo: string, draft: PullRequestDraft): Promise<PullRequestRef>;
   /**
    * Retitles or rewrites a pull request the App opened. With `keepCarries`, a deploy pull request's new body keeps the
@@ -328,6 +337,8 @@ export interface Actions {
   createCheckRun(repo: string, report: CheckRunReport): Promise<number>;
   updateCheckRun(repo: string, id: number, report: Partial<CheckRunReport>): Promise<void>;
   openIssue(repo: string, issue: { title: string; body: string; labels?: string[] }): Promise<number>;
+  /** Retitles or rewrites an issue the App opened. */
+  updateIssue(repo: string, number: number, change: { title?: string; body?: string }): Promise<void>;
   /**
    * Closes an issue the App opened. With a comment, it first says why on the issue, and only while the issue is open and does not say
    * it already: closing one already closed, or trying again after a close that failed, says nothing again.
@@ -494,27 +505,36 @@ export class LiveActions implements Actions {
    */
   readonly #bodies = new Map<string, Promise<unknown>>();
   readonly #guard: IssueGuard;
+  readonly #pins: PinSource;
 
-  /** `guard` holds the issue actions to the App's own issues; by default it asks GitHub, and keeps no record. */
-  constructor(github: GitHub, { guard }: { guard?: IssueGuard } = {}) {
+  /**
+   * `guard` holds the issue actions to the App's own issues; by default it asks GitHub, and keeps no record. `pins` is
+   * what the pin guard reads, git's trees through GitHub by default.
+   */
+  constructor(github: GitHub, { guard, pins }: { guard?: IssueGuard; pins?: PinSource } = {}) {
     this.#github = github;
     this.#read = contentsReader(github);
     this.#guard = guard ?? new IssueGuard({ openedBy: openedBy(github) });
+    this.#pins = pins ?? treeSource(github);
   }
 
   async applyPatch(
     repo: string,
     { branch, expectedHead, patch, pins, lockfile, message }: PatchCommit,
   ): Promise<string> {
-    guardBranch(branch);
+    guardWritable(branch);
     const read = (path: string) => this.#read(repo, path, expectedHead);
     await guard(patch, read, { pins, lockfile });
     const changes = await applyInTurn([pins, patch, lockfile], read);
     return this.commit(repo, { branch, expectedHead, message, changes });
   }
 
-  async setBranch(repo: string, branch: string, sha: string, { force = false } = {}): Promise<void> {
-    guardBranch(branch);
+  async setBranch(repo: string, branch: string, sha: string, options: { force?: boolean } = {}): Promise<void> {
+    guardWritable(branch);
+    await this.#setBranch(repo, branch, sha, options);
+  }
+
+  async #setBranch(repo: string, branch: string, sha: string, { force = false } = {}): Promise<void> {
     // Whether the branch is there decides between moving it and making it: asked, not read off an error's words.
     let exists = true;
     try {
@@ -528,12 +548,32 @@ export class LiveActions implements Actions {
   }
 
   async deleteBranch(repo: string, branch: string): Promise<void> {
-    guardBranch(branch);
+    guardWritable(branch);
     await this.#github.write(repo, 'DELETE', `/repos/${repo}/git/refs/heads/${branch}`);
   }
 
-  async commit(repo: string, { branch, expectedHead, message, changes }: Commit): Promise<string> {
-    guardBranch(branch);
+  async commit(repo: string, commit: Commit): Promise<string> {
+    guardWritable(commit.branch);
+    return this.#commit(repo, commit);
+  }
+
+  async commitPins(repo: string, commit: PinCommit): Promise<string> {
+    const additions = await pinChanges(repo, commit, this.#pins);
+    // Made off to the side, so the pin branch goes from its older commit straight to this one (as `deploys.ts`).
+    const next = pinNextBranch(commit.branch);
+    await this.#setBranch(repo, next, commit.base, { force: true });
+    const sha = await this.#commit(repo, {
+      branch: next,
+      expectedHead: commit.base,
+      message: commit.message,
+      changes: { additions, deletions: [] },
+    });
+    await this.#setBranch(repo, commit.branch, sha, { force: true });
+    await this.#github.write(repo, 'DELETE', `/repos/${repo}/git/refs/heads/${next}`);
+    return sha;
+  }
+
+  async #commit(repo: string, { branch, expectedHead, message, changes }: Commit): Promise<string> {
     const [headline = '', ...rest] = message.split('\n');
     const body = rest.join('\n').trim();
     const answer = await this.#github.graphql(
@@ -726,6 +766,11 @@ export class LiveActions implements Actions {
     return made.number;
   }
 
+  async updateIssue(repo: string, number: number, change: { title?: string; body?: string }): Promise<void> {
+    await this.#guard.check(repo, number, 'updateIssue');
+    await this.#github.write(repo, 'PATCH', `/repos/${repo}/issues/${number}`, change);
+  }
+
   async closeIssue(repo: string, number: number, reason: 'completed' | 'not_planned', comment?: string): Promise<void> {
     await this.#guard.check(repo, number, 'closeIssue');
     if (comment !== undefined) {
@@ -892,6 +937,8 @@ export class DryRunActions implements Actions {
   #mergedNow: (pull: DryRunPull) => boolean = () => false;
   /** Reads a pull request GitHub has, as the queue's guard reads it. */
   readonly #readPull: (repo: string, number: number) => Promise<QueueCandidate>;
+  /** What the pin guard reads, as the live actions' does: a dry run's pin move is refused where a live one would be. */
+  readonly #pins: PinSource;
 
   constructor(
     artifacts: ArtifactStore,
@@ -909,6 +956,14 @@ export class DryRunActions implements Actions {
     readPull: (repo: string, number: number) => Promise<QueueCandidate> = async () => {
       throw new Error('This dry run reads no pull requests.');
     },
+    pins: PinSource = {
+      head: async () => {
+        throw new Error('This dry run reads no trees.');
+      },
+      file: async () => {
+        throw new Error('This dry run reads no trees.');
+      },
+    },
   ) {
     this.#artifacts = artifacts;
     this.#log = log;
@@ -916,6 +971,7 @@ export class DryRunActions implements Actions {
     this.#read = read;
     this.#guard = guard;
     this.#readPull = readPull;
+    this.#pins = pins;
   }
 
   /**
@@ -988,7 +1044,7 @@ export class DryRunActions implements Actions {
     repo: string,
     { branch, expectedHead, patch, pins, lockfile, message }: PatchCommit,
   ): Promise<string> {
-    guardBranch(branch);
+    guardWritable(branch);
     const read = (path: string) => this.file(repo, path, expectedHead);
     await guard(patch, read, { pins, lockfile });
     const changes = await applyInTurn([pins, patch, lockfile], read);
@@ -1009,25 +1065,46 @@ export class DryRunActions implements Actions {
   }
 
   async setBranch(repo: string, branch: string, sha: string, options: { force?: boolean } = {}): Promise<void> {
-    guardBranch(branch);
+    guardWritable(branch);
     await this.#record('setBranch', repo, { branch, sha, ...options });
     this.#branches.set(`${repo} ${branch}`, sha);
   }
 
   async deleteBranch(repo: string, branch: string): Promise<void> {
-    guardBranch(branch);
+    guardWritable(branch);
     await this.#record('deleteBranch', repo, { branch });
     this.#branches.delete(`${repo} ${branch}`);
   }
 
-  commit(repo: string, commit: Commit): Promise<string> {
+  async commit(repo: string, commit: Commit): Promise<string> {
+    guardWritable(commit.branch);
     return this.#commit(repo, commit, undefined);
   }
 
-  async #commit(repo: string, commit: Commit, patch: string | undefined): Promise<string> {
-    guardBranch(commit.branch);
+  /** Guarded as the live one is, against what GitHub has: recorded as one commit, on the pin branch itself. */
+  async commitPins(repo: string, commit: PinCommit): Promise<string> {
+    const additions = await pinChanges(repo, commit, this.#pins);
+    return this.#commit(
+      repo,
+      {
+        branch: commit.branch,
+        expectedHead: commit.base,
+        message: commit.message,
+        changes: { additions, deletions: [] },
+      },
+      undefined,
+      'commitPins',
+    );
+  }
+
+  async #commit(
+    repo: string,
+    commit: Commit,
+    patch: string | undefined,
+    action: 'commit' | 'commitPins' = 'commit',
+  ): Promise<string> {
     const { changes, ...rest } = commit;
-    const hash = await this.#record('commit', repo, {
+    const hash = await this.#record(action, repo, {
       ...rest,
       changes: {
         additions: changes.additions.map((a) => ({ path: a.path, ...shown(a.contents) })),
@@ -1148,6 +1225,11 @@ export class DryRunActions implements Actions {
   async openIssue(repo: string, issue: { title: string; body: string; labels?: string[] }): Promise<number> {
     await this.#record('openIssue', repo, issue);
     return this.#number();
+  }
+
+  async updateIssue(repo: string, number: number, change: { title?: string; body?: string }): Promise<void> {
+    await this.#guarded(repo, number, 'updateIssue');
+    await this.#record('updateIssue', repo, { number, ...change });
   }
 
   async closeIssue(repo: string, number: number, reason: 'completed' | 'not_planned', comment?: string): Promise<void> {

@@ -5,10 +5,13 @@
  * Dependabot names a branch `dependabot/<ecosystem>/<directory>/<dependency>-<version>`, the directory left out at the
  * root, and a scoped npm package without its `@`: `dependabot/npm_and_yarn/grpc/grpc-js-1.14.7` is `@grpc/grpc-js`
  * at 1.14.7 in `/`. A group's branch names the group and a hash instead (`dependabot/npm_and_yarn/tooling-7ddd2f2d32`,
- * and `dependabot/<group>-<hash>` for a group across ecosystems), and names no pin: it is listed with none. The
- * directory and the dependency are told apart by the directories `.github/dependabot.yml` names on the default branch,
- * the longest first. Only a pull request Dependabot opened, from a branch of its own in the repository, is listed; its
- * title and body, which are Dependabot's prose, are never read.
+ * and `dependabot/<group>-<hash>` for a group across ecosystems), and names no pin, so its pins are read from its
+ * changes instead: each line its files rewrite in place, at its place in the base, with the text before and after
+ * (`changed`), which a move's pins are matched against (`groupMovesTo`). A file whose patch GitHub does not send (too
+ * large to show) is named in `unread`, so a reader knows it cannot tell what moves there. The directory and the
+ * dependency are told apart by the directories `.github/dependabot.yml` names on the default branch, the longest
+ * first. Only a pull request Dependabot opened, from a branch of its own in the repository, is listed; its title and
+ * body, which are Dependabot's prose, are never read.
  */
 import { parse } from 'yaml';
 import { z } from 'zod';
@@ -26,6 +29,18 @@ export interface DependencyPull {
   dependency: string | null;
   /** The version it moves the pin to, as the branch names it; null for a group's. */
   version: string | null;
+  /** For a group's, which names no pin: each line its files rewrite in place. Empty for any other. */
+  changed: ChangedLine[];
+  /** For a group's: the files it changes whose patch GitHub did not send, where what moves cannot be read. */
+  unread: string[];
+}
+
+/** A line a pull request rewrites in place: its file, its number in the base, and its text before and after. */
+export interface ChangedLine {
+  file: string;
+  line: number;
+  before: string;
+  after: string;
 }
 
 /** Dependabot's account, which alone opens its pull requests. */
@@ -167,6 +182,101 @@ export function branchPin(
 
 /** The most open pull requests read: ten pages. */
 const PAGES = 10;
+/** The most files of one pull request read: GitHub lists 3,000 at most. */
+const FILE_PAGES = 30;
+
+const FILES = z.array(
+  z.object({
+    filename: z.string(),
+    status: z.string(),
+    patch: z.string().optional(),
+  }),
+);
+
+const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
+/**
+ * The lines a patch rewrites in place, by their numbers in the base: a run of removed lines followed by as many added
+ * ones, paired in order. A run that adds or removes lines rather than rewriting them is not a pin's, and is left out.
+ */
+export function rewrittenLines(file: string, patch: string): ChangedLine[] {
+  const out: ChangedLine[] = [];
+  let base = 0;
+  let removed: { line: number; text: string }[] = [];
+  let added: string[] = [];
+  const flush = () => {
+    if (removed.length && removed.length === added.length)
+      for (const [i, was] of removed.entries())
+        out.push({ file, line: was.line, before: was.text, after: added[i] as string });
+    removed = [];
+    added = [];
+  };
+  for (const text of patch.split('\n')) {
+    const hunk = HUNK.exec(text);
+    if (hunk) {
+      flush();
+      base = Number(hunk[1]);
+      continue;
+    }
+    if (text.startsWith('\\')) continue;
+    if (text.startsWith('-')) {
+      // A removed line after added ones starts a new run.
+      if (added.length) flush();
+      removed.push({ line: base, text: text.slice(1) });
+      base++;
+    } else if (text.startsWith('+')) added.push(text.slice(1));
+    else {
+      flush();
+      base++;
+    }
+  }
+  flush();
+  return out;
+}
+
+const WORDS = /[A-Za-z0-9._+-]+/g;
+const VERSION_WORD = /^v?\d+(\.\d+)*([-+][A-Za-z0-9.+-]*)?$/;
+
+const DIGESTS = /sha256:[0-9a-f]{64}/g;
+
+/**
+ * Where a group's pull request moves a pin, from the line it rewrites at the pin's place: the first word that changes
+ * and is a version (`FROM ghcr.io/anchore/syft:v1.54.0@sha256:…` to `…:v1.57.1@sha256:…` is `v1.57.1`), read only when
+ * the line's words line up, and every digest the line has after that it did not have before, read whatever the words
+ * do (a digest-only move has no version; a line that gains a digest has a word more). Nothing when it rewrites no line
+ * there, or moves neither.
+ */
+export function groupMovesTo(
+  pull: Pick<DependencyPull, 'changed'>,
+  pin: { file: string; line: number },
+): { version: string | undefined; digests: string[] } | undefined {
+  const line = pull.changed.find((each) => each.file === pin.file && each.line === pin.line);
+  if (!line) return undefined;
+  const [was, now] = [line.before.match(WORDS) ?? [], line.after.match(WORDS) ?? []];
+  const version =
+    was.length === now.length ? now.find((word, i) => word !== was[i] && VERSION_WORD.test(word)) : undefined;
+  const before = new Set(line.before.match(DIGESTS) ?? []);
+  const digests = (line.after.match(DIGESTS) ?? []).filter((each) => !before.has(each));
+  return version === undefined && !digests.length ? undefined : { version, digests };
+}
+
+/** What a group's pull request changes, from its files' patches. */
+async function changesOf(github: GitHub, repo: string, number: number) {
+  const changed: ChangedLine[] = [];
+  const unread: string[] = [];
+  for (let page = 1; page <= FILE_PAGES; page++) {
+    const { body } = await github.poll(repo, `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`, FILES);
+    for (const file of body) {
+      if (file.patch === undefined) unread.push(file.filename);
+      else changed.push(...rewrittenLines(file.filename, file.patch));
+    }
+    if (body.length < 100) return { changed, unread };
+  }
+  throw new GitHubError(
+    'malformed',
+    `${repo}#${number} changes more files than GitHub lists: what it moves is not read.`,
+  );
+}
 
 export async function dependencyPulls(
   github: GitHub,
@@ -184,12 +294,17 @@ export async function dependencyPulls(
       if (pull.user?.login !== DEPENDABOT || pull.head.repo?.full_name !== repo) continue;
       if (!pull.head.ref.startsWith('dependabot/')) continue;
       ecosystems ??= ecosystemsOf(await config());
+      const named = branchPin(pull.head.ref, ecosystems);
+      // A branch that names no pin is read by what it changes.
+      const changes = named.dependency === null ? await changesOf(github, repo, pull.number) : undefined;
       out.push({
         number: pull.number,
         head: { ref: pull.head.ref, sha: pull.head.sha },
         draft: pull.draft ?? false,
         createdAt: pull.created_at,
-        ...branchPin(pull.head.ref, ecosystems),
+        ...named,
+        changed: changes?.changed ?? [],
+        unread: changes?.unread ?? [],
       });
     }
     if (body.length < 100) return out.sort((a, b) => a.number - b.number);

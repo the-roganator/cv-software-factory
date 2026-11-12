@@ -15,6 +15,8 @@ import { deployQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
+import { treeSource } from './pin-guard.ts';
+import { PIN_REPOS, pinWatch } from './pins.ts';
 import { Poller } from './poller.ts';
 import { LiveReads } from './reads.ts';
 import { RefusalRecorder } from './refusals.ts';
@@ -42,7 +44,15 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   const guard = new IssueGuard({ openedBy: openedBy(github), recorder });
   // One dry run, remembered for as long as the worker runs, for a worker in dry-run mode and for any request that asks.
   const dryRun = artifacts
-    ? new DryRunActions(artifacts, log, undefined, contentsReader(github), guard, queueCandidate(github))
+    ? new DryRunActions(
+        artifacts,
+        log,
+        undefined,
+        contentsReader(github),
+        guard,
+        queueCandidate(github),
+        treeSource(github),
+      )
     : undefined;
   const actions: Actions = config.dryRun && dryRun ? dryRun : new LiveActions(github, { guard });
   // What each deploy watch proposes, which the line reads to say what a deploy carries.
@@ -70,6 +80,13 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
         deployQueueWatch({ github, reads: liveReads, actions, recorder, log }, target),
       );
     }
+    // This repository's moves: one pull request of the App's for each it can write, one issue for each it cannot, each
+    // recorded instead in a dry run. Its reads are the live ones: a dry run acts on the day as GitHub has it.
+    for (const repo of PIN_REPOS.filter((r) => config.repositories.includes(r)))
+      poller.watch(
+        `pins in ${repo}`,
+        pinWatch({ github, reads: liveReads, actions, recorder, log, only: config.pinWatchOnly }, repo),
+      );
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.
     for (const repo of config.repositories)
       poller.watch(`issues in ${repo}`, outsideIssuesWatch(github, repo, actions, log));

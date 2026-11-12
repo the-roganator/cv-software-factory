@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { GitHubError } from '../../src/github/client.ts';
-import { branchPin, ecosystemsOf } from '../../src/github/dependabot.ts';
+import { branchPin, ecosystemsOf, groupMovesTo, rewrittenLines } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
 import { ScanReads } from '../../src/github/scanning.ts';
 import { zipEntry } from '../../src/github/zip.ts';
@@ -525,6 +525,33 @@ describe('Dependabot’s pull requests', () => {
       path: `/repos/${REPO}/contents/.github/dependabot.yml?ref=main`,
       answer: () => ({ body: { type: 'file', encoding: 'base64', content: Buffer.from(CONFIG).toString('base64') } }),
     },
+    {
+      // A group's branch names no pin: its files are read, as #984's would be. A lockfile's patch is too large to send.
+      method: 'GET',
+      path: /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+\/files\?per_page=100&page=1$/,
+      answer: ({ path }) => {
+        const number = Number(/pulls\/(\d+)/.exec(path)?.[1]);
+        if (number === 17)
+          return {
+            body: [
+              {
+                filename: 'deploy/images/scanner/Dockerfile',
+                status: 'modified',
+                patch: [
+                  '@@ -3,4 +3,4 @@',
+                  ' # The scanner, pinned here for Dependabot.',
+                  ' # It reads this line.',
+                  ' # And this one.',
+                  `-FROM example/scanner:1.40.0@sha256:${'1'.repeat(64)}`,
+                  `+FROM example/scanner:1.41.2@sha256:${'2'.repeat(64)}`,
+                ].join('\n'),
+              },
+            ],
+          };
+        if (number === 13) return { body: [{ filename: 'pnpm-lock.yaml', status: 'modified' }] };
+        return { body: [] };
+      },
+    },
   ];
 
   it('are Dependabot’s own, each with the pin and version its branch names', async () => {
@@ -545,7 +572,46 @@ describe('Dependabot’s pull requests', () => {
       20: ['npm', null, null, null],
     });
     expect(pulls[0]).toMatchObject({ head: { ref: 'dependabot/npm_and_yarn/invented-lib-7.6.6' }, draft: false });
+    // A group's is read by the lines it rewrites; a branch that names its pin is not read further.
+    const group = pulls.find((p) => p.number === 17);
+    expect(group?.changed).toEqual([
+      {
+        file: 'deploy/images/scanner/Dockerfile',
+        line: 6,
+        before: `FROM example/scanner:1.40.0@sha256:${'1'.repeat(64)}`,
+        after: `FROM example/scanner:1.41.2@sha256:${'2'.repeat(64)}`,
+      },
+    ]);
+    expect(group && groupMovesTo(group, { file: 'deploy/images/scanner/Dockerfile', line: 6 })?.version).toBe('1.41.2');
+    expect(group && groupMovesTo(group, { file: 'deploy/images/scanner/Dockerfile', line: 5 })).toBeUndefined();
+    expect(pulls.find((p) => p.number === 13)).toMatchObject({ changed: [], unread: ['pnpm-lock.yaml'] });
+    expect(pulls.find((p) => p.number === 11)).toMatchObject({ changed: [], unread: [] });
     expect(JSON.stringify(pulls)).not.toMatch(/never read/);
+  });
+
+  it('read the lines a patch rewrites in place, by their numbers in the base, and no line it adds or removes', () => {
+    const patch = [
+      '@@ -1,3 +1,4 @@',
+      ' a',
+      '-b',
+      '+B',
+      ' c',
+      '+added',
+      '@@ -10,3 +11,2 @@',
+      '-removed',
+      ' k',
+      '-x',
+      '-y',
+      '+X',
+      '\\ No newline at end of file',
+    ].join('\n');
+    expect(rewrittenLines('f', patch)).toEqual([{ file: 'f', line: 2, before: 'b', after: 'B' }]);
+    expect(
+      groupMovesTo(
+        { changed: [{ file: 'f', line: 1, before: 'image: a:1.0', after: 'image: b:1.0' }] },
+        { file: 'f', line: 1 },
+      ),
+    ).toBeUndefined();
   });
 
   it('read every page up to the most, and fail on one more', async () => {

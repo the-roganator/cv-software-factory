@@ -51,6 +51,10 @@ Admission control admits only images `build.yml` signed, and the third-party ima
 
 On the host, `factory patching --once` makes one pass against the cluster's GitHub worker and says what it appended, or why not: root `AGENTS.md` has the commands.
 
+## The pin watch
+
+This repository's moves are the GitHub worker's to make ([its pin watch](GITHUB-WORKER.md#pins)), from the same moves read: one pull request of the App's on `factory/pin/<move>` for each move in the `worker`, `approval` or `cluster` lane, which replaces the version or digest at each of the move's pins and nothing else, as [its guard](GITHUB-WORKER.md#the-pin-guard) holds it; one issue for each move in the `issue` lane, a line no longer built, and one whose pins' lines it cannot write. It does not fight Dependabot: a move Dependabot's open pull request already makes, to the same target or a newer one, gets nothing, and a pin Dependabot reads with no High or Critical on a deadline is in the `dependabot` lane, Dependabot's alone. The review gate passes its pull request as `pin-move` when it proves the move from the pull request itself, and holds it for Martin otherwise ([approval routing](APPROVAL-ROUTING.md)). It takes only the moves its deployment names in `PIN_WATCH_ONLY` (or every one, `*`), and none while none is named. The app's moves are its line's.
+
 ### Not yet
 
-The day's cards in Needs you and its messages to Martin's phone (task 32), the pin watch that opens a move's pull request (task 33), and the app's moves sent to triage's inbox (task 35), for which the inbox already knows the sense by name, `dependency`.
+The day's cards in Needs you and its messages to Martin's phone (task 32), the worker queueing a pin pull request the gate passed (task 33), and the app's moves sent to triage's inbox (task 35), for which the inbox already knows the sense by name, `dependency`.

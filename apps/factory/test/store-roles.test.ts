@@ -35,9 +35,13 @@ const migrateJob = async () => {
 describe('the store’s passwords', () => {
   it('are each set by the migrate Job from a Secret, for every role the migrations give one', async () => {
     const env = await migrateJob();
-    for (const { variable } of Object.values(PASSWORDS)) {
+    for (const [name, { variable }] of Object.entries(PASSWORDS)) {
+      // The dependency sense's role is made by 0050, with no password until its manifests give the Job one: the sense
+      // runs only once they merge, after the image that carries it is pinned.
+      if (name === 'patching') continue;
       expect(env.find((e) => e.name === variable)?.valueFrom?.secretKeyRef?.key, variable).toBe('password');
     }
+    expect(env.find((e) => e.name === PASSWORDS.patching.variable)).toBeUndefined();
   });
 
   it('include none for the factory’s writer, which is gone (0024), and nothing makes or reads its Secret', async () => {
@@ -178,37 +182,6 @@ describe('the red-team harness’s role', () => {
       const pod = manifest.spec?.template?.spec;
       for (const e of [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])].flatMap((c) => c.env ?? [])) {
         expect(e.valueFrom?.secretKeyRef?.name, manifest.metadata?.name).not.toBe('postgres-redteam');
-      }
-    }
-  });
-});
-
-describe('the dependency sense’s role', () => {
-  it('runs the sense as factory_patching, its password from a Secret `make up` makes and the migrate Job sets', async () => {
-    const makefile = await readFile(join(DEPLOY, '../Makefile'), 'utf-8');
-    expect(makefile).toMatch(/^\t@\$\(call password,factory,postgres-patching\)/m);
-    expect((await migrateJob()).find((e) => e.name === 'PATCHING_PASSWORD')?.valueFrom?.secretKeyRef).toEqual({
-      name: 'postgres-patching',
-      key: 'password',
-      optional: true,
-    });
-    const deployment = (await manifests<Deployment>()).find(
-      (m) => m.manifest.kind === 'Deployment' && m.manifest.metadata?.name === 'patching',
-    )?.manifest;
-    const env = deployment?.spec?.template?.spec.containers[0]?.env ?? [];
-    expect(env.find((e) => e.name === 'PGUSER')?.value).toBe('factory_patching');
-    expect(env.find((e) => e.name === 'PGPASSWORD')?.valueFrom?.secretKeyRef).toEqual({
-      name: 'postgres-patching',
-      key: 'password',
-    });
-  });
-
-  it('is the only pod that reads its Secret, besides the migrate Job that sets it', async () => {
-    for (const { manifest } of await manifests<Deployment>()) {
-      if (manifest.metadata?.name === 'patching' || manifest.metadata?.name === 'migrate') continue;
-      const pod = manifest.spec?.template?.spec;
-      for (const e of [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])].flatMap((c) => c.env ?? [])) {
-        expect(e.valueFrom?.secretKeyRef?.name, manifest.metadata?.name).not.toBe('postgres-patching');
       }
     }
   });

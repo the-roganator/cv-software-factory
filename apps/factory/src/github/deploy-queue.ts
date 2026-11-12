@@ -292,7 +292,8 @@ async function queueOne(
     return;
   }
   // Read the last thing before the enqueue, so what it confirms (who labelled a pin move) is as fresh as it can be:
-  // GitHub's enqueue takes no condition on a label, so a change in the one request between is seen next pass.
+  // GitHub's enqueue takes no condition on a label: a label taken off in the one request between is not seen, and
+  // nothing takes a pull request out of the queue once it is in. Martin takes it out by hand.
   const confirmed = await confirm?.();
   if (confirmed) return state.wait(number, head, confirmed);
 
@@ -354,11 +355,43 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
 /** How many pages of a hundred open pull requests a pass reads: the pin watch opens one for each move. */
 const OPEN_PAGES = 5;
 
+const MATCHING_REFS = z.array(z.object({ ref: z.string(), object: z.object({ sha: z.string() }) }));
+
+/** The commits the pin watch's branches (`factory/pin/…`, `factory/pin-next/…`) point at in a repository. */
+export const pinHeadsOf =
+  (github: GitHub) =>
+  async (repo: string): Promise<string[]> => {
+    const { body } = await github.poll(repo, `/repos/${repo}/git/matching-refs/heads/factory/pin`, MATCHING_REFS);
+    return body.filter((ref) => pinBranch(ref.ref.replace(/^refs\/heads\//, ''))).map((ref) => ref.object.sha);
+  };
+
 /** Whether a pin branch is that of a move the pin watch is told to take (`PIN_WATCH_ONLY`), by the branch it opens. */
-export function toldWait(only: PinScope, branch: string): QueueWait | undefined {
-  if (only === '*' || only.some((name) => pinBranchFor(name) === branch)) return undefined;
+export function toldWait(only: PinScope, pull: Pick<QueuePull, 'title' | 'head'>): QueueWait | undefined {
+  if (only === '*') return undefined;
+  // The move by its exact name, as the watch reads the setting: the branch the watch opens for that name, and the
+  // title it gives it, which no worker that asks can change (the door refuses any action on a pin pull request).
+  const told = only.some(
+    (name) =>
+      pinBranchFor(name) === pull.head.ref &&
+      pull.title.startsWith(`chore(pin): move ${name.replace(/[`\r\n]/g, '')} to `),
+  );
+  if (told) return undefined;
   return { waits: 'not-a-pin', why: 'its move is not one the pin watch is told to take (PIN_WATCH_ONLY)' };
 }
+
+/** Whether anyone but the App ever took the `pin` label off a pull request, by its events: Martin's hold of it. */
+export const heldByLabel = (events: LabelEvents): boolean =>
+  events.some((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER);
+
+const CLOSED = z.array(
+  z.object({
+    number: z.number().int().positive(),
+    title: z.string(),
+    user: z.object({ id: z.number().int() }).nullable(),
+    head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
+    merged_at: z.string().nullable().optional(),
+  }),
+);
 
 /**
  * Watches the pin watch's open pull requests in a repository, and adds each to the merge queue once the gate passed
@@ -385,6 +418,33 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       events.push(...body);
       if (body.length < 100) return { events, whole: true };
     }
+  };
+
+  /**
+   * Martin's hold carried across the pin watch closing a move's pull request and opening another for the same move and
+   * target (a day the scan left it out, or Dependabot took it): an earlier closed pull request of the App's from the
+   * same branch with the same title, whose `pin` label anyone but the App took off, holds this one. A later target is
+   * a new title, and is not held, as the watch opens one again only for a later target than Martin closed.
+   */
+  const heldBefore = async (pull: QueuePull): Promise<QueueWait | undefined> => {
+    const [owner] = repo.split('/');
+    const { body } = await github.poll(
+      repo,
+      `/repos/${repo}/pulls?state=closed&per_page=20&head=${owner}:${encodeURIComponent(pull.head.ref)}`,
+      CLOSED,
+    );
+    for (const closed of body) {
+      if (closed.user?.id !== APP_USER || closed.head.repo?.full_name !== repo || closed.merged_at) continue;
+      if (closed.title !== pull.title || closed.head.ref !== pull.head.ref) continue;
+      const { events, whole } = await eventsOf(closed.number);
+      if (!whole || heldByLabel(events)) {
+        return {
+          waits: 'not-a-pin',
+          why: `Martin held this move at this target on #${closed.number} by taking its ${PIN_LABEL} label off`,
+        };
+      }
+    }
+    return undefined;
   };
 
   /** The open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */
@@ -416,7 +476,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       const head = pull.head.sha;
       const attempt = state.attempt(number, head);
       if (attempt.done) continue;
-      const notOne = pinPullWait(repo, pull) ?? toldWait(only, pull.head.ref);
+      const notOne = pinPullWait(repo, pull) ?? toldWait(only, pull);
       if (notOne) {
         state.wait(number, head, notOne);
         continue;
@@ -424,7 +484,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       // Who labelled it is read last, once the gate and the checks pass it: its events are the dearest read.
       const labelled = async () => {
         const { events, whole } = await eventsOf(number);
-        return labelWait(events, whole);
+        return labelWait(events, whole) ?? (await heldBefore(pull));
       };
       // One pull request that cannot be read (closed since the list, an answer that does not parse) holds only itself.
       await queueOne(deps, state, repo, 'pin', pull, 'pin-move', attempt, labelled).catch((error: unknown) => {

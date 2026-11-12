@@ -395,7 +395,7 @@ const PIN_HEAD = 'c'.repeat(40);
 const OLDER = 'd'.repeat(40);
 const pinPull = (over: Partial<QueuePull> = {}): QueuePull => ({
   number: 1040,
-  title: 'fix(deps): move zap to 2.17.0 on its line',
+  title: 'chore(pin): move zap to 2.17.0',
   draft: false,
   user: { id: APP_USER },
   labels: [{ name: 'pin' }],
@@ -430,6 +430,8 @@ function pinHarness(o: {
   actions?: DeployQueueDependencies['actions'];
   queued?: (number: number) => MergeQueue['queued'];
   only?: PinScope;
+  /** The closed pull requests GitHub lists from a branch, as the queue reads them for an earlier hold. */
+  closed?: (branch: string) => unknown[];
 }) {
   const sent: Sent[] = [];
   /** GitHub's requests and the merge queue's reads, in the order they were made. */
@@ -444,6 +446,14 @@ function pinHarness(o: {
         answer: ({ path }) => {
           const page = Number(/page=(\d+)$/.exec(path)?.[1]);
           return { body: pulls().slice((page - 1) * 100, page * 100) };
+        },
+      },
+      {
+        method: 'GET',
+        path: /\/pulls\?state=closed&per_page=20&head=/,
+        answer: ({ path }) => {
+          const branch = decodeURIComponent(path.split('&head=')[1]?.split(':').slice(1).join(':') ?? '');
+          return { body: o.closed?.(branch) ?? [] };
         },
       },
       {
@@ -512,10 +522,57 @@ describe('the pin queue watch', () => {
       await (none === undefined ? pinQueueWatch(deps, REPO) : pinQueueWatch(deps, REPO, none))();
       expect(sent).toEqual([]);
     }
-    expect(toldWait(['zap'], 'factory/pin/zap')).toBeUndefined();
-    expect(toldWait('*', 'factory/pin/anything')).toBeUndefined();
-    expect(toldWait(['Zap'], 'factory/pin/zap')).toBeUndefined();
-    expect(toldWait(['zap'], 'factory/pin/zap2')?.waits).toBe('not-a-pin');
+    const at = (ref: string, title = 'chore(pin): move zap to 2.17.0') => ({
+      title,
+      head: { ref, sha: PIN_HEAD, repo: null },
+    });
+    expect(toldWait(['zap'], at('factory/pin/zap'))).toBeUndefined();
+    expect(toldWait('*', at('factory/pin/anything'))).toBeUndefined();
+    expect(toldWait(['zap'], at('factory/pin/zap2'))?.waits).toBe('not-a-pin');
+  });
+
+  it('takes the setting by the exact move name, as the watch does: no name that only folds to the branch', async () => {
+    const at = (ref: string, title: string) => ({ title, head: { ref, sha: PIN_HEAD, repo: null } });
+    const dashboards = at('factory/pin/example-dashboards', 'chore(pin): move example-dashboards to 13.7.2');
+    // Each folds to the same branch, and the watch takes no move by any of them.
+    for (const name of ['Example-Dashboards', 'example_dashboards', 'example.dashboards*', 'example-dashboards ']) {
+      expect(toldWait([name], dashboards)?.waits, name).toBe('not-a-pin');
+    }
+    expect(toldWait(['example-dashboards'], dashboards)).toBeUndefined();
+    // A told name whose title prefixes another move's is still on its own branch.
+    expect(toldWait(['zap'], at('factory/pin/zap-to-x', 'chore(pin): move zap to x to 1.0'))?.waits).toBe('not-a-pin');
+    const folded = pinHarness({ only: ['Zap'] });
+    await folded.pass();
+    expect(folded.enqueued).toEqual([]);
+  });
+
+  it('carries Martin’s hold to a pull request the watch opened again for the same move and target', async () => {
+    const closed = (over: Record<string, unknown> = {}) => ({
+      number: 1001,
+      title: 'chore(pin): move zap to 2.17.0',
+      user: { id: APP_USER },
+      head: { ref: 'factory/pin/zap', repo: { full_name: REPO } },
+      merged_at: null,
+      ...over,
+    });
+    const unlabelled = { event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' } };
+    const events = (n: number, p: number) =>
+      p > 1 ? [] : n === 1001 ? [labelled(APP_USER), unlabelled] : [labelled(APP_USER)];
+    const held = pinHarness({ closed: () => [closed()], events });
+    await held.pass();
+    expect(held.enqueued).toEqual([]);
+
+    // Not held: an earlier target (another title), one the App alone unlabelled, a merged one, or someone else's.
+    for (const earlier of [
+      closed({ title: 'chore(pin): move zap to 2.16.0' }),
+      closed({ number: 1002 }),
+      closed({ merged_at: '2026-11-01T00:00:00Z' }),
+      closed({ user: { id: MARTIN } }),
+    ]) {
+      const free = pinHarness({ closed: () => [earlier], events });
+      await free.pass();
+      expect(free.enqueued, JSON.stringify(earlier)).toEqual([[1040, PIN_HEAD]]);
+    }
   });
 
   it('adds the pin watch’s pull request at its head once the gate passed it as a pin move and its checks are green', async () => {

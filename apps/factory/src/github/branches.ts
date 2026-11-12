@@ -36,9 +36,12 @@ export const ownsBranch = (branch: string): boolean =>
 export const PIN_PREFIX = `${FACTORY_PREFIX}pin/`;
 export const PIN_NEXT_PREFIX = `${FACTORY_PREFIX}pin-next/`;
 
-/** Whether a branch is one only `commitPins` writes. */
+/** Whether a branch is one only `commitPins` writes, or the prefix of one, which no branch of anyone else's may be. */
 export const pinBranch = (branch: string): boolean =>
-  branch.startsWith(PIN_PREFIX) || branch.startsWith(PIN_NEXT_PREFIX);
+  branch.startsWith(PIN_PREFIX) ||
+  branch.startsWith(PIN_NEXT_PREFIX) ||
+  `${branch}/` === PIN_PREFIX ||
+  `${branch}/` === PIN_NEXT_PREFIX;
 
 /** Throws `BranchRefused` for a branch the factory does not own. */
 export function guardBranch(branch: string): void {

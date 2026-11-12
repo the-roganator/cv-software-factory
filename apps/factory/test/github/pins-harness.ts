@@ -141,7 +141,7 @@ export class FakeRepo {
       merged_at: p.merged_at,
       draft: false,
       created_at: '2026-11-11T00:00:00Z',
-      user: { login: p.user },
+      user: { login: p.user, id: p.user === APP_LOGIN ? APP_USER : 1 },
       labels: p.labels.map((name) => ({ name })),
       head: { ref: p.head, sha: this.refs.get(p.head) ?? 'c'.repeat(40), repo: { full_name: p.from ?? repo } },
       mergeable: p.mergeable,
@@ -151,6 +151,15 @@ export class FakeRepo {
     const branchOf = (path: string, prefix: string) =>
       decodeURIComponent(path.slice(prefix.length).split('?')[0] ?? '');
     return [
+      {
+        method: 'GET',
+        path: new RegExp(`^${at}/git/matching-refs/heads/`),
+        answer: ({ path }) => {
+          const prefix = branchOf(path, `${at}/git/matching-refs/heads/`);
+          const refs = [...this.refs].filter(([name]) => name.startsWith(prefix));
+          return { body: refs.map(([name, sha]) => ({ ref: `refs/heads/${name}`, object: { sha } })) };
+        },
+      },
       {
         method: 'GET',
         path: new RegExp(`^${at}/git/ref/heads/`),

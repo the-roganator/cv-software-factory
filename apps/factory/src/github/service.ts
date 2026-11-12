@@ -11,7 +11,7 @@ import { type Actions, contentsReader, DryRunActions, LiveActions, queueCandidat
 import { createAttackServer } from './attacks.ts';
 import { GitHub } from './client.ts';
 import { type GitHubConfig, REPOSITORIES } from './config.ts';
-import { deployQueueWatch, pinQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
+import { deployQueueWatch, pinHeadsOf, pinQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
 import { DEPLOYS, DeployProposals, deployWatch } from './deploys.ts';
 import { DryRunReads } from './dry-run-reads.ts';
 import { IssueGuard, openedBy, outsideIssuesWatch } from './issues.ts';
@@ -109,6 +109,7 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     repositories: config.repositories,
     health: () => ({ mode, watching: poller.watching, signsRefusals: recorder.signs }),
     recorder,
+    pinHeads: pinHeadsOf(github),
     log,
   });
   // The dependency sense's door (`factory patching`), on a port of its own: the scan's moves and Dependabot's pull

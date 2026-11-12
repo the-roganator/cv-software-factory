@@ -191,6 +191,34 @@ describe('the GitHub worker’s refusals', () => {
     expect(opened.status).toBe(500);
   });
 
+  it('refuses, signed, a check run named as one main requires, and posts any other', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
+    const server = createWorkerServer({
+      actions: failing(new Error('the action was reached')),
+      reads: { requiredChecks: async () => ['lint, types, tests', 'Image builds'] } as never,
+      repositories: [REPO],
+      health: () => ({}),
+      recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT }),
+      log: quiet,
+    });
+    const { url } = await listenLocal(server);
+    close = () => server.close();
+    const worker = new GitHubWorker(url);
+    const asked = { headSha: SHA, status: 'completed', conclusion: 'success', title: 't', summary: 's' } as const;
+    const answer = (name: string) =>
+      worker.act('createCheckRun', REPO, { name, ...asked }).catch((e: unknown) => e as GitHubWorkerError);
+    for (const name of ['image builds', 'lint, types, tests', 'review']) {
+      const failed = (await answer(name)) as GitHubWorkerError;
+      expect(failed.status, name).toBe(422);
+      expect(verifyRefusal(publicKey, failed.refusal), name).toMatchObject({ ok: true });
+    }
+    expect(((await answer('factory review')) as GitHubWorkerError).status).toBe(500);
+    const renamed = (await worker
+      .act('updateCheckRun', REPO, { id: 1, name: 'Image builds' })
+      .catch((e: unknown) => e)) as GitHubWorkerError;
+    expect(renamed.status).toBe(422);
+  });
+
   it('does not take GitHub’s 403 to the door’s own read of a pull request for a refusal of the action', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
     const refused = async () => {

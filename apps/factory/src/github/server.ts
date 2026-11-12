@@ -30,13 +30,15 @@ import { z } from 'zod';
 import { entryProblem, MOST_CONTRADICTED } from '../gates/contradicts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
-import { BranchRefused, pinBranch } from './branches.ts';
+import { BranchRefused, guardWritable, pinBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
+import { QUEUES_DEPLOYS_IN } from './deploy-queue.ts';
 import { DeployRefused, MAX_CARRIES } from './deploys.ts';
 import { IssueRefused } from './issues.ts';
+import { REVIEW_CHECK } from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import { plainPath } from './paths.ts';
-import { PIN_LABEL } from './pins.ts';
+import { PIN_LABEL, PIN_REPOS } from './pins.ts';
 import type { Reads } from './reads.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 import { DIGEST, RegistryError } from './registry.ts';
@@ -231,7 +233,20 @@ function actingFor(req: IncomingMessage): ActingFor {
 }
 
 /** Whether a label is `pin` as GitHub takes it: label names are matched without regard to case. */
-const isPinLabel = (label: string): boolean => label.trim().toLowerCase() === PIN_LABEL;
+/**
+ * A label as GitHub may take it: compatibility forms folded (NFKC), the characters that show nothing (zero-width,
+ * the soft hyphen, the byte-order mark) taken out, a dotless i read as i, without regard to case or the space round it.
+ */
+const labelAsRead = (label: string): string =>
+  label
+    .normalize('NFKC')
+    .replace(/[\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]/g, '')
+    .replace(/\u0131/g, 'i')
+    .trim()
+    .toLowerCase();
+
+/** Whether a label is `pin` as GitHub takes it. */
+const isPinLabel = (label: string): boolean => labelAsRead(label) === PIN_LABEL;
 
 /**
  * Throws `BranchRefused` for what only the pin watch does with a pull request: open one from a pin branch, or give one
@@ -239,7 +254,12 @@ const isPinLabel = (label: string): boolean => label.trim().toLowerCase() === PI
  * and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch wrote.
  */
 function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
-  if (head !== undefined && pinBranch(head.replace(/^refs\/heads\//, ''))) {
+  const branch = head?.replace(/^refs\/heads\//, '');
+  // A head is a branch by its name, or `refs/heads/` and its name; any other ref's form is not read as a branch here.
+  if (branch !== undefined && /^(refs|heads)\//.test(branch)) {
+    throw new BranchRefused(`${head} is not a branch by its name: a pull request is opened from a branch's name.`);
+  }
+  if (branch !== undefined && pinBranch(branch)) {
     throw new BranchRefused(`${head} is the pin watch's: only the pin watch opens a pull request from it.`);
   }
   if (labels?.some(isPinLabel)) {
@@ -274,6 +294,54 @@ async function guardPinNumber(repo: string, args: Record<string, unknown>, reads
   }
   if (pinBranch(head)) {
     throw new BranchRefused(`#${number} is the pin watch's pull request, from ${head}: only the pin watch acts on it.`);
+  }
+}
+
+/**
+ * Throws `BranchRefused` for an enqueue a worker asks in a repository whose merge queue only the worker's own watches
+ * add to: this one's, where the deploy queue and the pin queue add only what their watches opened and the gate passed
+ * (ADR 0017). The line adds to the app's alone.
+ */
+function guardEnqueue(repo: string): void {
+  if (repo === QUEUES_DEPLOYS_IN || PIN_REPOS.includes(repo)) {
+    throw new BranchRefused(
+      `In ${repo} only the worker's own watches add to the merge queue: no worker that asks adds a pull request there.`,
+    );
+  }
+}
+
+/**
+ * Throws `BranchRefused` for a branch a worker asks to set at a pin branch's commit, in a repository the pin watch
+ * writes: a second pull request with the pin move's head would have the gate hold the move (two pull requests that
+ * have had one head), so only the pin watch's branches are at its commits.
+ */
+async function guardPinHead(
+  repo: string,
+  sha: string,
+  pinHeads?: (repo: string) => Promise<readonly string[]>,
+): Promise<void> {
+  if (!PIN_REPOS.includes(repo)) return;
+  if (!pinHeads) throw new Error(`The door cannot read the pin watch's branches in ${repo}, so it sets none there.`);
+  if ((await pinHeads(repo)).includes(sha)) {
+    throw new BranchRefused(
+      `${sha.slice(0, 7)} is a pin branch's head: no other branch is set to a pin move's commit.`,
+    );
+  }
+}
+
+/**
+ * Throws `BranchRefused` for a check run a worker asks to post or rename as one GitHub requires on `main`, or as the
+ * review gate's: those are what a merge waits for, and only their own workflows and App post them.
+ */
+async function guardCheckName(repo: string, name: string | undefined, reads?: Reads): Promise<void> {
+  if (name === undefined) return;
+  if (name.trim().toLowerCase() === REVIEW_CHECK) {
+    throw new BranchRefused(`A check run named ${name} is the review gate's: no worker that asks posts one.`);
+  }
+  if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether ${name} is a check main requires.`);
+  const required = await reads.requiredChecks(repo, 'main');
+  if (required.some((r) => r.trim().toLowerCase() === name.trim().toLowerCase())) {
+    throw new BranchRefused(`A check run named ${name} is one main requires: no worker that asks posts one.`);
   }
 }
 
@@ -424,6 +492,11 @@ export interface WorkerServerOptions {
   only?: readonly ReadName[] | undefined;
   /** What keeps, logs and signs each refusal, for the answer to carry; without it, a refusal is answered as it is. */
   recorder?: RefusalRecorder | undefined;
+  /**
+   * The commits the pin watch's branches point at in a repository (`pinHeadsOf`): a branch a worker asks to set in one
+   * of `PIN_REPOS` is refused at any of them. Without it, such a branch is refused in those repositories.
+   */
+  pinHeads?: ((repo: string) => Promise<readonly string[]>) | undefined;
   log: Logger;
 }
 
@@ -475,6 +548,7 @@ export function createWorkerServer({
   health,
   recorder,
   only,
+  pinHeads,
   log,
 }: WorkerServerOptions): Server {
   /** Each refusal kept for an action's failure, for its answer. */
@@ -541,6 +615,16 @@ export function createWorkerServer({
     let result: unknown;
     try {
       await guardPinNumber(repo, parsed.data as Record<string, unknown>, reads);
+      if (name === 'enqueuePullRequest') guardEnqueue(repo);
+      if (name === 'setBranch') {
+        const { branch, sha } = parsed.data as unknown as { branch: string; sha: string };
+        // The branch's own refusal first, as the action gives it, before anything is read.
+        guardWritable(branch);
+        await guardPinHead(repo, sha, pinHeads);
+      }
+      if (name === 'createCheckRun' || name === 'updateCheckRun') {
+        await guardCheckName(repo, (parsed.data as unknown as { name?: string }).name, reads);
+      }
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(
         actions,
         repo,

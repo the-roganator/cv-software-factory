@@ -394,8 +394,12 @@ describe("the review gate's workflows", () => {
     // workflow_run runs the workflow as main has it; pull_request would run the change's copy. GitHub's default event
     // policy blocks pull_request_target in public repositories.
     expect(triggers(gate)).toEqual(['workflow_call', 'workflow_run']);
-    // And after check.yml, so a pin move that waited for the job running its pin is judged again.
-    expect(gate).toMatch(/workflow_run:\n {4}# [^\n]*\n {4}workflows: \[review requested, check\]\n/);
+    // And after check.yml and platform.yml, so a pin move that waited for the job running its pin is judged again.
+    expect(gate).toMatch(/workflow_run:\n(?: {4}# [^\n]*\n)+ {4}workflows: \[review requested, check, platform\]\n/);
+    // The pin move job reads, and holds no secret: which workflow made a check run is an Actions read.
+    expect(gate).toMatch(
+      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n(?: {6}# [^\n]*\n)? {6}actions: read\n {4}outputs:/m,
+    );
     expect(requested).toMatch(/^name: review requested$/m);
     // The key is in an environment only main may use: a pull request into another branch runs that branch's copy.
     expect(gate).toMatch(/^ {4}environment: review$/m);

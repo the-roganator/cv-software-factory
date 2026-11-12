@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import {
+  CHECK_WORKFLOW,
   chartForward,
   hashesOf,
   IMAGE_CHECK,
@@ -12,8 +13,11 @@ import {
   listMoves,
   type Move,
   manifestsDiffer,
+  moveTitle,
   onlyPinsChange,
   type PinMoveIO,
+  PLATFORM_CHECK,
+  PLATFORM_WORKFLOW,
   PLATFORMS,
   POSTGRES_FILE,
   pinMove,
@@ -24,6 +28,9 @@ import {
   scansShow,
   staleRecords,
   TEST_SHARDS,
+  type WorkflowRun,
+  whatRunsIt,
+  workflowsOf,
   ZAP_CHECK,
   ZAP_FILE,
 } from './pin-move.ts';
@@ -66,8 +73,11 @@ const run = (name: string, conclusion: string | null = 'success', more: Partial<
   status: 'completed',
   conclusion,
   app: { slug: 'github-actions' },
+  workflow: name === PLATFORM_CHECK ? PLATFORM_WORKFLOW : CHECK_WORKFLOW,
   ...more,
 });
+/** Every check that runs a pin, each a success at the head from its own workflow. */
+const ALL_RAN = () => [run(ZAP_CHECK), run(IMAGE_CHECK), ...TEST_SHARDS.map((name) => run(name)), run(PLATFORM_CHECK)];
 
 /** A reader of the case's answers: every fact the rule reads, each passing unless the case says otherwise. */
 function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
@@ -99,7 +109,7 @@ function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
     hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
     scan: async (reference) =>
       reference.endsWith(hex('a')) || reference.endsWith(hex('d')) || reference.includes('2.11.2') ? FIXED : CLEAN,
-    runs: async () => [run(ZAP_CHECK), run(IMAGE_CHECK), ...TEST_SHARDS.map((name) => run(name))],
+    runs: async () => ALL_RAN(),
     ...io,
   };
 }
@@ -217,13 +227,143 @@ describe('a pin move, replayed as the App would make it', () => {
   it('holds a Postgres digest while it stales the admission record, and passes it once it does not, on tests', async () => {
     const stale = { hashes: async (side: 'base' | 'head') => ({ 'admission-refusals': side, 'mark-refusals': 'y' }) };
     expect(await reasonOf({ ...POSTGRES, io: stale })).toMatch(/^it stales deploy\/test\/admission-refusals\.json/);
-    expect(await judged(POSTGRES)).toMatchObject({ ran: TEST_SHARDS, fixed: 1 });
+    expect(await judged(POSTGRES)).toMatchObject({ ran: [...TEST_SHARDS, PLATFORM_CHECK], fixed: 1 });
   });
 
-  it("holds a sidecar's value until the platform check, with every other condition proved", async () => {
-    expect(await reasonOf(SIDECAR)).toBe(
-      "only a cluster runs grafana's value at deploy/base/telemetry/values/grafana.yaml:32: held until the platform check makes one from the change (task 34)",
+  it("passes a sidecar's value once platform made a cluster from the change at its head (#995)", async () => {
+    const result = await judged(SIDECAR);
+    expect(result).toMatchObject({ ran: [PLATFORM_CHECK], fixed: 1 });
+    expect('move' in result && moveTitle(result)).toMatch(/, platform ran it$/);
+  });
+
+  it("holds a sidecar's value while platform has not made a cluster from the change at its head", async () => {
+    const at = (runs: Run[]) => reasonOf({ ...SIDECAR, io: { runs: async () => runs } });
+    const others = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
+    expect(await at(others)).toBe('platform has not run at ccccccc');
+    expect(await at([...others, run(PLATFORM_CHECK, null, { status: 'in_progress' })])).toBe(
+      'platform has not finished at ccccccc',
     );
+    expect(await at([...others, run(PLATFORM_CHECK, 'skipped')])).toBe(
+      'platform at ccccccc is skipped, not a success: it made no cluster from the change',
+    );
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'neutral'])
+      expect(await at([...others, run(PLATFORM_CHECK, conclusion)])).toBe(
+        `platform at ccccccc is ${conclusion}, not a success: something must run it`,
+      );
+    // Its latest attempt counts: a success re-run into a failure holds, a failure re-run into a success passes.
+    const failedLast = [run(PLATFORM_CHECK, 'success', { id: 1 }), run(PLATFORM_CHECK, 'failure', { id: 2 })];
+    expect(await at([...others, ...failedLast])).toMatch(/is failure, not a success/);
+    const passedLast = [run(PLATFORM_CHECK, 'failure', { id: 1 }), run(PLATFORM_CHECK, 'success', { id: 2 })];
+    expect(await at([...others, ...passedLast])).toBe(
+      "passed: grafana's value at deploy/base/telemetry/values/grafana.yaml:32",
+    );
+    // Another head's success, another app's, or a job named `platform` in any workflow but platform.yml proves nothing.
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { head_sha: 'd'.repeat(40) })])).toBe(
+      'platform has not run at ccccccc',
+    );
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { app: { slug: 'mrogan-software-factory' } })])).toBe(
+      'platform has not run at ccccccc',
+    );
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: CHECK_WORKFLOW })])).toBe(
+      'platform has not run at ccccccc',
+    );
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: null })])).toBe(
+      'platform has not run at ccccccc',
+    );
+    // A later forged success beside a failed real one does not hide the failure.
+    const forged = [
+      run(PLATFORM_CHECK, 'failure', { id: 1 }),
+      run(PLATFORM_CHECK, 'success', { id: 2, workflow: '.github/workflows/other.yml' }),
+    ];
+    expect(await at([...others, ...forged])).toMatch(/is failure, not a success/);
+  });
+
+  it('holds Postgres until both tests and platform ran it, and a third-party image or a chart in deploy/ on platform', async () => {
+    const noPlatform = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
+    expect(await reasonOf({ ...POSTGRES, io: { runs: async () => noPlatform } })).toBe(
+      'platform has not run at ccccccc',
+    );
+    const noTests = ALL_RAN().filter((r) => !r.name.startsWith('tests'));
+    expect(await reasonOf({ ...POSTGRES, io: { runs: async () => noTests } })).toBe(
+      'tests (1/3) has not run at ccccccc',
+    );
+    const flagd = (image: string): Move => ({
+      what: 'image',
+      name: 'ghcr.io/open-feature/flagd',
+      kind: 'third-party',
+      from: image,
+      to: image,
+      pins: [
+        {
+          what: 'image',
+          kind: 'third-party',
+          item: image,
+          place: { file: 'deploy/base/flagd/flagd.yaml', line: 102 },
+          from: image,
+          to: image,
+        },
+      ],
+    });
+    expect(whatRunsIt(flagd('x'))).toEqual({ checks: [PLATFORM_CHECK] });
+    const chartMove: Move = {
+      what: 'chart',
+      name: 'grafana',
+      kind: 'chart',
+      from: '13.5.0',
+      to: '13.7.0',
+      pins: [
+        {
+          what: 'chart',
+          kind: 'chart',
+          item: 'grafana',
+          place: { file: 'deploy/base/telemetry/grafana.yaml', line: 12 },
+          from: '13.5.0',
+          to: '13.7.0',
+        },
+      ],
+    };
+    expect(whatRunsIt(chartMove)).toEqual({ checks: [PLATFORM_CHECK] });
+    // A Dockerfile's stage in deploy/ builds an image the cluster runs only once build.yml built it on main.
+    const stage: Move = {
+      ...flagd('x'),
+      kind: 'dockerfile',
+      pins: [
+        {
+          ...(flagd('x').pins[0] as Move['pins'][number]),
+          kind: 'dockerfile',
+          place: { file: 'deploy/images/tool/Dockerfile', line: 2 },
+        },
+      ],
+    };
+    expect(whatRunsIt(stage)).toEqual({
+      reason: 'no check at the head runs ghcr.io/open-feature/flagd: nothing shows it ran',
+    });
+  });
+
+  it('ties each check run to the workflow file its suite ran, of this repository, on a pull request, at its head', () => {
+    const wf = (more: Partial<WorkflowRun>): WorkflowRun => ({
+      id: 1,
+      path: PLATFORM_WORKFLOW,
+      event: 'pull_request',
+      head_sha: HEAD,
+      check_suite_id: 7,
+      repository: { full_name: 'o/r' },
+      head_repository: { full_name: 'o/r' },
+      ...more,
+    });
+    const { workflow: _, ...check } = run(PLATFORM_CHECK, 'success', { check_suite: { id: 7 } });
+    const of = (workflows: WorkflowRun[], c: Run = check) => workflowsOf([c], workflows, 'o/r')[0]?.workflow;
+    expect(of([wf({})])).toBe(PLATFORM_WORKFLOW);
+    expect(of([wf({ check_suite_id: 8 })])).toBeNull();
+    expect(of([])).toBeNull();
+    expect(of([wf({})], { ...check, check_suite: null })).toBeNull();
+    expect(of([wf({ repository: { full_name: 'x/r' } })])).toBeNull();
+    expect(of([wf({ head_repository: { full_name: 'fork/r' } })])).toBeNull();
+    expect(of([wf({ head_repository: null })])).toBeNull();
+    expect(of([wf({ event: 'merge_group' })])).toBeNull();
+    expect(of([wf({ event: 'workflow_dispatch' })])).toBeNull();
+    expect(of([wf({ head_sha: 'd'.repeat(40) })])).toBeNull();
+    expect(of([wf({ path: '.github/workflows/other.yml' })])).toBe('.github/workflows/other.yml');
   });
 
   it("holds Argo CD's chart, which make up installs, and k3s, which waits for Martin", async () => {
@@ -265,8 +405,9 @@ describe('a pin move, replayed as the App would make it', () => {
         scan: async (reference) => (reference === a ? FIXED : CLEAN),
       },
     };
+    // Whatever the platform check says: every check, platform's too, succeeded at the head.
     expect(await reasonOf(cluster)).toBe(
-      'rancher/k3s is the cluster’s own: a k3s move waits for Martin, whose cluster moves with it'.replace('’', "'"),
+      "rancher/k3s is the cluster's own: a k3s move waits for Martin, whose cluster moves with it, whatever the platform check says",
     );
   });
 });

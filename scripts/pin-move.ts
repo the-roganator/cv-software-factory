@@ -23,9 +23,12 @@
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
  * 8. **Something ran it.** GitHub Actions' latest run at the head of the job that runs what the pin runs succeeded,
- *    not skipped: `ZAP scan` for ZAP's image, `image builds` for a Dockerfile's stage, each shard of `tests` for
- *    Postgres, whose pin CI's own database is. What only a cluster runs is held until the `platform` check (task 34),
- *    and k3s waits for Martin, whose cluster moves with it. Last, so such a hold says every other condition held.
+ *    not skipped, in this repository's own workflow that has that job, on the pull request: `ZAP scan` for ZAP's image,
+ *    `image builds` for a Dockerfile's stage, each shard of `tests` for Postgres, whose pin CI's own database is. What a
+ *    cluster runs (a chart, a value, a third-party image in deploy/, Postgres too) passes only once `platform` made a
+ *    cluster from the change and everything on it ran; a `platform` skipped made none. Argo CD's chart, which `make up`
+ *    installs, is held, and k3s waits for Martin, whose cluster moves with it. Last, so such a hold says every other
+ *    condition held.
  *
  * It trusts nothing the pull request says of itself (its title, label, description or branch): the move is worked out
  * from its two commits, and the code that works it out (the list, the policy hash, the Trivy pin) is the gate's own,
@@ -101,6 +104,23 @@ export interface Run {
   status: string;
   conclusion: string | null;
   app: { slug: string } | null;
+  check_suite?: { id: number } | null;
+  /**
+   * The workflow file whose run made it, as `workflowsOf` reads it from its check suite: only a run of this repository,
+   * on a pull request from this repository, at the run's own head. Anything else, or unread, is null.
+   */
+  workflow?: string | null;
+}
+
+/** A workflow run, as the Actions API lists them for a commit: the one fact that ties a check run to its file. */
+export interface WorkflowRun {
+  id: number;
+  path: string;
+  event: string;
+  head_sha: string;
+  check_suite_id: number;
+  repository: { full_name: string } | null;
+  head_repository: { full_name: string } | null;
 }
 
 /** What a Trivy report says, as far as the rule reads it. */
@@ -133,7 +153,7 @@ export interface PinMoveIO {
   hashes(side: Side): Promise<Record<string, string>>;
   /** Trivy's report of an image on one platform; one the index does not have is an error, and holds. */
   scan(reference: string, platform: string): Promise<Scan>;
-  /** The check runs at the head. */
+  /** The check runs at the head, each with the workflow that made it (`workflowsOf`). */
   runs(): Promise<Run[]>;
 }
 
@@ -151,6 +171,18 @@ export const ACTIONS = 'github-actions';
 export const ZAP_CHECK = 'ZAP scan';
 export const IMAGE_CHECK = 'image builds';
 export const TEST_SHARDS = ['tests (1/3)', 'tests (2/3)', 'tests (3/3)'];
+/** platform.yml's job that makes a cluster from the change and passes once everything on it runs (task 34). */
+export const PLATFORM_CHECK = 'platform';
+
+export const CHECK_WORKFLOW = '.github/workflows/check.yml';
+export const PLATFORM_WORKFLOW = '.github/workflows/platform.yml';
+/** The workflow each check must come from: a job of the same name in any other workflow ran something else. */
+export const WORKFLOW_OF: Readonly<Record<string, string>> = {
+  [ZAP_CHECK]: CHECK_WORKFLOW,
+  [IMAGE_CHECK]: CHECK_WORKFLOW,
+  ...Object.fromEntries(TEST_SHARDS.map((name) => [name, CHECK_WORKFLOW])),
+  [PLATFORM_CHECK]: PLATFORM_WORKFLOW,
+};
 
 /** ZAP's image, which the browser tests' scan starts: `ZAP scan` runs it. */
 export const ZAP_FILE = 'apps/console/zap/scan.ts';
@@ -458,34 +490,72 @@ export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersion
 }
 
 /**
- * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none of check.yml's jobs
- * runs it, so it is held.
+ * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none runs it, so it is
+ * held. A pin in deploy/ the cluster runs from the change itself (a chart, its value, a third-party image) needs
+ * `platform`, which makes a cluster from the change; Postgres needs it beside `tests`, which run the same pin as CI's
+ * database. An image of ours never gets here (condition 3), and a Dockerfile's stage in deploy/ builds an image the
+ * cluster runs only once build.yml has built it on main, which no check at the head does.
  */
 export function whatRunsIt(move: Move): { checks: string[] } | { reason: string } {
   const files = new Set(move.pins.map((m) => m.place.file));
   const only = (file: string) => files.size === 1 && files.has(file);
   if (move.kind === 'k3s' || move.kind === 'k3s-release' || move.kind === 'k3d')
-    return { reason: `${move.name} is the cluster's own: a k3s move waits for Martin, whose cluster moves with it` };
+    return {
+      reason: `${move.name} is the cluster's own: a k3s move waits for Martin, whose cluster moves with it, whatever the platform check says`,
+    };
   if (move.what === 'image' && move.kind === 'workflow' && only(ZAP_FILE)) return { checks: [ZAP_CHECK] };
   if (move.what === 'image' && move.kind === 'dockerfile' && [...files].every((f) => !f.startsWith('deploy/')))
     return { checks: [IMAGE_CHECK] };
-  if (move.what === 'image' && move.kind === 'third-party' && only(POSTGRES_FILE)) return { checks: TEST_SHARDS };
   if (files.has('Makefile')) return { reason: `${move.name} is installed by make up: a merge does not apply it` };
-  return {
-    reason: `only a cluster runs ${move.name}: held until the platform check makes one from the change (task 34)`,
-  };
+  const inDeploy = [...files].every((f) => f.startsWith('deploy/'));
+  if (move.what === 'image' && move.kind === 'third-party' && only(POSTGRES_FILE))
+    return { checks: [...TEST_SHARDS, PLATFORM_CHECK] };
+  if (inDeploy && (move.kind === 'chart' || (move.what === 'image' && move.kind === 'third-party')))
+    return { checks: [PLATFORM_CHECK] };
+  return { reason: `no check at the head runs ${move.name}: nothing shows it ran` };
 }
 
-/** Whether each check ran at the head and succeeded: GitHub Actions' latest run of each name, completed, a success. */
+/**
+ * The check runs at the head, each with the workflow file that made it, read from the workflow run of its check suite:
+ * a run of this repository (`repo`), on `pull_request`, from a branch of this repository, at the check run's own head.
+ * A check run whose suite is not such a run (another app's, a fork's, another event's or another head's) has none.
+ */
+export function workflowsOf(checks: readonly Run[], workflows: readonly WorkflowRun[], repo: string): Run[] {
+  return checks.map((run) => {
+    const suite = run.check_suite?.id;
+    const made = workflows.find((w) => suite !== undefined && w.check_suite_id === suite);
+    const ours =
+      made &&
+      made.repository?.full_name === repo &&
+      made.head_repository?.full_name === repo &&
+      made.event === 'pull_request' &&
+      made.head_sha === run.head_sha;
+    return { ...run, workflow: ours ? made.path : null };
+  });
+}
+
+/**
+ * Whether each check ran at the head and succeeded: GitHub Actions' latest run of each name at the head, from the
+ * workflow that has that job (`WORKFLOW_OF`), completed, a success. A run of the same name from anywhere else counts
+ * for nothing; skipped, cancelled or failed is no success.
+ */
 export function ranIt(runs: readonly Run[], head: string, checks: readonly string[]): string | undefined {
   for (const name of checks) {
+    const workflow = WORKFLOW_OF[name];
+    if (!workflow) return `the gate knows no workflow that runs ${name}`;
     const latest = runs
-      .filter((run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS)
+      .filter(
+        (run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS && run.workflow === workflow,
+      )
       .sort((a, b) => b.id - a.id)[0];
     if (!latest) return `${name} has not run at ${head.slice(0, 7)}`;
     if (latest.status !== 'completed') return `${name} has not finished at ${head.slice(0, 7)}`;
     if (latest.conclusion !== 'success')
-      return `${name} at ${head.slice(0, 7)} is ${latest.conclusion ?? 'unfinished'}, not a success: something must run it`;
+      return `${name} at ${head.slice(0, 7)} is ${latest.conclusion ?? 'unfinished'}, not a success: ${
+        name === PLATFORM_CHECK && latest.conclusion === 'skipped'
+          ? 'it made no cluster from the change'
+          : 'something must run it'
+      }`;
   }
   return undefined;
 }
@@ -681,8 +751,8 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   );
   const shown = scansShow(scanned);
   if ('reason' in shown) return shown;
-  // 8. Something ran it, last: a pin only a cluster runs is held so with every other condition proved, and its hold
-  // then says that the platform check (task 34) is all it waits for.
+  // 8. Something ran it, last: a pin a cluster runs waiting on `platform` is held so with every other condition
+  // proved, and its hold then says that the check is all it waits for.
   const runs = whatRunsIt(move);
   if ('reason' in runs) return runs;
   const notRun = ranIt(await io.runs(), head, runs.checks);
@@ -699,7 +769,7 @@ export function moveTitle(result: { move: Move; ran: string[]; fixed: number }) 
       : move.what === 'value'
         ? move.to.slice(0, 19)
         : move.to;
-  const by = ran.length > 1 && ran.every((r) => r.startsWith('tests (')) ? 'tests' : ran.join(', ');
+  const by = [...new Set(ran.map((r) => (r.startsWith('tests (') ? 'tests' : r)))].join(' and ');
   return `A pin move of ${move.name} to ${to}, forward on its line: ${fixed} finding${fixed === 1 ? '' : 's'} with a fix gone, none new at High, ${by} ran it`;
 }
 
@@ -769,7 +839,7 @@ export interface RealOptions {
   head: string;
   /** Where the commits are fetched from: the repository on GitHub, unless a test names a local one. */
   remote?: string;
-  /** The check runs at the head, read through the API by the gate. */
+  /** The check runs at the head, each with the workflow that made it, read through the API by the gate. */
   runs: () => Promise<Run[]>;
 }
 

@@ -220,7 +220,8 @@ describe('every workflow', () => {
     const job = workflow.jobs[PIN_MOVE_JOB] as Job;
     expect(secretsOf(workflow, job)).toEqual({ names: [], passed: false });
     expect(job.environment).toBeUndefined();
-    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', checks: 'read' });
+    // actions: read, to learn which workflow made each check run at the head: a read, as the others are.
+    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', checks: 'read', actions: 'read' });
     const checkouts = (job.steps ?? []).filter((s) => s.uses?.startsWith('actions/checkout@'));
     expect(checkouts).toHaveLength(1);
     expect(checkouts[0]?.with).toEqual({

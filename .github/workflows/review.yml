@@ -25,12 +25,13 @@
 #
 # A pin move (scripts/pin-move.ts, ADR 0019) is one pin of the vulnerability scan's list moved forward by the App here,
 # proved from its two commits: the list at each, the registries, the charts' renderings, the refusal records' hashes,
-# Trivy on the image before and after, and the checks that ran it. Working that out reads the pull request's head, as
+# Trivy on the image before and after, and the checks that ran it, each from the workflow that has its job: a chart, a
+# value or a third-party image in deploy/ by platform.yml's cluster made from the change. Working that out reads the pull request's head, as
 # data, which the job holding the App's key never does: the `pin move` job below does it, with no secret and read-only
 # permissions, from main's whole checkout and its locked dependencies, and hands the gate one answer for each pull
 # request it would judge, `<number>@<head>`, which the gate takes only for a pull request of the App's here that is no
-# exact pin. A missing or unreadable answer holds it. The gate runs again when check.yml finishes, as a pin move waits
-# for the job that runs what it pins.
+# exact pin. A missing or unreadable answer holds it. The gate runs again when check.yml or platform.yml finishes, as a
+# pin move waits for the job that runs what it pins.
 #
 # Only main's copy runs with the App's key. `workflow_run` runs the workflow as main has it, with GITHUB_REF main, and
 # the key is in the `review` environment, which only main may use: a run on any other ref, a pull request's merge ref
@@ -81,8 +82,9 @@ name: review
 
 on:
   workflow_run:
-    # check.yml too, so a pin move held only because the job that runs its pin had not finished is judged again.
-    workflows: [review requested, check]
+    # check.yml and platform.yml too, so a pin move held only because the job that runs its pin had not finished is
+    # judged again.
+    workflows: [review requested, check, platform]
     types: [completed]
   workflow_call:
     secrets:
@@ -116,6 +118,8 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
+      # To read which workflow made each check run at the head: a job of the same name elsewhere proves nothing.
+      actions: read
     outputs:
       answers: ${{ steps.moves.outputs.answers }}
     steps:

@@ -12,7 +12,7 @@
  * said of the same change. A reader that fails, or runs past its time, is a hold that says what it could not read.
  */
 
-import { type Run as CheckRun, moveTitle, pinMove, realPinMoveIO } from './pin-move.ts';
+import { type Run as CheckRun, moveTitle, pinMove, realPinMoveIO, type WorkflowRun, workflowsOf } from './pin-move.ts';
 import { type GitHub, main, type PinMoveAnswer, type PullRequest, type Run } from './review-gate.ts';
 
 /**
@@ -69,12 +69,23 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
           base,
           mergeBase,
           head: pr.head.sha,
-          runs: () =>
-            github.paged<CheckRun>(
-              `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
-              each.read,
-              'check_runs',
-            ),
+          // Each check run with the workflow file its suite's run is of, so a job of the same name in another
+          // workflow, or a run for another head or event, proves nothing.
+          runs: async () => {
+            const [checks, workflows] = await Promise.all([
+              github.paged<CheckRun>(
+                `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
+                each.read,
+                'check_runs',
+              ),
+              github.paged<WorkflowRun>(
+                `/repos/${each.repo}/actions/runs?head_sha=${pr.head.sha}&event=pull_request`,
+                each.read,
+                'workflow_runs',
+              ),
+            ]);
+            return workflowsOf(checks, workflows, each.repo);
+          },
         }),
         expired,
       ]);

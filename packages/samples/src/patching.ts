@@ -36,7 +36,7 @@ export const PATCHING: NewEvent<'patching.read'> = {
   type: 'patching.read',
   version: 1,
   actor: 'factory',
-  summary: 'The day’s moves: 9 in the factory, 2 in the app; 1 image running off the list',
+  summary: 'The day’s moves: 9 in the factory, 2 in the app; 1 unscanned image running',
   payload: {
     repositories: [
       {

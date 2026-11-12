@@ -6,16 +6,16 @@
  * first view does not load it: the sheet projects itself when it opens.
  */
 import type {
-  DefectCategory,
+  DefectSymptom,
   GateRule,
   Kind,
   PayloadOf,
   PublicEvent,
   Screenshot,
   Sense,
-  SymptomClass,
+  TicketCategory,
 } from '@software-factory/events';
-import { clearedOnWords, knownInScope, LIMITS, pointWords, SENSES } from '@software-factory/events';
+import { clearedOnWords, knownInScope, LIMITS, pointWords, ROUTE_SENSES } from '@software-factory/events';
 import { attackLimitMs } from '@software-factory/policy/attacks';
 import { FLAG_STEP_UP } from '../access.ts';
 import { clock, listed, plural, shortVersion } from '../format.ts';
@@ -781,7 +781,7 @@ function seenBy(item: ItemState): Sighting[] {
     }),
   );
   // The canary sees only a release doing worse than the version before it, so it is no sense a ticket waits on.
-  const unseen = SENSES.filter((sense) => sense !== 'canary' && !first.has(sense)).map(
+  const unseen = ROUTE_SENSES.filter((sense) => sense !== 'canary' && !first.has(sense)).map(
     (sense): Sighting => ({
       sense,
       check: undefined,
@@ -812,7 +812,7 @@ function senseEvidence(item: ItemState): SenseEvidence[] {
 }
 
 /** A symptom as the policy's table names it, for saying why no model was needed. */
-const SYMPTOM_WORDS: Record<SymptomClass, string> = {
+const SYMPTOM_WORDS: Record<DefectSymptom, string> = {
   'broken-link': 'a broken link',
   'broken-image': 'a broken image',
   'redirect-loop': 'a redirect loop',
@@ -832,7 +832,7 @@ const SYMPTOM_WORDS: Record<SymptomClass, string> = {
 };
 
 /** A ticket's category, as a noun the sentence below can use. */
-const CATEGORY_WORDS: Record<DefectCategory, string> = {
+const CATEGORY_WORDS: Record<TicketCategory, string> = {
   content: 'a content problem',
   navigation: 'a navigation problem',
   functional: 'a functional problem',
@@ -841,6 +841,7 @@ const CATEGORY_WORDS: Record<DefectCategory, string> = {
   accessibility: 'an accessibility problem',
   security: 'a security problem',
   observability: 'an observability problem',
+  dependency: 'a dependency to move',
 };
 
 /** Why no model was called, said as a sentence, for work that called none. */
@@ -1153,7 +1154,9 @@ export function sheet(
         fingerprint:
           'class' in item.ticket.fingerprint
             ? `${where(item.ticket.fingerprint.route)} · ${item.ticket.fingerprint.class}`
-            : `${item.ticket.fingerprint.page} · “${item.ticket.fingerprint.text}”`,
+            : 'ecosystem' in item.ticket.fingerprint
+              ? `${item.ticket.fingerprint.name} · ${item.ticket.fingerprint.ecosystem}`
+              : `${item.ticket.fingerprint.page} · “${item.ticket.fingerprint.text}”`,
         reported: item.ticket.points && pointWords(item.ticket.points),
       },
       flag: flagFact(item),

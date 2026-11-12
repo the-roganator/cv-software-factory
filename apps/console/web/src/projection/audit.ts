@@ -57,6 +57,7 @@ export const ACTOR_NAME: Record<Actor, string> = {
   metrics: SENSE.metrics.the,
   logs: SENSE.logs.the,
   canary: SENSE.canary.the,
+  dependency: SENSE.dependency.the,
   widget: 'the report widget',
   injector: 'the injector',
   actions: 'GitHub Actions',

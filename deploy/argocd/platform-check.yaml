@@ -1,0 +1,33 @@
+# What the platform check's cluster leaves out, patched into root beside its revision when `make up PLATFORM_CHECK=1`
+# applies it (.github/workflows/platform.yml), so Argo CD's self-heal keeps it. Martin's `make up` never sets it.
+#
+# The check's cluster talks to GitHub only as Argo CD reads the repositories and the cluster pulls its images. The
+# GitHub worker would read too, even with no App key: the line, not started, still watches the app's releases, and asks
+# the worker for each running version's commit and signature (anonymous reads of ghcr.io and Sigstore). So the worker
+# runs no pod, and the line watches no release.
+- target:
+    kind: Deployment
+    name: github
+    namespace: factory
+  patch: |
+    - op: replace
+      path: /spec/replicas
+      value: 0
+- target:
+    kind: Deployment
+    name: line
+    namespace: factory
+  patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: line
+      namespace: factory
+    spec:
+      template:
+        spec:
+          containers:
+            - name: line
+              env:
+                - name: RELEASE_ROLLOUT
+                  $patch: delete

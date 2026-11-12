@@ -92,6 +92,7 @@ import type { KeyObject } from 'node:crypto';
 import { hostname } from 'node:os';
 import { trace } from '@opentelemetry/api';
 import type {
+  Ecosystem,
   Effort,
   Evidence,
   NewEvent,
@@ -105,8 +106,8 @@ import {
   cutTo,
   pointsAtSomething,
   pointWords,
+  ROUTE_SENSES,
   returnWords,
-  SENSES,
   scopesOverlap,
   upcast,
   WORDS_LEAVE_HELD,
@@ -146,7 +147,7 @@ import type {
 } from '../github/server.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
-import type { StepOutcome, StepRequest } from '../runners/steps.ts';
+import type { Step, StepOutcome, StepRequest } from '../runners/steps.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
 import {
@@ -191,6 +192,7 @@ import {
   type LineEvent,
   lookDue,
   type Next,
+  needsHold,
   STAGE_OF,
   type WorkItemState,
 } from './machine.ts';
@@ -598,6 +600,11 @@ export class Line {
       const first = await this.#firstSignal(workItem);
       if (!first) {
         this.#o.log.warn({ workItem }, 'a ticket a dry run verified has no signal to reopen it on');
+        return;
+      }
+      // A move's ticket names no route to reopen it on, and work-item.reopened takes a route's sense alone.
+      if (first.sense === 'dependency') {
+        this.#o.log.warn({ workItem }, 'a dependency’s ticket a dry run verified names no route to reopen it on');
         return;
       }
       await this.#append(workItem, [
@@ -1434,7 +1441,7 @@ export class Line {
   ): Promise<void> {
     const now = this.#o.now();
     const first = await this.#firstSignal(workItem);
-    const sense = SENSES.find((one) => one === first?.sense);
+    const sense = ROUTE_SENSES.find((one) => one === first?.sense);
     const base = {
       for: occasion,
       ...(sense ? { sense } : {}),
@@ -1644,7 +1651,9 @@ export class Line {
     if (!pictures || promoted.dryRun) return { pages: [], artifacts: [] };
     // The ticket's own page: where its sense last boxed its check, with the elements it boxed, and its route.
     const ownOf = async (signal: FirstSignal | undefined): Promise<Own> => {
-      const look = signal && (await pictures.lookOf(signal.sense, signal.check, signal.route));
+      // A move is on no page: a dependency's ticket has no page of its own.
+      const look =
+        signal && signal.sense !== 'dependency' && (await pictures.lookOf(signal.sense, signal.check, signal.route));
       return {
         route: signal?.route ?? '*',
         ...(look && { path: look.path, selectors: look.elements.map((e) => e.selector) }),
@@ -1683,10 +1692,29 @@ export class Line {
     }
   }
 
+  /** The move a dependency's work item names, as it was opened, for the pin step: none for any other work item. */
+  async #moveOf(workItem: string): Promise<Step['move']> {
+    const [row] = await this.#o.sql<
+      { dependency: { name: string; ecosystem: Ecosystem; from: string; to: string } | null }[]
+    >`
+      select payload->'dependency' as dependency
+      from events where work_item = ${workItem} and type = 'work-item.opened' order by seq limit 1`;
+    const dependency = row?.dependency;
+    return dependency
+      ? { ecosystem: dependency.ecosystem, name: dependency.name, from: dependency.from, to: dependency.to }
+      : undefined;
+  }
+
   /** The ticket's first signal: its sense, check, route and evidence, never a report's words. */
   async #firstSignal(workItem: string): Promise<FirstSignal | undefined> {
     const [row] = await this.#o.sql<
-      { sense: SignalSource; check: string; route: string; symptom: SymptomClass | null; evidence: Evidence[] | null }[]
+      {
+        sense: SignalSource;
+        check: string;
+        route: string | null;
+        symptom: SymptomClass | null;
+        evidence: Evidence[] | null;
+      }[]
     >`
       select payload->>'sense' as sense, payload->>'check' as check, payload->>'route' as route,
              payload->>'symptom' as symptom, payload->'evidence' as evidence
@@ -1695,7 +1723,8 @@ export class Line {
       row && {
         sense: row.sense,
         check: row.check,
-        route: row.route,
+        // A dependency's names a move, on no page: Verify holds its ticket for Martin before any route is read.
+        route: row.route ?? '*',
         ...(row.symptom ? { symptom: row.symptom } : {}),
         evidence: row.evidence ?? [],
       }
@@ -1738,6 +1767,9 @@ export class Line {
       // A pull request's head is checked out as GitHub has it; a dry run's, which GitHub never had, as the real
       // commit under it with the dry run's commits made on it in the runner.
       const checkout = pr ? await github.read('checkout', repo, { sha: commit }) : { commit, commits: [] };
+      // A dependency's move is the pin step's to write, before the coder's first round: once the pull request is open,
+      // its head has the pins.
+      const move = agent === 'coder' && !pr ? await this.#moveOf(workItem) : undefined;
       let started: Awaited<ReturnType<typeof definition.start>>;
       try {
         started = await definition.start({ ...this.#context(item, round, state, commit, base), change });
@@ -1755,6 +1787,7 @@ export class Line {
             base: reads ? base : undefined,
             prompt: started.prompt,
             resume: started.resume,
+            move,
           },
         ),
         workItem,
@@ -1767,6 +1800,16 @@ export class Line {
         [A.job]: outcome.job,
         [A.outcome]: outcome.kind === 'handed-back' ? outcome.handback.ending : outcome.kind,
       });
+      if (outcome.kind === 'held') {
+        // No agent ran: the move needs a file only Martin may change, and the work item waits for him, told which.
+        const protectedPaths = await github.read('protectedPaths', repo, { ref: commit });
+        const hold = needsHold([{ path: outcome.path, reason: outcome.reason }], protectedPaths);
+        await this.#append(workItem, [holdDraft('factory', { ...hold, reason: cutTo(outcome.reason, 300) })]);
+        await this.#queue.moved(workItem);
+        countStep(agent, provider, 'held');
+        this.#o.log.info({ workItem, agent, job: outcome.job, reason: outcome.reason }, 'the pins wait for Martin');
+        return;
+      }
       if (outcome.kind === 'stopped') {
         countStep(agent, provider, 'stopped');
         this.#o.log.info({ workItem, agent, job: outcome.job }, 'a step stopped with the line; it runs again on start');
@@ -1805,6 +1848,14 @@ export class Line {
         commit,
         base,
         handback,
+        ...(outcome.pins || outcome.lockfile
+          ? {
+              pinned: {
+                ...(outcome.pins ? { pins: outcome.pins } : {}),
+                ...(outcome.lockfile ? { lockfile: outcome.lockfile } : {}),
+              },
+            }
+          : {}),
         called,
         begun: [],
         done: {},
@@ -1961,6 +2012,7 @@ export class Line {
         await sendSignal(this.#o.sql, { ...signal, observedAt }, signalId(workItem, key));
       },
       keepSession: (session) => this.#queue.setSession(workItem, session),
+      pinned: pending.pinned ?? {},
       log: this.#o.log,
     };
   }
@@ -1971,7 +2023,9 @@ export class Line {
     const where =
       'class' in ticket.fingerprint
         ? `\`${ticket.fingerprint.class}\` on \`${ticket.fingerprint.route}\``
-        : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
+        : 'ecosystem' in ticket.fingerprint
+          ? `the move of \`${ticket.fingerprint.name}\`, in ${ticket.fingerprint.ecosystem}`
+          : `the words “${asText(ticket.fingerprint.text)}” on \`${ticket.fingerprint.page}\``;
     const body = [
       `The factory’s ticket #${workItem}: ${where}.`,
       '',

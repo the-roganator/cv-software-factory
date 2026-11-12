@@ -2,7 +2,7 @@
 
 One disposable sandbox per step, with the repository checked out and its toolchain (ADR 0008). Part of the [factory plane](README.md#factory-plane).
 
-- **v1:** two Kubernetes Jobs per attempt at a step, in `runners` (`apps/factory/src/runners/jobs.ts`).
+- **v1:** two Kubernetes Jobs per attempt at a step, in `runners` (`apps/factory/src/runners/jobs.ts`), and a third, the lockfile's, after a coder's patch that changes a manifest.
 - **Later:** gVisor or Firecracker isolation.
 
 ```mermaid
@@ -12,15 +12,20 @@ sequenceDiagram
   participant Agent as Agent pod
   participant Gateway
   participant Worker as GitHub worker
-  Line->>Prepare: start, with the step's commit
-  Prepare->>Prepare: check out, install, commit any seed
+  Line->>Prepare: start, with the step's commit (and a dependency's move)
+  Prepare->>Prepare: check out, commit any seed, write and commit the move's pins, install
+  Line->>Prepare: read the pins from its log
   Line->>Agent: start, with a job token
   loop each turn
     Agent->>Gateway: model call (job token)
   end
   Agent->>Line: POST /v1/handback: patch, note, result
+  opt the patch changes a package.json
+    Line->>Prepare: a lockfile pod, with the pins and the patch
+    Line->>Prepare: read the lockfile from its log
+  end
   Line->>Line: fence the patch to the spec's scope
-  Line->>Worker: apply the accepted patch
+  Line->>Worker: apply the pins, the accepted patch, the lockfile
 ```
 
 ## The Jobs
@@ -28,7 +33,7 @@ sequenceDiagram
 - **Named** by the agent, the work item, the agent's round and the step's number within the work item. `reviewer-1002-1-4` is the reviewer's first round and the work item's fourth step. The number follows both the line's count of the work item's steps and the last number among its job tokens, so a step tried again never meets the Jobs or the token of the attempt before it, even when the work item's row on the line was made afresh.
 - **On a volume** that lives until the work item merges or ends. `DELETE /v1/work-items/<id>` on the line ends it.
 - **Fenced:** the restricted Pod Security Standard, no service account token, a read-only root and a deadline. The deadline is the pod's, so a pod out of time fails and stays, with its log, until the line has kept it; the Job's own, a minute later, is a backstop.
-- **One image:** both run `factory-runner` (`apps/runner`: Node, git, this repository's pnpm, the Agent SDK).
+- **One image:** every pod runs `factory-runner` (`apps/runner`: Node, git, this repository's pnpm, the Agent SDK).
 - **Logged** as JSON lines, each naming the job, the work item and the pod (`apps/runner/src/log.ts`). A step that fails says why in its last line.
 
 ### The prepare pod
@@ -39,6 +44,19 @@ sequenceDiagram
 - **A seed**, when the step has one, is committed under a neutral message at a fixed time, so its base has the same sha every run. The checkout's files get that time too, so a search lists them alike.
 - **A dry run's commits**, which GitHub never had, are committed on the real commit under them, as the pull request's own.
 - **pnpm** is the image's, this repository's, at the version `mise.lock` holds, whatever the checkout's `packageManager` names: the app pins its own, within the same major, and neither pod fetches another (pnpm's version switching is off in the image). The step logs both versions, and fails with a sentence that names them when their majors differ.
+
+### The pin step
+
+The coder reaches no registry, by design, so it never writes a lockfile: a step that runs no agent writes every pin of a dependency's move, and the lockfile after any change to a manifest (`apps/runner/src/pins.ts`). It runs in a prepare pod, with the prepare pod's egress and none of its own secrets, since it holds none.
+
+- **Before the coder**, on a dependency's work item (`work-item.opened`'s `dependency`), until its pull request is open: the prepare pod writes the move after the checkout and commits it as the coder's starting point, under a message that names the move, so the coder's patch never holds it. It prints the pins as a patch (`the pins`), which the line reads from the pod's log once it has finished, before the agent pod is made.
+  - **A package** (`npm`): each manifest's range that does not admit the target moves to it first, with the same operator, so the move never crosses a major the fix does not need; then `pnpm update <package> --depth Infinity --lockfile-only`, which takes the newest release the range admits under the app's own release age and trust policy (`pnpm-workspace.yaml`). A copy pnpm leaves below the target, because a parent's range admits no fix, needs an override in `pnpm-workspace.yaml`, which is Martin's file: the step prints that the pins wait for Martin (`the pins wait for Martin`), naming the file and the parents, no agent runs, and the line holds the work item (`scope`, with the file in `needs`).
+  - **Node** (`node`): `mise.toml`'s version; `mise.lock`'s entry, its version, specifiers, downloads and each platform's checksum from Node's `SHASUMS256.txt`, as `mise lock` writes it; and each `FROM` of a Node image, its tag moved where it names the version and its digest the registry's for that tag now, as an anonymous reader. Not before the release is as old as `mise.toml`'s `minimum_release_age`. mise is not run, and not in the image: nothing here pins mise's own version, and the entry is the version, its downloads and their checksums, which the step writes from the file mise reads, so nothing of the app's `mise.toml` runs.
+  - **A base image** (`docker`): each `FROM` of the image at the move's `from` takes its `to`, a tag and its digest, once the registry says that tag is that digest.
+  - A move already made writes nothing; one whose `from` the checkout does not pin fails the step, saying so.
+- **After a coder's step** whose patch changes a `package.json`, for any work item: a lockfile Job (`runner lockfile`, a prepare pod by its label and its fence, with no token) checks out the step's commit, commits the pins on it and applies the patch, writes the lockfile with `pnpm install --lockfile-only`, and prints only the lockfile's change (`the lockfile`). A patch that also changes a lockfile or pnpm's settings gets none: the fence refuses it whole.
+- **pnpm on a manifest an agent wrote, on a pod with egress**, runs no lifecycle script and no pnpmfile, reads no `.npmrc` of the checkout's (copied aside while it runs, and the registry given on its command line), and the pod holds no secret. Every dependency and override must be a range of the registry's versions: a tarball, a git source, an alias, a `file:`, `link:` or `workspace:`, a URL or a dist-tag is refused before pnpm runs, and a lockfile that resolves anything but the registry's packages after. A change from the coder to what in a manifest overrides resolution (`pnpm`, `overrides`, `resolutions` and the like) is refused too.
+- **What the line does with them:** the pins and the lockfile go beside the coder's patch to the [GitHub worker](GITHUB-WORKER.md#the-pin-steps-patches), which applies the pins, the patch on them and the lockfile on that as one commit, and holds the pin step's patches to a rule of their own. A lockfile pod that fails fails the step, with its reason.
 
 ### The agent pod
 
@@ -67,7 +85,7 @@ The line (`factory line serve`):
 - starts the Jobs with a service account that may create Jobs and volumes in `runners`, list their pods and read their logs, and nothing else;
 - keeps each pod's log with the step, however it ended, before it deletes the step's Jobs, since their pods go with them (below);
 - takes handbacks at `POST /v1/handback`, checked with Zod, each token once;
-- fences each patch to the spec's scope (`runners/scope.ts`), and never lets one change `.github/`, `deploy/` or a path the app's CODEOWNERS gives a person at the step's commit, which the line reads through the GitHub worker. It tests each path against each entry by stepping it through the entry's automaton (`pattern` in the events package), in at most the path's length times the entry's, however many `*` the planner wrote, so no scope can stall the fence or the console that marks a spec's paths the same way.
+- fences each patch to the spec's scope (`runners/scope.ts`), and never lets one change `.github/`, `deploy/`, a lockfile, pnpm's settings (`.npmrc`, `pnpm-workspace.yaml`, a pnpmfile, `patches/`) or a path the app's CODEOWNERS gives a person at the step's commit, which the line reads through the GitHub worker. The coder's prompt says so: it changes a dependency's range in `package.json` alone, and the pin step writes the lockfile after it. It tests each path against each entry by stepping it through the entry's automaton (`pattern` in the events package), in at most the path's length times the entry's, however many `*` the planner wrote, so no scope can stall the fence or the console that marks a spec's paths the same way.
 
 The [GitHub worker](GITHUB-WORKER.md) applies an accepted patch, outside the sandbox (`github/patches.ts`).
 
@@ -76,7 +94,7 @@ The [GitHub worker](GITHUB-WORKER.md) applies an accepted patch, outside the san
 The line deletes a step's Jobs as the step ends, so it reads their pods' logs first (`runners/logs.ts`):
 
 - **What:** each pod's last 2,000 lines, from the Kubernetes API, once the agent pod has ended after its handback (or two seconds on). The runner keeps its lines short, so those lines hold how the step ended.
-- **Where:** the text goes in the artifact store, and its index in Postgres (`step_logs`): the job, the work item, the agent, the pod, and how the step ended (handed back, failed with its reason, stopped with the line, or errored in the line).
+- **Where:** the text goes in the artifact store, and its index in Postgres (`step_logs`): the job, the work item, the agent, the pod, and how the step ended (handed back, failed with its reason, stopped with the line or at pins that wait for Martin, or errored in the line).
 - **When:** however the step ended, and before the line stops a step's agent. The Jobs wait no more than ten seconds for it, so stopping the line still stops every agent. A log that cannot be read, such as a pod that never started, is warned of, and the Jobs are deleted all the same.
 - **Who sees them:** no event names a log, so the console serves none. The line's step API serves a work item's as plain text, step by step, at `GET /v1/work-items/<id>/logs` (404 when it kept none for that number: a mistyped one, one never on the line, or one whose first step has not ended), to a person's port-forward (`kubectl -n factory port-forward svc/line 8092:8080`): it listens on loopback only, and reading there starts no second process in the line's pod.
 - **If the store cannot take them** (before migration 0017 has run, or with no volume at `ARTIFACTS_DIR`), the line warns and the step goes on as ever. Without `ARTIFACTS_DIR` it keeps none, and says so when it starts.

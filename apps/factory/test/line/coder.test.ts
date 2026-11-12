@@ -79,6 +79,9 @@ describe('the coder', () => {
     expect(prompt).toContain('Read AGENTS.md first');
     expect(prompt).toMatch(/Write the test first.*see it fail/);
     expect(prompt).toContain('The line refuses a patch that changes any file outside the scope, whole.');
+    // No registry is in its reach: the pin step writes the lockfile after it, and the fence refuses one of its own.
+    expect(prompt).toContain('Never change a lockfile (pnpm-lock.yaml)');
+    expect(prompt).toContain('after your step the line writes the lockfile for it');
   });
 
   it('runs what CI requires, formatting and types as well as tests, before every hand-back', () => {

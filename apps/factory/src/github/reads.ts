@@ -23,6 +23,7 @@
  * worker does; and a worker with no key reads the public repositories as anyone may.
  */
 import { z } from 'zod';
+import { ACTIONS_APP, scanOfCheck } from '../gates/counts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { type DependencyPull, dependencyPulls } from './dependabot.ts';
@@ -79,6 +80,11 @@ export interface CheckRun {
    * the file it named. Absent from a run that has not failed, and from one GitHub never read, such as a dry run's.
    */
   annotations?: Annotation[];
+  /**
+   * What a scan gate's run counted (`../gates/counts.ts`): its annotations at the notice level, verbatim, read only
+   * from the latest completed run of a scan's name that GitHub Actions posted for the commit read. Absent otherwise.
+   */
+  notices?: string[];
 }
 
 /** One of a check run's annotations: the file it is on, or `.github` for the run as a whole, and what it says. */
@@ -210,6 +216,7 @@ const CHECK_RUNS = z.object({
       status: z.string(),
       conclusion: z.string().nullable(),
       app: z.object({ slug: z.string().optional() }).nullable().optional(),
+      head_sha: z.string().optional(),
       started_at: z.string().nullable().optional(),
       completed_at: z.string().nullable().optional(),
       output: z.object({ title: z.string().nullable().optional() }).optional(),
@@ -515,6 +522,13 @@ export class LiveReads implements Reads {
     // attempt's is never recorded.
     const latest = new Map<string, number>();
     for (const run of body.check_runs) latest.set(run.name, Math.max(run.id, latest.get(run.name) ?? run.id));
+    // A scan's counts are taken from GitHub Actions' own latest run of it for this very commit: never from a run
+    // another app posted under the scan's name, which neither gives them nor hides Actions' own.
+    const actions = (run: (typeof body.check_runs)[number]) =>
+      run.app?.slug === ACTIONS_APP && run.head_sha === sha && Boolean(scanOfCheck(run.name));
+    const scans = new Map<string, number>();
+    for (const run of body.check_runs.filter(actions))
+      scans.set(run.name, Math.max(run.id, scans.get(run.name) ?? run.id));
     return Promise.all(
       body.check_runs.map(async (run) => {
         const read: CheckRun = {
@@ -527,32 +541,46 @@ export class LiveReads implements Reads {
           completedAt: run.completed_at ?? null,
           title: run.output?.title ?? null,
         };
-        const failed = run.status === 'completed' && outcomeOf(run.conclusion) === 'failure';
-        return failed && latest.get(run.name) === run.id
-          ? { ...read, annotations: await this.#failedAnnotations(repo, run.id) }
-          : read;
+        if (run.status !== 'completed') return read;
+        const failed = outcomeOf(run.conclusion) === 'failure' && latest.get(run.name) === run.id;
+        const counted = actions(run) && scans.get(run.name) === run.id;
+        if (!failed && !counted) return read;
+        const said = await this.#annotations(repo, run.id);
+        return {
+          ...read,
+          ...(failed ? { annotations: said.failures } : {}),
+          ...(counted && said.notices.length ? { notices: said.notices } : {}),
+        };
       }),
     );
   }
 
   /**
-   * A failed run's annotations at the failure level, less Actions' exit-code line: what the gate itself said was
-   * wrong. A job's summary is not in its check run's output, so these are the only reasons GitHub keeps for a job.
-   * One more conditional read for each run that failed, and none for the rest. The reasons are extras: a read that
-   * GitHub refuses, or answers with nothing or something malformed, gives none, so the runs are still read and the
-   * gates recorded. One that a rate limit or an outage stops fails the whole read, which the line asks again on its
-   * next pass, so a passing failure does not record a gate without its reasons for good.
+   * A run's annotations: at the failure level, less Actions' exit-code line, what the gate itself said was wrong; at
+   * the notice level, what a scan counted. A job's summary is not in its check run's output, so these are the only
+   * words GitHub keeps for a job. One more conditional read for each run that failed or is a scan's, and none for the
+   * rest. They are extras: a read that GitHub refuses, or answers with nothing or something malformed, gives none, so
+   * the runs are still read and the gates recorded, with no reasons and no counts. One that a rate limit or an outage
+   * stops fails the whole read, which the line asks again on its next pass, so a passing failure does not record a
+   * gate without its reasons for good.
    */
-  async #failedAnnotations(repo: string, id: number): Promise<Annotation[]> {
+  async #annotations(repo: string, id: number): Promise<{ failures: Annotation[]; notices: string[] }> {
     try {
       const path = `/repos/${repo}/check-runs/${id}/annotations?per_page=${ANNOTATIONS_PER_PAGE}`;
       const { body } = await this.#github.poll(repo, path, ANNOTATIONS);
-      return body.flatMap(({ path, annotation_level, message }) =>
-        annotation_level === 'failure' && message?.trim() && !EXIT_CODE.test(message.trim()) ? [{ path, message }] : [],
-      );
+      return {
+        failures: body.flatMap(({ path, annotation_level, message }) =>
+          annotation_level === 'failure' && message?.trim() && !EXIT_CODE.test(message.trim())
+            ? [{ path, message }]
+            : [],
+        ),
+        notices: body.flatMap(({ annotation_level, message }) =>
+          annotation_level === 'notice' && message ? [message] : [],
+        ),
+      };
     } catch (error) {
       if (error instanceof GitHubError && PASSING.includes(error.kind)) throw error;
-      return [];
+      return { failures: [], notices: [] };
     }
   }
 

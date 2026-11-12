@@ -399,6 +399,13 @@ svg.chart {
   height: 2.8cqw;
   color: var(--text);
 }
+/* Each scan's counts, side by side. */
+.scans {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 4cqw;
+}
 .sev {
   display: flex;
   flex-direction: column;

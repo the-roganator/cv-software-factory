@@ -3,7 +3,7 @@
  * each stage panel lists.
  */
 import type { Autonomy, PayloadOf, PublicEvent, Sense, Stage } from '@software-factory/events';
-import { isSense, returnWords, SENSES, STAGES } from '@software-factory/events';
+import { isSense, ROUTE_SENSES, returnWords, STAGES } from '@software-factory/events';
 import { DEFAULT_CONTROLS } from '@software-factory/policy/line';
 import { capital, lower, plural, shortVersion, startOfDay } from '../format.ts';
 import { deployCaption, endedSinceMerge } from './fixing.ts';
@@ -568,8 +568,9 @@ function ownRow(r: Release): PanelRow {
  * seeing an open ticket's problem again is counted by the inbox, which is not events, so not here.
  */
 function senseCounts(items: readonly ItemState[], events: readonly PublicEvent[]): SenseCount[] {
+  // The senses that see the app: the dependency sense's moves are counted on a panel of their own.
   const counts = new Map<Sense, SenseCount>(
-    SENSES.map((sense) => [
+    ROUTE_SENSES.map((sense) => [
       sense,
       {
         sense,

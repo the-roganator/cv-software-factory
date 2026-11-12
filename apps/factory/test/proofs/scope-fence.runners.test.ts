@@ -1,7 +1,8 @@
 /**
  * Proves `ci:scope-fence` (policy/guardrails.ts, spec 6 guardrail 11), with the coder's and the line's tests beside it:
- * the fence lets through only what the spec's scope names, and never the workflows, the deployment or a path CODEOWNERS
- * gives a person. Martin's (CODEOWNERS), as every file here is: a change to what they assert is a change to the proof.
+ * the fence lets through only what the spec's scope names, and never the workflows, the deployment, a path CODEOWNERS
+ * gives a person, a lockfile or pnpm's settings. Martin's (CODEOWNERS), as every file here is: a change to what they
+ * assert is a change to the proof.
  */
 import { describe, expect, it } from 'vitest';
 import { fence, ownedPaths } from '../../src/runners/scope.ts';
@@ -28,6 +29,19 @@ describe('the scope fence', () => {
       owned,
     );
     expect(result.outside).toEqual(['.github/workflows/check.yml', 'Dockerfile', 'apps/package.json']);
+  });
+
+  it('never lets through a lockfile or pnpm’s settings, whatever the scope says: the pin step writes the lockfile', () => {
+    const patch = ['pnpm-lock.yaml', 'apps/shop/pnpm-lock.yaml', 'mise.lock', '.npmrc', 'pnpm-workspace.yaml']
+      .map(PATCH)
+      .join('');
+    expect(fence(patch + PATCH('package.json'), ['**']).outside).toEqual([
+      'pnpm-lock.yaml',
+      'apps/shop/pnpm-lock.yaml',
+      'mise.lock',
+      '.npmrc',
+      'pnpm-workspace.yaml',
+    ]);
   });
 
   it('prints the scope, then each file it allowed or refused, with its lines', () => {

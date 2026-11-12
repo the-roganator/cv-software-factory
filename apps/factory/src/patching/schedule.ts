@@ -1,7 +1,7 @@
 /**
  * When the dependency sense reads: as it starts, then each day once the scan has had time to finish; an hour after a
  * pass that failed, or that found a repository's last scan older than the day's (GitHub's schedule runs late); and ten
- * minutes after a read the worker answered 409, to take again; each until the day's time comes round again. The scan
+ * minutes after a read the worker asked for again (`READ_AGAIN`); each until the day's time comes round again. The scan
  * runs at 04:17 UTC
  * (`.github/workflows/vulnerabilities.yml`) and takes under an hour, so the day's read is at 05:30 UTC by default.
  */

@@ -14,7 +14,7 @@ import type { Logger } from 'pino';
 import type { Sql } from 'postgres';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves } from '../github/scanning.ts';
-import { GitHubWorkerError } from '../github/worker-client.ts';
+import { GitHubWorkerError, READ_AGAIN } from '../github/worker-client.ts';
 import { compare } from './compare.ts';
 import { type Day, dayOf, type RepositoryRead, sameDay, scannedOf } from './day.ts';
 import type { RunningContainer } from './running.ts';
@@ -32,8 +32,8 @@ export type Pass =
   | { pass: 'unchanged'; day: Day }
   | { pass: 'failed'; failed: string[] }
   /**
-   * The worker answered a read with 409, read again: a scan finished during it. Nothing failed, and nothing is
-   * appended.
+   * The worker asked for the moves read again (`READ_AGAIN`): a scan finished during it. Nothing failed, and nothing
+   * is appended.
    */
   | { pass: 'again'; why: string[] }
   | { pass: 'not-real' };
@@ -48,8 +48,11 @@ export interface SenseOptions {
   now?: () => Date;
 }
 
-/** Whether the moves read was answered 409, to be read again: a scan finished while its alerts were read. */
-const readAgain = (error: unknown) => error instanceof GitHubWorkerError && error.status === 409;
+/**
+ * Whether the worker asked for the read again: a scan finished while its alerts were read. By its kind alone: GitHub's
+ * own 409, which the worker relays as `conflict`, is a failed read.
+ */
+const readAgain = (error: unknown) => error instanceof GitHubWorkerError && error.kind === READ_AGAIN;
 
 /** How many reads to take again in a row before they count as a failure: the sixth some fifty minutes after the
  * first, at ten minutes apart. */
@@ -126,9 +129,9 @@ export class PatchingSense {
     const failed = answers.flatMap((answer, i) =>
       answer.status === 'rejected' ? [`${asked[i]?.what}: ${message(answer.reason)}`] : [],
     );
-    // The moves read's 409 is no failure: the scan finished while the alerts were read, and the next read takes it
-    // whole.
-    // Any other read's 409 is a failure, and so are the moves read's once they have come an hour in a row.
+    // The moves read asked for again is no failure: the scan finished while the alerts were read, and the next read
+    // takes it whole. Any other read's refusal is a failure, a `conflict` from GitHub too, and so are the moves read's
+    // asks once they have come an hour in a row.
     const again =
       failed.length > 0 &&
       answers.every((answer, i) => answer.status === 'fulfilled' || (asked[i]?.moves && readAgain(answer.reason)));
@@ -138,7 +141,7 @@ export class PatchingSense {
       return { pass: 'again', why: failed };
     }
     if (failed.length) {
-      const why = again ? `, answered 409 ${MOST_AGAIN} times in a row` : '';
+      const why = again ? `, asked for again ${MOST_AGAIN} times in a row` : '';
       this.#log.error({ failed }, `patching: ${failed.length} of the reads failed${why}, so the day is not appended`);
       return { pass: 'failed', failed };
     }

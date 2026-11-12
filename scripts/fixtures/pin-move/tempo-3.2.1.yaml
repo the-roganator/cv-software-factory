@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: tempo
-  namespace: default
+  namespace: telemetry
   labels:
     helm.sh/chart: tempo-3.2.1
     app.kubernetes.io/name: tempo
@@ -19,7 +19,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: tempo
-  namespace: default
+  namespace: telemetry
   labels:
     helm.sh/chart: tempo-3.2.1
     app.kubernetes.io/name: tempo
@@ -33,7 +33,7 @@ data:
   tempo.yaml: |
     stream_over_http_enabled: false
     memberlist:
-      cluster_label: "tempo.default"
+      cluster_label: "tempo.telemetry"
     multitenancy_enabled: false
     usage_report:
       reporting_enabled: false
@@ -115,7 +115,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: tempo-headless
-  namespace: default
+  namespace: telemetry
   labels:
     helm.sh/chart: tempo-3.2.1
     app.kubernetes.io/name: tempo
@@ -178,7 +178,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: tempo
-  namespace: default
+  namespace: telemetry
   labels:
     helm.sh/chart: tempo-3.2.1
     app.kubernetes.io/name: tempo
@@ -238,7 +238,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: tempo
-  namespace: default
+  namespace: telemetry
   labels:
     helm.sh/chart: tempo-3.2.1
     app.kubernetes.io/name: tempo
@@ -258,7 +258,7 @@ spec:
         app.kubernetes.io/name: tempo
         app.kubernetes.io/instance: tempo
       annotations:
-        checksum/config: 9b2bcfd4ff4ee082bf4a3887eee6e6b204c0d94788fdbcbb74a6cee914fcb77e
+        checksum/config: c754f78366dcd0a318751e85595f6a22050393ae1dd24755ecf59c1e56a8fdda
         prometheus.io/port: "3200"
         prometheus.io/scrape: "true"
     spec:

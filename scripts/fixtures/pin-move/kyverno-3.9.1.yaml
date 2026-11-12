@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kyverno-admission-controller
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: admission-controller
     app.kubernetes.io/instance: kyverno
@@ -21,7 +21,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kyverno-reports-controller
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: reports-controller
     app.kubernetes.io/instance: kyverno
@@ -38,7 +38,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: kyverno
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: config
     app.kubernetes.io/instance: kyverno
@@ -54,7 +54,7 @@ data:
   generateSuccessEvents: "false"
   excludeGroups: "system:nodes"
   resourceFilters: >-
-    [*/*,default,*] [Event,*,*] [*/*,kube-system,*] [*/*,kube-public,*]
+    [*/*,kyverno,*] [Event,*,*] [*/*,kube-system,*] [*/*,kube-public,*]
     [*/*,kube-node-lease,*] [Node,*,*] [Node/?*,*,*] [APIService,*,*]
     [APIService/?*,*,*] [TokenReview,*,*] [SubjectAccessReview,*,*]
     [SelfSubjectAccessReview,*,*] [Binding,*,*] [Pod/binding,*,*]
@@ -75,79 +75,79 @@ data:
     [ClusterRoleBinding,*,kyverno:background-controller]
     [ClusterRoleBinding,*,kyverno:cleanup-controller]
     [ClusterRoleBinding,*,kyverno:reports-controller]
-    [ServiceAccount,default,kyverno-admission-controller]
-    [ServiceAccount/?*,default,kyverno-admission-controller]
-    [ServiceAccount,default,kyverno-background-controller]
-    [ServiceAccount/?*,default,kyverno-background-controller]
-    [ServiceAccount,default,kyverno-cleanup-controller]
-    [ServiceAccount/?*,default,kyverno-cleanup-controller]
-    [ServiceAccount,default,kyverno-reports-controller]
-    [ServiceAccount/?*,default,kyverno-reports-controller]
-    [Role,default,kyverno:admission-controller]
-    [Role,default,kyverno:background-controller]
-    [Role,default,kyverno:cleanup-controller]
-    [Role,default,kyverno:reports-controller]
-    [RoleBinding,default,kyverno:admission-controller]
-    [RoleBinding,default,kyverno:background-controller]
-    [RoleBinding,default,kyverno:cleanup-controller]
-    [RoleBinding,default,kyverno:reports-controller] [ConfigMap,default,kyverno]
-    [ConfigMap,default,kyverno-metrics]
-    [Deployment,default,kyverno-admission-controller]
-    [Deployment/?*,default,kyverno-admission-controller]
-    [Deployment,default,kyverno-background-controller]
-    [Deployment/?*,default,kyverno-background-controller]
-    [Deployment,default,kyverno-cleanup-controller]
-    [Deployment/?*,default,kyverno-cleanup-controller]
-    [Deployment,default,kyverno-reports-controller]
-    [Deployment/?*,default,kyverno-reports-controller]
-    [Pod,default,kyverno-admission-controller-*]
-    [Pod/?*,default,kyverno-admission-controller-*]
-    [Pod,default,kyverno-background-controller-*]
-    [Pod/?*,default,kyverno-background-controller-*]
-    [Pod,default,kyverno-cleanup-controller-*]
-    [Pod/?*,default,kyverno-cleanup-controller-*]
-    [Pod,default,kyverno-reports-controller-*]
-    [Pod/?*,default,kyverno-reports-controller-*]
-    [Job,default,kyverno-hook-pre-delete]
-    [Job/?*,default,kyverno-hook-pre-delete]
-    [NetworkPolicy,default,kyverno-admission-controller]
-    [NetworkPolicy/?*,default,kyverno-admission-controller]
-    [NetworkPolicy,default,kyverno-background-controller]
-    [NetworkPolicy/?*,default,kyverno-background-controller]
-    [NetworkPolicy,default,kyverno-cleanup-controller]
-    [NetworkPolicy/?*,default,kyverno-cleanup-controller]
-    [NetworkPolicy,default,kyverno-reports-controller]
-    [NetworkPolicy/?*,default,kyverno-reports-controller]
-    [PodDisruptionBudget,default,kyverno-admission-controller]
-    [PodDisruptionBudget/?*,default,kyverno-admission-controller]
-    [PodDisruptionBudget,default,kyverno-background-controller]
-    [PodDisruptionBudget/?*,default,kyverno-background-controller]
-    [PodDisruptionBudget,default,kyverno-cleanup-controller]
-    [PodDisruptionBudget/?*,default,kyverno-cleanup-controller]
-    [PodDisruptionBudget,default,kyverno-reports-controller]
-    [PodDisruptionBudget/?*,default,kyverno-reports-controller]
-    [Service,default,kyverno-svc] [Service/?*,default,kyverno-svc]
-    [Service,default,kyverno-svc-metrics]
-    [Service/?*,default,kyverno-svc-metrics]
-    [Service,default,kyverno-background-controller-metrics]
-    [Service/?*,default,kyverno-background-controller-metrics]
-    [Service,default,kyverno-cleanup-controller]
-    [Service/?*,default,kyverno-cleanup-controller]
-    [Service,default,kyverno-cleanup-controller-metrics]
-    [Service/?*,default,kyverno-cleanup-controller-metrics]
-    [Service,default,kyverno-reports-controller-metrics]
-    [Service/?*,default,kyverno-reports-controller-metrics]
-    [ServiceMonitor,default,kyverno-admission-controller]
-    [ServiceMonitor,default,kyverno-background-controller]
-    [ServiceMonitor,default,kyverno-cleanup-controller]
-    [ServiceMonitor,default,kyverno-reports-controller]
-    [Secret,default,kyverno-svc.default.svc.*]
-    [Secret,default,kyverno-cleanup-controller.default.svc.*]
+    [ServiceAccount,kyverno,kyverno-admission-controller]
+    [ServiceAccount/?*,kyverno,kyverno-admission-controller]
+    [ServiceAccount,kyverno,kyverno-background-controller]
+    [ServiceAccount/?*,kyverno,kyverno-background-controller]
+    [ServiceAccount,kyverno,kyverno-cleanup-controller]
+    [ServiceAccount/?*,kyverno,kyverno-cleanup-controller]
+    [ServiceAccount,kyverno,kyverno-reports-controller]
+    [ServiceAccount/?*,kyverno,kyverno-reports-controller]
+    [Role,kyverno,kyverno:admission-controller]
+    [Role,kyverno,kyverno:background-controller]
+    [Role,kyverno,kyverno:cleanup-controller]
+    [Role,kyverno,kyverno:reports-controller]
+    [RoleBinding,kyverno,kyverno:admission-controller]
+    [RoleBinding,kyverno,kyverno:background-controller]
+    [RoleBinding,kyverno,kyverno:cleanup-controller]
+    [RoleBinding,kyverno,kyverno:reports-controller] [ConfigMap,kyverno,kyverno]
+    [ConfigMap,kyverno,kyverno-metrics]
+    [Deployment,kyverno,kyverno-admission-controller]
+    [Deployment/?*,kyverno,kyverno-admission-controller]
+    [Deployment,kyverno,kyverno-background-controller]
+    [Deployment/?*,kyverno,kyverno-background-controller]
+    [Deployment,kyverno,kyverno-cleanup-controller]
+    [Deployment/?*,kyverno,kyverno-cleanup-controller]
+    [Deployment,kyverno,kyverno-reports-controller]
+    [Deployment/?*,kyverno,kyverno-reports-controller]
+    [Pod,kyverno,kyverno-admission-controller-*]
+    [Pod/?*,kyverno,kyverno-admission-controller-*]
+    [Pod,kyverno,kyverno-background-controller-*]
+    [Pod/?*,kyverno,kyverno-background-controller-*]
+    [Pod,kyverno,kyverno-cleanup-controller-*]
+    [Pod/?*,kyverno,kyverno-cleanup-controller-*]
+    [Pod,kyverno,kyverno-reports-controller-*]
+    [Pod/?*,kyverno,kyverno-reports-controller-*]
+    [Job,kyverno,kyverno-hook-pre-delete]
+    [Job/?*,kyverno,kyverno-hook-pre-delete]
+    [NetworkPolicy,kyverno,kyverno-admission-controller]
+    [NetworkPolicy/?*,kyverno,kyverno-admission-controller]
+    [NetworkPolicy,kyverno,kyverno-background-controller]
+    [NetworkPolicy/?*,kyverno,kyverno-background-controller]
+    [NetworkPolicy,kyverno,kyverno-cleanup-controller]
+    [NetworkPolicy/?*,kyverno,kyverno-cleanup-controller]
+    [NetworkPolicy,kyverno,kyverno-reports-controller]
+    [NetworkPolicy/?*,kyverno,kyverno-reports-controller]
+    [PodDisruptionBudget,kyverno,kyverno-admission-controller]
+    [PodDisruptionBudget/?*,kyverno,kyverno-admission-controller]
+    [PodDisruptionBudget,kyverno,kyverno-background-controller]
+    [PodDisruptionBudget/?*,kyverno,kyverno-background-controller]
+    [PodDisruptionBudget,kyverno,kyverno-cleanup-controller]
+    [PodDisruptionBudget/?*,kyverno,kyverno-cleanup-controller]
+    [PodDisruptionBudget,kyverno,kyverno-reports-controller]
+    [PodDisruptionBudget/?*,kyverno,kyverno-reports-controller]
+    [Service,kyverno,kyverno-svc] [Service/?*,kyverno,kyverno-svc]
+    [Service,kyverno,kyverno-svc-metrics]
+    [Service/?*,kyverno,kyverno-svc-metrics]
+    [Service,kyverno,kyverno-background-controller-metrics]
+    [Service/?*,kyverno,kyverno-background-controller-metrics]
+    [Service,kyverno,kyverno-cleanup-controller]
+    [Service/?*,kyverno,kyverno-cleanup-controller]
+    [Service,kyverno,kyverno-cleanup-controller-metrics]
+    [Service/?*,kyverno,kyverno-cleanup-controller-metrics]
+    [Service,kyverno,kyverno-reports-controller-metrics]
+    [Service/?*,kyverno,kyverno-reports-controller-metrics]
+    [ServiceMonitor,kyverno,kyverno-admission-controller]
+    [ServiceMonitor,kyverno,kyverno-background-controller]
+    [ServiceMonitor,kyverno,kyverno-cleanup-controller]
+    [ServiceMonitor,kyverno,kyverno-reports-controller]
+    [Secret,kyverno,kyverno-svc.kyverno.svc.*]
+    [Secret,kyverno,kyverno-cleanup-controller.kyverno.svc.*]
   updateRequestThreshold: "1000"
   webhooks: "{\"namespaceSelector\":{\"matchExpressions\":[{\"key\":\"kubernetes.\
     io/metadata.name\",\"operator\":\"NotIn\",\"values\":[\"kyverno\",\"kube-sy\
     stem\",\"kube-public\",\"kube-node-lease\",\"argocd\"]},{\"key\":\"kubernet\
-    es.io/metadata.name\",\"operator\":\"NotIn\",\"values\":[\"default\"]}],\"m\
+    es.io/metadata.name\",\"operator\":\"NotIn\",\"values\":[\"kyverno\"]}],\"m\
     atchLabels\":null}}"
   webhookAnnotations: "{\"admissions.enforcer/disabled\":\"true\"}"
 ---
@@ -157,7 +157,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: kyverno-metrics
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: config
     app.kubernetes.io/instance: kyverno
@@ -850,7 +850,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kyverno-admission-controller
-    namespace: default
+    namespace: kyverno
 ---
 ---
 # Source: kyverno/templates/admission-controller/clusterrolebinding.yaml
@@ -873,7 +873,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kyverno-admission-controller
-    namespace: default
+    namespace: kyverno
 ---
 ---
 # Source: kyverno/templates/reports-controller/clusterrolebinding.yaml
@@ -896,7 +896,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kyverno-reports-controller
-    namespace: default
+    namespace: kyverno
 ---
 ---
 # Source: kyverno/templates/reports-controller/clusterrolebinding.yaml
@@ -919,7 +919,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kyverno-reports-controller
-    namespace: default
+    namespace: kyverno
 ---
 ---
 # Source: kyverno/templates/admission-controller/role.yaml
@@ -927,7 +927,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kyverno:admission-controller
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: admission-controller
     app.kubernetes.io/instance: kyverno
@@ -998,7 +998,7 @@ metadata:
     app.kubernetes.io/part-of: kyverno
     app.kubernetes.io/version: 3.9.1
     helm.sh/chart: kyverno-3.9.1
-  namespace: default
+  namespace: kyverno
 rules:
   - apiGroups:
       - ''
@@ -1043,7 +1043,7 @@ kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: kyverno:admission-controller
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: admission-controller
     app.kubernetes.io/instance: kyverno
@@ -1059,7 +1059,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kyverno-admission-controller
-    namespace: default
+    namespace: kyverno
 ---
 ---
 # Source: kyverno/templates/reports-controller/rolebinding.yaml
@@ -1075,7 +1075,7 @@ metadata:
     app.kubernetes.io/part-of: kyverno
     app.kubernetes.io/version: 3.9.1
     helm.sh/chart: kyverno-3.9.1
-  namespace: default
+  namespace: kyverno
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -1083,7 +1083,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kyverno-reports-controller
-    namespace: default
+    namespace: kyverno
 ---
 ---
 # Source: kyverno/templates/admission-controller/service.yaml
@@ -1091,7 +1091,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kyverno-svc
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: admission-controller
     app.kubernetes.io/instance: kyverno
@@ -1119,7 +1119,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kyverno-svc-metrics
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: admission-controller
     app.kubernetes.io/instance: kyverno
@@ -1146,7 +1146,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kyverno-reports-controller-metrics
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: reports-controller
     app.kubernetes.io/instance: kyverno
@@ -1173,7 +1173,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kyverno-admission-controller
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: admission-controller
     app.kubernetes.io/instance: kyverno
@@ -1281,10 +1281,10 @@ spec:
             2ebae08eb82fa51d91af14a1d9fe989949b4edb"
           imagePullPolicy: IfNotPresent
           args:
-            - --caSecretName=kyverno-svc.default.svc.kyverno-tls-ca
-            - --tlsSecretName=kyverno-svc.default.svc.kyverno-tls-pair
+            - --caSecretName=kyverno-svc.kyverno.svc.kyverno-tls-ca
+            - --tlsSecretName=kyverno-svc.kyverno.svc.kyverno-tls-pair
             - --tlsKeyAlgorithm=RSA
-            - --reportsServiceAccountName=system:serviceaccount:default:kyverno-reports-controller
+            - --reportsServiceAccountName=system:serviceaccount:kyverno:kyverno-reports-controller
             - --servicePort=443
             - --webhookServerPort=9443
             - --resyncPeriod=15m
@@ -1417,7 +1417,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kyverno-reports-controller
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: reports-controller
     app.kubernetes.io/instance: kyverno
@@ -1571,7 +1571,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: kyverno-admission-controller-metrics
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: test
     app.kubernetes.io/instance: kyverno
@@ -1610,7 +1610,7 @@ spec:
       args:
         - check-http
         - --service-name=kyverno-svc-metrics
-        - --namespace=default
+        - --namespace=kyverno
         - --port=8000
         - --path=metrics
   nodeSelector:
@@ -1622,7 +1622,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: kyverno-reports-controller-metrics
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: test
     app.kubernetes.io/instance: kyverno
@@ -1661,7 +1661,7 @@ spec:
       args:
         - check-http
         - --service-name=kyverno-reports-controller-metrics
-        - --namespace=default
+        - --namespace=kyverno
         - --port=8000
         - --path=metrics
   nodeSelector:
@@ -1673,7 +1673,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: kyverno-rm-webhooks
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: hooks
     app.kubernetes.io/instance: kyverno
@@ -1728,7 +1728,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: kyverno-scale-to-zero
-  namespace: default
+  namespace: kyverno
   labels:
     app.kubernetes.io/component: hooks
     app.kubernetes.io/instance: kyverno

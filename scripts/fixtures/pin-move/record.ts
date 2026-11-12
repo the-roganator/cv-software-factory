@@ -1,6 +1,7 @@
 /**
  * Records the chart renderings pin-move.test.ts compares, with the gate's own renderer (`realTools().render`, the
- * scan's), each chart at the version this checkout pins and at the release its move goes to, with this checkout's
+ * scan's, as Argo CD renders it: its namespace, its `crds/`, the k3s and the API versions this checkout records), each
+ * chart at the version this checkout pins and at the release its move goes to, with this checkout's
  * values (record them from main):
  *
  *   mise exec -- node scripts/fixtures/pin-move/record.ts
@@ -13,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseAllDocuments } from 'yaml';
 import { inventory } from '../../../apps/factory/src/vulnerabilities/inventory.ts';
-import { realTools } from '../../../apps/factory/src/vulnerabilities/scan.ts';
+import { apiVersionsOf, kubeVersionOf, realTools } from '../../../apps/factory/src/vulnerabilities/scan.ts';
 
 const ROOT = join(import.meta.dirname, '../../..');
 /** Each chart's move, as the scan named it on 12 November 2026. */
@@ -39,7 +40,7 @@ if (import.meta.main) {
       const chart = items.find((each) => each.name === item)?.chart;
       if (!chart) throw new Error(`main lists no chart ${item}`);
       for (const version of [chart.version, to]) {
-        let text = await tools.render({ ...chart, version }, ROOT);
+        let text = await tools.render({ ...chart, version }, ROOT, kubeVersionOf(items), apiVersionsOf(ROOT));
         if (item === 'kyverno') text = withoutCrds(text);
         writeFileSync(join(import.meta.dirname, `${item}-${version}.yaml`), text);
         console.log(`${item} ${version}: ${text.length} bytes`);

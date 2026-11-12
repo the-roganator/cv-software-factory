@@ -19,9 +19,10 @@
  * 5. **No record goes stale.** Each refusal record's hash (scripts/policy-hash.ts), computed at the base and at the
  *    head, is the same.
  * 6. **Nothing else that runs changes.** For a chart, a value or an image the cluster runs, the manifests rendered at
- *    the base and at the head, compared object by object, have the same objects (kind, namespace, name: none added,
- *    none gone), and differ only in the moved image's references, the chart's own version labels' values, the `data` of
- *    a ConfigMap that was there at the base, and a pod template's `checksum/` annotations. The configuration a chart's
+ *    the base and at the head, a chart rendered as Argo CD renders it on the cluster `main` describes, compared object by
+ *    object, have the same objects (kind, namespace, name: none added, none gone), and differ only in each moved image's
+ *    `from` for its `to`, the chart's own version labels moving as the chart's, the `data` of a ConfigMap that was there
+ *    at the base, and a pod template's `checksum/` annotations. The configuration a chart's
  *    ConfigMaps carry is the publisher's, as its image is; its objects, permissions, pod specs and network policies
  *    stay Martin's.
  * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on

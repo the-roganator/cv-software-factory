@@ -103,6 +103,33 @@ export function apiVersionsOf(root: string): string[] | undefined {
   return apiVersions as string[];
 }
 
+/**
+ * `helm template`'s arguments for a chart as Argo CD 3.6's repo-server gives them (util/helm/cmd.go `template`): its
+ * release, in its namespace, for the cluster's Kubernetes version, with its values files, each of the cluster's API
+ * versions, and its `crds/` unless its Application skips them.
+ */
+export function helmTemplateArgs(
+  chart: Chart,
+  root: string,
+  kubeVersion?: string,
+  apiVersions?: readonly string[],
+): string[] {
+  return [
+    'template',
+    chart.release,
+    chart.chart,
+    '--repo',
+    chart.repo,
+    '--version',
+    chart.version,
+    ...(chart.namespace ? ['--namespace', chart.namespace] : []),
+    ...(kubeVersion ? ['--kube-version', kubeVersion] : []),
+    ...chart.values.flatMap((file) => ['--values', join(root, file)]),
+    ...(apiVersions ?? []).flatMap((version) => ['--api-versions', version]),
+    ...(chart.skipCrds ? [] : ['--include-crds']),
+  ];
+}
+
 /** The Kubernetes version the charts are rendered for: the k3s node's, from the list's k3s item. */
 export const kubeVersionOf = (items: readonly Item[]) =>
   items.find((item) => item.kind === 'k3s')?.image?.match(/:v?(\d+\.\d+\.\d+)/)?.[1];
@@ -791,35 +818,18 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
     },
     async render(chart, root, kubeVersion, apiVersions) {
       const home = temp();
-      const { stdout } = await run(
-        'helm',
-        [
-          'template',
-          chart.release,
-          chart.chart,
-          '--repo',
-          chart.repo,
-          '--version',
-          chart.version,
-          ...(chart.namespace ? ['--namespace', chart.namespace] : []),
-          ...(kubeVersion ? ['--kube-version', kubeVersion] : []),
-          ...chart.values.flatMap((file) => ['--values', join(root, file)]),
-          ...(apiVersions ?? []).flatMap((version) => ['--api-versions', version]),
-          ...(chart.skipCrds ? [] : ['--include-crds']),
-        ],
-        {
-          maxBuffer: 64 * 1024 * 1024,
-          timeout: 5 * 60 * 1000,
-          // Helm's own state in a directory of the run's: no plugins, repositories or registry logins but none.
-          env: {
-            PATH: process.env.PATH ?? '',
-            HOME: home,
-            HELM_CACHE_HOME: join(home, 'cache'),
-            HELM_CONFIG_HOME: join(home, 'config'),
-            HELM_DATA_HOME: join(home, 'data'),
-          },
+      const { stdout } = await run('helm', helmTemplateArgs(chart, root, kubeVersion, apiVersions), {
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 5 * 60 * 1000,
+        // Helm's own state in a directory of the run's: no plugins, repositories or registry logins but none.
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: home,
+          HELM_CACHE_HOME: join(home, 'cache'),
+          HELM_CONFIG_HOME: join(home, 'config'),
+          HELM_DATA_HOME: join(home, 'data'),
         },
-      );
+      });
       return stdout;
     },
     async fetch(url) {

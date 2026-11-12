@@ -3,7 +3,8 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeF
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.ts';
+import { type Chart, type Item, inventory } from '../apps/factory/src/vulnerabilities/inventory.ts';
+import { apiVersionsOf, helmTemplateArgs, kubeVersionOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import {
   CHECK_WORKFLOW,
   chartForward,
@@ -1396,10 +1397,10 @@ describe('the manifests, object by object', () => {
 
   it("holds prometheus's release on the nodeSelector it adds, and kyverno's on the first object it adds", async () => {
     expect(await chartMove('prometheus', '29.35.0', '29.47.2')).toBe(
-      'the manifests change beyond the image: Deployment default/prometheus-kube-state-metrics at spec.template.spec.nodeSelector',
+      'the manifests change beyond the image: Deployment telemetry/prometheus-kube-state-metrics at spec.template.spec.nodeSelector',
     );
     expect(manifestsDiffer(recorded('kyverno', '3.9.1'), recorded('kyverno', '3.10.0'), [])).toBe(
-      'the head renders ServiceAccount default/kyverno-check-legacy-policies, which the base does not',
+      'the head renders ServiceAccount kyverno/kyverno-check-legacy-policies, which the base does not',
     );
   });
 
@@ -1759,5 +1760,48 @@ spec:
       'the manifests change beyond the image: Service ns/s at spec.selector.yes',
     );
     expect(objectsOf(svc('{yes: other, "true": safe}'), '1.1')).toMatch(/a key that is not a string/);
+  });
+});
+
+// The independent read of #1065: the gate rendered a chart otherwise than Argo CD, so a template that branches on the
+// namespace, the cluster's APIs or a chart's crds/ could hide an object from it. It renders as Argo CD does now.
+describe('a chart rendered as Argo CD renders it', () => {
+  const ROOT = join(import.meta.dirname, '..');
+
+  it("passes helm Argo CD's arguments: the release, the namespace, the cluster's version and APIs, and the crds/", () => {
+    const chart: Chart = { ...GRAFANA, release: 'grafana', namespace: 'telemetry' };
+    expect(helmTemplateArgs(chart, '/r', '1.37.2', ['v1', 'argoproj.io/v1alpha1/Rollout'])).toEqual([
+      'template',
+      'grafana',
+      'grafana',
+      '--repo',
+      GRAFANA.repo,
+      '--version',
+      '13.5.0',
+      '--namespace',
+      'telemetry',
+      '--kube-version',
+      '1.37.2',
+      '--values',
+      '/r/deploy/base/telemetry/values/grafana.yaml',
+      '--api-versions',
+      'v1',
+      '--api-versions',
+      'argoproj.io/v1alpha1/Rollout',
+      '--include-crds',
+    ]);
+    expect(helmTemplateArgs({ ...chart, skipCrds: true }, '/r')).not.toContain('--include-crds');
+  });
+
+  it("renders every chart main runs in its Application's namespace, for the k3s main pins, with main's record", () => {
+    const items = inventory(ROOT).items;
+    const charts = items.filter((item) => item.chart && item.file.startsWith('deploy/'));
+    expect(charts.length).toBeGreaterThan(5);
+    for (const item of charts) expect(item.chart?.namespace, item.name).toMatch(/^[a-z][a-z0-9-]*$/);
+    expect(kubeVersionOf(items)).toMatch(/^\d+\.\d+\.\d+$/);
+    const apiVersions = apiVersionsOf(ROOT) ?? [];
+    // Argo CD's own list, from platform's cluster: the core group, its kinds, and the CRDs main's charts install.
+    for (const api of ['v1', 'v1/ConfigMap', 'apps/v1/Deployment', 'argoproj.io/v1alpha1/Rollout', 'kyverno.io/v1'])
+      expect(apiVersions).toContain(api);
   });
 });

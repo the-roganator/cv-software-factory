@@ -7,6 +7,7 @@ import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.
 import {
   CHECK_WORKFLOW,
   chartForward,
+  comparable,
   hashesOf,
   IMAGE_CHECK,
   imagePairs,
@@ -1343,6 +1344,7 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
 // Condition 6 compares the renderings object by object: what a chart's release may change (its ConfigMaps' data, its pod
 // templates' checksums, its images and version labels) passes, and each way to pass something else through that holds.
 describe('the manifests, object by object', () => {
+  const record = (value: unknown) => value as Record<string, unknown>;
   const FIXTURES = join(import.meta.dirname, 'fixtures/pin-move');
   const recorded = (item: string, version: string) => readFileSync(join(FIXTURES, `${item}-${version}.yaml`), 'utf-8');
   /** What the gate compares a recorded chart move with: its own image pairs, from its own renderings. */
@@ -1401,7 +1403,8 @@ describe('the manifests, object by object', () => {
   const configMap = (data: string, name = 'app', extra = '') =>
     `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${name}\n  namespace: t\n${extra}data:\n  config.yaml: ${data}\n`;
   const base = `${configMap('a')}---\n${deployment()}`;
-  const judge = (head: string, was = base) => manifestsDiffer(was, head, [IMAGE]);
+  // The references as the gate gives them: each moved image's, and its digest alone.
+  const judge = (head: string, was = base) => manifestsDiffer(was, head, [IMAGE, IMAGE.split('@')[1] as string]);
 
   it("passes a ConfigMap's data beside its pod template's checksum, written in any whitespace", () => {
     expect(judge(`${configMap('b')}---\n${deployment({ template: 'checksum/config: bbb' })}`)).toBeUndefined();
@@ -1551,6 +1554,35 @@ describe('the manifests, object by object', () => {
     );
     // A separator with a comment after it, and a document that ends with `...` and nothing more, are as the cluster reads.
     expect(judge(`${configMap('a')}--- # x\n${deployment()}\n...\n---\n${policy}`, was)).toBeUndefined();
+  });
+
+  it('holds what an adversarial review found the first reading let through', () => {
+    // An image with no repository path, by tag or by digest.
+    expect(judge(`${configMap(`'{"image":"busybox:1.36"}'`)}---\n${deployment()}`)).toBe(
+      "ConfigMap t/app's data names an image its base did not: busybox:1.36",
+    );
+    // A word that only begins with the moved image is not the moved image.
+    const tagged = (data: string) => `${configMap(data)}---\n${deployment()}`;
+    expect(manifestsDiffer(tagged("'repo/app:0'"), tagged("'repo/app:1-x'"), ['repo/app:0', 'repo/app:1'])).toBe(
+      "ConfigMap t/app's data names an image its base did not: repo/app:1-x",
+    );
+    expect(
+      manifestsDiffer(tagged("'repo/app:0'"), tagged("'repo/app:1'"), ['repo/app:0', 'repo/app:1']),
+    ).toBeUndefined();
+    // A namespace written empty is not one left out.
+    const spaced = (ns: string) => `kind: Pod\nmetadata:\n  name: p\n${ns}`;
+    expect(manifestsDiffer(spaced(''), spaced('  namespace: ""\n'), [])).toBe(
+      'the head renders Pod ""/p, which the base does not',
+    );
+    // A version label is set aside in an object's own and its templates' metadata alone, not in a spec's.
+    const custom = (v: string) =>
+      `apiVersion: example.io/v1\nkind: Generator\nmetadata:\n  name: g\nspec:\n  config:\n    metadata:\n      labels:\n        helm.sh/chart: x-${v}\n`;
+    expect(manifestsDiffer(custom('1'), custom('2'), [])).toBe(
+      'the manifests change beyond the image: Generator g at spec.config.metadata.labels["helm.sh/chart"]',
+    );
+    // A timestamp YAML 1.1 reads as a Date keeps its time through the image and label passes.
+    const at = new Date('2031-01-01');
+    expect(record(record(comparable({ kind: 'Pod', spec: { at } }, [IMAGE])).spec).at).toBe(at);
   });
 
   it('reads a merge key, a timestamp and a version label that is not a string as YAML 1.1 does, and holds', () => {

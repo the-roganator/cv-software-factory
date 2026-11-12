@@ -819,42 +819,51 @@ export function objectsOf(
       return `${kind} ${name} has a namespace that is not a name`;
     if (kind.endsWith('List') || Object.hasOwn(object, 'items'))
       return `the rendering has a ${kind} that wraps objects the gate does not key`;
-    const label = `${kind} ${namespace ? `${namespace}/` : ''}${name}`;
-    const key = JSON.stringify([kind, namespace ?? '', name]);
+    const label = `${kind} ${namespace ? `${namespace}/` : namespace === '' ? '""/' : ''}${name}`;
+    const key = JSON.stringify([kind, namespace ?? null, name]);
     if (objects.has(key)) return `the rendering has ${label} twice`;
     objects.set(key, { label, body: object });
   }
   return objects;
 }
 
+/** A mapping as YAML reads one: an object of no class. A Date (YAML 1.1's timestamp) is a value, kept as it is. */
+const isPlain = (value: unknown): value is Record<string, unknown> =>
+  value !== null &&
+  typeof value === 'object' &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value) as object | null);
+
 /** A value with every string's references to the moved image written the same. */
 function withoutImage(value: unknown, refs: readonly string[]): unknown {
   if (typeof value === 'string') return refs.reduce((text, ref) => text.split(ref).join('<image>'), value);
   if (Array.isArray(value)) return value.map((each) => withoutImage(each, refs));
-  if (value && typeof value === 'object')
+  if (isPlain(value))
     return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, withoutImage(each, refs)]));
   return value;
 }
 
-/** A value with the chart's own version labels written the same in every `metadata.labels`, where they are there. */
-function withoutVersionLabels(value: unknown, parent?: string): unknown {
-  if (Array.isArray(value)) return value.map((each) => withoutVersionLabels(each));
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, each]) => {
-      if (parent === 'metadata' && key === 'labels' && each && typeof each === 'object' && !Array.isArray(each))
-        return [
-          key,
-          Object.fromEntries(
-            Object.entries(each).map(([label, text]) => [
-              label,
-              VERSION_LABELS.has(label) && typeof text === 'string' ? '<version>' : text,
-            ]),
-          ),
-        ];
-      return [key, withoutVersionLabels(each, key)];
-    }),
-  );
+/** A `metadata` mapping with the chart's own version labels' values written the same, where they are strings. */
+function versionsAside(metadata: unknown) {
+  const labels = record(metadata).labels;
+  if (!isPlain(labels)) return;
+  for (const label of VERSION_LABELS) if (typeof labels[label] === 'string') labels[label] = '<version>';
+}
+
+/**
+ * The `metadata` the chart's version labels are set aside in: the object's own, its pod template's (and a CronJob's
+ * job template's), and a StatefulSet's claim templates'. Nowhere else: a resource's spec may carry metadata a controller
+ * reads as input.
+ */
+function versionLabelsAside(object: Record<string, unknown>) {
+  versionsAside(object.metadata);
+  const kind = `${object.apiVersion} ${object.kind}`;
+  const path = POD_TEMPLATES[kind];
+  if (path) versionsAside(record(path.reduce<unknown>((at, step) => record(at)[step], object)).metadata);
+  if (kind === 'batch/v1 CronJob') versionsAside(record(record(object.spec).jobTemplate).metadata);
+  if (kind === 'apps/v1 StatefulSet') {
+    const claims = record(object.spec).volumeClaimTemplates;
+    if (Array.isArray(claims)) for (const claim of claims) versionsAside(record(claim).metadata);
+  }
 }
 
 /**
@@ -863,8 +872,9 @@ function withoutVersionLabels(value: unknown, parent?: string): unknown {
  * core workload's pod template's annotations by the `checksum/` prefix taken out, which a chart writes from the
  * configuration so a change to it restarts the pods. Nothing else is set aside.
  */
-function comparable(body: unknown, refs: readonly string[]): unknown {
-  const object = record(withoutVersionLabels(withoutImage(body, refs)));
+export function comparable(body: unknown, refs: readonly string[]): unknown {
+  const object = record(withoutImage(body, refs));
+  versionLabelsAside(object);
   // Its data whole, keys added or gone among it, and the data itself added or gone.
   if (object.apiVersion === 'v1' && object.kind === 'ConfigMap') object.data = '<configuration>';
   const path = POD_TEMPLATES[`${object.apiVersion} ${object.kind}`];
@@ -881,11 +891,13 @@ function comparable(body: unknown, refs: readonly string[]): unknown {
 
 /**
  * The image references a ConfigMap's data names, however it writes them (`image: …`, JSON, TOML, a pod template a
- * controller launches): every word with a repository path and a tag or a digest, and every bare digest. A URL's path is
- * not one. Its data is set aside, so an image named there that the base's did not would run unresolved and unscanned.
+ * controller launches): every word with a tag or a digest, with a repository path or none (`busybox:1`), and every bare
+ * digest, read from the data as written, but for the moved image's references exactly. A URL's path is not one. Its
+ * data is set aside, so an image named there that the base's did not would run unresolved and unscanned. A `host:port`
+ * reads as one too: a new one holds, which is no loss.
  */
 function imagesNamed(body: unknown, refs: readonly string[]): Set<string> {
-  const object = record(withoutImage(body, refs));
+  const object = record(body);
   const names = new Set<string>();
   if (object.apiVersion !== 'v1' || object.kind !== 'ConfigMap') return names;
   for (const text of Object.values(record(object.data))) {
@@ -893,10 +905,12 @@ function imagesNamed(body: unknown, refs: readonly string[]): Set<string> {
     for (const [word] of text.matchAll(IMAGE_WORD)) if (/:[\w][\w.-]*$|@sha256:/.test(word)) names.add(word);
     for (const [digest] of text.matchAll(/sha256:[0-9a-f]{64}/g)) names.add(digest);
   }
+  for (const ref of refs) names.delete(ref);
   return names;
 }
 
-const IMAGE_WORD = /(?<![\w./:@-])[a-z0-9][\w.-]*(?::\d+)?(?:\/[\w.-]+)+(?::[\w][\w.-]*)?(?:@sha256:[0-9a-f]{64})?/gi;
+const IMAGE_WORD =
+  /(?<![\w./:@-])[a-z0-9][\w.-]*(?::\d+(?=\/))?(?:\/[\w.-]+)*(?::[\w][\w.-]*)?(?:@sha256:[0-9a-f]{64})?/gi;
 
 const step = (key: string) => (/^[A-Za-z_][\w-]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
 

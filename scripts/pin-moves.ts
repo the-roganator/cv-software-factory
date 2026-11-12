@@ -84,7 +84,7 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
                 'workflow_runs',
               ),
             ]);
-            return workflowsOf(checks, workflows, each.repo);
+            return workflowsOf(checks, workflows, each.repo, { number: pr.number, open: pr.state === 'open' });
           },
         }),
         expired,

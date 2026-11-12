@@ -232,7 +232,11 @@ describe('every workflow', () => {
     // The gate, which holds the key, takes its answers and reads no head itself; it runs whatever the job did.
     const review = workflow.jobs.review as Job & { needs?: unknown };
     expect(review.needs).toBe(PIN_MOVE_JOB);
-    expect(review.if).toBe(expression('!cancelled()'));
+    // A platform run asks for a verdict only when the App's: its pin moves alone wait for it.
+    const onlyApp =
+      "(github.event.workflow_run.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
+    expect(review.if).toBe(expression(`!cancelled() && ${onlyApp}`));
+    expect(job.if).toBe(expression(`github.repository != 'the-roganator/cv-worlds-worst-website' && ${onlyApp}`));
     const judge = (review.steps ?? []).find((s) => s.run === 'node scripts/review-gate.ts') as Step & {
       env?: Record<string, unknown>;
     };

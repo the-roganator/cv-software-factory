@@ -25,9 +25,9 @@
 #
 # A pin move (scripts/pin-move.ts, ADR 0019) is one pin of the vulnerability scan's list moved forward by the App here,
 # proved from its two commits: the list at each, the registries, the charts' renderings, the refusal records' hashes,
-# Trivy on the image before and after, and the checks that ran it, each from the workflow that has its job: a chart, a
-# value or a third-party image in deploy/ by platform.yml's cluster made from the change. Working that out reads the pull request's head, as
-# data, which the job holding the App's key never does: the `pin move` job below does it, with no secret and read-only
+# Trivy on the image before and after, and the checks that ran it, each counted only from the workflow that has its
+# job: platform.yml's cluster, made from the change, for a chart, a value or a third-party image in deploy/. Working that
+# out reads the pull request's head, as data, which the job holding the App's key never does: the `pin move` job below does it, with no secret and read-only
 # permissions, from main's whole checkout and its locked dependencies, and hands the gate one answer for each pull
 # request it would judge, `<number>@<head>`, which the gate takes only for a pull request of the App's here that is no
 # exact pin. A missing or unreadable answer holds it. The gate runs again when check.yml or platform.yml finishes, as a
@@ -57,8 +57,10 @@
 # `secrets: inherit`: GitHub's docs say a called job with `environment:` uses the caller's environment of that name, but
 # resolves a secret to empty unless the caller passes it, and a secret held only in the environment may be passed by
 # name. Unpassed, the gate says its verdict and posts nothing, as before the key exists. A caller grants the job
-# `checks: read` too, for test integrity's run, and lists its gates' workflow beside review requested in its
-# `workflow_run`, so the gate judges again when they finish: low-risk waits for test integrity's run at the head.
+# `checks: read` too, for test integrity's run, and `actions: read`, which the pin move job asks for even where it does
+# not run, as GitHub refuses a called job more than its caller grants; and it lists its gates' workflow beside review
+# requested in its `workflow_run`, so the gate judges again when they finish: low-risk waits for test integrity's run at
+# the head.
 #
 # When the check is missing, the pull request waits, as it does for a failing one: the queue takes it only once every
 # required check has passed. That is how each of these ends:
@@ -83,7 +85,7 @@ name: review
 on:
   workflow_run:
     # check.yml and platform.yml too, so a pin move held only because the job that runs its pin had not finished is
-    # judged again.
+    # judged again. Only the factory's App opens a pin move, so a platform run of anyone else's asks for nothing.
     workflows: [review requested, check, platform]
     types: [completed]
   workflow_call:
@@ -111,7 +113,9 @@ jobs:
   pin-move:
     name: pin move
     # The app's line moves its own pins: its pull requests are never pin moves.
-    if: ${{ github.repository != 'the-roganator/cv-worlds-worst-website' }}
+    if: >-
+      ${{ github.repository != 'the-roganator/cv-worlds-worst-website' && (github.event.workflow_run.name != 'platform' ||
+      github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -147,8 +151,11 @@ jobs:
   review:
     name: review gate
     needs: pin-move
-    # Whatever the pin move job did: the gate always gives a verdict, and holds a pin move it has no answer for.
-    if: ${{ !cancelled() }}
+    # Whatever the pin move job did: the gate always gives a verdict, and holds a pin move it has no answer for. A
+    # platform run judges again only for the App, whose pin moves alone wait for it.
+    if: >-
+      ${{ !cancelled() && (github.event.workflow_run.name != 'platform' ||
+      github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: review

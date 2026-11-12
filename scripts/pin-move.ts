@@ -9,7 +9,8 @@
  *    the head merged onto main's tip, against that tip. The list worked out on both (inventory.ts) has the same items at the same places, and differs in one move's pins alone: one image,
  *    one chart or one value of a chart, from one pin to one other. Every line it changes is one of those pins, and
  *    `--unlisted` finds nothing at the head.
- * 2. **Not what judges.** Trivy's and Syft's own pins are Martin's: a scanner cannot vouch for its replacement.
+ * 2. **Not what judges.** Trivy's, Syft's and Kyverno's own pins are Martin's: what judges a move cannot vouch for its
+ *    own replacement, and Kyverno is what says, on the platform check's cluster, that admission enforces.
  * 3. **Signed where its publisher signs.** An image of ours passes only as an exact pin, signed by build.yml on main. A
  *    third-party image is held to its digest alone, as admission admits it (ADR 0010): the next condition's.
  * 4. **Forward on its line.** The gate resolves the target itself, as the scan does (deadlines.ts's `newestOf`): the
@@ -121,6 +122,14 @@ export interface WorkflowRun {
   check_suite_id: number;
   repository: { full_name: string } | null;
   head_repository: { full_name: string } | null;
+  /** The pull requests GitHub ran it for: this repository's open ones at the head, none once they closed. */
+  pull_requests?: { number: number; base: { ref: string } }[] | null;
+}
+
+/** The pull request a check must have run for: its number, and whether it is open (a replay by hand is not). */
+export interface For {
+  number: number;
+  open: boolean;
 }
 
 /** What a Trivy report says, as far as the rule reads it. */
@@ -171,7 +180,7 @@ export const ACTIONS = 'github-actions';
 export const ZAP_CHECK = 'ZAP scan';
 export const IMAGE_CHECK = 'image builds';
 export const TEST_SHARDS = ['tests (1/3)', 'tests (2/3)', 'tests (3/3)'];
-/** platform.yml's job that makes a cluster from the change and passes once everything on it runs (task 34). */
+/** platform.yml's job that makes a cluster from the change and passes once everything on it runs. */
 export const PLATFORM_CHECK = 'platform';
 
 export const CHECK_WORKFLOW = '.github/workflows/check.yml';
@@ -189,8 +198,14 @@ export const ZAP_FILE = 'apps/console/zap/scan.ts';
 /** The Postgres the cluster runs, whose pin CI's own database is (scripts/ci-images.sh postgres): `tests` run it. */
 export const POSTGRES_FILE = 'deploy/base/postgres/statefulset.yaml';
 
-/** The scanners' own pins, which are Martin's to move: a scanner cannot vouch for its replacement. */
+/** What judges a move, whose own pins are Martin's to move: none of them can vouch for its replacement. */
 const JUDGES: { name: string; test: (moved: Moved) => boolean }[] = [
+  // Kyverno is admission itself: on the platform check's cluster it is what says every image policy enforces and
+  // `make admission-ready` passes, so it cannot vouch for its own replacement either.
+  {
+    name: 'Kyverno',
+    test: (m) => m.item === 'kyverno' || /(^|\/)kyverno\//.test(m.from),
+  },
   {
     name: 'Trivy',
     test: (m) => m.place.file.startsWith('deploy/images/trivy/') || /(^|\/)aquasec(urity)?\/trivy([:@]|$)/.test(m.from),
@@ -515,12 +530,41 @@ export function whatRunsIt(move: Move): { checks: string[] } | { reason: string 
   return { reason: `no check at the head runs ${move.name}: nothing shows it ran` };
 }
 
+/** The kinds whose pods the platform check holds to running and ready (scripts/platform-pods.sh). */
+const WORKLOADS = new Set(['Deployment', 'StatefulSet', 'DaemonSet']);
+
+/**
+ * Whether a cluster made from the change starts an image: some document of the rendering that names it is a
+ * Deployment, StatefulSet or DaemonSet, not a hook (Helm's or Argo CD's) and not scaled to nothing. An image only a
+ * hook, a Job or a CronJob runs, or one no workload names, is never pulled by the platform check, which then proves
+ * nothing of it.
+ */
+export function started(rendered: string, references: readonly string[]): string | undefined {
+  const documents = rendered.split(/^---\s*$/m);
+  for (const reference of references) {
+    const naming = documents.filter((doc) => doc.includes(reference));
+    const runs = naming.some((doc) => {
+      const kind = /^kind:\s*(\S+)/m.exec(doc)?.[1] ?? '';
+      return (
+        WORKLOADS.has(kind) &&
+        !/^\s+(helm\.sh\/hook|argocd\.argoproj\.io\/hook)\s*:/m.test(doc) &&
+        !/^ {2}replicas:\s*['"]?0['"]?\s*$/m.test(doc)
+      );
+    });
+    if (!runs)
+      return `no workload the platform check runs starts ${short(reference)}: a hook, a Job or nothing at all runs it, so its cluster never pulled it`;
+  }
+  return undefined;
+}
+
 /**
  * The check runs at the head, each with the workflow file that made it, read from the workflow run of its check suite:
- * a run of this repository (`repo`), on `pull_request`, from a branch of this repository, at the check run's own head.
- * A check run whose suite is not such a run (another app's, a fork's, another event's or another head's) has none.
+ * a run of this repository (`repo`), on `pull_request`, from a branch of this repository, at the check run's own head,
+ * for this pull request into main. A check run whose suite is not such a run (another app's, a fork's, another event's,
+ * another head's, or one run for another pull request at the same head, into another base) has none. GitHub empties a
+ * run's pull requests once they close, so a replay of a closed one by hand takes a run that names none.
  */
-export function workflowsOf(checks: readonly Run[], workflows: readonly WorkflowRun[], repo: string): Run[] {
+export function workflowsOf(checks: readonly Run[], workflows: readonly WorkflowRun[], repo: string, pr: For): Run[] {
   return checks.map((run) => {
     const suite = run.check_suite?.id;
     const made = workflows.find((w) => suite !== undefined && w.check_suite_id === suite);
@@ -529,7 +573,9 @@ export function workflowsOf(checks: readonly Run[], workflows: readonly Workflow
       made.repository?.full_name === repo &&
       made.head_repository?.full_name === repo &&
       made.event === 'pull_request' &&
-      made.head_sha === run.head_sha;
+      made.head_sha === run.head_sha &&
+      ((made.pull_requests ?? []).some((p) => p.number === pr.number && p.base.ref === 'main') ||
+        (!pr.open && !made.pull_requests?.length));
     return { ...run, workflow: ours ? made.path : null };
   });
 }
@@ -543,12 +589,12 @@ export function ranIt(runs: readonly Run[], head: string, checks: readonly strin
   for (const name of checks) {
     const workflow = WORKFLOW_OF[name];
     if (!workflow) return `the gate knows no workflow that runs ${name}`;
-    const latest = runs
-      .filter(
-        (run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS && run.workflow === workflow,
-      )
-      .sort((a, b) => b.id - a.id)[0];
-    if (!latest) return `${name} has not run at ${head.slice(0, 7)}`;
+    const named = runs.filter((run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS);
+    const latest = named.filter((run) => run.workflow === workflow).sort((a, b) => b.id - a.id)[0];
+    if (!latest)
+      return named.length
+        ? `${name} at ${head.slice(0, 7)} ran in no run of ${workflow} for this pull request that the gate could read`
+        : `${name} has not run at ${head.slice(0, 7)}`;
     if (latest.status !== 'completed') return `${name} has not finished at ${head.slice(0, 7)}`;
     if (latest.conclusion !== 'success')
       return `${name} at ${head.slice(0, 7)} is ${latest.conclusion ?? 'unfinished'}, not a success: ${
@@ -704,7 +750,7 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   // 2. Not what judges.
   const judge = JUDGES.find((j) => move.pins.some(j.test));
   if (judge)
-    return { reason: `${judge.name}'s own pin: a scanner cannot vouch for its replacement, so it is Martin's` };
+    return { reason: `${judge.name}'s own pin: what judges cannot vouch for its replacement, so it is Martin's` };
   // 3. Signed where its publisher signs: an image of ours passes as an exact pin, or not at all.
   if (move.what === 'image' && /^ghcr\.io\/the-roganator\//.test(move.from))
     return {
@@ -755,6 +801,14 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   // proved, and its hold then says that the check is all it waits for.
   const runs = whatRunsIt(move);
   if ('reason' in runs) return runs;
+  if (runs.checks.includes(PLATFORM_CHECK)) {
+    const rendered = chart ? await io.render('head', chart.head) : await io.overlay('head');
+    const unstarted = started(
+      rendered,
+      pairs.map(({ to }) => to),
+    );
+    if (unstarted) return { reason: unstarted };
+  }
   const notRun = ranIt(await io.runs(), head, runs.checks);
   if (notRun) return { reason: notRun };
   return { move, ran: runs.checks, fixed: shown.fixed };

@@ -27,6 +27,7 @@ import {
   type Scan,
   scansShow,
   staleRecords,
+  started,
   TEST_SHARDS,
   type WorkflowRun,
   whatRunsIt,
@@ -264,11 +265,11 @@ describe('a pin move, replayed as the App would make it', () => {
     expect(await at([...others, run(PLATFORM_CHECK, 'success', { app: { slug: 'mrogan-software-factory' } })])).toBe(
       'platform has not run at ccccccc',
     );
-    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: CHECK_WORKFLOW })])).toBe(
-      'platform has not run at ccccccc',
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: CHECK_WORKFLOW })])).toMatch(
+      /^platform at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
     );
-    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: null })])).toBe(
-      'platform has not run at ccccccc',
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: null })])).toMatch(
+      /^platform at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
     );
     // A later forged success beside a failed real one does not hide the failure.
     const forged = [
@@ -340,6 +341,54 @@ describe('a pin move, replayed as the App would make it', () => {
     });
   });
 
+  it('says when a check of the name ran at the head but in no run the gate could tie to its workflow', async () => {
+    const others = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
+    expect(
+      await reasonOf({
+        ...SIDECAR,
+        io: { runs: async () => [...others, run(PLATFORM_CHECK, 'success', { workflow: null })] },
+      }),
+    ).toBe(
+      'platform at ccccccc ran in no run of .github/workflows/platform.yml for this pull request that the gate could read',
+    );
+  });
+
+  it('holds an image no running workload starts: platform never pulled it', () => {
+    const ref = `kiwigrid/k8s-sidecar:2.14.3@sha256:${hex('5')}`;
+    const doc = (kind: string, extra = '') =>
+      `apiVersion: v1\nkind: ${kind}\nmetadata:\n  name: x${extra}\nspec:\n  image: ${ref}\n`;
+    expect(started(doc('Deployment'), [ref])).toBeUndefined();
+    expect(started(`${doc('Job')}---\n${doc('StatefulSet')}`, [ref])).toBeUndefined();
+    for (const rendering of [
+      doc('Job'),
+      doc('CronJob'),
+      doc('Deployment', '\n  annotations:\n    helm.sh/hook: pre-delete'),
+      doc('Deployment', '\n  annotations:\n    argocd.argoproj.io/hook: PreSync'),
+      doc('Deployment').replace('spec:\n', 'spec:\n  replicas: 0\n'),
+      'kind: Deployment\nspec:\n  image: another\n',
+    ])
+      expect(started(rendering, [ref])).toMatch(/^no workload the platform check runs starts kiwigrid\/k8s-sidecar/);
+  });
+
+  it('holds a value only a hook runs, with every other condition proved', async () => {
+    const hooked: Partial<PinMoveIO> = {
+      render: async (side, chart) =>
+        rendered(side, chart).replace('  labels:\n', '  annotations:\n    helm.sh/hook: pre-delete\n  labels:\n'),
+    };
+    expect(await reasonOf({ ...SIDECAR, io: hooked })).toMatch(/^no workload the platform check runs starts/);
+  });
+
+  it("holds Kyverno's chart and values for Martin: admission cannot vouch for its own replacement", async () => {
+    const kyverno: Case = {
+      ...SIDECAR,
+      base: SIDECAR.base.map((i) => ({ ...i, name: 'kyverno' })),
+      head: SIDECAR.head.map((i) => ({ ...i, name: 'kyverno' })),
+    };
+    expect(await reasonOf(kyverno)).toBe(
+      "Kyverno's own pin: what judges cannot vouch for its replacement, so it is Martin's",
+    );
+  });
+
   it('ties each check run to the workflow file its suite ran, of this repository, on a pull request, at its head', () => {
     const wf = (more: Partial<WorkflowRun>): WorkflowRun => ({
       id: 1,
@@ -349,10 +398,12 @@ describe('a pin move, replayed as the App would make it', () => {
       check_suite_id: 7,
       repository: { full_name: 'o/r' },
       head_repository: { full_name: 'o/r' },
+      pull_requests: [{ number: 9, base: { ref: 'main' } }],
       ...more,
     });
     const { workflow: _, ...check } = run(PLATFORM_CHECK, 'success', { check_suite: { id: 7 } });
-    const of = (workflows: WorkflowRun[], c: Run = check) => workflowsOf([c], workflows, 'o/r')[0]?.workflow;
+    const of = (workflows: WorkflowRun[], c: Run = check, open = true) =>
+      workflowsOf([c], workflows, 'o/r', { number: 9, open })[0]?.workflow;
     expect(of([wf({})])).toBe(PLATFORM_WORKFLOW);
     expect(of([wf({ check_suite_id: 8 })])).toBeNull();
     expect(of([])).toBeNull();
@@ -364,6 +415,14 @@ describe('a pin move, replayed as the App would make it', () => {
     expect(of([wf({ event: 'workflow_dispatch' })])).toBeNull();
     expect(of([wf({ head_sha: 'd'.repeat(40) })])).toBeNull();
     expect(of([wf({ path: '.github/workflows/other.yml' })])).toBe('.github/workflows/other.yml');
+    // Run for another pull request at the same head, into another base, or for none while this one is open.
+    expect(of([wf({ pull_requests: [{ number: 10, base: { ref: 'main' } }] })])).toBeNull();
+    expect(of([wf({ pull_requests: [{ number: 9, base: { ref: 'other' } }] })])).toBeNull();
+    expect(of([wf({ pull_requests: [] })])).toBeNull();
+    expect(of([wf({ pull_requests: null })])).toBeNull();
+    // A replay of a closed pull request by hand: GitHub has emptied the run's list, and nothing names another.
+    expect(of([wf({ pull_requests: [] })], check, false)).toBe(PLATFORM_WORKFLOW);
+    expect(of([wf({ pull_requests: [{ number: 10, base: { ref: 'other' } }] })], check, false)).toBeNull();
   });
 
   it("holds Argo CD's chart, which make up installs, and k3s, which waits for Martin", async () => {
@@ -562,7 +621,7 @@ describe('a pin move holds, each for its one reason', () => {
         { file: 'deploy/images/trivy/Dockerfile', line: 9, before: `FROM ${trivy('a')}`, after: `FROM ${trivy('b')}` },
       ],
     };
-    expect(await reasonOf(c)).toBe("Trivy's own pin: a scanner cannot vouch for its replacement, so it is Martin's");
+    expect(await reasonOf(c)).toBe("Trivy's own pin: what judges cannot vouch for its replacement, so it is Martin's");
     const syft = (d: string) => `anchore/syft:v1.57.1@sha256:${hex(d)}`;
     const s: Case = {
       base: [{ ...item(syft('a')), file: 'deploy/images/syft/Dockerfile' }],
@@ -571,7 +630,7 @@ describe('a pin move holds, each for its one reason', () => {
         { file: 'deploy/images/syft/Dockerfile', line: 9, before: `FROM ${syft('a')}`, after: `FROM ${syft('b')}` },
       ],
     };
-    expect(await reasonOf(s)).toBe("Syft's own pin: a scanner cannot vouch for its replacement, so it is Martin's");
+    expect(await reasonOf(s)).toBe("Syft's own pin: what judges cannot vouch for its replacement, so it is Martin's");
   });
 
   it('a pin under .github/, and one of mise’s files', async () => {

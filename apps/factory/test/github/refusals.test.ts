@@ -191,6 +191,29 @@ describe('the GitHub worker’s refusals', () => {
     expect(opened.status).toBe(500);
   });
 
+  it('does not take GitHub’s 403 to the door’s own read of a pull request for a refusal of the action', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
+    const refused = async () => {
+      throw new GitHubError('refused', 'GET /repos/x/pulls/12 answered 403: secondary rate limit', 403);
+    };
+    const server = createWorkerServer({
+      actions: failing(new Error('the action was reached')),
+      reads: { pullRequest: refused } as never,
+      repositories: [REPO],
+      health: () => ({}),
+      recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT }),
+      log: quiet,
+    });
+    const { url } = await listenLocal(server);
+    close = () => server.close();
+    const failed = (await new GitHubWorker(url)
+      .act('comment', REPO, { number: 12, body: 'hello' })
+      .catch((e: unknown) => e)) as GitHubWorkerError;
+    expect(failed.status).toBe(500);
+    expect(failed.refusal).toBeUndefined();
+    expect(await readdir(dir)).toEqual([]);
+  });
+
   it('does not take a failure for a refusal: a patch that will not apply, a 401, a rate limit, a 404', async () => {
     const failures = [
       new PatchRefused('does-not-apply', 'The patch does not apply.'),

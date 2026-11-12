@@ -249,8 +249,8 @@ function guardPinPull({ head, labels }: { head?: string; labels?: readonly strin
 
 /**
  * Throws `BranchRefused` for any action a worker asks on one of the pin watch's pull requests, by its branch as GitHub
- * has it now: every action that names a pull request or issue by its number (`numberOf`) is asked, so one added later
- * is too, and none is allowed, as only the pin watch acts on its own. A number that is no pull request is an issue's,
+ * has it now: every action that names a pull request or issue by its number (`numberOf`: `number`, or `pullRequest`'s),
+ * so one added later that names it so is too, and none is allowed, as only the pin watch acts on its own. A number that is no pull request is an issue's,
  * and not the pin queue's concern.
  */
 async function guardPinNumber(repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
@@ -264,6 +264,12 @@ async function guardPinNumber(repo: string, args: Record<string, unknown>, reads
     } = await reads.pullRequest(repo, number));
   } catch (error) {
     if (error instanceof GitHubError && error.kind === 'not-found') return;
+    // GitHub's 403 to the door's own read is no refusal of the action, which was never asked: kept as a failure.
+    if (error instanceof GitHubError && error.status === 403) {
+      throw new Error(`The door could not read #${number}, so it cannot tell whether it is the pin watch's.`, {
+        cause: error,
+      });
+    }
     throw error;
   }
   if (pinBranch(head)) {

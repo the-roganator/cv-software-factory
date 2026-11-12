@@ -10,7 +10,8 @@
 #   - the pod is Pending (not scheduled, or not started), Failed or Unknown;
 #   - a container last ended less than RECENT seconds ago (default 120): it is still restarting.
 # A pod that has Succeeded is not a fault, nor is any pod of a Job that has completed: a Job's attempts that failed
-# while what it needed came up (the migrations, while Postgres starts) are its own business once it succeeds. A pod of
+# while what it needed came up (the migrations, while Postgres starts) are its own business once it succeeds, and are
+# named as retries in the log and the summary. A pod of
 # a Job not complete is judged as any other, but in `website`, whose Jobs are the canary analysis's journeys run on
 # the app's `main`: a canary they judge bad is the release's business, as the website's health is (wait-deployed.sh).
 #
@@ -57,7 +58,18 @@ judge() { # pods.json jobs.json now
     ] | select(length > 0) | "\($name): \(join("; "))"'
 }
 
+# A completed Job's attempts that failed, one line each, `namespace/pod: …`: not faults, but said, as retries.
+retries() { # pods.json jobs.json
+  jq -rn --slurpfile pods "$1" --slurpfile jobs "$2" '
+    ([$jobs[0].items[] | select(any(.status.conditions[]?; .type == "Complete" and .status == "True"))
+      | "\(.metadata.namespace)/\(.metadata.name)"]) as $complete |
+    $pods[0].items[] | select(.status.phase == "Failed") | . as $pod |
+    [.metadata.ownerReferences[]? | select(.kind == "Job") | "\($pod.metadata.namespace)/\(.name)" | select(IN($complete[]))][0] //
+      empty | "\($pod.metadata.namespace)/\($pod.metadata.name): a failed attempt of Job \(.), which completed"'
+}
+
 if [ $# -eq 2 ]; then
+  retries "$1" "$2" | sed 's/^/retry: /' >&2
   faults=$(judge "$1" "$2" "${NOW:-$(date +%s)}") || exit 2
   [ -z "$faults" ] && exit 0
   printf '%s\n' "$faults"
@@ -84,6 +96,13 @@ while true; do
       restarts "$work/pods.json" >"$work/now"
       if [ -n "$clean_at" ] && ((SECONDS - clean_at >= ${STEADY:-30})) && cmp -s "$work/now" "$work/clean"; then
         echo "Every pod is running and ready, and none restarted in the last ${recent} seconds, nor in $((SECONDS - clean_at)) more."
+        seen=$(retries "$work/pods.json" "$work/jobs.json")
+        if [ -n "$seen" ]; then
+          echo "Retries, not faults:"
+          sed 's/^/  /' <<<"$seen"
+          [ -z "${GITHUB_STEP_SUMMARY:-}" ] ||
+            { echo "### Retries of Jobs that completed, not faults"; echo; tr -d '`' <<<"$seen" | sed 's/.*/- `&`/'; } >>"$GITHUB_STEP_SUMMARY"
+        fi
         exit 0
       fi
       if [ -z "$clean_at" ] || ! cmp -s "$work/now" "$work/clean"; then clean_at=$SECONDS; cp "$work/now" "$work/clean"; fi

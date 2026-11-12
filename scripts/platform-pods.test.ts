@@ -68,7 +68,11 @@ function judge(pods: object[], jobs: object[] = [], env: Record<string, string> 
 
 describe('the platform check’s end', () => {
   it('passes a healthy end: restarts long settled, and a completed Job’s failed attempts', () => {
-    expect(judge(healthy.pods, healthy.jobs)).toEqual({ status: 0, out: '', err: '' });
+    expect(judge(healthy.pods, healthy.jobs)).toEqual({
+      status: 0,
+      out: '',
+      err: 'retry: factory/migrate-n9fnz: a failed attempt of Job factory/migrate, which completed\n',
+    });
   });
 
   it('fails a crash loop, by name, with its reason', () => {
@@ -121,6 +125,34 @@ describe('the platform check’s end', () => {
     expect(
       judge([pod('factory', 'gateway-1', 'Running', [running('gateway', 1, 130)])], [], { RECENT: '180' }).status,
     ).toBe(1);
+  });
+
+  it('names a completed Job’s errored attempt as a retry, and fails one whose Job never completed', () => {
+    // As run 43176216471 ended (#1016, green): one migrate attempt errored beside the retry that completed.
+    const errored = {
+      metadata: { namespace: 'factory', name: 'migrate-4kq2x', ...ownedBy('migrate') },
+      status: {
+        phase: 'Failed',
+        containerStatuses: [
+          {
+            name: 'migrate',
+            ready: false,
+            restartCount: 0,
+            state: { terminated: { exitCode: 1, reason: 'Error', finishedAt: ago(700) } },
+          },
+        ],
+      },
+    };
+    const retry = {
+      metadata: { namespace: 'factory', name: 'migrate-7tzm9', ...ownedBy('migrate') },
+      status: { phase: 'Succeeded' },
+    };
+    expect(judge([errored, retry], [job('factory', 'migrate', true)])).toEqual({
+      status: 0,
+      out: '',
+      err: 'retry: factory/migrate-4kq2x: a failed attempt of Job factory/migrate, which completed\n',
+    });
+    expect(judge([errored], [job('factory', 'migrate', false)]).out).toBe('factory/migrate-4kq2x: Failed\n');
   });
 
   it('judges the pods of a Job not yet complete as any other', () => {

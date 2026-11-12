@@ -17,7 +17,8 @@
  *     PATCHING_AT                              the day's read, HH:MM in UTC (05:30, once the scan has finished)
  *     PATCHING_REPOSITORIES                    the repositories, comma-separated (both public ones)
  *     PATCHING_NAMESPACES                      the namespaces it lists pods in, comma-separated; unset, every one,
- *                                              as `kubectl proxy` on a host may
+ *                                              as `kubectl proxy` on a host may; an empty item or a name that is
+ *                                              not a namespace's is refused
  */
 import { REPOSITORIES } from '../github/config.ts';
 
@@ -30,7 +31,14 @@ export async function run(args: string[]): Promise<number> {
     console.log(`Usage:\n${USAGE}\n\nSet GITHUB_URL to the GitHub worker's reads door.`);
     return 2;
   }
-  const namespaces = PATCHING_NAMESPACES?.trim() ? PATCHING_NAMESPACES.split(',').map((ns) => ns.trim()) : undefined;
+  const { namespacesFrom, runningContainers } = await import('../patching/running.ts');
+  let namespaces: string[] | undefined;
+  try {
+    namespaces = namespacesFrom(PATCHING_NAMESPACES, 'PATCHING_NAMESPACES');
+  } catch (error) {
+    console.error((error as Error).message);
+    return 2;
+  }
   const repositories = PATCHING_REPOSITORIES?.trim()
     ? PATCHING_REPOSITORIES.split(',').map((repo) => repo.trim())
     : [...REPOSITORIES];
@@ -41,7 +49,6 @@ export async function run(args: string[]): Promise<number> {
   const { connect, DiskArtifacts, EventWriter } = await import('@software-factory/store');
   const { kubeFrom } = await import('../runners/kube.ts');
   const { GitHubWorker } = await import('../github/worker-client.ts');
-  const { runningContainers } = await import('../patching/running.ts');
   const { exitCode, nextAfter, PatchingSense } = await import('../patching/sense.ts');
 
   const sql = connect(process.env.DATABASE_URL);

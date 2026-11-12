@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compare, type Listed, parseReference } from '../../src/patching/compare.ts';
-import { type RunningContainer, runningContainers } from '../../src/patching/running.ts';
+import { namespacesFrom, type RunningContainer, runningContainers } from '../../src/patching/running.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { APP, APP_SCANNED, agreeing, digest, FACTORY, FACTORY_SCANNED, pod } from './fixtures.ts';
 
@@ -67,6 +67,50 @@ describe("the cluster's pods", () => {
 
   it('leave out a container not started yet, which has no digest', async () => {
     expect(await running([pod('default', 'pending', [{ name: 'c', image: 'nginx:1' }], 'Pending')])).toEqual([]);
+  });
+
+  it('include an ephemeral container `kubectl debug` added, by its spec’s image and the digest it runs', async () => {
+    const debugged = {
+      metadata: { name: 'web-1', namespace: 'default' },
+      spec: {
+        containers: [{ name: 'web', image: `nginx:1@${digest(30)}` }],
+        ephemeralContainers: [{ name: 'debugger-x1', image: 'busybox:1.37' }],
+      },
+      status: {
+        phase: 'Running',
+        containerStatuses: [{ name: 'web', image: 'nginx:1', imageID: `docker.io/library/nginx@${digest(30)}` }],
+        ephemeralContainerStatuses: [
+          {
+            name: 'debugger-x1',
+            image: 'docker.io/library/busybox:1.37',
+            imageID: `docker.io/library/busybox@${digest(31)}`,
+          },
+        ],
+      },
+    };
+    expect(await running([debugged])).toEqual([
+      { namespace: 'default', pod: 'web-1', container: 'debugger-x1', image: 'busybox:1.37', digest: digest(31) },
+      { namespace: 'default', pod: 'web-1', container: 'web', image: `nginx:1@${digest(30)}`, digest: digest(30) },
+    ]);
+  });
+
+  it('are listed by namespace only for names that are namespaces: never an empty one, which would be every one', async () => {
+    expect(namespacesFrom(undefined, 'PATCHING_NAMESPACES')).toBeUndefined();
+    expect(namespacesFrom('  ', 'PATCHING_NAMESPACES')).toBeUndefined();
+    expect(namespacesFrom('default, factory,website', 'PATCHING_NAMESPACES')).toEqual([
+      'default',
+      'factory',
+      'website',
+    ]);
+    expect(() => namespacesFrom('default,factory,', 'PATCHING_NAMESPACES')).toThrow(
+      'PATCHING_NAMESPACES names "", not a namespace',
+    );
+    expect(() => namespacesFrom('default,,Factory', 'PATCHING_NAMESPACES')).toThrow(
+      'PATCHING_NAMESPACES names "", "Factory", not a namespace',
+    );
+    const kube = cluster([[]]);
+    await expect(runningContainers(kube, ['default', ''])).rejects.toThrow('Not a namespace: ""');
+    expect(kube.asked).toEqual([]);
   });
 });
 

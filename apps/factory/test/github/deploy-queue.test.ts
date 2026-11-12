@@ -19,11 +19,13 @@ import {
   pinQueueWatch,
   QUEUED_DEPLOYS,
   type QueuePull,
+  toldWait,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
 import { DEPLOYS, type DeployTarget } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import type { MergeQueue, ReviewVerdict } from '../../src/github/merging.ts';
+import type { PinScope } from '../../src/github/pins.ts';
 import type { CheckRun } from '../../src/github/reads.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { calls, client, quiet, type Sent } from './fake.ts';
@@ -427,6 +429,7 @@ function pinHarness(o: {
   runs?: () => CheckRun[];
   actions?: DeployQueueDependencies['actions'];
   queued?: (number: number) => MergeQueue['queued'];
+  only?: PinScope;
 }) {
   const sent: Sent[] = [];
   /** GitHub's requests and the merge queue's reads, in the order they were made. */
@@ -474,7 +477,7 @@ function pinHarness(o: {
       return queue({ number, head: headOf(number), queued: o.queued?.(number) ?? null });
     },
   };
-  const pass = pinQueueWatch({ github, reads, actions, log: quiet }, REPO);
+  const pass = pinQueueWatch({ github, reads, actions, log: quiet }, REPO, o.only ?? '*');
   const order = () => [...read, ...sent.slice(seen).map((x) => x.path)];
   return { pass, enqueued, sent, order };
 }
@@ -484,6 +487,35 @@ describe('the pin queue watch', () => {
     const { github } = client([]);
     const deps = { github, reads: {} as never, actions: {} as never, log: quiet };
     expect(() => pinQueueWatch(deps, APP.repo)).toThrow(/does not queue/);
+  });
+
+  it('queues only a move the pin watch is told to take, as the watch opens only those, and reads nothing told none', async () => {
+    // `zap` folds to factory/pin/zap, the branch the pin watch opens for it.
+    const told = pinHarness({ only: ['zap'] });
+    await told.pass();
+    expect(told.enqueued).toEqual([[1040, PIN_HEAD]]);
+
+    // One left open from an earlier setting, or opened by hand on a pin branch: the watch is told another move.
+    const other = pinHarness({ only: ['argo-rollouts: quay.io/argoproj/argo-rollouts'] });
+    await other.pass();
+    expect(other.enqueued).toEqual([]);
+    expect(calls(other.sent).some((s) => s.path.includes('/events'))).toBe(false);
+
+    for (const none of [[], undefined]) {
+      const { github } = client([]);
+      const sent: string[] = [];
+      const reads = new Proxy({} as DeployQueueDependencies['reads'], {
+        get: (_t, name) => async () => void sent.push(String(name)),
+      });
+      const actions = { enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }) };
+      const deps = { github, reads, actions, log: quiet };
+      await (none === undefined ? pinQueueWatch(deps, REPO) : pinQueueWatch(deps, REPO, none))();
+      expect(sent).toEqual([]);
+    }
+    expect(toldWait(['zap'], 'factory/pin/zap')).toBeUndefined();
+    expect(toldWait('*', 'factory/pin/anything')).toBeUndefined();
+    expect(toldWait(['Zap'], 'factory/pin/zap')).toBeUndefined();
+    expect(toldWait(['zap'], 'factory/pin/zap2')?.waits).toBe('not-a-pin');
   });
 
   it('adds the pin watch’s pull request at its head once the gate passed it as a pin move and its checks are green', async () => {

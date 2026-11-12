@@ -11,7 +11,7 @@ The daily [vulnerability scan](SECURITY-SCANNING.md) groups each day's findings 
 `factory patching` (`apps/factory/src/patching`), a worker of its own in `factory`, connecting to the store as its own role, `factory_patching`. As it starts, and each day at 05:30 UTC once the scan (04:17) has finished (`PATCHING_AT`), it:
 
 - asks the GitHub worker, through [its door](GITHUB-WORKER.md#the-senses-door), for both repositories' moves and open Dependabot pull requests;
-- lists the images every pod runs (its init and ephemeral containers too: an image `kubectl debug` runs is one the cluster runs), by the reference its spec names and the digest its runtime resolved, in every namespace but three (`PATCHING_NAMESPACES`, where an empty item or a name that is not a namespace's stops the sense as it starts, since it would list every one), since an image the list lacks may run in any;
+- lists the images every pod runs (its init and ephemeral containers too: an image `kubectl debug` runs is one the cluster runs), by the reference its spec names and the digest its runtime resolved, in every namespace but three ([below](#the-namespaces-it-reads); in `PATCHING_NAMESPACES`, an empty item or a name that is not a namespace's stops the sense as it starts, since it would list every one), since an image the list lacks may run in any;
 - compares the two, and appends the day as one event, `patching.read`, when it differs from the last it appended.
 
 A read that fails, of either repository or of the cluster, appends nothing and says which failed in its log, as an error; it tries again an hour later, until the day's read comes round. A moves read the GitHub worker asks for again (409 with the kind `read-again`: a scan finished while its alerts were read) is no failure: it appends nothing, says so as information, and reads again ten minutes later; the sixth in a row, some fifty minutes after the first, is a failure, and any other pass starts the count again. Any other read asked for again is a failure, and so is any `conflict`, GitHub's own 409, the moves read's too. `--once` exits 0 for a day read, 1 for a read that failed, and 75 for one to take again; the count is the running sense's, so a `--once` asked for again exits 75 each time. A day that says what the last said appends nothing: a pod made again under a new name, or a Deployment scaled, is no new day while its row stands. It acts on no store of samples.
@@ -32,13 +32,28 @@ Each is a row of the day, with no target, since each means the list or the clust
 
 A reference is compared by its repository, normalised as Docker does (`postgres` is `docker.io/library/postgres`), then by its digest when the pod names one, or else by its tag. With a repository's list missing, as when its scan failed before it wrote one, the cluster is not compared (`compared: false`), since every image of it would look unlisted.
 
-### Where it runs
+### The namespaces it reads
 
-Its role and its event are the store's (`0050_patching.sql`): `factory_patching` appends `patching.read` and nothing else, reads only its own events, and no other table, and is no member of `factory_worker`. Its password is in `postgres-patching`, which `make up` makes. What runs it in the cluster (its Deployment and account, the pods it may list, its NetworkPolicy, and the GitHub worker's door on its port) comes in a pull request of its own, which merges only once the image that carries `factory patching` is pinned on `main`, so `main` never runs a worker on an image without it.
+Every namespace the cluster has, `default` included, but three, which `PATCHING_NAMESPACES` lists and the RoleBindings bind; a test holds the two together, and fails for a namespace `deploy/` renders, or one of the cluster's own it names (`default`, `kube-system`, `kube-public`, `kube-node-lease`, `argocd`, `kyverno`), until it is in one or named as left out. A namespace made at run time (by a chart, a try, or a k3s of another version) is in neither, and is not read until someone adds it.
+
+- **`runners`**: an agent step's Job carries its job token in its spec, as a value (a pin step's and a lockfile's carry none), so whatever lists pods there can read live tokens; only the line may.
+- **`red-team`**: only the red-team harness's two attack pods run there, each held by an admission rule to one of two images and a pinned command, the unsigned one refused as it is created.
+- **`scoreboard`**: the answer key's namespace, where no role of ours is bound but the line's list of its Events, so that nothing can reach the key.
+
+Admission control admits only images `build.yml` signed, and the third-party images it names by digest, in all three (ADR 0010), so an image the list does not have cannot run there. What cannot be seen there is the first row: an older signed image of ours still running, a digest no result names, which admission does not stop.
+
+### Its fences
+
+- **The GitHub worker's reads, and no action.** The worker's main port acts in GitHub, so the sense asks its own door, on a port of its own (8083), which serves `moves` and `dependencyPulls` and nothing else; a NetworkPolicy opens it to the sense's pod alone.
+- **Pods, listed, and nothing else.** Its account's one right is a ClusterRole, `patching-lists-pods`: list pods, never get, watch or anything else, bound by a RoleBinding in each namespace it reads and by no ClusterRoleBinding (`deploy/base/patching-reads-pods`).
+- **Its own role.** `factory_patching` appends `patching.read` and nothing else, reads only its own events, and no other table; it is no member of `factory_worker`. Its password is in `postgres-patching`, which `make up` makes and the migrate Job sets.
+- **Its NetworkPolicy** gives it the store, the collector, the API server on 6443 and the worker's door, and takes nothing in.
+
+On the host, `factory patching --once` makes one pass against the cluster's GitHub worker and says what it appended, or why not: root `AGENTS.md` has the commands.
 
 ## The pin watch
 
-This repository's moves are the GitHub worker's to make ([its pin watch](GITHUB-WORKER.md#pins)), from the same moves read: one pull request of the App's on `factory/pin/<move>` for each move in the `worker`, `approval` or `cluster` lane, which replaces the version or digest at each of the move's pins and nothing else, as [its guard](GITHUB-WORKER.md#the-pin-guard) holds it; one issue for each move in the `issue` lane, a line no longer built, and one whose pins' lines it cannot write. It does not fight Dependabot: a move Dependabot's open pull request already makes, to the same target or a newer one, gets nothing, and a pin Dependabot reads with no High or Critical on a deadline is in the `dependabot` lane, Dependabot's alone. The review gate passes its pull request as `pin-move` when it proves the move from the pull request itself, and holds it for Martin otherwise ([approval routing](APPROVAL-ROUTING.md)). The app's moves are its line's.
+This repository's moves are the GitHub worker's to make ([its pin watch](GITHUB-WORKER.md#pins)), from the same moves read: one pull request of the App's on `factory/pin/<move>` for each move in the `worker`, `approval` or `cluster` lane, which replaces the version or digest at each of the move's pins and nothing else, as [its guard](GITHUB-WORKER.md#the-pin-guard) holds it; one issue for each move in the `issue` lane, a line no longer built, and one whose pins' lines it cannot write. It does not fight Dependabot: a move Dependabot's open pull request already makes, to the same target or a newer one, gets nothing, and a pin Dependabot reads with no High or Critical on a deadline is in the `dependabot` lane, Dependabot's alone. The review gate passes its pull request as `pin-move` when it proves the move from the pull request itself, and holds it for Martin otherwise ([approval routing](APPROVAL-ROUTING.md)). It takes only the moves its deployment names in `PIN_WATCH_ONLY` (or every one, `*`), and none while none is named. The app's moves are its line's.
 
 ### Not yet
 

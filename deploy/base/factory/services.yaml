@@ -31,6 +31,10 @@ spec:
     - name: attack
       port: 8082
       targetPort: attack
+    # The dependency sense's door, on its own port: its two reads, and no action.
+    - name: patching
+      port: 8083
+      targetPort: patching
 ---
 apiVersion: v1
 kind: Service

@@ -94,7 +94,7 @@ spec:
               app.kubernetes.io/component: worker
         - podSelector:
             matchExpressions:
-              - { key: app.kubernetes.io/name, operator: In, values: [console, admin, migrate, postgres-exporter, red-team] }
+              - { key: app.kubernetes.io/name, operator: In, values: [console, admin, migrate, postgres-exporter, red-team, patching] }
         # The scoreboard, from its own namespace: the namespace and the label in one peer, so both must match.
         - namespaceSelector:
             matchLabels:
@@ -337,6 +337,13 @@ spec:
               app.kubernetes.io/name: red-team
       ports:
         - { protocol: TCP, port: 8082 }
+    # The dependency sense reaches its door on its own port (8083), which serves its two reads and no action.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: patching
+      ports:
+        - { protocol: TCP, port: 8083 }
   egress:
     - to:
         - ipBlock:
@@ -661,3 +668,51 @@ spec:
               app.kubernetes.io/name: github
       ports:
         - { protocol: TCP, port: 8082 }
+---
+# The dependency sense (patching.yaml) reaches the store and the collector, the Kubernetes API to list pods, and the
+# GitHub worker's door for its two reads (8083), never its main port, which acts; and nothing else. As for the line, the
+# API server is reached on 6443 on a private address, which is where the `kubernetes` Service sends it. It takes
+# nothing in: nobody calls it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: patching
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: patching
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: telemetry
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - { protocol: TCP, port: 4318 }
+    # The Kubernetes API, to list pods: 6443 on a private address, as for the line.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+      ports:
+        - { protocol: TCP, port: 6443 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: github
+      ports:
+        - { protocol: TCP, port: 8083 }

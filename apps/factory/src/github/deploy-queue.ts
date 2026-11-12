@@ -50,8 +50,8 @@ import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
 import { APP_USER, IssueRefused } from './issues.ts';
 import { REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
-import { guardPinBranch } from './pin-guard.ts';
-import { PIN_LABEL, PIN_REPOS } from './pins.ts';
+import { guardPinBranch, pinBranchFor } from './pin-guard.ts';
+import { PIN_LABEL, PIN_REPOS, type PinScope } from './pins.ts';
 import type { Watch } from './poller.ts';
 import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -354,12 +354,20 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
 /** How many pages of a hundred open pull requests a pass reads: the pin watch opens one for each move. */
 const OPEN_PAGES = 5;
 
+/** Whether a pin branch is that of a move the pin watch is told to take (`PIN_WATCH_ONLY`), by the branch it opens. */
+export function toldWait(only: PinScope, branch: string): QueueWait | undefined {
+  if (only === '*' || only.some((name) => pinBranchFor(name) === branch)) return undefined;
+  return { waits: 'not-a-pin', why: 'its move is not one the pin watch is told to take (PIN_WATCH_ONLY)' };
+}
+
 /**
  * Watches the pin watch's open pull requests in a repository, and adds each to the merge queue once the gate passed
- * its head as a pin move and its checks are green. A pull request on a pin branch or labelled `pin` that is not the pin
- * watch's own waits, and says why; every other open pull request is not read further.
+ * its head as a pin move and its checks are green. Only a move the watch is told to take (`only`, `PIN_WATCH_ONLY`) is
+ * queued, as the watch opens only those: one left open from an earlier setting, or opened by hand on a pin branch,
+ * waits; told none, it reads nothing. A pull request on a pin branch or labelled `pin` that is not the pin watch's own
+ * waits, and says why; every other open pull request is not read further.
  */
-export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watch {
+export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only: PinScope = []): Watch {
   const { github } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s pin moves.`);
   const state = queueState(deps, repo, 'pin');
@@ -399,6 +407,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
   };
 
   return async () => {
+    if (only !== '*' && only.length === 0) return;
     const pulls = await openPulls();
     const candidates = pulls.filter((p) => pinBranch(p.head.ref) || p.labels.some((l) => l.name === PIN_LABEL));
     state.keep(new Set(candidates.map((p) => p.number)));
@@ -407,7 +416,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
       const head = pull.head.sha;
       const attempt = state.attempt(number, head);
       if (attempt.done) continue;
-      const notOne = pinPullWait(repo, pull);
+      const notOne = pinPullWait(repo, pull) ?? toldWait(only, pull.head.ref);
       if (notOne) {
         state.wait(number, head, notOne);
         continue;

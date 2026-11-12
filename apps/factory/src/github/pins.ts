@@ -85,6 +85,27 @@ export interface PinWatchDependencies {
   recorder?: RefusalRecorder | undefined;
   log: Logger;
   now?: () => number;
+  /**
+   * The moves it takes (`PIN_WATCH_ONLY`): `'*'` for every move of the day, or their names. A move outside it is never
+   * opened, updated or closed, nor its issue; told nothing (no names, the default), the watch takes no move at all.
+   */
+  only?: PinScope;
+}
+
+/** Which of the day's moves the watch takes: every one, or those named. */
+export type PinScope = '*' | readonly string[];
+
+/** `PIN_WATCH_ONLY` read: unset or blank names none, `*` alone every move, otherwise the names, comma-separated. */
+export function readPinScope(text: string | undefined): PinScope {
+  const names = (text ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (names.includes('*')) {
+    if (names.length > 1) throw new Error(`PIN_WATCH_ONLY is ${JSON.stringify(text)}; * stands alone, for every move.`);
+    return '*';
+  }
+  return [...new Set(names)];
 }
 
 const CLOSED_BY = z.object({ closed_by: z.object({ login: z.string() }).nullable().optional() });
@@ -351,7 +372,7 @@ export function pullTitle(move: ReadMove, target: Target): string {
 
 /** Watches this repository's moves, and keeps one pull request, or one issue, for each. */
 export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
-  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github) } = deps;
+  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github), only = [] } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The pin watch does not move ${repo}'s pins: its line does.`);
   let last: number | undefined;
   /** The refusals kept, by the branch and the words, so each is recorded once a run; emptied as the run changes. */
@@ -463,9 +484,30 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     throw new GitHubError('malformed', `${repo} has more pin issues than the pin watch reads.`);
   };
 
+  // The branches and issue keys of the moves it was told to take: nothing else of the App's is closed as gone.
+  const every = only === '*';
+  const named = new Set(every ? [] : only);
+  let toldNothing = false;
+
   return async () => {
     if (last !== undefined && now() - last < PASS_MS) return;
-    const day = await reads.moves(repo);
+    if (!every && !named.size) {
+      if (!toldNothing) log.info({ repo }, 'the pin watch was told no move (PIN_WATCH_ONLY): it takes none');
+      toldNothing = true;
+      last = now();
+      return;
+    }
+    const read = await reads.moves(repo);
+    const taken = every ? read.moves : read.moves.filter((move) => named.has(move.name));
+    const day: Moves = { ...read, moves: taken };
+    // What a gone move of the watch's may be closed by: a named move's branch and issue, unless a move it was not told
+    // to take has that branch too (a name folds to its branch, so another name can share it), and every taken move's.
+    const others = new Set(read.moves.filter((move) => !taken.includes(move)).map((move) => pinBranchFor(move.name)));
+    const ownBranches = new Set([...named].map(pinBranchFor).filter((branch) => !others.has(branch)));
+    const ownIssues = new Set([
+      ...[...ownBranches].map((branch) => branch.slice(PIN_PREFIX.length)),
+      ...taken.map(issueKey),
+    ]);
     if (!day.file) {
       say(
         `no file ${day.run.id}`,
@@ -484,14 +526,26 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       said.clear();
       keptFor = run;
     }
+    say(
+      `scope ${run}`,
+      {
+        only: every ? '*' : [...named],
+        taken: taken.length,
+        leftAlone: read.moves.length - taken.length,
+        unknown: [...named].filter((name) => !read.moves.some((move) => move.name === name)),
+      },
+      'the pin watch takes the moves it was told to (PIN_WATCH_ONLY), and leaves the rest alone',
+    );
     /** Whether the next poll reads the day again rather than wait the hour: main moved while a move was written. */
     let again = false;
 
     // Two moves that name one line, or make one branch, are both refused: neither is the one move of that pin.
-    const writing = day.moves.filter((m) => PULL_LANES.has(m.lane) && !m.lockfile);
+    // Read over every move of the day, taken or not: a move named alone is still refused beside a rival it was not told.
+    const writable = (m: ReadMove) => PULL_LANES.has(m.lane) && !m.lockfile;
+    const writing = day.moves.filter(writable);
     const byPlace = new Map<string, ReadMove[]>();
     const byBranch = new Map<string, ReadMove[]>();
-    for (const move of writing) {
+    for (const move of read.moves.filter(writable)) {
       for (const pin of move.pins) {
         const key = `${pin.file}:${pin.line}`;
         byPlace.set(key, [...(byPlace.get(key) ?? []), move]);
@@ -660,7 +714,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
 
     // A move gone: its pull request is closed, with a sentence.
     for (const pull of open) {
-      if (keep.has(pull.head.ref)) continue;
+      if (keep.has(pull.head.ref) || !(every || ownBranches.has(pull.head.ref))) continue;
       const sentence =
         closeWith.get(pull.head.ref) ??
         `${RunText(day)} no longer lists this move as one a pull request of the factory's makes: \`main\` has moved its pin, the move needs more than its pins written, or nothing it cleared is left. Closed; the watch opens another if the scan lists one.`;
@@ -692,7 +746,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         await actions.updateIssue(repo, found.number, { title: issue.title, body: issue.body });
     }
     for (const [key, issue] of issues) {
-      if (issue.state !== 'open' || wanted.has(key)) continue;
+      if (issue.state !== 'open' || wanted.has(key) || !(every || ownIssues.has(key))) continue;
       await actions.closeIssue(
         repo,
         issue.number,

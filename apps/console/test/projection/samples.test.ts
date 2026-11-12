@@ -7,8 +7,8 @@ import { END, SAMPLES, work } from './support.ts';
 const view = project(SAMPLES, END);
 const card = (number: string) => view.cards.find((c) => c.number === number);
 
-// Projecting the whole sample log at every one of its moments takes about a second here and several on a shared CI
-// runner, past the default five.
+// Projecting the whole sample log at every one of its moments, or every seventh, takes up to a second here and up to
+// about five on a shared CI runner, which runs these about 4.5 times slower: at the default five a slow runner fails it.
 const WHOLE_TIMELINE = 30_000;
 
 describe('the samples, projected', () => {
@@ -369,11 +369,17 @@ describe('replay', () => {
     for (const t of instants) expect(project(SAMPLES, t)).toEqual(project(upTo(SAMPLES, t), t));
   });
 
-  it('draws the same sheet at t, the same way', () => {
+  it('draws the same sheet at t, the same way', { timeout: WHOLE_TIMELINE }, () => {
+    // One view each way per instant, every sheet drawn from it, as the console draws them: a sheet is drawn from the
+    // view alone. The replayed side draws its sheets in the other order, so a sheet that changed the view it was drawn
+    // from would show as a difference.
+    const numbers = ['1271', '1296', '1302', '1304', '1311', '1315', '1319', '1323'];
     for (const t of instants.filter((_, i) => i % 7 === 0)) {
-      for (const number of ['1271', '1296', '1302', '1304', '1311', '1315', '1319', '1323']) {
-        expect(projectSheet(project(SAMPLES, t), number)).toEqual(projectSheet(project(upTo(SAMPLES, t), t), number));
-      }
+      const whole = project(SAMPLES, t);
+      const replayed = project(upTo(SAMPLES, t), t);
+      const fromWhole = numbers.map((number) => projectSheet(whole, number));
+      const fromReplay = numbers.toReversed().map((number) => projectSheet(replayed, number));
+      expect(fromWhole).toEqual(fromReplay.toReversed());
     }
   });
 

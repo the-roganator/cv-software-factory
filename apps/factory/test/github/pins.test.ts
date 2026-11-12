@@ -7,12 +7,13 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
+import { type Logger, pino } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { DryRunActions, LiveActions } from '../../src/github/actions.ts';
 import { type DependencyPull, dependencyPulls } from '../../src/github/dependabot.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { treeSource } from '../../src/github/pin-guard.ts';
-import { dependabotHas, PASS_MS, PIN_LABEL, pinWatch } from '../../src/github/pins.ts';
+import { dependabotHas, PASS_MS, PIN_LABEL, type PinScope, pinWatch, readPinScope } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { readTarget, type Target } from '../../src/vulnerabilities/fixes.ts';
@@ -28,7 +29,11 @@ updates:
 `;
 
 /** A watch over the fake repository, whose day is what `today` gives, and a clock a test moves on. */
-function harness(repo: FakeRepo, today: () => Moves, options: { dryRun?: boolean } = {}) {
+function harness(
+  repo: FakeRepo,
+  today: () => Moves,
+  options: { dryRun?: boolean; only?: PinScope; log?: Logger } = {},
+) {
   const sent: Sent[] = [];
   const { github } = client(repo.routes(), sent);
   const artifacts = new DiskArtifacts(mkdtempSync(join(tmpdir(), 'pins-')));
@@ -42,7 +47,10 @@ function harness(repo: FakeRepo, today: () => Moves, options: { dryRun?: boolean
     moves: async () => today(),
     dependencyPulls: (r: string) => dependencyPulls(github, r, async () => DEPENDABOT_YML),
   };
-  const watch = pinWatch({ github, reads, actions, recorder, log: quiet, now: () => clock }, FACTORY);
+  const watch = pinWatch(
+    { github, reads, actions, recorder, log: options.log ?? quiet, now: () => clock, only: options.only ?? '*' },
+    FACTORY,
+  );
   const records = () =>
     readdirSync(artifacts.dir, { recursive: true })
       .map(String)
@@ -647,5 +655,123 @@ describe('a group’s pull request of Dependabot’s that has a move', () => {
 
   it('moves both, to the move’s', () => {
     expect(has(`v1.66.0-noble@${now}`, group(`v1.65.0-noble@${old}`, `v1.66.0-noble@${now}`))?.number).toBe(1035);
+  });
+});
+
+describe('the pin watch, told which moves to take (PIN_WATCH_ONLY)', () => {
+  /** A logger that keeps what it says. */
+  const heard = () => {
+    const lines: { msg: string; [key: string]: unknown }[] = [];
+    const log = pino({ level: 'info' }, { write: (line: string) => lines.push(JSON.parse(line)) });
+    return { log, lines };
+  };
+
+  it('told nothing, opens nothing and closes nothing, and says so once', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    await harness(repo, () => day(scanned, factoryMoves())).pass();
+    const before = openPins(repo).length;
+    expect(before).toBeGreaterThan(0);
+    const { log, lines } = heard();
+    const told = harness(repo, () => day(scanned, []), { only: [], log });
+    await told.pass();
+    await told.pass();
+    expect(writes(told.sent)).toEqual([]);
+    expect(openPins(repo)).toHaveLength(before);
+    expect(lines.filter((l) => /told no move/.test(l.msg))).toHaveLength(1);
+  });
+
+  it('told one name, takes that move alone and leaves another’s open pull request as it is', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    await harness(repo, () => day(scanned, factoryMoves())).pass();
+    const other = openPins(repo).find((p) => p.head === 'factory/pin/example-dashboards');
+    expect(other).toBeDefined();
+    // The day moves on: the dashboards' move is gone, and sidecar's is its own again.
+    const sidecar = repo.pulls.find((p) => p.head === 'factory/pin/example-sidecar');
+    if (sidecar) sidecar.state = 'closed';
+    const { log, lines } = heard();
+    const one = harness(
+      repo,
+      () =>
+        day(
+          scanned,
+          factoryMoves().filter((m) => m.name !== 'example-dashboards'),
+        ),
+      { only: ['example-logs'], log },
+    );
+    await one.pass();
+    expect(other?.state).toBe('open');
+    const touched = one.sent.filter((s) => s.method !== 'GET').map((s) => s.path);
+    expect(touched.some((path) => path.endsWith(`/${other?.number}`) || path.includes(`/${other?.number}/`))).toBe(
+      false,
+    );
+    expect(lines.find((l) => /pin watch takes/.test(l.msg))).toMatchObject({ only: ['example-logs'], taken: 1 });
+  });
+
+  it('told one name, opens that move’s pull request and no other', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    await harness(repo, () => day(scanned, factoryMoves()), { only: ['example-dashboards'] }).pass();
+    expect(openPins(repo).map((p) => p.head)).toEqual(['factory/pin/example-dashboards']);
+    expect(repo.issues).toEqual([]);
+  });
+
+  it('told every move (*), does what it does with no setting at all', async () => {
+    const [all, every] = [new FakeRepo(FILES), new FakeRepo(FILES)];
+    await harness(all, () => day(all.main, factoryMoves()), { only: '*' }).pass();
+    await harness(every, () => day(every.main, factoryMoves())).pass();
+    expect(
+      openPins(all)
+        .map((p) => p.head)
+        .sort(),
+    ).toEqual(
+      openPins(every)
+        .map((p) => p.head)
+        .sort(),
+    );
+    expect(openPins(all).length).toBeGreaterThan(1);
+  });
+
+  it('told one of two moves that name one line, refuses it as it would with both told', async () => {
+    const repo = new FakeRepo(FILES);
+    const sidecar = factoryMoves().find((m) => m.name === 'example/sidecar') as ReadMove;
+    const rival = { ...sidecar, name: 'example/sidecar-rival' };
+    await harness(repo, () => day(repo.main, [sidecar, rival]), { only: ['example/sidecar'] }).pass();
+    expect(appPulls(repo)).toEqual([]);
+  });
+
+  it('told a name that only folds to another move’s branch, closes nothing of that move’s', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    await harness(repo, () => day(scanned, factoryMoves())).pass();
+    const dashboards = openPins(repo).find((p) => p.head === 'factory/pin/example-dashboards');
+    await harness(repo, () => day(scanned, factoryMoves()), { only: ['Example-Dashboards'] }).pass();
+    expect(dashboards?.state).toBe('open');
+  });
+
+  it('says a name no move of the day has', async () => {
+    const repo = new FakeRepo(FILES);
+    const { log, lines } = heard();
+    const w = harness(repo, () => day(repo.main, factoryMoves()), {
+      only: ['example-dashboards', 'no-such-move'],
+      log,
+    });
+    await w.pass();
+    expect(lines.find((l) => /pin watch takes/.test(l.msg))).toMatchObject({ unknown: ['no-such-move'], taken: 1 });
+    expect(openPins(repo)).toHaveLength(1);
+  });
+});
+
+describe('PIN_WATCH_ONLY, read', () => {
+  it('names none unset or blank, every move as * alone, and the names otherwise', () => {
+    expect(readPinScope(undefined)).toEqual([]);
+    expect(readPinScope(' , ')).toEqual([]);
+    expect(readPinScope('*')).toBe('*');
+    expect(readPinScope(' argo-rollouts: quay.io/argoproj/argo-rollouts , loki,loki')).toEqual([
+      'argo-rollouts: quay.io/argoproj/argo-rollouts',
+      'loki',
+    ]);
+    expect(() => readPinScope('*,loki')).toThrow(/stands alone/);
   });
 });

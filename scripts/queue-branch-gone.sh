@@ -43,7 +43,8 @@ quiet_git() {
 }
 
 valid() {
-  [[ ${QUEUE_BRANCH:-} =~ ^refs/heads/gh-readonly-queue/[A-Za-z0-9._/-]+$ ]] &&
+  # The queue's branch for a pull request into main: check-kind.sh's QUEUE, with refs/heads/, as a test holds it.
+  [[ ${QUEUE_BRANCH:-} =~ ^refs/heads/gh-readonly-queue/main/pr-([0-9]+)-[0-9a-f]{7,40}$ ]] &&
     [[ ${QUEUE_SHA:-} =~ ^[0-9a-f]{40}$ ]] && [[ $BASE_REF =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]]
 }
 
@@ -135,8 +136,30 @@ stop_steps() {
   # shellcheck disable=SC2086
   [ -z "$pids" ] || kill -TERM $pids 2>/dev/null
   sleep 10
+  # Then whatever of them, or of what they started since, is still under the root: read again, so a process forked while
+  # they ended is caught, and a number the system gave to another process since is not.
+  # shellcheck disable=SC2086 # one line of numbers, for awk
+  pids=$(left "$root" "$(echo $pids)")
   # shellcheck disable=SC2086
   [ -z "$pids" ] || kill -KILL $pids 2>/dev/null
+}
+
+# Each process under the root now that is one of those given or under one of them.
+left() {
+  ps -A -o pid= -o ppid= | awk -v root="$1" -v self="$$" -v given="$2" '
+    BEGIN { n = split(given, g, /[[:space:]]+/); for (i = 1; i <= n; i++) if (g[i] != "") was[g[i]] = 1 }
+    { parent[$1] = $2; order[NR] = $1 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        p = order[i]
+        if (p == 1 || p == 0 || p == self || p == root) continue
+        mine = 0
+        for (q = p; q != "" && q != 0 && q != 1; q = parent[q]) {
+          if (was[q]) mine = 1
+          if (parent[q] == root) { if (mine) print p; break }
+        }
+      }
+    }'
 }
 
 loop() {

@@ -50,6 +50,15 @@ describe('runs the merge queue let go', () => {
     );
     expect(steps.slice(0, 2).map((step) => step.if)).toEqual([only, only]);
     expect(steps[0]?.with).toMatchObject({ 'sparse-checkout': 'scripts/queue-branch-gone.sh' });
+    // A checkout needs the contents' read, which the job's own `actions: read` would otherwise leave out.
+    expect(read('check.yml').jobs.check?.permissions).toEqual({ actions: 'read', contents: 'read' });
+  });
+
+  it("platform's cluster blames nothing on the cluster when the watch stopped it", () => {
+    const make = read('platform.yml').jobs.platform?.steps.find((step) => step.name === 'Make the cluster')?.run ?? '';
+    const stopped = make.indexOf('[ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 1');
+    expect(stopped).toBeGreaterThan(0);
+    expect(stopped).toBeLessThan(make.indexOf('::error::The cluster did not come up'));
   });
 
   it("platform's leftover report says only that the entry was let go", () => {

@@ -78,6 +78,12 @@ const ask = (env: Record<string, string>) => {
 };
 
 describe('asked once', () => {
+  it("knows the queue's branch by check-kind.sh's own expression", () => {
+    const kind = /^QUEUE='\^\(refs\/heads\/\)\?(.+)'$/m.exec(readFileSync('scripts/check-kind.sh', 'utf-8'))?.[1];
+    expect(kind).toBeTruthy();
+    expect(readFileSync(SCRIPT, 'utf-8')).toContain(`=~ ^refs/heads/${kind} ]]`);
+  });
+
   it('says there while the queue holds the branch', () => {
     const { env } = remote();
     expect(ask(env)).toMatchObject({ status: 0, out: 'there' });
@@ -120,6 +126,7 @@ describe('asked once', () => {
     for (const wrong of [
       { QUEUE_BRANCH: 'refs/heads/main' },
       { QUEUE_BRANCH: `${QUEUE} --upload-pack=x` },
+      { QUEUE_BRANCH: QUEUE.replace('/main/', '/other/') },
       { QUEUE_SHA: 'HEAD' },
       { BASE_REF: '--all' },
     ]) {
@@ -132,10 +139,10 @@ describe('asked once', () => {
  * A stand-in for the runner: a process named Runner.Worker that runs the watch as one step and then a long step, which
  * prints `step: <pid>` and runs until it is stopped, and then says how it ended. Its output is collected.
  */
-function job(env: Record<string, string>) {
+function job(env: Record<string, string>, step = `echo "step: $$"; sleep 120`) {
   const temp = mkdtempSync(join(tmpdir(), 'queue-watch-'));
   dirs.push(temp);
-  const steps = `"${SCRIPT}" watch; bash -c 'echo "step: $$"; sleep 120'; echo "the step ended: $?"; sleep 120`;
+  const steps = `"${SCRIPT}" watch; bash -c '${step}'; echo "the step ended: $?"; sleep 120`;
   const worker = spawn('bash', ['-c', `exec -a Runner.Worker bash -c '${steps.replaceAll("'", "'\\''")}'`], {
     env: { ...process.env, ...env, RUNNER_TEMP: temp, INTERVAL: '1', CONFIRM: '1' },
     detached: true,
@@ -219,6 +226,16 @@ describe('watched', { timeout: 40_000 }, () => {
     expect(run.log()).not.toContain('::notice::');
     expect(run.gone()).toBe(true);
     await run.until(() => !alive(watcher), 'the watcher to end');
+  });
+
+  it('kills, ten seconds later, what does not end on SIGTERM, and what it started meanwhile', async () => {
+    const queue = remote();
+    // The step and its sleep ignore SIGTERM, and its trap would start another process if it ran.
+    const run = job(queue.env, 'trap "" TERM; echo "step: $$"; sleep 120');
+    await run.started();
+    queue.eject();
+    await run.until(() => run.output().includes('the step ended: '), 'the step to be killed', 40);
+    expect(run.output()).toContain('the step ended: 137');
   });
 
   it('leaves the step alone when the entry merged, and stops watching', async () => {

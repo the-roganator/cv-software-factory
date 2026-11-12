@@ -127,6 +127,8 @@ jobs:
           if ! WATCHED=$make scripts/platform-watch.sh; then
             kill -- "-$make" 2>/dev/null || true
             wait "$make" || true
+            # Stopped because the merge queue let the entry go (its notice is above): no fault of the cluster's.
+            [ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 1
             echo "::error::The cluster did not come up: the watch's first line above says why, and the lines after it what it waited on."
             exit 1
           fi

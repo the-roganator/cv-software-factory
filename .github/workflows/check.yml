@@ -153,6 +153,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       actions: read
+      # The checkout of the watch's script, below.
+      contents: read
     steps:
       # Only a release or a deploy in the merge queue waits here, on the run of the entry ahead; the rest end in seconds.
       # The watch, as in the long jobs below, and the one script it needs.

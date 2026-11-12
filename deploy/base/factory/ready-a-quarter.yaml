@@ -1,0 +1,41 @@
+# Broken on purpose, on a throwaway pull request, to see the platform check fail. Never merged.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ready-a-quarter
+  labels:
+    app.kubernetes.io/name: ready-a-quarter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ready-a-quarter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ready-a-quarter
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broken
+          image: factory
+          args: [-e, "const t = Date.now(); require('http').createServer((q, s) => { s.statusCode = (Date.now() - t) % 60000 < 15000 ? 200 : 503; s.end() }).listen(8080)"]
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 1
+            successThreshold: 1
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

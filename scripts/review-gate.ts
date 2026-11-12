@@ -10,8 +10,8 @@
  *     node scripts/review-gate.ts --print <owner/name> <number>   # by hand, posting nothing
  *
  * It reads the event GitHub hands the workflow, and the pull request and its reviews through the API, and never the
- * pull request's code. It runs on `workflow_run`, after `review-requested.yml` ran, which runs as the pull request or
- * the queue's commit has it and so holds nothing:
+ * pull request's code. It runs on `workflow_run`, after `review-requested.yml` ran, which runs as the pull request has
+ * it and so holds nothing, or, on the merge queue's commit, after `check.yml` ran there:
  *
  * - for a pull request opened, pushed to, reopened, made ready or edited, and for a review of one: the check goes on the
  *   pull request's head as it is now, judged on every open pull request here whose head that commit is, since a check

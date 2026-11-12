@@ -38,18 +38,20 @@
 # included, is refused it. It reads the pull request's metadata through the API and never checks out, builds or runs
 # its code: the diff, the files an exact pin changes and CODEOWNERS come through the API, the images' signatures from
 # GHCR through cosign. The pin move job, which holds no secret, fetches the pull request's two commits as data, and
-# runs none of them. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
-# review-requested.yml, which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and
-# holds nothing; its run starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's
-# default event policy blocks in public repositories.
+# runs none of them. A pull request opened, pushed to, edited or unlabelled, and a review each run
+# review-requested.yml, which runs on `pull_request` or `pull_request_review` as the change has it and holds nothing;
+# its run starts this one, here, from main. The merge queue's commit is asked for by check.yml's run there, which runs
+# on every entry and starts this one too (scripts/review-gate.ts reads the queue's branch whichever run it follows).
+# Nothing here runs on `pull_request_target`, which GitHub's default event policy blocks in public repositories.
 #
 # The review App is the-roganator's, App ID 5470762, installed on every repository there. Until its key is in the
 # `review` environment, as the secret REVIEW_APP_PRIVATE_KEY, the gate says its verdict and posts nothing.
 #
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit from its own review.yml, with a `review`
 # environment of its own, so both repositories keep one rule. A caller pinned here does as this repository does: its
-# review-requested.yml, a copy of this one's, runs on `pull_request`, `pull_request_review` and `merge_group` and holds
-# nothing, and its review.yml runs on `workflow_run` after it alone, with `workflow_call` to this file. This copy judges
+# review-requested.yml runs on `pull_request` and `pull_request_review`, and on `merge_group` unless a workflow its
+# review.yml follows runs on every queue entry, as check.yml does here, and holds nothing, and its review.yml runs on
+# `workflow_run` after it, with `workflow_call` to this file. This copy judges
 # only a `workflow_run`, so a caller moves its pin and its triggers in the same change: pinned here and still started by
 # `pull_request_target`, it would judge nothing. The app is such a caller: its pin carries the gate's judging of a
 # stacked pull request and of a queued stack down to `main`, and its review-requested.yml has no base filter, so its
@@ -81,6 +83,9 @@
 # - A pull request with a merge conflict: GitHub runs no `pull_request` workflow on it until the conflict is resolved,
 #   which is a push, and that run asks the gate.
 name: review
+# Named by the run that asked: its title (a pull request's, or the queue's branch) and its workflow. A caller's run is
+# named by the caller.
+run-name: ${{ format('review · {0} · after {1}', github.event.workflow_run.display_title, github.event.workflow_run.name) }}
 
 on:
   workflow_run:

@@ -3,6 +3,9 @@
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit, so both repositories keep one rule,
 # and the rule stays out of reach of anything that can write to the app's repository.
 name: pr title
+# A run on the merge queue's commit is named by the queue's branch, which names its pull request; on a pull request,
+# an empty name leaves GitHub's own, the pull request's title.
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || '' }}
 
 on:
   pull_request:

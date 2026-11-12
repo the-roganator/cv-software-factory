@@ -1,5 +1,8 @@
 # The required checks on every pull request.
 name: check
+# A run on the merge queue's commit is named by the queue's branch, which names its pull request; on a pull request,
+# an empty name leaves GitHub's own, the pull request's title.
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || '' }}
 
 # Pull requests the factory's App opens (deploy, release) run these too, at once: no workflow opens pull requests.
 # Some are lighter (the `kind` job): the App's release and deploy pull requests, and anyone's that changes only

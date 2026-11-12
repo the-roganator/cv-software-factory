@@ -1,13 +1,14 @@
 # Asks main's review gate (review.yml) to judge a pull request, into any branch: when it opens, its head moves, it is
 # reopened, made ready or edited (its base changed, as when the pull request below it in a stack merges), when a label
-# is removed from it (a risk label removed by anyone but Martin holds it), when someone reviews it, and when the merge
-# queue tests it, whose commit needs the `review` check too. A stacked pull request, into the branch of the one below
-# it, is held to main's required checks, `review` among them, so it asks too.
+# is removed from it (a risk label removed by anyone but Martin holds it), and when someone reviews it. A stacked pull
+# request, into the branch of the one below it, is held to main's required checks, `review` among them, so it asks too.
+# The merge queue's commit, which needs the `review` check too, is asked for by check.yml's run there, which review.yml
+# also follows: check.yml runs on every entry, and the queue waits for it anyway.
 #
-# It runs as the pull request or the queue's commit has it, so it holds no token that can write and no secret, and does
-# nothing but finish: its run is what starts review.yml, from main, through `workflow_run`. A copy changed by a pull
-# request, or another workflow given its name, can only make the honest gate look again, or leave the check missing,
-# which holds the pull request as a failing check does.
+# It runs as the pull request has it, so it holds no token that can write and no secret, and does nothing but finish:
+# its run is what starts review.yml, from main, through `workflow_run`. A copy changed by a pull request, or another
+# workflow given its name, can only make the honest gate look again, or leave the check missing, which holds the pull
+# request as a failing check does. Its runs keep GitHub's name for them, the pull request's title.
 name: review requested
 
 on:
@@ -15,8 +16,6 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, edited, unlabeled]
   pull_request_review:
     types: [submitted, dismissed]
-  merge_group:
-    types: [checks_requested]
 
 permissions: {}
 

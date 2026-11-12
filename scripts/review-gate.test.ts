@@ -467,8 +467,9 @@ describe("the review gate's workflows", () => {
     expect(title).toContain('BASH_REMATCH[2]');
   });
 
-  it('ask for it when a pull request into any branch opens or moves, on a review and in the merge queue, holding nothing and running nothing', () => {
-    expect(triggers(requested)).toEqual(['merge_group', 'pull_request', 'pull_request_review']);
+  it('ask for it when a pull request into any branch opens or moves, and on a review, holding nothing and running nothing', () => {
+    // The merge queue's commit is asked for by check.yml's run there, which the gate follows too.
+    expect(triggers(requested)).toEqual(['pull_request', 'pull_request_review']);
     // No base filter: a stacked pull request, into the branch below it, needs the check too; `edited` covers its
     // retargeting when the one below merges.
     expect(requested).toMatch(

@@ -15,7 +15,7 @@
  * issue it did not open, a deploy it does not own and a merge the review check held, each relayed with its signed
  * record, one of them changed after it was signed. No red-team attack: none can be launched yet (`policy/attacks.ts`), and the console's browser
  * tests bring their own (`apps/console/test/attacks`). And a run of `make guardrails` on the last morning, whose egress
- * proof did not hold. The scoreboard counts them against an invented key. Nothing in them happened: the console labels
+ * proof did not hold, and the dependency sense's day, with a move waiting on Martin for each lane only he moves. The scoreboard counts them against an invented key. Nothing in them happened: the console labels
  * each as a sample.
  */
 import type { NewEvent } from '@software-factory/events';
@@ -49,6 +49,7 @@ import searchPages from './items/1327-search-pages.ts';
 import searchByColour from './items/1329-search-by-colour.ts';
 import freeDelivery from './items/1334-free-delivery.ts';
 import releases from './items/line.ts';
+import { PATCHING } from './patching.ts';
 import { PROOFS } from './proofs.ts';
 import lineRefusals from './refusals.ts';
 import { scoreEvents } from './score.ts';
@@ -162,6 +163,7 @@ export function sampleEvents(): NewEvent[] {
     ...CONTROLS,
     ...STEPPED_UP,
     ...PROOFS,
+    PATCHING,
     ...releases.events,
     ...lineRefusals.events,
     ...ITEMS.flatMap((item) => item.events),

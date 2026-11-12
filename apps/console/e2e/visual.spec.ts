@@ -20,6 +20,8 @@
  * Task 22's Guardrails: the checklist with a guardrail that did not hold opened, for a visitor and for Martin, task
  * 23's refusals in a row, the attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
  * each way one stands (refused twice, a refusal cut at five lines, not refused, running), and a sheet's refusals whole.
+ * Task 32's Patching from the samples' day, in Paper and Ink at laptop and phone width, for Martin and for a visitor, and
+ * a row opened.
  */
 import type { Page } from '@playwright/test';
 import { STAGES as KINDS } from '@software-factory/events';
@@ -1430,3 +1432,39 @@ test.describe('Guardrails in Ink', () => {
     await expect(panel).toHaveScreenshot('m07-guardrails-ink.png');
   });
 });
+
+/** Task 32: Patching from the samples' day, for Martin or a visitor, with a row opened (`?move=`, its key) or none. */
+async function patchingAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'ink', move?: string) {
+  await adminService(page, as);
+  await page.goto(`${consoleUrl({ theme })}${move ? `&move=${encodeURIComponent(move)}` : ''}`);
+  await ready(page);
+  const panel = page.locator('#patching');
+  await panel.locator('.pm').first().waitFor();
+  if (move) await panel.locator('.pm .more').waitFor();
+  await panel.scrollIntoViewIfNeeded();
+  await page.evaluate(() => document.fonts.ready);
+  return panel;
+}
+
+for (const width of ['laptop', 'phone'] as const) {
+  test.describe(`${width}, Patching`, () => {
+    test.use({ viewport: WIDTHS[width] });
+
+    for (const theme of THEMES) {
+      test(`the day’s moves for Martin, in ${theme}`, async ({ page }) => {
+        const panel = await patchingAt(page, 'martin', theme);
+        await expect(panel).toHaveScreenshot(`m07-patching-martin-${theme}-${width}.png`);
+      });
+
+      test(`the day’s moves for a visitor, in ${theme}`, async ({ page }) => {
+        const panel = await patchingAt(page, 'visitor', theme);
+        await expect(panel).toHaveScreenshot(`m07-patching-visitor-${theme}-${width}.png`);
+      });
+    }
+
+    test('a move that waits on Martin opened, for him', async ({ page }) => {
+      const panel = await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory example-logs');
+      await expect(panel).toHaveScreenshot(`m07-patching-open-${width}.png`);
+    });
+  });
+}

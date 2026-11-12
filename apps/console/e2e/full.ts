@@ -1,9 +1,11 @@
 /**
  * The full events, as the admin service streams them to Martin's session, made from the samples for the browser tests:
- * the samples are public views, so each visitor's report is given back the text a visitor wrote. Everything else in
- * them is the same in both.
+ * the samples are public views, so each visitor's report is given back the text a visitor wrote, and the dependency
+ * sense's day the lockfile's package the public view withholds until its pull request is open. Everything else in them
+ * is the same in both.
  */
 import { type HoldAnswer, type RawEvent, WORDED_ANSWERS } from '@software-factory/events';
+import { WITHHELD } from '../../../packages/samples/src/patching-withheld.ts';
 
 /** What the samples' visitor wrote, with a link, an address and markup, which the console leaves out. */
 export const REPORT_TEXT =
@@ -15,8 +17,21 @@ export const REPORT_SHOWN = 'The contact form ate my message twice, so I gave up
 /** What Martin answered on a hold about a visitor's report, which only his full events carry. */
 export const MARTINS_WORDS = 'Worth having: I’ll ask for colour in search from Plan once improvements ship.';
 
-/** An event as its full version carries it: a report with its text, and Martin's words on a hold about one. */
+/**
+ * An event as its full version carries it: a report with its text, Martin's words on a hold about one, and the sense's
+ * day whole.
+ */
 export function full<T extends RawEvent>(event: T): T {
+  if (event.type === 'patching.read') {
+    type Day = { repositories: { repository: string; moves: { lockfile: boolean; package?: unknown }[] }[] };
+    const day = event.payload as Day;
+    const repositories = day.repositories.map((r) =>
+      r.repository === 'the-roganator/cv-worlds-worst-website'
+        ? { ...r, moves: r.moves.map((m) => (m.lockfile && !m.package ? { ...m, package: WITHHELD } : m)) }
+        : r,
+    );
+    return { ...event, payload: { ...day, repositories } };
+  }
   const payload = event.payload as { report?: { page: string }; state?: { report?: { page: string } } };
   if (event.type === 'signal.received' && payload.report) {
     return { ...event, payload: { ...payload, report: { ...payload.report, text: REPORT_TEXT } } };

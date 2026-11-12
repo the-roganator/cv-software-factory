@@ -16,6 +16,8 @@ const APPENDERS: Partial<Record<NewEvent['type'], string>> = {
   'score.updated': 'scoreboard_writer',
   // `make guardrails`'s, as only its role may append one.
   'guardrail.proved': 'factory_proofs',
+  // The dependency sense's day, which only its role may append.
+  'patching.read': 'factory_patching',
   // Martin's to launch from the console, as his commands are; the harness's alone to end.
   'attack.launched': 'factory_admin',
   'attack.finished': 'factory_redteam',

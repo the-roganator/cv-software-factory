@@ -1,0 +1,37 @@
+# Broken on purpose, on a throwaway pull request: a Deployment whose container exits 1 each time it starts, to see the
+# platform check fail at its end on a crash loop. Never merged.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-on-purpose
+  labels:
+    app.kubernetes.io/name: broken-on-purpose
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: broken-on-purpose
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: broken-on-purpose
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broken
+          image: factory
+          args: [-e, "console.error('exiting 1 on purpose'); process.exit(1)"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

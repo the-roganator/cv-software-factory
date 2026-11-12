@@ -24,3 +24,4 @@ resources:
   - probes.yaml
   - crawler.yaml
   - traffic.yaml
+  - broken-on-purpose.yaml

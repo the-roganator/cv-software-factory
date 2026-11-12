@@ -1,6 +1,6 @@
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
-import { MOST_PINS, PAYLOADS } from '@software-factory/events/schemas';
+import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -194,16 +194,35 @@ describe('the dependency sense', () => {
     expect(payload.repositories[1]).toMatchObject({ judged: null, totals: null, failed: ['other'], scanned: 0 });
   });
 
-  it('says why a scan failed, as its moves show it', async () => {
+  it('says why a scan failed from the scan’s own totals, not from its moves', async () => {
     const moves = factoryMoves();
-    const overdue = {
+    const totals = moves.file?.totals as NonNullable<Moves['file']>['totals'];
+    // An overdue finding with no fix is in no move; a move with a new Low that also clears an old High is no new High.
+    const failed = {
       ...moves,
       run: { ...moves.run, conclusion: 'failure' },
-      moves: moves.moves.map((m, i) => (i === 0 ? { ...m, deadline: '2026-11-10T00:00:00Z', newToday: 1 } : m)),
+      file: {
+        ...(moves.file as NonNullable<Moves['file']>),
+        totals: { ...totals, overdue: 1, dueWithinDay: 0, newHighWithFix: 0 },
+      },
+      moves: moves.moves.map((m, i) => (i === 0 ? { ...m, newToday: 1, clears: { ...m.clears, HIGH: 1 } } : m)),
     };
-    await sense(senses({ moves: async (repo) => (repo === FACTORY ? overdue : appMoves()) })).pass();
+    await sense(senses({ moves: async (repo) => (repo === FACTORY ? failed : appMoves()) })).pass();
     const payload = PAYLOADS['patching.read'].parse((await days())[0]?.payload);
-    expect(payload.repositories[0]?.failed).toEqual(['overdue', 'new-high-or-critical']);
+    expect(payload.repositories[0]?.failed).toEqual(['overdue']);
+  });
+
+  it('refuses to read more repositories than a day holds', () => {
+    expect(
+      () =>
+        new PatchingSense({
+          sql: database.patching,
+          events: new EventWriter(database.patching, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }),
+          senses: senses(),
+          repositories: [FACTORY, APP, 'the-roganator/a-third'],
+          log,
+        }),
+    ).toThrow('one or two repositories');
   });
 
   it('acts on no sample store', async () => {
@@ -285,5 +304,91 @@ describe('the day, made from the reads', () => {
     });
     expect(of(image, [npmNode, unversioned, dockerNode])).toEqual({ number: 83, version: '24.2.0' });
     expect(of(image, [npmNode])).toBeUndefined();
+  });
+
+  it('names the Dependabot pull request of an image outside Docker Hub, which its branch names without the registry', () => {
+    const image = withMove({
+      name: 'gcr.io/distroless/nodejs24-debian13',
+      pins: [{ file: 'apps/x/Dockerfile', line: 1 }],
+    });
+    const pull: DependencyPull = {
+      ...PULL,
+      number: 91,
+      ecosystem: 'docker',
+      directory: '/apps/x',
+      dependency: 'distroless/nodejs24-debian13',
+      version: '1.2.3',
+    };
+    expect(dayOf(read(image, [pull]), 0, []).repositories[0]?.moves[0]?.pullRequest).toEqual({
+      number: 91,
+      version: '1.2.3',
+    });
+  });
+
+  it('names the Dependabot pull request of an Action used by a subpath', () => {
+    const action = withMove({
+      name: 'github/codeql-action/upload-sarif',
+      pins: [{ file: '.github/workflows/scan.yml', line: 40 }],
+    });
+    const pull: DependencyPull = {
+      ...PULL,
+      number: 92,
+      ecosystem: 'github-actions',
+      directory: '/',
+      dependency: 'github/codeql-action',
+      version: '4.31.0',
+    };
+    expect(dayOf(read(action, [pull]), 0, []).repositories[0]?.moves[0]?.pullRequest).toEqual({
+      number: 92,
+      version: '4.31.0',
+    });
+  });
+
+  it('is the same day whatever copies of a row run: a Deployment scaled appends nothing', () => {
+    const row = (pod: string) =>
+      ({
+        row: 'unlisted-image',
+        namespace: 'default',
+        pod,
+        container: 'c',
+        image: 'nginx:1',
+        digest: digest(13),
+      }) as const;
+    const two = dayOf(read(), 2, [row('try-a'), row('try-b')]);
+    const three = dayOf(read(), 3, [row('try-a'), row('try-b'), row('try-c')]);
+    expect(sameDay(three, two)).toBe(true);
+  });
+
+  it('never builds a day that fails validation, whatever the reads hold', () => {
+    const moves = factoryMoves();
+    const lockfile = moves.moves[1] as ReadMove;
+    const many = {
+      ...moves,
+      moves: [
+        ...Array.from({ length: MOST_MOVES + 10 }, (_, i) => ({
+          ...(moves.moves[0] as ReadMove),
+          index: i + 1,
+          name: `m${i}`,
+        })),
+        { ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), from: '', to: '' } },
+      ],
+    };
+    const rows = Array.from({ length: MOST_ROWS + 50 }, (_, i) => ({
+      row: 'unlisted-image' as const,
+      namespace: 'default',
+      pod: `p${i}`,
+      container: 'c',
+      image: 'nginx:1',
+      digest: digest(13),
+    }));
+    const day = dayOf(read(many), rows.length, rows);
+    expect(PAYLOADS['patching.read'].safeParse(day).success).toBe(true);
+    expect(day.repositories[0]?.moves).toHaveLength(MOST_MOVES);
+    expect(day.rows).toHaveLength(MOST_ROWS);
+    const empty = {
+      ...moves,
+      moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), from: '' } }],
+    };
+    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(empty), 0, [])).success).toBe(true);
   });
 });

@@ -12,7 +12,7 @@
  * own words; the sense reads no log.
  */
 import type { MoveLane, PayloadOf, ScanFailure, ScanSeverity } from '@software-factory/events';
-import { MOST_PINS } from '@software-factory/events/schemas';
+import { MOST_MOVES, MOST_PINS, MOST_ROWS } from '@software-factory/events/schemas';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves, ReadMove } from '../github/scanning.ts';
 import type { Counts, MovesFile } from '../vulnerabilities/moves.ts';
@@ -27,8 +27,6 @@ export interface RepositoryRead {
   pulls: DependencyPull[];
 }
 
-const DAY_MS = 86_400_000;
-
 const counts = (from: Counts): Record<ScanSeverity, number> => ({
   critical: from.CRITICAL,
   high: from.HIGH,
@@ -37,8 +35,18 @@ const counts = (from: Counts): Record<ScanSeverity, number> => ({
   unknown: from.UNKNOWN,
 });
 
-/** A name as Docker would read it, so `node` and `docker.io/library/node` are one; a package's is itself. */
-const bare = (name: string) => parseReference(name).repository;
+/**
+ * An image's path as Dependabot's branch names it: its repository without the registry, and without Docker Hub's
+ * `library/`, so `node`, `docker.io/library/node` and `gcr.io/distroless/static` match `node` and `distroless/static`.
+ */
+export function imagePath(name: string): string {
+  // parseReference always names the registry (Docker Hub's as docker.io): the path is what follows it.
+  const [, ...path] = parseReference(name).repository.split('/');
+  return path.join('/').replace(/^library\//, '');
+}
+
+/** An Action as Dependabot names it: its owner and repository, without a subpath or a ref (`github/codeql-action`). */
+export const actionPath = (name: string) => (name.split('@')[0] ?? name).split('/').slice(0, 2).join('/').toLowerCase();
 
 /** A pin's directory as `dependabot.yml` writes one: `/` for the root. */
 const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
@@ -58,16 +66,19 @@ function ecosystemOf(move: ReadMove): { ecosystems: string[]; directories: Set<s
 
 /** The open Dependabot pull request that moves a move's pin, if one does: same ecosystem, dependency and directory. */
 function pullFor(move: ReadMove, pulls: DependencyPull[]): DayMove['pullRequest'] {
-  const lockfile = move.withheld?.package;
-  const name = lockfile ?? bare(move.name.split('@')[0] ?? move.name);
   const { ecosystems, directories } = ecosystemOf(move);
+  const lockfile = move.withheld?.package;
+  const action = ecosystems.includes('github-actions');
+  // Each side read the same way: a package by its name, an Action by its owner and repository, an image by its path.
+  const key = (name: string) => (lockfile !== undefined ? name : action ? actionPath(name) : imagePath(name));
+  const name = key(lockfile ?? move.name);
   const pull = pulls.find(
     (p) =>
       p.version !== null &&
       p.dependency !== null &&
       p.ecosystem !== null &&
       ecosystems.includes(p.ecosystem) &&
-      (lockfile ? p.dependency === name : bare(p.dependency) === name) &&
+      key(p.dependency) === name &&
       p.directory !== null &&
       directories.has(p.directory),
   );
@@ -102,18 +113,17 @@ function dayMove(move: ReadMove, pulls: DependencyPull[]): DayMove {
   };
 }
 
-/** Why a scan that did not pass failed, as its moves show it. */
-export function failures(conclusion: string | null, judged: string | null, moves: DayMove[]): ScanFailure[] {
+/**
+ * Why a scan that did not pass failed, read from its own totals, which count what it fails on: a finding past its
+ * deadline, one due within a day, a new High or Critical with a fix. `other` when it failed with none of those, or wrote
+ * no totals at all.
+ */
+export function failures(conclusion: string | null, totals: ScanTotals | null): ScanFailure[] {
   if (conclusion === 'success') return [];
-  const at = judged ? Date.parse(judged) : Number.NaN;
   const found: ScanFailure[] = [];
-  const due = moves.map((m) => (m.deadline ? Date.parse(m.deadline) : Number.POSITIVE_INFINITY));
-  if (!Number.isNaN(at)) {
-    if (due.some((d) => d <= at)) found.push('overdue');
-    if (due.some((d) => d > at && d <= at + DAY_MS)) found.push('due-within-a-day');
-  }
-  if (moves.some((m) => m.newToday > 0 && m.to && m.clears.critical + m.clears.high > 0))
-    found.push('new-high-or-critical');
+  if (totals?.overdue) found.push('overdue');
+  if (totals?.dueWithinDay) found.push('due-within-a-day');
+  if (totals?.newHighWithFix) found.push('new-high-or-critical');
   return found.length ? found : ['other'];
 }
 
@@ -135,7 +145,7 @@ const totalsOf = (t: ScanTotals): ScanTotals => ({
 
 /** One repository's day. */
 function repositoryDay({ moves, pulls }: RepositoryRead): Day['repositories'][number] {
-  const list = moves.moves.map((move) => dayMove(move, pulls));
+  const list = moves.moves.slice(0, MOST_MOVES).map((move) => dayMove(move, pulls));
   const judged = moves.file?.judged ?? null;
   return {
     repository: moves.repository,
@@ -148,7 +158,7 @@ function repositoryDay({ moves, pulls }: RepositoryRead): Day['repositories'][nu
       url: moves.run.url,
     },
     judged,
-    failed: failures(moves.run.conclusion, judged, list),
+    failed: failures(moves.run.conclusion, moves.file?.totals ?? null),
     totals: moves.file ? totalsOf(moves.file.totals) : null,
     scanned: scannedOf(moves).length,
     moves: list,
@@ -168,28 +178,29 @@ export function dayOf(reads: RepositoryRead[], containers: number, rows: Row[] |
       .sort((a, b) => (a.repository < b.repository ? -1 : a.repository > b.repository ? 1 : 0)),
     compared: rows !== null,
     containers,
-    rows: (rows ?? []).slice(0, 1000),
+    rows: (rows ?? []).slice(0, MOST_ROWS),
   };
 }
 
 /**
  * Whether two days say the same: the same runs, moves and rows. A pod's name and how many containers ran are left out,
- * so a pod made again, or a Deployment scaled, is no new day while its row stands.
+ * and so is how many copies make a row, so a pod made again, or a Deployment scaled, is no new day while its row stands.
  */
 export function sameDay(a: Day, b: Day | null): boolean {
   if (!b) return false;
-  // Without the pods' names the rows may come in another order, so they are compared as sorted.
+  // Without the pods' names the rows may come in another order and repeat, so they are compared as a sorted set.
+  const set = (items: string[]) => [...new Set(items)].sort();
   const plain = ({ containers: _, rows, ...day }: Day) => ({
     ...day,
-    rows: rows
-      .map((row) =>
+    rows: set(
+      rows.map((row) =>
         canonical(
           row.row === 'not-running'
-            ? { ...row, running: row.running.map(withoutPod).map(canonical).sort() }
+            ? { ...row, running: set(row.running.map(withoutPod).map(canonical)) }
             : withoutPod(row),
         ),
-      )
-      .sort(),
+      ),
+    ),
   });
   return canonical(plain(a)) === canonical(plain(b));
 }

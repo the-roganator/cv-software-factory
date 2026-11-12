@@ -52,6 +52,9 @@ export class PatchingSense {
   readonly #now: () => Date;
 
   constructor({ sql, events, senses, repositories, log, now = () => new Date() }: SenseOptions) {
+    // A day holds one or two repositories (`patching.read`): more could never be appended, so it would never read.
+    if (repositories.length < 1 || repositories.length > 2)
+      throw new Error(`The sense reads one or two repositories, not ${repositories.length}`);
     this.#sql = sql;
     this.#events = events;
     this.#senses = senses;

@@ -5,7 +5,6 @@
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Actions } from '../../src/github/actions.ts';
 import { configFromEnv } from '../../src/github/config.ts';
 import type { Reads } from '../../src/github/reads.ts';
 import { createWorkerServer, PATCHING_READS } from '../../src/github/server.ts';
@@ -23,11 +22,8 @@ describe('the GitHub worker’s door for the sense', () => {
         return name === 'dependencyPulls' ? [] : { read: name };
       },
     });
-    const actions = new Proxy({} as Actions, {
-      get: (_, name: string) => (name === 'dryRun' ? false : async () => asked.push(`action ${name}`)),
-    });
+    // The door is given no actions at all: it has nothing to act with.
     const server = createWorkerServer({
-      actions,
       reads,
       repositories: [REPO],
       health: () => ({ door: 'patching' }),
@@ -70,5 +66,17 @@ describe('the GitHub worker’s door for the sense', () => {
     expect(() => configFromEnv({ PATCHING_PORT: '8080' })).toThrow('a port of its own');
     expect(() => configFromEnv({ PATCHING_PORT: '8082', ATTACK_PORT: '8082' })).toThrow('a port of its own');
     expect(() => configFromEnv({ PATCHING_PORT: 'x' })).toThrow('a port number');
+  });
+
+  it('answers an action 404 on any server given no actions, door or not', async () => {
+    const server = createWorkerServer({ repositories: [REPO], health: () => ({}), log: pino({ level: 'silent' }) });
+    const { url } = await listenLocal(server);
+    close = () => server.close();
+    const r = await fetch(`${url}/v1/actions/comment`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo: REPO, number: 1, body: 'x' }),
+    });
+    expect(r.status).toBe(404);
   });
 });

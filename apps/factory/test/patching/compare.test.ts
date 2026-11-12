@@ -190,4 +190,84 @@ describe('the comparison with the list', () => {
     expect(compare([...containers].reverse(), LISTS)).toEqual(compare(containers, LISTS));
     expect(compare(containers, LISTS).map((row) => row.row === 'unlisted-image' && row.namespace)).toEqual(['a', 'b']);
   });
+
+  it('makes a row of a digest no result names when a pod runs the tag alone of a tag-and-digest pin, rebuilt', async () => {
+    const lists: Listed[] = [
+      {
+        repository: FACTORY,
+        scanned: [
+          ...FACTORY_SCANNED,
+          {
+            kind: 'third-party',
+            item: `nginx:1.29@${digest(20)}`,
+            image: `nginx:1.29@${digest(20)}`,
+            digests: [digest(20)],
+            pin: { file: 'deploy/example/nginx.yaml', line: 3 },
+          },
+        ],
+      },
+      { repository: APP, scanned: APP_SCANNED },
+    ];
+    const rebuilt = pod('default', 'web-1', [
+      { name: 'web', image: 'nginx:1.29', imageID: `docker.io/library/nginx@${digest(21)}` },
+    ]);
+    expect(compare(await running([...agreeing(), rebuilt]), lists)).toEqual([
+      {
+        row: 'unscanned-digest',
+        namespace: 'default',
+        pod: 'web-1',
+        container: 'web',
+        image: 'nginx:1.29',
+        digest: digest(21),
+        repository: FACTORY,
+        item: `nginx:1.29@${digest(20)}`,
+        pin: { file: 'deploy/example/nginx.yaml', line: 3 },
+      },
+    ]);
+  });
+
+  it('names the same containers in a not-running row whatever the pods are called', async () => {
+    // Twenty-five old references of Postgres in one namespace, more than a row names: which twenty it keeps must not
+    // hang on the pods' names, which a rollout makes anew.
+    const old = (name: (i: number) => string) =>
+      agreeing()
+        .filter((p) => p.metadata.name !== 'postgres-0')
+        .concat(
+          Array.from({ length: 25 }, (_, i) =>
+            pod('factory', name(i), [
+              {
+                name: 'postgres',
+                image: `postgres:16.${i}`,
+                imageID: `docker.io/library/postgres@${digest(30 + (i % 9))}`,
+              },
+            ]),
+          ),
+        );
+    const images = (rows: ReturnType<typeof compare>) =>
+      rows.flatMap((r) => (r.row === 'not-running' ? r.running.map((c) => c.image) : []));
+    const before = images(compare(await running(old((i) => `a-${String(i).padStart(2, '0')}`)), LISTS));
+    const after = images(compare(await running(old((i) => `b-${String(24 - i).padStart(2, '0')}`)), LISTS));
+    expect(after).toEqual(before);
+    expect(before).toHaveLength(20);
+  });
+
+  it('fails the whole read when one namespace cannot be listed, and lists the others at once', async () => {
+    const asked: string[] = [];
+    const kube: Kube = {
+      async get(path, schema) {
+        asked.push(path);
+        if (path.includes('/namespaces/runners/')) throw new Error('GET pods answered 403: forbidden');
+        return schema.parse({ items: [] });
+      },
+      text: async () => undefined,
+      create: async () => {},
+      remove: async () => {},
+    };
+    await expect(runningContainers(kube, ['default', 'runners', 'website'])).rejects.toThrow('403');
+    expect(asked.sort()).toEqual([
+      '/api/v1/namespaces/default/pods?limit=500',
+      '/api/v1/namespaces/runners/pods?limit=500',
+      '/api/v1/namespaces/website/pods?limit=500',
+    ]);
+  });
 });

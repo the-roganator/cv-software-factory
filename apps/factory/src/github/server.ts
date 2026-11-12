@@ -340,7 +340,8 @@ const STATUS: Record<GitHubError['kind'], number> = {
 };
 
 export interface WorkerServerOptions {
-  actions: Actions;
+  /** What it acts with; a door with `only` takes none, and acts with none. */
+  actions?: Actions | undefined;
   /** What the other workers may read; without it, every read is not found. */
   reads?: Reads | undefined;
   /** What a request asking for a dry run (`x-factory-dry-run: true`) gets: one memory of what it would have done. */
@@ -441,7 +442,7 @@ export function createWorkerServer({
     const known = only
       ? kind === 'reads' && reads && only.includes(name as ReadName)
       : kind === 'actions'
-        ? Object.hasOwn(ARGS, name)
+        ? actions !== undefined && Object.hasOwn(ARGS, name)
         : kind === 'reads' && reads && Object.hasOwn(READS, name);
     if (!known)
       return send(res, 404, { error: 'not-found', message: `No such ${kind === 'reads' ? 'read' : 'action'}.` });
@@ -470,6 +471,8 @@ export function createWorkerServer({
       const read = READ_CALLS[name as ReadName] as (r: Reads, repo: string, args: unknown) => Promise<unknown>;
       return send(res, 200, { result: await read(reads, repo, parsed.data) });
     }
+    // Only an action reaches here, and only on a server given actions (`known` above).
+    if (!actions) return send(res, 404, { error: 'not-found', message: 'No such action.' });
     let result: unknown;
     try {
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(

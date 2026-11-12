@@ -65,8 +65,8 @@ function remote(history = 1) {
       ref('-d', QUEUE);
     },
     /** Main moves on past it, as when the entries behind it merge with it. */
-    pastIt: () => {
-      work('commit', '-q', '--allow-empty', '-m', 'the entry behind');
+    pastIt: (commits = 1) => {
+      for (let i = 0; i < commits; i++) work('commit', '-q', '--allow-empty', '-m', `after it ${i}`);
       work('push', '-q', bare, `${work('rev-parse', 'HEAD')}:refs/heads/main`);
     },
   };
@@ -97,6 +97,11 @@ describe('asked once', () => {
     past.merge();
     past.pastIt();
     expect(ask(past.env)).toMatchObject({ status: 0, out: 'merged' });
+    // Long after, as when a job of its run is run again: main far past it.
+    const later = remote();
+    later.merge();
+    later.pastIt(60);
+    expect(ask(later.env)).toMatchObject({ status: 0, out: 'merged' });
   });
 
   it('says merged for an entry at the head of a history longer than it reads at once', () => {

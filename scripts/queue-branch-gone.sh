@@ -64,15 +64,16 @@ ask() {
     echo there
     return
   fi
-  # Gone: merged if the base's last commits hold the queue's, as the base moves to the queue's own commit when it
-  # merges, and the queue merges a few entries at a time. Commits alone, no trees, into a repository of its own, so
-  # the job's checkout is not touched.
+  # Gone: merged if the base's history holds the queue's commit, as the base moves to the queue's own commit when it
+  # merges. The whole history, not its last few commits, so a job run again long after its entry merged is not taken
+  # for one let go. Commits alone, no trees (a few MB), into a repository of its own, so the job's checkout is not
+  # touched.
   dir=$(mktemp -d)
   found=unreachable
   # The list is read whole before it is searched: piped to grep -q, which leaves at the first match, git would die of
   # SIGPIPE, and pipefail would take a merge for no match.
   if git init -q --bare "$dir" &&
-    quiet_git -C "$dir" fetch -q --no-tags --depth=50 --filter=tree:0 "$REMOTE" "$BASE_REF" 2>/dev/null &&
+    quiet_git -C "$dir" fetch -q --no-tags --filter=tree:0 "$REMOTE" "$BASE_REF" 2>/dev/null &&
     commits=$(git -C "$dir" rev-list FETCH_HEAD); then
     if grep -qx "$QUEUE_SHA" <<<"$commits"; then found=merged; else found=gone; fi
   fi

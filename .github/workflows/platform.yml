@@ -82,6 +82,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The merge queue deletes an entry's branch when it ejects or removes it, and nothing cancels the runs on it: this
+      # stops the job, `make up` and the watch below included, once that branch is gone and the entry did not merge
+      # (scripts/queue-branch-gone.sh). A watcher of the whole job rather than a question in the watch's loop, so the
+      # steps after `make up` stop too.
+      - name: Stop if the merge queue lets this entry go
+        env:
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: scripts/queue-branch-gone.sh watch
       # What the cluster costs the runner: its memory in use every five seconds, for the peak, and its disk at the end
       # (the last step). The whole of `make up` used 7.8 GiB of the runner's 16 at its peak, and 15 GB of disk.
       - name: Measure
@@ -166,6 +176,8 @@ jobs:
       - name: What the cluster shows
         if: ${{ always() }}
         run: |
+          # A run the merge queue let go shows nothing worth reading.
+          if [ -e "$RUNNER_TEMP/queue-gone" ]; then echo "The merge queue let this entry go: nothing to show."; exit 0; fi
           exec > >(tee "$RUNNER_TEMP/measure/cluster.txt") 2>&1
           echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
           df -h / | tail -1

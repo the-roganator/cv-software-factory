@@ -466,9 +466,6 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
     }
   };
 
-  /** Each closed pull request of the App's found held, or not read whole, by its number and when it closed. */
-  const heldWhenClosed = new Map<string, { since: string | undefined }>();
-
   /**
    * Martin's hold of a move carried across the pin watch closing its pull request and opening another (a day the scan
    * left it out, or Dependabot took it), at any target: an earlier closed, unmerged pull request of the App's from the
@@ -499,16 +496,10 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       .at(-1);
     for (const [i, c] of closed.entries()) {
       if (c.merged_at || c.user?.id !== APP_USER) continue;
-      const key = `${c.number} ${c.closed_at ?? ''}`;
-      let held: { since: string | undefined } | 'unread' | false | undefined = heldWhenClosed.get(key);
-      if (held === undefined) {
-        const { events, whole } = await eventsOf(c.number);
-        held = !whole ? 'unread' : heldByLabel(events) ? { since: heldSince(events) } : false;
-        // Kept only once GitHub says when it closed, and only a hold: Martin may take the label off a closed pull
-        // request later, so one not held is read again each pass (a conditional request), as is one not read whole.
-        // A pull request reopened and closed again is read again too.
-        if (c.closed_at && typeof held === 'object') heldWhenClosed.set(key, held);
-      }
+      // Read each pass (a conditional request): Martin may take the label off a closed pull request, or put it back
+      // and take it off again, at any time. One that cannot be read whole holds, saying so: it fails closed.
+      const { events, whole } = await eventsOf(c.number);
+      const held = !whole ? 'unread' : heldByLabel(events) ? { since: heldSince(events) } : false;
       if (held === 'unread') return { waits: 'not-a-pin', why: `#${c.number}, of this move, runs past what is read` };
       if (!held) continue;
       // A merge from the branch after Martin took the label off ends the hold: by when he took it off, which may be

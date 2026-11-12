@@ -79,8 +79,8 @@ describe('the hold by branch', () => {
     await s.w.queueOnly();
     await s.w.queueOnly();
     expect(s.w.enqueued).toEqual([]);
-    // Read once, then kept: only a hold is.
-    expect(s.w.eventReads.get(one.number)).toBe(1);
+    // Read each pass, as Martin may take the label off, or put it back and take it off again, at any time.
+    expect(s.w.eventReads.get(one.number)).toBe(2);
     // Martin merges #2 himself; the branch is used again for #3.
     two.state = 'closed';
     two.merged_at = '2026-11-12T12:00:00Z';

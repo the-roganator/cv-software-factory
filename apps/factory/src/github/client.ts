@@ -308,7 +308,8 @@ export class GitHub {
     const sent = parsed ? `${parsed.origin}${parsed.pathname}${parsed.search}` : undefined;
     const dotted = /(^|\/)(\.|%2e){1,2}(\/|\?|$)/i.test(path.split('?')[0] ?? path);
     if (sent !== built || dotted || /%(?![0-9A-Fa-f]{2})/.test(path)) {
-      throw new GitHubError('conflict', `${method} ${path} would name another path than it says: not sent.`);
+      // Refused, not a conflict: it is never sent, so no caller takes it for a state that may pass and tries again.
+      throw new GitHubError('refused', `${method} ${path} would name another path than it says: not sent.`);
     }
     const url = built;
     // Doing it twice is harmless: anything but a POST.

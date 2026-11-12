@@ -1010,11 +1010,20 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
         if (run === undefined) continue;
         const short = run.slice(-7);
         const pinFile = files.get(pin);
-        const at = commits.findIndex((c) => c.sha.startsWith(short));
-        if (pinFile === undefined || at === -1) return `${short} is not among main's last commits`;
+        const named = commits.filter((c) => c.sha.startsWith(short));
+        if (pinFile === undefined || named.length !== 1) return `${short} is not one of main's last commits alone`;
+        const at = commits.indexOf(named[0] as { sha: string });
         const proposal = await newerBuild(deps, pin, pinFile, commits.slice(at));
-        if (!proposal?.commit.startsWith(short)) return `no build of ${pin.file} at ${short} is found`;
-        if ((await signed(proposal)).state !== 'signed') return `the build at ${short} is not signed by its pipeline`;
+        if (!proposal || proposal.commit !== named[0]?.sha) return `no build of ${pin.file} at ${short} is found`;
+        // Checked as they are, with none of the waiting `signed` keeps for a build being proposed.
+        for (const { image, digest } of proposal.digests) {
+          try {
+            await signatures.verify(image, digest, pipeline(repo));
+          } catch (error) {
+            if (!(error instanceof UnsignedError)) throw error;
+            return `the build at ${short} is not signed by its pipeline`;
+          }
+        }
         moves.push({ pin, proposal, pinFile });
       }
       if (!moves.length || deployTitle(target, moves.map(runsOf)) !== existing.title) {

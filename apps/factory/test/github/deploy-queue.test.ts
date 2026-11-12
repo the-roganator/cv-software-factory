@@ -641,14 +641,32 @@ describe('the pin queue watch', () => {
     await older.pass();
     expect(older.enqueued).toEqual([]);
 
-    // A closed pull request's events are read once: a second pass asks GitHub for none of them again.
+    // Dated by when Martin last took the label off, read each pass: put back and taken off again after a merge, it holds.
+    const off = (at: string) => ({ event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' }, created_at: at });
+    const on = (at: string) => ({ event: 'labeled', actor: { id: MARTIN }, label: { name: 'pin' }, created_at: at });
+    let history = [labelled(APP_USER), off('2026-11-05T01:00:00Z')];
+    const again = pinHarness({
+      closed: () => [heldOne, mergedAfter],
+      events: (n, p) => (p > 1 ? [] : n === 1001 ? history : [labelled(APP_USER)]),
+    });
+    await again.pass();
+    expect(again.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const later = pinHarness({
+      closed: () => [heldOne, mergedAfter],
+      events: (n, p) => (p > 1 ? [] : n === 1001 ? history : [labelled(APP_USER)]),
+    });
+    history = [...history, on('2026-11-06T02:00:00Z'), off('2026-11-06T03:00:00Z')];
+    await later.pass();
+    expect(later.enqueued).toEqual([]);
+
+    // A closed pull request's events are read again on each pass, as Martin may change its label at any time.
     const twice = pinHarness({ closed: () => [heldOne], events });
     await twice.pass();
     const read = () => twice.sent.filter((x) => x.path.includes('/issues/1001/events')).length;
     const first = read();
     await twice.pass();
     expect(first).toBeGreaterThan(0);
-    expect(read()).toBe(first);
+    expect(read()).toBe(2 * first);
 
     // Not held: one the App alone unlabelled, a merged one, or someone else's, or another branch's.
     for (const earlier of [

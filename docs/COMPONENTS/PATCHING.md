@@ -34,7 +34,7 @@ A reference is compared by its repository, normalised as Docker does (`postgres`
 
 ### The namespaces it reads
 
-Every namespace the cluster has, `default` included, but three, which `PATCHING_NAMESPACES` lists and the RoleBindings bind; a test holds the two together, and fails for a namespace `deploy/` makes, or the cluster has of its own, until it is in one or named as left out. A namespace made later is not read until then.
+Every namespace the cluster has, `default` included, but three, which `PATCHING_NAMESPACES` lists and the RoleBindings bind; a test holds the two together, and fails for a namespace `deploy/` renders, or one of the cluster's own it names (`default`, `kube-system`, `kube-public`, `kube-node-lease`, `argocd`, `kyverno`), until it is in one or named as left out. A namespace made at run time (by a chart, a try, or a k3s of another version) is in neither, and is not read until someone adds it.
 
 - **`runners`**: an agent step's Job carries its job token in its spec, as a value (a pin step's and a lockfile's carry none), so whatever lists pods there can read live tokens; only the line may.
 - **`red-team`**: only the red-team harness's two attack pods run there, each held by an admission rule to one of two images and a pinned command, the unsigned one refused as it is created.
@@ -49,7 +49,7 @@ Admission control admits only images `build.yml` signed, and the third-party ima
 - **Its own role.** `factory_patching` appends `patching.read` and nothing else, reads only its own events, and no other table; it is no member of `factory_worker`. Its password is in `postgres-patching`, which `make up` makes and the migrate Job sets.
 - **Its NetworkPolicy** gives it the store, the collector, the API server on 6443 and the worker's door, and takes nothing in.
 
-On the host, with Postgres forwarded, `kubectl proxy` running and the GitHub worker on the host with `PATCHING_PORT` set, `factory patching --once` makes one pass and says what it appended, or why not (AGENTS.md).
+On the host, `factory patching --once` makes one pass against the cluster's GitHub worker and says what it appended, or why not: root `AGENTS.md` has the commands.
 
 ### Not yet
 

@@ -170,8 +170,8 @@ describe('the admin service', () => {
     // The FeatureFlag its Role in `flagd` names (deploy/base/flagd/admin-stages-flags.yaml): any other is refused.
     expect(env.FEATURE_FLAGS).toBe('flagd/flags');
     // In `factory`, only the line, the admin service, the red-team harness and the dependency sense hold a token for
-    // the API (the harness creates the egress and image attacks' pods, and the sense lists pods): every other pod, of any workload, says it holds none, and a pod
-    // that does not say counts as holding one.
+    // the API (the harness creates the egress and image attacks' pods, and the sense lists pods): every other pod, of
+    // any workload, says it holds none, and a pod that does not say counts as holding one.
     const pods = all
       .filter(({ namespace }) => namespace === 'factory')
       .map(({ manifest }) => ({

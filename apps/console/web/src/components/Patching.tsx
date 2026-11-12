@@ -572,10 +572,10 @@ export function Patching({
   const read = lastRead(events, t);
   const carried = carriedKey(items);
   const minute = Math.floor(t / MINUTE) * MINUTE;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads only the day, the carried work items and the minute, and is kept while they are the same
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads only the day and the carried work items, and is kept while they are the same
   const view: PatchingView = useMemo(
-    () => (read ? dayView(read.payload, Date.parse(read.ts), items, minute) : { state: 'unread' }),
-    [read, carried, minute],
+    () => (read ? dayView(read.payload, Date.parse(read.ts), items) : { state: 'unread' }),
+    [read, carried],
   );
   return <Panel view={view} t={minute} martin={admin.kind === 'martin'} onOpen={onOpen} />;
 }

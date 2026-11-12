@@ -88,7 +88,10 @@ export interface ScanDay {
   newHighWithoutFix: number;
   overdue: number;
   dueWithinDay: number;
-  /** How many rows below hold each: moves with something new today that clears a High or a Critical, and by deadline. */
+  /**
+   * How many rows below hold each: moves with something new today that clears a High or a Critical, and by deadline as
+   * the run judged it, so a day read long ago still names the rows its counts were made of.
+   */
   movesWithNew: number;
   movesOverdue: number;
   movesDueWithinDay: number;
@@ -307,22 +310,27 @@ const sum = (repositories: readonly Repository[], field: 'noFix' | 'excepted' | 
 export function patchingView(events: readonly PublicEvent[], items: readonly ItemState[], t: number): PatchingView {
   const read = lastRead(events, t);
   if (!read) return { state: 'unread' };
-  return dayView(read.payload, Date.parse(read.ts), items, t);
+  return dayView(read.payload, Date.parse(read.ts), items);
 }
 
-/** One day's view at t. */
-export function dayView(day: Day, at: number, items: readonly ItemState[], t: number): PatchingView {
-  const moves = day.repositories.flatMap((r) => {
+/** One day's view, read at `at`: what it says holds whatever the time, and the deadlines' colour is the panel's, at t. */
+export function dayView(day: Day, at: number, items: readonly ItemState[]): PatchingView {
+  // Each move with the time its repository's run judged it: the day's line counts its reasons as the scan did then,
+  // so the rows it says hold each are found by the same clock, not by the viewer's.
+  const judgedMoves = day.repositories.flatMap((r) => {
     let lockfiles = 0;
-    return r.moves.map((move) =>
-      moveRow(
+    const judged = r.judged === null ? at : Date.parse(r.judged);
+    return r.moves.map((move) => ({
+      judged,
+      row: moveRow(
         r.repository,
         move,
         items,
         move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`,
       ),
-    );
+    }));
   });
+  const moves = judgedMoves.map(({ row }) => row);
   // Two pods of one workload running the same image make rows with one key: each after the first is told apart by
   // its place among them, so a key never rests on a pod's name.
   const seen = new Map<string, number>();
@@ -347,9 +355,10 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
     dueWithinDay: sum(day.repositories, 'dueWithinDay'),
     movesWithNew: moves.filter((row) => row.newToday > 0 && row.clears && row.clears.critical + row.clears.high > 0)
       .length,
-    movesOverdue: moves.filter((row) => row.deadline !== undefined && row.deadline <= t).length,
-    movesDueWithinDay: moves.filter((row) => row.deadline !== undefined && row.deadline > t && row.deadline - t <= DAY)
-      .length,
+    movesOverdue: judgedMoves.filter(({ row, judged }) => row.deadline !== undefined && row.deadline <= judged).length,
+    movesDueWithinDay: judgedMoves.filter(
+      ({ row, judged }) => row.deadline !== undefined && row.deadline > judged && row.deadline - judged <= DAY,
+    ).length,
     unjudged: day.repositories.filter((r) => r.judged === null).map(runPage),
     broken: day.repositories
       .filter(

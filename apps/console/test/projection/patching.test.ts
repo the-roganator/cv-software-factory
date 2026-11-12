@@ -91,6 +91,11 @@ describe('Patching, projected from the samples', () => {
     });
   });
 
+  it('finds the rows holding each deadline reason by the run’s clock, as the day’s counts were made, not the viewer’s', () => {
+    const later = read(patchingView(SAMPLES, foldItems(SAMPLES), Date.parse('2026-10-08T00:00:00Z')));
+    expect(later.day).toMatchObject({ overdue: 0, dueWithinDay: 6, movesOverdue: 0, movesDueWithinDay: 3 });
+  });
+
   it('gives the four figures: no fix yet, cleared by the moves, excepted, past their deadline', () => {
     expect(view.figures).toEqual({ noFix: 15056, cleared: 1732, excepted: 0, overdue: 0, clearingMoves: 10 });
   });
@@ -139,7 +144,7 @@ describe('an empty day', () => {
     })),
     rows: [],
   };
-  const view = read(dayView(empty, END, [], END));
+  const view = read(dayView(empty, END, []));
 
   it('has no rows, nothing waiting, and a scan that passed, with what has no fix still counted', () => {
     expect(view.rows).toEqual([]);
@@ -156,7 +161,7 @@ describe('an empty day', () => {
       ),
       compared: false,
     };
-    const shown = read(dayView(failed, END, [], END));
+    const shown = read(dayView(failed, END, []));
     expect(shown.day.passed).toBe(false);
     expect(shown.day.failed).toEqual(['other']);
     expect(shown.day.unjudged).toEqual([
@@ -176,7 +181,7 @@ describe('an empty day', () => {
         i === 1 ? { ...r, run: { ...r.run, conclusion: 'failure', url: 'javascript:alert(1)' }, failed: ['other'] } : r,
       ),
     };
-    const shown = read(dayView(broken, END, [], END));
+    const shown = read(dayView(broken, END, []));
     expect(shown.day.passed).toBe(false);
     expect(shown.day.broken).toEqual([
       {
@@ -200,13 +205,13 @@ describe('row keys', () => {
       ...sample.payload,
       repositories: [{ ...app, moves: [withheld, { ...withheld, deadline: '2026-10-09T00:00:00.000Z' }] }],
     };
-    const keys = read(dayView(twice, END, [], END)).rows.map((row) => row.key);
+    const keys = read(dayView(twice, END, [])).rows.map((row) => row.key);
     expect(new Set(keys).size).toBe(keys.length);
     const full: Day = {
       ...twice,
       repositories: [{ ...app, moves: [lockfile, { ...lockfile, deadline: '2026-10-09T00:00:00.000Z' }] }],
     };
-    expect(read(dayView(full, END, [], END)).rows.map((row) => row.key)).toEqual(keys);
+    expect(read(dayView(full, END, [])).rows.map((row) => row.key)).toEqual(keys);
   });
 });
 
@@ -229,7 +234,7 @@ describe('a pin the cluster does not run yet', () => {
         },
       ],
     };
-    const row = read(dayView(withRow, END, [], END)).rows.find((r) => r.source.kind === 'not-running');
+    const row = read(dayView(withRow, END, [])).rows.find((r) => r.source.kind === 'not-running');
     expect(row).toMatchObject({ where: pin, from: 'example/db:17.5', to: 'example/db:17.6', waits: true });
     expect(row?.pins.map((p) => p.at)).toEqual([
       'deploy/base/postgres/statefulset.yaml:40',
@@ -254,7 +259,7 @@ describe('the line’s move', () => {
           }
         : item,
     ) as ReturnType<typeof foldItems>;
-    const view = read(dayView(sample.payload, END, items, END));
+    const view = read(dayView(sample.payload, END, items));
     expect(view.rows.find((row) => row.name === 'example/node-base')).toMatchObject({
       state: { kind: 'stage', stage: 'build' },
       link: { kind: 'item', number: '1262' },
@@ -298,7 +303,7 @@ describe('a lockfile’s package whose versions the scan could not read', () => 
       repositories: [{ ...app, moves: [{ ...lockfile, package: { ...named, from, to } }] }],
       rows: [],
     };
-    return read(dayView(one, END, [], END)).rows[0];
+    return read(dayView(one, END, [])).rows[0];
   };
 
   it('leaves an empty side unsaid, never drawn as half an arrow', () => {
@@ -318,7 +323,7 @@ describe('the sense’s rows', () => {
     const unlisted = sample.payload.rows.find((r) => r.row === 'unlisted-image');
     if (unlisted?.row !== 'unlisted-image') throw new Error('the samples have no unlisted image');
     const keysOf = (rows: Day['rows']) =>
-      read(dayView({ ...sample.payload, rows }, END, [], END))
+      read(dayView({ ...sample.payload, rows }, END, []))
         .rows.filter((r) => r.source.kind === 'unlisted-image')
         .map((r) => r.key);
     const before = keysOf([unlisted]);

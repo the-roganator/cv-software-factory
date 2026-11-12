@@ -14,7 +14,7 @@ The daily [vulnerability scan](SECURITY-SCANNING.md) groups each day's findings 
 - lists the images every pod runs, by the reference its spec names and the digest its runtime resolved, in every namespace but three (`PATCHING_NAMESPACES`), since an image the list lacks may run in any;
 - compares the two, and appends the day as one event, `patching.read`, when it differs from the last it appended.
 
-A read that fails, of either repository or of the cluster, appends nothing and says which failed in its log; it tries again an hour later, until the day's read comes round. A day that says what the last said appends nothing: a pod made again under a new name, or a Deployment scaled, is no new day while its row stands. It acts on no store of samples.
+A read that fails, of either repository or of the cluster, appends nothing and says which failed in its log, as an error; it tries again an hour later, until the day's read comes round. A moves read the GitHub worker answers 409, read again (a scan finished while its alerts were read), is no failure: it appends nothing, says so as information, and reads again ten minutes later, until six in a row, an hour of them, which count as a failure. Any other read answered 409 is a failure. `--once` exits 0 for a day read, 1 for a read that failed, and 75 for one to take again. A day that says what the last said appends nothing: a pod made again under a new name, or a Deployment scaled, is no new day while its row stands. It acts on no store of samples.
 
 ### The day
 

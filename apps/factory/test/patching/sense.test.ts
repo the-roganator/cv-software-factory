@@ -10,7 +10,7 @@ import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
-import { PatchingSense, type Senses } from '../../src/patching/sense.ts';
+import { exitCode, MOST_AGAIN, nextAfter, type Pass, PatchingSense, type Senses } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
 import {
@@ -197,9 +197,43 @@ describe('the dependency sense', () => {
     expect(logged.filter((l) => l.level >= 50)).toEqual([]);
     expect(
       logged.some(
-        (l) => l.level === 30 && l.msg === 'patching: a scan finished during the read, so the day is read again',
+        (l) => l.level === 30 && l.msg === 'patching: a scan finished during the read, so the day is read again soon',
       ),
     ).toBe(true);
+  });
+
+  it('is a failed pass when the Dependabot read is answered 409: only the moves read is read again', async () => {
+    const conflict = new GitHubWorkerError(409, 'conflict', 'GitHub answered 409');
+    const result = await sense(senses({ dependencyPulls: async () => Promise.reject(conflict) })).pass();
+    expect(result.pass).toBe('failed');
+  });
+
+  it('counts reads to take again as a failure once they have come an hour in a row', async () => {
+    const again = new GitHubWorkerError(409, 'conflict', 'read again');
+    const s = sense(senses({ moves: async () => Promise.reject(again) }));
+    const passes: string[] = [];
+    for (let i = 0; i < MOST_AGAIN; i++) passes.push((await s.pass()).pass);
+    expect(passes).toEqual([...Array(MOST_AGAIN - 1).fill('again'), 'failed']);
+    expect(logged.filter((l) => l.level === 50)).toHaveLength(1);
+    // A read that answers starts the count again.
+    expect((await sense(senses()).pass()).pass).toBe('appended');
+  });
+
+  it('says when to read next and what --once exits with, for each pass', () => {
+    const now = Date.parse('2026-11-11T06:00:00Z');
+    const day = (finished: string) =>
+      ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
+    expect(nextAfter({ pass: 'again', why: [] }, now)).toBe('soon');
+    expect(nextAfter({ pass: 'failed', failed: [] }, now)).toBe('hour');
+    expect(nextAfter({ pass: 'not-real' }, now)).toBe('daily');
+    expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toBe('daily');
+    expect(nextAfter(day('2026-11-10T04:58:00Z'), now)).toBe('hour');
+    expect([
+      exitCode(day('2026-11-11T04:58:00Z')),
+      exitCode({ pass: 'not-real' }),
+      exitCode({ pass: 'failed', failed: [] }),
+      exitCode({ pass: 'again', why: [] }),
+    ]).toEqual([0, 0, 1, 75]);
   });
 
   it('is a failed pass when a 409 comes beside a read that failed', async () => {

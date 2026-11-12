@@ -18,6 +18,7 @@ import { GitHubWorkerError } from '../github/worker-client.ts';
 import { compare } from './compare.ts';
 import { type Day, dayOf, type RepositoryRead, sameDay, scannedOf } from './day.ts';
 import type { RunningContainer } from './running.ts';
+import { type Next, stale } from './schedule.ts';
 
 /** What the sense reads through: the GitHub worker's two reads, and the cluster's pods. */
 export interface Senses {
@@ -44,8 +45,24 @@ export interface SenseOptions {
   now?: () => Date;
 }
 
-/** Whether a read was answered 409, to be read again (the moves read, while a scan finishes). */
+/** Whether the moves read was answered 409, to be read again: a scan finished while its alerts were read. */
 const readAgain = (error: unknown) => error instanceof GitHubWorkerError && error.status === 409;
+
+/** How many reads to take again in a row before they count as a failure: an hour of them, at ten minutes apart. */
+export const MOST_AGAIN = 6;
+
+/** When the next pass is, after this one: see `schedule.ts`. A day read from yesterday's scan is read again within the hour. */
+export function nextAfter(result: Pass, now: number): Next {
+  if (result.pass === 'again') return 'soon';
+  if (result.pass === 'failed') return 'hour';
+  if (result.pass === 'not-real') return 'daily';
+  return result.day.repositories.some((r) => stale(r.run.finished, now)) ? 'hour' : 'daily';
+}
+
+/** What `factory patching --once` exits with: 0 for a day read, 1 for a read that failed, 75 for one to take again. */
+export function exitCode(result: Pass): number {
+  return result.pass === 'failed' ? 1 : result.pass === 'again' ? 75 : 0;
+}
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -56,6 +73,8 @@ export class PatchingSense {
   readonly #repositories: readonly string[];
   readonly #log: Logger;
   readonly #now: () => Date;
+  /** How many passes in a row have been reads to take again. */
+  #again = 0;
 
   constructor({ sql, events, senses, repositories, log, now = () => new Date() }: SenseOptions) {
     // A day holds one or two repositories (`patching.read`): more could never be appended, so it would never read.
@@ -74,9 +93,9 @@ export class PatchingSense {
 
   async pass(): Promise<Pass> {
     if ((await storeKind(this.#sql)) === 'sample') return { pass: 'not-real' };
-    const asked = [
+    const asked: { what: string; moves?: true; read: () => Promise<unknown> }[] = [
       ...this.#repositories.flatMap((repo) => [
-        { what: `the moves of ${repo}`, read: () => this.#senses.moves(repo) },
+        { what: `the moves of ${repo}`, moves: true as const, read: () => this.#senses.moves(repo) },
         { what: `the Dependabot pull requests of ${repo}`, read: () => this.#senses.dependencyPulls(repo) },
       ]),
       { what: "the cluster's pods", read: () => this.#senses.running() },
@@ -85,11 +104,17 @@ export class PatchingSense {
     const failed = answers.flatMap((answer, i) =>
       answer.status === 'rejected' ? [`${asked[i]?.what}: ${message(answer.reason)}`] : [],
     );
-    // The worker's 409 is no failure: the scan finished while the alerts were read, and the next read takes it whole.
-    if (failed.length && answers.every((answer) => answer.status === 'fulfilled' || readAgain(answer.reason))) {
-      this.#log.info({ why: failed }, 'patching: a scan finished during the read, so the day is read again');
+    // The moves read's 409 is no failure: the scan finished while the alerts were read, and the next read takes it whole.
+    // Any other read's 409 is a failure, and so are the moves read's once they have come an hour in a row.
+    const again =
+      failed.length > 0 &&
+      answers.every((answer, i) => answer.status === 'fulfilled' || (asked[i]?.moves && readAgain(answer.reason)));
+    if (again && ++this.#again < MOST_AGAIN) {
+      this.#log.info({ why: failed }, 'patching: a scan finished during the read, so the day is read again soon');
       return { pass: 'again', why: failed };
     }
+    if (again) failed.push(`the moves read was answered 409, read again, ${MOST_AGAIN} times in a row`);
+    this.#again = 0;
     if (failed.length) {
       this.#log.error({ failed }, `patching: ${failed.length} of the reads failed, so the day is not appended`);
       return { pass: 'failed', failed };

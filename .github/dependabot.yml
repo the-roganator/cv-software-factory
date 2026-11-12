@@ -101,9 +101,9 @@ updates:
   # Trivy is the scanner every workflow runs, pinned once, in deploy/images/trivy/Dockerfile, which nothing builds: a
   # docker update may not write under .github/ (GitHub refused one there, run 42667462814). The cooldown is kept for it
   # so that it holds if GHCR gives a date, and a bump waits for Martin, as deploy/ is his.
-  # Syft, which the dependency graph runs, is pinned once, in deploy/images/syft/Dockerfile, which nothing builds: outside
-  # .github/, where Dependabot's docker updates may not write. Its bump moves build.yml's `syft-version` by hand in the
-  # same pull request (scripts/workflows.test.ts holds the two together).
+  # Syft, which the dependency graph runs and build.yml attests SBOMs with, is pinned once, in
+  # deploy/images/syft/Dockerfile, which nothing builds: outside .github/, where Dependabot's docker updates may not
+  # write. Both read its version from there, so its bump is the whole change (scripts/workflows.test.ts).
   - package-ecosystem: docker
     directory: /apps/factory
     schedule:

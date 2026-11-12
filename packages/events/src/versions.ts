@@ -6,7 +6,7 @@
  */
 export const VERSIONS = {
   // A work item, from first event to last
-  'work-item.opened': 2,
+  'work-item.opened': 3,
   'work-item.summarised': 1,
   'work-item.closed': 3,
   'work-item.reopened': 3,
@@ -16,9 +16,9 @@ export const VERSIONS = {
   'attack.launched': 2,
   'attack.finished': 1,
   // Sense and triage
-  'signal.received': 5,
+  'signal.received': 6,
   'judgement.made': 2,
-  'ticket.opened': 2,
+  'ticket.opened': 3,
   // Plan and build
   'spec.written': 5,
   'pull-request.pushed': 3,
@@ -26,7 +26,7 @@ export const VERSIONS = {
   'wait.started': 1,
   // Gates and review
   'gates.started': 1,
-  'gate.finished': 2,
+  'gate.finished': 3,
   'gates.finished': 1,
   'review.submitted': 5,
   'review.accepted': 1,

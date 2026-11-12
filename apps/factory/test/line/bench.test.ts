@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jobForToken } from '@software-factory/store';
@@ -8,8 +8,17 @@ import { type Database, freshDatabase } from '../../../../packages/store/test/da
 import { commitPatch } from '../../../runner/src/prepare.ts';
 import { stepFrom } from '../../../runner/src/step.ts';
 import { coder, coderInputAfterRefusal } from '../../src/line/agents/coder.ts';
-import { BENCH_DIR, bench, followed, lastStep, passed, type RunnerSteps, stepsOf } from '../../src/line/bench/bench.ts';
-import { FIXTURE_WORK_ITEM, FIXTURES, type Fixture } from '../../src/line/bench/fixtures.ts';
+import {
+  BENCH_DIR,
+  bench,
+  followed,
+  lastStep,
+  passed,
+  protectedAsCheckedOut,
+  type RunnerSteps,
+  stepsOf,
+} from '../../src/line/bench/bench.ts';
+import { APP_CODEOWNERS, FIXTURE_WORK_ITEM, FIXTURES, type Fixture } from '../../src/line/bench/fixtures.ts';
 import { LIMITS } from '../../src/line/machine.ts';
 
 let database: Database;
@@ -37,11 +46,29 @@ const PATCH = (path: string) => `diff --git a/${path} b/${path}
 `;
 
 /** The runner's steps as the bench calls them, keeping what each was given and what the agent saw. */
-function runner(answer: (env: NodeJS.ProcessEnv) => Promise<unknown>, patches: string[] = []) {
-  const seen: { prepare?: NodeJS.ProcessEnv; agent?: NodeJS.ProcessEnv; home?: string[]; token?: unknown } = {};
+function runner(
+  answer: (env: NodeJS.ProcessEnv) => Promise<unknown>,
+  patches: string[] = [],
+  printed: { prepare?: string[]; lockfile?: string[] } = {},
+) {
+  const seen: {
+    prepare?: NodeJS.ProcessEnv;
+    lockfile?: NodeJS.ProcessEnv;
+    agent?: NodeJS.ProcessEnv;
+    home?: string[];
+    token?: unknown;
+  } = {};
   const steps: RunnerSteps = {
-    prepare: async (env) => {
+    prepare: async (env, log) => {
       seen.prepare = env;
+      // The app's CODEOWNERS, as a checkout of the fixture's commit has it.
+      mkdirSync(join(String(env.WORK), 'repo', '.github'), { recursive: true });
+      writeFileSync(join(String(env.WORK), 'repo', '.github', 'CODEOWNERS'), APP_CODEOWNERS);
+      for (const line of printed.prepare ?? []) log(line);
+    },
+    lockfile: async (env, log) => {
+      seen.lockfile = env;
+      for (const line of printed.lockfile ?? []) log(line);
     },
     commitPatch,
     runAgent: async (env, options) => {
@@ -62,7 +89,78 @@ function runner(answer: (env: NodeJS.ProcessEnv) => Promise<unknown>, patches: s
   return { seen, steps };
 }
 
+describe('the bench, on a dependency’s move', () => {
+  const moving =
+    FIXTURES.coder['dependency-move'] ??
+    (() => {
+      throw new Error('The coder has no dependency-move fixture.');
+    })();
+
+  it('has the pin step write the move first, and the lockfile after a patch that changes a manifest', async () => {
+    const pins = PATCH('pnpm-lock.yaml');
+    const lockfile = PATCH('pnpm-lock.yaml').replace('+new', '+newer');
+    const line = (msg: string, fields: object) => JSON.stringify({ pod: 'prepare', msg, ...fields });
+    const { seen, steps } = runner(async () => CODED, [PATCH('package.json') + PATCH('test/dependencies.test.ts')], {
+      prepare: [line('checked out the commit', {}), line('the pins', { move: moving.move, pins })],
+      lockfile: [line('the lockfile', { lockfile })],
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'bench-'));
+    const benched = await bench({
+      agent: 'coder',
+      fixture: moving,
+      sql: database.as.line,
+      gateway: 'http://localhost:8180',
+      dir,
+      runner: steps,
+      log: () => {},
+    });
+    expect(stepFrom(seen.prepare)).toMatchObject({ move: moving.move });
+    expect(benched).toMatchObject({ pins, lockfile });
+    // The lockfile step starts from the fixture's commit, with the pins and the coder's patch on it.
+    expect(stepFrom(seen.lockfile)).toMatchObject({
+      commit: moving.commit,
+      pins,
+      change: PATCH('package.json') + PATCH('test/dependencies.test.ts'),
+    });
+  });
+
+  it('writes no lockfile for a patch that changes no manifest', async () => {
+    const { seen, steps } = runner(async () => CODED, [PATCH('test/dependencies.test.ts')]);
+    const benched = await bench({
+      agent: 'coder',
+      fixture: moving,
+      sql: database.as.line,
+      gateway: 'http://localhost:8180',
+      dir: mkdtempSync(join(tmpdir(), 'bench-')),
+      runner: steps,
+      log: () => {},
+    });
+    expect(seen.lockfile).toBeUndefined();
+    expect(benched).not.toHaveProperty('lockfile');
+  });
+});
+
 describe('the bench', () => {
+  it('refuses a fixture whose protected paths are not its checkout’s CODEOWNERS, naming what differs', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bench-codeowners-'));
+    const input = FIXTURES.planner['wrong-price']?.input;
+    mkdirSync(join(repo, '.github'));
+    writeFileSync(join(repo, '.github', 'CODEOWNERS'), APP_CODEOWNERS);
+    await expect(protectedAsCheckedOut(repo, input)).resolves.toBeUndefined();
+    // The app gives another path to a person, or stops giving one: the copy is stale either way.
+    writeFileSync(join(repo, '.github', 'CODEOWNERS'), `${APP_CODEOWNERS}\n/src/money.ts @mrogan`);
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('(src/money.ts, src/money.ts/)');
+    writeFileSync(join(repo, '.github', 'CODEOWNERS'), APP_CODEOWNERS.replace('/mise.lock @mrogan\n', ''));
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('(mise.lock, mise.lock/)');
+    // An input with no protected paths has nothing to hold.
+    await expect(protectedAsCheckedOut(join(repo, 'none'), {})).resolves.toBeUndefined();
+    // A CODEOWNERS that cannot be read is an error of its own, not a file that is not there.
+    rmSync(join(repo, '.github', 'CODEOWNERS'));
+    mkdirSync(join(repo, '.github', 'CODEOWNERS'));
+    await expect(protectedAsCheckedOut(repo, input)).rejects.toThrow('EISDIR');
+    rmSync(repo, { recursive: true });
+  });
+
   it("runs the agent's own step on a fixture, in a fixed folder with a fresh home, and ends its token", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bench-'));
     // What an earlier run, or the developer's own Claude Code, left in the agent's home.

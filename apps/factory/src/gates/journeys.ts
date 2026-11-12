@@ -8,7 +8,7 @@
  *
  * The base and the change are observed at once, and only what failed on the change is observed again.
  */
-import { cutAt, cutTo, type Evidence, SYMPTOM_CLASSES, type SymptomClass } from '@software-factory/events';
+import { cutAt, cutTo, DEFECT_SYMPTOMS, type DefectSymptom, type Evidence } from '@software-factory/events';
 import { z } from 'zod';
 import { cell } from './report.ts';
 
@@ -19,7 +19,7 @@ export interface Seen {
   route: string;
   failed: boolean;
   /** What a failed check called what it saw. */
-  symptom?: SymptomClass;
+  symptom?: DefectSymptom;
   /** Why the check could not tell, when it could not. */
   trouble?: string;
   message?: string;
@@ -168,7 +168,7 @@ const regression = z.object({
       .max(200),
     z.literal('*'),
   ]),
-  symptom: z.enum(SYMPTOM_CLASSES).optional(),
+  symptom: z.enum(DEFECT_SYMPTOMS).optional(),
   message: z.string().trim().min(1).max(300).optional(),
 });
 export type Regression = z.infer<typeof regression>;

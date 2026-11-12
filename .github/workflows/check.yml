@@ -214,7 +214,6 @@ jobs:
             mise.lock
             apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
-            .github/images/trivy/Dockerfile
             policy/vulnerabilities.ts
             pnpm-lock*.yaml
           sparse-checkout-cone-mode: false
@@ -264,10 +263,13 @@ jobs:
             echo "::error::The base has no lockfile gate, and this change does not bring one in."
             exit 1
           fi
-          # Trivy's pin, from the base, as the base holds it: a base from before it moved out of .github/ (#977) holds it
-          # at its old path, which is read only when the new one is missing.
+          # Trivy's pin, from its one home in the base. A base without it is older than the move out of .github/ (#977),
+          # and the branch it is cut from takes main first.
           pin=base/deploy/images/trivy/Dockerfile
-          if [ ! -f "$pin" ] && [ -f base/.github/images/trivy/Dockerfile ]; then pin=base/.github/images/trivy/Dockerfile; fi
+          if [ ! -f "$pin" ]; then
+            echo "::error::The base holds no Trivy pin at deploy/images/trivy/Dockerfile: merge main into the branch this pull request is opened into."
+            exit 1
+          fi
           node base/apps/factory/src/gates/lockfile-scan.ts base change --trivy-pin "$pin"
 
   # The browser tests run side by side: the console's, in parts, and the factory's senses (the crawler and the probes).

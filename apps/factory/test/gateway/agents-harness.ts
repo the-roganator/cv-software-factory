@@ -251,7 +251,7 @@ export const opened = (): NewEvent => ({
   ts: new Date().toISOString(),
   work_item: '1001',
   type: 'work-item.opened',
-  version: 2,
+  version: 3,
   actor: 'triage',
   summary: 'Work item opened',
   payload: { kind: 'defect-fix', title: 'Server errors', sample: false },

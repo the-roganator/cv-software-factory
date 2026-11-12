@@ -133,6 +133,7 @@ const CAPTURED: Record<Sense, [what: string, source: string, tool?: ToolName]> =
   logs: ['', 'Loki', 'loki'],
   canary: [' · analysis', 'Argo Rollouts’ analysis of the release', 'argo'],
   report: ['', 'the widget'],
+  dependency: [' · scan', 'the vulnerability scan'],
 };
 
 const KIND_OF: Partial<Record<PictureData['type'], string>> = {

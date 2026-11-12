@@ -944,7 +944,7 @@ describe('triage', () => {
           {
             ...closed(other),
             type: 'work-item.opened',
-            version: 2,
+            version: 3,
             payload: { kind: 'planner-finding', title: 'A finding', sample: false },
           },
           {
@@ -1096,13 +1096,13 @@ describe('triage', () => {
         {
           ...closed(other),
           type: 'work-item.opened',
-          version: 2,
+          version: 3,
           payload: { kind: 'defect-fix', title: 'Gift wrap', sample: false },
         },
         {
           ...closed(other),
           type: 'ticket.opened',
-          version: 2,
+          version: 3,
           payload: {
             title: 'A wrong result on /gift-wrap',
             category: 'functional',

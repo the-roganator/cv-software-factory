@@ -110,7 +110,12 @@ describe("the app's gates (ADR 0014)", () => {
     expect(jobs['test-integrity']).toMatch(
       /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {4}steps:/m,
     );
-    expect(workflow.match(/github\.token/g)).toHaveLength(1);
+    // Test integrity's, for the description, and dependency review's, for GitHub's advisory database: a job that checks
+    // out none of the change.
+    const withToken = Object.entries(jobs).filter(([, job]) => /github\.token/.test(job));
+    expect(withToken.map(([id]) => id)).toEqual(['test-integrity', 'dependency-review']);
+    expect(workflow.match(/github\.token/g)).toHaveLength(2);
+    expect(jobs['dependency-review']).not.toMatch(/path: change|context: change/);
     expect(workflow).not.toMatch(/secrets\./);
   });
 });

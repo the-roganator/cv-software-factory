@@ -1,0 +1,193 @@
+# The `platform` check: a change to what the cluster runs is run on a cluster made from the change, before it merges.
+# A chart, a value, a third-party image, k3s, k3d or Argo CD's pin can be proved only by a cluster, so this makes one,
+# as `make up` makes the local one, from the change's own files: k3d from its deploy/k3d/cluster.yaml, at the k3d its
+# mise.toml pins; Argo CD by the Makefile's own line; root, and every chart's values, at its commit. It passes when
+# every Application is Synced and Healthy, every image policy enforces, and `make admission-ready` passes. Then it
+# takes each refusal record with its script, and uploads them, for the record a change stales to be taken from the
+# change's own cluster rather than edited.
+#
+# It runs the change's own scripts and manifests, so it holds nothing worth taking: its token reads the contents and
+# nothing else, no job names a secret, and the cluster gets none of the keys `make up` takes from the Keychain, so it
+# opens nothing and attempts nothing outside. It runs on a pull request and on the merge queue's commit, as check.yml's jobs do, and
+# refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): one that changes
+# deploy/, the Makefile, mise's pins or what it runs, but never the factory's App's deploy pin of our own images, which
+# were built from commits already merged (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
+name: platform
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+concurrency:
+  group: platform-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Whether the change is one a cluster alone can prove (scripts/check-kind.sh platform). In the merge queue, whose
+  # event names no pull request, it reads the author and base of the one the queue's branch names, to tell the App's
+  # deploy pin apart: that read, of a public pull request, is all its token can do.
+  which:
+    name: whether a cluster runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      platform: ${{ steps.which.outputs.platform }}
+    steps:
+      - name: Refuse a privileged context
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request | merge_group) ;;
+            *) echo "::error::The platform check runs on a pull request or the merge queue's commit, not $GITHUB_EVENT_NAME."; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: which
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          platform=$(scripts/check-kind.sh platform)
+          echo "$platform"
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+
+  platform:
+    name: platform
+    needs: which
+    # Skipped only when the job above said `none`: a skipped job passes the required check, so one that failed, or said
+    # nothing, makes the cluster, as check.yml's `kind` failing runs everything.
+    if: ${{ !cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a privileged context
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request | merge_group) ;;
+            *) echo "::error::The platform check runs on a pull request or the merge queue's commit, not $GITHUB_EVENT_NAME."; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # What the cluster costs the runner: its memory in use every five seconds, for the peak, and its disk at the end
+      # (the last step). The whole of `make up` used 7.8 GiB of the runner's 16 at its peak, and 15 GB of disk.
+      - name: Measure
+        run: |
+          mkdir -p "$RUNNER_TEMP/measure"
+          nohup bash -c 'while true; do free -m | awk "/^Mem:/ { print \$3 }"; sleep 5; done' \
+            > "$RUNNER_TEMP/measure/memory" 2>/dev/null &
+          df -h / | tail -1
+          nproc; free -m
+      # The toolchain the change pins, k3d's among them, from main's cache (toolchain-cache.yml): saved on main alone,
+      # where this never runs, so no run here saves one.
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          install_args: node pnpm kubectl k3d helm kustomize cosign step yq
+      - run: pnpm install --frozen-lockfile
+      # `make up`, at the change's commit, with none of the keys it would take from the Keychain, which the runner has
+      # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
+      # any kind would have it try: the GitHub worker, given one, acts as the App and polls GitHub each pass, and
+      # Alertmanager, given Pushover's, sends each alert with a level that fires while the cluster comes up.
+      # scripts/platform-watch.sh watches it, and stops it at the 20-minute ceiling, or sooner on what waiting will not
+      # mend: an Application Argo CD cannot render, or one Degraded for five minutes.
+      - name: Make the cluster
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          unset TYPESAFE_API_KEY ANTHROPIC_API_KEY GITHUB_APP_PRIVATE_KEY PUSHOVER_APP_TOKEN PUSHOVER_USER_KEY
+          setsid make up REVISION="$REVISION" PLATFORM_CHECK=1 SYNC_TIMEOUT=20m TIMEOUT=1200 &
+          make=$!
+          # make has a session of its own, so a cancelled step stops it here.
+          trap 'kill -- "-$make" 2>/dev/null' TERM INT
+          if ! WATCHED=$make scripts/platform-watch.sh; then
+            kill -- "-$make" 2>/dev/null || true
+            wait "$make" || true
+            echo "::error::The cluster did not come up: the line above says why."
+            exit 1
+          fi
+          wait "$make"
+      # Every Application Synced, and Healthy but the website's, whose health is its release's, and root's, which rolls
+      # the website's up: `make up` has waited for the website to settle, and for everything else root deploys to be
+      # Healthy (scripts/wait-deployed.sh), so a canary in flight on the app's main holds no change here.
+      - name: Every Application Synced and Healthy
+        run: |
+          kubectl --context k3d-software-factory -n argocd get applications \
+            -o custom-columns='APPLICATION:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision'
+          unready=$(kubectl --context k3d-software-factory -n argocd get applications -o json |
+            jq -r '.items[] | select(.status.sync.status != "Synced" or
+              (.status.health.status != "Healthy" and (.metadata.name | IN("root", "website") | not))) | .metadata.name')
+          if [ -n "$unready" ]; then echo "::error::Not Synced and Healthy: $(echo $unready)"; exit 1; fi
+      - name: Every image policy enforcing, and admission ready
+        run: |
+          policies=$(kubectl --context k3d-software-factory get imagevalidatingpolicies -o json |
+            jq -r '.items[] | "\(.metadata.name) \(.spec.validationActions | join(","))"')
+          echo "$policies"
+          [ -n "$policies" ] || { echo "::error::No image policy on the cluster."; exit 1; }
+          if grep -v ' Deny$' <<< "$policies"; then echo "::error::An image policy does not enforce."; exit 1; fi
+          make admission-ready
+      # Only from a cluster that came up: a record taken from one that did not would say nothing.
+      - name: Take the refusal records
+        run: |
+          mkdir -p "$RUNNER_TEMP/records"
+          failed=0
+          for script in admission flags mark rollout route share-key; do
+            REFUSALS_OUT="$RUNNER_TEMP/records/$script-refusals.json" "scripts/$script-refusals.sh" || { echo "::error::$script-refusals failed"; failed=1; }
+          done
+          REFUSALS_OUT="$RUNNER_TEMP/records/flag-stages-refusals.json" node scripts/flag-stages-refusals.ts || { echo "::error::flag-stages-refusals failed"; failed=1; }
+          exit "$failed"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: refusal-records
+          path: ${{ runner.temp }}/records
+          if-no-files-found: warn
+      # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
+      - name: What the cluster shows
+        if: ${{ always() }}
+        run: |
+          exec > >(tee "$RUNNER_TEMP/measure/cluster.txt") 2>&1
+          echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
+          df -h / | tail -1
+          docker system df || true
+          kubectl --context k3d-software-factory -n argocd get applications \
+            -o custom-columns='APPLICATION:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,PHASE:.status.operationState.phase,MESSAGE:.status.operationState.message' || true
+          kubectl --context k3d-software-factory -n argocd get applications -o json | jq -r '.items[] | .metadata.name as $app |
+            (.status.conditions[]? | "\($app) condition \(.type): \(.message)"),
+            (.status.resources[]? | select(.status != "Synced" or (.health.status // "Healthy") != "Healthy") |
+              "\($app) \(.kind)/\(.namespace // "")/\(.name) \(.status) \(.health.status // "") \(.health.message // "")")' || true
+          kubectl --context k3d-software-factory get pods -A -o wide || true
+          kubectl --context k3d-software-factory get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -40 || true
+          # What would reach outside: the gateway (no key, and no agent calls on a line not started), the GitHub
+          # worker, which runs no pod here, and the line, which watches no release (deploy/argocd/platform-check.yaml),
+          # and Alertmanager's sends to Pushover (none attempted with no token).
+          kubectl --context k3d-software-factory -n factory get deployment github line \
+            -o custom-columns='DEPLOYMENT:.metadata.name,REPLICAS:.spec.replicas,RELEASE_ROLLOUT:.spec.template.spec.containers[0].env[?(@.name=="RELEASE_ROLLOUT")].value' || true
+          for worker in gateway line; do
+            echo "--- $worker's log"
+            kubectl --context k3d-software-factory -n factory logs "deploy/$worker" --tail=40 || true
+          done
+          echo "--- Alertmanager's notifications, by integration"
+          kubectl --context k3d-software-factory get --raw \
+            '/api/v1/namespaces/telemetry/services/http:prometheus-alertmanager:9093/proxy/metrics' |
+            grep -E '^alertmanager_notification(s|_requests)(_failed)?_total' | grep -v ' 0$' || true
+          echo "--- Alertmanager's log"
+          kubectl --context k3d-software-factory -n telemetry logs statefulset/prometheus-alertmanager -c alertmanager --tail=40 || true
+      # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states and
+      # the runner's figures: no Secret is read.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() || cancelled() }}
+        with:
+          name: cluster
+          path: ${{ runner.temp }}/measure
+          if-no-files-found: warn

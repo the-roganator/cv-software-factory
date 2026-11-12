@@ -40,12 +40,13 @@
 
 import { setTimeout as pause } from 'node:timers/promises';
 import type {
+  DefectCategory,
+  DefectSymptom,
   Environment,
   InboxSignal,
   NewEvent,
   PayloadOf,
   SignalSource,
-  SymptomClass,
 } from '@software-factory/events';
 import { samePoints, ticketPoints } from '@software-factory/events';
 import {
@@ -74,6 +75,7 @@ import {
   idsFor,
   type ParkedDefect,
   reportEvents,
+  routeOf,
   type Seen,
   senseEvidence,
   senseReopened,
@@ -644,8 +646,8 @@ export class Triage {
       // The inbox refuses a report without its text; one that got in some other way is nothing to judge.
       if (!text) throw new Error(`A ${finding ? 'finding' : 'report'} reached triage without its text`);
       // The visitor may have typed the path, so anything private in it goes before anything is matched or asked.
-      const page = privatePath(signal.report?.page ?? signal.route);
-      const route = privatePath(signal.route);
+      const page = privatePath(signal.report?.page ?? routeOf(signal));
+      const route = privatePath(routeOf(signal));
       // A planner's finding is about something beyond the ticket it was planning, so it never joins that one.
       const others = tickets.filter((ticket) => ticket.workItem !== signal.planning);
       const candidates = others.filter((ticket) => onPage(ticket, route, page, signal.sense)).slice(0, 10);
@@ -733,7 +735,7 @@ export class Triage {
   async #sense(signal: Seen, seed: string, tickets: Ticket[], taken?: Taken): Promise<Made> {
     const { sql } = this.#o;
     const now = this.#o.now();
-    const fingerprint = { route: signal.route, class: signal.symptom as SymptomClass };
+    const fingerprint = { route: routeOf(signal), class: signal.symptom as DefectSymptom };
     const ticket = tickets.find((open) =>
       sameFingerprint(open.fingerprint, fingerprint, { open: open.sense, found: signal.sense }),
     );
@@ -833,7 +835,7 @@ export class Triage {
         outcome: string | null;
         work_item: string | null;
         route: string;
-        symptom: SymptomClass;
+        symptom: DefectSymptom;
         version: string;
         received_at: Date;
       }[]
@@ -851,7 +853,7 @@ export class Triage {
     // problem, as is a ticket on every route found again on several routes, and the ticket this signal would add to.
     const opened = new Set<string>();
     const again = new Set<string>();
-    const fresh = new Map<string, { route: string; class: SymptomClass }>();
+    const fresh = new Map<string, { route: string; class: DefectSymptom }>();
     for (const row of near) {
       const found = { route: row.route, class: row.symptom };
       if (row.outcome === 'opened') opened.add(row.work_item ?? row.fingerprint);
@@ -1077,7 +1079,7 @@ export async function openTickets(sql: Sql): Promise<Ticket[]> {
  * defect), and only a sense's fingerprint is matched. On every route, the canary's and the other senses' are not the
  * same problem (`sameFingerprint`).
  */
-async function verifiedTicket(sql: Sql, fingerprint: { route: string; class: SymptomClass }, source: SignalSource) {
+async function verifiedTicket(sql: Sql, fingerprint: { route: string; class: DefectSymptom }, source: SignalSource) {
   const [row] = await sql<{ work_item: string; closed_at: Date; dry_run: boolean }[]>`
     select t.work_item, last_end.ts as closed_at, coalesce(last_check.dry_run, false) as dry_run from events t
     left join lateral (
@@ -1109,7 +1111,8 @@ async function verifiedTicket(sql: Sql, fingerprint: { route: string; class: Sym
 type Fingerprint = PayloadOf<'ticket.opened'>['fingerprint'];
 
 /**
- * The same problem: the same class on the same route, or on every route; or the same passage of the same page. Given
+ * The same problem: the same class on the same route, or on every route; the same passage of the same page; or the
+ * same move, by its name and ecosystem, whatever its target. Given
  * where the open ticket's first signal and what was found came from, a route of `*` means what its source means by it
  * (`everyRoute`).
  */
@@ -1126,6 +1129,8 @@ export function sameFingerprint(
     return widens && open.route === '*';
   }
   if ('page' in open && 'page' in found) return open.page === found.page && open.text === found.text;
+  if ('ecosystem' in open && 'ecosystem' in found)
+    return open.name === found.name && open.ecosystem === found.ecosystem;
   return false;
 }
 
@@ -1139,16 +1144,24 @@ export function sameFingerprint(
 export const everyRoute = (ticket: SignalSource | undefined, found: SignalSource) =>
   ticket !== 'canary' && found !== 'canary';
 
-/** Whether a report sent from a page could be about this ticket. */
+function defectCategory(ticket: Ticket): DefectCategory {
+  if ('ecosystem' in ticket.fingerprint || ticket.category === 'dependency') {
+    throw new Error(`Ticket #${ticket.workItem} is a dependency's, on no page`);
+  }
+  return ticket.category;
+}
+
+/** Whether a report sent from a page could be about this ticket. A dependency's ticket is on no page. */
 const onPage = (ticket: Ticket, route: string, page: string, source: SignalSource) =>
   'class' in ticket.fingerprint
     ? ticket.fingerprint.route === route || (everyRoute(ticket.sense, source) && ticket.fingerprint.route === '*')
-    : ticket.fingerprint.page === page;
+    : 'page' in ticket.fingerprint && ticket.fingerprint.page === page;
 
+/** An open ticket offered as one a report might repeat: a defect's, since only a defect's ticket is on a page (`onPage`). */
 const candidateOf = (ticket: Ticket): Candidate => ({
   workItem: ticket.workItem,
   title: ticket.title,
-  category: ticket.category,
+  category: defectCategory(ticket),
   symptom: 'class' in ticket.fingerprint ? ticket.fingerprint.class : undefined,
 });
 

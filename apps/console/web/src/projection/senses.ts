@@ -54,4 +54,11 @@ export const SENSE: Record<Sense, SenseWords> = {
     watches: 'a release against its baseline',
   },
   report: { group: 'Reports', name: 'Report', the: 'a report', check: 'the check', watches: 'from the widget' },
+  dependency: {
+    group: 'Dependencies',
+    name: 'Dependency sense',
+    the: 'the dependency sense',
+    check: 'the scan',
+    watches: 'the pins a move fixes',
+  },
 };

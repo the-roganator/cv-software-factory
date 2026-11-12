@@ -20,12 +20,10 @@ const ENTRIES = 30;
 function key(events: readonly NewEvent[]): KeyEntry[] {
   const found = new Map<string, KeyEntry>();
   for (const event of events) {
-    if (
-      event.type !== 'ticket.opened' ||
-      ('route' in event.payload.fingerprint && event.payload.fingerprint.route === '*')
-    )
-      continue;
+    if (event.type !== 'ticket.opened') continue;
     const { fingerprint } = event.payload;
+    // No entry is on every route, or a move's.
+    if (('route' in fingerprint && fingerprint.route === '*') || 'ecosystem' in fingerprint) continue;
     found.set(JSON.stringify(fingerprint), { id: `found-by-${event.work_item}`, fingerprint });
   }
   const unfound = Array.from({ length: ENTRIES - found.size }, (_, i) => ({

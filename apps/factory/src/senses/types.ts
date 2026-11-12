@@ -2,12 +2,12 @@
  * What a sense hands the runner. A sense checks the app and reports, for each of its checks, a pass or a finding; the
  * runner decides which findings become signals. The probes are the first sense, and the crawler is the second.
  */
-import type { ArtifactRef, Evidence, SymptomClass } from '@software-factory/events';
+import type { ArtifactRef, DefectSymptom, Evidence } from '@software-factory/events';
 import type { Check } from '../capture.ts';
 
 /** A check that did not pass: what a fair observer would call it, and the proof. */
 export interface Finding {
-  symptom: SymptomClass;
+  symptom: DefectSymptom;
   /** One plain sentence saying what was expected and what was seen. It goes in the log and beside the signal. */
   message: string;
   /** The route as the app names it, when it is not the check's own. */

@@ -202,7 +202,12 @@ describe('the door, asked for actions that name no pull request', () => {
 
   it('refuses a head in another ref’s form, a label that reads as pin, and the pin prefix itself as a branch', async () => {
     const { door, sent, refusals } = await worker(readPinScope(undefined));
-    for (const head of ['heads/factory/pin/zap', 'refs/remotes/origin/factory/pin/zap', 'refs/tags/factory/pin/zap']) {
+    for (const head of [
+      'heads/factory/pin/zap',
+      'refs/remotes/origin/factory/pin/zap',
+      'refs/tags/factory/pin/zap',
+      'pull/5/head',
+    ]) {
       const failed = await failure(door.act('openPullRequest', FACTORY, { head, base: 'main', title: 't', body: '' }));
       expect(failed?.status, head).toBe(422);
     }

@@ -376,8 +376,8 @@ export const pinHeadsOf =
 /** Whether a title is the one the pin watch gives a move of this name: the name, then one version, and nothing else. */
 const titleNames = (title: string, name: string): boolean => {
   const prefix = pinTitle(name, '');
-  // A name so long the title is cut within it: the title is that cut alone.
-  if (prefix.length === 256) return title === prefix;
+  // A name the title would alter or cut is no move the watch opens a pull request for (it opens an issue): none is it.
+  if (prefix !== `chore(pin): move ${name} to `) return false;
   return title.startsWith(prefix) && /^\S+$/.test(title.slice(prefix.length));
 };
 
@@ -434,30 +434,31 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
   };
 
   /**
-   * Martin's hold carried across the pin watch closing a move's pull request and opening another for the same move and
-   * target (a day the scan left it out, or Dependabot took it): an earlier closed pull request of the App's from the
-   * same branch with the same title, whose `pin` label anyone but the App took off, holds this one. A later target is
-   * a new title, and is not held, as the watch opens one again only for a later target than Martin closed.
+   * Martin's hold of a move carried across the pin watch closing its pull request and opening another (a day the scan
+   * left it out, or Dependabot took it), at any target: an earlier closed, unmerged pull request of the App's from the
+   * same branch whose `pin` label anyone but the App took off holds this one. They are read newest first, back to the
+   * last one merged from the branch: a merge ends every hold before it. One that cannot be read whole holds too, saying
+   * so, as do more than `OPEN_PAGES` pages of them.
    */
   const heldBefore = async (pull: QueuePull): Promise<QueueWait | undefined> => {
     const [owner] = repo.split('/');
+    const head = `${owner}:${encodeURIComponent(pull.head.ref)}`;
     for (let page = 1; page <= OPEN_PAGES; page++) {
       const { body } = await github.poll(
         repo,
-        `/repos/${repo}/pulls?state=closed&per_page=100&page=${page}&head=${owner}:${encodeURIComponent(pull.head.ref)}`,
+        `/repos/${repo}/pulls?state=closed&sort=created&direction=desc&per_page=100&page=${page}&head=${head}`,
         CLOSED,
       );
       for (const closed of body) {
-        if (closed.user?.id !== APP_USER || closed.head.repo?.full_name !== repo || closed.merged_at) continue;
-        if (closed.title !== pull.title || closed.head.ref !== pull.head.ref) continue;
+        if (closed.head.repo?.full_name !== repo || closed.head.ref !== pull.head.ref) continue;
+        if (closed.merged_at) return undefined;
+        if (closed.user?.id !== APP_USER) continue;
         const { events, whole } = await eventsOf(closed.number);
-        if (!whole) {
-          return { waits: 'not-a-pin', why: `#${closed.number}, of this move at this target, runs past what is read` };
-        }
+        if (!whole) return { waits: 'not-a-pin', why: `#${closed.number}, of this move, runs past what is read` };
         if (heldByLabel(events)) {
           return {
             waits: 'not-a-pin',
-            why: `Martin held this move at this target on #${closed.number} by taking its ${PIN_LABEL} label off`,
+            why: `Martin held this move on #${closed.number} by taking its ${PIN_LABEL} label off, and has merged none since`,
           };
         }
       }

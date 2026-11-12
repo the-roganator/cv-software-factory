@@ -277,7 +277,9 @@ export class FakeRepo {
           const listed = this.pulls.filter(
             (p) => (state === 'all' || p.state === state) && (head === undefined || p.head === head),
           );
-          return { body: page === 1 ? listed.map(pullOf) : [] };
+          // GitHub lists them newest first unless asked otherwise.
+          const ordered = q.get('direction') === 'asc' ? listed : [...listed].reverse();
+          return { body: page === 1 ? ordered.map(pullOf) : [] };
         },
       },
       {

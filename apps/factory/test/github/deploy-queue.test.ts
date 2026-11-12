@@ -450,7 +450,7 @@ function pinHarness(o: {
       },
       {
         method: 'GET',
-        path: /\/pulls\?state=closed&per_page=100&page=1&head=/,
+        path: /\/pulls\?state=closed&sort=created&direction=desc&per_page=100&page=1&head=/,
         answer: ({ path }) => {
           const branch = decodeURIComponent(path.split('&head=')[1]?.split(':').slice(1).join(':') ?? '');
           return { body: o.closed?.(branch) ?? [] };
@@ -552,7 +552,7 @@ describe('the pin queue watch', () => {
     expect(folded.enqueued).toEqual([]);
   });
 
-  it('carries Martin’s hold to a pull request the watch opened again for the same move and target', async () => {
+  it('carries Martin’s hold to a pull request the watch opened again for the move, at any target, until a merge', async () => {
     const closed = (over: Record<string, unknown> = {}) => ({
       number: 1001,
       title: 'chore(pin): move zap to 2.17.0',
@@ -577,12 +577,26 @@ describe('the pin queue watch', () => {
     await long.pass();
     expect(long.enqueued).toEqual([]);
 
-    // Not held: an earlier target (another title), one the App alone unlabelled, a merged one, or someone else's.
+    // Held at another target too: the hold is of the move, by its branch.
+    const other = pinHarness({ closed: () => [closed({ title: 'chore(pin): move zap to 2.16.0' })], events });
+    await other.pass();
+    expect(other.enqueued).toEqual([]);
+
+    // A merge from the branch since ends it: the closed pull requests are read newest first, back to the last merged.
+    const merged = closed({ number: 1003, merged_at: '2026-11-02T00:00:00Z' });
+    const ended = pinHarness({ closed: () => [merged, closed()], events });
+    await ended.pass();
+    expect(ended.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const before = pinHarness({ closed: () => [closed(), merged], events });
+    await before.pass();
+    expect(before.enqueued).toEqual([]);
+
+    // Not held: one the App alone unlabelled, a merged one, or someone else's, or another branch's.
     for (const earlier of [
-      closed({ title: 'chore(pin): move zap to 2.16.0' }),
       closed({ number: 1002 }),
       closed({ merged_at: '2026-11-01T00:00:00Z' }),
       closed({ user: { id: MARTIN } }),
+      closed({ head: { ref: 'factory/pin/zap2', repo: { full_name: REPO } } }),
     ]) {
       const free = pinHarness({ closed: () => [earlier], events });
       await free.pass();

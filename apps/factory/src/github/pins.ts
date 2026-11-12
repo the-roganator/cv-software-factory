@@ -369,6 +369,10 @@ export function pullTitle(move: ReadMove, target: Target): string {
   return pinTitle(move.name, versionOf(target) ?? move.to);
 }
 
+/** Whether a move's title holds its name and version as they are: nothing taken out, nothing cut. */
+export const titleIsExact = (name: string, to: string): boolean =>
+  pinTitle(name, to) === `chore(pin): move ${name} to ${to}`;
+
 /** The title of a move's pull request, from its name and the version it moves to: what the pin queue reads it by. */
 export const pinTitle = (name: string, to: string): string =>
   `chore(pin): move ${name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
@@ -587,6 +591,12 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         (target.kind !== 'image' && target.kind !== 'chart' && target.kind !== 'k3s' && target.kind !== 'version')
       ) {
         want(move, `its target, ${move.to || 'none'}, is not a version or digest a pin's line writes`);
+        continue;
+      }
+      // A pull request's title names its move exactly, for the pin queue reads the move by it: a name the title would
+      // alter (a backtick, a line break) or cut (past 256 characters) gets an issue instead.
+      if (!titleIsExact(move.name, versionOf(target) ?? move.to)) {
+        want(move, 'its name cannot be a pull request’s title whole: a backtick or line break in it, or too long');
         continue;
       }
       const twice = [...new Set(move.pins.flatMap((pin) => byPlace.get(`${pin.file}:${pin.line}`) ?? []))];

@@ -32,8 +32,8 @@ import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
 import { BranchRefused, guardWritable, pinBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
-import { QUEUES_DEPLOYS_IN } from './deploy-queue.ts';
-import { DeployRefused, MAX_CARRIES } from './deploys.ts';
+import { QUEUED_DEPLOYS, QUEUES_DEPLOYS_IN } from './deploy-queue.ts';
+import { DeployRefused, deployLabel, MAX_CARRIES, scratchBranch } from './deploys.ts';
 import { IssueRefused } from './issues.ts';
 import { REVIEW_CHECK } from './merging.ts';
 import { PatchRefused } from './patches.ts';
@@ -256,7 +256,7 @@ const isPinLabel = (label: string): boolean => labelAsRead(label) === PIN_LABEL;
 function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
   const branch = head?.replace(/^refs\/heads\//, '');
   // A head is a branch by its name, or `refs/heads/` and its name; any other ref's form is not read as a branch here.
-  if (branch !== undefined && /^(refs|heads)\//.test(branch)) {
+  if (branch !== undefined && /^(refs|heads|pull)\//.test(branch)) {
     throw new BranchRefused(`${head} is not a branch by its name: a pull request is opened from a branch's name.`);
   }
   if (branch !== undefined && pinBranch(branch)) {
@@ -295,6 +295,42 @@ async function guardPinNumber(repo: string, args: Record<string, unknown>, reads
   if (pinBranch(head)) {
     throw new BranchRefused(`#${number} is the pin watch's pull request, from ${head}: only the pin watch acts on it.`);
   }
+  if (deployBranch(repo, head)) {
+    throw new BranchRefused(
+      `#${number} is the deploy watch's pull request, from ${head}: only the deploy watch acts on it.`,
+    );
+  }
+}
+
+/**
+ * Whether a branch is one of the deploy watch's in a repository whose deploy pull requests the worker queues itself:
+ * the deploy branch, or the scratch branch its commit is made on. The deploy queue takes a pull request from it as the
+ * watch's own, so no worker that asks writes it, opens a pull request from it, or acts on one (ADR 0017).
+ */
+function deployBranch(repo: string, branch: string): boolean {
+  if (repo !== QUEUES_DEPLOYS_IN) return false;
+  return QUEUED_DEPLOYS.some((target) => target.branch === branch || scratchBranch(target) === branch);
+}
+
+/**
+ * Throws `BranchRefused` for what only the deploy watch does in this repository: write its branches (`branch`), open a
+ * pull request from one (`head`), or give one of its labels (`deploy: <profile>`).
+ */
+function guardDeployWatch(repo: string, args: Record<string, unknown>): void {
+  if (repo !== QUEUES_DEPLOYS_IN) return;
+  for (const field of ['branch', 'head'] as const) {
+    const named = args[field];
+    if (typeof named === 'string' && deployBranch(repo, named.replace(/^refs\/heads\//, ''))) {
+      throw new BranchRefused(`${named} is the deploy watch's: no worker that asks writes it or opens it.`);
+    }
+  }
+  const labels = args.labels;
+  if (Array.isArray(labels)) {
+    const watched = QUEUED_DEPLOYS.map((target) => labelAsRead(deployLabel(target)));
+    if (labels.some((label) => typeof label === 'string' && watched.includes(labelAsRead(label)))) {
+      throw new BranchRefused(`Only the deploy watch gives a pull request or issue a deploy label.`);
+    }
+  }
 }
 
 /**
@@ -311,21 +347,20 @@ function guardEnqueue(repo: string): void {
 }
 
 /**
- * Throws `BranchRefused` for a branch a worker asks to set at a pin branch's commit, in a repository the pin watch
+ * Throws `BranchRefused` for a branch a worker asks to set, or a check run it asks to post, at a pin branch's commit, in a repository the pin watch
  * writes: a second pull request with the pin move's head would have the gate hold the move (two pull requests that
  * have had one head), so only the pin watch's branches are at its commits.
  */
 async function guardPinHead(
   repo: string,
   sha: string,
-  pinHeads?: (repo: string) => Promise<readonly string[]>,
+  pinHeads: ((repo: string) => Promise<readonly string[]>) | undefined,
+  what: string,
 ): Promise<void> {
   if (!PIN_REPOS.includes(repo)) return;
-  if (!pinHeads) throw new Error(`The door cannot read the pin watch's branches in ${repo}, so it sets none there.`);
+  if (!pinHeads) throw new Error(`The door cannot read the pin watch's branches in ${repo}, so nothing is set there.`);
   if ((await pinHeads(repo)).includes(sha)) {
-    throw new BranchRefused(
-      `${sha.slice(0, 7)} is a pin branch's head: no other branch is set to a pin move's commit.`,
-    );
+    throw new BranchRefused(`${sha.slice(0, 7)} is a pin branch's head: no worker that asks has ${what} at it.`);
   }
 }
 
@@ -618,16 +653,20 @@ export function createWorkerServer({
     if (!actions) return send(res, 404, { error: 'not-found', message: 'No such action.' });
     let result: unknown;
     try {
+      guardDeployWatch(repo, parsed.data as Record<string, unknown>);
       await guardPinNumber(repo, parsed.data as Record<string, unknown>, reads);
       if (name === 'enqueuePullRequest') guardEnqueue(repo);
       if (name === 'setBranch') {
         const { branch, sha } = parsed.data as unknown as { branch: string; sha: string };
         // The branch's own refusal first, as the action gives it, before anything is read.
         guardWritable(branch);
-        await guardPinHead(repo, sha, pinHeads);
+        await guardPinHead(repo, sha, pinHeads, 'a branch is set');
       }
       if (name === 'createCheckRun' || name === 'updateCheckRun') {
-        await guardCheckName(repo, (parsed.data as unknown as { name?: string }).name, reads);
+        const { name: called, headSha } = parsed.data as unknown as { name?: string; headSha?: string };
+        await guardCheckName(repo, called, reads);
+        // A run at a pin move's head, named to look like a check it is not, would be shown beside the gate's.
+        if (headSha !== undefined) await guardPinHead(repo, headSha, pinHeads, 'a check run is posted');
       }
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(
         actions,

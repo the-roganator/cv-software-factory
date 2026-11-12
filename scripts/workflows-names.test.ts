@@ -14,7 +14,7 @@ const read = (file: string) => parse(readFileSync(`.github/workflows/${file}`, '
 const expression = (inside: string) => `\${{ ${inside} }}`;
 
 describe('run names', () => {
-  it("name a run on the merge queue's commit by the queue's branch, and leave a pull request's its title", () => {
+  it("name a run on the merge queue's commit by the queue's branch, and a pull request's by its title", () => {
     // The branch is gh-readonly-queue/main/pr-<number>-<base>, which names the pull request; GitHub's own name there is
     // the workflow's alone. An empty name leaves GitHub's, the pull request's title.
     const named = expression(

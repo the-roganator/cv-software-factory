@@ -10,7 +10,7 @@ controller:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8090"
   image:
-    tag: v1.10.0@sha256:187630ba722846bb8e079630364d3c29c8246a256be95785fd957b088f621c4e
+    tag: v1.10.2@sha256:2a395642ea411ae7b09274a560c3934b16134dfe36f5ffaaa6054c8a21a2eecf
   resources:
     requests:
       cpu: 20m

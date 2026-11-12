@@ -41,7 +41,12 @@ export type GitHubErrorKind =
   /** A write with no App key: the worker is running read-only. */
   | 'read-only'
   /** An answer that is not the shape the factory expects. */
-  | 'malformed';
+  | 'malformed'
+  /** A read that should simply be asked again: what it read changed while it read it (`READ_AGAIN`). */
+  | 'read-again';
+
+/** The kind of a read that should simply be asked again, which the worker answers with a 409 of its own. */
+export const READ_AGAIN = 'read-again' satisfies GitHubErrorKind;
 
 export class GitHubError extends Error {
   override name = 'GitHubError';

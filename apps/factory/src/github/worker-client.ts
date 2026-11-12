@@ -2,7 +2,14 @@
  * The GitHub worker, as the other workers call it (`github/server.ts`). Every action in GitHub goes through it: it
  * holds the App's key, and nothing else does. Reads go through it too (`reads.ts`), so it is the one place that
  * talks to GitHub.
+ *
+ * It calls the worker over `node:http`, not `fetch`: Node's `fetch` stops waiting for a response's headers after 300 s
+ * whatever the caller's signal, and the worker answers a read only once it has read it all, which for `moves` can take
+ * longer. Here the only limit is the call's own timeout.
  */
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { READ_AGAIN } from './client.ts';
 import {
   type ActingFor,
   type ActionArgs,
@@ -24,6 +31,12 @@ export const ISSUE_GONE = [403, 404, 410];
 
 /** Whether an action failed on an issue that is gone, or that the App may not change. */
 export const issueGone = (error: unknown) => error instanceof GitHubWorkerError && ISSUE_GONE.includes(error.status);
+
+/**
+ * The kind the worker answers, with a 409, when a read should simply be asked again (`scanning.ts`: a scan ran while
+ * its moves were read). GitHub's own 409 or 422 is relayed as `conflict`, never as this.
+ */
+export { READ_AGAIN };
 
 /** How long an action or a read may take. */
 const TIMEOUT_MS = 120_000;
@@ -101,21 +114,50 @@ export class GitHubWorker {
     headers: Record<string, string>,
     timeoutMs = TIMEOUT_MS,
   ): Promise<T> {
-    const response = await fetch(`${this.#url}/v1/${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify({ repo, ...args }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const body = (await response.json()) as { result?: T; error?: string; message?: string; refusal?: unknown };
-    if (!response.ok) {
-      throw new GitHubWorkerError(
-        response.status,
-        body.error ?? 'unknown',
-        body.message ?? `${path} failed`,
-        body.refusal,
-      );
+    const { status, text } = await post(
+      `${this.#url}/v1/${path}`,
+      { 'content-type': 'application/json', ...headers },
+      JSON.stringify({ repo, ...args }),
+      timeoutMs,
+    );
+    let body: { result?: T; error?: string; message?: string; refusal?: unknown };
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new GitHubWorkerError(status, 'malformed', `${path} answered ${status} with something other than JSON`);
+    }
+    if (status < 200 || status >= 300) {
+      throw new GitHubWorkerError(status, body.error ?? 'unknown', body.message ?? `${path} failed`, body.refusal);
     }
     return body.result as T;
   }
+}
+
+/** One POST, its status and its body as text, within `timeoutMs` from the start: no other limit on the wait. */
+function post(
+  url: string,
+  headers: Record<string, string>,
+  payload: string,
+  timeoutMs: number,
+): Promise<{ status: number; text: string }> {
+  const target = new URL(url);
+  const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const req = send(
+      target,
+      {
+        method: 'POST',
+        headers: { ...headers, 'content-length': Buffer.byteLength(payload) },
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.end(payload);
+  });
 }

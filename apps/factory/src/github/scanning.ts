@@ -30,7 +30,7 @@ import {
   type ScannedImage,
 } from '../vulnerabilities/moves.ts';
 import { readMessage, SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
-import { type GitHub, GitHubError } from './client.ts';
+import { type GitHub, GitHubError, READ_AGAIN } from './client.ts';
 import { DIGEST } from './registry.ts';
 import { type ZipError, zipEntry } from './zip.ts';
 
@@ -372,7 +372,7 @@ export class ScanReads {
     if (other === undefined) return;
     const { body } = await this.#github.poll(repo, `/repos/${repo}/actions/runs/${other}`, RUN);
     throw new GitHubError(
-      'conflict',
+      READ_AGAIN,
       body.status === 'completed'
         ? `The scan's run ${other} in ${repo} finished while its moves were read: read them again.`
         : `The scan's run ${other} in ${repo} has uploaded its results and has not finished: read its moves once it has.`,

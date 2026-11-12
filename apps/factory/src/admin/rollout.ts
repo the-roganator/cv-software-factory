@@ -237,8 +237,9 @@ class BetweenReleases extends Refused {
 }
 
 /**
- * How many times, a second apart, Stop the line looks for a pod of the stable version ready to serve before it leaves
- * the canary alone, so that a moment's readiness blip of the stable version's pods does not keep a canary from abort.
+ * How many times, `waitMs` apart (a second), Stop the line looks for a pod of the stable version ready to serve before
+ * it leaves the canary alone, so that a moment's readiness blip of the stable version's pods does not keep a canary from
+ * abort.
  */
 const STABLE_LOOKS = 3;
 
@@ -249,8 +250,8 @@ const POD_NAME_BASE = 58;
 class NoStablePod extends Error {}
 
 /**
- * How long Stop the line waits for the Rollout's status to catch up with its spec, a second at a time: a release just
- * starting has its canary named in a moment, and is aborted then.
+ * How long Stop the line waits for the Rollout's status to catch up with its spec, `waitMs` at a time (a second): a
+ * release just starting has its canary named in a moment, and is aborted then.
  */
 const STOP_WAITS = 5;
 
@@ -306,9 +307,12 @@ export class ReleaseControls {
   readonly #rollout: RolloutRef;
   readonly #sql: Sql;
   readonly #log: Logger;
+  /** How long Stop the line waits between its looks: a second, or less in the tests. */
+  readonly #waitMs: number;
 
-  constructor(kube: KubeWriter, rollout: RolloutRef, sql: Sql, log: Logger) {
+  constructor(kube: KubeWriter, rollout: RolloutRef, sql: Sql, log: Logger, { waitMs = 1_000 } = {}) {
     this.#kube = kube;
+    this.#waitMs = waitMs;
     this.#path =
       `/apis/argoproj.io/v1alpha1/namespaces/${encodeURIComponent(rollout.namespace)}` +
       `/rollouts/${encodeURIComponent(rollout.name)}`;
@@ -337,7 +341,7 @@ export class ReleaseControls {
       } catch (error) {
         if (error instanceof NoStablePod) looked += 1;
         else if (!(error instanceof BetweenReleases) || ++waited > STOP_WAITS) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await new Promise((resolve) => setTimeout(resolve, this.#waitMs));
       }
     }
   }

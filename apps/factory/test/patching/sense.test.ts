@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer } from 'node:http';
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
@@ -399,10 +399,11 @@ describe('the dependency sense', () => {
     for (let i = 0; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
   });
 
-  it('reads the day from a worker whose door listens a second after the sense first reads', async () => {
-    // The worker as a deploy restarts it: its port refuses until it listens, a second later.
+  it('reads the day from a worker whose door listens after the sense first reads', async () => {
+    // The worker as a deploy restarts it: its door refuses until it listens. The refusal is a port the OS gave and took
+    // back a moment before, which nothing here listens on again; the door listens on a port the OS gives then.
     const reserved = createServer();
-    const { port, url } = await listenLocal(reserved);
+    let { url } = await listenLocal(reserved);
     await new Promise((resolve) => reserved.close(resolve));
     const worker = createServer((req, res) => {
       let body = '';
@@ -413,28 +414,25 @@ describe('the dependency sense', () => {
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ result }));
       });
     });
-    const github = new GitHubWorker(url);
     const s = sense(
       senses({
-        moves: (repo) => github.read('moves', repo, {}),
-        dependencyPulls: (repo) => github.read('dependencyPulls', repo, {}),
+        moves: (repo) => new GitHubWorker(url).read('moves', repo, {}),
+        dependencyPulls: (repo) => new GitHubWorker(url).read('dependencyPulls', repo, {}),
       }),
     );
     const started = Date.now();
-    const listening = new Promise<Server>((resolve) =>
-      setTimeout(() => worker.listen(port, '127.0.0.1', () => resolve(worker)), 1_000),
-    );
     try {
+      // Listening only once the first pass is over, however long it took, so that pass is always refused.
       const first = await s.pass();
       expect(first.pass).toBe('refused');
       const { next } = nextAfter(first, started);
       // Taken again within the minute, not the hour a failed pass waits.
       expect(waitAfter(started, (5 * 60 + 30) * 60_000, next)).toBeLessThanOrEqual(60_000);
-      await listening;
+      ({ url } = await listenLocal(worker));
       expect((await s.pass()).pass).toBe('appended');
       expect(await days()).toHaveLength(1);
     } finally {
-      await new Promise((resolve) => worker.close(resolve));
+      if (worker.listening) await new Promise((resolve) => worker.close(resolve));
     }
   });
 

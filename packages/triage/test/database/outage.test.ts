@@ -95,8 +95,15 @@ const lockers = () =>
     order by granted desc, pid`;
 const holder = async () => (await lockers()).find((l) => l.granted)?.pid;
 
-/** Ends a backend, as a dropped connection or a restart of Postgres does. */
-const drop = (pid: number) => database.owner`select pg_terminate_backend(${pid})`;
+/**
+ * Ends a backend, as a dropped connection or a restart of Postgres does, and waits until it has: alone, the call only
+ * signals it, and on a slow machine its connection still answers as the same backend for a while after.
+ */
+const drop = async (pid: number) => {
+  const [{ ended } = { ended: false }] = await database.owner<{ ended: boolean }[]>`
+    select pg_terminate_backend(${pid}, 10000) as ended`;
+  expect(ended, `backend ${pid} ended`).toBe(true);
+};
 
 const triaged = async (id: string) =>
   (await database.owner<{ outcome: string | null }[]>`select outcome from inbox where id = ${id}`)[0]?.outcome;

@@ -92,6 +92,8 @@ const start = async (config: Partial<AdminConfig> = {}, kube?: KubeWriter, held:
       port: 0,
       host: '127.0.0.1',
       recheckMs: 100,
+      // Stop the line's second between looks, shortened: the looks are counted, not timed.
+      stopWaitMs: 10,
       held,
       ...(kube && { kube }),
     },
@@ -1592,7 +1594,7 @@ describe('the release controls', () => {
           body: { stopped: true, canary: 'kept', release: RELEASE, warning: NO_STABLE },
         });
         expect(await stopped()).toBe(true);
-        // Looked at three times, a second apart, before it is left.
+        // Looked at three times before it is left.
         expect(kube.slices).toEqual(Array(3).fill('/apis/discovery.k8s.io/v1/namespaces/website/endpointslices'));
         expect(kube.patches).toEqual([]);
         expect(await controls()).toHaveLength(before);

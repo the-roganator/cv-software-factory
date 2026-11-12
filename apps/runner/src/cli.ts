@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 /**
- * What a runner's pods run: `runner prepare` in the prepare pod, `runner agent` in the agent pod. Settings come from
+ * What a runner's pods run: `runner prepare` in the prepare pod, `runner agent` in the agent pod, and `runner lockfile`
+ * in a prepare pod after a coder's step that changed a manifest (`pins.ts`). Settings come from
  * the environment the job gives them (`step.ts`). Each prints JSON lines (`log.ts`), and a step that fails says why
  * in its last one before the pod ends in failure.
  */
 import { handBack, runAgent } from './agent.ts';
 import { errorText, runnerLog } from './log.ts';
-import { prepare } from './prepare.ts';
+import { lockfile, prepare } from './prepare.ts';
 
 const [command] = process.argv.slice(2);
-if (command === 'prepare' || command === 'agent') {
-  const log = runnerLog(process.env, command);
+if (command === 'prepare' || command === 'lockfile' || command === 'agent') {
+  const log = runnerLog(process.env, command === 'agent' ? 'agent' : 'prepare');
   try {
     if (command === 'prepare') {
       await prepare();
+    } else if (command === 'lockfile') {
+      await lockfile();
     } else {
       const handback = await runAgent();
       log(`the agent ${handback.ending}`, {
@@ -34,6 +37,6 @@ if (command === 'prepare' || command === 'agent') {
   await Promise.all([process.stdout, process.stderr].map((out) => new Promise((resolve) => out.write('', resolve))));
   process.exit();
 } else {
-  console.log('Usage:\n  runner prepare\n  runner agent');
+  console.log('Usage:\n  runner prepare\n  runner lockfile\n  runner agent');
   process.exitCode = 2;
 }

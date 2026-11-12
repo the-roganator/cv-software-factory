@@ -8,12 +8,12 @@ import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { RED_TEAM_LABEL } from '../../../policy/attacks.ts';
 import { RESULT_BYTES as RUNNER_RESULT_BYTES } from '../../runner/src/step.ts';
-import { agentJob, prepareJob } from '../src/runners/jobs.ts';
+import { agentJob, lockfileJob, prepareJob } from '../src/runners/jobs.ts';
 import { StepLogs } from '../src/runners/logs.ts';
 import { lineServers } from '../src/runners/serve.ts';
 import { RESULT_BYTES, type Runners } from '../src/runners/steps.ts';
 import { quiet } from './github/fake.ts';
-import { DONE, database, handBack, line, STEP, withRunnersStore } from './runners-harness.ts';
+import { DONE, database, handBack, line, PATCH, STEP, withRunnersStore } from './runners-harness.ts';
 
 // The tests of the scope fence, the agent pod's token and a stop, which prove guardrails, are in proofs/, Martin's
 // (CODEOWNERS).
@@ -37,6 +37,16 @@ describe('a runner’s jobs', () => {
     });
     expect(pod.volumes[0]).toEqual({ name: 'work', persistentVolumeClaim: { claimName: 'work-1001' } });
     expect(job.metadata.labels['factory.mrogan.dev/runner']).toBe('prepare');
+  });
+
+  it('give the lockfile pod a checkout of its own, and no part of the volume the agent may still write to', () => {
+    const job = lockfileJob(names, STEP, { image: 'runner', deadlineSeconds: 600 });
+    const pod = job.spec.template.spec;
+    expect(job.metadata.name).toBe('coder-1001-1-1-lockfile');
+    expect(job.metadata.labels['factory.mrogan.dev/runner']).toBe('prepare');
+    expect(pod.containers[0]?.args).toEqual(['lockfile']);
+    expect(pod.volumes.map((v) => v.name)).toEqual(['tmp', 'prepare']);
+    expect(pod.containers[0]?.env).toContainEqual({ name: 'WORK', value: '/prepare/work' });
   });
 
   it('give the agent pod the addresses it needs and no DNS, which would be a way out', () => {
@@ -80,6 +90,7 @@ describe('running a step', () => {
       'POST /apis/batch/v1/namespaces/runners/jobs Job coder-1001-1-1-agent',
       'DELETE /apis/batch/v1/namespaces/runners/jobs/coder-1001-1-1-prepare',
       'DELETE /apis/batch/v1/namespaces/runners/jobs/coder-1001-1-1-agent',
+      'DELETE /apis/batch/v1/namespaces/runners/jobs/coder-1001-1-1-lockfile',
     ]);
   });
 
@@ -114,6 +125,120 @@ describe('running a step', () => {
       job: 'coder-1003-2-1',
       reason: 'The agent pod succeeded without handing anything back.',
     });
+  });
+});
+
+describe('the pin step around a coder’s step', () => {
+  const MOVE = { ecosystem: 'npm' as const, name: 'vitest', from: '5.0.5', to: '5.1.0' };
+  const PINS = PATCH('pnpm-lock.yaml');
+  const printed = (msg: string, fields: Record<string, unknown>) =>
+    `${JSON.stringify({ level: 'info', pod: 'prepare', msg: 'checked out the commit' })}\n${JSON.stringify({ level: 'info', pod: 'prepare', msg, ...fields })}\n`;
+  /** The agent pod hands back; the lockfile pod, which has no token, does nothing but end. */
+  const agentHandsBack = (url: () => string, handback: typeof DONE) => async (env: Record<string, string>) => {
+    if (env.ANTHROPIC_API_KEY) await handBack(url(), env.ANTHROPIC_API_KEY, handback);
+  };
+  it('reads a move’s pins from the prepare pod’s log before the agent starts, and gives them beside its patch', async () => {
+    let url = '';
+    const steps: Record<string, string>[] = [];
+    const { runners, handbackUrl, close } = await line(
+      async (env) => {
+        steps.push(env);
+        await agentHandsBack(() => url, DONE)(env);
+      },
+      undefined,
+      quiet,
+      { podLogs: { prepare: printed('the pins', { move: MOVE, pins: PINS }) } },
+    );
+    url = handbackUrl;
+    const outcome = await runners.run({ ...STEP, move: MOVE, workItem: '1060', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({ kind: 'handed-back', job: 'coder-1060-1-1', handback: DONE, pins: PINS });
+    // The agent's step names the move too, which its pod does nothing with: the pins are its checkout's base.
+    expect(JSON.parse(steps[0]?.RUNNER_STEP ?? '{}')).toMatchObject({ move: MOVE });
+  });
+
+  it('holds the step when the pins wait for Martin, and never starts the agent', async () => {
+    const held = { path: 'pnpm-workspace.yaml', reason: 'sonic-boom stays at 4.2.1: pino@10.4.0 admit no 5.0.2' };
+    const { runners, calls, close } = await line(() => {}, undefined, quiet, {
+      podLogs: { prepare: printed('the pins wait for Martin', { held }) },
+    });
+    const outcome = await runners.run({ ...STEP, move: MOVE, workItem: '1061', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({ kind: 'held', job: 'coder-1061-1-1', ...held });
+    expect(calls.some((c) => c.includes('agent') && c.startsWith('POST'))).toBe(false);
+  });
+
+  it('fails a step whose prepare pod printed no pins for its move, and never starts the agent', async () => {
+    const { runners, calls, close } = await line(() => {}, undefined, quiet, {
+      podLogs: { prepare: printed('installed the dependencies', {}) },
+    });
+    const outcome = await runners.run({ ...STEP, move: MOVE, workItem: '1062', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({
+      kind: 'failed',
+      job: 'coder-1062-1-1',
+      reason: 'The prepare pod printed no pins for the move.',
+    });
+    expect(calls.some((c) => c.includes('agent') && c.startsWith('POST'))).toBe(false);
+  });
+
+  it('writes the lockfile in a Job of its own after a patch that changes a manifest, and gives it beside the patch', async () => {
+    const manifest = { ...DONE, patch: PATCH('package.json') };
+    const lockfile = PATCH('pnpm-lock.yaml');
+    let url = '';
+    const steps: Record<string, string>[] = [];
+    const { runners, calls, handbackUrl, close } = await line(
+      async (env) => {
+        steps.push(env);
+        await agentHandsBack(() => url, manifest)(env);
+      },
+      undefined,
+      quiet,
+      { podLogs: { prepare: printed('the lockfile', { lockfile }) } },
+    );
+    url = handbackUrl;
+    const outcome = await runners.run({ ...STEP, workItem: '1063', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({ kind: 'handed-back', job: 'coder-1063-1-1', handback: manifest, lockfile });
+    expect(calls).toContain('POST /apis/batch/v1/namespaces/runners/jobs Job coder-1063-1-1-lockfile');
+    // Its pod is told the coder's patch, and holds no token: it is a prepare pod, by its label and its fence.
+    const step = steps.find((env) => !env.ANTHROPIC_API_KEY);
+    expect(JSON.parse(step?.RUNNER_STEP ?? '{}')).toMatchObject({ change: manifest.patch });
+    expect(step).not.toHaveProperty('HANDBACK_URL');
+  });
+
+  it('fails the step when the lockfile pod does not write one, saying why', async () => {
+    const manifest = { ...DONE, patch: PATCH('package.json') };
+    let url = '';
+    const error =
+      'Only versions from the registry are pinned, and the manifests name package.json: shop "file:../shop"';
+    const { runners, handbackUrl, close } = await line(
+      agentHandsBack(() => url, manifest),
+      undefined,
+      quiet,
+      {
+        podLogs: { prepare: printed('the lockfile step failed', { level: 'error', error }) },
+      },
+    );
+    url = handbackUrl;
+    const outcome = await runners.run({ ...STEP, workItem: '1064', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({
+      kind: 'failed',
+      job: 'coder-1064-1-1',
+      reason: `The lockfile pod printed no lockfile: ${error}`,
+    });
+  });
+
+  it('writes no lockfile for a patch that also changes one, which the scope fence refuses whole', async () => {
+    const both = { ...DONE, patch: `${PATCH('package.json')}${PATCH('pnpm-lock.yaml')}` };
+    let url = '';
+    const { runners, calls, handbackUrl, close } = await line(agentHandsBack(() => url, both));
+    url = handbackUrl;
+    const outcome = await runners.run({ ...STEP, workItem: '1065', round: 1, deadlineSeconds: 60 });
+    await close();
+    expect(outcome).toEqual({ kind: 'handed-back', job: 'coder-1065-1-1', handback: both });
+    expect(calls.some((c) => c.includes('lockfile') && c.startsWith('POST'))).toBe(false);
   });
 });
 

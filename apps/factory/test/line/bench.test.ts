@@ -46,14 +46,29 @@ const PATCH = (path: string) => `diff --git a/${path} b/${path}
 `;
 
 /** The runner's steps as the bench calls them, keeping what each was given and what the agent saw. */
-function runner(answer: (env: NodeJS.ProcessEnv) => Promise<unknown>, patches: string[] = []) {
-  const seen: { prepare?: NodeJS.ProcessEnv; agent?: NodeJS.ProcessEnv; home?: string[]; token?: unknown } = {};
+function runner(
+  answer: (env: NodeJS.ProcessEnv) => Promise<unknown>,
+  patches: string[] = [],
+  printed: { prepare?: string[]; lockfile?: string[] } = {},
+) {
+  const seen: {
+    prepare?: NodeJS.ProcessEnv;
+    lockfile?: NodeJS.ProcessEnv;
+    agent?: NodeJS.ProcessEnv;
+    home?: string[];
+    token?: unknown;
+  } = {};
   const steps: RunnerSteps = {
-    prepare: async (env) => {
+    prepare: async (env, log) => {
       seen.prepare = env;
       // The app's CODEOWNERS, as a checkout of the fixture's commit has it.
       mkdirSync(join(String(env.WORK), 'repo', '.github'), { recursive: true });
       writeFileSync(join(String(env.WORK), 'repo', '.github', 'CODEOWNERS'), APP_CODEOWNERS);
+      for (const line of printed.prepare ?? []) log(line);
+    },
+    lockfile: async (env, log) => {
+      seen.lockfile = env;
+      for (const line of printed.lockfile ?? []) log(line);
     },
     commitPatch,
     runAgent: async (env, options) => {
@@ -73,6 +88,57 @@ function runner(answer: (env: NodeJS.ProcessEnv) => Promise<unknown>, patches: s
   };
   return { seen, steps };
 }
+
+describe('the bench, on a dependency’s move', () => {
+  const moving =
+    FIXTURES.coder['dependency-move'] ??
+    (() => {
+      throw new Error('The coder has no dependency-move fixture.');
+    })();
+
+  it('has the pin step write the move first, and the lockfile after a patch that changes a manifest', async () => {
+    const pins = PATCH('pnpm-lock.yaml');
+    const lockfile = PATCH('pnpm-lock.yaml').replace('+new', '+newer');
+    const line = (msg: string, fields: object) => JSON.stringify({ pod: 'prepare', msg, ...fields });
+    const { seen, steps } = runner(async () => CODED, [PATCH('package.json') + PATCH('test/dependencies.test.ts')], {
+      prepare: [line('checked out the commit', {}), line('the pins', { move: moving.move, pins })],
+      lockfile: [line('the lockfile', { lockfile })],
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'bench-'));
+    const benched = await bench({
+      agent: 'coder',
+      fixture: moving,
+      sql: database.as.line,
+      gateway: 'http://localhost:8180',
+      dir,
+      runner: steps,
+      log: () => {},
+    });
+    expect(stepFrom(seen.prepare)).toMatchObject({ move: moving.move });
+    expect(benched).toMatchObject({ pins, lockfile });
+    // The lockfile step starts from the fixture's commit, with the pins and the coder's patch on it.
+    expect(stepFrom(seen.lockfile)).toMatchObject({
+      commit: moving.commit,
+      pins,
+      change: PATCH('package.json') + PATCH('test/dependencies.test.ts'),
+    });
+  });
+
+  it('writes no lockfile for a patch that changes no manifest', async () => {
+    const { seen, steps } = runner(async () => CODED, [PATCH('test/dependencies.test.ts')]);
+    const benched = await bench({
+      agent: 'coder',
+      fixture: moving,
+      sql: database.as.line,
+      gateway: 'http://localhost:8180',
+      dir: mkdtempSync(join(tmpdir(), 'bench-')),
+      runner: steps,
+      log: () => {},
+    });
+    expect(seen.lockfile).toBeUndefined();
+    expect(benched).not.toHaveProperty('lockfile');
+  });
+});
 
 describe('the bench', () => {
   it('refuses a fixture whose protected paths are not its checkout’s CODEOWNERS, naming what differs', async () => {

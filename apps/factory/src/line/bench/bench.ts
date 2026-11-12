@@ -23,6 +23,10 @@
  * A step that reads a change, the reviewer's, has it committed on the base after the prepare step, at the seed's
  * time, as a pull request's head; the base is named `base`, as the prepare step names a real step's base.
  *
+ * A fixture with a dependency's move has the pin step write it, as the prepare pod does on the line, and the bench
+ * shows the pins it wrote (`pins`); after a coder's patch that changes a manifest, the pin step writes the lockfile for
+ * it as the lockfile pod does (`lockfile`). Both run on the host, with its pnpm and its network.
+ *
  * A fixture that plants instructions (guardrail 8) names the paths they ask for, and each step is held to leave them
  * alone (`followed`): its patch changes none, its spec's scope takes none, its findings name none.
  */
@@ -37,7 +41,7 @@ import type { Sql } from 'postgres';
 import type { AgentOptions } from '../../../../runner/src/agent.ts';
 import type { Handback } from '../../../../runner/src/step.ts';
 import { filesIn, PatchRefused } from '../../github/patches.ts';
-import { CODEOWNERS_PATHS, protectedFrom } from '../../github/paths.ts';
+import { CODEOWNERS_PATHS, changesManifest, protectedFrom } from '../../github/paths.ts';
 import type { Fenced } from '../../runners/scope.ts';
 import { oneRunWorkItem } from '../../runners/smoke.ts';
 import { type AgentDefinition, stepFrom } from '../agents/agent.ts';
@@ -53,6 +57,8 @@ export const BENCH_DIR = join(homedir(), '.cache', 'factory-bench');
 /** The runner's two steps, as `apps/runner` has them, and the prepare step's commit of a seed. */
 export interface RunnerSteps {
   prepare(env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<void>;
+  /** The pin step after a coder's step that changed a manifest (`runner lockfile`). */
+  lockfile(env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<void>;
   runAgent(env: NodeJS.ProcessEnv, options: AgentOptions): Promise<Handback>;
   commitPatch(dir: string, patch: string, commit: { message: string; author: string }): Promise<void>;
 }
@@ -85,6 +91,10 @@ export interface Benched {
   unreadable?: true;
   /** For a coder: what the scope fence made of its patch, and the step a refusal sent it back to. */
   fence?: Fenced;
+  /** For a fixture with a move: the pins the pin step wrote before the agent, as a patch. */
+  pins?: string;
+  /** For a coder's patch that changed a manifest: the lockfile the pin step wrote after it, as a patch. */
+  lockfile?: string;
   again?: Benched;
 }
 
@@ -156,7 +166,17 @@ export async function bench<A extends LineAgent>(o: BenchOptions<A>): Promise<Be
   let input = o.fixture.input;
   const steps: Benched[] = [];
   for (let attempt = 1; ; attempt++) {
-    const benched = await step(o, dir, workItem, attempt, input);
+    const printed: string[] = [];
+    const log = (line: string) => {
+      printed.push(line);
+      o.log(line);
+    };
+    const benched = await step({ ...o, log }, dir, workItem, attempt, input);
+    const pins = said(printed, 'the pins')?.pins;
+    if (typeof pins === 'string' && pins) benched.pins = pins;
+    if (o.agent === 'coder' && changesManifest(benched.handback.patch)) {
+      benched.lockfile = await lockfileFor(o, dir, benched.pins, benched.handback.patch);
+    }
     steps.push(benched);
     if (o.agent !== 'coder' || !benched.handback.patch) break;
     const coderInput = input as CoderInput;
@@ -171,6 +191,52 @@ export async function bench<A extends LineAgent>(o: BenchOptions<A>): Promise<Be
   }
   // Each step, with the one after it.
   return steps.reduceRight((after, benched) => ({ ...benched, again: after }));
+}
+
+/** The last line the runner printed with a message, as JSON. */
+function said(lines: readonly string[], msg: string): Record<string, unknown> | undefined {
+  return lines
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .findLast((line) => line.msg === msg);
+}
+
+/**
+ * The lockfile the pin step writes for a coder's patch that changed a manifest, on a fresh checkout of the fixture's
+ * commit with its seed, the pins and the patch: as the lockfile pod does on the line, in the bench's own folder.
+ */
+async function lockfileFor<A extends LineAgent>(
+  o: BenchOptions<A>,
+  dir: string,
+  pins: string | undefined,
+  change: string,
+): Promise<string> {
+  const work = join(dir, 'lockfile');
+  const prepareDir = join(dir, 'prepare');
+  await rm(work, { recursive: true, force: true });
+  await rm(prepareDir, { recursive: true, force: true });
+  await mkdir(prepareDir, { recursive: true });
+  const step = {
+    agent: o.agent,
+    repository: `https://github.com/${APP_REPOSITORY}.git`,
+    commit: o.commit ?? o.fixture.commit,
+    prompt: 'The lockfile for the change.',
+    maxTurns: 1,
+    ...(o.fixture.seed ? { seed: o.fixture.seed } : {}),
+    ...(pins ? { pins } : {}),
+    change,
+  };
+  const printed: string[] = [];
+  await o.runner.lockfile(
+    { ...process.env, WORK: work, PREPARE: prepareDir, RUNNER_STEP: JSON.stringify(step) },
+    (line) => {
+      printed.push(line);
+      o.log(line);
+    },
+  );
+  const lockfile = said(printed, 'the lockfile')?.lockfile;
+  if (typeof lockfile !== 'string') throw new Error('The lockfile step printed no lockfile.');
+  return lockfile;
 }
 
 /** The fence's verdict, or nothing for a patch it cannot read, which the line fails the step for. */
@@ -199,6 +265,7 @@ async function step<A extends LineAgent>(
     prompt: definition.prompt(input),
     resume: definition.resume?.(input),
     seed: o.fixture.seed,
+    move: o.fixture.move,
   });
   const home = join(dir, 'home');
   const prepareDir = join(dir, 'prepare');

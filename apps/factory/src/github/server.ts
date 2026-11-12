@@ -109,15 +109,29 @@ const ARGS = {
       deletions: z.array(path).max(200),
     }),
   }),
-  applyPatch: z.strictObject({
-    branch,
-    expectedHead: sha,
-    patch: z
-      .string()
-      .min(1)
-      .max(2 * 1024 * 1024),
-    message: text(10_000).min(1),
-  }),
+  applyPatch: z
+    .strictObject({
+      branch,
+      expectedHead: sha,
+      // Empty only beside the pin step's pins, when the move is the whole change (refined below).
+      patch: z.string().max(2 * 1024 * 1024),
+      /** The pin step's, on either side of the agent's: the guard holds each to the pin step's own rule. */
+      pins: z
+        .string()
+        .min(1)
+        .max(2 * 1024 * 1024)
+        .optional(),
+      lockfile: z
+        .string()
+        .min(1)
+        .max(2 * 1024 * 1024)
+        .optional(),
+      message: text(10_000).min(1),
+    })
+    .refine((commit) => commit.patch !== '' || commit.pins !== undefined, {
+      message: 'a commit has an agent’s patch, or the pin step’s pins',
+      path: ['patch'],
+    }),
   openPullRequest: z.strictObject({
     head: branch,
     base: branch,

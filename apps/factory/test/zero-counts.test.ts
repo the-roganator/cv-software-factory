@@ -59,14 +59,14 @@ function product(sets: Record<string, readonly unknown[]>): string[] {
 }
 
 const AGENTS = ['planner', 'coder', 'reviewer', 'describer'];
-const ENDINGS = ['done', 'failed', 'max-turns', 'capped', 'stopped', 'stale', 'effects-failed', 'errored'];
+const ENDINGS = ['done', 'failed', 'max-turns', 'capped', 'stopped', 'held', 'stale', 'effects-failed', 'errored'];
 const RELEASES = ['promoted', 'rolled-back', 'aborted', 'errored'];
 
 describe('the counts', () => {
   it('start at 0 for each label set the line can count, a dry run’s only on a dry run', async () => {
     line.zeroCounts({ providerOf: (agent) => (agent === 'coder' ? 'local' : 'anthropic'), dryRun: false });
     const steps = await zeros('line.steps');
-    expect(steps).toHaveLength(32);
+    expect(steps).toHaveLength(36);
     expect(steps).toEqual(
       [
         ...product({ agent: ['planner', 'reviewer', 'describer'], outcome: ENDINGS, provider: ['anthropic'] }),

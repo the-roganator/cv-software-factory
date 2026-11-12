@@ -92,6 +92,7 @@ import type { KeyObject } from 'node:crypto';
 import { hostname } from 'node:os';
 import { trace } from '@opentelemetry/api';
 import type {
+  Ecosystem,
   Effort,
   Evidence,
   NewEvent,
@@ -146,7 +147,7 @@ import type {
 } from '../github/server.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
-import type { StepOutcome, StepRequest } from '../runners/steps.ts';
+import type { Step, StepOutcome, StepRequest } from '../runners/steps.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
 import {
@@ -191,6 +192,7 @@ import {
   type LineEvent,
   lookDue,
   type Next,
+  needsHold,
   STAGE_OF,
   type WorkItemState,
 } from './machine.ts';
@@ -1690,6 +1692,19 @@ export class Line {
     }
   }
 
+  /** The move a dependency's work item names, as it was opened, for the pin step: none for any other work item. */
+  async #moveOf(workItem: string): Promise<Step['move']> {
+    const [row] = await this.#o.sql<
+      { dependency: { name: string; ecosystem: Ecosystem; from: string; to: string } | null }[]
+    >`
+      select payload->'dependency' as dependency
+      from events where work_item = ${workItem} and type = 'work-item.opened' order by seq limit 1`;
+    const dependency = row?.dependency;
+    return dependency
+      ? { ecosystem: dependency.ecosystem, name: dependency.name, from: dependency.from, to: dependency.to }
+      : undefined;
+  }
+
   /** The ticket's first signal: its sense, check, route and evidence, never a report's words. */
   async #firstSignal(workItem: string): Promise<FirstSignal | undefined> {
     const [row] = await this.#o.sql<
@@ -1752,6 +1767,9 @@ export class Line {
       // A pull request's head is checked out as GitHub has it; a dry run's, which GitHub never had, as the real
       // commit under it with the dry run's commits made on it in the runner.
       const checkout = pr ? await github.read('checkout', repo, { sha: commit }) : { commit, commits: [] };
+      // A dependency's move is the pin step's to write, before the coder's first round: once the pull request is open,
+      // its head has the pins.
+      const move = agent === 'coder' && !pr ? await this.#moveOf(workItem) : undefined;
       let started: Awaited<ReturnType<typeof definition.start>>;
       try {
         started = await definition.start({ ...this.#context(item, round, state, commit, base), change });
@@ -1769,6 +1787,7 @@ export class Line {
             base: reads ? base : undefined,
             prompt: started.prompt,
             resume: started.resume,
+            move,
           },
         ),
         workItem,
@@ -1781,6 +1800,16 @@ export class Line {
         [A.job]: outcome.job,
         [A.outcome]: outcome.kind === 'handed-back' ? outcome.handback.ending : outcome.kind,
       });
+      if (outcome.kind === 'held') {
+        // No agent ran: the move needs a file only Martin may change, and the work item waits for him, told which.
+        const protectedPaths = await github.read('protectedPaths', repo, { ref: commit });
+        const hold = needsHold([{ path: outcome.path, reason: outcome.reason }], protectedPaths);
+        await this.#append(workItem, [holdDraft('factory', { ...hold, reason: cutTo(outcome.reason, 300) })]);
+        await this.#queue.moved(workItem);
+        countStep(agent, provider, 'held');
+        this.#o.log.info({ workItem, agent, job: outcome.job, reason: outcome.reason }, 'the pins wait for Martin');
+        return;
+      }
       if (outcome.kind === 'stopped') {
         countStep(agent, provider, 'stopped');
         this.#o.log.info({ workItem, agent, job: outcome.job }, 'a step stopped with the line; it runs again on start');
@@ -1819,6 +1848,14 @@ export class Line {
         commit,
         base,
         handback,
+        ...(outcome.pins || outcome.lockfile
+          ? {
+              pinned: {
+                ...(outcome.pins ? { pins: outcome.pins } : {}),
+                ...(outcome.lockfile ? { lockfile: outcome.lockfile } : {}),
+              },
+            }
+          : {}),
         called,
         begun: [],
         done: {},
@@ -1975,6 +2012,7 @@ export class Line {
         await sendSignal(this.#o.sql, { ...signal, observedAt }, signalId(workItem, key));
       },
       keepSession: (session) => this.#queue.setSession(workItem, session),
+      pinned: pending.pinned ?? {},
       log: this.#o.log,
     };
   }

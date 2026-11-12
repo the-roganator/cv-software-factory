@@ -28,6 +28,10 @@
 #   nothing, and runs on a pull request alone, from a branch of this repository: its first step refuses a fork's, whose
 #   token would read the alerts, which are not public. A fork supplies its own copy of this file, so the step binds a
 #   fork that keeps it; the repository's approval of fork runs, which no fork can change, binds one that does not.
+#
+# Kept between runs, by the default branch's runs alone (a pull request's restores): Trivy's analysis of each layer,
+# keyed by Trivy's pin, and the day's lookups of registries and releases (memo.ts). Neither is what a verdict depends
+# on: the advisory databases are pulled afresh every run, and code scanning and the exceptions are read every run.
 name: vulnerabilities
 
 on:
@@ -192,6 +196,30 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node kustomize helm yq cosign
+      # What the scan derived, kept between runs, never what its verdicts depend on (the advisory databases, the alerts,
+      # the exceptions). Trivy's analysis of each layer (scan.ts --cache), which Trivy keys by the layer's digest and its
+      # own analysers: this key names Trivy's pin, so a new Trivy starts afresh, and the day, so the day's first run on
+      # the default branch saves what it added, from the month's latest, and each month starts afresh. And the day's
+      # lookups of registries and releases (deadlines.ts --memo, memo.ts), which a run by the schedule or by hand asks
+      # afresh. Only the default branch's runs save; a pull request's proving run restores and never saves, and a
+      # pull request's own entries are never one the default branch reads.
+      - name: The day
+        id: day
+        run: |
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - id: layers
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy/fanal
+          key: vulnerabilities-layers-${{ hashFiles('factory/deploy/images/trivy/Dockerfile') }}-${{ steps.day.outputs.day }}
+          restore-keys: vulnerabilities-layers-${{ hashFiles('factory/deploy/images/trivy/Dockerfile') }}-${{ steps.day.outputs.month }}-
+      - id: lookups
+        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lookups/deadlines.json
+          key: vulnerabilities-lookups-${{ steps.day.outputs.day }}
       # GHCR with the job's token, read-only, for Trivy, its database and cosign: any other registry anonymously.
       - name: Sign in to GHCR
         env:
@@ -202,7 +230,7 @@ jobs:
         run: |
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" --upload \
-            --repository "$GITHUB_REPOSITORY"
+            --repository "$GITHUB_REPOSITORY" --cache "$RUNNER_TEMP/trivy"
       # What fixes each finding and since when, ended into each result's message before the upload, each deadline, and the
       # moves (deadlines.ts, moves.ts). It reads code scanning with the job's token, for the day each alert states and
       # when each was made, npm's registry, Node's release index, k3s's releases, the charts' repositories, the tools'
@@ -214,7 +242,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --write
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --write --memo "$RUNNER_TEMP/lookups/deadlines.json"
+      # The default branch's runs alone save, each entry once (a day's key is not saved again). Trivy writes its cache as
+      # root, in its image: the runner's user is given it to read.
+      - name: Give the runner Trivy's analysis to save
+        if: ${{ !cancelled() && steps.layers.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        run: |
+          if [ -d "$RUNNER_TEMP/trivy" ]; then sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/trivy"; fi
+      - if: ${{ !cancelled() && steps.layers.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy/fanal
+          key: ${{ steps.layers.outputs.cache-primary-key }}
+      - if: ${{ steps.scan.outputs.sarif == 'true' && steps.lookups.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lookups/deadlines.json
+          key: vulnerabilities-lookups-${{ steps.day.outputs.day }}
       # The moves, as the log printed them: what the GitHub worker reads, from the default branch's last finished run.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ steps.scan.outputs.sarif == 'true' }}
@@ -327,6 +371,24 @@ jobs:
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           working_directory: factory
           install_args: node kustomize helm yq cosign
+      # As the scan keeps them: restored, never saved.
+      - name: The day
+        id: day
+        run: |
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - id: layers
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy/fanal
+          key: vulnerabilities-layers-${{ hashFiles('factory/deploy/images/trivy/Dockerfile') }}-${{ steps.day.outputs.day }}
+          restore-keys: vulnerabilities-layers-${{ hashFiles('factory/deploy/images/trivy/Dockerfile') }}-${{ steps.day.outputs.month }}-
+      - id: lookups
+        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lookups/deadlines.json
+          key: vulnerabilities-lookups-${{ steps.day.outputs.day }}
       - name: Sign in to GHCR
         env:
           TOKEN: ${{ github.token }}
@@ -336,14 +398,14 @@ jobs:
           echo "The base read: $(git -C scanned rev-parse HEAD), the tip of ${GITHUB_BASE_REF} when coverage ran."
           node factory/apps/factory/src/vulnerabilities/scan.ts scanned \
             --trivy-pin factory/deploy/images/trivy/Dockerfile --out "$RUNNER_TEMP/scan" \
-            --repository "$GITHUB_REPOSITORY"
+            --repository "$GITHUB_REPOSITORY" --cache "$RUNNER_TEMP/trivy"
       # The deadlines' counts and the moves against the repository's alerts as they stand, failing on none of them.
       - name: Deadlines and moves, failing on none
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --prove
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --prove --memo "$RUNNER_TEMP/lookups/deadlines.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: moves

@@ -93,9 +93,25 @@ describe('the platform check’s end', () => {
     );
   });
 
+  it('fails a container that exited and waits to start again, as a crash loop’s does between its back-offs', () => {
+    // As run 43180006391 ended: `crashes-after-start` in Error, its sixth exit 3m23s before, neither waiting nor running.
+    const exited = pod('factory', 'crashes-after-start-569dcc87f8-v5jhv', 'Running', [
+      {
+        name: 'broken',
+        ready: false,
+        restartCount: 6,
+        state: { terminated: { exitCode: 1, reason: 'Error', finishedAt: ago(5) } },
+        lastState: { terminated: { exitCode: 1, reason: 'Error', finishedAt: ago(203) } },
+      },
+    ]);
+    expect(judge([exited]).out).toBe(
+      'factory/crashes-after-start-569dcc87f8-v5jhv: container broken not ready, exited 1, Error\n',
+    );
+  });
+
   it('fails a pod that runs and never becomes ready', () => {
     const unready = pod('factory', 'unready-7d9f', 'Running', [{ ...running('unready'), ready: false }]);
-    expect(judge([unready]).out).toBe('factory/unready-7d9f: container unready running, not ready\n');
+    expect(judge([unready]).out).toBe('factory/unready-7d9f: container unready not ready, running\n');
   });
 
   it('fails a pod that cannot start: an image it cannot pull, or one never scheduled', () => {
@@ -152,7 +168,9 @@ describe('the platform check’s end', () => {
       out: '',
       err: 'retry: factory/migrate-4kq2x: a failed attempt of Job factory/migrate, which completed\n',
     });
-    expect(judge([errored], [job('factory', 'migrate', false)]).out).toBe('factory/migrate-4kq2x: Failed\n');
+    expect(judge([errored], [job('factory', 'migrate', false)]).out).toBe(
+      'factory/migrate-4kq2x: container migrate not ready, exited 1, Error; Failed\n',
+    );
   });
 
   it('judges the pods of a Job not yet complete as any other', () => {
@@ -176,7 +194,7 @@ describe('the platform check’s end', () => {
       { ...running('c'), ready: false },
     ]);
     expect(judge([two]).out).toBe(
-      'factory/two-1: container c running, not ready; container b restarted 40s ago (3 restarts; last exit 2, Error)\n',
+      'factory/two-1: container c not ready, running; container b restarted 40s ago (3 restarts; last exit 2, Error)\n',
     );
   });
 
@@ -199,7 +217,7 @@ describe('the platform check’s end', () => {
     };
     const website = pod('website', 'website-1', 'Running', [{ ...running('website'), ready: false }]);
     expect(judge([journeys, website], [job('website', 'journeys', false)]).out).toBe(
-      'website/website-1: container website running, not ready\n',
+      'website/website-1: container website not ready, running\n',
     );
   });
 });

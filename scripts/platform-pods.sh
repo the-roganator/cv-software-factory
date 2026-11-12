@@ -6,7 +6,7 @@
 # A pod is a fault, named with its reason, when any of these holds:
 #   - a container, or an init container, is waiting: CrashLoopBackOff, an image it cannot pull, a config it cannot
 #     read, or any other reason (an init container is judged on that alone);
-#   - a container is running and not ready;
+#   - a container is not ready: running and failing its readiness, or exited and not yet started again;
 #   - the pod is Pending (not scheduled, or not started), Failed or Unknown;
 #   - a container last ended less than RECENT seconds ago (default 120): it is still restarting.
 # A pod that has Succeeded is not a fault, nor is any pod of a Job that has completed: a Job's attempts that failed
@@ -48,7 +48,9 @@ judge() { # pods.json jobs.json now
     [
       (.status.initContainerStatuses[]? | waiting("init container")),
       (.status.containerStatuses[]? | waiting("container")),
-      (.status.containerStatuses[]? | select(.state.running and (.ready | not)) | "container \(.name) running, not ready"),
+      (.status.containerStatuses[]? | select((.ready | not) and (.state.waiting | not)) |
+        "container \(.name) not ready, \(if .state.running then "running" elif .state.terminated then
+          "exited \(.state.terminated.exitCode), \(.state.terminated.reason // "unknown")" else "not started" end)"),
       (.status.containerStatuses[]? | ended as $at | select($now - $at < $recent) |
         "container \(.name) restarted \($now - $at | floor)s ago (\(.restartCount) restarts; last exit \(.lastState.terminated.exitCode), \(.lastState.terminated.reason // "unknown"))"),
       (select(.status.phase == "Pending" and ([.status.containerStatuses[]?, .status.initContainerStatuses[]? | select(.state.waiting)] | length == 0)) |

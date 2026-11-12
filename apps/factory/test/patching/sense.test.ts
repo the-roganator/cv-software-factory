@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
-import { GitHubWorkerError } from '../../src/github/worker-client.ts';
+import { GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
 import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
-import { PatchingSense, type Senses } from '../../src/patching/sense.ts';
+import { exitCode, MOST_AGAIN, nextAfter, type Pass, PatchingSense, type Senses } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
 import {
@@ -182,6 +182,97 @@ describe('the dependency sense', () => {
       "the moves of the-roganator/cv-software-factory: The factory's App cannot read the scan's moves: it lacks `security_events: read`.",
     );
     expect(said[2]?.failed).toEqual(["the cluster's pods: GET /api/v1/pods answered 403: forbidden"]);
+  });
+
+  it('reads again, as nothing failed, when the worker asks for the moves read again, and appends nothing', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'A scan finished during the read: read again.');
+    const result = await sense(
+      senses({ moves: async (repo) => (repo === APP ? Promise.reject(again) : factoryMoves()) }),
+    ).pass();
+    expect(result).toEqual({
+      pass: 'again',
+      why: [`the moves of ${APP}: A scan finished during the read: read again.`],
+    });
+    expect(await days()).toEqual([]);
+    expect(logged.filter((l) => l.level >= 50)).toEqual([]);
+    expect(
+      logged.some(
+        (l) => l.level === 30 && l.msg === 'patching: a scan finished during the read, so the day is read again soon',
+      ),
+    ).toBe(true);
+  });
+
+  it('is a failed pass when the Dependabot read is asked for again: only the moves read is read again', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    const result = await sense(senses({ dependencyPulls: async () => Promise.reject(again) })).pass();
+    expect(result.pass).toBe('failed');
+  });
+
+  it("is a failed pass when GitHub's own 409 comes from the moves read: only the worker's ask is read again", async () => {
+    const conflict = new GitHubWorkerError(409, 'conflict', 'GitHub answered 409');
+    const result = await sense(senses({ moves: async () => Promise.reject(conflict) })).pass();
+    expect(result).toEqual({
+      pass: 'failed',
+      failed: [`the moves of ${FACTORY}: GitHub answered 409`, `the moves of ${APP}: GitHub answered 409`],
+    });
+    expect(await days()).toEqual([]);
+  });
+
+  it('counts reads to take again as a failure once they have come an hour in a row', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    const s = sense(senses({ moves: async () => Promise.reject(again) }));
+    const passes: string[] = [];
+    for (let i = 0; i < MOST_AGAIN; i++) passes.push((await s.pass()).pass);
+    expect(passes).toEqual([...Array(MOST_AGAIN - 1).fill('again'), 'failed']);
+    const errors = logged.filter((l) => l.level === 50);
+    expect(errors.map((l) => l.msg)).toEqual([
+      `patching: 2 of the reads failed, asked for again ${MOST_AGAIN} times in a row, so the day is not appended`,
+    ]);
+  });
+
+  it('starts the count of reads to take again anew after any other pass, on the same sense', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    let answer = false;
+    const s = sense(
+      senses({
+        moves: async (repo) => (answer ? (repo === FACTORY ? factoryMoves() : appMoves()) : Promise.reject(again)),
+      }),
+    );
+    for (let i = 0; i < MOST_AGAIN - 1; i++) expect((await s.pass()).pass).toBe('again');
+    answer = true;
+    expect((await s.pass()).pass).toBe('appended');
+    answer = false;
+    // Were the count kept, the next would be the sixth in a row, and a failure.
+    for (let i = 0; i < MOST_AGAIN - 1; i++) expect((await s.pass()).pass).toBe('again');
+  });
+
+  it('says when to read next and what --once exits with, for each pass', () => {
+    const now = Date.parse('2026-11-11T06:00:00Z');
+    const day = (finished: string) =>
+      ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
+    expect(nextAfter({ pass: 'again', why: [] }, now)).toEqual({ next: 'soon', why: 'again' });
+    expect(nextAfter({ pass: 'failed', failed: [] }, now)).toEqual({ next: 'hour', why: 'failed' });
+    expect(nextAfter({ pass: 'not-real' }, now)).toEqual({ next: 'daily' });
+    expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toEqual({ next: 'daily' });
+    expect(nextAfter(day('2026-11-10T04:58:00Z'), now)).toEqual({ next: 'hour', why: 'stale' });
+    expect([
+      exitCode(day('2026-11-11T04:58:00Z')),
+      exitCode({ pass: 'not-real' }),
+      exitCode({ pass: 'failed', failed: [] }),
+      exitCode({ pass: 'again', why: [] }),
+    ]).toEqual([0, 0, 1, 75]);
+  });
+
+  it('is a failed pass when a 409 comes beside a read that failed', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    const result = await sense(
+      senses({
+        moves: async () => Promise.reject(again),
+        running: async () => Promise.reject(new Error('GET /api/v1/pods answered 403: forbidden')),
+      }),
+    ).pass();
+    expect(result.pass).toBe('failed');
+    expect(await days()).toEqual([]);
   });
 
   it('does not compare the cluster with a list a scan did not write, and says the scan failed', async () => {

@@ -152,6 +152,13 @@ jobs:
           name: refusal-records
           path: ${{ runner.temp }}/records
           if-no-files-found: warn
+      # The end: every pod running and ready, none restarting (scripts/platform-pods.sh), which Argo CD's health does
+      # not say of a Deployment with no readiness probe until its progress deadline. Each pod that is not is named here
+      # and in the step summary, with its logs and description kept for the `cluster` artifact.
+      - name: Every pod running and ready
+        env:
+          OUT: ${{ runner.temp }}/measure/pods
+        run: scripts/platform-pods.sh
       # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}
@@ -183,8 +190,10 @@ jobs:
             grep -E '^alertmanager_notification(s|_requests)(_failed)?_total' | grep -v ' 0$' || true
           echo "--- Alertmanager's log"
           kubectl --context k3d-software-factory -n telemetry logs statefulset/prometheus-alertmanager -c alertmanager --tail=40 || true
-      # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states and
-      # the runner's figures: no Secret is read.
+      # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states, the
+      # runner's figures, and each pod the end found not running: its description, which shows an env value a manifest
+      # writes and only the name of a Secret another is read from, and its logs. No Secret is read, and the cluster
+      # holds no key: its passwords and keys are made on the runner, and go with it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() || cancelled() }}
         with:

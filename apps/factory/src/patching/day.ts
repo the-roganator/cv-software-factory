@@ -53,7 +53,8 @@ const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')
 
 /**
  * The ecosystem a move's pins belong to, as Dependabot names it, and the directories its pull request may name: a
- * lockfile's is npm's, a workflow's is GitHub Actions', which `dependabot.yml` reads from `/`, and any other a Dockerfile
+ * lockfile's is npm's, a workflow's is GitHub Actions', which `dependabot.yml` reads from `/`, and any other a
+ * Dockerfile
  * or a manifest's image, docker's, in the pin's own directory.
  */
 function ecosystemOf(move: ReadMove): { ecosystems: string[]; directories: Set<string> } {
@@ -119,7 +120,8 @@ const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
 
 /**
  * Why a scan that did not pass failed, read from its own totals, which count what it fails on: a finding past its
- * deadline, one due within a day, a new High or Critical with a fix. `other` when it failed with none of those, or wrote
+ * deadline, one due within a day, a new High or Critical with a fix. `other` when it failed with none of those, or
+ * wrote
  * no totals at all.
  */
 export function failures(conclusion: string | null, totals: ScanTotals | null): ScanFailure[] {
@@ -206,7 +208,8 @@ function capped(rows: Row[]): Row[] {
 
 /**
  * Whether two days say the same: the same runs, moves and rows. A pod's name and how many containers ran are left out,
- * and so is how many copies make a row, so a pod made again, or a Deployment scaled, is no new day while its row stands.
+ * and so is how many copies make a row, so a pod made again, or a Deployment scaled, is no new day while its row
+ * stands.
  */
 export function sameDay(a: Day, b: Day | null): boolean {
   if (!b) return false;

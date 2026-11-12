@@ -123,14 +123,11 @@ const PULLS = z.array(
     merged_at: z.string().nullable().optional(),
     user: z.object({ login: z.string() }).nullable(),
     labels: z.array(z.object({ name: z.string() })),
-    head: z.object({
-      ref: z.string(),
-      sha: z.string().optional(),
-      repo: z.object({ full_name: z.string() }).nullable(),
-    }),
+    head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
   }),
 );
 const PULL = z.object({ mergeable: z.boolean().nullable() });
+const BRANCH = z.object({ object: z.object({ sha: z.string() }) });
 const ISSUES = z.array(
   z.object({
     number: z.number().int().positive(),
@@ -444,6 +441,17 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     }
   };
 
+  /** The commit a branch is at, or undefined when there is none. */
+  const branchAt = async (branch: string): Promise<string | undefined> => {
+    try {
+      const { body } = await github.poll(repo, `/repos/${repo}/git/ref/heads/${branch}`, BRANCH);
+      return body.object.sha;
+    } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found') return undefined;
+      throw error;
+    }
+  };
+
   /** Whether the App closed an issue or pull request itself, rather than Martin: only his close holds a target back. */
   const closedByApp = async (number: number): Promise<boolean> => {
     const { body } = await github.poll(repo, `/repos/${repo}/issues/${number}`, CLOSED_BY);
@@ -690,8 +698,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
           await actions.addLabels(repo, existing.number, [PIN_LABEL]);
         // Its branch at any commit but the one the watch wrote (moved by anyone, or not yet written by this worker): the
         // watch writes its own again, and its queue adds nothing meanwhile.
-        const ours =
-          heads === undefined || (existing.head.sha !== undefined && existing.head.sha === heads.get(repo, branch));
+        // Read from the branch itself, as GitHub's list of pull requests may name a head a push since has moved.
+        const ours = heads === undefined || (await branchAt(branch)) === heads.get(repo, branch);
         if (!ours) {
           log.warn(
             { repo, number: existing.number, branch },

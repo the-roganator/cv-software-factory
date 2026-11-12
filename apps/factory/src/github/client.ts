@@ -302,8 +302,11 @@ export class GitHub {
   ) {
     // A `.` or `..` segment (or its escape) is taken out of a URL before it is sent, so the path asked would not be the
     // path named: no request names one, whatever built it.
-    if (/(^|\/)(\.|%2e){1,2}(\/|\?|$)/i.test(path.split('?')[0] ?? path)) {
-      throw new Error(`${method} ${path} has a dot segment, which would name another path: not sent.`);
+    // A backslash is a slash to the URL parser, and a `#` ends the path: neither is in any path the worker builds.
+    if (/[\\#]/.test(path) || /(^|\/)(\.|%2e){1,2}(\/|\?|$)/i.test(path.split('?')[0] ?? path)) {
+      throw new Error(
+        `${method} ${path} has a dot segment, a backslash or a #, which would name another path: not sent.`,
+      );
     }
     const url = `${this.api}${path}`;
     // Doing it twice is harmless: anything but a POST.

@@ -65,8 +65,10 @@ describe('a `.` segment in a branch name, and a branch moved by any route', () =
       `/repos/${FACTORY}/git/refs/heads/factory/x/../pin/example-dashboards`,
       `/repos/${FACTORY}/git/refs/heads/factory/%2e/pin/example-dashboards`,
       `/repos/${FACTORY}/git/refs/heads/factory/%2E%2E/pin`,
+      `/repos/${FACTORY}/git/refs/heads/factory\\..\\deploy/local`,
+      `/repos/${FACTORY}/git/refs/heads/factory/pin/x#`,
     ]) {
-      await expect(github.write(FACTORY, 'DELETE', path), path).rejects.toThrow(/dot segment/);
+      await expect(github.write(FACTORY, 'DELETE', path), path).rejects.toThrow(/would name another path/);
     }
     expect(seen.filter((s) => s.startsWith('PATCH') || s.startsWith('DELETE'))).toEqual([]);
     // Control: the name written plainly is refused before anything is sent.

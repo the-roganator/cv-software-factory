@@ -5,7 +5,6 @@
 The factory's own deploy pull request for the local profile (`chore(deploy): run … on the local cluster`, labelled `deploy: local`, opened and moved by the deploy watch on `deploy/local`, ADR 0005) is added to the merge queue by the GitHub worker itself, as the App, with nobody's hand on it. It is added only when all of these hold, and once for each head (`github/deploy-queue.ts`):
 
 - its head is the very commit the deploy watch wrote to `deploy/local` (`WatchedHeads`): a branch at any other commit, moved by anyone by any route, is not the watch's work, is not added, and the watch writes its own commit again on its next pass;
-
 - the App opened it, from this repository's `deploy/local` into `main`, not a draft, with the label and a title the deploy watch writes; and it is the deploy watch's as the watch left it, as the worker's door refuses any worker that asks to write `deploy/local` or its scratch branch, open a pull request from either, give a `deploy:` label, or act on a pull request from either;
 - the review App's own `review` check on that head passed it as `exact-pin` (ADR 0014): every changed line a digest under `deploy/`, each image signed by `build.yml` on `main`, from a commit ahead of the pin it replaces;
 - every other check `main`'s rulesets require has a latest run on that head that finished and did not fail, by anyone but the factory's App;
@@ -14,7 +13,6 @@ The factory's own deploy pull request for the local profile (`chore(deploy): run
 The pin watch's pull request for a move of the scan's (ADR 0013), which the gate passed as `pin-move` (ADR 0019), is added on the same terms, each open one on its own, when all of these hold:
 
 - its head is the very commit the pin watch wrote to its branch for that move: the pin edits the watch made on `main`'s head through the pin guard, and nothing else; any other commit is not added, and the watch writes its own again on its next pass;
-
 - the App opened it, from this repository's `factory/pin/<move>` (one segment, the pin watch's branch) into `main`, not a draft, labelled `pin`, and the App alone ever gave it that label or took it off, by its events, so Martin holds one by taking the label off, though the pin watch puts it back; and no earlier unmerged pull request of the App's from the same branch, back to the last one merged from it, had its label taken off by anyone else, so his hold of the move outlasts the watch closing it and opening it again, at any target, until a pull request from the branch merges;
 - its move is one the pin watch is told to take (`PIN_WATCH_ONLY`), by its exact name: the branch and the title the watch gives that name, which names one move, as the watch opens no pull request for a name its title would alter or cut;
 - the review App's own `review` check on that head passed it as `pin-move`: no other rule, so not a hold, and not Martin's approval of a held one (`martin-approved-head`), which leaves adding it his;

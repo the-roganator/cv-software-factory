@@ -68,9 +68,12 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   } else {
     // The commit each watch whose pull requests the worker queues last wrote to its branch: the only head its queue adds.
     const heads = new WatchedHeads();
+    // In a dry run a watch writes nothing to GitHub, so it records nothing: its queue adds nothing, and it never takes a
+    // branch GitHub has for one it moved.
+    const recorded = config.dryRun ? {} : { heads };
     // The App opens the deploy pull requests, and keeps the release pull requests, in every repository it acts on.
     for (const target of DEPLOYS.filter((t) => config.repositories.includes(t.repo))) {
-      const queued = QUEUED_DEPLOYS.includes(target) ? { heads } : {};
+      const queued = QUEUED_DEPLOYS.includes(target) ? recorded : {};
       poller.watch(
         `deploy ${target.branch} in ${target.repo}`,
         deployWatch({ github, registry, signatures, actions, log, proposals, ...queued }, target),
@@ -90,7 +93,7 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       const only = config.pinWatchOnly;
       poller.watch(
         `pins in ${repo}`,
-        pinWatch({ github, reads: liveReads, actions, recorder, heads, log, only }, repo),
+        pinWatch({ github, reads: liveReads, actions, recorder, ...recorded, log, only }, repo),
       );
       // Each of those pull requests is added to the merge queue once the gate passes it as a pin move and its checks
       // are green (ADR 0017), recorded instead in a dry run; only a move the watch is told to take, as it opens only

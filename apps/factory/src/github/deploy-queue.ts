@@ -497,9 +497,9 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
         const { events, whole } = await eventsOf(c.number);
         held = whole ? heldByLabel(events) : 'unread';
         // Kept only once GitHub says when it closed, and only a hold: Martin may take the label off a closed pull
-        // request later, so one not held is read again each pass. A pull request reopened and closed again is read
-        // again too.
-        if (c.closed_at && held !== false) heldWhenClosed.set(key, held);
+        // request later, so one not held is read again each pass (a conditional request), as is one not read whole.
+        // A pull request reopened and closed again is read again too.
+        if (c.closed_at && held === true) heldWhenClosed.set(key, held);
       }
       if (held === 'unread') return { waits: 'not-a-pin', why: `#${c.number}, of this move, runs past what is read` };
       if (held) {

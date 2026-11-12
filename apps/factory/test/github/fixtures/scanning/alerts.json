@@ -1,0 +1,394 @@
+[
+  {
+    "number": 101,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/101",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/101",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "CVE-2099-0001",
+      "severity": "error",
+      "description": "invented",
+      "name": "CVE-2099-0001",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "vulnerabilities/01",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "libexample 3.0.1 in ghcr.io/example/base:1.2.0 (sha256:2222222222222222222222222222222222222222222222222222222222222222): CVE-2099-0001 (high), fixed in 3.0.2. Fixed by image 1.2.1@sha256:1111111111111111111111111111111111111111111111111111111111111111, first seen 2026-11-01T06:00:00Z. Move 1 of run 42000000001."
+      },
+      "location": {
+        "path": "deploy/website.yaml",
+        "start_line": 12,
+        "end_line": 12,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/101/instances"
+  },
+  {
+    "number": 102,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/102",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/102",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "CVE-2099-0002",
+      "severity": "error",
+      "description": "invented",
+      "name": "CVE-2099-0002",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": "medium"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "vulnerabilities/01",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "libexample 3.0.1 in ghcr.io/example/base:1.2.0 (sha256:2222222222222222222222222222222222222222222222222222222222222222): CVE-2099-0002 (medium), fixed in 3.0.3. Fixed by image 1.2.1@sha256:1111111111111111111111111111111111111111111111111111111111111111, first seen 2026-11-02T06:00:00Z. Move 1 of run 42000000001."
+      },
+      "location": {
+        "path": "deploy/website.yaml",
+        "start_line": 12,
+        "end_line": 12,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/102/instances"
+  },
+  {
+    "number": 103,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/103",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/103",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "GHSA-0000-0000-0001",
+      "severity": "error",
+      "description": "invented",
+      "name": "GHSA-0000-0000-0001",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "vulnerabilities/02",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "invented-pkg 2.0.0 in pnpm-lock.yaml: GHSA-0000-0000-0001 (high), fixed in 2.0.1. Fixed by version 2.0.1, first seen 2026-11-10T06:00:00Z. Move 2 of run 42000000001."
+      },
+      "location": {
+        "path": "pnpm-lock.yaml",
+        "start_line": 210,
+        "end_line": 210,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/103/instances"
+  },
+  {
+    "number": 104,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/104",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/104",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "GHSA-0000-0000-0002",
+      "severity": "error",
+      "description": "invented",
+      "name": "GHSA-0000-0000-0002",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": "low"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "vulnerabilities/02",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "invented-pkg 2.0.0 in pnpm-lock.yaml: GHSA-0000-0000-0002 (low), fixed in 2.0.3. Fixed by version 2.0.3, first seen 2026-11-03T06:00:00Z. Move 2 of run 42000000001."
+      },
+      "location": {
+        "path": "pnpm-lock.yaml",
+        "start_line": 210,
+        "end_line": 210,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/104/instances"
+  },
+  {
+    "number": 105,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/105",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/105",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "CVE-2099-0003",
+      "severity": "error",
+      "description": "invented",
+      "name": "CVE-2099-0003",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": "medium"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "vulnerabilities/01",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "otherlib 1.0.0 in ghcr.io/example/base:1.2.0 (sha256:2222222222222222222222222222222222222222222222222222222222222222): CVE-2099-0003 (medium), no fix yet."
+      },
+      "location": {
+        "path": "deploy/website.yaml",
+        "start_line": 12,
+        "end_line": 12,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/105/instances"
+  },
+  {
+    "number": 106,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/106",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/106",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "js/invented-rule",
+      "severity": "error",
+      "description": "invented",
+      "name": "js/invented-rule",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": null
+    },
+    "tool": {
+      "name": "CodeQL",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "/language:javascript-typescript",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "An invented CodeQL finding: Fixed by nothing. Move 1 of run 1."
+      },
+      "location": {
+        "path": "src/cart.ts",
+        "start_line": 40,
+        "end_line": 40,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/106/instances"
+  },
+  {
+    "number": 107,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/107",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/107",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "PinnedDependenciesID",
+      "severity": "error",
+      "description": "invented",
+      "name": "PinnedDependenciesID",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": null
+    },
+    "tool": {
+      "name": "Scorecard",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "supply-chain",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "An invented Scorecard finding."
+      },
+      "location": {
+        "path": ".github/workflows/build.yml",
+        "start_line": 1,
+        "end_line": 1,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/107/instances"
+  },
+  {
+    "number": 108,
+    "created_at": "2026-11-01T06:20:00Z",
+    "updated_at": "2026-11-10T06:20:00Z",
+    "url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/108",
+    "html_url": "https://github.com/the-roganator/cv-worlds-worst-website/security/code-scanning/108",
+    "state": "open",
+    "fixed_at": null,
+    "dismissed_by": null,
+    "dismissed_at": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "rule": {
+      "id": "CVE-2099-0004",
+      "severity": "error",
+      "description": "invented",
+      "name": "CVE-2099-0004",
+      "tags": ["security"],
+      "full_description": "An invented advisory: nothing here names a real one.",
+      "help": "invented",
+      "help_uri": "https://example.invalid/advisory",
+      "security_severity_level": "high"
+    },
+    "tool": {
+      "name": "Trivy",
+      "guid": null,
+      "version": "0.0.0"
+    },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "analysis_key": "invented",
+      "environment": "{}",
+      "category": "trivy-image",
+      "state": "open",
+      "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": {
+        "text": "Not the scan's message, in a category not the scan's."
+      },
+      "location": {
+        "path": "Dockerfile",
+        "start_line": 1,
+        "end_line": 1,
+        "start_column": 1,
+        "end_column": 2
+      },
+      "classifications": []
+    },
+    "instances_url": "https://api.github.com/repos/the-roganator/cv-worlds-worst-website/code-scanning/alerts/108/instances"
+  }
+]

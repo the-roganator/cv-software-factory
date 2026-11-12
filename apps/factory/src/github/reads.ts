@@ -14,7 +14,11 @@
  * GHCR: the commits between two commits, and whether one is an ancestor of the other; the commit an image was built
  * from, and whether its pipeline signed it; and the open deploy pull request, as the deploy watch last saw it.
  *
- * Every read is a conditional request, so asking again about something that has not changed costs nothing against
+ * For patching, the factory learns of vulnerabilities only through the worker: the scan's moves, from its artifact and
+ * its alerts, checked one against the other (`scanning.ts`), and the open Dependabot pull requests, each with the pin
+ * its branch names (`dependabot.ts`).
+ *
+ * Every read is a conditional request (an artifact, which never changes, is downloaded once), so asking again about something that has not changed costs nothing against
  * the rate limit, and every answer is read through a Zod schema. Reading is harmless, so a dry run reads as a live
  * worker does; and a worker with no key reads the public repositories as anyone may.
  */
@@ -22,6 +26,7 @@ import { z } from 'zod';
 import { ACTIONS_APP, scanOfCheck } from '../gates/counts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import { type GitHub, GitHubError } from './client.ts';
+import { type DependencyPull, dependencyPulls } from './dependabot.ts';
 import { type DeployBuild, type DeployProposal, type DeployProposals, deployedImage } from './deploys.ts';
 import {
   conflictsOf,
@@ -40,6 +45,7 @@ import {
 import { CODEOWNERS_PATHS, protectedFrom } from './paths.ts';
 import type { RefusalRecorder } from './refusals.ts';
 import type { Registry } from './registry.ts';
+import { defaultBranch, type Moves, ScanReads } from './scanning.ts';
 import { pipeline, type Signatures, UnsignedError } from './signatures.ts';
 
 export interface PullRequestState {
@@ -175,6 +181,13 @@ export interface Reads {
   mergeQueue(repo: string, number: number): Promise<MergeQueue>;
   /** Whether a pull request conflicts with its base. */
   mergeability(repo: string, number: number): Promise<Mergeability>;
+  /**
+   * The scan's moves: the last finished run of `vulnerabilities.yml` on the default branch, its `moves.json`, and each
+   * move's findings from the open alerts, checked against it. Fails, returning nothing, when the two disagree.
+   */
+  moves(repo: string): Promise<Moves>;
+  /** The open pull requests Dependabot made, each with the pin and version its branch names. */
+  dependencyPulls(repo: string): Promise<DependencyPull[]>;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -355,6 +368,7 @@ export class LiveReads implements Reads {
   readonly #github: GitHub;
   readonly #sources: ReleaseSources | undefined;
   readonly #recorder: RefusalRecorder | undefined;
+  readonly #scan: ScanReads;
   /**
    * Each held pull request's refusal, kept and signed once, by repository, run, pull request and head, however often
    * it is read: one run's verdict can judge every pull request of a stack, and each held one has a refusal of its own.
@@ -369,6 +383,17 @@ export class LiveReads implements Reads {
     this.#github = github;
     this.#sources = sources;
     this.#recorder = recorder;
+    this.#scan = new ScanReads(github);
+  }
+
+  async moves(repo: string): Promise<Moves> {
+    return this.#scan.moves(repo);
+  }
+
+  async dependencyPulls(repo: string): Promise<DependencyPull[]> {
+    return dependencyPulls(this.#github, repo, async () => {
+      return this.#text(repo, '.github/dependabot.yml', await defaultBranch(this.#github, repo));
+    });
   }
 
   async pullRequest(repo: string, number: number): Promise<PullRequestState> {

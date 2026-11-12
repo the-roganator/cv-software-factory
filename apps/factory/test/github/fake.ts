@@ -50,7 +50,8 @@ export function verifyJwt(jwt: string): { iss: string; iat: number; exp: number 
 
 let tokens = 0;
 
-export function fakeGitHub(routes: Route[], sent: Sent[] = []) {
+/** `permissions`, when given, is what GitHub says each token it makes may do. */
+export function fakeGitHub(routes: Route[], sent: Sent[] = [], permissions?: Record<string, string>) {
   const all: Route[] = [
     {
       method: 'GET',
@@ -68,7 +69,11 @@ export function fakeGitHub(routes: Route[], sent: Sent[] = []) {
         tokens += 1;
         return {
           status: 201,
-          body: { token: `ghs_test${tokens}`, expires_at: new Date(Date.now() + 3600_000).toISOString() },
+          body: {
+            token: `ghs_test${tokens}`,
+            expires_at: new Date(Date.now() + 3600_000).toISOString(),
+            ...(permissions && { permissions }),
+          },
         };
       },
     },
@@ -88,11 +93,17 @@ export function fakeGitHub(routes: Route[], sent: Sent[] = []) {
     if (!route) throw new Error(`No fake answer for ${method} ${path}`);
     const answer = route.answer(request);
     const status = answer.status ?? 200;
+    // Bytes go as they are, as GitHub's storage sends an artifact; anything else as JSON.
+    const bytes = answer.body instanceof Uint8Array;
     return new Response(
-      status === 204 || status === 304 || answer.body === undefined ? null : JSON.stringify(answer.body),
+      status === 204 || status === 304 || answer.body === undefined
+        ? null
+        : bytes
+          ? (answer.body as Uint8Array<ArrayBuffer>)
+          : JSON.stringify(answer.body),
       {
         status,
-        headers: { 'content-type': 'application/json', ...answer.headers },
+        headers: { 'content-type': bytes ? 'application/zip' : 'application/json', ...answer.headers },
       },
     );
   }) as typeof fetch;
@@ -105,9 +116,9 @@ export const quiet = pino({ level: 'silent' });
 export function client(
   routes: Route[],
   sent: Sent[] = [],
-  options: { keyless?: boolean; sleep?: (ms: number) => Promise<void> } = {},
+  options: { keyless?: boolean; sleep?: (ms: number) => Promise<void>; permissions?: Record<string, string> } = {},
 ) {
-  const fake = fakeGitHub(routes, sent);
+  const fake = fakeGitHub(routes, sent, options.permissions);
   const github = new GitHub({
     credentials: options.keyless ? undefined : { clientId: CLIENT_ID, privateKey: PRIVATE_KEY },
     api: 'https://api.github.test',

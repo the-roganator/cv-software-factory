@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "repository": "the-roganator/cv-worlds-worst-website",
+  "judged": "2026-11-10T06:15:00Z",
+  "run": "42000000001",
+  "totals": {
+    "fixed": 4,
+    "moves": 2,
+    "noFix": 1,
+    "excepted": 0,
+    "overdue": 0,
+    "dueWithinDay": 0,
+    "newHighWithFix": 1,
+    "newHighWithoutFix": 0,
+    "lanes": {
+      "line": 2,
+      "worker": 0,
+      "dependabot": 0,
+      "approval": 0,
+      "cluster": 0,
+      "issue": 0,
+      "none": 0
+    }
+  },
+  "moves": [
+    {
+      "repository": "the-roganator/cv-worlds-worst-website",
+      "name": "ghcr.io/example/base",
+      "pins": [
+        {
+          "file": "Dockerfile",
+          "line": 3
+        }
+      ],
+      "from": "1.2.0",
+      "to": "image 1.2.1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "major": false,
+      "clears": {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 1,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "leaves": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 1,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "deadline": "2026-11-17T06:00:00Z",
+      "newToday": 0,
+      "lane": "line",
+      "lockfile": false
+    },
+    {
+      "repository": "the-roganator/cv-worlds-worst-website",
+      "name": "a package in `pnpm-lock.yaml`",
+      "pins": [
+        {
+          "file": "pnpm-lock.yaml",
+          "line": 0
+        }
+      ],
+      "from": "",
+      "to": "",
+      "major": false,
+      "clears": {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 0,
+        "LOW": 1,
+        "UNKNOWN": 0
+      },
+      "leaves": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "deadline": "2026-11-24T06:00:00Z",
+      "newToday": 1,
+      "lane": "line",
+      "lockfile": true
+    }
+  ],
+  "scanned": [
+    {
+      "kind": "ours",
+      "item": "ghcr.io/example/base",
+      "image": "ghcr.io/example/base:1.2.0@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "digests": [
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      ],
+      "pin": {
+        "file": "Dockerfile",
+        "line": 3
+      }
+    },
+    {
+      "kind": "chart",
+      "item": "telemetry-example",
+      "image": "docker.io/example/sidecar:2.0.1",
+      "digests": ["sha256:6666666666666666666666666666666666666666666666666666666666666666"],
+      "pin": {
+        "file": "deploy/values.yaml",
+        "line": 17
+      }
+    }
+  ]
+}

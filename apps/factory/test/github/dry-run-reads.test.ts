@@ -75,8 +75,25 @@ function live(asked: string[] = []): Reads {
       asked.push(`mergeability ${number}`);
       return { number, head: 'c'.repeat(40), conflicts: true, state: 'dirty' };
     },
+    moves: async (repo) => {
+      asked.push(`moves ${repo}`);
+      return { repository: repo, run: SCAN_RUN, file: null, moves: [] };
+    },
+    dependencyPulls: async (repo) => {
+      asked.push(`dependencyPulls ${repo}`);
+      return [];
+    },
   };
 }
+
+const SCAN_RUN = {
+  id: 1,
+  event: 'schedule',
+  conclusion: 'failure',
+  headSha: 'd'.repeat(40),
+  updatedAt: '2026-10-06T06:00:00Z',
+  url: 'https://github.com/o/r/actions/runs/1',
+};
 
 /** A dry run with a clock, and the app's one file as it is on main. */
 async function dryRun(asked: string[] = []) {
@@ -118,6 +135,14 @@ async function dryRun(asked: string[] = []) {
 }
 
 describe('a dry run’s reads', () => {
+  it('read the scan’s moves and Dependabot’s pull requests as a live worker does', async () => {
+    const asked: string[] = [];
+    const { reads } = await dryRun(asked);
+    expect(await reads.moves(REPO)).toEqual({ repository: REPO, run: SCAN_RUN, file: null, moves: [] });
+    expect(await reads.dependencyPulls(REPO)).toEqual([]);
+    expect(asked).toEqual([`moves ${REPO}`, `dependencyPulls ${REPO}`]);
+  });
+
   it('answer for the pull request it opened: open, a draft, its head the commit it would have pushed', async () => {
     const { reads, commit, number } = await dryRun();
     expect(await reads.pullRequest(REPO, number)).toMatchObject({

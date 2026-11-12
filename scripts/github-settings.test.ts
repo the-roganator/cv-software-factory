@@ -318,15 +318,22 @@ describe('the GitHub Apps', () => {
 
   it('are as GitHub shows them: the factory’s writes its pull requests, the others read, but for the review check', () => {
     expect(APPS.factory.permissions).toEqual({
+      actions: 'read',
       checks: 'write',
       contents: 'write',
       issues: 'write',
       metadata: 'read',
       pull_requests: 'write',
+      security_events: 'read',
     });
     expect(APPS.review).toMatchObject({ id: REVIEW_APP });
     expect(APPS.review.permissions).toEqual({ checks: 'write', metadata: 'read', pull_requests: 'read' });
     expect(Object.values(APPS.driftCheck.permissions)).toEqual(['read', 'read', 'read', 'read']);
+  });
+
+  it('let the factory’s read the scan, and change none of it: no alert dismissed, no run started or cancelled', () => {
+    expect(APPS.factory.permissions.security_events).toBe('read');
+    expect(APPS.factory.permissions.actions).toBe('read');
   });
 });
 

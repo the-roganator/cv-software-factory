@@ -74,8 +74,9 @@ function runs(container: RunningContainer, ran: Reference, image: ScannedImage, 
   if (ran.digest) return ran.digest === listed.digest || image.digests.includes(ran.digest);
   // By its tag alone the pod runs the listed reference whatever the tag resolved to, so a tag rebuilt since the scan is
   // the list's image at a digest no result names; a pin by digest alone matches a pod on any tag that resolved to it.
+  if (listed.digest && image.digests.includes(container.digest)) return true;
   if (ran.tag !== undefined && listed.tag !== undefined) return ran.tag === listed.tag;
-  if (listed.digest) return image.digests.includes(container.digest);
+  if (listed.digest) return false;
   return (ran.tag ?? 'latest') === (listed.tag ?? 'latest');
 }
 

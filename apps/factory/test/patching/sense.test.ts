@@ -378,7 +378,7 @@ describe('the day, made from the reads', () => {
       namespace: 'default',
       pod: `p${i}`,
       container: 'c',
-      image: 'nginx:1',
+      image: `nginx:1.${i}`,
       digest: digest(13),
     }));
     const day = dayOf(read(many), rows.length, rows);
@@ -390,5 +390,43 @@ describe('the day, made from the reads', () => {
       moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), from: '' } }],
     };
     expect(PAYLOADS['patching.read'].safeParse(dayOf(read(empty), 0, [])).success).toBe(true);
+  });
+
+  it('says a cancelled or unfinished scan did not fail', () => {
+    for (const conclusion of ['cancelled', 'skipped', null]) {
+      const moves = factoryMoves();
+      const day = dayOf(read({ ...moves, run: { ...moves.run, conclusion } }), 0, []);
+      expect(day.repositories[0]?.failed, String(conclusion)).toEqual([]);
+    }
+  });
+
+  it('matches a lockfile move only by its package, and one without its package to nothing', () => {
+    const moves = factoryMoves();
+    const lockfile = moves.moves[1] as ReadMove;
+    const scoped = (dependency: string): DependencyPull => ({ ...PULL, number: 95, dependency });
+    const of = (move: ReadMove, pulls: DependencyPull[]) =>
+      dayOf(read({ ...moves, moves: [move] }, pulls), 0, []).repositories[0]?.moves[0]?.pullRequest;
+    expect(of({ ...lockfile, withheld: undefined }, [scoped('@scope/a'), scoped('@scope/b')])).toBeUndefined();
+    const withPackage = {
+      ...lockfile,
+      withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), package: '@scope/b' },
+    };
+    expect(of(withPackage, [scoped('@scope/a'), scoped('@scope/b')])).toEqual({ number: 95, version: PULL.version });
+  });
+
+  it('keeps the same rows past its cap whatever the pods are called', () => {
+    const rows = (prefix: string) =>
+      Array.from({ length: MOST_ROWS + 40 }, (_, i) => ({
+        row: 'unlisted-image' as const,
+        namespace: 'default',
+        pod: `${prefix}-${String((i * 7919) % (MOST_ROWS + 40)).padStart(5, '0')}`,
+        container: 'c',
+        image: `nginx:1.${i}`,
+        digest: digest(13),
+      }));
+    const a = dayOf(read(), 0, rows('a'));
+    const b = dayOf(read(), 0, rows('z'));
+    expect(sameDay(b, a)).toBe(true);
+    expect(a.rows).toHaveLength(MOST_ROWS);
   });
 });

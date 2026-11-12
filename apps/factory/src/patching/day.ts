@@ -7,9 +7,9 @@
  * A move whose pin an open Dependabot pull request moves names it (`pullRequest`), matched by the dependency its branch
  * names and the directory of one of the move's pins.
  *
- * Why a scan failed is what its moves show: one past its deadline, one due within a day of when it judged them, a new
- * High or Critical with a fix; and `other` when none does, or it wrote no moves at all. The scan's log is the reason's
- * own words; the sense reads no log.
+ * Why a scan failed is what its own totals count: one past its deadline, one due within a day, a new High or Critical
+ * with a fix; and `other` when none does, or it wrote no totals at all. The scan's log is the reason's own words; the
+ * sense reads no log.
  */
 import type { MoveLane, PayloadOf, ScanFailure, ScanSeverity } from '@software-factory/events';
 import { MOST_MOVES, MOST_PINS, MOST_ROWS } from '@software-factory/events/schemas';
@@ -67,11 +67,12 @@ function ecosystemOf(move: ReadMove): { ecosystems: string[]; directories: Set<s
 /** The open Dependabot pull request that moves a move's pin, if one does: same ecosystem, dependency and directory. */
 function pullFor(move: ReadMove, pulls: DependencyPull[]): DayMove['pullRequest'] {
   const { ecosystems, directories } = ecosystemOf(move);
-  const lockfile = move.withheld?.package;
   const action = ecosystems.includes('github-actions');
   // Each side read the same way: a package by its name, an Action by its owner and repository, an image by its path.
-  const key = (name: string) => (lockfile !== undefined ? name : action ? actionPath(name) : imagePath(name));
-  const name = key(lockfile ?? move.name);
+  // A lockfile's move with no package from its alerts names none, so it matches nothing.
+  const key = (name: string) => (move.lockfile ? name : action ? actionPath(name) : imagePath(name));
+  if (move.lockfile && !move.withheld) return undefined;
+  const name = key(move.withheld?.package ?? move.name);
   const pull = pulls.find(
     (p) =>
       p.version !== null &&
@@ -113,13 +114,17 @@ function dayMove(move: ReadMove, pulls: DependencyPull[]): DayMove {
   };
 }
 
+/** The conclusions GitHub gives a run that failed. */
+const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
+
 /**
  * Why a scan that did not pass failed, read from its own totals, which count what it fails on: a finding past its
  * deadline, one due within a day, a new High or Critical with a fix. `other` when it failed with none of those, or wrote
  * no totals at all.
  */
 export function failures(conclusion: string | null, totals: ScanTotals | null): ScanFailure[] {
-  if (conclusion === 'success') return [];
+  // A run cancelled, skipped or not finished judged nothing: it did not fail, and its conclusion says what it did.
+  if (!conclusion || !FAILED.has(conclusion)) return [];
   const found: ScanFailure[] = [];
   if (totals?.overdue) found.push('overdue');
   if (totals?.dueWithinDay) found.push('due-within-a-day');
@@ -178,8 +183,25 @@ export function dayOf(reads: RepositoryRead[], containers: number, rows: Row[] |
       .sort((a, b) => (a.repository < b.repository ? -1 : a.repository > b.repository ? 1 : 0)),
     compared: rows !== null,
     containers,
-    rows: (rows ?? []).slice(0, MOST_ROWS),
+    rows: capped(rows ?? []),
   };
+}
+
+/**
+ * The rows a day holds: all of them, or past the cap one of each row as it reads without its pod, in that order, so
+ * which rows a full day keeps does not hang on the pods' names.
+ */
+function capped(rows: Row[]): Row[] {
+  if (rows.length <= MOST_ROWS) return rows;
+  const byRow = new Map<string, Row>();
+  for (const row of rows) {
+    const k = canonical(row.row === 'not-running' ? { ...row, running: [] } : withoutPod(row));
+    if (!byRow.has(k)) byRow.set(k, row);
+  }
+  return [...byRow.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MOST_ROWS)
+    .map(([, row]) => row);
 }
 
 /**

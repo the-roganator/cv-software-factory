@@ -161,7 +161,8 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
       log.warn(`ATTACK_PORT is set but ${why}: the attack door is not served.`);
     }
   } catch (error) {
-    await stop();
+    // The start's own failure is the one to report: a failure putting things away after it is only logged.
+    await stop().catch((stopping: unknown) => log.error({ err: stopping }, 'could not stop what had started'));
     throw error;
   }
   return { github, registry, actions, poller, server, mode, stop };

@@ -270,4 +270,27 @@ describe('the comparison with the list', () => {
       '/api/v1/namespaces/website/pods?limit=500',
     ]);
   });
+
+  it('makes no row of a pod that runs a digest-pinned image under another tag', async () => {
+    const lists: Listed[] = [
+      {
+        repository: FACTORY,
+        scanned: [
+          ...FACTORY_SCANNED,
+          {
+            kind: 'third-party',
+            item: `node:20@${digest(22)}`,
+            image: `node:20@${digest(22)}`,
+            digests: [digest(22)],
+            pin: { file: 'deploy/example/node.yaml', line: 2 },
+          },
+        ],
+      },
+      { repository: APP, scanned: APP_SCANNED },
+    ];
+    const same = pod('default', 'n-1', [
+      { name: 'n', image: 'node:20.11', imageID: `docker.io/library/node@${digest(22)}` },
+    ]);
+    expect(compare(await running([...agreeing(), same]), lists)).toEqual([]);
+  });
 });

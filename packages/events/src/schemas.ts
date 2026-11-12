@@ -583,7 +583,7 @@ const patchingRepository = z.strictObject({
   }),
   /** When the scan judged its moves; null when the run wrote none, as a run that failed early does. */
   judged: timestamp.nullable(),
-  /** Why the scan failed, as its moves show it; empty when it passed. */
+  /** Why the scan failed, as its totals count it; empty when it passed. */
   failed: z.array(z.enum(V.SCAN_FAILURES)).max(V.SCAN_FAILURES.length),
   /**
    * The scan's own totals, as `moves.json` gives them, never worked out here: results with a fix and not excepted, the

@@ -26,7 +26,7 @@ import { readTarget } from '../vulnerabilities/fixes.ts';
 import { BranchRefused, PIN_NEXT_PREFIX, PIN_PREFIX } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { PatchRefused } from './patches.ts';
-import { CODEOWNERS_PATHS, inScope, plainPath, protectedFrom } from './paths.ts';
+import { CODEOWNERS_PATHS, inScope, LOCKFILES, plainPath, protectedFrom } from './paths.ts';
 
 /** One pin a commit moves: where it is, and the text it pins before and after (`2.14.2@sha256:…`, `13.7.0`). */
 export interface PinEdit {
@@ -99,10 +99,9 @@ export function forbiddenPin(file: string): string | undefined {
   if (file.startsWith('.github/')) return 'a pin under .github/ is a workflow’s, and the App writes none';
   if (file.startsWith('policy/')) return 'policy/ holds the rules of the line, which no pin move writes';
   if (file === 'Makefile') return 'the Makefile’s pins move with the toolchain, by hand';
-  if (/(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/.test(file))
-    return 'a lockfile moves by its package manager, and the App writes none';
   if (/(^|\/)\.?mise(\.[\w-]+)?\.(toml|lock)$/.test(file))
     return 'mise’s files move only when someone upgrades the toolchain';
+  if (inScope(file, LOCKFILES)) return 'a lockfile moves by its package manager, and the App writes none';
   return undefined;
 }
 
@@ -117,17 +116,23 @@ export function ownedPinPlace(file: string): boolean {
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
-/** What a pin's text is: a tag and its digest, or a version alone, as the scan's grammar reads a target; or neither. */
-function shapeOf(text: string): 'image' | 'version' | undefined {
+/** Whether a tag or version starts as a version does (`2.14.3`, `v1.54.0`), not as a word (`bookworm`, `main`). */
+const VERSIONED = /^v?\d/;
+
+/**
+ * What a pin's text is: a tag and its digest, or a version alone, as the scan's grammar reads a target; or neither. A
+ * tag that is not a version (`bookworm`) is read with its digest, which is all of it that moves.
+ */
+function shapeOf(text: string): { kind: 'image'; tag: string } | { kind: 'version' } | undefined {
   const [tag = '', digest, ...rest] = text.split('@');
   if (rest.length) return undefined;
   if (digest !== undefined) {
     const read = readTarget(`image ${tag}@${digest}`);
-    return read?.kind === 'image' && read.tag === tag && DIGEST.test(digest) && /^v?\d/.test(tag) ? 'image' : undefined;
+    return read?.kind === 'image' && read.tag === tag && DIGEST.test(digest) ? { kind: 'image', tag } : undefined;
   }
   const read = readTarget(`version ${text}`);
-  return read?.kind === 'version' && read.versions.length === 1 && read.versions[0] === text && /^v?\d/.test(text)
-    ? 'version'
+  return read?.kind === 'version' && read.versions.length === 1 && read.versions[0] === text && VERSIONED.test(text)
+    ? { kind: 'version' }
     : undefined;
 }
 
@@ -180,11 +185,23 @@ export async function pinChanges(
     if (places.has(place)) refuse(`${place} is named twice in one pin move.`);
     places.add(place);
     const [from, to] = [shapeOf(pin.from), shapeOf(pin.to)];
-    if (!from) refuse(`${place} pins ${JSON.stringify(pin.from)}, which is not a version or a tag with its digest.`);
-    if (!to) refuse(`${place} would pin ${JSON.stringify(pin.to)}, which is not a version or a tag with its digest.`);
-    if (from !== to)
+    if (!from)
+      return refuse(`${place} pins ${JSON.stringify(pin.from)}, which is not a version or a tag with its digest.`);
+    if (!to)
+      return refuse(`${place} would pin ${JSON.stringify(pin.to)}, which is not a version or a tag with its digest.`);
+    if (from.kind !== to.kind)
       refuse(
-        `${place} would pin a ${to === 'image' ? 'digest' : 'version alone'} where it pinned a ${from === 'image' ? 'digest' : 'version alone'}.`,
+        `${place} would pin a ${to.kind === 'image' ? 'digest' : 'version alone'} where it pinned a ${from.kind === 'image' ? 'digest' : 'version alone'}.`,
+      );
+    // A tag that is not a version keeps its name: only its digest moves, as the scan's fix for it does.
+    if (
+      from.kind === 'image' &&
+      to.kind === 'image' &&
+      from.tag !== to.tag &&
+      !(VERSIONED.test(from.tag) && VERSIONED.test(to.tag))
+    )
+      refuse(
+        `${place} would pin the tag ${to.tag} where it pinned ${from.tag}: a tag that is not a version moves its digest alone.`,
       );
     if (pin.from === pin.to) refuse(`${place} would pin what it pins already.`);
   }

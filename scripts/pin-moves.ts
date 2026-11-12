@@ -14,6 +14,7 @@
 
 import { type Run as CheckRun, moveTitle, pinMove, realPinMoveIO, type WorkflowRun, workflowsOf } from './pin-move.ts';
 import { type GitHub, main, type PinMoveAnswer, type PullRequest, type Run } from './review-gate.ts';
+import { RETARGETED } from './review-routing.ts';
 
 /**
  * When every pin move's reads have ended, from the job's start: one window for the run, inside the job's 20 minutes with
@@ -22,9 +23,6 @@ import { type GitHub, main, type PinMoveAnswer, type PullRequest, type Run } fro
  */
 export const PIN_MOVES_MS = 15 * 60_000;
 const STARTED = Date.now();
-
-/** The events that change a pull request's base: Martin's or anyone's, and GitHub's own when the base branch goes. */
-export const RETARGETED = new Set(['base_ref_changed', 'automatic_base_change_succeeded']);
 
 const cause = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200) ?? '';

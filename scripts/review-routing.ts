@@ -63,6 +63,9 @@ export interface PullRequest {
   changed_files?: number;
 }
 
+/** The events that change a pull request's base: anyone's, and GitHub's own when the base branch goes. */
+export const RETARGETED: ReadonlySet<string> = new Set(['base_ref_changed', 'automatic_base_change_succeeded']);
+
 export interface Review {
   user: { id: number } | null;
   state: string;

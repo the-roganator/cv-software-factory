@@ -60,6 +60,7 @@ import {
   notJudged,
   type OwnerRule,
   type PullRequest,
+  RETARGETED,
   REVIEW_APP,
   type Review,
   riskLabelsRemoved,
@@ -685,8 +686,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       tags,
       testIntegrity,
       labelsRemoved: riskLabelsRemoved(events),
-      // Anyone's change of base, or GitHub's own when the base branch went (pin-moves.ts's RETARGETED, the same two).
-      retargeted: events.some((e) => e.event === 'base_ref_changed' || e.event === 'automatic_base_change_succeeded'),
+      // Anyone's change of base, or GitHub's own when the base branch went.
+      retargeted: events.some((e) => RETARGETED.has(e.event)),
       ...(pin ? { pin } : {}),
       ...(pinMove ? { pinMove } : {}),
     });

@@ -173,8 +173,8 @@ export interface PinMoveIO {
   scan(reference: string, platform: string): Promise<Scan>;
   /** The check runs at the head, each with the workflow that made it (`workflowsOf`). */
   runs(): Promise<Run[]>;
-  /** The workloads the platform check's cluster changes from what main runs (`patchedByTheCheck`), main's. */
-  patched(): Promise<Workload[]>;
+  /** The workloads the platform check's cluster changes from what main runs (`patchedByTheCheck`), main's, or why not. */
+  patched(): Promise<Workload[] | string>;
 }
 
 export type Side = 'base' | 'head';
@@ -512,6 +512,12 @@ export async function chartImageForward(
   if (!version(now.tag)) return `${short(to)} is not pinned to a version tag: no line to hold it to`;
   if (!version(was.tag)) return `${short(from)} is not pinned to a version tag: no line to hold the move to`;
   const [a, b] = [was.tag as string, now.tag as string];
+  // The line is the version's variant too: `1.4.0-alpine` moves to `1.4.1-alpine`, never to `-debian` or `-rc.1`.
+  const variant = (tag: string) => tag.replace(/^v?\d+(\.\d+)*/, '');
+  if (variant(a) !== variant(b)) return `${repository} moves off its line, from ${a} to ${b}`;
+  if (/^[-+.]?(rc|alpha|beta|pre|dev|snapshot|nightly|canary)/i.test(variant(b)))
+    return `${repository} ${b} is a prerelease, not a release`;
+  if (was.digest && !now.digest) return `${short(to)} drops the digest ${short(from)} was pinned to`;
   if (compareVersions(b, a) < 0) return `a move backwards in ${repository}, from ${a} to ${b}`;
   if (major(b) !== major(a)) return `a major in ${repository}, from ${a} to ${b}`;
   if (now.digest) {
@@ -563,7 +569,9 @@ export function whatRunsIt(move: Move): { checks: string[] } | { reason: string 
     return { checks: [IMAGE_CHECK] };
   if (
     files.has('Makefile') ||
-    move.pins.some((m) => m.item === 'argocd') ||
+    move.pins.some(
+      (m) => m.item === 'argocd' || m.chart?.base.chart === 'argo-cd' || m.chart?.head.chart === 'argo-cd',
+    ) ||
     [...files].some((f) => f.startsWith('deploy/argocd/'))
   )
     return { reason: `${move.name} is installed by make up: a merge does not apply it` };
@@ -586,10 +594,24 @@ export interface Workload {
 }
 
 /** The workloads platform.yml's cluster changes from what `main` runs (deploy/argocd/platform-check.yaml), main's file. */
-export function patchedByTheCheck(text = readFileSync(join(ROOT, 'deploy/argocd/platform-check.yaml'), 'utf-8')) {
-  const patches = parseYaml(text) as { target?: Workload }[] | null;
-  if (!Array.isArray(patches)) throw new Error('the platform check names no patches the gate can read');
-  return patches.flatMap((patch) => (patch.target?.kind && patch.target.name ? [patch.target] : []));
+export function patchedByTheCheck(
+  text = readFileSync(join(ROOT, 'deploy/argocd/platform-check.yaml'), 'utf-8'),
+): Workload[] | string {
+  const patches = parseYaml(text) as { target?: Record<string, unknown> }[] | null;
+  if (!Array.isArray(patches) || !patches.length) return 'the platform check names no patches the gate can read';
+  const targets: Workload[] = [];
+  for (const { target } of patches) {
+    // A target by kind and name alone: one by selector, or with no name, could reach a workload the gate cannot tell.
+    const { kind, name, namespace, ...rest } = target ?? {};
+    if (
+      typeof kind !== 'string' ||
+      typeof name !== 'string' ||
+      Object.keys(rest).some((key) => key !== 'group' && key !== 'version')
+    )
+      return `the platform check patches a target the gate cannot match by kind and name: ${short(JSON.stringify(target ?? null))}`;
+    targets.push({ kind, name, ...(typeof namespace === 'string' ? { namespace } : {}) });
+  }
+  return targets;
 }
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -897,10 +919,12 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   if ('reason' in runs) return runs;
   if (runs.checks.includes(PLATFORM_CHECK)) {
     const rendered = chart ? await io.render('head', chart.head) : await io.overlay('head');
+    const patched = await io.patched();
+    if (typeof patched === 'string') return { reason: patched };
     const unstarted = started(
       rendered,
       pairs.map(({ to }) => to),
-      await io.patched(),
+      patched,
     );
     if (unstarted) return { reason: unstarted };
   }

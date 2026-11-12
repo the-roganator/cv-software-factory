@@ -1205,6 +1205,29 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
     expect(await reason(`grafana/grafana:12.0.1@sha256:${hex('9')}`)).toMatch(/^a digest that is not the tag's/);
     // A later version on its line, by tag alone as its publisher writes it, is the chart's publisher's: it passes.
     expect(await reason('grafana/grafana:12.0.1')).toBe('passed');
+    // Its line is its variant too, and a release: no candidate, no other base image.
+    expect(await reason('grafana/grafana:12.0.1-rc.1')).toBe(
+      'grafana/grafana moves off its line, from 12.0.0 to 12.0.1-rc.1',
+    );
+    const variantIO = (from: string, to: string) =>
+      sidecarIO({
+        ...io(to),
+        render: async (side) => (side === 'base' ? workload([from, OLD]) : workload([to, OLD], '13.7.0')),
+        scan: async (reference) => (reference === from ? FIXED : CLEAN),
+      });
+    const variant = async (from: string, to: string) => {
+      const result = await pinMove(variantIO(from, to), HEAD);
+      return 'reason' in result ? result.reason : 'passed';
+    };
+    expect(await variant('x/y:1.4.0-alpine', 'x/y:1.4.1-alpine')).toBe('passed');
+    expect(await variant('x/y:1.4.0-debian', 'x/y:1.4.1-alpine')).toBe(
+      'x/y moves off its line, from 1.4.0-debian to 1.4.1-alpine',
+    );
+    expect(await variant('x/y:1.4.0-rc.1', 'x/y:1.4.1-rc.1')).toBe('x/y 1.4.1-rc.1 is a prerelease, not a release');
+    // From a digest to a tag alone is a pin let go of.
+    expect(await variant(`x/y:1.2.0@sha256:${hex('a')}`, 'x/y:1.2.1')).toBe(
+      `x/y:1.2.1 drops the digest x/y:1.2.0@sha256:${hex('a')} was pinned to`,
+    );
   });
 
   it('`started` reads manifests, not text: an argument, replicas written any way, a quoted hook key', () => {
@@ -1240,9 +1263,24 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
   it('a workload the platform check scales to nothing on its own cluster, read from main’s platform-check.yaml', () => {
     const github = `kind: Deployment\nmetadata:\n  name: github\n  namespace: factory\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - image: ${NEW}\n`;
     const patched = patchedByTheCheck();
+    if (typeof patched === 'string') throw new Error(patched);
     expect(patched).toContainEqual({ kind: 'Deployment', name: 'github', namespace: 'factory' });
     expect(started(github, [NEW], patched)).toMatch(/^no workload/);
     expect(started(github, [NEW], [])).toBeUndefined();
+    // A patch by selector, or with no name, could reach a workload the gate cannot tell: the gate holds on it.
+    expect(patchedByTheCheck('- target:\n    kind: Deployment\n    labelSelector: app=foo\n  patch: x\n')).toMatch(
+      /^the platform check patches a target the gate cannot match/,
+    );
+    expect(patchedByTheCheck('- target:\n    kind: Deployment\n  patch: x\n')).toMatch(/cannot match/);
+    expect(patchedByTheCheck('')).toBe('the platform check names no patches the gate can read');
+  });
+
+  it('a patch the gate cannot read holds the move, saying so, rather than throwing', async () => {
+    const io = sidecarIO({
+      runs: async () => [{ ...check(1, 'success', 1), workflow: PLATFORM_WORKFLOW }],
+      patched: async () => 'the platform check names no patches the gate can read',
+    });
+    expect(await pinMove(io, HEAD)).toEqual({ reason: 'the platform check names no patches the gate can read' });
   });
 
   it("a value of Argo CD's own chart, which make up installs and no merge applies, whatever file pins it", () => {
@@ -1270,5 +1308,16 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
       reason: /installed by make up/,
     });
     expect(whatRunsIt(pin('deploy/argocd/other.yaml', 'other'))).toMatchObject({ reason: /installed by make up/ });
+    // By its chart too, whatever its release is called.
+    const renamed = pin('deploy/base/x/values.yaml', 'argo');
+    const chart = {
+      repo: 'https://argoproj.github.io/argo-helm',
+      chart: 'argo-cd',
+      version: '10.15.0',
+      release: 'argo',
+      values: [],
+    };
+    renamed.pins = renamed.pins.map((m) => ({ ...m, chart: { base: chart, head: chart } }));
+    expect(whatRunsIt(renamed)).toMatchObject({ reason: /installed by make up/ });
   });
 });

@@ -4,22 +4,25 @@
 # container starts, and is Degraded only after its progress deadline, later than the check ends.
 #
 # A pod is a fault, named with its reason, when any of these holds:
-#   - a container (or an init container) is waiting: CrashLoopBackOff, an image it cannot pull, a config it cannot
-#     read, or any other reason;
+#   - a container, or an init container, is waiting: CrashLoopBackOff, an image it cannot pull, a config it cannot
+#     read, or any other reason (an init container is judged on that alone);
 #   - a container is running and not ready;
 #   - the pod is Pending (not scheduled, or not started), Failed or Unknown;
 #   - a container last ended less than RECENT seconds ago (default 120): it is still restarting.
 # A pod that has Succeeded is not a fault, nor is any pod of a Job that has completed: a Job's attempts that failed
 # while what it needed came up (the migrations, while Postgres starts) are its own business once it succeeds. A pod of
-# a Job not complete is judged as any other.
+# a Job not complete is judged as any other, but in `website`, whose Jobs are the canary analysis's journeys run on
+# the app's `main`: a canary they judge bad is the release's business, as the website's health is (wait-deployed.sh).
 #
 # The rule comes from the check's green runs: workers restart while Postgres and the migrations come up, the last of
 # them three to eight minutes before the end, and a migration Job leaves failed attempts beside the one that ran.
 # Restarts are not counted, only how recent the last one is.
 #
 # On the cluster (no arguments), it looks every INTERVAL seconds (default 10) for up to SETTLE seconds (default 180),
-# and passes on the first look with no fault, so a worker that restarted a minute before is given time to show it has
-# settled. Otherwise it names each pod and its reason, in the log and in the step summary ($GITHUB_STEP_SUMMARY), keeps
+# and passes on two looks with no fault, STEADY seconds apart (default 30), between which no container restarted: one
+# look could fall while a slow crash loop's container is running. So a worker that restarted a minute before is given
+# time to show it has settled. Otherwise it names each pod and its reason, as the last look that could read the
+# cluster found them, in the log and in the step summary ($GITHUB_STEP_SUMMARY), keeps
 # each one's previous and current log and its `describe` in OUT (a directory, for the run's `cluster` artifact), and
 # exits 1. KUBECTL is the kubectl command with its context.
 #
@@ -34,13 +37,13 @@ judge() { # pods.json jobs.json now
   jq -rn --slurpfile pods "$1" --slurpfile jobs "$2" --argjson now "$3" --argjson recent "$recent" '
     ([$jobs[0].items[] | select(any(.status.conditions[]?; .type == "Complete" and .status == "True"))
       | "\(.metadata.namespace)/\(.metadata.name)"]) as $complete |
-    def ended: (.lastState.terminated.finishedAt // empty | fromdateiso8601);
+    def ended: (.lastState.terminated.finishedAt // empty | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601);
     def waiting($kind): select(.state.waiting) |
       "\($kind) \(.name) waiting: \(.state.waiting.reason // "unknown")\(.state.waiting.message // "" | if . == "" then "" else ": " + (split("\n")[0]) end)";
     $pods[0].items[] | . as $pod | "\(.metadata.namespace)/\(.metadata.name)" as $name |
     select(.status.phase != "Succeeded") |
     select([.metadata.ownerReferences[]? | select(.kind == "Job") | "\($pod.metadata.namespace)/\(.name)"]
-      | any(IN($complete[])) | not) |
+      | any(IN($complete[])) or (length > 0 and $pod.metadata.namespace == "website") | not) |
     [
       (.status.initContainerStatuses[]? | waiting("init container")),
       (.status.containerStatuses[]? | waiting("container")),
@@ -65,22 +68,42 @@ read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
 kubectl+=(--request-timeout="${READ_TIMEOUT:-10s}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# Each container's restarts, one line each, to tell two clean looks apart from a crash between them.
+restarts() { jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name)" as $pod |
+  (.status.containerStatuses[]?, .status.initContainerStatuses[]?) | "\($pod) \(.name) \(.restartCount)"' "$1" | sort; }
+
 deadline=$((SECONDS + ${SETTLE:-180}))
+faults="no look could read the cluster"
+clean_at=
 while true; do
-  if "${kubectl[@]}" get pods -A -o json >"$work/pods.json" && "${kubectl[@]}" get jobs -A -o json >"$work/jobs.json"; then
-    faults=$(judge "$work/pods.json" "$work/jobs.json" "$(date +%s)") || faults="the pods could not be judged"
+  if "${kubectl[@]}" get pods -A -o json >"$work/pods.json" && "${kubectl[@]}" get jobs -A -o json >"$work/jobs.json" &&
+    found=$(judge "$work/pods.json" "$work/jobs.json" "$(date +%s)"); then
+    faults=$found
+    unread=
+    if [ -z "$faults" ]; then
+      restarts "$work/pods.json" >"$work/now"
+      if [ -n "$clean_at" ] && ((SECONDS - clean_at >= ${STEADY:-30})) && cmp -s "$work/now" "$work/clean"; then
+        echo "Every pod is running and ready, and none restarted in the last ${recent} seconds, nor in $((SECONDS - clean_at)) more."
+        exit 0
+      fi
+      if [ -z "$clean_at" ] || ! cmp -s "$work/now" "$work/clean"; then clean_at=$SECONDS; cp "$work/now" "$work/clean"; fi
+    else
+      clean_at=
+    fi
   else
-    faults="the cluster could not be read"
+    unread="The last look could not read the cluster; the look before it found:"
   fi
-  [ -z "$faults" ] && { echo "Every pod is running and ready, and none restarted in the last ${recent} seconds."; exit 0; }
   ((SECONDS >= deadline)) && break
   sleep "${INTERVAL:-10}"
 done
 
+[ -n "$faults" ] || faults="no two looks ${STEADY:-30} seconds apart found every pod running, ready and not restarting"
 echo "Not running and ready after ${SETTLE:-180} seconds more:"
+[ -z "$unread" ] || echo "  $unread"
 sed 's/^/  /' <<<"$faults"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { echo "### Pods not running and ready"; echo; sed 's/.*/- `&`/' <<<"$faults"; } >>"$GITHUB_STEP_SUMMARY"
+  # Each line as code, with any backquote of a pod's own message taken out so it cannot end the span.
+  { echo "### Pods not running and ready"; echo; tr -d '`' <<<"$faults" | sed 's/.*/- `&`/'; } >>"$GITHUB_STEP_SUMMARY"
 fi
 # Each pod's logs, its previous container's too, and its description, for the artifact.
 if [ -n "${OUT:-}" ]; then
@@ -91,7 +114,7 @@ if [ -n "${OUT:-}" ]; then
     file="$OUT/${pod//\//_}"
     "${kubectl[@]}" -n "${pod%%/*}" describe pod "${pod#*/}" >"$file.describe.txt" 2>&1
     "${kubectl[@]}" -n "${pod%%/*}" logs "${pod#*/}" --all-containers --tail=200 >"$file.log" 2>&1
-    "${kubectl[@]}" -n "${pod%%/*}" logs "${pod#*/}" --all-containers --previous --tail=200 >"$file.previous.log" 2>&1
+    "${kubectl[@]}" -n "${pod%%/*}" logs "${pod#*/}" --all-containers --previous --ignore-errors --tail=200 >"$file.previous.log" 2>&1
   done <<<"$faults"
 fi
 exit 1

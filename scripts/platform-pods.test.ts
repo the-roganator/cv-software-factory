@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -133,4 +133,121 @@ describe('the platform check’s end', () => {
     // A Job of the same name in another namespace is another Job.
     expect(judge([attempt], [job('website', 'migrate', true)]).status).toBe(1);
   });
+
+  it('reads a time with fractions of a second, and names each faulty container of a pod', () => {
+    const two = pod('factory', 'two-1', 'Running', [
+      running('a'),
+      {
+        ...running('b', 3),
+        lastState: { terminated: { exitCode: 2, reason: 'Error', finishedAt: `${ago(40)}`.replace('Z', '.123Z') } },
+      },
+      { ...running('c'), ready: false },
+    ]);
+    expect(judge([two]).out).toBe(
+      'factory/two-1: container c running, not ready; container b restarted 40s ago (3 restarts; last exit 2, Error)\n',
+    );
+  });
+
+  it('fails a pod in phase Unknown, and the pods of a Job that is gone', () => {
+    const lost = {
+      metadata: { namespace: 'factory', name: 'lost-1' },
+      status: { phase: 'Unknown', reason: 'NodeLost' },
+    };
+    const orphan = {
+      metadata: { namespace: 'factory', name: 'old-1', ...ownedBy('gone') },
+      status: { phase: 'Failed' },
+    };
+    expect(judge([lost, orphan]).out).toBe('factory/lost-1: Unknown: NodeLost\nfactory/old-1: Failed\n');
+  });
+
+  it('leaves the website’s Jobs to its release: a canary analysis that failed is not the cluster’s fault', () => {
+    const journeys = {
+      metadata: { namespace: 'website', name: 'journeys-1', ...ownedBy('journeys') },
+      status: { phase: 'Failed' },
+    };
+    const website = pod('website', 'website-1', 'Running', [{ ...running('website'), ready: false }]);
+    expect(judge([journeys, website], [job('website', 'journeys', false)]).out).toBe(
+      'website/website-1: container website running, not ready\n',
+    );
+  });
+});
+
+/*
+ * On the cluster it looks again and again, through a kubectl that answers each look with the next of a list of pods
+ * (the last from then on), and Jobs that are none.
+ */
+describe('the platform check’s end, on the cluster', () => {
+  function cluster(looks: object[][], env: Record<string, string> = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'platform-pods-cluster-'));
+    dirs.push(dir);
+    looks.forEach((pods, i) => {
+      writeFileSync(join(dir, `look-${i}.json`), JSON.stringify({ items: pods }));
+    });
+    const last = looks.length - 1;
+    writeFileSync(
+      join(dir, 'kubectl'),
+      `#!/usr/bin/env bash
+case " $* " in
+  *" get pods "*) n=$(cat "${dir}/n" 2>/dev/null || echo 0); echo $((n + 1)) > "${dir}/n"
+    cat "${dir}/look-$(( n < ${last} ? n : ${last} )).json" ;;
+  *" get jobs "*) echo '{"items":[]}' ;;
+  *" describe "*) echo "described $*" ;;
+  *" logs "*) echo "logged $*" ;;
+esac
+`,
+    );
+    chmodSync(join(dir, 'kubectl'), 0o755);
+    const summary = join(dir, 'summary.md');
+    const result = spawnSync(SCRIPT, [], {
+      encoding: 'utf-8',
+      timeout: 20_000,
+      env: {
+        PATH: process.env.PATH,
+        KUBECTL: join(dir, 'kubectl'),
+        INTERVAL: '1',
+        STEADY: '1',
+        SETTLE: '4',
+        OUT: join(dir, 'out'),
+        GITHUB_STEP_SUMMARY: summary,
+        ...env,
+      },
+    });
+    const read = (file: string) => (existsSync(file) ? readFileSync(file, 'utf-8') : '');
+    return { status: result.status, out: result.stdout, summary: read(summary), out_dir: join(dir, 'out'), read };
+  }
+  // Settled long before any look: what each look sees of a healthy cluster.
+  const settled = (restarts: number) => [
+    pod('factory', 'line-1', 'Running', [{ ...running('line'), restartCount: restarts }]),
+  ];
+
+  it('passes on two clean looks between which nothing restarted', () => {
+    const { status, out } = cluster([settled(0)]);
+    expect(status).toBe(0);
+    expect(out).toMatch(/^Every pod is running and ready/);
+  });
+
+  it('fails clean looks between which a container restarted, as a slow crash loop’s may be', () => {
+    const { status, out } = cluster([settled(1), settled(2), settled(3), settled(4), settled(5), settled(6)]);
+    expect(status).toBe(1);
+    expect(out).toMatch(/no two looks 1 seconds apart found every pod running, ready and not restarting/);
+  }, 15_000);
+
+  it('names a crash loop in the log and the summary, and keeps its logs and description', () => {
+    const crashing = pod('factory', 'broken-1', 'Running', [
+      {
+        name: 'broken',
+        ready: false,
+        restartCount: 3,
+        state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off `x`' } },
+      },
+    ]);
+    const { status, out, summary, out_dir, read } = cluster([[crashing]]);
+    expect(status).toBe(1);
+    expect(out).toContain('  factory/broken-1: container broken waiting: CrashLoopBackOff: back-off `x`');
+    expect(summary).toBe(
+      '### Pods not running and ready\n\n- `factory/broken-1: container broken waiting: CrashLoopBackOff: back-off x`\n',
+    );
+    expect(read(join(out_dir, 'factory_broken-1.describe.txt'))).toMatch(/describe pod broken-1/);
+    expect(read(join(out_dir, 'factory_broken-1.previous.log'))).toMatch(/logs broken-1 --all-containers --previous/);
+  }, 15_000);
 });

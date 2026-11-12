@@ -30,7 +30,7 @@ import {
   type ScannedImage,
 } from '../vulnerabilities/moves.ts';
 import { readMessage, SEVERITIES, type Severity } from '../vulnerabilities/sarif.ts';
-import { type GitHub, GitHubError } from './client.ts';
+import { type GitHub, GitHubError, READ_AGAIN } from './client.ts';
 import { DIGEST } from './registry.ts';
 import { type ZipError, zipEntry } from './zip.ts';
 
@@ -309,8 +309,12 @@ export class ScanReads {
   /** Each artifact's `moves.json`, by its id: an artifact never changes, so it is downloaded once. */
   readonly #files = new Map<number, unknown>();
 
-  constructor(github: GitHub) {
+  readonly #maxAlerts: number;
+
+  /** `maxAlerts` for a test of the cap; the scan's own is `MAX_ALERTS`. */
+  constructor(github: GitHub, { maxAlerts = MAX_ALERTS }: { maxAlerts?: number } = {}) {
     this.#github = github;
+    this.#maxAlerts = maxAlerts;
   }
 
   async moves(repo: string): Promise<Moves> {
@@ -355,28 +359,25 @@ export class ScanReads {
    * read in `joined`.
    */
   async #settled(repo: string, run: ScanRun, alerts: z.infer<typeof ALERTS>) {
-    const others = new Set<string>();
+    // Only a later run than the artifact's can be a read to try again; any other fails the read in `joined`. The tags
+    // are the alerts' words, so at most one later run is asked about: two are a disagreement.
+    const later = new Set<string>();
     for (const alert of alerts) {
       if (!ours(alert)) continue;
       const tag = readMove(alert.most_recent_instance?.message?.text ?? '');
-      if (tag && tag.run !== String(run.id)) others.add(tag.run);
+      if (tag && BigInt(tag.run) > BigInt(run.id)) later.add(tag.run);
     }
-    for (const other of others) {
-      const { body } = await this.#github.poll(repo, `/repos/${repo}/actions/runs/${other}`, RUN);
-      if (body.status !== 'completed')
-        throw new GitHubError(
-          'conflict',
-          `The scan's run ${other} in ${repo} has uploaded its results and has not finished: read its moves once it has.`,
-          409,
-        );
-      // Run ids only grow: a later run's results with an earlier run's artifact is a read that began before it ended.
-      if (BigInt(other) > BigInt(run.id))
-        throw new GitHubError(
-          'conflict',
-          `The scan's run ${other} in ${repo} finished while its moves were read: read them again.`,
-          409,
-        );
-    }
+    if (later.size > 1) throw disagrees(repo, `its alerts name ${later.size} runs later than the artifact's`);
+    const [other] = later;
+    if (other === undefined) return;
+    const { body } = await this.#github.poll(repo, `/repos/${repo}/actions/runs/${other}`, RUN);
+    throw new GitHubError(
+      READ_AGAIN,
+      body.status === 'completed'
+        ? `The scan's run ${other} in ${repo} finished while its moves were read: read them again.`
+        : `The scan's run ${other} in ${repo} has uploaded its results and has not finished: read its moves once it has.`,
+      409,
+    );
   }
 
   /** The last finished run of the scan on the default branch, by schedule, push or hand. */
@@ -389,7 +390,7 @@ export class ScanReads {
           run.status === 'completed' &&
           SCAN_EVENTS.includes(run.event) &&
           run.head_branch === branch &&
-          (run.head_repository?.full_name ?? repo) === repo,
+          run.head_repository?.full_name === repo,
       );
       if (found)
         return {
@@ -452,10 +453,10 @@ export class ScanReads {
   async #alerts(repo: string): Promise<z.infer<typeof ALERTS>> {
     const all: z.infer<typeof ALERTS> = [];
     for (let page = 1; ; page++) {
-      if (all.length >= MAX_ALERTS) throw disagrees(repo, `more than ${MAX_ALERTS} open alerts`);
       const path = `/repos/${repo}/code-scanning/alerts?state=open&tool_name=Trivy&per_page=${ALERTS_PER_PAGE}&page=${page}`;
       const { body } = await this.#github.poll(repo, path, ALERTS);
       all.push(...body);
+      if (all.length > this.#maxAlerts) throw disagrees(repo, `more than ${this.#maxAlerts} open alerts`);
       if (body.length < ALERTS_PER_PAGE) return all;
     }
   }

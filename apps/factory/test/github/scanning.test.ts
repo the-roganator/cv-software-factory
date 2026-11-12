@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { GitHubError } from '../../src/github/client.ts';
 import { branchPin, ecosystemsOf } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
+import { ScanReads } from '../../src/github/scanning.ts';
 import { zipEntry } from '../../src/github/zip.ts';
 import { client, REPO, type Route, type Sent } from './fake.ts';
 
@@ -184,6 +185,18 @@ describe('the scan’s moves', () => {
     expect(moves.moves.flatMap((m) => m.findings.map((f) => f.alert))).toEqual([101, 102, 103, 104]);
   });
 
+  it('read exactly as many alerts as the cap, and fail on one more', async () => {
+    const filler = (from: number) => Array.from({ length: 100 }, (_, i) => ({ ...alerts()[4], number: from + i }));
+    const atCap = await new ScanReads(client(routes({ pages: [filler(1000), [...alerts().slice(0, 4)]] })).github, {
+      maxAlerts: 104,
+    }).moves(REPO);
+    expect(atCap.moves.flatMap((m) => m.findings)).toHaveLength(4);
+    const over = await new ScanReads(client(routes({ pages: [filler(1000), alerts()] })).github, { maxAlerts: 104 })
+      .moves(REPO)
+      .catch((e) => e);
+    expect(over.message).toMatch(/more than 104 open alerts/);
+  });
+
   it('fail when a page of alerts was cut short, so a move has fewer findings than it clears', async () => {
     await fails({ pages: [alerts().filter((a) => a.number !== 104)] }, /move 2 clears 2 results and 1 alerts name it/);
   });
@@ -232,7 +245,7 @@ describe('the scan’s moves', () => {
     )
       .moves(REPO)
       .catch((e) => e);
-    expect(going).toMatchObject({ kind: 'conflict', status: 409 });
+    expect(going).toMatchObject({ kind: 'read-again', status: 409 });
     expect(going.message).toMatch(/run 42000000003 .* has not finished/);
     // A later run that finished while the alerts were paged through: read again, too.
     const ended = await new LiveReads(
@@ -240,7 +253,7 @@ describe('the scan’s moves', () => {
     )
       .moves(REPO)
       .catch((e) => e);
-    expect(ended).toMatchObject({ kind: 'conflict', status: 409 });
+    expect(ended).toMatchObject({ kind: 'read-again', status: 409 });
     expect(ended.message).toMatch(/run 42000000009 .* finished while its moves were read: read them again/);
     const done = await new LiveReads(
       client([ran('42000000000', 'completed'), ...routes({ pages: pages('42000000000') })]).github,
@@ -249,6 +262,44 @@ describe('the scan’s moves', () => {
       .catch((e) => e);
     expect(done.message).toMatch(/alert 101 is from run 42000000000, and the artifact from run 42000000001/);
     await fails({ moves: { ...fixture('moves.json'), run: '42000000000' } }, /names run 42000000000/);
+  });
+
+  it('ask about one later run at most: two later runs in the alerts are a disagreement', async () => {
+    const pages = [
+      alerts().map((a) => {
+        const text = a.most_recent_instance.message.text;
+        if (a.number === 101)
+          return {
+            ...a,
+            most_recent_instance: {
+              ...a.most_recent_instance,
+              message: { text: text.replace('run 42000000001', 'run 42000000008') },
+            },
+          };
+        if (a.number === 102)
+          return {
+            ...a,
+            most_recent_instance: {
+              ...a.most_recent_instance,
+              message: { text: text.replace('run 42000000001', 'run 42000000009') },
+            },
+          };
+        return a;
+      }),
+    ];
+    const sent: Sent[] = [];
+    const error = await read({ pages }, sent).catch((e) => e);
+    expect(error.message).toMatch(/its alerts name 2 runs later than the artifact's/);
+    expect(sent.filter((each) => /\/actions\/runs\/4200000000[89]$/.test(each.path))).toEqual([]);
+  });
+
+  it('pass over a run whose source repository GitHub does not name', async () => {
+    const runs = fixture('runs.json');
+    for (const run of runs.workflow_runs) if (run.id === 42000000001) run.head_repository = null;
+    const error = await read({ runs }).catch((e) => e);
+    // The next is a fork's, then an older push whose artifacts are not in the fixtures.
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).not.toMatch(/42000000001/);
   });
 
   it('fail on a count that differs from the artifact’s', async () => {
@@ -497,6 +548,22 @@ describe('Dependabot’s pull requests', () => {
     expect(JSON.stringify(pulls)).not.toMatch(/never read/);
   });
 
+  it('read every page up to the most, and fail on one more', async () => {
+    const pulls = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ ...fixture('pulls.json')[0], number: from + i }));
+    const pages = (last: unknown[]): Route[] => [
+      ...pullRoutes.filter((r) => !String(r.path).includes('/pulls?')),
+      ...Array.from({ length: 11 }, (_, i) => ({
+        method: 'GET',
+        path: `/repos/${REPO}/pulls?state=open&per_page=100&page=${i + 1}`,
+        answer: () => ({ body: i < 10 ? pulls(1 + i * 100, 100) : last }),
+      })),
+    ];
+    expect(await new LiveReads(client(pages([])).github).dependencyPulls(REPO)).toHaveLength(1000);
+    const more = await new LiveReads(client(pages(pulls(2000, 1))).github).dependencyPulls(REPO).catch((e) => e);
+    expect(more.message).toMatch(/more than 1000 open pull requests/);
+  });
+
   it('read a branch against the directories and groups dependabot.yml names, the longest first', () => {
     const config = ecosystemsOf(
       'updates:\n  - package-ecosystem: docker\n    directories: [/, /apps, /apps/console]\n  - package-ecosystem: npm\n    directories: [/, /packages/*]\n    groups:\n      tooling: {}\n',
@@ -537,5 +604,12 @@ describe('Dependabot’s pull requests', () => {
       dependency: 'apps/console/node',
     });
     expect(ecosystemsOf('{not: [yaml').directories).toEqual(new Map());
+    // A dependabot.yml that names no entry for an ecosystem: no directory is sure, not the root.
+    expect(
+      branchPin(
+        'dependabot/github_actions/example/setup-thing-5.2.6',
+        ecosystemsOf('updates:\n  - package-ecosystem: npm\n    directory: /\n'),
+      ),
+    ).toMatchObject({ ecosystem: 'github-actions', dependency: null });
   });
 });

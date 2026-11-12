@@ -82,7 +82,7 @@ describe('the pin guard', () => {
     [`2.14.3@${digest('x')}\n    evil: true`, /not a version or a tag with its digest/],
     [`2.14.3 @${digest('x')}`, /not a version or a tag with its digest/],
     ['2.14.3', /version alone where it pinned a digest/],
-    [`main@${digest('x')}`, /not a version or a tag with its digest/],
+    [`main@${digest('x')}`, /tag main where it pinned 2\.11\.2: a tag that is not a version moves its digest alone/],
     [`2.14.3@${digest('x')}@${digest('y')}`, /not a version or a tag with its digest/],
   ])('refuses a target that is not a version or digest by the grammar: %j', async (to, words) => {
     const repo = new FakeRepo(FILES);
@@ -91,6 +91,23 @@ describe('the pin guard', () => {
       { pins: [{ file: 'deploy/base/telemetry/values/logs.yaml', line: 4, from: SIDECAR, to }] },
       PatchRefused,
       words,
+    );
+  });
+
+  it('moves the digest of a tag that is not a version, and never its name', async () => {
+    const file = 'deploy/base/telemetry/values/debian.yaml';
+    const [old, now] = [`bookworm@${digest('debian/old')}`, `bookworm@${digest('debian/new')}`];
+    const repo = new FakeRepo({ ...FILES, [file]: `image:\n  tag: ${old}\n` });
+    const sha = await live(repo).actions.commitPins(
+      REPO,
+      asked(repo, { pins: [{ file, line: 2, from: old, to: now }] }),
+    );
+    expect(repo.file(sha, file)).toBe(`image:\n  tag: ${now}\n`);
+    await refuses(
+      repo,
+      { pins: [{ file, line: 2, from: old, to: `trixie@${digest('debian/new')}` }] },
+      PatchRefused,
+      /tag trixie where it pinned bookworm/,
     );
   });
 
@@ -167,6 +184,8 @@ describe('the pin guard', () => {
     ['policy/vulnerabilities.ts', /rules of the line/],
     ['pnpm-lock.yaml', /lockfile/],
     ['apps/console/pnpm-lock.yaml', /lockfile/],
+    ['pnpm-lock.dev.yaml', /lockfile/],
+    ['apps/console/npm-shrinkwrap.json', /lockfile/],
     ['mise.toml', /toolchain/],
     ['mise.lock', /toolchain/],
     ['../outside.yaml', /not a plain path/],

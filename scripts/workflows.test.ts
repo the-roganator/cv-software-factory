@@ -789,6 +789,15 @@ describe('platform.yml', () => {
     // Watched, and stopped at the ceiling or on what waiting will not mend (scripts/platform-watch.test.ts).
     expect(make?.run).toContain('WATCHED=$make scripts/platform-watch.sh');
     expect(runs).toContain('make admission-ready');
+    // The end: every pod running and ready, after the records, its findings kept beside the cluster's state.
+    const names = steps.map((step) => step.name);
+    const pods = steps.find((step) => step.run === 'scripts/platform-pods.sh') as
+      | (Step & { env?: Record<string, string> })
+      | undefined;
+    expect(pods?.name).toBe('Every pod running and ready');
+    expect((pods as { if?: string } | undefined)?.if).toBeUndefined();
+    expect(pods?.env?.OUT).toBe(`${expression('runner.temp')}/measure/pods`);
+    expect(names.indexOf('Every pod running and ready')).toBeGreaterThan(names.indexOf('Take the refusal records'));
     // What the cluster showed, kept on every outcome but success, cancellation included.
     const kept = steps.find((step) => step.with?.name === 'cluster');
     expect(kept?.uses).toMatch(/^actions\/upload-artifact@/);

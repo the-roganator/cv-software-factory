@@ -36,8 +36,9 @@ import { DiskArtifacts } from '../src/artifacts.ts';
 import type { JSONValue } from '../src/client.ts';
 import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
+import { migrate } from '../src/migrate.ts';
 import { type Database, freshDatabase } from './database.ts';
-import { WORKERS } from './postgres.ts';
+import { PASSWORDS, WORKERS } from './postgres.ts';
 
 let db: Database;
 
@@ -792,6 +793,20 @@ describe("the day's moves", () => {
     await signal(db.owner, 'dependency');
     await expect(signal(db.owner, 'not-a-sense')).rejects.toThrow('inbox_sense_check');
     await expect(signal(db.patching, 'dependency')).rejects.toThrow('permission denied');
+  });
+
+  it('comes from a role 0050 makes with no password until the migrate Job is given one, which then lets it in', async () => {
+    // Between the sense's code and its manifests, `main`'s migrate Job runs 0050 with no PATCHING_PASSWORD.
+    const real = await freshDatabase('patching_password');
+    try {
+      await real.owner`alter role factory_patching password null`;
+      expect(await migrate(real.owner, {})).toEqual([]);
+      await expect(real.patching`select 1`).rejects.toThrow(/password authentication failed/);
+      await migrate(real.owner, { patching: PASSWORDS.patching });
+      expect(await real.patching`select 1 as ok`).toEqual([{ ok: 1 }]);
+    } finally {
+      await real.end();
+    }
   });
 
   it('is appended as a sample by Martin’s command line too, for `make samples`, and by no other role', async () => {

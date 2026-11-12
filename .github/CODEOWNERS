@@ -47,6 +47,7 @@
 /apps/factory/test/gateway/agents-harness.ts    @mrogan
 /apps/factory/test/gateway/judge-harness.ts     @mrogan
 /apps/factory/test/gateway/helpers.ts           @mrogan
+/apps/factory/test/github/door-reads.ts         @mrogan
 /apps/factory/test/github/fake.ts               @mrogan
 /apps/factory/test/github/issues-harness.ts     @mrogan
 /apps/factory/test/line/fakes.ts                @mrogan

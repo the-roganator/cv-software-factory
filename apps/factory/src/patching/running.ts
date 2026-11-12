@@ -5,7 +5,8 @@
  * else (deploy/base/patching-reads-pods).
  *
  * A pod that has finished (`Succeeded`, `Failed`) runs nothing, and a container not started yet has no digest: neither
- * is read. An init container that ran is read: it ran that image.
+ * is read. An init container that ran is read: it ran that image. So is an ephemeral one, which `kubectl debug` adds to
+ * a running pod: an image it runs is an image the cluster runs, whatever made it.
  */
 import { z } from 'zod';
 import type { Kube } from '../runners/kube.ts';
@@ -35,12 +36,14 @@ const PODS = z.object({
       spec: z.object({
         containers: z.array(z.object({ name: z.string(), image: z.string() })),
         initContainers: z.array(z.object({ name: z.string(), image: z.string() })).optional(),
+        ephemeralContainers: z.array(z.object({ name: z.string(), image: z.string() })).optional(),
       }),
       status: z
         .object({
           phase: z.string().optional(),
           containerStatuses: z.array(STATUS).optional(),
           initContainerStatuses: z.array(STATUS).optional(),
+          ephemeralContainerStatuses: z.array(STATUS).optional(),
         })
         .optional(),
     }),
@@ -58,17 +61,40 @@ export function digestOf(imageID: string | undefined): string | undefined {
   return imageID ? DIGEST.exec(imageID)?.[0] : undefined;
 }
 
-/** Every container running in the namespaces given, or in every one, in order of namespace, pod and container. */
-export async function runningContainers(kube: Kube, namespaces?: readonly string[]): Promise<RunningContainer[]> {
-  const found: RunningContainer[] = [];
-  for (const namespace of namespaces ?? [undefined]) await listPods(kube, namespace, found);
-  return found.sort(
-    (a, b) =>
-      a.namespace.localeCompare(b.namespace) || a.pod.localeCompare(b.pod) || a.container.localeCompare(b.container),
-  );
+/** A namespace's name, as Kubernetes holds it: a DNS label. */
+const NAMESPACE = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+
+/**
+ * The namespaces a comma-separated setting names, or undefined (every namespace) when it is unset or blank. An empty
+ * item (a trailing comma) or a name that is not a namespace's is refused, naming the setting: it would otherwise reach
+ * the pod list as no namespace, and so every one.
+ */
+export function namespacesFrom(value: string | undefined, setting: string): string[] | undefined {
+  if (!value?.trim()) return undefined;
+  const names = value.split(',').map((ns) => ns.trim());
+  const bad = names.filter((ns) => !NAMESPACE.test(ns));
+  if (bad.length)
+    throw new Error(`${setting} names ${bad.map((ns) => JSON.stringify(ns)).join(', ')}, not a namespace`);
+  return names;
 }
 
-async function listPods(kube: Kube, namespace: string | undefined, found: RunningContainer[]): Promise<void> {
+/** Every container running in the namespaces given, or in every one, in order of namespace, pod and container. */
+export async function runningContainers(kube: Kube, namespaces?: readonly string[]): Promise<RunningContainer[]> {
+  // An empty name would list every namespace: only no list at all means that.
+  const bad = namespaces?.filter((ns) => !NAMESPACE.test(ns)) ?? [];
+  if (bad.length) throw new Error(`Not a namespace: ${bad.map((ns) => JSON.stringify(ns)).join(', ')}`);
+  // Each namespace at once: one that cannot be listed fails the whole read, as it would one at a time.
+  const lists = await Promise.all((namespaces ?? [undefined]).map((ns) => listPods(kube, ns)));
+  return lists
+    .flat()
+    .sort(
+      (a, b) =>
+        a.namespace.localeCompare(b.namespace) || a.pod.localeCompare(b.pod) || a.container.localeCompare(b.container),
+    );
+}
+
+async function listPods(kube: Kube, namespace: string | undefined): Promise<RunningContainer[]> {
+  const found: RunningContainer[] = [];
   const base = namespace ? `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods` : '/api/v1/pods';
   let next: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -77,8 +103,17 @@ async function listPods(kube: Kube, namespace: string | undefined, found: Runnin
     if (!list) throw new Error(`The Kubernetes API has no pods to list${namespace ? ` in ${namespace}` : ''}`);
     for (const pod of list.items) {
       if (pod.status?.phase === 'Succeeded' || pod.status?.phase === 'Failed') continue;
-      const specs = [...pod.spec.containers, ...(pod.spec.initContainers ?? [])];
-      for (const status of [...(pod.status?.containerStatuses ?? []), ...(pod.status?.initContainerStatuses ?? [])]) {
+      const specs = [
+        ...pod.spec.containers,
+        ...(pod.spec.initContainers ?? []),
+        ...(pod.spec.ephemeralContainers ?? []),
+      ];
+      const statuses = [
+        ...(pod.status?.containerStatuses ?? []),
+        ...(pod.status?.initContainerStatuses ?? []),
+        ...(pod.status?.ephemeralContainerStatuses ?? []),
+      ];
+      for (const status of statuses) {
         const digest = digestOf(status.imageID);
         if (!digest) continue;
         found.push({
@@ -92,7 +127,7 @@ async function listPods(kube: Kube, namespace: string | undefined, found: Runnin
       }
     }
     next = list.metadata?.continue || undefined;
-    if (!next) return;
+    if (!next) return found;
   }
   throw new Error(`More than ${PAGE * MAX_PAGES} pods${namespace ? ` in ${namespace}` : ''}: the sense reads no more`);
 }

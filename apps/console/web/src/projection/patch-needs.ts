@@ -33,25 +33,35 @@ export const OPEN_ROW = 'patching:open-row';
 export const HIS: readonly MoveLane[] = ['approval', 'cluster', 'issue'];
 
 /**
- * Each row's key in a day, the same for Martin and a visitor and while its pull request opens: a move's repository and
- * name, or, for a lockfile's, whose name is the file's for every one of them, its place among the repository's lockfile
- * moves; a row the sense made, by what it found and where.
+ * Each row's key in a day, the same for Martin and a visitor, while its pull request opens, and in a card and its row,
+ * which the card opens by it: a move's repository and name, or, for a lockfile's, whose name is the file's for every
+ * one of them, its place among the repository's lockfile moves; a row the sense made, by what runs and where, not by
+ * its pod, whose name a restart changes. Rows with one key are told apart by their place among them, the first keeping
+ * it: two pods of one workload running the same image, or two moves of one name from two pins, as the scan groups by
+ * name and what it pins now.
  */
-export function moveKeys(day: Day): string[][] {
-  return day.repositories.map((r) => {
+export function rowKeys(day: Day): { moves: string[][]; running: string[] } {
+  const seen = new Map<string, number>();
+  const told = (key: string) => {
+    const n = (seen.get(key) ?? 0) + 1;
+    seen.set(key, n);
+    return n === 1 ? key : `${key} ${n}`;
+  };
+  const moves = day.repositories.map((r) => {
     let lockfiles = 0;
     return r.moves.map((move) =>
-      move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`,
+      told(move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`),
     );
   });
+  return { moves, running: day.rows.map((row) => told(runningKey(row))) };
 }
 
-export function runningKey(row: Running): string {
+function runningKey(row: Running): string {
   switch (row.row) {
     case 'unlisted-image':
-      return `unlisted ${row.namespace}/${row.pod}/${row.container}`;
+      return `unlisted ${row.namespace} ${row.container} ${row.image}@${row.digest}`;
     case 'unscanned-digest':
-      return `unscanned ${row.namespace}/${row.pod}/${row.container}`;
+      return `unscanned ${row.namespace} ${row.container} ${row.image}@${row.digest}`;
     case 'not-running':
       return `not-running ${row.repository} ${row.item}`;
   }
@@ -122,14 +132,14 @@ export function targetWords(to: string): string {
 }
 
 function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
-  const keys = moveKeys(day);
+  const keys = rowKeys(day);
   const moves = day.repositories.flatMap((r, i) =>
     r.moves.flatMap((move, j): Omit<PatchNeed, 'since'>[] => {
       if (!HIS.includes(move.lane)) return [];
       const shown = move.lockfile ? move.package : undefined;
       return [
         {
-          key: keys[i]?.[j] ?? '',
+          key: keys.moves[i]?.[j] ?? '',
           kind: move.lane as PatchNeed['kind'],
           name: move.lockfile ? shown?.name : move.name,
           from: move.lockfile ? shown?.from : shortDigests(move.from).trim() || undefined,
@@ -147,8 +157,8 @@ function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
     }),
   );
   const running = day.rows.map(
-    (row): Omit<PatchNeed, 'since'> => ({
-      key: runningKey(row),
+    (row, i): Omit<PatchNeed, 'since'> => ({
+      key: keys.running[i] ?? '',
       kind: row.row,
       name: shortDigests(row.image).trim(),
       from: undefined,

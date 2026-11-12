@@ -157,11 +157,9 @@ describe('the pod log collector', () => {
       ({ manifest }) => manifest.kind === 'Application' && manifest.spec?.destination?.namespace === 'pod-logs',
     );
     expect(into.map(({ manifest }) => manifest.metadata?.name)).toEqual(['pod-logs']);
-    // Beside the chart, only its fences, and the dependency sense's list of its pods.
-    const beside = all
-      .filter(({ namespace }) => namespace === 'pod-logs')
-      .map(({ manifest }) => `${manifest.kind}${manifest.kind === 'RoleBinding' ? ` ${manifest.metadata?.name}` : ''}`);
-    expect(new Set(beside)).toEqual(new Set(['NetworkPolicy', 'RoleBinding patching-lists-pods']));
+    // Beside the chart, only its fences.
+    const beside = all.filter(({ namespace }) => namespace === 'pod-logs').map(({ manifest }) => manifest.kind);
+    expect(new Set(beside)).toEqual(new Set(['NetworkPolicy']));
     // The same chart at the same version as the collector in `telemetry`, so the two move together.
     const chart = (name: string) =>
       all.find(({ manifest }) => manifest.kind === 'Application' && manifest.metadata?.name === name)?.manifest.spec

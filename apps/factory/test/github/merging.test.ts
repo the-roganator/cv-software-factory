@@ -19,6 +19,7 @@ import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { verifyRefusal } from '../../src/signed-refusals.ts';
+import { doorReads } from './door-reads.ts';
 import { calls, client, OTHER_SHA, quiet, REPO, type Route, type Sent, SHA } from './fake.ts';
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -141,6 +142,7 @@ describe('adding to the merge queue over HTTP', () => {
     const { github } = client(routes, sent);
     const server = createWorkerServer({
       actions: new LiveActions(github, { guard: guard(recorder) }),
+      reads: doorReads(),
       repositories: [REPO],
       health: () => ({}),
       recorder,

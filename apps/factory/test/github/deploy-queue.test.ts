@@ -426,8 +426,12 @@ function pinHarness(o: {
   verdict?: (number: number) => ReviewVerdict;
   runs?: () => CheckRun[];
   actions?: DeployQueueDependencies['actions'];
+  queued?: (number: number) => MergeQueue['queued'];
 }) {
   const sent: Sent[] = [];
+  /** GitHub's requests and the merge queue's reads, in the order they were made. */
+  const read: string[] = [];
+  let seen = 0;
   const pulls = o.pulls ?? (() => [pinPull()]);
   const { github } = client(
     [
@@ -464,10 +468,15 @@ function pinHarness(o: {
     checkRuns: async () => (o.runs ?? green)(),
     requiredChecks: async () => REQUIRED,
     mergeability: async (_repo, number) => ({ number, head: headOf(number), conflicts: false, state: 'clean' }),
-    mergeQueue: async (_repo, number) => queue({ number, head: headOf(number) }),
+    mergeQueue: async (_repo, number) => {
+      read.push(`mergeQueue ${number}`, ...sent.slice(seen).map((x) => x.path));
+      seen = sent.length;
+      return queue({ number, head: headOf(number), queued: o.queued?.(number) ?? null });
+    },
   };
   const pass = pinQueueWatch({ github, reads, actions, log: quiet }, REPO);
-  return { pass, enqueued, sent };
+  const order = () => [...read, ...sent.slice(seen).map((x) => x.path)];
+  return { pass, enqueued, sent, order };
 }
 
 describe('the pin queue watch', () => {
@@ -547,6 +556,17 @@ describe('the pin queue watch', () => {
           : [],
     ],
     ['labelled pin by an actor GitHub no longer has', (_n, p) => (p === 1 ? [labelled(null)] : [])],
+    [
+      'the App reopened, as a worker that asked could after Martin closed it',
+      (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'closed', actor: { id: MARTIN } },
+              { event: 'reopened', actor: { id: APP_USER } },
+            ]
+          : [],
+    ],
     ['with no labelling event', (_n, p) => (p === 1 ? [labelled(APP_USER, 'deploy: local')] : [])],
     [
       'whose events run past what is read',
@@ -578,12 +598,42 @@ describe('the pin queue watch', () => {
     expect(enqueued).toEqual([]);
   });
 
+  it('queues a pull request Martin reopened himself', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'closed', actor: { id: MARTIN } },
+              { event: 'reopened', actor: { id: MARTIN } },
+            ]
+          : [],
+    });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
   it('reads exactly as many events as it reads whole, when no page follows', async () => {
     const { pass, enqueued } = pinHarness({
       events: (_n, p) => (p <= 5 ? Array.from({ length: 100 }, () => labelled(APP_USER)) : []),
     });
     await pass();
     expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  it('reads who labelled it last of all, just before the enqueue, and not at all for one already queued', async () => {
+    const { pass, order, enqueued } = pinHarness({});
+    await pass();
+    const paths = order();
+    expect(paths.findIndex((p) => p.includes('/events'))).toBeGreaterThan(paths.indexOf('mergeQueue 1040'));
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+
+    const already = pinHarness({
+      queued: () => ({ position: 1, state: 'QUEUED', enqueuedAt: '2026-11-12T10:00:00Z', commit: null }),
+    });
+    await already.pass();
+    expect(already.sent.some((s) => s.path.includes('/events'))).toBe(false);
+    expect(already.enqueued).toEqual([]);
   });
 
   it('reads the events last, never for a pull request the gate or its checks hold', async () => {

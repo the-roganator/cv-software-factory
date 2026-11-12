@@ -1,7 +1,8 @@
 /**
- * When the dependency sense reads: as it starts, then each day once the scan has had time to finish, and an hour after
- * a pass that failed, or that found a repository's last scan older than the day's (GitHub's schedule runs late), until
- * the day's time comes round again. The scan runs at 04:17 UTC
+ * When the dependency sense reads: as it starts, then each day once the scan has had time to finish; an hour after a
+ * pass that failed, or that found a repository's last scan older than the day's (GitHub's schedule runs late); and ten
+ * minutes after a read the worker asked for again (`READ_AGAIN`); each until the day's time comes round again. The scan
+ * runs at 04:17 UTC
  * (`.github/workflows/vulnerabilities.yml`) and takes under an hour, so the day's read is at 05:30 UTC by default.
  */
 
@@ -33,21 +34,30 @@ export function nextDaily(now: number, at: number): number {
   return today > now ? today : today + DAY;
 }
 
-/** How long to wait after a pass: to the next day's read, or an hour after a failure if that comes first. */
-export function waitAfter(now: number, at: number, failed: boolean): number {
+/**
+ * When the next read is: the day's, an hour on (after a failure, or a scan older than today's), or soon (a read to take
+ * again).
+ */
+export type Next = 'daily' | 'hour' | 'soon';
+
+/** How soon a read to take again is taken: the scan that made it was finishing, which takes minutes. */
+export const SOON_MS = 10 * 60_000;
+
+/** How long to wait after a pass: to the next day's read, or sooner as `next` says if that comes first. */
+export function waitAfter(now: number, at: number, next: Next): number {
   const daily = nextDaily(now, at) - now;
-  return failed ? Math.min(HOUR, daily) : daily;
+  return next === 'daily' ? daily : Math.min(next === 'soon' ? SOON_MS : HOUR, daily);
 }
 
 /** Runs passes until `signal` aborts: one now, then as `waitAfter` says. */
 export async function everyDay(
-  pass: () => Promise<{ failed: boolean }>,
+  pass: () => Promise<{ next: Next }>,
   at: number,
   signal: AbortSignal,
   now: () => number = Date.now,
 ): Promise<void> {
   while (!signal.aborted) {
-    const { failed } = await pass();
+    const { next } = await pass();
     if (signal.aborted) return;
     await new Promise<void>((resolve) => {
       const stop = () => {
@@ -59,7 +69,7 @@ export async function everyDay(
           signal.removeEventListener('abort', stop);
           resolve();
         },
-        waitAfter(now(), at, failed),
+        waitAfter(now(), at, next),
       );
       signal.addEventListener('abort', stop, { once: true });
     });

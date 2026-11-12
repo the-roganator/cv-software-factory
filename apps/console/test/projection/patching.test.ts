@@ -91,6 +91,11 @@ describe('Patching, projected from the samples', () => {
     });
   });
 
+  it('finds the rows holding each deadline reason by the run’s clock, as the day’s counts were made, not the viewer’s', () => {
+    const later = read(patchingView(SAMPLES, foldItems(SAMPLES), Date.parse('2026-10-08T00:00:00Z')));
+    expect(later.day).toMatchObject({ overdue: 0, dueWithinDay: 6, movesOverdue: 0, movesDueWithinDay: 3 });
+  });
+
   it('gives the four figures: no fix yet, cleared by the moves, excepted, past their deadline', () => {
     expect(view.figures).toEqual({ noFix: 15056, cleared: 1732, excepted: 0, overdue: 0, clearingMoves: 10 });
   });
@@ -139,13 +144,14 @@ describe('an empty day', () => {
     })),
     rows: [],
   };
-  const view = read(dayView(empty, END, [], END));
+  const view = read(dayView(empty, END, []));
 
   it('has no rows, nothing waiting, and a scan that passed, with what has no fix still counted', () => {
     expect(view.rows).toEqual([]);
     expect(view.waiting).toBe(0);
     expect(view.day.passed).toBe(true);
     expect(view.figures).toMatchObject({ noFix: 15056, cleared: 0, clearingMoves: 0 });
+    expect(view.nothing).toBe('cleared');
   });
 
   it('says a repository whose run wrote no moves, and does not call the scan passed', () => {
@@ -156,7 +162,7 @@ describe('an empty day', () => {
       ),
       compared: false,
     };
-    const shown = read(dayView(failed, END, [], END));
+    const shown = read(dayView(failed, END, []));
     expect(shown.day.passed).toBe(false);
     expect(shown.day.failed).toEqual(['other']);
     expect(shown.day.unjudged).toEqual([
@@ -167,6 +173,7 @@ describe('an empty day', () => {
     ]);
     expect(shown.compared).toBe(false);
     expect(shown.day.broken).toEqual([]);
+    expect(shown.nothing).toBe('unjudged');
   });
 
   it('names a run that judged its moves and failed for none of the scan’s reasons, by its page', () => {
@@ -176,7 +183,7 @@ describe('an empty day', () => {
         i === 1 ? { ...r, run: { ...r.run, conclusion: 'failure', url: 'javascript:alert(1)' }, failed: ['other'] } : r,
       ),
     };
-    const shown = read(dayView(broken, END, [], END));
+    const shown = read(dayView(broken, END, []));
     expect(shown.day.passed).toBe(false);
     expect(shown.day.broken).toEqual([
       {
@@ -184,6 +191,8 @@ describe('an empty day', () => {
         url: 'https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/1834981',
       },
     ]);
+    // A run that judged no moves and failed in itself says nothing was cleared.
+    expect(shown.nothing).toBe('failed');
   });
 });
 
@@ -200,13 +209,28 @@ describe('row keys', () => {
       ...sample.payload,
       repositories: [{ ...app, moves: [withheld, { ...withheld, deadline: '2026-10-09T00:00:00.000Z' }] }],
     };
-    const keys = read(dayView(twice, END, [], END)).rows.map((row) => row.key);
+    const keys = read(dayView(twice, END, [])).rows.map((row) => row.key);
     expect(new Set(keys).size).toBe(keys.length);
     const full: Day = {
       ...twice,
       repositories: [{ ...app, moves: [lockfile, { ...lockfile, deadline: '2026-10-09T00:00:00.000Z' }] }],
     };
-    expect(read(dayView(full, END, [], END)).rows.map((row) => row.key)).toEqual(keys);
+    expect(read(dayView(full, END, [])).rows.map((row) => row.key)).toEqual(keys);
+  });
+
+  it('are one to a row for two moves of one name from two pins, the first keeping its name alone', () => {
+    const sample = day();
+    if (!sample) throw new Error('the samples have no patching.read');
+    const factory = sample.payload.repositories[0];
+    const move = factory?.moves.find((m) => !m.lockfile);
+    if (!factory || !move) throw new Error('the factory has no move');
+    const two: Day = {
+      ...sample.payload,
+      rows: [],
+      repositories: [{ ...factory, moves: [move, { ...move, from: `${move.from}-older` }] }],
+    };
+    const keys = read(dayView(two, END, [])).rows.map((row) => row.key);
+    expect(keys).toEqual([`${factory.repository} ${move.name}`, `${factory.repository} ${move.name} 2`]);
   });
 });
 
@@ -229,7 +253,7 @@ describe('a pin the cluster does not run yet', () => {
         },
       ],
     };
-    const row = read(dayView(withRow, END, [], END)).rows.find((r) => r.source.kind === 'not-running');
+    const row = read(dayView(withRow, END, [])).rows.find((r) => r.source.kind === 'not-running');
     expect(row).toMatchObject({ where: pin, from: 'example/db:17.5', to: 'example/db:17.6', waits: true });
     expect(row?.pins.map((p) => p.at)).toEqual([
       'deploy/base/postgres/statefulset.yaml:40',
@@ -254,7 +278,7 @@ describe('the line’s move', () => {
           }
         : item,
     ) as ReturnType<typeof foldItems>;
-    const view = read(dayView(sample.payload, END, items, END));
+    const view = read(dayView(sample.payload, END, items));
     expect(view.rows.find((row) => row.name === 'example/node-base')).toMatchObject({
       state: { kind: 'stage', stage: 'build' },
       link: { kind: 'item', number: '1262' },
@@ -280,5 +304,52 @@ describe('a deadline in words', () => {
     expect(dueSoon(t - h, t)).toBe(true);
     expect(dueSoon(t + 25 * h, t)).toBe(false);
     expect(dueSoon(undefined, t)).toBe(false);
+  });
+});
+
+describe('a lockfile’s package whose versions the scan could not read', () => {
+  const sample = day();
+  if (!sample) throw new Error('the samples have no patching.read');
+  // The factory's, whose package the public view keeps, as its pull request is open.
+  const app = sample.payload.repositories[0];
+  if (!app) throw new Error('the sample day has no factory');
+  const lockfile = app.moves.find((m) => m.lockfile && m.package);
+  if (!lockfile?.package) throw new Error('the factory has no named lockfile move');
+  const named = lockfile.package;
+  const row = (from: string, to: string) => {
+    const one: Day = {
+      ...sample.payload,
+      repositories: [{ ...app, moves: [{ ...lockfile, package: { ...named, from, to } }] }],
+      rows: [],
+    };
+    return read(dayView(one, END, [])).rows[0];
+  };
+
+  it('leaves an empty side unsaid, never drawn as half an arrow', () => {
+    expect(row('', '')).toMatchObject({ name: '@example/tokens', from: undefined, to: undefined });
+    expect(row('', '')?.pins.map((p) => p.change)).toEqual(['']);
+    expect(row('3.0.1', '')).toMatchObject({ from: '3.0.1', to: undefined });
+    expect(row('3.0.1', '')?.pins.map((p) => p.change)).toEqual(['3.0.1']);
+    expect(row('', '3.0.2')).toMatchObject({ from: undefined, to: '3.0.2' });
+    expect(row('', '3.0.2')?.pins.map((p) => p.change)).toEqual(['→ 3.0.2']);
+  });
+});
+
+describe('the sense’s rows', () => {
+  it('are keyed by what runs and where, not by a pod’s name, and two replicas get two keys', () => {
+    const sample = day();
+    if (!sample) throw new Error('the samples have no patching.read');
+    const unlisted = sample.payload.rows.find((r) => r.row === 'unlisted-image');
+    if (unlisted?.row !== 'unlisted-image') throw new Error('the samples have no unlisted image');
+    const keysOf = (rows: Day['rows']) =>
+      read(dayView({ ...sample.payload, rows }, END, []))
+        .rows.filter((r) => r.source.kind === 'unlisted-image')
+        .map((r) => r.key);
+    const before = keysOf([unlisted]);
+    // The same image in the same place after a restart, under a new pod name, keeps its key.
+    expect(keysOf([{ ...unlisted, pod: 'debug-shell-b81d' }])).toEqual(before);
+    const two = keysOf([unlisted, { ...unlisted, pod: 'debug-shell-b81d' }]);
+    expect(new Set(two).size).toBe(2);
+    expect(two.every((key) => !key.includes('debug-shell-7c9f') && !key.includes('debug-shell-b81d'))).toBe(true);
   });
 });

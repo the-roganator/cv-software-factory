@@ -46,10 +46,34 @@ describe('Needs you’s moves, projected from the samples', () => {
     expect(needs.map((need) => need.key).sort()).toEqual([...waiting].sort());
   });
 
+  it('keys each card as its row when two rows share a key: two pods of one image, and after a restart', () => {
+    const day = sample().payload;
+    const unlisted = day.rows.find((r) => r.row === 'unlisted-image');
+    if (!unlisted) throw new Error('the samples have no unlisted image');
+    const twice = { ...day, rows: [...day.rows, { ...unlisted, pod: 'debug-shell-b81d' }] };
+    const events = [readAt(sample().ts, twice)];
+    const view = patchingView(events, [], END);
+    if (view.state !== 'read') throw new Error('no day read');
+    const rows = view.rows.filter((row) => row.source.kind === 'unlisted-image').map((row) => row.key);
+    const cards = patchNeeds(events)
+      .filter((need) => need.kind === 'unlisted-image')
+      .map((need) => need.key);
+    expect(new Set(rows).size).toBe(2);
+    expect([...cards].sort()).toEqual([...rows].sort());
+    // A restart renames the pod and keeps the card's key, so its wait is not started again.
+    const restarted = patchNeeds([
+      readAt(sample().ts, {
+        ...day,
+        rows: day.rows.map((r) => (r === unlisted ? { ...r, pod: 'debug-shell-0000' } : r)),
+      }),
+    ]);
+    expect(restarted.map((need) => need.key)).toEqual(patchNeeds([readAt(sample().ts, day)]).map((need) => need.key));
+  });
+
   it('says only what the day gives: what it clears at High and Critical, its deadline, where a pod runs', () => {
     const logs = needs.find((need) => need.name === 'example-logs');
     expect(logs?.clears).toEqual({ critical: 1, high: 21 });
-    expect(logs?.deadline).toBe(Date.parse('2026-10-07T12:00:00.000Z'));
+    expect(logs?.deadline).toBe(Date.parse('2026-10-07T00:00:00.000Z'));
     const pod = needs.find((need) => need.kind === 'unlisted-image');
     expect(pod?.clears).toBeUndefined();
     expect(pod?.deadline).toBeUndefined();

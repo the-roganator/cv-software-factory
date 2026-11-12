@@ -18,7 +18,8 @@
  * open is 403 (`issue-refused`), as GitHub answers one the App may not change.
  *
  * An action refused by the worker's guard (a patch to a protected path, a branch, a deploy, an issue or pull request
- * not the App's, a pull request for the merge queue from a fork or a red-team branch) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
+ * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch, a
+ * `pin` label, or any action on the pin watch's pull requests, which only it takes) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
  * `refusal`, for the worker that asked to record as `action.refused` (`../signed-refusals.ts`). Its status is as it
  * would be without it. A read refuses nothing, but the gate's verdict that holds a pull request (`reviewVerdict`)
  * carries the gate's refusal the same way, in its result.
@@ -29,12 +30,13 @@ import { z } from 'zod';
 import { entryProblem, MOST_CONTRADICTED } from '../gates/contradicts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
-import { BranchRefused } from './branches.ts';
+import { BranchRefused, pinBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
 import { DeployRefused, MAX_CARRIES } from './deploys.ts';
 import { IssueRefused } from './issues.ts';
 import { PatchRefused } from './patches.ts';
 import { plainPath } from './paths.ts';
+import { PIN_LABEL } from './pins.ts';
 import type { Reads } from './reads.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 import { DIGEST, RegistryError } from './registry.ts';
@@ -228,6 +230,61 @@ function actingFor(req: IncomingMessage): ActingFor {
   return on;
 }
 
+/** Whether a label is `pin` as GitHub takes it: label names are matched without regard to case. */
+const isPinLabel = (label: string): boolean => label.trim().toLowerCase() === PIN_LABEL;
+
+/**
+ * Throws `BranchRefused` for what only the pin watch does with a pull request: open one from a pin branch, or give one
+ * the `pin` label. The merge queue's pin watch (`deploy-queue.ts`) takes a pull request the App opened from a pin branch
+ * and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch wrote.
+ */
+function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
+  if (head !== undefined && pinBranch(head.replace(/^refs\/heads\//, ''))) {
+    throw new BranchRefused(`${head} is the pin watch's: only the pin watch opens a pull request from it.`);
+  }
+  if (labels?.some(isPinLabel)) {
+    throw new BranchRefused(`Only the pin watch gives a pull request or issue the ${PIN_LABEL} label.`);
+  }
+}
+
+/**
+ * The actions a worker that asks takes on a pull request by its number, with how each names it: none may be taken on
+ * one of the pin watch's, which only it reopens, closes, labels, drafts, rewrites or adds to the merge queue.
+ */
+const BY_NUMBER: Partial<Record<Name, (args: Record<string, unknown>) => number>> = {
+  updatePullRequest: (a) => a.number as number,
+  addLabels: (a) => a.number as number,
+  readyForReview: (a) => (a.pullRequest as { number: number }).number,
+  convertToDraft: (a) => (a.pullRequest as { number: number }).number,
+  closeIssue: (a) => a.number as number,
+  reopenIssue: (a) => a.number as number,
+  closePullRequest: (a) => a.number as number,
+  enqueuePullRequest: (a) => a.number as number,
+};
+
+/**
+ * Throws `BranchRefused` for an action a worker asks on one of the pin watch's pull requests, by its branch as GitHub
+ * has it now. A number that is no pull request is an issue's, and not the pin queue's concern.
+ */
+async function guardPinNumber(name: Name, repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
+  const numberOf = BY_NUMBER[name];
+  if (!numberOf) return;
+  const number = numberOf(args);
+  if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether #${number} is the pin watch's.`);
+  let head: string;
+  try {
+    ({
+      head: { ref: head },
+    } = await reads.pullRequest(repo, number));
+  } catch (error) {
+    if (error instanceof GitHubError && error.kind === 'not-found') return;
+    throw error;
+  }
+  if (pinBranch(head)) {
+    throw new BranchRefused(`#${number} is the pin watch's pull request, from ${head}: only the pin watch acts on it.`);
+  }
+}
+
 /** Each action's call, from its checked arguments. */
 const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(typeof ARGS)[K]>) => Promise<unknown> } = {
   setBranch: (x, repo, { branch, sha, force }) => x.setBranch(repo, branch, sha, force === undefined ? {} : { force }),
@@ -241,17 +298,26 @@ const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(type
       },
     }),
   applyPatch: (x, repo, patch) => x.applyPatch(repo, patch),
-  openPullRequest: (x, repo, draft) => x.openPullRequest(repo, defined(draft)),
+  openPullRequest: async (x, repo, draft) => {
+    guardPinPull(draft);
+    return x.openPullRequest(repo, defined(draft));
+  },
   updatePullRequest: (x, repo, { number, ...change }) => x.updatePullRequest(repo, number, defined(change)),
   describeDeploy: (x, repo, { number, ...deploy }) => x.describeDeploy(repo, number, defined(deploy)),
-  addLabels: (x, repo, { number, labels }) => x.addLabels(repo, number, labels),
+  addLabels: async (x, repo, { number, labels }) => {
+    guardPinPull({ labels });
+    return x.addLabels(repo, number, labels);
+  },
   readyForReview: (x, repo, { pullRequest }) => x.readyForReview(repo, pullRequest),
   convertToDraft: (x, repo, { pullRequest }) => x.convertToDraft(repo, pullRequest),
   review: (x, repo, { number, ...review }) => x.review(repo, number, review),
   resolveThreads: (x, repo, { number, threads }) => x.resolveThreads(repo, number, threads),
   createCheckRun: (x, repo, report) => x.createCheckRun(repo, defined(report)),
   updateCheckRun: (x, repo, { id, ...report }) => x.updateCheckRun(repo, id, defined(report)),
-  openIssue: (x, repo, issue) => x.openIssue(repo, defined(issue)),
+  openIssue: async (x, repo, issue) => {
+    guardPinPull(issue);
+    return x.openIssue(repo, defined(issue));
+  },
   closeIssue: (x, repo, { number, reason, comment }) => x.closeIssue(repo, number, reason, comment),
   reopenIssue: (x, repo, { number, comment }) => x.reopenIssue(repo, number, comment),
   closePullRequest: (x, repo, { number, comment }) => x.closePullRequest(repo, number, comment),
@@ -343,10 +409,12 @@ const STATUS: Record<GitHubError['kind'], number> = {
   network: 502,
   'read-only': 503,
   malformed: 502,
+  'read-again': 409,
 };
 
 export interface WorkerServerOptions {
-  actions: Actions;
+  /** What it acts with; a door with `only` takes none, and acts with none. */
+  actions?: Actions | undefined;
   /** What the other workers may read; without it, every read is not found. */
   reads?: Reads | undefined;
   /** What a request asking for a dry run (`x-factory-dry-run: true`) gets: one memory of what it would have done. */
@@ -447,7 +515,7 @@ export function createWorkerServer({
     const known = only
       ? kind === 'reads' && reads && only.includes(name as ReadName)
       : kind === 'actions'
-        ? Object.hasOwn(ARGS, name)
+        ? actions !== undefined && Object.hasOwn(ARGS, name)
         : kind === 'reads' && reads && Object.hasOwn(READS, name);
     if (!known)
       return send(res, 404, { error: 'not-found', message: `No such ${kind === 'reads' ? 'read' : 'action'}.` });
@@ -476,8 +544,11 @@ export function createWorkerServer({
       const read = READ_CALLS[name as ReadName] as (r: Reads, repo: string, args: unknown) => Promise<unknown>;
       return send(res, 200, { result: await read(reads, repo, parsed.data) });
     }
+    // Only an action reaches here, and only on a server given actions (`known` above).
+    if (!actions) return send(res, 404, { error: 'not-found', message: 'No such action.' });
     let result: unknown;
     try {
+      await guardPinNumber(name as Name, repo, parsed.data as Record<string, unknown>, reads);
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(
         actions,
         repo,

@@ -523,6 +523,9 @@ const scanCounts = z.strictObject(
 );
 /** The most pins a move's day holds: one action may be pinned in every workflow, and the sense keeps the first. */
 export const MOST_PINS = 2000;
+/** The most moves a repository's day holds, and the most rows a day holds: the sense keeps the first. */
+export const MOST_MOVES = 5000;
+export const MOST_ROWS = 1000;
 /** A pin: the file and line it is written at, in its repository. */
 const filePin = z.strictObject({ file: z.string().min(1).max(300), line: count });
 /** An image as a pod or a pin names it. */
@@ -554,7 +557,8 @@ const patchingMove = z
     package: z
       .strictObject({
         name: z.string().min(1).max(214),
-        from: z.string().min(1).max(100),
+        /** Empty when its alerts name no installed version. */
+        from: z.string().max(100),
         /** Empty when no fix its alerts name resolves to a version. */
         to: z.string().max(100),
         pins: z.array(filePin).max(MOST_PINS),
@@ -579,7 +583,7 @@ const patchingRepository = z.strictObject({
   }),
   /** When the scan judged its moves; null when the run wrote none, as a run that failed early does. */
   judged: timestamp.nullable(),
-  /** Why the scan failed, as its moves show it; empty when it passed. */
+  /** Why the scan failed, as its totals count it; empty when it passed. */
   failed: z.array(z.enum(V.SCAN_FAILURES)).max(V.SCAN_FAILURES.length),
   /**
    * The scan's own totals, as `moves.json` gives them, never worked out here: results with a fix and not excepted, the
@@ -603,7 +607,7 @@ const patchingRepository = z.strictObject({
     .nullable(),
   /** How many images the scan read, which the cluster's are compared with. */
   scanned: count,
-  moves: z.array(patchingMove).max(5000),
+  moves: z.array(patchingMove).max(MOST_MOVES),
 });
 
 /** A row the comparison of the cluster's pods with the scan's list made: see `RUNNING_ROWS`. */
@@ -2071,7 +2075,7 @@ export const PAYLOADS = {
       compared: z.boolean(),
       /** How many running containers the sense compared. */
       containers: count,
-      rows: z.array(runningRow).max(1000),
+      rows: z.array(runningRow).max(MOST_ROWS),
     })
     .refine(
       (day) => new Set(day.repositories.map((r) => r.repository)).size === day.repositories.length,

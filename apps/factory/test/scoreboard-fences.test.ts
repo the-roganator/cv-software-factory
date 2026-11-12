@@ -23,6 +23,7 @@ interface Manifest {
   metadata?: { name?: string; namespace?: string; labels?: Record<string, string> };
   rules?: Rule[];
   subjects?: { kind: string; name: string; namespace?: string }[];
+  roleRef?: { kind: string; name: string };
   spec?: Record<string, unknown>;
 }
 
@@ -49,9 +50,14 @@ describe('the scoreboard’s Secrets', () => {
     expect(namespace?.manifest.metadata?.labels).toEqual({ 'pod-security.kubernetes.io/enforce': 'restricted' });
   });
 
-  it('can be read by no role deploy/ makes: none names Secrets, and none is cluster-wide', async () => {
+  it('can be read by no role deploy/ makes: none names Secrets, and the one ClusterRole lists pods alone', async () => {
     const roles = (await manifests()).filter(({ manifest }) => ['Role', 'ClusterRole'].includes(manifest.kind ?? ''));
-    expect(roles.filter(({ manifest }) => manifest.kind === 'ClusterRole')).toEqual([]);
+    // The dependency sense's, which lists pods, bound only in the namespaces it reads, never this one (below).
+    expect(
+      roles
+        .filter(({ manifest }) => manifest.kind === 'ClusterRole')
+        .map(({ manifest }) => [manifest.metadata?.name, manifest.rules]),
+    ).toEqual([['patching-lists-pods', [{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }]]]);
     const secrets = roles.filter(({ manifest }) =>
       (manifest.rules ?? []).some(
         (rule) =>

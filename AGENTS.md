@@ -89,6 +89,16 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
     GITHUB_ATTACK_URL=http://localhost:8082 node apps/factory/src/cli.ts red-team)
   ```
 
+  The dependency sense (`factory patching`, [`docs/COMPONENTS/PATCHING.md`](docs/COMPONENTS/PATCHING.md)) connects as its own role, `factory_patching` (`make up` makes `postgres-patching`), lists the cluster's pods through the Kubernetes API, and asks the GitHub worker's door for its two reads (`GITHUB_URL`, the worker's `PATCHING_PORT`). `--once` makes one pass and says what it appended, or why not. Give it the Deployment's `PATCHING_NAMESPACES`: unset, it lists every namespace, `runners` and its job tokens included. Scale the cluster's copy to nothing first (`kubectl -n factory scale deployment/patching --replicas=0`), and back to one after. On a cluster made before the sense, run `make up` first, so `postgres-patching` is there when the migrate Job and the sense read it:
+
+  ```sh
+  kubectl proxy --port=8001 &
+  kubectl --context k3d-software-factory -n factory port-forward svc/github 8083:8083 &
+  (store_role patching && KUBE_API_URL=http://127.0.0.1:8001 GITHUB_URL=http://localhost:8083 \
+    PATCHING_NAMESPACES="$(kubectl --context k3d-software-factory -n factory get deploy patching -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PATCHING_NAMESPACES")].value}')" \
+    node apps/factory/src/cli.ts patching --once)
+  ```
+
   Runners need the cluster, with the line started: their agent pods reach the cluster's gateway and the line's handback, and nothing else. The smoke run asks the line, through a port-forward to its step API, to have a coder fix an off-by-one seeded in a scratch copy of the app; the GitHub worker records the commit it would have made, and nothing reaches GitHub. The coder works on Claude, through the cluster's gateway, and the run costs money; with `ALL_LOCAL=true` on that gateway and LM Studio running, it works on Qwen, for nothing:
 
   ```sh

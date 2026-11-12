@@ -50,6 +50,9 @@ spec:
             # The red-team harness's attack door, on a port of its own (apps/factory/src/github/attacks.ts).
             - name: attack
               containerPort: 8082
+            # The dependency sense's door: its two reads, and no action (apps/factory/src/github/server.ts).
+            - name: patching
+              containerPort: 8083
           env:
             # Other pods call it, so it listens beyond loopback; the network policy says which may.
             - name: HOST
@@ -57,6 +60,8 @@ spec:
             # Serve the red-team harness's attack door on its own port (github/attacks.ts); only the harness reaches it.
             - name: ATTACK_PORT
               value: "8082"
+            - name: PATCHING_PORT
+              value: "8083"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector.telemetry:4318"
             - name: OTEL_SERVICE_NAME

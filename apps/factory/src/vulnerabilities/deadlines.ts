@@ -71,6 +71,7 @@ import {
   type Severity,
 } from './sarif.ts';
 import {
+  apiVersionsOf,
   type Handoff,
   imagesIn,
   type ReadTarget,
@@ -1307,7 +1308,8 @@ export function realSources(
           typeof each?.version === 'string' && typeof each?.created === 'string',
       );
     },
-    render: (chart, kubeVersion) => tools.retry(() => tools.render(chart, checkout, kubeVersion)),
+    render: (chart, kubeVersion) =>
+      tools.retry(() => tools.render(chart, checkout, kubeVersion, apiVersionsOf(checkout))),
     async toolReleases(tool) {
       const repository = aquaRepository(readLock(checkout), tool);
       if (!repository) throw new Permanent(`mise.lock names no repository for ${tool}`);

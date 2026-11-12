@@ -59,7 +59,15 @@ import {
   unlisted,
 } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
-import { DB_MAX_AGE_MS, databases, realTools, repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
+import {
+  API_VERSIONS_RECORD,
+  apiVersionsOf,
+  DB_MAX_AGE_MS,
+  databases,
+  kubeVersionOf,
+  realTools,
+  repositoryOf,
+} from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
 import { PROFILE, RECORDS, type RecordName, render, taken } from './policy-hash.ts';
 
@@ -1420,7 +1428,14 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
       if (!Array.isArray(versions)) throw new Error(`${repo} lists no versions of ${chart}`);
       return versions.filter((v): v is string => typeof v === 'string');
     },
-    render: (side, chart) => tools.render(chart, dirs[side]),
+    // As Argo CD renders it, on the cluster main describes: the k3s main pins and the API versions main's record keeps,
+    // never the head's, so a head that changes either renders as main's cluster would run it.
+    render: (side, chart) => {
+      const apiVersions = apiVersionsOf(ROOT);
+      if (!apiVersions)
+        throw new Error(`the gate's checkout keeps no ${API_VERSIONS_RECORD} to render charts as Argo CD does`);
+      return tools.render(chart, dirs[side], kubeVersionOf(inventory(ROOT).items), apiVersions);
+    },
     async overlay(side) {
       const { stdout } = await exec('kustomize', ['build', join(dirs[side], 'deploy/overlays/local')], {
         maxBuffer: 64 * 1024 * 1024,

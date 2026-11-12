@@ -94,7 +94,7 @@ jobs:
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
-          install_args: node pnpm kubectl k3d helm kustomize cosign step yq
+          install_args: node pnpm kubectl k3d helm kustomize cosign step yq argocd
       - run: pnpm install --frozen-lockfile
       # `make up`, at the change's commit, with none of the keys it would take from the Keychain, which the runner has
       # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
@@ -147,6 +147,12 @@ jobs:
           done
           REFUSALS_OUT="$RUNNER_TEMP/records/flag-stages-refusals.json" node scripts/flag-stages-refusals.ts || { echo "::error::flag-stages-refusals failed"; failed=1; }
           exit "$failed"
+      # The API versions Argo CD renders charts with on this cluster, its own list (scripts/api-versions.ts): the review
+      # gate and the scan render each chart with deploy/test/api-versions.json, so a chart that branches on an API
+      # renders for them as Argo CD renders it. Taken beside the records, and checked against the change's after they
+      # are uploaded, so a record that differs is retaken from the artifact.
+      - name: Take the API versions
+        run: node scripts/api-versions.ts take "$RUNNER_TEMP/records/api-versions.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: refusal-records
@@ -159,6 +165,9 @@ jobs:
         env:
           OUT: ${{ runner.temp }}/measure/pods
         run: scripts/platform-pods.sh
+      # Last of what the check requires, so a record to retake never hides a pod that did not run.
+      - name: The API versions are the record's
+        run: node scripts/api-versions.ts check "$RUNNER_TEMP/records/api-versions.json"
       # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}

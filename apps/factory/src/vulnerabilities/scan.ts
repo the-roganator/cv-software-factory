@@ -80,6 +80,32 @@ const DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-db:2';
 const JAVA_DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-java-db:1';
 /** The oldest the advisory database may be when the scan starts. */
 export const DB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The API versions Argo CD renders the cluster's charts with (`--api-versions`), as `platform.yml` takes them from its
+ * cluster made from `main`: each `group/version`, and each `group/version/Kind`, Argo CD's own list
+ * (`scripts/api-versions.ts`). A chart may render otherwise for an API the cluster has, so the scan and the gate render
+ * with this list, never a head's.
+ */
+export const API_VERSIONS_RECORD = 'deploy/test/api-versions.json';
+
+/** The record's API versions in a checkout, none where it keeps no record (the app's), or a throw when it cannot be read. */
+export function apiVersionsOf(root: string): string[] | undefined {
+  const file = join(root, API_VERSIONS_RECORD);
+  if (!existsSync(file)) return undefined;
+  const { apiVersions } = JSON.parse(readFileSync(file, 'utf-8')) as { apiVersions?: unknown };
+  if (
+    !Array.isArray(apiVersions) ||
+    !apiVersions.length ||
+    !apiVersions.every((v) => typeof v === 'string' && /^[\w./-]+$/.test(v))
+  )
+    throw new Error(`${API_VERSIONS_RECORD} lists no API versions the gate can read`);
+  return apiVersions as string[];
+}
+
+/** The Kubernetes version the charts are rendered for: the k3s node's, from the list's k3s item. */
+export const kubeVersionOf = (items: readonly Item[]) =>
+  items.find((item) => item.kind === 'k3s')?.image?.match(/:v?(\d+\.\d+\.\d+)/)?.[1];
 /** The platform an image of ours is scanned on when its SBOM gives no Node: its Node is the same release on both. */
 const FALLBACK_PLATFORM = 'linux/amd64';
 const OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
@@ -127,8 +153,11 @@ export interface Tools {
   trivy(args: string[], src?: string): Promise<TrivyReport>;
   /** The SPDX SBOM predicates an image carries, each verified against its signer; none, or a throw, when unverified. */
   attestations(image: string, signer: string): Promise<unknown[]>;
-  /** A chart, rendered as `helm template` renders it, with its values files from the checkout. */
-  render(chart: Chart, root: string, kubeVersion?: string): Promise<string>;
+  /**
+   * A chart, rendered as Argo CD's `helm template` renders it: its release, in its namespace, with its values files from
+   * the checkout and its `crds/` (unless `skipCrds`), for the cluster's Kubernetes version and API versions where given.
+   */
+  render(chart: Chart, root: string, kubeVersion?: string, apiVersions?: readonly string[]): Promise<string>;
   fetch(url: string): Promise<string>;
   /** Tries again, as a pull or a download needs. */
   retry<T>(what: () => Promise<T>): Promise<T>;
@@ -440,7 +469,14 @@ const firstLine = (error: unknown) =>
     ?.slice(0, 300) ?? '';
 
 /** The targets an item is read as: itself, or each image a chart renders or a k3s release lists. */
-async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<string>, kubeVersion?: string) {
+async function targetsOf(
+  tools: Tools,
+  root: string,
+  item: Item,
+  tracked: Set<string>,
+  kubeVersion?: string,
+  apiVersions?: readonly string[],
+) {
   const image = (reference: string): Target => ({
     item,
     key: itemKey(item, reference),
@@ -460,7 +496,7 @@ async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<st
       return { targets: [], unreadable: `a values file it names is not a file the checkout tracks: ${outside}` };
     let rendered: string;
     try {
-      rendered = await tools.retry(() => tools.render(item.chart as Chart, root, kubeVersion));
+      rendered = await tools.retry(() => tools.render(item.chart as Chart, root, kubeVersion, apiVersions));
     } catch (error) {
       return { targets: [], unreadable: `its chart does not render: ${firstLine(error)}` };
     }
@@ -545,10 +581,11 @@ export async function scan(
   const lockfiles = new Map<string, string[]>();
   // An image several items run is pulled once, and its findings are each item's.
   const pulled = new Map<string, Promise<Read>>();
-  const kubeVersion = items.find((item) => item.kind === 'k3s')?.image?.match(/:v?(\d+\.\d+\.\d+)/)?.[1];
+  const kubeVersion = kubeVersionOf(items);
+  const apiVersions = apiVersionsOf(root);
   let read = 0;
   for (const item of items) {
-    const { targets, unreadable: why } = await targetsOf(tools, root, item, tracked, kubeVersion);
+    const { targets, unreadable: why } = await targetsOf(tools, root, item, tracked, kubeVersion, apiVersions);
     if (why) {
       unreadable.push({ name: item.name, why });
       continue;
@@ -752,7 +789,7 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
             .predicate;
         });
     },
-    async render(chart, root, kubeVersion) {
+    async render(chart, root, kubeVersion, apiVersions) {
       const home = temp();
       const { stdout } = await run(
         'helm',
@@ -764,8 +801,11 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
           chart.repo,
           '--version',
           chart.version,
+          ...(chart.namespace ? ['--namespace', chart.namespace] : []),
           ...(kubeVersion ? ['--kube-version', kubeVersion] : []),
           ...chart.values.flatMap((file) => ['--values', join(root, file)]),
+          ...(apiVersions ?? []).flatMap((version) => ['--api-versions', version]),
+          ...(chart.skipCrds ? [] : ['--include-crds']),
         ],
         {
           maxBuffer: 64 * 1024 * 1024,

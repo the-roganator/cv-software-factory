@@ -562,6 +562,23 @@ describe('a pin move holds, each for its one reason', () => {
     );
   });
 
+  it('a head that changes the API versions the gate renders charts with: the gate reads main\u2019s alone, and this is no pin', async () => {
+    const record = {
+      file: 'deploy/test/api-versions.json',
+      line: 3,
+      before: '    "apps/v1",',
+      after: '    "evil.io/v1",',
+    };
+    expect(await reasonOf({ ...ZAP_CASE, lines: [ZAP_LINE, record] })).toBe(
+      'deploy/test/api-versions.json:3 changes more than a version or a digest: "evil.io/v1",',
+    );
+    // One that changes only a version word is still no pin.
+    const versioned = { ...record, after: '    "apps/v2",' };
+    expect(await reasonOf({ ...ZAP_CASE, lines: [ZAP_LINE, versioned] })).toBe(
+      'deploy/test/api-versions.json:3 is a line that is not a pin: "apps/v2",',
+    );
+  });
+
   it('a line that changes more than a version or a digest', async () => {
     const c: Case = {
       ...ZAP_CASE,

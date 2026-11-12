@@ -3,7 +3,7 @@
  * search box and a form, and what the shop's own API says. Nothing here knows about one shop's wording or products.
  * Reading a page runs scripts in the browser, which are strings because this package is type-checked for Node.
  */
-import type { Evidence, SymptomClass } from '@software-factory/events';
+import type { DefectSymptom, Evidence } from '@software-factory/events';
 import type { Page, Response } from 'playwright';
 import type { CheckContext } from '../senses/browser.ts';
 import { type Exchange, evidenceOf, exchange, pathOf, type RequestHeaders } from '../senses/http.ts';
@@ -79,7 +79,7 @@ export type Context = CheckContext<Shop>;
 
 /** A finding, with the evidence and boxes a check usually has. */
 export const fail = (
-  symptom: SymptomClass,
+  symptom: DefectSymptom,
   message: string,
   more: Omit<Finding, 'symptom' | 'message'> = {},
 ): Finding => ({

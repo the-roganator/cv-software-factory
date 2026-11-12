@@ -10,6 +10,17 @@ spec:
     repoURL: https://github.com/the-roganator/cv-software-factory.git
     targetRevision: main
     path: deploy/overlays/local
+    # Every chart's values from this revision too: each Application but the website's, which is deployed from the
+    # app's repository, reads them from its second source, `ref: values`. `make up REVISION=` writes both `main`s.
+    kustomize:
+      patches:
+        - target:
+            kind: Application
+            labelSelector: software-factory/repository!=app
+          patch: |
+            - op: replace
+              path: /spec/sources/1/targetRevision
+              value: main
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

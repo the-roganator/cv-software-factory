@@ -4,14 +4,15 @@
  * agent's own words have no part in it.
  *
  * A scope entry is a file (`src/money.ts`), a folder ending in `/` (`test/`), or a pattern with `*` (one path
- * segment) or `**` (any number). Whatever the scope says, a patch may never change the workflows, the deployment, or
- * a path the repository's CODEOWNERS gives a person.
+ * segment) or `**` (any number). Whatever the scope says, a patch may never change the workflows, the deployment, a
+ * path the repository's CODEOWNERS gives a person, a lockfile, or pnpm's settings: the pin step writes the lockfile
+ * after a patch that changes a manifest (`apps/runner/src/pins.ts`), and an agent never does.
  *
  * Its output is what a reader of a refusal needs to judge it: the scope, then each file the patch changes, allowed or
  * refused, with the lines it adds and removes.
  */
 import { filesIn } from '../github/patches.ts';
-import { inScope, NEVER, ownedPaths } from '../github/paths.ts';
+import { inScope, LOCKFILES, NEVER, ownedPaths, PNPM_SETTINGS } from '../github/paths.ts';
 
 export { NEVER, ownedPaths };
 
@@ -35,7 +36,7 @@ const OUTPUT_CHARS = 4000;
  * commit, beside the workflows and the deployment, which are refused whatever it says.
  */
 export function fence(patch: string, scope: readonly string[], owned: readonly string[] = []): Fenced {
-  const forbidden = [...NEVER, ...owned];
+  const forbidden = [...NEVER, ...owned, ...LOCKFILES, ...PNPM_SETTINGS];
   const files = filesIn(patch).map(({ path, patch: file }) => {
     const lines = file.hunks.flatMap((hunk) => hunk.lines);
     return {

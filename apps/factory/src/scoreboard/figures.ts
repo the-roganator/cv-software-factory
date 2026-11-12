@@ -98,6 +98,10 @@ export interface Figures {
   falsePositives: number;
 }
 
+/** Whether a ticket finds an entry, by the policy's rule. A dependency's fingerprint, a move's, is no entry's shape. */
+const finds = (ticket: Ticket, entry: KeyEntry) =>
+  !('ecosystem' in ticket.fingerprint) && matches(ticket.fingerprint, entry.fingerprint);
+
 /**
  * The figures for the key, counting as found only what tickets opened before `foundBefore` found (and every entry
  * verified). The scoreboard passes the last boundary of its cadence; `--print` passes now.
@@ -106,12 +110,12 @@ export function figures(all: readonly Ticket[], key: readonly KeyEntry[], foundB
   let found = 0;
   const fixes: number[] = [];
   for (const entry of key) {
-    const finders = all.filter((ticket) => matches(ticket.fingerprint, entry.fingerprint));
+    const finders = all.filter((ticket) => finds(ticket, entry));
     const times = finders.flatMap((t) => (t.verifiedAt === null ? [] : [t.verifiedAt - t.startedAt]));
     if (times.length) fixes.push(Math.min(...times));
     if (times.length || finders.some((t) => t.everVerified || t.openedAt < foundBefore)) found++;
   }
-  const falsePositives = all.filter((t) => !key.some((entry) => matches(t.fingerprint, entry.fingerprint))).length;
+  const falsePositives = all.filter((t) => !key.some((entry) => finds(t, entry))).length;
   return { entries: key.length, found, verified: fixes.length, medianMs: median(fixes), falsePositives };
 }
 

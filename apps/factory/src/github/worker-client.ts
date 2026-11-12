@@ -25,6 +25,15 @@ export const ISSUE_GONE = [403, 404, 410];
 /** Whether an action failed on an issue that is gone, or that the App may not change. */
 export const issueGone = (error: unknown) => error instanceof GitHubWorkerError && ISSUE_GONE.includes(error.status);
 
+/** How long an action or a read may take. */
+const TIMEOUT_MS = 120_000;
+
+/**
+ * The reads that page through more than GitHub answers in two minutes: `moves` reads every open alert of the scan, a
+ * hundred to a page, one page after another (the factory's ten thousand took 108 s on 12 November).
+ */
+const READ_TIMEOUTS: Partial<Record<ReadName, number>> = { moves: 10 * 60_000 };
+
 export class GitHubWorkerError extends Error {
   readonly status: number;
   readonly kind: string;
@@ -81,15 +90,22 @@ export class GitHubWorker {
    * have been, and anything else as GitHub has it.
    */
   async read<K extends ReadName>(read: K, repo: string, args: ReadArgs[K]): Promise<ReadResult<K>> {
-    return this.#post(`reads/${read}`, repo, args, this.#dryRun ? { 'x-factory-dry-run': 'true' } : {});
+    const headers = this.#dryRun ? { 'x-factory-dry-run': 'true' } : {};
+    return this.#post(`reads/${read}`, repo, args, headers, READ_TIMEOUTS[read] ?? TIMEOUT_MS);
   }
 
-  async #post<T>(path: string, repo: string, args: object, headers: Record<string, string>): Promise<T> {
+  async #post<T>(
+    path: string,
+    repo: string,
+    args: object,
+    headers: Record<string, string>,
+    timeoutMs = TIMEOUT_MS,
+  ): Promise<T> {
     const response = await fetch(`${this.#url}/v1/${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify({ repo, ...args }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const body = (await response.json()) as { result?: T; error?: string; message?: string; refusal?: unknown };
     if (!response.ok) {

@@ -104,6 +104,10 @@ For the [red-team harness](RED-TEAM-HARNESS.md), on a port of its own (`ATTACK_P
 
 It answers each refusal signed, as above, and the harness relays them; a direct attempt that got through (GitHub took the workflow commit, or the review check did not hold the pull request) is reported so, with whatever it made undone.
 
+## The sense's door
+
+For the [dependency sense](PATCHING.md#the-dependency-sense), on a port of its own (`PATCHING_PORT`), served only when it is set: the main port acts in GitHub, and the sense must reach the worker's reads and nothing else. It serves `moves` and `dependencyPulls` ([for patching](#for-patching)), as a live worker reads them, and answers any other read or action, dry run or not, as not found (`server.ts`'s `PATCHING_READS`).
+
 ## Reads
 
 The line reads through it too, `POST /v1/reads/<read>` (`github/reads.ts`):

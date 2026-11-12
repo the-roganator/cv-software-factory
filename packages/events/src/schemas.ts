@@ -517,6 +517,126 @@ const figures = z.strictObject({
   journeys: z.tuple([count, count]).nullable(),
 });
 
+/** A finding's counts by the scan's severities. */
+const scanCounts = z.strictObject(
+  Object.fromEntries(V.SCAN_SEVERITIES.map((s) => [s, count])) as Record<V.ScanSeverity, typeof count>,
+);
+/** The most pins a move's day holds: one action may be pinned in every workflow, and the sense keeps the first. */
+export const MOST_PINS = 2000;
+/** The most moves a repository's day holds, and the most rows a day holds: the sense keeps the first. */
+export const MOST_MOVES = 5000;
+export const MOST_ROWS = 1000;
+/** A pin: the file and line it is written at, in its repository. */
+const filePin = z.strictObject({ file: z.string().min(1).max(300), line: count });
+/** An image as a pod or a pin names it. */
+const imageReference = z.string().regex(/^[!-~]{1,512}$/, 'an image reference');
+const kubeName = z.string().regex(/^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/, "a Kubernetes object's name");
+/** Where a pod runs an image, by its namespace, pod and container. */
+const runsIn = { namespace: kubeName, pod: kubeName, container: kubeName };
+
+/**
+ * A move as the dependency sense reads it from the scan (`apps/factory/src/vulnerabilities/moves.ts`): what moves, every
+ * pin it writes, from and to, what it clears and leaves, its deadline and its lane. A lockfile's move is named by its
+ * file alone, as the scan's log names it; the package, its versions and its lines, which the alerts give, are `package`,
+ * which the public view leaves out until a pull request moving it is open.
+ */
+const patchingMove = z
+  .strictObject({
+    name: z.string().min(1).max(300),
+    pins: z.array(filePin).max(MOST_PINS),
+    from: z.string().max(200),
+    /** What fixes it, in the scan's grammar (fixes.ts); empty for a lockfile's, and for a line no longer built. */
+    to: z.string().max(400),
+    major: z.boolean(),
+    clears: scanCounts,
+    leaves: scanCounts,
+    deadline: timestamp.optional(),
+    newToday: count,
+    lane: z.enum(V.MOVE_LANES),
+    lockfile: z.boolean(),
+    package: z
+      .strictObject({
+        name: z.string().min(1).max(214),
+        /** Empty when its alerts name no installed version. */
+        from: z.string().max(100),
+        /** Empty when no fix its alerts name resolves to a version. */
+        to: z.string().max(100),
+        pins: z.array(filePin).max(MOST_PINS),
+      })
+      .optional(),
+    /** The pull request open at its pin, as Dependabot's branch names it, and the version it moves to. */
+    pullRequest: z.strictObject({ number: pullRequest, version: z.string().min(1).max(100) }).optional(),
+  })
+  .refine((m) => !m.package || m.lockfile, "only a lockfile's move has its package apart");
+
+/** One repository's day: the scan's run it was read from, how that run ended and why, its totals and its moves. */
+const patchingRepository = z.strictObject({
+  repository,
+  run: z.strictObject({
+    id: z.number().int().positive(),
+    /** How it was started: `schedule`, `push` or `workflow_dispatch`, and never a pull request's run. */
+    event: z.enum(['schedule', 'push', 'workflow_dispatch']),
+    conclusion: z.string().min(1).max(40).nullable(),
+    commit,
+    finished: timestamp,
+    url: z.url().max(300),
+  }),
+  /** When the scan judged its moves; null when the run wrote none, as a run that failed early does. */
+  judged: timestamp.nullable(),
+  /** Why the scan failed, as its totals count it; empty when it passed. */
+  failed: z.array(z.enum(V.SCAN_FAILURES)).max(V.SCAN_FAILURES.length),
+  /**
+   * The scan's own totals, as `moves.json` gives them, never worked out here: results with a fix and not excepted, the
+   * moves and the moves in each lane; and the findings nobody can act on by a move, and those that fail the scan: with
+   * no fix, excepted, past their deadline, due within a day, and new today at High or Critical, with a fix and without.
+   */
+  totals: z
+    .strictObject({
+      fixed: count,
+      moves: count,
+      lanes: z.strictObject(
+        Object.fromEntries(V.MOVE_LANES.map((lane) => [lane, count])) as Record<V.MoveLane, typeof count>,
+      ),
+      noFix: count,
+      excepted: count,
+      overdue: count,
+      dueWithinDay: count,
+      newHighWithFix: count,
+      newHighWithoutFix: count,
+    })
+    .nullable(),
+  /** How many images the scan read, which the cluster's are compared with. */
+  scanned: count,
+  moves: z.array(patchingMove).max(MOST_MOVES),
+});
+
+/** A row the comparison of the cluster's pods with the scan's list made: see `RUNNING_ROWS`. */
+const runningRow = z.discriminatedUnion('row', [
+  z.strictObject({
+    row: z.literal('unscanned-digest'),
+    ...runsIn,
+    image: imageReference,
+    digest,
+    /** The list's item the reference is, and its pin. */
+    repository,
+    item: z.string().min(1).max(512),
+    pin: filePin,
+  }),
+  z.strictObject({ row: z.literal('unlisted-image'), ...runsIn, image: imageReference, digest }),
+  z.strictObject({
+    row: z.literal('not-running'),
+    repository,
+    item: z.string().min(1).max(512),
+    image: imageReference,
+    pin: filePin,
+    /** What the cluster runs of the same image instead, and where. */
+    running: z
+      .array(z.strictObject({ ...runsIn, image: imageReference }))
+      .min(1)
+      .max(20),
+  }),
+]);
+
 /** A signal's evidence: any other event's, or a scan's, which only a dependency's signal carries. */
 export const signalEvidence = z.discriminatedUnion('kind', [...evidence.options, scanEvidence]);
 
@@ -1939,6 +2059,29 @@ export const PAYLOADS = {
     words: text(REQUEST_WORDS),
     steppedUp: z.boolean(),
   }),
+  /**
+   * The dependency sense's day (`factory patching`): both repositories' moves, as the GitHub worker read them from each
+   * scan's last finished run on the default branch, checked against its alerts, and each row its comparison of the
+   * images the cluster's pods run with the scan's list made. Appended only when it differs from the last, never from a
+   * read that failed, and only by the sense's role (`0050_patching.sql`).
+   */
+  'patching.read': z
+    .strictObject({
+      repositories: z.array(patchingRepository).min(1).max(2),
+      /**
+       * Whether the cluster was compared with the lists: not when a repository's scan wrote no list, as a run that
+       * failed early does, since every image would then look unlisted. Its rows are then empty.
+       */
+      compared: z.boolean(),
+      /** How many running containers the sense compared. */
+      containers: count,
+      rows: z.array(runningRow).max(MOST_ROWS),
+    })
+    .refine(
+      (day) => new Set(day.repositories.map((r) => r.repository)).size === day.repositories.length,
+      'each repository once',
+    )
+    .refine((day) => day.compared || day.rows.length === 0, 'rows only from a comparison'),
 } satisfies { [K in EventType]: z.ZodType };
 
 /** The envelope of an event about to be appended: everything but `seq` and `public`, which the store adds. */

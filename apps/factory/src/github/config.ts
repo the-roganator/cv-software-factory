@@ -19,6 +19,8 @@
  *                                     user's cache)
  *     ATTACK_PORT                     the red-team harness's attack door, on a port of its own (github/attacks.ts);
  *                                     unset, it is not served
+ *     PATCHING_PORT                   the dependency sense's door, on a port of its own: its two reads, and no
+ *                                     action (server.ts's PATCHING_READS); unset, it is not served
  *     PORT                            default 8080
  *     HOST                            the address to listen on (default 127.0.0.1; the cluster's Deployment says
  *                                     0.0.0.0)
@@ -48,6 +50,8 @@ export interface GitHubConfig {
   tufCacheDir: string | undefined;
   /** The attack door's port, for the red-team harness (github/attacks.ts); unset, the door is not served. */
   attackPort: number | undefined;
+  /** The dependency sense's door, which serves its two reads and nothing else; unset, the door is not served. */
+  patchingPort: number | undefined;
   port: number;
   host: string;
 }
@@ -81,6 +85,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     ghcr: env.GHCR_URL || GHCR,
     tufCacheDir: env.TUF_CACHE_DIR || undefined,
     attackPort: env.ATTACK_PORT?.trim() ? Number(env.ATTACK_PORT) : undefined,
+    patchingPort: env.PATCHING_PORT?.trim() ? Number(env.PATCHING_PORT) : undefined,
     port: Number(env.PORT ?? 8080),
     host: env.HOST || '127.0.0.1',
   };
@@ -95,6 +100,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
   }
   if (config.attackPort !== undefined && config.attackPort === config.port) {
     throw new Error('ATTACK_PORT must differ from PORT: the attack door is on a port of its own.');
+  }
+  if (
+    config.patchingPort !== undefined &&
+    (!Number.isInteger(config.patchingPort) || config.patchingPort < 1 || config.patchingPort > 65_535)
+  ) {
+    throw new Error(`PATCHING_PORT is ${JSON.stringify(env.PATCHING_PORT)}; it must be a port number.`);
+  }
+  if (config.patchingPort !== undefined && [config.port, config.attackPort].includes(config.patchingPort)) {
+    throw new Error("PATCHING_PORT must differ from PORT and ATTACK_PORT: the sense's door is on a port of its own.");
   }
   if (dryRun && !config.artifactsDir)
     throw new Error('GITHUB_DRY_RUN records to the artifact store: set ARTIFACTS_DIR.');

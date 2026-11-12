@@ -8,7 +8,8 @@
  * Each of the variables in `PASSWORDS`, when set, becomes the password of its role: CONSOLE_PASSWORD the console's
  * reader's, SCOREBOARD_PASSWORD the scoreboard's writer's, METRICS_PASSWORD the Postgres exporter's reader's,
  * TRIAGE_PASSWORD, LINE_PASSWORD and the like each worker's own, ADMIN_PASSWORD the admin service's,
- * PROOFS_PASSWORD the proofs' (`make guardrails`), and REDTEAM_PASSWORD the red-team harness's. Martin's command
+ * PROOFS_PASSWORD the proofs' (`make guardrails`), REDTEAM_PASSWORD the red-team harness's, and PATCHING_PASSWORD
+ * the dependency sense's. Martin's command
  * line's and the enrolment's are set by the make targets that use them (`operator.ts`), so no pod holds them. It
  * connects as the database's owner, the only role that may change its schema.
  */
@@ -64,6 +65,8 @@ export const PASSWORDS = {
   proofs: { role: 'factory_proofs', variable: 'PROOFS_PASSWORD' },
   // The red-team harness's (0045_red-team-attacks.sql), which is no member of the workers' role.
   redteam: { role: 'factory_redteam', variable: 'REDTEAM_PASSWORD' },
+  // The dependency sense's (0050_patching.sql), which is no member of the workers' role either.
+  patching: { role: 'factory_patching', variable: 'PATCHING_PASSWORD' },
 } as const;
 
 export type Passwords = { [name in keyof typeof PASSWORDS]?: string | undefined };

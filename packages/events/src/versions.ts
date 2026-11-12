@@ -82,6 +82,8 @@ export const VERSIONS = {
   'flag.checked': 3,
   // Martin's request for an improvement, in his own words (the admin service), with the work item it opens
   'improvement.requested': 1,
+  // The day's moves for both repositories, and what the cluster runs that the scan's list does not say (the dependency sense)
+  'patching.read': 1,
 } as const;
 
 export type EventType = keyof typeof VERSIONS;
@@ -106,6 +108,7 @@ export const LINE_TYPES: readonly EventType[] = [
   'settings.changed',
   'controls.changed',
   'alerts.switched',
+  'patching.read',
 ];
 
 /**
@@ -152,6 +155,13 @@ export const PROOFS_ONLY_TYPES: readonly EventType[] = ['guardrail.proved'];
  * only those that role appended.
  */
 export const REDTEAM_ONLY_TYPES: readonly EventType[] = ['attack.finished'];
+
+/**
+ * The dependency sense's record of the day's moves: the type only its role (`factory_patching`) may append (row security
+ * on `events`, `0050_patching.sql`), save samples from Martin's command line. The Patching panel, Needs you, the alert
+ * rules and the pin watch read the day from it, and also read only those that role appended.
+ */
+export const PATCHING_ONLY_TYPES: readonly EventType[] = ['patching.read'];
 
 /**
  * Martin's commands: the types only his roles may append (row security on `events`, `0023_martins-commands.sql`), and

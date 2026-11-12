@@ -15,6 +15,7 @@ import * as guardrails from './commands/guardrails.ts';
 import * as intake from './commands/intake.ts';
 import * as line from './commands/line.ts';
 import * as logs from './commands/logs.ts';
+import * as patching from './commands/patching.ts';
 import * as probes from './commands/probes.ts';
 import * as redTeam from './commands/red-team.ts';
 import * as reviews from './commands/reviews.ts';
@@ -38,6 +39,7 @@ const GROUPS: Record<string, Group> = {
   intake,
   line,
   logs,
+  patching,
   probes,
   'red-team': redTeam,
   reviews,

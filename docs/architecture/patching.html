@@ -201,7 +201,7 @@ const STEPS = [
 <tr><th>Images</th><td>Ours are built and signed on <code>main</code>. Anyone else's is pinned by digest: a tag can be moved, a digest cannot.</td></tr>
 </table>
 <p>A fix that can be installed starts a clock: <b>2 days</b> for a Critical, <b>7</b> High, <b>30</b> Medium, <b>90</b> Low. A missed deadline fails the scan.</p>
-<p>The pin watch opens <b>one pull request for each move</b>, changing the pin and nothing else. Dependabot keeps the ones it already makes.</p>
+<p>The pin watch opens <b>one pull request for each move it can write</b>, changing the pin and nothing else. A move with no pin to edit becomes an issue, and Dependabot keeps the ones it already makes.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/SECURITY-SCANNING.md">The scan</a>, its <a href="${DOCS}/SECURITY-SCANNING.md#moves">moves</a> and <a href="${DOCS}/SECURITY-SCANNING.md#exceptions">exceptions</a>; <a href="${DOCS}/SUPPLY-CHAIN.md">signing</a>; <a href="adr/0013-vulnerabilities-found-everywhere-fixed-by-a-deadline.md">ADR 0013</a>.</p></details>`,
   },
   {
@@ -364,15 +364,20 @@ addEventListener('keydown', (e) => {
 });
 // Every card is as tall as the longest, so Back and Next stay where they are from step to step.
 function level() {
-  // Measured in a hidden copy beside the card's text, so the text the reader has open is never redrawn.
-  const body = $('body'), probe = body.cloneNode(false);
-  probe.removeAttribute('id');
-  probe.style.cssText = `position:absolute;visibility:hidden;width:${body.clientWidth}px`;
-  body.parentNode.appendChild(probe);
-  let tallest = 0;
-  for (const s of STEPS) { probe.innerHTML = s.body; tallest = Math.max(tallest, probe.offsetHeight); }
-  probe.remove();
-  body.style.minHeight = `${tallest}px`;
+  // The title and the text are each measured in a hidden copy beside them, so what the reader has open is never
+  // redrawn: a title that wraps on one step must not move the buttons either.
+  const tallest = (node, each) => {
+    const probe = node.cloneNode(false);
+    probe.removeAttribute('id');
+    probe.style.cssText = `position:absolute;visibility:hidden;width:${node.clientWidth}px`;
+    node.parentNode.appendChild(probe);
+    let most = 0;
+    for (const s of STEPS) { each(probe, s); most = Math.max(most, probe.offsetHeight); }
+    probe.remove();
+    node.style.minHeight = `${most}px`;
+  };
+  tallest($('title'), (probe, s) => { probe.textContent = s.title; });
+  tallest($('body'), (probe, s) => { probe.innerHTML = s.body; });
 }
 addEventListener('resize', level);
 document.fonts?.ready.then(level);

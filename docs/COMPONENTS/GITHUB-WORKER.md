@@ -106,7 +106,7 @@ It answers each refusal signed, as above, and the harness relays them; a direct 
 
 ## The sense's door
 
-For the [dependency sense](PATCHING.md#the-dependency-sense), on a port of its own (`PATCHING_PORT`), served only when it is set: the main port acts in GitHub, and the sense must reach the worker's reads and nothing else. It serves `moves` and `dependencyPulls` ([for patching](#for-patching)), as a live worker reads them, and answers any other read or action, dry run or not, as not found (`server.ts`'s `PATCHING_READS`).
+For the [dependency sense](PATCHING.md#the-dependency-sense), on a port of its own (`PATCHING_PORT`, 8083), which a NetworkPolicy opens to the sense's pod alone: the main port acts in GitHub, and the sense must reach the worker's reads and nothing else. It serves `moves` and `dependencyPulls` ([for patching](#for-patching)), as a live worker reads them, and answers any other read or action, dry run or not, as not found (`server.ts`'s `PATCHING_READS`).
 
 ## Reads
 

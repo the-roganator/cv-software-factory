@@ -15,6 +15,7 @@ import {
   type Move,
   manifestsDiffer,
   moveTitle,
+  objectsOf,
   onlyPinsChange,
   type PinMoveIO,
   PLATFORM_CHECK,
@@ -1512,6 +1513,66 @@ describe('the manifests, object by object', () => {
         `${configMap('a')}---\n${deployment({ pod: 'x: 1' })}`,
       ),
     ).toBe('the manifests change beyond the image: Deployment t/app at spec.template.spec.x');
+  });
+
+  it('reads `__proto__` as a key like any other, never as what an object inherits', () => {
+    const pod = (spec: string) => `kind: Pod\nmetadata:\n  name: p\nspec:\n  ${spec}\n`;
+    expect(manifestsDiffer(pod('__proto__: { hostPID: true }'), pod('hostPID: true'), [])).toBe(
+      'the manifests change beyond the image: Pod p at spec.hostPID',
+    );
+    expect(manifestsDiffer(pod('x: 1'), pod('x: 1\n  __proto__: { hostPID: true }'), [])).toBe(
+      'the manifests change beyond the image: Pod p at spec.__proto__',
+    );
+  });
+
+  it("holds an image a ConfigMap's data names that its base did not, however it writes it", () => {
+    for (const named of [
+      `'{"image":"evil.io/x/y:1"}'`,
+      `'image = "evil/y@sha256:${hex('9')}"'`,
+      `'pull sha256:${hex('9')}'`,
+    ])
+      expect(judge(`${configMap(named)}---\n${deployment()}`)).toMatch(
+        /^ConfigMap t\/app's data names an image its base did not: /,
+      );
+    // The same images at both, a URL's path, and the moved image itself are no new image.
+    const same = `'{"image":"quay.io/x/y:1","url":"https://example.test/a/b:c"}'`;
+    expect(
+      judge(`${configMap(same)}---\n${deployment()}`, `${configMap(`'${same.slice(1, -1)} '`)}---\n${deployment()}`),
+    ).toBeUndefined();
+    expect(judge(`${configMap(`'runs ${IMAGE}'`)}---\n${deployment()}`)).toBeUndefined();
+  });
+
+  it('splits the rendering on `---` alone, as the cluster does, and holds a document a `...` begins', () => {
+    const policy = 'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: deny\n  namespace: t\n';
+    const was = `${base}\n---\n${policy}`;
+    // The cluster reads one object from the first part: the NetworkPolicy would be pruned, and the gate would see it.
+    expect(judge(`${configMap('b')}...\n${policy}---\n${deployment()}`, was)).toBe(
+      'at the head, the rendering has a document that does not begin with `---`, which readers split apart',
+    );
+    // A separator with a comment after it, and a document that ends with `...` and nothing more, are as the cluster reads.
+    expect(judge(`${configMap('a')}--- # x\n${deployment()}\n...\n---\n${policy}`, was)).toBeUndefined();
+  });
+
+  it('reads a merge key, a timestamp and a version label that is not a string as YAML 1.1 does, and holds', () => {
+    expect(objectsOf('kind: Pod\nmetadata:\n  name: p\nspec:\n  <<: { hostPID: true }\n', '1.1')).toMatch(
+      /a merge key/,
+    );
+    const dated = (when: string) => `kind: Pod\nmetadata:\n  name: p\nspec:\n  at: ${when}\n`;
+    expect(objectsOf(dated('2024-01-01'), '1.1')).not.toBeTypeOf('string');
+    expect(manifestsDiffer(dated('2024-01-01'), dated('2024-01-01'), [])).toBeUndefined();
+    expect(manifestsDiffer(dated('2024-01-01'), dated('2031-01-01'), [])).toBe(
+      'the manifests change beyond the image: Pod p at spec.at',
+    );
+    const labelled = (value: string) => `kind: Pod\nmetadata:\n  name: p\n  labels:\n    helm.sh/chart: ${value}\n`;
+    expect(manifestsDiffer(labelled('x-1'), labelled('{ a: 1 }'), [])).toBe(
+      'the manifests change beyond the image: Pod p at metadata.labels["helm.sh/chart"]',
+    );
+  });
+
+  it("passes a ConfigMap's data added or gone whole", () => {
+    const bare = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n  namespace: t\n`;
+    expect(judge(`${bare}---\n${deployment()}`)).toBeUndefined();
+    expect(judge(base, `${bare}---\n${deployment()}`)).toBeUndefined();
   });
 
   it('holds a List that wraps objects, two documents with one key, and an object with no kind or name', () => {

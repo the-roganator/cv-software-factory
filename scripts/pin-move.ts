@@ -22,7 +22,8 @@
  *    the base and at the head, compared object by object, have the same objects (kind, namespace, name: none added,
  *    none gone), and differ only in the moved image's references, the chart's own version labels' values, the `data` of
  *    a ConfigMap that was there at the base, and a pod template's `checksum/` annotations. The configuration a chart's
- *    ConfigMaps carry is the publisher's, as its image is; what runs it, and what may reach what, stays Martin's.
+ *    ConfigMaps carry is the publisher's, as its image is; its objects, permissions, pod specs and network policies
+ *    stay Martin's.
  * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
@@ -773,7 +774,19 @@ export function objectsOf(
   version: (typeof YAML_VERSIONS)[number] = '1.2',
 ): Map<string, Rendered> | string {
   const objects = new Map<string, Rendered>();
-  for (const doc of parseAllDocuments(rendered, { version, intAsBigInt: true })) {
+  // The stream split as Kubernetes' YAML reader splits it (kubectl, kustomize, Argo CD and Helm alike): on a line that is
+  // `---`, with a comment or nothing after it, and on nothing else. Each part is one document: a part this parser reads
+  // as more (after a `...`) is one whose later objects the cluster never gets.
+  // A directive before a `---` would be a part of its own, with no document to hold it to: any line that begins one holds.
+  if (/^%/m.test(rendered)) return 'the rendering writes a YAML directive, which readers may read apart';
+  const docs = [];
+  for (const part of rendered.split(/^---[ \t]*(?:#[^\n]*)?\r?$/m)) {
+    const read = parseAllDocuments(part, { version, intAsBigInt: true });
+    if (read.length > 1)
+      return 'the rendering has a document that does not begin with `---`, which readers split apart';
+    docs.push(...read);
+  }
+  for (const doc of docs) {
     if (doc.errors.length)
       return `the rendering is not YAML the gate can read (${doc.errors[0]?.code}), so nothing shows what changes`;
     if (doc.directives?.yaml.explicit || Object.keys(doc.directives?.tags ?? {}).some((handle) => handle !== '!!'))
@@ -783,7 +796,9 @@ export function objectsOf(
       if (isAlias(node)) unsure = 'an alias';
       else if (isPair(node)) {
         if (!isScalar(node.key)) unsure = 'a key that is not a scalar';
-        else if (node.key.value === '<<') unsure = 'a merge key';
+        // YAML 1.1's schema reads `<<` as a symbol of its own, and merges it.
+        else if (node.key.value === '<<' || typeof node.key.value === 'symbol' || node.key.source === '<<')
+          unsure = 'a merge key';
       } else if (isNode(node)) {
         if (node.tag) unsure = `a tag (${short(node.tag)})`;
         else if (node.anchor) unsure = 'an anchor';
@@ -802,7 +817,7 @@ export function objectsOf(
       return 'the rendering has an object with no kind or no name';
     if (namespace !== undefined && typeof namespace !== 'string')
       return `${kind} ${name} has a namespace that is not a name`;
-    if (kind.endsWith('List') || 'items' in object)
+    if (kind.endsWith('List') || Object.hasOwn(object, 'items'))
       return `the rendering has a ${kind} that wraps objects the gate does not key`;
     const label = `${kind} ${namespace ? `${namespace}/` : ''}${name}`;
     const key = JSON.stringify([kind, namespace ?? '', name]);
@@ -831,7 +846,10 @@ function withoutVersionLabels(value: unknown, parent?: string): unknown {
         return [
           key,
           Object.fromEntries(
-            Object.entries(each).map(([label, text]) => [label, VERSION_LABELS.has(label) ? '<version>' : text]),
+            Object.entries(each).map(([label, text]) => [
+              label,
+              VERSION_LABELS.has(label) && typeof text === 'string' ? '<version>' : text,
+            ]),
           ),
         ];
       return [key, withoutVersionLabels(each, key)];
@@ -847,7 +865,8 @@ function withoutVersionLabels(value: unknown, parent?: string): unknown {
  */
 function comparable(body: unknown, refs: readonly string[]): unknown {
   const object = record(withoutVersionLabels(withoutImage(body, refs)));
-  if (object.apiVersion === 'v1' && object.kind === 'ConfigMap' && 'data' in object) object.data = '<configuration>';
+  // Its data whole, keys added or gone among it, and the data itself added or gone.
+  if (object.apiVersion === 'v1' && object.kind === 'ConfigMap') object.data = '<configuration>';
   const path = POD_TEMPLATES[`${object.apiVersion} ${object.kind}`];
   const template = path?.reduce<unknown>((at, step) => record(at)[step], object);
   const metadata = template === undefined ? undefined : record(record(template).metadata);
@@ -859,6 +878,25 @@ function comparable(body: unknown, refs: readonly string[]): unknown {
   }
   return object;
 }
+
+/**
+ * The image references a ConfigMap's data names, however it writes them (`image: …`, JSON, TOML, a pod template a
+ * controller launches): every word with a repository path and a tag or a digest, and every bare digest. A URL's path is
+ * not one. Its data is set aside, so an image named there that the base's did not would run unresolved and unscanned.
+ */
+function imagesNamed(body: unknown, refs: readonly string[]): Set<string> {
+  const object = record(withoutImage(body, refs));
+  const names = new Set<string>();
+  if (object.apiVersion !== 'v1' || object.kind !== 'ConfigMap') return names;
+  for (const text of Object.values(record(object.data))) {
+    if (typeof text !== 'string') continue;
+    for (const [word] of text.matchAll(IMAGE_WORD)) if (/:[\w][\w.-]*$|@sha256:/.test(word)) names.add(word);
+    for (const [digest] of text.matchAll(/sha256:[0-9a-f]{64}/g)) names.add(digest);
+  }
+  return names;
+}
+
+const IMAGE_WORD = /(?<![\w./:@-])[a-z0-9][\w.-]*(?::\d+)?(?:\/[\w.-]+)+(?::[\w][\w.-]*)?(?:@sha256:[0-9a-f]{64})?/gi;
 
 const step = (key: string) => (/^[A-Za-z_][\w-]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
 
@@ -872,11 +910,17 @@ function firstDifference(a: unknown, b: unknown, path = ''): string | undefined 
     }
     return undefined;
   }
-  const objects = [a, b].every((each) => each !== null && typeof each === 'object' && !Array.isArray(each));
-  if (!objects) return a === b ? undefined : path;
+  // YAML 1.1 reads a timestamp as a Date, which has no keys to compare: compared by its time. Any other object that is
+  // not a plain mapping is never the same as anything.
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime() ? undefined : path;
+  const plain = (each: unknown) =>
+    each !== null &&
+    typeof each === 'object' &&
+    [Object.prototype, null].includes(Object.getPrototypeOf(each) as object | null);
+  if (!plain(a) || !plain(b)) return a === b ? undefined : path;
   const [x, y] = [a, b] as [Record<string, unknown>, Record<string, unknown>];
   for (const key of new Set([...Object.keys(y), ...Object.keys(x)])) {
-    if (!(key in x) || !(key in y)) return `${path}${step(key)}`;
+    if (!Object.hasOwn(x, key) || !Object.hasOwn(y, key)) return `${path}${step(key)}`;
     const at = firstDifference(x[key], y[key], `${path}${step(key)}`);
     if (at !== undefined) return at;
   }
@@ -902,6 +946,9 @@ export function manifestsDiffer(base: string, head: string, references: readonly
       if (!was.has(key)) return `the head renders ${object.label}, which the base does not`;
     for (const [key, object] of was) if (!now.has(key)) return `the head no longer renders ${object.label}`;
     for (const [key, object] of now) {
+      const named = imagesNamed((was.get(key) as Rendered).body, refs);
+      const brought = [...imagesNamed(object.body, refs)].find((name) => !named.has(name));
+      if (brought) return `${object.label}'s data names an image its base did not: ${short(brought)}${as}`;
       const at = firstDifference(comparable((was.get(key) as Rendered).body, refs), comparable(object.body, refs));
       if (at !== undefined)
         return `the manifests change beyond the image: ${object.label} at ${at.replace(/^\./, '') || 'the object'}${as}`;

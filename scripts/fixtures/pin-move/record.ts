@@ -1,11 +1,12 @@
 /**
  * Records the chart renderings pin-move.test.ts compares, with the gate's own renderer (`realTools().render`, the
- * scan's), each chart at the version main pins and at the release its move goes to, with main's values:
+ * scan's), each chart at the version this checkout pins and at the release its move goes to, with this checkout's
+ * values (record them from main):
  *
  *   mise exec -- node scripts/fixtures/pin-move/record.ts
  *
- * Kyverno's renderings are kept without their CustomResourceDefinitions, which are nearly all of their bytes and none of
- * what the test reads: the move's first added object.
+ * Kyverno's renderings are kept without their CustomResourceDefinitions, which are nearly all of their bytes: its move
+ * adds none and removes none, so the first object it adds is the same with them or without.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -20,6 +20,9 @@ import { CATEGORY } from './sarif.ts';
 export interface Alert {
   number: number;
   state: 'open' | 'dismissed' | 'fixed' | string;
+  created_at?: string;
+  updated_at?: string;
+  fixed_at?: string | null;
   dismissed_reason?: string | null;
   dismissed_comment?: string | null;
   rule?: { id?: string } | null;
@@ -75,16 +78,25 @@ export interface Api {
   patch(path: string, body: Record<string, string>): Promise<unknown>;
 }
 
-/** The repository's Trivy alerts in a state, every page. */
-export async function alertsIn(api: Api, repository: string, state: 'open' | 'dismissed') {
+/**
+ * The repository's Trivy alerts in a state, every page; or, with `while`, those it holds for, in the order `query` asks
+ * for, stopping at the first that it does not.
+ */
+export async function alertsIn(
+  api: Api,
+  repository: string,
+  state: 'open' | 'dismissed' | 'fixed',
+  options: { query?: string; while?: (alert: Alert) => boolean } = {},
+) {
   const alerts: Alert[] = [];
   let path: string | undefined =
-    `/repos/${repository}/code-scanning/alerts?tool_name=Trivy&state=${state}&per_page=100`;
+    `/repos/${repository}/code-scanning/alerts?tool_name=Trivy&state=${state}&per_page=100${options.query ?? ''}`;
   while (path) {
     const page: { body: unknown; next?: string | undefined } = await api.get(path);
     if (!Array.isArray(page.body)) throw new Error(`code scanning answered ${path} with something other than a list`);
-    alerts.push(...(page.body as Alert[]));
-    path = page.next;
+    const kept = options.while ? (page.body as Alert[]).filter(options.while) : (page.body as Alert[]);
+    alerts.push(...kept);
+    path = kept.length === page.body.length ? page.next : undefined;
   }
   return alerts;
 }

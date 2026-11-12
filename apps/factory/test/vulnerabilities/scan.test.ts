@@ -773,6 +773,10 @@ describe('a moved pin', () => {
     const print = (outcome: typeof before) =>
       sarif(outcome.findings).runs[0]?.results.find((result) => result.ruleId === 'CVE-2026-0202');
     expect(print(after)?.partialFingerprints).toEqual(print(before)?.partialFingerprints);
+    // Code scanning's own line hash is set from the same identity, or upload-sarif would hash the moved line itself.
+    expect(print(after)?.partialFingerprints.primaryLocationLineHash).toBe(
+      `${print(after)?.partialFingerprints['vulnerabilities/v1']}:1`,
+    );
     expect(print(after)?.locations[0]?.physicalLocation.region.startLine).toBe(30);
     // Past the fix, Trivy finds nothing, and the result is gone, so its alert closes.
     const fixed = everything();

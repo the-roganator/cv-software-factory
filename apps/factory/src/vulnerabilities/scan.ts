@@ -32,6 +32,10 @@
  * alerts.ts to set once code scanning has the upload. The log names each entry that excepts nothing, and warns when the
  * checkout's `osv-scanner.toml` is not the one the policy gives it; neither fails the run.
  *
+ * Every run that passes writes `deadlines.json` beside it (`Handoff`): the results as uploaded, without their prose,
+ * the targets read, the excepted results' keys and the repository's `minimumReleaseAge`, for deadlines.ts to give each
+ * open finding its deadline once code scanning has the upload.
+ *
  * The checkout is data: nothing in it runs. Trivy runs in its pinned image, which reads the registries' credentials
  * from DOCKER_CONFIG (GHCR's, the job's token); cosign, helm, kustomize and yq come from this repository's mise.lock.
  */
@@ -87,6 +91,10 @@ export interface TrivyVulnerability {
   InstalledVersion?: string;
   FixedVersion?: string;
   Severity?: string;
+  /** Each source's rating, 1 (low) to 4 (critical), by the source's id. */
+  VendorSeverity?: Record<string, number>;
+  /** The advisory's own source: `ghsa` for an npm package, the distribution for an operating system's. */
+  DataSource?: { ID?: string };
   Title?: string;
   Description?: string;
   PrimaryURL?: string;
@@ -105,7 +113,8 @@ export interface TrivyReport {
   Metadata?: {
     ImageID?: string;
     RepoDigests?: string[] | null;
-    ImageConfig?: { config?: { Env?: string[] | null } };
+    /** `created` is when the image was built, as its configuration says. */
+    ImageConfig?: { created?: string; config?: { Env?: string[] | null } };
   };
   Results?: TrivyResult[] | null;
 }
@@ -198,6 +207,13 @@ export function lockfileLine(lines: string[], name: string, version: string) {
 const severityOf = (value: string | undefined): Severity =>
   SEVERITIES.includes(value as Severity) ? (value as Severity) : 'UNKNOWN';
 
+/** Trivy's `VendorSeverity` numbers, as its own `Severity` names them. */
+const VENDOR: Record<number, Severity> = { 1: 'LOW', 2: 'MEDIUM', 3: 'HIGH', 4: 'CRITICAL' };
+
+/** The publisher's rating: the one the advisory's own source gives, where it gives one. */
+export const publisherOf = (v: TrivyVulnerability): Severity | undefined =>
+  v.DataSource?.ID ? VENDOR[v.VendorSeverity?.[v.DataSource.ID] ?? 0] : undefined;
+
 const scoreOf = (v: TrivyVulnerability) => {
   const scores = Object.values(v.CVSS ?? {}).flatMap((s) => [s.V40Score, s.V3Score].filter((n) => n !== undefined));
   return scores.length ? Math.max(...(scores as number[])) : undefined;
@@ -232,6 +248,7 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
             fixed: v.FixedVersion || undefined,
             advisory: v.VulnerabilityID,
             severity: severityOf(v.Severity),
+            publisher: publisherOf(v),
             title: v.Title,
             description: v.Description,
             url: v.PrimaryURL,
@@ -258,6 +275,7 @@ export function nodeFindingsOf(read: Read, database: [string, CoreEntry][]): Fin
     fixed: advisory.patched,
     advisory: advisory.advisory,
     severity: advisory.severity,
+    publisher: advisory.severity,
     title: advisory.title,
     description: advisory.description,
     url: advisory.url,
@@ -430,8 +448,21 @@ async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<st
   return { targets: [image(item.image ?? item.name)] };
 }
 
+/** A target the scan read, as deadlines.ts needs it: its item's kind, the file that pins it, and what it read. */
+export interface ReadTarget {
+  key: string;
+  kind: Item['kind'];
+  file: string;
+  label: string;
+  image?: string | undefined;
+  /** For an image k3s's release brings, the URL of the release's list of images (inventory.ts's `list`). */
+  list?: string | undefined;
+}
+
 export interface Outcome {
   findings: Finding[];
+  /** Each target read, the proof's left out. */
+  targets: ReadTarget[];
   unreadable: { name: string; why: string }[];
   read: number;
   proof: {
@@ -457,6 +488,7 @@ export async function scan(
     why: `a pin the list does not read: ${pin.why}`,
   }));
   const findings: Finding[] = [];
+  const targetsRead: ReadTarget[] = [];
   const lockfiles = new Map<string, string[]>();
   // An image several items run is pulled once, and its findings are each item's.
   const pulled = new Map<string, Promise<Read>>();
@@ -491,6 +523,14 @@ export async function scan(
         continue;
       }
       read++;
+      targetsRead.push({
+        key: target.key,
+        kind: item.kind,
+        file: item.file,
+        label: target.label,
+        image: target.image,
+        list: item.list,
+      });
       findings.push(...findingsOf(result, lockfiles.get(item.file)), ...nodeFindingsOf(result, database));
     }
   }
@@ -512,6 +552,7 @@ export async function scan(
   const found = nodeFindingsOf(proofRead, database).some((finding) => finding.advisory === PROOF.advisory);
   return {
     findings,
+    targets: targetsRead,
     unreadable,
     read,
     proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, node: proofRead.node },
@@ -738,6 +779,7 @@ export async function main(args: string[]): Promise<number> {
     console.error(`::error::No Trivy pin in ${pinFile}`);
     return 1;
   }
+  const started = new Date().toISOString();
   mkdirSync(out, { recursive: true });
   const cache = mkdtempSync(join(resolve(out), 'cache-'));
   const work = mkdtempSync(join(resolve(out), 'work-'));
@@ -793,6 +835,11 @@ export async function main(args: string[]): Promise<number> {
   for (const entry of outcome.unreadable) console.log(`::error::Not read: ${entry.name}: ${entry.why}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary(outcome, lines)}\n`);
   if (!passes) return 1;
+  // What deadlines.ts reads, after the upload: every run that passes, a proving run's too.
+  writeFileSync(
+    join(out, 'deadlines.json'),
+    JSON.stringify(handoff(repository ?? '', started, cache, checkout, outcome, exceptions.excepted)),
+  );
   if (upload) {
     // The file checked against the limits, as it was checked.
     writeFileSync(join(out, 'vulnerabilities.sarif'), JSON.stringify(file));
@@ -803,6 +850,47 @@ export async function main(args: string[]): Promise<number> {
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'sarif=true\n');
   }
   return 0;
+}
+
+/** What the scan hands deadlines.ts: the results, as uploaded, without their prose, and what it needs to judge them. */
+export interface Handoff {
+  repository: string;
+  /** When the scan started: an alert fixed since then was closed by this run's upload. */
+  started: string;
+  /** Trivy's cache, with the advisory database the scan checked. */
+  cache: string;
+  /** pnpm's `minimumReleaseAge` in the scanned repository, in minutes, where it sets one. */
+  minimumReleaseAge?: number | undefined;
+  findings: Finding[];
+  /** The alert key (sarif.ts's `alertKey`) of each excepted result. */
+  excepted: string[];
+  targets: ReadTarget[];
+}
+
+export function handoff(
+  repository: string,
+  started: string,
+  cache: string,
+  checkout: string,
+  outcome: Outcome,
+  excepted: Map<string, string>,
+): Handoff {
+  const workspace = join(checkout, 'pnpm-workspace.yaml');
+  return {
+    repository,
+    started,
+    cache,
+    minimumReleaseAge: existsSync(workspace) ? minimumReleaseAge(readFileSync(workspace, 'utf-8')) : undefined,
+    findings: merge(outcome.findings).map(({ title: _t, description: _d, ...finding }) => finding),
+    excepted: [...excepted.keys()],
+    targets: outcome.targets,
+  };
+}
+
+/** pnpm's `minimumReleaseAge`, in minutes, from a `pnpm-workspace.yaml`, read as data. */
+export function minimumReleaseAge(workspace: string) {
+  const minutes = /^minimumReleaseAge:\s*['"]?(\d+)['"]?\s*(?:#.*)?$/m.exec(workspace)?.[1];
+  return minutes === undefined ? undefined : Number(minutes);
 }
 
 function summary(outcome: Outcome, lines: string[]) {

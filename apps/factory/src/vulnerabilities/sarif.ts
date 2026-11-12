@@ -13,7 +13,8 @@
  * alert.
  *
  * A result's `partialFingerprints` are the item, the package and the advisory, never the line, the version or the
- * image's digest, so moving a pin that leaves the finding keeps its alert, and moving it past the fix closes it. An
+ * image's digest, and its `primaryLocationLineHash` is the same, so code scanning does not hash the pinned line's text
+ * itself: moving a pin that leaves the finding keeps its alert, and moving it past the fix closes it. An
  * image's copy of a package is its own result, never folded into a lockfile's, so a finding excepted in one place is
  * still seen in another, and the same package in an image's two platforms is one result.
  *
@@ -40,6 +41,12 @@ export interface Finding {
   fixed?: string | undefined;
   advisory: string;
   severity: Severity;
+  /**
+   * The publisher's own rating, where it gives one: Trivy's `VendorSeverity` for the advisory's own source (GitHub's
+   * advisory for an npm package, the distribution's for an operating system's), or Node's for Node's own. A finding's
+   * deadline is at the higher of this and `severity` (deadlines.ts).
+   */
+  publisher?: Severity | undefined;
   title?: string | undefined;
   description?: string | undefined;
   url?: string | undefined;
@@ -94,8 +101,15 @@ export function merge(findings: Finding[]): Finding[] {
     const versions = new Set([...seen.installed.split(', '), finding.installed]);
     seen.installed = [...versions].sort().join(', ');
     if (SEVERITIES.indexOf(finding.severity) < SEVERITIES.indexOf(seen.severity)) seen.severity = finding.severity;
+    if (
+      finding.publisher &&
+      (!seen.publisher || SEVERITIES.indexOf(finding.publisher) < SEVERITIES.indexOf(seen.publisher))
+    )
+      seen.publisher = finding.publisher;
     seen.score = Math.max(seen.score ?? 0, finding.score ?? 0) || undefined;
-    seen.fixed ??= finding.fixed;
+    // Each copy's fixed versions, so a copy in another version keeps its own.
+    const fixes = new Set([...(seen.fixed?.split(', ') ?? []), ...(finding.fixed?.split(', ') ?? [])].filter(Boolean));
+    seen.fixed = fixes.size ? [...fixes].join(', ') : undefined;
   }
   return [...byKey.values()];
 }
@@ -257,7 +271,9 @@ function run(group: Part[], index: number, trivyVersion?: string): Run {
         physicalLocation: { artifactLocation: { uri: finding.file }, region: { startLine: Math.max(1, finding.line) } },
       },
     ],
-    partialFingerprints: { [FINGERPRINT]: fingerprint(finding) },
+    // Code scanning's own `primaryLocationLineHash` too, from the same identity: left out, upload-sarif hashes the pinned
+    // line's text, digest and all, and a re-pin closes every alert of the item and opens a new one.
+    partialFingerprints: { [FINGERPRINT]: fingerprint(finding), primaryLocationLineHash: `${fingerprint(finding)}:1` },
   }));
   return {
     tool: {

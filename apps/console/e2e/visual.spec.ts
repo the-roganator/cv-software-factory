@@ -1491,7 +1491,7 @@ for (const width of ['laptop', 'phone'] as const) {
       });
 
       test(`a running pod’s card for a visitor, in ${theme}`, async ({ page }) => {
-        const card = await patchCardAt(page, 'visitor', theme, 'An image no list names is running');
+        const card = await patchCardAt(page, 'visitor', theme, 'An unscanned image is running');
         await expect(card).toHaveScreenshot(`m07-needs-patch-visitor-${theme}-${width}.png`);
       });
     }

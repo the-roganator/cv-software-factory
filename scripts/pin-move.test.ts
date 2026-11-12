@@ -567,9 +567,9 @@ describe('the manifests and the records', () => {
     expect(staleRecords({ a: '1' }, { b: '1' })).toMatch(/other refusal records/);
   });
 
-  // The real hash, as the gate computes it with main's policy-hash.ts: whether a Postgres digest stales the admission
-  // record depends on whether that hash reads the digests admission admits, which #1008 takes out.
-  it("holds a Postgres digest exactly when the policies' hash, as this checkout computes it, moves with it", async () => {
+  // The real hash, as the gate computes it with main's policy-hash.ts, which leaves out the digests admission admits:
+  // a Postgres digest stales no record, so it passes.
+  it('passes a Postgres digest, which moves no refusal record\u2019s hash', async () => {
     const root = join(import.meta.dirname, '..');
     const dirs = ['base', 'head'].map((side) => {
       const dir = mkdtempSync(join(tmpdir(), `pin-move-${side}-`));
@@ -583,12 +583,10 @@ describe('the manifests and the records', () => {
     const [base, head] = (await Promise.all(dirs.map(hashesOf)).finally(() => {
       for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
     })) as [Record<string, string>, Record<string, string>];
-    const moves = base['admission-refusals'] !== head['admission-refusals'];
     const io = { hashes: async (side: 'base' | 'head') => (side === 'base' ? base : head) };
     const reason = await reasonOf({ ...POSTGRES, io });
-    console.log(`A Postgres digest ${moves ? 'moves' : 'leaves'} the admission record's hash: ${reason}`);
-    if (moves) expect(reason).toMatch(/^it stales deploy\/test\/admission-refusals\.json/);
-    else expect(reason).toBe('passed: postgres');
+    expect(head['admission-refusals']).toBe(base['admission-refusals']);
+    expect(reason).toBe('passed: postgres');
     // Only the admission record reads the Postgres digest.
     for (const record of Object.keys(base).filter((r) => r !== 'admission-refusals'))
       expect(head[record]).toBe(base[record]);

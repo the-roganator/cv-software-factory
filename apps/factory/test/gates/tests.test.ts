@@ -478,18 +478,92 @@ describe('the gates’ scripts, end to end', () => {
     }
   });
 
-  it('image scan: a report with no results is no vulnerability, new or old', async () => {
+  it('image scan: a report with no results is no vulnerability, new or old, and counts nothing', async () => {
     const { main } = await import('../../src/gates/image-scan.ts');
     const dir = await dirs({
       'base.json': '{}',
-      'change.json': '{"Results":[{"Target":"app","Vulnerabilities":null}]}',
+      'change.json': '{"SchemaVersion":2,"Results":[{"Target":"app","Vulnerabilities":null}]}',
     });
+    const output: string[] = [];
     const log = console.log;
-    console.log = () => {};
+    console.log = (line: string) => void output.push(line);
+    vi.stubEnv('GITHUB_STEP_SUMMARY', '');
     try {
       expect(await main([`${dir}/base.json`, `${dir}/change.json`])).toBe(0);
+      // A report of another shape is not an image with nothing in it: no notice of counts at all.
+      expect(output.join('\n')).not.toContain('counted');
     } finally {
       console.log = log;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('image scan: a report in Trivy’s schema with entries of another shape counts nothing, and does not throw', async () => {
+    const { countsOf } = await import('../../src/gates/image-scan.ts');
+    const fine = { SchemaVersion: 2, Results: [{ Target: 'os', Vulnerabilities: [] }] };
+    const odd = (Vulnerabilities: unknown[]) => ({
+      SchemaVersion: 2,
+      Results: [null, { Target: 'os', Vulnerabilities }],
+    });
+    expect(countsOf(fine, fine)).toEqual({
+      before: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+      after: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: a report of another shape, as Trivy would never write it
+    const reports = [odd([null, 7]), odd([{ VulnerabilityID: 'CVE-1', PkgName: 'zlib', Severity: 5 }])] as any[];
+    for (const report of reports) expect(countsOf(fine, report)).toBeUndefined();
+  });
+
+  it('image scan: its notice counts what each image has in all, by severity, each vulnerability once', async () => {
+    const { main } = await import('../../src/gates/image-scan.ts');
+    const { parseCounts } = await import('../../src/gates/counts.ts');
+    const trivy = (...vulns: [string, string, string][]) =>
+      JSON.stringify({
+        SchemaVersion: 2,
+        Results: [
+          {
+            Target: 'os',
+            Vulnerabilities: vulns.map(([id, pkg, s]) => ({
+              VulnerabilityID: id,
+              PkgName: pkg,
+              InstalledVersion: '1',
+              Severity: s,
+            })),
+          },
+          // The same vulnerability in the same package, found again in another target, is one.
+          {
+            Target: 'node',
+            Vulnerabilities: vulns
+              .slice(0, 1)
+              .map(([id, pkg, s]) => ({ VulnerabilityID: id, PkgName: pkg, InstalledVersion: '1', Severity: s })),
+          },
+        ],
+      });
+    const dir = await dirs({
+      'base.json': trivy(['CVE-1', 'openssl', 'HIGH'], ['CVE-2', 'zlib', 'LOW'], ['CVE-5', 'tar', 'UNKNOWN']),
+      'change.json': trivy(['CVE-2', 'zlib', 'LOW']),
+    });
+    const output: string[] = [];
+    const log = console.log;
+    console.log = (line: string) => void output.push(line);
+    vi.stubEnv('GITHUB_STEP_SUMMARY', '');
+    try {
+      expect(await main([`${dir}/base.json`, `${dir}/change.json`])).toBe(0);
+      const notices = output.filter((line) => line.startsWith('::notice::')).map((line) => line.slice(10));
+      expect(notices.map(parseCounts)).toEqual([
+        {
+          scan: 'image scan',
+          counts: {
+            before: { critical: 0, high: 1, medium: 0, low: 1, unknown: 1 },
+            after: { critical: 0, high: 0, medium: 0, low: 1, unknown: 0 },
+          },
+        },
+      ]);
+      // Counts alone: no package and no advisory.
+      expect(notices.join('\n')).not.toMatch(/CVE|openssl|zlib/);
+    } finally {
+      console.log = log;
+      vi.unstubAllEnvs();
     }
   });
 

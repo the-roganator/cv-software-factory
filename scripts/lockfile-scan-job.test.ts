@@ -8,7 +8,7 @@ import { parse } from 'yaml';
 /**
  * check.yml's `lockfile scan` runs the gate from the base. A base without it, and a change that brings it in, is the
  * gate's own first landing: that run judges nothing and says so. A base without it otherwise fails, and every other run
- * is the base's script, whatever it answers, given the base's pin of Trivy, at its old path for a base from before #977.
+ * is the base's script, whatever it answers, given the base's pin of Trivy from its one home, and fails, saying why, on a base without it.
  */
 const workflow = parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as {
   jobs: Record<string, { steps?: { name?: string; run?: string }[] }>;
@@ -16,7 +16,7 @@ const workflow = parse(readFileSync('.github/workflows/check.yml', 'utf-8')) as 
 const step = workflow.jobs['lockfile-scan']?.steps?.find((s) => s.name === 'Compare the lockfiles')?.run ?? 'exit 99';
 
 /** The step's script, run as the runner would, in a workspace with or without the base's gate. */
-function compare(gate?: string, { changeBringsIt = true, pins = ['deploy/images/trivy/Dockerfile'] } = {}) {
+function compare(gate?: string, { changeBringsIt = true, pinned = true } = {}) {
   const workspace = mkdtempSync(join(tmpdir(), 'lockfile-scan-job-'));
   try {
     const place = (side: string, text: string) => {
@@ -24,9 +24,9 @@ function compare(gate?: string, { changeBringsIt = true, pins = ['deploy/images/
       writeFileSync(join(workspace, side, 'apps/factory/src/gates/lockfile-scan.ts'), text);
     };
     if (gate !== undefined) place('base', gate);
-    for (const pin of pins) {
-      mkdirSync(join(workspace, 'base', pin, '..'), { recursive: true });
-      writeFileSync(join(workspace, 'base', pin), 'FROM trivy\n');
+    if (pinned) {
+      mkdirSync(join(workspace, 'base/deploy/images/trivy'), { recursive: true });
+      writeFileSync(join(workspace, 'base/deploy/images/trivy/Dockerfile'), 'FROM trivy\n');
     }
     if (changeBringsIt) place('change', 'process.exitCode = 1;');
     return spawnSync('bash', ['-e', '-c', step], { cwd: workspace, encoding: 'utf-8' });
@@ -71,31 +71,27 @@ describe("check.yml's lockfile scan", () => {
     expect(compare('process.exitCode = 1;').status).toBe(1);
   });
 
-  it("reads the base's pin at its old path only when the base has none at the new one", () => {
-    const argv = 'console.log(JSON.stringify(process.argv.slice(2)));';
-    const pinOf = (pins: string[]) => {
-      const args = JSON.parse(compare(argv, { pins }).stdout) as string[];
-      return args[args.indexOf('--trivy-pin') + 1];
-    };
-    expect(pinOf(['.github/images/trivy/Dockerfile'])).toBe('base/.github/images/trivy/Dockerfile');
-    expect(pinOf(['deploy/images/trivy/Dockerfile', '.github/images/trivy/Dockerfile'])).toBe(
-      'base/deploy/images/trivy/Dockerfile',
-    );
-    // With neither, the base's gate is given the new path, and fails on it.
-    expect(pinOf([])).toBe('base/deploy/images/trivy/Dockerfile');
+  it('fails, saying why, and runs no gate, when the base has no pin at its one home', () => {
+    const run = compare('console.log("the gate ran");', { pinned: false });
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain('::error::The base holds no Trivy pin at deploy/images/trivy/Dockerfile');
+    expect(run.stdout).not.toContain('the gate ran');
   });
 });
 
 describe("the exceptions, from main's policy alone", () => {
-  type Step = { name?: string; uses?: string; run?: string; with?: Record<string, string> };
+  type Step = { id?: string; name?: string; uses?: string; run?: string; with?: Record<string, string> };
   const jobs = [
     ['.github/workflows/check.yml', 'lockfile-scan', 'base'],
     ['.github/workflows/app-gates.yml', 'lockfile-scan', 'factory'],
+    ['.github/workflows/app-gates.yml', 'image-scan', 'factory'],
+    ['.github/workflows/app-gates.yml', 'dependency-review', 'factory'],
     ['.github/workflows/vulnerabilities.yml', 'scan', 'factory'],
     ['.github/workflows/vulnerabilities.yml', 'prove', 'factory'],
   ] as const;
 
   it("put main's policy/vulnerabilities.ts where the script imports it, before it runs, in every job that reads it", () => {
+    const takes = new Set<string | undefined>();
     for (const [file, name, into] of jobs) {
       const steps = (parse(readFileSync(file, 'utf-8')).jobs[name] as { steps: Step[] }).steps;
       const main = steps.findIndex((s) => s.uses?.startsWith('actions/checkout@') && s.with?.path === 'policy-main');
@@ -108,9 +104,26 @@ describe("the exceptions, from main's policy alone", () => {
       const take = steps.findIndex((s) => s.name === 'Take the exceptions from main');
       expect(take, `${file} ${name}`).toBeGreaterThan(main);
       expect(steps[take]?.run).toContain(`cp policy-main/policy/vulnerabilities.ts ${into}/policy/vulnerabilities.ts`);
-      const runs = steps.findIndex((s) => /lockfile-scan\.ts|scan\.ts/.test(s.run ?? ''));
+      if (file !== '.github/workflows/check.yml') takes.add(steps[take]?.run);
+      const runs = steps.findIndex((s) => /lockfile-scan\.ts|scan\.ts|dependency-allow\.ts/.test(s.run ?? ''));
       expect(runs, `${file} ${name}`).toBeGreaterThan(take);
     }
+    // One step, the same in every job that takes the policy into `factory`, so no copy drifts.
+    expect(takes.size).toBe(1);
+  });
+
+  it("gives dependency review the advisories main's policy allows, read after main's copy is in place", () => {
+    const steps = (
+      parse(readFileSync('.github/workflows/app-gates.yml', 'utf-8')).jobs['dependency-review'] as {
+        steps: Step[];
+      }
+    ).steps;
+    const allow = steps.findIndex((s) => s.run === 'node factory/apps/factory/src/gates/dependency-allow.ts');
+    const review = steps.findIndex((s) => s.uses?.startsWith('actions/dependency-review-action@'));
+    expect(allow).toBeGreaterThan(steps.findIndex((s) => s.name === 'Take the exceptions from main'));
+    expect(review).toBeGreaterThan(allow);
+    expect(steps[allow]?.id).toBe('allow');
+    expect(steps[review]?.with?.['allow-ghsas']).toBe(['${{', 'steps.allow.outputs.ghsas', '}}'].join(' '));
   });
 
   it("replaces the checkout's copy with main's, and keeps the checkout's only while main has none", () => {

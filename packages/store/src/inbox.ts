@@ -2,15 +2,23 @@
  * The inbox: where the senses leave what they found, for triage to take (0002_store-kind-work-items-and-inbox.sql).
  * A signal here is what `signal.received` will say if triage makes an event of it, with its artifacts beside it.
  */
-import type { InboxSignal } from '@software-factory/events';
+import { type InboxSignal, moveFingerprint } from '@software-factory/events';
 import { validateSignal } from '@software-factory/events/schemas';
 import type { Sql } from 'postgres';
 import type { JSONValue } from './client.ts';
 
-/** What a sense found, as triage matches it: the route and the symptom class. A report or a finding has none. */
-export function fingerprintOf(found: Pick<InboxSignal, 'sense' | 'route' | 'symptom'>): string | null {
+/**
+ * What a sense found, as triage matches it: the route and the symptom class; or, for a dependency, its move's name and
+ * ecosystem (`moveFingerprint`), with neither its version nor its findings, so every target of one move is one. A
+ * report or a finding has none.
+ */
+export function fingerprintOf(found: Pick<InboxSignal, 'sense' | 'route' | 'move' | 'symptom'>): string | null {
   if (found.sense === 'report' || found.sense === 'planner') return null;
   if (!found.symptom) throw new Error(`A signal from the ${found.sense} needs the symptom class it saw`);
+  if (found.move) {
+    const { name, ecosystem } = moveFingerprint(found.move);
+    return `move ${ecosystem} ${name}`;
+  }
   return `${found.route} ${found.symptom}`;
 }
 

@@ -44,7 +44,7 @@ const all = rendered() as { manifest: Rbac }[];
 
 /** The namespaces the sense lists no pod in, each with why (deploy/base/patching-reads-pods, PATCHING.md). */
 const LEFT_OUT: Record<string, string> = {
-  runners: 'its Jobs carry a step’s job token in their spec, as a value',
+  runners: 'an agent step’s Job carries its job token in its spec, as a value',
   'red-team': 'only the harness’s two attack pods run there, held to two images by an admission rule',
   scoreboard: 'the answer key’s namespace, where no role of ours but the line’s list of Events is bound',
 };

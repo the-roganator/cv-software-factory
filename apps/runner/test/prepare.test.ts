@@ -220,3 +220,79 @@ describe('the fence check', () => {
     expect(await attempt('http://no-such-host.invalid')).toBe('unclear');
   });
 });
+
+describe('the prepare step, on a dependency’s work item', () => {
+  /** The origin, with more files committed on it. */
+  function originWith(files: Record<string, string>) {
+    const { dir } = origin();
+    for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', ...args], {
+        cwd: dir,
+        encoding: 'utf-8',
+      });
+    git('add', '.');
+    git('commit', '--quiet', '--message', 'more');
+    return { url: `file://${dir}`, commit: git('rev-parse', 'HEAD').trim() };
+  }
+  const envFor = (url: string, commit: string, move: unknown) => {
+    const work = mkdtempSync(join(tmpdir(), 'work-'));
+    const own = mkdtempSync(join(tmpdir(), 'prepare-'));
+    mkdirSync(join(own, 'home'));
+    return {
+      work,
+      env: {
+        ...process.env,
+        WORK: work,
+        PREPARE: own,
+        HOME: join(own, 'home'),
+        npm_config_store_dir: join(own, 'store'),
+        RUNNER_STEP: JSON.stringify({ agent: 'coder', repository: url, commit, prompt: 'Fix it.', maxTurns: 5, move }),
+      },
+    };
+  };
+  const OLD = `sha256:${'1'.repeat(64)}`;
+  const NEW = `sha256:${'2'.repeat(64)}`;
+
+  it('writes the move’s pins, commits them as the agent’s base, and prints them for the line', async () => {
+    const { url, commit } = originWith({ Dockerfile: `FROM gcr.io/distroless/static:nonroot@${OLD}\n` });
+    const move = {
+      ecosystem: 'docker',
+      name: 'gcr.io/distroless/static',
+      from: `nonroot@${OLD}`,
+      to: `nonroot@${NEW}`,
+    };
+    const { work, env } = envFor(url, commit, move);
+    const lines: string[] = [];
+    const get = async () => new Response(null, { headers: { 'docker-content-digest': NEW } });
+    await prepare(env, (line) => lines.push(line), { get });
+    const said = lines.map((line) => JSON.parse(line));
+    const pins = said.find((line) => line.msg === 'the pins');
+    expect(pins).toMatchObject({ move });
+    expect(pins.pins).toContain(`+FROM gcr.io/distroless/static:nonroot@${NEW}`);
+    expect(said.at(-1)).toMatchObject({ msg: 'installed the dependencies' });
+    const repo = join(work, 'repo');
+    // Committed, so the agent's patch, measured from where it starts, never holds them.
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8' }).trim();
+    expect(git('log', '-1', '--format=%s %an')).toBe(
+      `chore(deps): move gcr.io/distroless/static from nonroot@${OLD} to nonroot@${NEW} pins`,
+    );
+    expect(git('status', '--porcelain', '--', 'Dockerfile')).toBe('');
+  });
+
+  it('prints that the pins wait for Martin, and installs nothing, when the move needs his file', async () => {
+    const lock =
+      "lockfileVersion: '9.0'\n\npackages:\n\n  pino@10.4.0:\n    resolution: {integrity: sha512-p}\n\n  sonic-boom@4.2.1:\n    resolution: {integrity: sha512-s}\n\nsnapshots:\n\n  pino@10.4.0:\n    dependencies:\n      sonic-boom: 4.2.1\n";
+    const { url, commit } = originWith({ 'pnpm-lock.yaml': lock });
+    const move = { ecosystem: 'npm', name: 'sonic-boom', from: '4.2.1', to: '5.0.2' };
+    const { env } = envFor(url, commit, move);
+    const lines: string[] = [];
+    await prepare(env, (line) => lines.push(line), { pnpm: async () => {} });
+    const said = lines.map((line) => JSON.parse(line));
+    expect(said.at(-1)).toMatchObject({
+      msg: 'the pins wait for Martin',
+      held: { path: 'pnpm-workspace.yaml', reason: expect.stringContaining('pino@10.4.0 admit no 5.0.2') },
+    });
+    expect(said.some((line) => line.msg === 'installed the dependencies')).toBe(false);
+  });
+});

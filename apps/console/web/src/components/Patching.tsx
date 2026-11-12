@@ -92,7 +92,7 @@ function reads(row: PatchingRow, who: Who): [word: string, tone: string, glyph: 
 
 /** What a row's sense found, as its name says it when the event gives none of its own. */
 const RUNNING_NAME = {
-  'unlisted-image': 'An image no list names',
+  'unlisted-image': 'Unscanned image running',
   'unscanned-digest': 'A running digest no scan read',
   'not-running': 'A pin the cluster does not run yet',
 } as const;
@@ -255,7 +255,7 @@ function Row({
           {withheld ? (
             <span className="ft zero">versions once its pull request opens</span>
           ) : row.source.kind === 'unlisted-image' ? (
-            <span className="ft">not on the list</span>
+            <span className="ft">pinned nowhere</span>
           ) : (
             (row.from || row.to) && (
               <span className="ft">
@@ -410,7 +410,7 @@ function headWords(view: Extract<PatchingView, { state: 'read' }>) {
   const { running } = view;
   return [
     plural(view.moves, 'move'),
-    running['unlisted-image'] > 0 && `${plural(running['unlisted-image'], 'image')} off the list`,
+    running['unlisted-image'] > 0 && `${plural(running['unlisted-image'], 'unscanned image')} running`,
     running['unscanned-digest'] > 0 && `${plural(running['unscanned-digest'], 'digest')} no scan read`,
     running['not-running'] > 0 && `${plural(running['not-running'], 'pin')} not running yet`,
   ].filter(Boolean) as string[];

@@ -2,12 +2,12 @@ import {
   ANSWERS,
   answersTo,
   CLOSE_AGREES,
+  DEFECT_SYMPTOMS,
   HOLD_CAUSES,
   type HoldCause,
   type PayloadOf,
   POINTED_BY,
   pointsAtSomething,
-  SYMPTOM_CLASSES,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
 import { type Answer, type Judge, judgeReport, type PageView, reportEvents } from '@software-factory/triage';
@@ -1945,7 +1945,7 @@ describe('a report’s ticket, from triage to the line', () => {
     observedAt: '2026-11-08T09:00:00.000Z',
     artifacts: [],
   };
-  const cases = SYMPTOM_CLASSES.flatMap((symptom) =>
+  const cases = DEFECT_SYMPTOMS.flatMap((symptom) =>
     (['content', 'functional'] as const).flatMap((category) =>
       [true, false].flatMap((pick) => [true, false].map((readable) => ({ symptom, category, pick, readable }))),
     ),

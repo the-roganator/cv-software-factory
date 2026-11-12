@@ -13,7 +13,7 @@ import { seen } from '../src/line/agents/evidence.ts';
 import type { Exchange } from '../src/senses/http.ts';
 import { signalOf } from '../src/senses/runner.ts';
 
-const VERSION = 'd487739';
+const VERSION = '200855c';
 
 /** What a page that passes every check sends. */
 const GOOD: Record<string, string> = {

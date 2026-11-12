@@ -448,6 +448,9 @@ describe('reading the provider', () => {
     const checked = (ms: number) =>
       ran(`\u001b[34mChecked 2 files in ${ms}\u001b[0m\u001b[2mms\u001b[0m. No fixes applied.`);
     expect(keyedRequest(checked(7))).toEqual(keyedRequest(checked(12)));
+    const formatted = (ms: number) => ran(`Formatted 1 file in ${ms}ms. Fixed 1 file.`);
+    expect(keyedRequest(formatted(2))).toEqual(keyedRequest(formatted(17)));
+    expect(keyedRequest(formatted(2))).not.toEqual(keyedRequest(ran('Formatted 2 files in 2ms. Fixed 2 files.')));
     // A different outcome is a different call.
     expect(keyedRequest(ran(vitest('23:03:54', '4ms', '2ms', '483ms', 2)))).not.toEqual(first);
   });

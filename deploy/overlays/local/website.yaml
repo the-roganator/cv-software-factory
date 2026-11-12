@@ -5,6 +5,10 @@ kind: Application
 metadata:
   name: website
   namespace: argocd
+  labels:
+    # Deployed from the app's repository, with no values from this one: root's patch, which points every other
+    # Application's values at the revision root deploys, leaves it alone (deploy/argocd/root.yaml).
+    software-factory/repository: app
   annotations:
     # Last of everything root deploys. Root's sync waits while a resource in an earlier wave is Suspended or
     # Progressing, and fails on a Degraded one; the website is Suspended through a canary and Degraded after a rollback,

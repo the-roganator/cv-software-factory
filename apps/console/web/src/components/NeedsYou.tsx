@@ -550,7 +550,7 @@ const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: strin
   ],
   'unlisted-image': [
     '{his} cluster',
-    () => 'An image no list names is running',
+    () => 'An unscanned image is running',
     'A pod runs an image no pin names, so the daily scan never sees it.',
   ],
   'unscanned-digest': [

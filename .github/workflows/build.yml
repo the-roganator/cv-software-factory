@@ -276,14 +276,53 @@ jobs:
       - id: push
         run: scripts/image-index.sh factory factory-browser factory-runner
 
+  # Syft's version is pinned once, in deploy/images/syft/Dockerfile, which the dependency graph runs by digest too: read
+  # here from this workflow's own commit, so Dependabot's bump of that file is the whole change. A job of its own, so
+  # that no checkout happens where the OIDC token can be asked for: a sparse checkout of that one file, with no
+  # credentials, and nothing of it runs. Only the version leaves it.
+  syft-version:
+    name: Syft's version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.pin.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: factory
+          sparse-checkout: deploy/images/syft/Dockerfile
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Read Syft's version from its pin
+        id: pin
+        env:
+          PIN: factory/deploy/images/syft/Dockerfile
+        run: |
+          set -euo pipefail
+          # One FROM, of Syft's image by version and digest, as check.yml holds every scanner's pin: every FROM line is
+          # counted, however it is written, so a second one fails too.
+          froms=$(grep -iE '^[[:space:]]*FROM[[:space:]]' "$PIN" || true)
+          if [ -z "$froms" ] || [ "$(wc -l <<< "$froms")" -ne 1 ] ||
+            [[ ! $froms =~ ^FROM\ ghcr\.io/anchore/syft:(v[0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::$PIN must pin Syft's image once, as FROM ghcr.io/anchore/syft:v<version>@sha256:<digest>"
+            exit 1
+          fi
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "Syft ${BASH_REMATCH[1]}, from $PIN"
+
   # Signs each image the jobs above pushed, by digest, and attests an SBOM of each of its platforms, made by Syft. Jobs
   # of their own, so that only they can ask for the workflow's OIDC token, and nothing an image's build runs ever can:
   # one for each image, side by side. A brief failure of Sigstore's or GHCR's is tried again within the job; if one
   # still fails, its image is in GHCR unsigned, and the deploy watch will not propose it until it is run again.
   sign:
     name: sign
-    needs: [push-console, push-factory]
-    if: ${{ !cancelled() && (needs.push-console.result == 'success' || needs.push-factory.result == 'success') }}
+    needs: [push-console, push-factory, syft-version]
+    # Never without Syft's version: download-syft given none would install whatever Syft is newest.
+    if: ${{ !cancelled() && needs.syft-version.result == 'success' && (needs.push-console.result == 'success' || needs.push-factory.result == 'success') }}
     runs-on: ubuntu-24.04
     # Room for every try: the two scans' four tries each, three cosign calls of four one-minute tries each, and up to
     # 105 seconds of waiting between each call's tries.
@@ -317,8 +356,7 @@ jobs:
         if: env.DIGEST != ''
         uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          # The version deploy/images/syft/Dockerfile pins, which the dependency graph runs: they move together.
-          syft-version: v1.54.0
+          syft-version: ${{ needs.syft-version.outputs.version }}
       - if: env.DIGEST != ''
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:

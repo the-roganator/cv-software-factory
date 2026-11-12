@@ -24,12 +24,10 @@ svg#dia { display: block; width: 100%; min-width: 820px; height: auto; }
 .f-auto { --flow: var(--signal); --dash: none; }
 .f-held { --flow: var(--attn); --dash: 5 5; }
 .f-hand { --flow: var(--signal); --dash: 9 5; }
-.f-set { --flow: var(--text-2); --dash: 0.5 4.5; }
 .dot-read { fill: var(--text-muted); }
 .dot-auto { fill: var(--signal); }
 .dot-held { fill: var(--attn); }
 .dot-hand { fill: var(--bg); stroke: var(--signal); stroke-width: 1.8; }
-.dot-set { fill: var(--text-2); }
 .node { cursor: default; }
 #dia .node .name { font-size: 17px; }
 #dia .node .sub { font-size: 12.5px; }
@@ -366,11 +364,14 @@ addEventListener('keydown', (e) => {
 });
 // Every card is as tall as the longest, so Back and Next stay where they are from step to step.
 function level() {
-  const body = $('body'), kept = body.innerHTML;
-  body.style.minHeight = '';
+  // Measured in a hidden copy beside the card's text, so the text the reader has open is never redrawn.
+  const body = $('body'), probe = body.cloneNode(false);
+  probe.removeAttribute('id');
+  probe.style.cssText = `position:absolute;visibility:hidden;width:${body.clientWidth}px`;
+  body.parentNode.appendChild(probe);
   let tallest = 0;
-  for (const s of STEPS) { body.innerHTML = s.body; tallest = Math.max(tallest, body.offsetHeight); }
-  body.innerHTML = kept;
+  for (const s of STEPS) { probe.innerHTML = s.body; tallest = Math.max(tallest, probe.offsetHeight); }
+  probe.remove();
   body.style.minHeight = `${tallest}px`;
 }
 addEventListener('resize', level);

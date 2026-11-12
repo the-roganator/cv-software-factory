@@ -310,7 +310,13 @@ async function pinMoveOf(each: Run, pr: PullRequest): Promise<PinMoveAnswer> {
       }
     );
   }
-  const answer = await moves.read(each, pr, { api, paged });
+  // A reader that throws still gives an answer, which the job hands on: the gate then says the job's own reason, never
+  // that the job gave none.
+  const answer = await moves.read(each, pr, { api, paged }).catch(
+    (error: unknown): PinMoveAnswer => ({
+      reason: `the pin move job could not work it out (${(error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200)})`,
+    }),
+  );
   // Cut to what the gate reads, so one long reason (a path the head names) never spoils the others' answers.
   if (moves.kind === 'work')
     WORKED.set(answerKey(pr), 'title' in answer ? { title: cutTo(answer.title) } : { reason: cutTo(answer.reason) });

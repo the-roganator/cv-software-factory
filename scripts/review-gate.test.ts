@@ -682,6 +682,26 @@ describe('judging a pull request through the API', () => {
       expect((await judge({ ...run, repo: FACTORY }, here)).title).toContain('gave the gate no answers');
     });
 
+    it('holds on the reader’s own words when it throws, rather than reading the pull request as unread', async () => {
+      github({ '/pulls/9/files': zap });
+      const throwing = {
+        ...run,
+        repo: FACTORY,
+        moves: {
+          kind: 'read' as const,
+          read: async () => {
+            throw new Error("EACCES, Permission denied: '/home/runner/work/_temp/pin-move-x'");
+          },
+        },
+      };
+      const said = await judge(throwing, here);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.title).toContain(
+        "nor a pin move: the pin move job could not work it out (EACCES, Permission denied: '/home/runner/work/_temp/pin-move-x')",
+      );
+      expect(said.title).not.toContain('could not read the pull request whole');
+    });
+
     it('never takes one for someone else’s pull request, or in the app’s repository', async () => {
       github({ '/pulls/9/files': zap });
       const answers = new Map([[`9@${HEAD}`, { title }]]);

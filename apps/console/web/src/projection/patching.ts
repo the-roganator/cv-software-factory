@@ -124,6 +124,11 @@ export type PatchingView =
       /** How many rows the sense made of each kind. */
       running: Record<Running['row'], number>;
       day: ScanDay;
+      /**
+       * Why no row shows, when none does: a run wrote no moves, or judged its moves and itself failed, so nothing can
+       * be said cleared; or every finding with a fix was.
+       */
+      nothing: 'unjudged' | 'failed' | 'cleared' | undefined;
       figures: { noFix: number; cleared: number; excepted: number; overdue: number; clearingMoves: number };
       /** Whether the cluster was compared with the lists, and how many containers. */
       compared: boolean;
@@ -331,15 +336,17 @@ export function dayView(day: Day, at: number, items: readonly ItemState[]): Patc
     }));
   });
   const moves = judgedMoves.map(({ row }) => row);
-  // Two pods of one workload running the same image make rows with one key: each after the first is told apart by
-  // its place among them, so a key never rests on a pod's name.
+  // Rows with one key are told apart by their place among them, the first keeping it: two pods of one workload running
+  // the same image, so a key never rests on a pod's name, or two moves of one name from two pins, as the scan groups
+  // by name and what it pins now.
   const seen = new Map<string, number>();
-  const sensed = day.rows.map(runningRow).map((row) => {
-    const n = (seen.get(row.key) ?? 0) + 1;
-    seen.set(row.key, n);
-    return n === 1 ? row : { ...row, key: `${row.key} ${n}` };
-  });
-  const rows = ordered([...moves, ...sensed]);
+  const rows = ordered(
+    [...moves, ...day.rows.map(runningRow)].map((row) => {
+      const n = (seen.get(row.key) ?? 0) + 1;
+      seen.set(row.key, n);
+      return n === 1 ? row : { ...row, key: `${row.key} ${n}` };
+    }),
+  );
   const running = { 'unscanned-digest': 0, 'unlisted-image': 0, 'not-running': 0 };
   for (const row of day.rows) running[row.row]++;
   const failed = [...new Set(day.repositories.flatMap((r) => r.failed))];
@@ -375,6 +382,14 @@ export function dayView(day: Day, at: number, items: readonly ItemState[]): Patc
     waiting: rows.filter((row) => row.waits).length,
     running,
     day: scanDay,
+    nothing:
+      rows.length > 0
+        ? undefined
+        : scanDay.unjudged.length > 0
+          ? 'unjudged'
+          : scanDay.broken.length > 0
+            ? 'failed'
+            : 'cleared',
     figures: {
       noFix: sum(day.repositories, 'noFix'),
       cleared: clearing.reduce((n, row) => n + (row.clears ? total(row.clears) : 0), 0),

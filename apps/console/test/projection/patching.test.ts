@@ -151,6 +151,7 @@ describe('an empty day', () => {
     expect(view.waiting).toBe(0);
     expect(view.day.passed).toBe(true);
     expect(view.figures).toMatchObject({ noFix: 15056, cleared: 0, clearingMoves: 0 });
+    expect(view.nothing).toBe('cleared');
   });
 
   it('says a repository whose run wrote no moves, and does not call the scan passed', () => {
@@ -172,6 +173,7 @@ describe('an empty day', () => {
     ]);
     expect(shown.compared).toBe(false);
     expect(shown.day.broken).toEqual([]);
+    expect(shown.nothing).toBe('unjudged');
   });
 
   it('names a run that judged its moves and failed for none of the scan’s reasons, by its page', () => {
@@ -189,6 +191,8 @@ describe('an empty day', () => {
         url: 'https://github.com/the-roganator/cv-worlds-worst-website/actions/runs/1834981',
       },
     ]);
+    // A run that judged no moves and failed in itself says nothing was cleared.
+    expect(shown.nothing).toBe('failed');
   });
 });
 
@@ -212,6 +216,21 @@ describe('row keys', () => {
       repositories: [{ ...app, moves: [lockfile, { ...lockfile, deadline: '2026-10-09T00:00:00.000Z' }] }],
     };
     expect(read(dayView(full, END, [])).rows.map((row) => row.key)).toEqual(keys);
+  });
+
+  it('are one to a row for two moves of one name from two pins, the first keeping its name alone', () => {
+    const sample = day();
+    if (!sample) throw new Error('the samples have no patching.read');
+    const factory = sample.payload.repositories[0];
+    const move = factory?.moves.find((m) => !m.lockfile);
+    if (!factory || !move) throw new Error('the factory has no move');
+    const two: Day = {
+      ...sample.payload,
+      rows: [],
+      repositories: [{ ...factory, moves: [move, { ...move, from: `${move.from}-older` }] }],
+    };
+    const keys = read(dayView(two, END, [])).rows.map((row) => row.key);
+    expect(keys).toEqual([`${factory.repository} ${move.name}`, `${factory.repository} ${move.name} 2`]);
   });
 });
 

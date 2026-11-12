@@ -582,7 +582,7 @@ describe('Dependabot’s pull requests', () => {
         after: `FROM example/scanner:1.41.2@sha256:${'2'.repeat(64)}`,
       },
     ]);
-    expect(group && groupMovesTo(group, { file: 'deploy/images/scanner/Dockerfile', line: 6 })).toBe('1.41.2');
+    expect(group && groupMovesTo(group, { file: 'deploy/images/scanner/Dockerfile', line: 6 })?.version).toBe('1.41.2');
     expect(group && groupMovesTo(group, { file: 'deploy/images/scanner/Dockerfile', line: 5 })).toBeUndefined();
     expect(pulls.find((p) => p.number === 13)).toMatchObject({ changed: [], unread: ['pnpm-lock.yaml'] });
     expect(pulls.find((p) => p.number === 11)).toMatchObject({ changed: [], unread: [] });

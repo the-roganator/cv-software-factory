@@ -183,9 +183,12 @@ export function dependabotHas(
     }
     if (move.pins.some((pin) => pull.unread.includes(pin.file)))
       return { number: pull.number, version: 'a version its patch does not show' };
+    // A group's has the move when it changes the pin's line to the move's target: its tag or further, or its digest.
     for (const pin of move.pins) {
-      const version = groupMovesTo(pull, pin);
-      if (version && atLeast(version)) return { number: pull.number, version };
+      const moves = groupMovesTo(pull, pin);
+      if (moves?.version && atLeast(moves.version)) return { number: pull.number, version: moves.version };
+      if (target.kind === 'image' && moves?.digests.includes(target.digest))
+        return { number: pull.number, version: `${target.tag}@${target.digest}` };
     }
   }
   return undefined;

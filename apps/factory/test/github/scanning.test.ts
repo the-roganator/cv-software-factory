@@ -234,6 +234,14 @@ describe('the scan’s moves', () => {
       .catch((e) => e);
     expect(going).toMatchObject({ kind: 'conflict', status: 409 });
     expect(going.message).toMatch(/run 42000000003 .* has not finished/);
+    // A later run that finished while the alerts were paged through: read again, too.
+    const ended = await new LiveReads(
+      client([ran('42000000009', 'completed'), ...routes({ pages: pages('42000000009') })]).github,
+    )
+      .moves(REPO)
+      .catch((e) => e);
+    expect(ended).toMatchObject({ kind: 'conflict', status: 409 });
+    expect(ended.message).toMatch(/run 42000000009 .* finished while its moves were read: read them again/);
     const done = await new LiveReads(
       client([ran('42000000000', 'completed'), ...routes({ pages: pages('42000000000') })]).github,
     )

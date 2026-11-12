@@ -350,8 +350,9 @@ export class ScanReads {
 
   /**
    * A run uploads its artifact and then its results, and is still going while code scanning processes them and the
-   * alerts are held to the policy: alerts that name a run still going are a read to try again once it finishes, not a
-   * disagreement. Any other run than the artifact's fails the read in `joined`.
+   * alerts are held to the policy: alerts that name a run still going, or a later run that finished while this read
+   * paged through the alerts, are a read to try again, not a disagreement. Any other run than the artifact's fails the
+   * read in `joined`.
    */
   async #settled(repo: string, run: ScanRun, alerts: z.infer<typeof ALERTS>) {
     const others = new Set<string>();
@@ -366,6 +367,13 @@ export class ScanReads {
         throw new GitHubError(
           'conflict',
           `The scan's run ${other} in ${repo} has uploaded its results and has not finished: read its moves once it has.`,
+          409,
+        );
+      // Run ids only grow: a later run's results with an earlier run's artifact is a read that began before it ended.
+      if (BigInt(other) > BigInt(run.id))
+        throw new GitHubError(
+          'conflict',
+          `The scan's run ${other} in ${repo} finished while its moves were read: read them again.`,
           409,
         );
     }

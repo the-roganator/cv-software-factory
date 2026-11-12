@@ -220,7 +220,8 @@ describe('every workflow', () => {
     const job = workflow.jobs[PIN_MOVE_JOB] as Job;
     expect(secretsOf(workflow, job)).toEqual({ names: [], passed: false });
     expect(job.environment).toBeUndefined();
-    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', checks: 'read' });
+    // actions: read, to learn which workflow made each check run at the head: a read, as the others are.
+    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', checks: 'read', actions: 'read' });
     const checkouts = (job.steps ?? []).filter((s) => s.uses?.startsWith('actions/checkout@'));
     expect(checkouts).toHaveLength(1);
     expect(checkouts[0]?.with).toEqual({
@@ -231,7 +232,11 @@ describe('every workflow', () => {
     // The gate, which holds the key, takes its answers and reads no head itself; it runs whatever the job did.
     const review = workflow.jobs.review as Job & { needs?: unknown };
     expect(review.needs).toBe(PIN_MOVE_JOB);
-    expect(review.if).toBe(expression('!cancelled()'));
+    // A platform run asks for a verdict only when the App's: its pin moves alone wait for it.
+    const onlyApp =
+      "(github.event.workflow_run.name != 'platform' || github.event.workflow_run.actor.login == 'mrogan-software-factory[bot]')";
+    expect(review.if).toBe(expression(`!cancelled() && ${onlyApp}`));
+    expect(job.if).toBe(expression(`github.repository != 'the-roganator/cv-worlds-worst-website' && ${onlyApp}`));
     const judge = (review.steps ?? []).find((s) => s.run === 'node scripts/review-gate.ts') as Step & {
       env?: Record<string, unknown>;
     };

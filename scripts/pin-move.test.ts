@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import {
+  CHECK_WORKFLOW,
   chartForward,
   hashesOf,
   IMAGE_CHECK,
@@ -12,18 +13,28 @@ import {
   listMoves,
   type Move,
   manifestsDiffer,
+  moveTitle,
   onlyPinsChange,
   type PinMoveIO,
+  PLATFORM_CHECK,
+  PLATFORM_WORKFLOW,
   PLATFORMS,
   POSTGRES_FILE,
+  patchedByTheCheck,
   pinMove,
   type Rewritten,
   type Run,
+  ranIt,
   realPinMoveIO,
+  removeWork,
   type Scan,
   scansShow,
   staleRecords,
+  started,
   TEST_SHARDS,
+  type WorkflowRun,
+  whatRunsIt,
+  workflowsOf,
   ZAP_CHECK,
   ZAP_FILE,
 } from './pin-move.ts';
@@ -66,8 +77,11 @@ const run = (name: string, conclusion: string | null = 'success', more: Partial<
   status: 'completed',
   conclusion,
   app: { slug: 'github-actions' },
+  workflow: name === PLATFORM_CHECK ? PLATFORM_WORKFLOW : CHECK_WORKFLOW,
   ...more,
 });
+/** Every check that runs a pin, each a success at the head from its own workflow. */
+const ALL_RAN = () => [run(ZAP_CHECK), run(IMAGE_CHECK), ...TEST_SHARDS.map((name) => run(name)), run(PLATFORM_CHECK)];
 
 /** A reader of the case's answers: every fact the rule reads, each passing unless the case says otherwise. */
 function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
@@ -94,12 +108,13 @@ function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
     // The overlay runs Postgres, and the admission policy copies its digest: both move with the pin, and nothing else.
     overlay: async (side) => {
       const pg = lines.some((l) => l.file === POSTGRES_FILE) && side === 'head' ? PG_B : PG_A;
-      return `kind: StatefulSet\nspec:\n  image: ${pg}\n---\nkind: ImageValidatingPolicy\nallowed: ['${pg.split('@')[1]}']\n`;
+      return `kind: StatefulSet\nmetadata:\n  name: postgres\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${pg}\n---\nkind: ImageValidatingPolicy\nallowed: ['${pg.split('@')[1]}']\n`;
     },
     hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
     scan: async (reference) =>
       reference.endsWith(hex('a')) || reference.endsWith(hex('d')) || reference.includes('2.11.2') ? FIXED : CLEAN,
-    runs: async () => [run(ZAP_CHECK), run(IMAGE_CHECK), ...TEST_SHARDS.map((name) => run(name))],
+    runs: async () => ALL_RAN(),
+    patched: async () => [],
     ...io,
   };
 }
@@ -121,12 +136,16 @@ function rendered(side: 'base' | 'head', chart: Chart) {
   return [
     'kind: Deployment',
     'metadata:',
+    '  name: grafana',
     '  labels:',
     `    helm.sh/chart: grafana-${chart.version}`,
     'spec:',
-    `  image: ${grafana}`,
-    `  sidecar: ${sidecar}`,
-    `        image: ${sidecar}`,
+    '  replicas: 1',
+    '  template:',
+    '    spec:',
+    '      containers:',
+    `        - image: ${grafana}`,
+    `        - image: ${sidecar}`,
   ].join('\n');
 }
 
@@ -217,13 +236,208 @@ describe('a pin move, replayed as the App would make it', () => {
   it('holds a Postgres digest while it stales the admission record, and passes it once it does not, on tests', async () => {
     const stale = { hashes: async (side: 'base' | 'head') => ({ 'admission-refusals': side, 'mark-refusals': 'y' }) };
     expect(await reasonOf({ ...POSTGRES, io: stale })).toMatch(/^it stales deploy\/test\/admission-refusals\.json/);
-    expect(await judged(POSTGRES)).toMatchObject({ ran: TEST_SHARDS, fixed: 1 });
+    expect(await judged(POSTGRES)).toMatchObject({ ran: [...TEST_SHARDS, PLATFORM_CHECK], fixed: 1 });
   });
 
-  it("holds a sidecar's value until the platform check, with every other condition proved", async () => {
-    expect(await reasonOf(SIDECAR)).toBe(
-      "only a cluster runs grafana's value at deploy/base/telemetry/values/grafana.yaml:32: held until the platform check makes one from the change (task 34)",
+  it("passes a sidecar's value once platform made a cluster from the change at its head (#995)", async () => {
+    const result = await judged(SIDECAR);
+    expect(result).toMatchObject({ ran: [PLATFORM_CHECK], fixed: 1 });
+    expect('move' in result && moveTitle(result)).toMatch(/, platform ran it$/);
+  });
+
+  it("holds a sidecar's value while platform has not made a cluster from the change at its head", async () => {
+    const at = (runs: Run[]) => reasonOf({ ...SIDECAR, io: { runs: async () => runs } });
+    const others = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
+    expect(await at(others)).toBe('platform has not run at ccccccc');
+    expect(await at([...others, run(PLATFORM_CHECK, null, { status: 'in_progress' })])).toBe(
+      'platform has not finished at ccccccc',
     );
+    expect(await at([...others, run(PLATFORM_CHECK, 'skipped')])).toBe(
+      'platform at ccccccc is skipped, not a success: it made no cluster from the change',
+    );
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'neutral'])
+      expect(await at([...others, run(PLATFORM_CHECK, conclusion)])).toBe(
+        `platform at ccccccc is ${conclusion}, not a success: something must run it`,
+      );
+    // Its latest attempt counts: a success re-run into a failure holds, a failure re-run into a success passes.
+    const failedLast = [run(PLATFORM_CHECK, 'success', { id: 1 }), run(PLATFORM_CHECK, 'failure', { id: 2 })];
+    expect(await at([...others, ...failedLast])).toMatch(/is failure, not a success/);
+    // Attempts of one workflow run share its check suite: a re-run that succeeds counts.
+    const passedLast = [
+      run(PLATFORM_CHECK, 'failure', { id: 1, check_suite: { id: 5 } }),
+      run(PLATFORM_CHECK, 'success', { id: 2, check_suite: { id: 5 } }),
+    ];
+    expect(await at([...others, ...passedLast])).toBe(
+      "passed: grafana's value at deploy/base/telemetry/values/grafana.yaml:32",
+    );
+    // Another head's success, another app's, or a job named `platform` in any workflow but platform.yml proves nothing.
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { head_sha: 'd'.repeat(40) })])).toBe(
+      'platform has not run at ccccccc',
+    );
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { app: { slug: 'mrogan-software-factory' } })])).toBe(
+      'platform has not run at ccccccc',
+    );
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: CHECK_WORKFLOW })])).toMatch(
+      /^platform at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
+    );
+    expect(await at([...others, run(PLATFORM_CHECK, 'success', { workflow: null })])).toMatch(
+      /^platform at ccccccc ran in no run of \.github\/workflows\/platform\.yml/,
+    );
+    // A later forged success beside a failed real one does not hide the failure.
+    const forged = [
+      run(PLATFORM_CHECK, 'failure', { id: 1 }),
+      run(PLATFORM_CHECK, 'success', { id: 2, workflow: '.github/workflows/other.yml' }),
+    ];
+    expect(await at([...others, ...forged])).toMatch(/is failure, not a success/);
+  });
+
+  it('holds Postgres until both tests and platform ran it, and a third-party image or a chart in deploy/ on platform', async () => {
+    const noPlatform = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
+    expect(await reasonOf({ ...POSTGRES, io: { runs: async () => noPlatform } })).toBe(
+      'platform has not run at ccccccc',
+    );
+    const noTests = ALL_RAN().filter((r) => !r.name.startsWith('tests'));
+    expect(await reasonOf({ ...POSTGRES, io: { runs: async () => noTests } })).toBe(
+      'tests (1/3) has not run at ccccccc',
+    );
+    const flagd = (image: string): Move => ({
+      what: 'image',
+      name: 'ghcr.io/open-feature/flagd',
+      kind: 'third-party',
+      from: image,
+      to: image,
+      pins: [
+        {
+          what: 'image',
+          kind: 'third-party',
+          item: image,
+          place: { file: 'deploy/base/flagd/flagd.yaml', line: 102 },
+          from: image,
+          to: image,
+        },
+      ],
+    });
+    expect(whatRunsIt(flagd('x'))).toEqual({ checks: [PLATFORM_CHECK] });
+    const chartMove: Move = {
+      what: 'chart',
+      name: 'grafana',
+      kind: 'chart',
+      from: '13.5.0',
+      to: '13.7.0',
+      pins: [
+        {
+          what: 'chart',
+          kind: 'chart',
+          item: 'grafana',
+          place: { file: 'deploy/base/telemetry/grafana.yaml', line: 12 },
+          from: '13.5.0',
+          to: '13.7.0',
+        },
+      ],
+    };
+    expect(whatRunsIt(chartMove)).toEqual({ checks: [PLATFORM_CHECK] });
+    // A Dockerfile's stage in deploy/ builds an image the cluster runs only once build.yml built it on main.
+    const stage: Move = {
+      ...flagd('x'),
+      kind: 'dockerfile',
+      pins: [
+        {
+          ...(flagd('x').pins[0] as Move['pins'][number]),
+          kind: 'dockerfile',
+          place: { file: 'deploy/images/tool/Dockerfile', line: 2 },
+        },
+      ],
+    };
+    expect(whatRunsIt(stage)).toEqual({
+      reason: 'no check at the head runs ghcr.io/open-feature/flagd: nothing shows it ran',
+    });
+  });
+
+  it('says when a check of the name ran at the head but in no run the gate could tie to its workflow', async () => {
+    const others = ALL_RAN().filter((r) => r.name !== PLATFORM_CHECK);
+    expect(
+      await reasonOf({
+        ...SIDECAR,
+        io: { runs: async () => [...others, run(PLATFORM_CHECK, 'success', { workflow: null })] },
+      }),
+    ).toBe(
+      'platform at ccccccc ran in no run of .github/workflows/platform.yml for this pull request that the gate could read',
+    );
+  });
+
+  it('holds an image no running workload starts: platform never pulled it', () => {
+    const ref = `kiwigrid/k8s-sidecar:2.14.3@sha256:${hex('5')}`;
+    const doc = (kind: string, extra = '') =>
+      `apiVersion: v1\nkind: ${kind}\nmetadata:\n  name: x${extra}\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    expect(started(doc('Deployment'), [ref])).toBeUndefined();
+    expect(started(`${doc('Job')}---\n${doc('StatefulSet')}`, [ref])).toBeUndefined();
+    for (const rendering of [
+      doc('Job'),
+      doc('CronJob'),
+      doc('Deployment', '\n  annotations:\n    helm.sh/hook: pre-delete'),
+      doc('Deployment', '\n  annotations:\n    argocd.argoproj.io/hook: PreSync'),
+      doc('Deployment').replace('spec:\n', 'spec:\n  replicas: 0\n'),
+      'kind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n        - image: another\n',
+    ])
+      expect(started(rendering, [ref])).toMatch(/^no workload the platform check runs starts kiwigrid\/k8s-sidecar/);
+  });
+
+  it('holds a value only a hook runs, with every other condition proved', async () => {
+    const hooked: Partial<PinMoveIO> = {
+      render: async (side, chart) =>
+        rendered(side, chart).replace('  labels:\n', '  annotations:\n    helm.sh/hook: pre-delete\n  labels:\n'),
+    };
+    expect(await reasonOf({ ...SIDECAR, io: hooked })).toMatch(/^no workload the platform check runs starts/);
+  });
+
+  it("holds Kyverno's chart and values for Martin: admission cannot vouch for its own replacement", async () => {
+    const kyverno: Case = {
+      ...SIDECAR,
+      base: SIDECAR.base.map((i) => ({ ...i, name: 'kyverno' })),
+      head: SIDECAR.head.map((i) => ({ ...i, name: 'kyverno' })),
+    };
+    expect(await reasonOf(kyverno)).toBe(
+      "Kyverno's own pin: what judges cannot vouch for its replacement, so it is Martin's",
+    );
+  });
+
+  it('ties each check run to the workflow file its suite ran, of this repository, on a pull request, at its head', () => {
+    const wf = (more: Partial<WorkflowRun>): WorkflowRun => ({
+      id: 1,
+      path: PLATFORM_WORKFLOW,
+      event: 'pull_request',
+      head_sha: HEAD,
+      head_branch: 'factory/pin/x',
+      created_at: '2026-11-12T10:00:00Z',
+      check_suite_id: 7,
+      repository: { full_name: 'o/r' },
+      head_repository: { full_name: 'o/r' },
+      pull_requests: [{ number: 9, base: { ref: 'main' } }],
+      ...more,
+    });
+    const { workflow: _, ...check } = run(PLATFORM_CHECK, 'success', { check_suite: { id: 7 } });
+    const of = (workflows: WorkflowRun[], c: Run = check, open = true) =>
+      workflowsOf([c], workflows, 'o/r', { number: 9, ref: 'factory/pin/x', created: '2026-11-12T09:00:00Z', open })[0]
+        ?.workflow;
+    expect(of([wf({})])).toBe(PLATFORM_WORKFLOW);
+    expect(of([wf({ check_suite_id: 8 })])).toBeNull();
+    expect(of([])).toBeNull();
+    expect(of([wf({})], { ...check, check_suite: null })).toBeNull();
+    expect(of([wf({ repository: { full_name: 'x/r' } })])).toBeNull();
+    expect(of([wf({ head_repository: { full_name: 'fork/r' } })])).toBeNull();
+    expect(of([wf({ head_repository: null })])).toBeNull();
+    expect(of([wf({ event: 'merge_group' })])).toBeNull();
+    expect(of([wf({ event: 'workflow_dispatch' })])).toBeNull();
+    expect(of([wf({ head_sha: 'd'.repeat(40) })])).toBeNull();
+    expect(of([wf({ path: '.github/workflows/other.yml' })])).toBe('.github/workflows/other.yml');
+    // Run for another pull request at the same head, into another base, or for none while this one is open.
+    expect(of([wf({ pull_requests: [{ number: 10, base: { ref: 'main' } }] })])).toBeNull();
+    expect(of([wf({ pull_requests: [{ number: 9, base: { ref: 'other' } }] })])).toBeNull();
+    expect(of([wf({ pull_requests: [] })])).toBeNull();
+    expect(of([wf({ pull_requests: null })])).toBeNull();
+    // A replay of a closed pull request by hand: GitHub has emptied the run's list, and nothing names another.
+    expect(of([wf({ pull_requests: [] })], check, false)).toBe(PLATFORM_WORKFLOW);
+    expect(of([wf({ pull_requests: [{ number: 10, base: { ref: 'other' } }] })], check, false)).toBeNull();
   });
 
   it("holds Argo CD's chart, which make up installs, and k3s, which waits for Martin", async () => {
@@ -265,8 +479,9 @@ describe('a pin move, replayed as the App would make it', () => {
         scan: async (reference) => (reference === a ? FIXED : CLEAN),
       },
     };
+    // Whatever the platform check says: every check, platform's too, succeeded at the head.
     expect(await reasonOf(cluster)).toBe(
-      'rancher/k3s is the cluster’s own: a k3s move waits for Martin, whose cluster moves with it'.replace('’', "'"),
+      "rancher/k3s is the cluster's own: a k3s move waits for Martin, whose cluster moves with it, whatever the platform check says",
     );
   });
 });
@@ -421,7 +636,7 @@ describe('a pin move holds, each for its one reason', () => {
         { file: 'deploy/images/trivy/Dockerfile', line: 9, before: `FROM ${trivy('a')}`, after: `FROM ${trivy('b')}` },
       ],
     };
-    expect(await reasonOf(c)).toBe("Trivy's own pin: a scanner cannot vouch for its replacement, so it is Martin's");
+    expect(await reasonOf(c)).toBe("Trivy's own pin: what judges cannot vouch for its replacement, so it is Martin's");
     const syft = (d: string) => `anchore/syft:v1.57.1@sha256:${hex(d)}`;
     const s: Case = {
       base: [{ ...item(syft('a')), file: 'deploy/images/syft/Dockerfile' }],
@@ -430,7 +645,7 @@ describe('a pin move holds, each for its one reason', () => {
         { file: 'deploy/images/syft/Dockerfile', line: 9, before: `FROM ${syft('a')}`, after: `FROM ${syft('b')}` },
       ],
     };
-    expect(await reasonOf(s)).toBe("Syft's own pin: a scanner cannot vouch for its replacement, so it is Martin's");
+    expect(await reasonOf(s)).toBe("Syft's own pin: what judges cannot vouch for its replacement, so it is Martin's");
   });
 
   it('a pin under .github/, and one of mise’s files', async () => {
@@ -594,6 +809,32 @@ describe('the manifests and the records', () => {
 });
 
 // An adversarial read of the rule's inputs, each weakness it showed now a hold.
+describe("the reader's directory, as the pin move job leaves it", () => {
+  it("never throws when Trivy's cache, root's on a runner, cannot be removed: the answer stands", () => {
+    // A runner's temp after Trivy ran as root in its container: a cache directory the job's own user cannot read. Made
+    // here by taking every permission off it, which the job's user meets the same way.
+    const work = mkdtempSync(join(tmpdir(), 'pin-move-'));
+    const db = join(work, 'cache', 'db');
+    mkdirSync(db, { recursive: true });
+    writeFileSync(join(db, 'trivy.db'), 'x');
+    chmodSync(db, 0o000);
+    const errors: string[] = [];
+    const error = console.error;
+    console.error = (line: string) => errors.push(line);
+    try {
+      // Linux, as on the runner, says EACCES on the directory itself; macOS says the directory is not empty.
+      expect(() => rmSync(work, { recursive: true, force: true })).toThrow(/EACCES|ENOTEMPTY|EPERM/);
+      expect(removeWork(work)).toBe(false);
+      expect(errors.join('\n')).toMatch(/^left .*pin-move-.*(EACCES|ENOTEMPTY|EPERM)/);
+    } finally {
+      console.error = error;
+      chmodSync(db, 0o755);
+      rmSync(work, { recursive: true, force: true });
+    }
+    expect(removeWork(work)).toBe(true);
+  });
+});
+
 describe('a pin move holds where an attacker would aim at its inputs', () => {
   it('a pull request whose base was ever changed: a check may have run for another base', async () => {
     const github = {
@@ -608,6 +849,7 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
       user: { id: 1 },
       head: { sha: HEAD, ref: 'factory/pin/x', repo: { full_name: 'o/r' } },
       base: { ref: 'main', repo: { full_name: 'o/r' } },
+      created_at: '2026-11-12T09:00:00Z',
     };
     const run = { repo: 'o/r', read: 't', token: '', autonomy: '', print: true };
     expect(await readPinMove(run, pr, github)).toEqual({
@@ -624,15 +866,18 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
       user: { id: 1 },
       head: { sha: HEAD, ref: 'factory/pin/x', repo: { full_name: 'o/r' } },
       base: { ref: 'main', repo: { full_name: 'o/r' } },
+      created_at: '2026-11-12T09:00:00Z',
     };
     const github = {
       api: async () => {
         throw new Error('not asked: the shared head holds first');
       },
       paged: async <T>(path: string) =>
-        (path.includes('/pulls')
+        (path.includes('/commits/')
           ? [pr, { ...pr, number: 10, state: 'closed', base: { ...pr.base, ref: 'gutted' } }]
-          : []) as T[],
+          : path.includes('/pulls?state=all')
+            ? [pr]
+            : []) as T[],
     };
     const run = { repo: 'o/r', read: 't', token: '', autonomy: '', print: true };
     expect(await readPinMove(run, pr, github)).toEqual({
@@ -766,5 +1011,313 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
     const io = { chartVersions: async () => ['13.5.0', '13.7.0', '13.8.0-rc.1'] };
     expect(await chartForward(move('13.8.0-rc.1'), io)).toBe('grafana 13.8.0-rc.1 is a prerelease, not a release');
     expect(await chartForward(move('13.7.0'), io)).toBeUndefined();
+  });
+});
+
+// An independent adversarial read of the platform rule (#1057): each attack it showed passing, now a hold.
+describe('the platform rule holds where an adversarial read aimed at it', () => {
+  const REPO = 'o/r';
+  const BRANCH = 'factory/pin/x';
+  const OPENED = '2026-11-12T09:00:00Z';
+  const VALUES = 'deploy/base/telemetry/values/grafana.yaml';
+  const OLD = `kiwigrid/k8s-sidecar:2.11.2@sha256:${hex('4')}`;
+  const NEW = `kiwigrid/k8s-sidecar:2.14.3@sha256:${hex('5')}`;
+  const valueItem = (digest: string, version = '13.5.0'): Item => ({
+    kind: 'chart',
+    name: 'grafana',
+    file: 'deploy/base/telemetry/grafana.yaml',
+    line: 12,
+    chart: { ...GRAFANA, version },
+    pins: [{ file: VALUES, line: 3, digest: `sha256:${hex(digest)}` }],
+  });
+  const workload = (images: string[], version = '13.5.0') =>
+    [
+      'kind: Deployment',
+      'metadata:',
+      '  name: grafana',
+      '  labels:',
+      `    helm.sh/chart: grafana-${version}`,
+      'spec:',
+      '  replicas: 1',
+      '  template:',
+      '    spec:',
+      '      containers:',
+      ...images.map((image) => `        - image: ${image}`),
+    ].join('\n');
+  /** Grafana's sidecar value moved in one line, every condition true but what the case gives it. */
+  const sidecarIO = (more: Partial<PinMoveIO> = {}): PinMoveIO => {
+    const text = (line: string) => `sidecar:\n  image:\n${line}\n`;
+    return {
+      diff: async () => ({
+        raw: `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\t${VALUES}`,
+        files: [
+          {
+            path: VALUES,
+            before: text(`    tag: 2.11.2@sha256:${hex('4')}`),
+            after: text(`    tag: 2.14.3@sha256:${hex('5')}`),
+          },
+        ],
+      }),
+      list: async (side) => [valueItem(side === 'base' ? '4' : '5')],
+      unlisted: async () => [],
+      tags: async () => ['2.11.2', '2.14.3'],
+      digest: async () => `sha256:${hex('5')}`,
+      chartVersions: async () => ['13.5.0', '13.7.0'],
+      render: async (side) => workload(['grafana/grafana:12.0.0', side === 'base' ? OLD : NEW]),
+      overlay: async () => 'kind: ConfigMap\n',
+      hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
+      scan: async (reference) => (reference.includes(hex('4')) || reference.endsWith('12.0.0') ? FIXED : CLEAN),
+      runs: async () => [],
+      patched: async () => [],
+      ...more,
+    };
+  };
+  const check = (id: number, conclusion: string | null, suite: number): Run => ({
+    ...run(PLATFORM_CHECK, conclusion, { id }),
+    check_suite: { id: suite },
+  });
+  const workflowRun = (suite: number, more: Partial<WorkflowRun> = {}): WorkflowRun => ({
+    id: suite,
+    path: PLATFORM_WORKFLOW,
+    event: 'pull_request',
+    head_sha: HEAD,
+    head_branch: BRANCH,
+    created_at: '2026-11-12T10:00:00Z',
+    check_suite_id: suite,
+    repository: { full_name: REPO },
+    head_repository: { full_name: REPO },
+    pull_requests: [{ number: 9, base: { ref: 'main' } }],
+    ...more,
+  });
+  const FOR = { number: 9, ref: BRANCH, created: OPENED, open: true };
+  const pr = {
+    number: 9,
+    state: 'open',
+    user: { id: 1 },
+    head: { sha: HEAD, ref: BRANCH, repo: { full_name: REPO } },
+    base: { ref: 'main', repo: { full_name: REPO } },
+    created_at: OPENED,
+  };
+  const each = { repo: REPO, read: 't', token: '', autonomy: '', print: true };
+  /** readPinMove's guards, then the compare: reaching it means no guard held. */
+  const guards = (events: { event: string }[], branch: unknown[]) =>
+    readPinMove(each, pr, {
+      api: async () => {
+        throw new Error('past every guard');
+      },
+      paged: async <T>(path: string) =>
+        (path.includes('/events')
+          ? events
+          : path.includes('/pulls?state=all')
+            ? branch
+            : path.includes('/commits/')
+              ? [pr]
+              : []) as T[],
+    });
+
+  it('a platform run made for a sibling from the same branch into a gutted base: the sibling holds, closed or open', async () => {
+    const sibling = { ...pr, number: 10, base: { ...pr.base, ref: 'gutted' } };
+    expect(await guards([], [pr, { ...sibling, state: 'closed', closed_at: '2026-11-12T10:30:00Z' }])).toEqual({
+      reason: '#10 comes from the same branch, so a run at its head may have been made for it',
+    });
+    expect(await guards([], [pr, sibling])).toEqual({
+      reason: '#10 comes from the same branch, so a run at its head may have been made for it',
+    });
+    // One closed before this pull request was opened made no run for its time: that is the run's own binding.
+    expect(await guards([], [pr, { ...sibling, state: 'closed', closed_at: '2026-11-12T08:00:00Z' }])).toEqual({
+      reason: 'the gate could not read what it proves a pin move by (past every guard)',
+    });
+  });
+
+  it("a later run's success never hides an earlier run's failure at the same head", async () => {
+    const runs = workflowsOf(
+      [check(100, 'failure', 1), check(200, 'success', 2)],
+      [workflowRun(1), workflowRun(2)],
+      REPO,
+      FOR,
+    );
+    expect(ranIt(runs, HEAD, [PLATFORM_CHECK])).toBe(
+      'platform at ccccccc is failure, not a success: something must run it',
+    );
+    expect(await pinMove(sidecarIO({ runs: async () => runs }), HEAD)).toEqual({
+      reason: 'platform at ccccccc is failure, not a success: something must run it',
+    });
+  });
+
+  it('a run from another branch, or made before the pull request was opened, is not its run', () => {
+    const of = (more: Partial<WorkflowRun>) =>
+      workflowsOf([check(1, 'success', 1)], [workflowRun(1, more)], REPO, FOR)[0]?.workflow;
+    expect(of({})).toBe(PLATFORM_WORKFLOW);
+    expect(of({ head_branch: 'gutted-source' })).toBeNull();
+    expect(of({ head_branch: null })).toBeNull();
+    expect(of({ created_at: '2026-11-12T08:59:59Z' })).toBeNull();
+  });
+
+  it('a base GitHub changed by itself is a base that was changed, for the pin move job and for the gate', async () => {
+    for (const event of ['base_ref_changed', 'automatic_base_change_succeeded'])
+      expect(await guards([{ event }], [pr])).toEqual({
+        reason: 'its base was changed: a pin move is proved only into main from the start',
+      });
+    expect(
+      await readPinMove(each, (({ created_at: _, ...rest }) => rest)(pr), {
+        api: async () => ({}) as never,
+        paged: async <T>() => [] as T[],
+      }),
+    ).toEqual({
+      reason: 'GitHub named no time the pull request was opened, to read its runs from',
+    });
+  });
+
+  it("a chart's new image on a tag that is no version, back on its line or across a major, holds", async () => {
+    const chartItem = (version: string): Item => ({
+      kind: 'chart',
+      name: 'grafana',
+      file: 'deploy/base/telemetry/grafana.yaml',
+      line: 12,
+      chart: { ...GRAFANA, version },
+    });
+    const io = (image: string) =>
+      sidecarIO({
+        diff: async () => ({
+          raw: `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\tdeploy/base/telemetry/grafana.yaml`,
+          files: [
+            {
+              path: 'deploy/base/telemetry/grafana.yaml',
+              before: `${'\n'.repeat(11)}      targetRevision: 13.5.0\n`,
+              after: `${'\n'.repeat(11)}      targetRevision: 13.7.0\n`,
+            },
+          ],
+        }),
+        list: async (side) => [chartItem(side === 'base' ? '13.5.0' : '13.7.0')],
+        render: async (side) =>
+          side === 'base' ? workload(['grafana/grafana:12.0.0', OLD]) : workload([image, OLD], '13.7.0'),
+        runs: async () => [{ ...check(1, 'success', 1), workflow: PLATFORM_WORKFLOW }],
+      });
+    const reason = async (image: string) => {
+      const result = await pinMove(io(image), HEAD);
+      return 'reason' in result ? result.reason : 'passed';
+    };
+    expect(await reason('grafana/grafana:nightly')).toBe(
+      'grafana/grafana:nightly is not pinned to a version tag: no line to hold it to',
+    );
+    expect(await reason('grafana/grafana:11.9.0')).toBe('a move backwards in grafana/grafana, from 12.0.0 to 11.9.0');
+    expect(await reason('grafana/grafana:13.0.0')).toBe('a major in grafana/grafana, from 12.0.0 to 13.0.0');
+    expect(await reason(`grafana/grafana:12.0.1@sha256:${hex('9')}`)).toMatch(/^a digest that is not the tag's/);
+    // A later version on its line, by tag alone as its publisher writes it, is the chart's publisher's: it passes.
+    expect(await reason('grafana/grafana:12.0.1')).toBe('passed');
+    // Its line is its variant too, and a release: no candidate, no other base image.
+    expect(await reason('grafana/grafana:12.0.1-rc.1')).toBe(
+      'grafana/grafana moves off its line, from 12.0.0 to 12.0.1-rc.1',
+    );
+    const variantIO = (from: string, to: string) =>
+      sidecarIO({
+        ...io(to),
+        render: async (side) => (side === 'base' ? workload([from, OLD]) : workload([to, OLD], '13.7.0')),
+        scan: async (reference) => (reference === from ? FIXED : CLEAN),
+      });
+    const variant = async (from: string, to: string) => {
+      const result = await pinMove(variantIO(from, to), HEAD);
+      return 'reason' in result ? result.reason : 'passed';
+    };
+    expect(await variant('x/y:1.4.0-alpine', 'x/y:1.4.1-alpine')).toBe('passed');
+    expect(await variant('x/y:1.4.0-debian', 'x/y:1.4.1-alpine')).toBe(
+      'x/y moves off its line, from 1.4.0-debian to 1.4.1-alpine',
+    );
+    expect(await variant('x/y:1.4.0-rc.1', 'x/y:1.4.1-rc.1')).toBe('x/y 1.4.1-rc.1 is a prerelease, not a release');
+    // From a digest to a tag alone is a pin let go of.
+    expect(await variant(`x/y:1.2.0@sha256:${hex('a')}`, 'x/y:1.2.1')).toBe(
+      `x/y:1.2.1 drops the digest x/y:1.2.0@sha256:${hex('a')} was pinned to`,
+    );
+  });
+
+  it('`started` reads manifests, not text: an argument, replicas written any way, a quoted hook key', () => {
+    const ref = NEW;
+    const job = `kind: Job\nmetadata:\n  name: once\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    const named = `kind: Deployment\nmetadata:\n  name: controller\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - image: other/controller:1.0.0\n          args:\n            - --job-image=${ref}\n`;
+    expect(started(`${job}---\n${named}`, [ref])).toMatch(/^no workload/);
+    const scaled = (replicas: string) =>
+      `kind: Deployment\nmetadata:\n  name: x\nspec:\n${replicas}\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    for (const replicas of [
+      '  replicas: 0',
+      '  replicas: 0 # off until the feature ships',
+      '  replicas: 00',
+      '  replicas: 0x0',
+      '  "replicas": 0',
+      "  replicas: '1'",
+    ])
+      expect(started(scaled(replicas), [ref])).toMatch(/^no workload/);
+    expect(started(scaled('  replicas: 2'), [ref])).toBeUndefined();
+    const hooked = (key: string) =>
+      `kind: Deployment\nmetadata:\n  name: x\n  annotations:\n    ${key}: pre-install,pre-upgrade\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    for (const key of ['helm.sh/hook', '"helm.sh/hook"', "'argocd.argoproj.io/hook'"])
+      expect(started(hooked(key), [ref])).toMatch(/^no workload/);
+    // An init container starts with its pod, so it counts.
+    expect(
+      started(
+        `kind: DaemonSet\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      initContainers:\n        - image: ${ref}\n`,
+        [ref],
+      ),
+    ).toBeUndefined();
+  });
+
+  it('a workload the platform check scales to nothing on its own cluster, read from main’s platform-check.yaml', () => {
+    const github = `kind: Deployment\nmetadata:\n  name: github\n  namespace: factory\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - image: ${NEW}\n`;
+    const patched = patchedByTheCheck();
+    if (typeof patched === 'string') throw new Error(patched);
+    expect(patched).toContainEqual({ kind: 'Deployment', name: 'github', namespace: 'factory' });
+    expect(started(github, [NEW], patched)).toMatch(/^no workload/);
+    expect(started(github, [NEW], [])).toBeUndefined();
+    // A patch by selector, or with no name, could reach a workload the gate cannot tell: the gate holds on it.
+    expect(patchedByTheCheck('- target:\n    kind: Deployment\n    labelSelector: app=foo\n  patch: x\n')).toMatch(
+      /^the platform check patches a target the gate cannot match/,
+    );
+    expect(patchedByTheCheck('- target:\n    kind: Deployment\n  patch: x\n')).toMatch(/cannot match/);
+    expect(patchedByTheCheck('')).toBe('the platform check names no patches the gate can read');
+  });
+
+  it('a patch the gate cannot read holds the move, saying so, rather than throwing', async () => {
+    const io = sidecarIO({
+      runs: async () => [{ ...check(1, 'success', 1), workflow: PLATFORM_WORKFLOW }],
+      patched: async () => 'the platform check names no patches the gate can read',
+    });
+    expect(await pinMove(io, HEAD)).toEqual({ reason: 'the platform check names no patches the gate can read' });
+  });
+
+  it("a value of Argo CD's own chart, which make up installs and no merge applies, whatever file pins it", () => {
+    const pin = (file: string, item: string): Move => ({
+      what: 'value',
+      name: `${item}'s value at ${file}:40`,
+      kind: 'chart',
+      from: `sha256:${hex('4')}`,
+      to: `sha256:${hex('5')}`,
+      pins: [
+        {
+          what: 'value',
+          kind: 'chart',
+          item,
+          place: { file, line: 40 },
+          from: `sha256:${hex('4')}`,
+          to: `sha256:${hex('5')}`,
+        },
+      ],
+    });
+    expect(whatRunsIt(pin('deploy/argocd/values.yaml', 'argocd'))).toEqual({
+      reason: "argocd's value at deploy/argocd/values.yaml:40 is installed by make up: a merge does not apply it",
+    });
+    expect(whatRunsIt(pin('deploy/base/telemetry/values/x.yaml', 'argocd'))).toMatchObject({
+      reason: /installed by make up/,
+    });
+    expect(whatRunsIt(pin('deploy/argocd/other.yaml', 'other'))).toMatchObject({ reason: /installed by make up/ });
+    // By its chart too, whatever its release is called.
+    const renamed = pin('deploy/base/x/values.yaml', 'argo');
+    const chart = {
+      repo: 'https://argoproj.github.io/argo-helm',
+      chart: 'argo-cd',
+      version: '10.15.0',
+      release: 'argo',
+      values: [],
+    };
+    renamed.pins = renamed.pins.map((m) => ({ ...m, chart: { base: chart, head: chart } }));
+    expect(whatRunsIt(renamed)).toMatchObject({ reason: /installed by make up/ });
   });
 });

@@ -9,7 +9,8 @@
  *    the head merged onto main's tip, against that tip. The list worked out on both (inventory.ts) has the same items at the same places, and differs in one move's pins alone: one image,
  *    one chart or one value of a chart, from one pin to one other. Every line it changes is one of those pins, and
  *    `--unlisted` finds nothing at the head.
- * 2. **Not what judges.** Trivy's and Syft's own pins are Martin's: a scanner cannot vouch for its replacement.
+ * 2. **Not what judges.** Trivy's, Syft's and Kyverno's own pins are Martin's: what judges a move cannot vouch for its
+ *    own replacement, and Kyverno is what says, on the platform check's cluster, that admission enforces.
  * 3. **Signed where its publisher signs.** An image of ours passes only as an exact pin, signed by build.yml on main. A
  *    third-party image is held to its digest alone, as admission admits it (ADR 0010): the next condition's.
  * 4. **Forward on its line.** The gate resolves the target itself, as the scan does (deadlines.ts's `newestOf`): the
@@ -23,9 +24,12 @@
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
  * 8. **Something ran it.** GitHub Actions' latest run at the head of the job that runs what the pin runs succeeded,
- *    not skipped: `ZAP scan` for ZAP's image, `image builds` for a Dockerfile's stage, each shard of `tests` for
- *    Postgres, whose pin CI's own database is. What only a cluster runs is held until the `platform` check (task 34),
- *    and k3s waits for Martin, whose cluster moves with it. Last, so such a hold says every other condition held.
+ *    not skipped, in this repository's own workflow that has that job, on the pull request: `ZAP scan` for ZAP's image,
+ *    `image builds` for a Dockerfile's stage, each shard of `tests` for Postgres, whose pin CI's own database is. What a
+ *    cluster runs (a chart, a value, a third-party image in deploy/, Postgres too) passes only once `platform` made a
+ *    cluster from the change and everything on it ran; a `platform` skipped made none. Argo CD's chart, which `make up`
+ *    installs, is held, and k3s waits for Martin, whose cluster moves with it. Last, so such a hold says every other
+ *    condition held.
  *
  * It trusts nothing the pull request says of itself (its title, label, description or branch): the move is worked out
  * from its two commits, and the code that works it out (the list, the policy hash, the Trivy pin) is the gate's own,
@@ -39,6 +43,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { parseAllDocuments, parse as parseYaml } from 'yaml';
 import { compareVersions, newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import { readTarget, type Target, targetText } from '../apps/factory/src/vulnerabilities/fixes.ts';
 import {
@@ -101,6 +106,39 @@ export interface Run {
   status: string;
   conclusion: string | null;
   app: { slug: string } | null;
+  check_suite?: { id: number } | null;
+  /**
+   * The workflow file whose run made it, as `workflowsOf` reads it from its check suite: only a run of this repository,
+   * on a pull request from this repository, at the run's own head. Anything else, or unread, is null.
+   */
+  workflow?: string | null;
+}
+
+/** A workflow run, as the Actions API lists them for a commit: the one fact that ties a check run to its file. */
+export interface WorkflowRun {
+  id: number;
+  path: string;
+  event: string;
+  head_sha: string;
+  /** The branch it ran from, and when it was made: a run older than the pull request was made for another. */
+  head_branch: string | null;
+  created_at: string;
+  check_suite_id: number;
+  repository: { full_name: string } | null;
+  head_repository: { full_name: string } | null;
+  /** The pull requests GitHub ran it for: this repository's open ones at the head, none once they closed. */
+  pull_requests?: { number: number; base: { ref: string } }[] | null;
+}
+
+/**
+ * The pull request a check must have run for: its number, its head branch, when it was opened, and whether it is open
+ * (a replay by hand is not).
+ */
+export interface For {
+  number: number;
+  ref: string;
+  created: string;
+  open: boolean;
 }
 
 /** What a Trivy report says, as far as the rule reads it. */
@@ -133,8 +171,10 @@ export interface PinMoveIO {
   hashes(side: Side): Promise<Record<string, string>>;
   /** Trivy's report of an image on one platform; one the index does not have is an error, and holds. */
   scan(reference: string, platform: string): Promise<Scan>;
-  /** The check runs at the head. */
+  /** The check runs at the head, each with the workflow that made it (`workflowsOf`). */
   runs(): Promise<Run[]>;
+  /** The workloads the platform check's cluster changes from what main runs (`patchedByTheCheck`), main's, or why not. */
+  patched(): Promise<Workload[] | string>;
 }
 
 export type Side = 'base' | 'head';
@@ -151,14 +191,32 @@ export const ACTIONS = 'github-actions';
 export const ZAP_CHECK = 'ZAP scan';
 export const IMAGE_CHECK = 'image builds';
 export const TEST_SHARDS = ['tests (1/3)', 'tests (2/3)', 'tests (3/3)'];
+/** platform.yml's job that makes a cluster from the change and passes once everything on it runs. */
+export const PLATFORM_CHECK = 'platform';
+
+export const CHECK_WORKFLOW = '.github/workflows/check.yml';
+export const PLATFORM_WORKFLOW = '.github/workflows/platform.yml';
+/** The workflow each check must come from: a job of the same name in any other workflow ran something else. */
+export const WORKFLOW_OF: Readonly<Record<string, string>> = {
+  [ZAP_CHECK]: CHECK_WORKFLOW,
+  [IMAGE_CHECK]: CHECK_WORKFLOW,
+  ...Object.fromEntries(TEST_SHARDS.map((name) => [name, CHECK_WORKFLOW])),
+  [PLATFORM_CHECK]: PLATFORM_WORKFLOW,
+};
 
 /** ZAP's image, which the browser tests' scan starts: `ZAP scan` runs it. */
 export const ZAP_FILE = 'apps/console/zap/scan.ts';
 /** The Postgres the cluster runs, whose pin CI's own database is (scripts/ci-images.sh postgres): `tests` run it. */
 export const POSTGRES_FILE = 'deploy/base/postgres/statefulset.yaml';
 
-/** The scanners' own pins, which are Martin's to move: a scanner cannot vouch for its replacement. */
+/** What judges a move, whose own pins are Martin's to move: none of them can vouch for its replacement. */
 const JUDGES: { name: string; test: (moved: Moved) => boolean }[] = [
+  // Kyverno is admission itself: on the platform check's cluster it is what says every image policy enforces and
+  // `make admission-ready` passes, so it cannot vouch for its own replacement either.
+  {
+    name: 'Kyverno',
+    test: (m) => m.item === 'kyverno' || /(^|\/)kyverno\//.test(m.from),
+  },
   {
     name: 'Trivy',
     test: (m) => m.place.file.startsWith('deploy/images/trivy/') || /(^|\/)aquasec(urity)?\/trivy([:@]|$)/.test(m.from),
@@ -435,6 +493,41 @@ export async function imageForward(
 
 const major = (version: string) => Number(/\d+/.exec(version)?.[0] ?? Number.NaN);
 
+/**
+ * Whether an image a chart's new version runs in place of one its old version ran is forward on its line: a version
+ * tag on both, the same or later, on the same major, and, where the chart pins a digest, the tag's index digest now.
+ * A chart pins its images as its publisher writes them, often by tag alone, so a bare version tag is whatever it names
+ * when the cluster pulls it: that much is the chart's publisher's, as the chart is. A tag that is no version
+ * (`nightly`, `latest`), a move back or across a major, or a digest the tag does not name, holds.
+ */
+export async function chartImageForward(
+  from: string,
+  to: string,
+  io: Pick<PinMoveIO, 'digest'>,
+): Promise<string | undefined> {
+  const repository = repositoryOf(to);
+  const was = tagAndDigest(from);
+  const now = tagAndDigest(to);
+  const version = (tag: string | undefined) => tag !== undefined && VERSION_WORD.test(tag);
+  if (!version(now.tag)) return `${short(to)} is not pinned to a version tag: no line to hold it to`;
+  if (!version(was.tag)) return `${short(from)} is not pinned to a version tag: no line to hold the move to`;
+  const [a, b] = [was.tag as string, now.tag as string];
+  // The line is the version's variant too: `1.4.0-alpine` moves to `1.4.1-alpine`, never to `-debian` or `-rc.1`.
+  const variant = (tag: string) => tag.replace(/^v?\d+(\.\d+)*/, '');
+  if (variant(a) !== variant(b)) return `${repository} moves off its line, from ${a} to ${b}`;
+  if (/^[-+.]?(rc|alpha|beta|pre|dev|snapshot|nightly|canary)/i.test(variant(b)))
+    return `${repository} ${b} is a prerelease, not a release`;
+  if (was.digest && !now.digest) return `${short(to)} drops the digest ${short(from)} was pinned to`;
+  if (compareVersions(b, a) < 0) return `a move backwards in ${repository}, from ${a} to ${b}`;
+  if (major(b) !== major(a)) return `a major in ${repository}, from ${a} to ${b}`;
+  if (now.digest) {
+    const current = await io.digest(`${repository}:${b}`);
+    if (current !== now.digest)
+      return `a digest that is not the tag's: ${repository}:${b} is ${current.slice(0, 19)} now, not ${now.digest.slice(0, 19)}`;
+  }
+  return undefined;
+}
+
 /** Whether a chart's move is to a later version on the same major, which its repository's index has. */
 export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersions'>): Promise<string | undefined> {
   const chart = move.pins[0]?.chart?.head;
@@ -458,34 +551,175 @@ export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersion
 }
 
 /**
- * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none of check.yml's jobs
- * runs it, so it is held.
+ * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none runs it, so it is
+ * held. A pin in deploy/ the cluster runs from the change itself (a chart, its value, a third-party image) needs
+ * `platform`, which makes a cluster from the change; Postgres needs it beside `tests`, which run the same pin as CI's
+ * database. An image of ours never gets here (condition 3), and a Dockerfile's stage in deploy/ builds an image the
+ * cluster runs only once build.yml has built it on main, which no check at the head does.
  */
 export function whatRunsIt(move: Move): { checks: string[] } | { reason: string } {
   const files = new Set(move.pins.map((m) => m.place.file));
   const only = (file: string) => files.size === 1 && files.has(file);
   if (move.kind === 'k3s' || move.kind === 'k3s-release' || move.kind === 'k3d')
-    return { reason: `${move.name} is the cluster's own: a k3s move waits for Martin, whose cluster moves with it` };
+    return {
+      reason: `${move.name} is the cluster's own: a k3s move waits for Martin, whose cluster moves with it, whatever the platform check says`,
+    };
   if (move.what === 'image' && move.kind === 'workflow' && only(ZAP_FILE)) return { checks: [ZAP_CHECK] };
   if (move.what === 'image' && move.kind === 'dockerfile' && [...files].every((f) => !f.startsWith('deploy/')))
     return { checks: [IMAGE_CHECK] };
-  if (move.what === 'image' && move.kind === 'third-party' && only(POSTGRES_FILE)) return { checks: TEST_SHARDS };
-  if (files.has('Makefile')) return { reason: `${move.name} is installed by make up: a merge does not apply it` };
-  return {
-    reason: `only a cluster runs ${move.name}: held until the platform check makes one from the change (task 34)`,
-  };
+  if (
+    files.has('Makefile') ||
+    move.pins.some(
+      (m) => m.item === 'argocd' || m.chart?.base.chart === 'argo-cd' || m.chart?.head.chart === 'argo-cd',
+    ) ||
+    [...files].some((f) => f.startsWith('deploy/argocd/'))
+  )
+    return { reason: `${move.name} is installed by make up: a merge does not apply it` };
+  const inDeploy = [...files].every((f) => f.startsWith('deploy/'));
+  if (move.what === 'image' && move.kind === 'third-party' && only(POSTGRES_FILE))
+    return { checks: [...TEST_SHARDS, PLATFORM_CHECK] };
+  if (inDeploy && (move.kind === 'chart' || (move.what === 'image' && move.kind === 'third-party')))
+    return { checks: [PLATFORM_CHECK] };
+  return { reason: `no check at the head runs ${move.name}: nothing shows it ran` };
 }
 
-/** Whether each check ran at the head and succeeded: GitHub Actions' latest run of each name, completed, a success. */
+/** The kinds whose pods the platform check holds to running and ready (scripts/platform-pods.sh). */
+const WORKLOADS = new Set(['Deployment', 'StatefulSet', 'DaemonSet']);
+
+/** A workload by its kind, name and namespace, as a kustomize patch's target names one. */
+export interface Workload {
+  kind: string;
+  name: string;
+  namespace?: string;
+}
+
+/** The workloads platform.yml's cluster changes from what `main` runs (deploy/argocd/platform-check.yaml), main's file. */
+export function patchedByTheCheck(
+  text = readFileSync(join(ROOT, 'deploy/argocd/platform-check.yaml'), 'utf-8'),
+): Workload[] | string {
+  const patches = parseYaml(text) as { target?: Record<string, unknown> }[] | null;
+  if (!Array.isArray(patches) || !patches.length) return 'the platform check names no patches the gate can read';
+  const targets: Workload[] = [];
+  for (const { target } of patches) {
+    // A target by kind and name alone: one by selector, or with no name, could reach a workload the gate cannot tell.
+    const { kind, name, namespace, ...rest } = target ?? {};
+    if (
+      typeof kind !== 'string' ||
+      typeof name !== 'string' ||
+      Object.keys(rest).some((key) => key !== 'group' && key !== 'version')
+    )
+      return `the platform check patches a target the gate cannot match by kind and name: ${short(JSON.stringify(target ?? null))}`;
+    targets.push({ kind, name, ...(typeof namespace === 'string' ? { namespace } : {}) });
+  }
+  return targets;
+}
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+/**
+ * Whether a cluster made from the change starts an image: some document of the rendering, read as YAML, is a
+ * Deployment, StatefulSet or DaemonSet whose pod template runs it as a container or an init container, by that exact
+ * reference, with no hook annotation (Helm's or Argo CD's), at a number of replicas that is a whole number above
+ * nought, and not one the platform check's own patches change (`patched`). An image only a hook, a Job or a CronJob
+ * runs, one named only in an argument, or one no such workload runs, is never pulled by the platform check's cluster as
+ * this pin, so the check proves nothing of it. A rendering that is not YAML holds.
+ */
+export function started(
+  rendered: string,
+  references: readonly string[],
+  patched: readonly Workload[] = [],
+): string | undefined {
+  const documents = parseAllDocuments(rendered);
+  if (documents.some((doc) => doc.errors.length))
+    return 'the rendering is not YAML the gate can read, so nothing shows what starts the image';
+  const workloads = documents.map((doc) => record(doc.toJS()));
+  for (const reference of references) {
+    const runs = workloads.some((doc) => {
+      const metadata = record(doc.metadata);
+      const spec = record(doc.spec);
+      if (typeof doc.kind !== 'string' || !WORKLOADS.has(doc.kind)) return false;
+      const annotations = Object.keys(record(metadata.annotations));
+      if (annotations.some((key) => key === 'helm.sh/hook' || key === 'argocd.argoproj.io/hook')) return false;
+      if ('replicas' in spec && !(Number.isInteger(spec.replicas) && (spec.replicas as number) > 0)) return false;
+      if (
+        patched.some(
+          (target) =>
+            target.kind === doc.kind &&
+            target.name === metadata.name &&
+            (!target.namespace || !metadata.namespace || target.namespace === metadata.namespace),
+        )
+      )
+        return false;
+      const pod = record(record(spec.template).spec);
+      const containers = [pod.containers, pod.initContainers].flatMap((list) => (Array.isArray(list) ? list : []));
+      return containers.some((container) => record(container).image === reference);
+    });
+    if (!runs)
+      return `no workload the platform check runs starts ${short(reference)}: a hook, a Job or nothing at all runs it, so its cluster never pulled it`;
+  }
+  return undefined;
+}
+
+/**
+ * The check runs at the head, each with the workflow file that made it, read from the workflow run of its check suite:
+ * a run of this repository (`repo`), on `pull_request`, from a branch of this repository, at the check run's own head,
+ * from this pull request's branch, made no earlier than the pull request, which GitHub lists among its pull requests into
+ * main. A check run whose suite is not such a run (another app's, a fork's, another event's, another head's, another
+ * branch's, or one made before this pull request) has none. A run's `pull_requests` are the open pull requests whose head
+ * it matches now, with their bases now, not the one it ran for: the branch and the time bind it, and `readPinMove` holds
+ * a pull request with a sibling from the same branch. GitHub empties that list once they close, so a replay of a closed
+ * one by hand takes a run that names none.
+ */
+export function workflowsOf(checks: readonly Run[], workflows: readonly WorkflowRun[], repo: string, pr: For): Run[] {
+  return checks.map((run) => {
+    const suite = run.check_suite?.id;
+    const made = workflows.find((w) => suite !== undefined && w.check_suite_id === suite);
+    const ours =
+      made &&
+      made.repository?.full_name === repo &&
+      made.head_repository?.full_name === repo &&
+      made.event === 'pull_request' &&
+      made.head_sha === run.head_sha &&
+      made.head_branch === pr.ref &&
+      Date.parse(made.created_at) >= Date.parse(pr.created) &&
+      ((made.pull_requests ?? []).some((p) => p.number === pr.number && p.base.ref === 'main') ||
+        (!pr.open && !made.pull_requests?.length));
+    return { ...run, workflow: ours ? made.path : null };
+  });
+}
+
+/**
+ * Whether each check ran at the head and succeeded: every run of each name at the head, from the workflow that has that
+ * job (`WORKFLOW_OF`), at its latest attempt, completed, a success. Attempts of one workflow run share its check suite,
+ * so a re-run that succeeds counts; a second run that succeeds never hides another that failed. A run of the same name
+ * from anywhere else counts for nothing; skipped, cancelled or failed is no success.
+ */
 export function ranIt(runs: readonly Run[], head: string, checks: readonly string[]): string | undefined {
   for (const name of checks) {
-    const latest = runs
-      .filter((run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS)
-      .sort((a, b) => b.id - a.id)[0];
-    if (!latest) return `${name} has not run at ${head.slice(0, 7)}`;
-    if (latest.status !== 'completed') return `${name} has not finished at ${head.slice(0, 7)}`;
-    if (latest.conclusion !== 'success')
-      return `${name} at ${head.slice(0, 7)} is ${latest.conclusion ?? 'unfinished'}, not a success: something must run it`;
+    const workflow = WORKFLOW_OF[name];
+    if (!workflow) return `the gate knows no workflow that runs ${name}`;
+    const named = runs.filter((run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS);
+    const bySuite = new Map<number | string, Run>();
+    for (const run of named.filter((each) => each.workflow === workflow)) {
+      const suite = run.check_suite?.id ?? `run ${run.id}`;
+      const seen = bySuite.get(suite);
+      if (!seen || run.id > seen.id) bySuite.set(suite, run);
+    }
+    const latest = [...bySuite.values()].sort((a, b) => b.id - a.id);
+    if (!latest.length)
+      return named.length
+        ? `${name} at ${head.slice(0, 7)} ran in no run of ${workflow} for this pull request that the gate could read`
+        : `${name} has not run at ${head.slice(0, 7)}`;
+    const unfinished = latest.find((run) => run.status !== 'completed');
+    if (unfinished) return `${name} has not finished at ${head.slice(0, 7)}`;
+    const failed = latest.find((run) => run.conclusion !== 'success');
+    if (failed)
+      return `${name} at ${head.slice(0, 7)} is ${failed.conclusion ?? 'unfinished'}, not a success: ${
+        name === PLATFORM_CHECK && failed.conclusion === 'skipped'
+          ? 'it made no cluster from the change'
+          : 'something must run it'
+      }`;
   }
   return undefined;
 }
@@ -634,7 +868,7 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   // 2. Not what judges.
   const judge = JUDGES.find((j) => move.pins.some(j.test));
   if (judge)
-    return { reason: `${judge.name}'s own pin: a scanner cannot vouch for its replacement, so it is Martin's` };
+    return { reason: `${judge.name}'s own pin: what judges cannot vouch for its replacement, so it is Martin's` };
   // 3. Signed where its publisher signs: an image of ours passes as an exact pin, or not at all.
   if (move.what === 'image' && /^ghcr\.io\/the-roganator\//.test(move.from))
     return {
@@ -647,11 +881,9 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   }
   const pairs = await imagePairs(move, io);
   if (typeof pairs === 'string') return { reason: pairs };
-  if (move.what !== 'chart') {
-    for (const { from, to } of pairs) {
-      const backward = await imageForward(from, to, io);
-      if (backward) return { reason: backward };
-    }
+  for (const { from, to } of pairs) {
+    const backward = move.what === 'chart' ? await chartImageForward(from, to, io) : await imageForward(from, to, io);
+    if (backward) return { reason: backward };
   }
   // 5. No record goes stale.
   const [hashBase, hashHead] = await Promise.all([io.hashes('base'), io.hashes('head')]);
@@ -681,10 +913,21 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   );
   const shown = scansShow(scanned);
   if ('reason' in shown) return shown;
-  // 8. Something ran it, last: a pin only a cluster runs is held so with every other condition proved, and its hold
-  // then says that the platform check (task 34) is all it waits for.
+  // 8. Something ran it, last: a pin a cluster runs waiting on `platform` is held so with every other condition
+  // proved, and its hold then says that the check is all it waits for.
   const runs = whatRunsIt(move);
   if ('reason' in runs) return runs;
+  if (runs.checks.includes(PLATFORM_CHECK)) {
+    const rendered = chart ? await io.render('head', chart.head) : await io.overlay('head');
+    const patched = await io.patched();
+    if (typeof patched === 'string') return { reason: patched };
+    const unstarted = started(
+      rendered,
+      pairs.map(({ to }) => to),
+      patched,
+    );
+    if (unstarted) return { reason: unstarted };
+  }
   const notRun = ranIt(await io.runs(), head, runs.checks);
   if (notRun) return { reason: notRun };
   return { move, ran: runs.checks, fixed: shown.fixed };
@@ -699,7 +942,7 @@ export function moveTitle(result: { move: Move; ran: string[]; fixed: number }) 
       : move.what === 'value'
         ? move.to.slice(0, 19)
         : move.to;
-  const by = ran.length > 1 && ran.every((r) => r.startsWith('tests (')) ? 'tests' : ran.join(', ');
+  const by = [...new Set(ran.map((r) => (r.startsWith('tests (') ? 'tests' : r)))].join(' and ');
   return `A pin move of ${move.name} to ${to}, forward on its line: ${fixed} finding${fixed === 1 ? '' : 's'} with a fix gone, none new at High, ${by} ran it`;
 }
 
@@ -769,8 +1012,24 @@ export interface RealOptions {
   head: string;
   /** Where the commits are fetched from: the repository on GitHub, unless a test names a local one. */
   remote?: string;
-  /** The check runs at the head, read through the API by the gate. */
+  /** The check runs at the head, each with the workflow that made it, read through the API by the gate. */
   runs: () => Promise<Run[]>;
+}
+
+/**
+ * Removes a reader's directory, as far as it can, and never throws: Trivy runs as root in its container and writes its
+ * cache there, which a runner's own user cannot then remove (`EACCES` on the directory, as Node names it). What it
+ * leaves is in the runner's temp, which goes with the job; a failure to tidy is never a failure to judge. It says
+ * what it could not remove, on stderr, so the answers on stdout stay the job's own.
+ */
+export function removeWork(dir: string): boolean {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.error(`left ${dir}: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`);
+    return false;
+  }
 }
 
 /** The readers on two commits of `repo`, fetched into a directory of their own, as data. */
@@ -822,7 +1081,7 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
   mkdirSync(join(work, 'cache'));
   let pulled: Promise<unknown> | undefined;
   return {
-    close: () => rmSync(work, { recursive: true, force: true }),
+    close: () => removeWork(work),
     async diff() {
       const raw = (await git('diff', '--raw', '--no-renames', '--no-abbrev', sides.base, sides.head)).stdout;
       // Each modified file's blob at both commits, as bytes git stores: no patch to parse, no filter or driver run.
@@ -915,6 +1174,7 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
       };
     },
     runs: options.runs,
+    patched: async () => patchedByTheCheck(),
   };
 }
 

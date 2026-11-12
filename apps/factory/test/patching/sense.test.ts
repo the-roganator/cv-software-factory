@@ -401,7 +401,7 @@ describe('the dependency sense', () => {
 
   it('reads the day from a worker whose door listens after the sense first reads', async () => {
     // The worker as a deploy restarts it: its door refuses until it listens. The refusal is a port the OS gave and took
-    // back; the door listens on one it gives, so no other program can have taken it in between.
+    // back a moment before, which nothing here listens on again; the door listens on a port the OS gives then.
     const reserved = createServer();
     let { url } = await listenLocal(reserved);
     await new Promise((resolve) => reserved.close(resolve));

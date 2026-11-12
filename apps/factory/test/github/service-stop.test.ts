@@ -32,16 +32,27 @@ async function port(hold = false): Promise<number> {
   return port;
 }
 
-/** Every server asked to listen from here on, the worker's: each is checked to be closed once its start has failed. */
-function servers(): Server[] {
-  const opened: Server[] = [];
+/** A server the worker asked to listen: whether it did, and whether it has closed since, its port given back. */
+interface Opened {
+  listened: boolean;
+  closed: boolean;
+}
+
+/** Every server asked to listen from here on, the worker's, followed until each has closed or never listened. */
+function servers(): Opened[] {
+  const opened: Opened[] = [];
   const listen = Server.prototype.listen;
   vi.spyOn(Server.prototype, 'listen').mockImplementation(function (this: Server, ...args: unknown[]) {
-    opened.push(this);
+    const one = { listened: false, closed: false };
+    opened.push(one);
+    this.once('listening', () => (one.listened = true)).once('close', () => (one.closed = true));
     return (listen as (...a: unknown[]) => Server).apply(this, args);
   });
   return opened;
 }
+
+/** Each server that listened has closed, its port given back: `close` is emitted only once it has. */
+const allClosed = (opened: Opened[]) => opened.filter((o) => o.listened && !o.closed);
 
 describe('the GitHub worker, when a port it is given is taken', () => {
   it('closes every server it opened when the last door cannot listen', { timeout: 60_000 }, async () => {
@@ -60,8 +71,9 @@ describe('the GitHub worker, when a port it is given is taken', () => {
       ATTACK_PORT: String(attack),
     });
     await expect(startGitHubWorker(config, pino({ level: 'silent' }))).rejects.toThrow();
-    expect(opened.length).toBeGreaterThan(0);
-    expect(opened.filter((s) => s.listening)).toEqual([]);
+    // The sense's door and the main port listened, and the attack door could not.
+    expect(opened.map((o) => o.listened)).toEqual([true, true, false]);
+    expect(allClosed(opened)).toEqual([]);
   });
 
   it('closes the sense’s door when the main port cannot listen', async () => {
@@ -69,7 +81,8 @@ describe('the GitHub worker, when a port it is given is taken', () => {
     const opened = servers();
     const config = configFromEnv({ PORT: String(main), PATCHING_PORT: String(door) });
     await expect(startGitHubWorker(config, pino({ level: 'silent' }))).rejects.toThrow();
-    expect(opened.length).toBeGreaterThan(0);
-    expect(opened.filter((s) => s.listening)).toEqual([]);
+    // The sense's door listened, and the main port could not.
+    expect(opened.map((o) => o.listened)).toEqual([true, false]);
+    expect(allClosed(opened)).toEqual([]);
   });
 });

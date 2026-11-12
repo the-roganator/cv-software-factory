@@ -158,7 +158,7 @@ test('signs out with a POST of JSON carrying the session’s token, and lands on
   await page.goto(consoleUrl());
   await ready(page);
   await page.getByRole('button', { name: 'Martin', exact: true }).click();
-  // The door asks the service again, which now finds no session.
+  // Signed out, the door asks the service again, which then finds no session.
   await page.getByRole('button', { name: /Sign out everywhere/ }).click();
   await expect(page).toHaveURL(/\/\?view=sign-in&ended=everywhere$/);
   await expect(page.getByRole('status')).toHaveText(

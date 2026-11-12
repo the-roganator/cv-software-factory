@@ -108,8 +108,8 @@ look() {
 }
 
 # Every abort is sent before any is waited for, so a slow controller holds up no other release. A Rollout whose stable
-# version has no pod ready is looked at again, STABLE_INTERVAL apart, up to STABLE_TRIES looks in all, with the others: one
-# that has a pod again is aborted then, and one that still has none at the last look is left.
+# version has no pod ready is looked at again, STABLE_INTERVAL apart, up to STABLE_TRIES looks in all, with the others:
+# one that has a pod again is aborted then, and one that still has none at the last look is left.
 candidates=()
 while IFS='|' read -r namespace name stable current abort; do
   [ -n "$name" ] || continue

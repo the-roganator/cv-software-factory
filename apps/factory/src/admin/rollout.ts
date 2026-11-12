@@ -237,8 +237,9 @@ class BetweenReleases extends Refused {
 }
 
 /**
- * How many times, a second apart, Stop the line looks for a pod of the stable version ready to serve before it leaves
- * the canary alone, so that a moment's readiness blip of the stable version's pods does not keep a canary from abort.
+ * How many times, `waitMs` apart (a second), Stop the line looks for a pod of the stable version ready to serve before
+ * it leaves the canary alone, so that a moment's readiness blip of the stable version's pods does not keep a canary from
+ * abort.
  */
 const STABLE_LOOKS = 3;
 
@@ -249,8 +250,8 @@ const POD_NAME_BASE = 58;
 class NoStablePod extends Error {}
 
 /**
- * How long Stop the line waits for the Rollout's status to catch up with its spec, a second at a time: a release just
- * starting has its canary named in a moment, and is aborted then.
+ * How long Stop the line waits for the Rollout's status to catch up with its spec, `waitMs` at a time (a second): a
+ * release just starting has its canary named in a moment, and is aborted then.
  */
 const STOP_WAITS = 5;
 

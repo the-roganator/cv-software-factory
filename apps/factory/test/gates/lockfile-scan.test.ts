@@ -68,7 +68,28 @@ describe('the lockfile gate', () => {
   it('passes a vulnerability only the base has', () => {
     const base = lockfiles({ [ROOT]: report([LODASH], [LODASH_CVE]) });
     const change = lockfiles({ [ROOT]: report([{ name: 'lodash', version: '4.17.21' }]) });
-    expect(judge(base, change)).toEqual({ added: [], unread: [], total: 0 });
+    expect(judge(base, change)).toMatchObject({ added: [], unread: [], total: 0 });
+    // Its notice counts what each side has in all: the base's one, and none on the change.
+    const { counts } = judge(base, change);
+    expect(Object.values(counts.before).reduce((a, b) => a + b)).toBe(1);
+    expect(Object.values(counts.after).every((n) => n === 0)).toBe(true);
+  });
+
+  it('counts a vulnerability once, however many versions and ways it is reached', () => {
+    const LODASH_21 = { name: 'lodash', version: '4.17.21' };
+    const both = lockfiles({
+      [ROOT]: report(
+        [LODASH, { ...LODASH_21, dev: true }],
+        [
+          LODASH_CVE,
+          { ...LODASH_CVE, version: '4.17.21' },
+          { id: 'CVE-9', pkg: 'lodash', version: '4.17.20', severity: 'LOW' },
+        ],
+      ),
+    });
+    const { counts } = judge(both, both);
+    expect(counts.after).toEqual({ critical: 0, high: 1, medium: 0, low: 1, unknown: 0 });
+    expect(counts.before).toEqual(counts.after);
   });
 
   it('passes a vulnerability both have', () => {
@@ -178,10 +199,14 @@ describe('the lockfiles a checkout tracks', () => {
       writeFileSync(join(root, 'pnpm-lock.main.yaml'), "lockfileVersion: '9.0'\n");
       writeFileSync(join(root, 'pnpm-lock.yml'), "lockfileVersion: '9.0'\n");
       symlinkSync('deps/lock', join(root, 'pnpm-lock.yaml'));
+      // A link to a directory outside the checkout: `lockfileDir: vendor` installs from the lockfile it reaches (pnpm
+      // 12.16.1, a frozen install from a fresh clone), which no path git tracks names.
+      symlinkSync('../outside', join(root, 'vendor'));
       git('add', '.');
       expect(trackedLockfiles(root)).toEqual({
         regular: ['pnpm-lock.main.yaml', 'test/alt/pnpm-lock.yaml', 'tools/pnpm-lock.yaml'],
         irregular: ['pnpm-lock.yaml'],
+        links: ['vendor'],
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -278,7 +303,7 @@ describe('an empty lockfile', () => {
     const none = { report: JSON.stringify({ Results: [{ Packages: [] }] }) };
     expect(
       judge(lockfiles({ [ROOT]: { ...none, empty: true } }), lockfiles({ [ROOT]: { ...none, empty: true } })),
-    ).toEqual({ added: [], unread: [], total: 0 });
+    ).toMatchObject({ added: [], unread: [], total: 0 });
     expect(judge(lockfiles({}), lockfiles({ [ROOT]: none })).unread).toMatchObject([{ side: 'change' }]);
   });
 

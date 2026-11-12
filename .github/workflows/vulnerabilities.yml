@@ -5,8 +5,9 @@
 #
 # Shared: cv-worlds-worst-website calls this workflow at a pinned commit and grants `contents: read`, `packages: read`
 # and `security-events: write`, and its results reach its own code scanning, since the upload names the calling
-# repository. The scripts and Trivy's pin come from this repository at the workflow's own commit, and the exceptions
-# (policy/vulnerabilities.ts) from its main alone; the scanned repository's checkout is data, and nothing in it runs.
+# repository. The scripts (the lockfile gate's reading of a lockfile among them, which the scan shares) and Trivy's pin
+# come from this repository at the workflow's own commit, and the exceptions (policy/vulnerabilities.ts) from its main
+# alone; the scanned repository's checkout is data, and nothing in it runs.
 #
 # - coverage: proves Trivy reads every package `pnpm list` gives of each lockfile. Its only output is whether it passed.
 # - scan: needs coverage. A run that cannot read an item, or whose advisory database was built more than a day ago,
@@ -40,6 +41,7 @@ on:
     paths:
       - .github/workflows/vulnerabilities.yml
       - apps/factory/src/vulnerabilities/**
+      - apps/factory/src/gates/**
       - deploy/images/trivy/**
 
 permissions: {}
@@ -159,6 +161,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
+            apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
             policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false
@@ -295,6 +298,7 @@ jobs:
             mise.toml
             mise.lock
             apps/factory/src/vulnerabilities/
+            apps/factory/src/gates/
             deploy/images/trivy/Dockerfile
             policy/vulnerabilities.ts
           sparse-checkout-cone-mode: false

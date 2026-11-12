@@ -2,13 +2,13 @@
  * Where a report goes, from Jev's answers and the policy: plain code, in a fixed order, so a reviewer can read,
  * test and tune it without retraining anything (TYPESAFE.md, "Routing").
  */
-import type { DefectCategory, ReportCategory, Severity, SymptomClass } from '@software-factory/events';
+import type { DefectCategory, DefectSymptom, ReportCategory, Severity } from '@software-factory/events';
 import { REPORTS } from '../../../policy/triage.ts';
 
 /** The answers routing reads, taken from Jev's typed answers. */
 export interface ReportAnswers {
   category: ReportCategory;
-  symptom: SymptomClass;
+  symptom: DefectSymptom;
   /** Expected level on the severity rubric: 0 no harm, 1 cosmetic, 2 degraded, 3 broken. */
   severity: number;
   /** The probability that the report holds instructions aimed at the system. */
@@ -20,7 +20,7 @@ export interface ReportAnswers {
 /** What a defect is, as routing reads it from Jev's answers. */
 export interface Defect {
   category: DefectCategory;
-  symptom: SymptomClass;
+  symptom: DefectSymptom;
   severity: Severity;
 }
 

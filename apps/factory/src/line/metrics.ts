@@ -58,6 +58,7 @@ export const OPEN_STAGES = Object.keys(EVERY_STAGE) as OpenStage[];
  *   refused, or it ran out of turns), and it runs again up to a limit;
  * - `capped`: it ended at a spend cap set while it ran, and runs again when the cap clears;
  * - `stopped`: the line stopped it, and it runs again when the line starts;
+ * - `held`: the pin step's move needs a file only Martin may change, so no agent ran, and the work item waits for him;
  * - `stale`: something was recorded meanwhile that made its result out of date, and it runs again;
  * - `effects-failed`: its result could not be put in GitHub or the store as often as the line tries, and the work item
  *   holds;
@@ -72,6 +73,7 @@ export type StepEnding =
   | 'max-turns'
   | 'capped'
   | 'stopped'
+  | 'held'
   | 'stale'
   | 'effects-failed'
   | 'errored';
@@ -80,6 +82,7 @@ export type StepEnding =
 const EVERY_ENDING: Record<StepEnding, true> = {
   done: true,
   failed: true,
+  held: true,
   'max-turns': true,
   capped: true,
   stopped: true,

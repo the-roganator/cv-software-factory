@@ -12,8 +12,12 @@
  * metadata and status, keys sorted, objects in order of kind, namespace and name; a ClusterRole keeps its labels too,
  * as an `aggregate-to-*` label grants its rules to every holder of the role it names. What the API server and Argo CD
  * add (defaults, uid, resourceVersion, managedFields, Argo CD's tracking annotation, status) is not deploy/'s, and
- * does not count. The tests compute it from the rendered manifests and hold each record to it
- * (refusal-records.test.ts).
+ * does not count. Nor do the tags and digests of the third-party images a copy of the image policy admits (its
+ * `allowed` variable, ADR 0018): kustomize copies them from the workloads' own pins, refusal-records.test.ts holds
+ * each to the workload that pins it, admission.test.ts holds that none is an image a record shows refused, and what a
+ * record proves, that admission refuses what it should, does not depend on them. So a Postgres, exporter or flagd
+ * bump stales no record; the repositories admitted, how many, whether each is by digest, and every rule still count.
+ * The tests compute it from the rendered manifests and hold each record to it (refusal-records.test.ts).
  *
  * The script's check is what makes the hash the cluster's as well as deploy/'s. Each object must be there, with every
  * field deploy/ gives it as deploy/ gives it; no one but Argo CD may have written a field deploy/ does not give it
@@ -249,9 +253,70 @@ export function writers(live: Resource, want: Resource): string[] {
     });
 }
 
-/** sha256 over the canonical form of these objects, in the canonical order, as 64 lower-case hex digits. */
+/** The variable of the image policy that lists the third-party images a copy admits, each by its exact reference. */
+export const ADMITTED = 'allowed';
+
+/**
+ * An expression that is a list of string literals and nothing else, `[]`, `['a']`, `[ 'a', 'b', ]`, spaced only as CEL
+ * spaces, each literal on one line with no escape.
+ */
+const LITERALS =
+  /^[ \t\r\n]*\[[ \t\r\n]*(?:'[^'\\\r\n]*'[ \t\r\n]*(?:,[ \t\r\n]*'[^'\\\r\n]*'[ \t\r\n]*)*,?[ \t\r\n]*)?\][ \t\r\n]*$/;
+
+/**
+ * An image reference as the hash reads it: its repository, and `@sha256` if it is by digest, its tag and the digest
+ * itself left out. `postgres:18.6@sha256:…` is `postgres@sha256`; `postgres:latest` is `postgres`.
+ */
+export const repository = (reference: string) => {
+  const [name = reference, digest] = reference.split('@');
+  const colon = name.lastIndexOf(':');
+  const bare = colon > name.lastIndexOf('/') ? name.slice(0, colon) : name;
+  return digest === undefined ? bare : `${bare}@${digest.split(':')[0]}`;
+};
+
+type Variable = { name?: string; expression?: unknown };
+const variablesOf = (o: Resource) =>
+  ((o.spec as { variables?: Variable[] } | undefined)?.variables ?? []) as Variable[];
+/** An expression's references, if it is a list of string literals; undefined if it is anything else. */
+const literals = (expression: unknown) =>
+  typeof expression === 'string' && LITERALS.test(expression)
+    ? [...expression.matchAll(/'([^']*)'/g)].map((m) => m[1] ?? '')
+    : undefined;
+
+/**
+ * The references an image policy admits by its `allowed` variable, as written: none for any other object or a policy
+ * with no such variable, and undefined when its expression is not a list of string literals, or more than one
+ * variable is named so: the hash then reads it whole.
+ */
+export function admitted(o: Resource): string[] | undefined {
+  if (o.kind !== 'ImageValidatingPolicy') return [];
+  const found = variablesOf(o).filter((v) => v.name === ADMITTED);
+  if (found.length === 0) return [];
+  if (found.length > 1) return undefined;
+  return literals(found[0]?.expression);
+}
+
+/**
+ * An object as the hash reads it: its canonical form, and in a copy of the image policy the expression of its one
+ * `allowed` variable, when it is a list of string literals, replaced by an object listing each reference as
+ * `repository()` reads it. An object, so no expression, which is always a string, can be read alike. Anything else is
+ * read whole, so a rule written there counts as any other rule does.
+ */
+export function hashed(o: Resource): Resource {
+  const form = canonical(o);
+  const references = admitted(o);
+  if (o.kind !== 'ImageValidatingPolicy' || references === undefined) return form;
+  for (const v of variablesOf(form)) {
+    if (v.name === ADMITTED) v.expression = { admits: references.map(repository) };
+  }
+  return form;
+}
+
+/**
+ * sha256 over these objects as the hash reads them (`hashed()`), in the canonical order, as 64 lower-case hex digits.
+ */
 export function policyHash(objects: Resource[]): string {
-  const forms = [...objects].sort(byOrder).map(canonical);
+  const forms = [...objects].sort(byOrder).map(hashed);
   return createHash('sha256').update(JSON.stringify(forms)).digest('hex');
 }
 
@@ -451,7 +516,8 @@ function unlike(context: string, record: RecordName, objects: Resource[]): { pro
         there = (error as Error).message;
       }
       if (typeof there === 'string') problems.push(`${revision}, which Argo CD's root is synced to, renders ${there}`);
-      else if (policyHash(there) !== policyHash(objects)) {
+      // Whole, the admitted digests included: the hash leaves them out, this comparison does not.
+      else if (JSON.stringify(there.map(canonical)) !== JSON.stringify(objects.map(canonical))) {
         problems.push(`deploy/ here renders them otherwise than ${revision} does, which Argo CD's root is synced to`);
       }
     }

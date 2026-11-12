@@ -12,6 +12,11 @@
 #              browser tests run beside. On a pull request only.
 #   code       anything else: every check runs.
 #
+# `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
+# HEAD changes from HEAD^1 anything a cluster made from the change runs or makes it with (deploy/, the Makefile, mise's
+# pins, k3d's among them, the workflow, the scripts it runs and the modules they import), unless the kind is `deploy`, whose images were built
+# from commits already merged and whose merge decides nothing (ADR 0017). Anything it cannot tell is `cluster`.
+#
 # The pull request's author and base come from the event on a pull request (AUTHOR, GITHUB_BASE_REF), and in the queue,
 # whose event names no pull request, from the API, for the pull request the queue's branch names (QUEUE_BRANCH,
 # GITHUB_REPOSITORY, GH_TOKEN). A queued stack or batch has an entry for each of its pull requests, each on a branch
@@ -84,6 +89,24 @@ queued() {
   gh api "repos/$GITHUB_REPOSITORY/pulls/${BASH_REMATCH[2]}" --jq '"\(.user.login) \(.base.ref)"'
 }
 
+# Whether HEAD changes from HEAD^1 anything the platform check's cluster is made from or runs: both sides of a rename.
+# The modules the scripts import are named file by file, as scripts/check-kind.test.ts finds them: a directory would
+# give a cluster to every change beside one of them. scripts/answer-key.ts is not among them: `make up` runs it only
+# with the private checkout, which the check's runner never has.
+# A diff it cannot read counts as a change.
+PLATFORM='^(deploy/|Makefile$|mise\.(toml|lock)$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|platform-watch\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
+changes_platform() {
+  local files
+  files=$(git diff --name-only --no-renames HEAD^1 HEAD) || return 0
+  grep -qE "$PLATFORM" <<< "$files"
+}
+
+mode=${1:-kind}
+case "$mode" in
+  kind | platform) ;;
+  *) echo "usage: $0 [platform]" >&2; exit 2 ;;
+esac
+
 kind=code
 case "${GITHUB_EVENT_NAME:-}" in
   pull_request)
@@ -104,4 +127,10 @@ case "${GITHUB_EVENT_NAME:-}" in
     fi
     ;;
 esac
-echo "$kind"
+if [ "$mode" = kind ]; then
+  echo "$kind"
+elif [ "$kind" != deploy ] && changes_platform; then
+  echo cluster
+else
+  echo none
+fi

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -95,7 +95,7 @@ interface Run {
 }
 
 /** The kind the script prints for HEAD, and what it asked GitHub. */
-function kind(repo: string, run: Run) {
+function kind(repo: string, run: Run, args: string[] = []) {
   const bin = mkdtempSync(join(tmpdir(), 'check-kind-bin-'));
   repos.push(bin);
   const answer = run.pull === 'fail' || !run.pull ? '' : `${run.pull.login} ${run.pull.base}`;
@@ -104,7 +104,7 @@ function kind(repo: string, run: Run) {
     `#!/bin/sh\necho "$*" >> "$0.asked"\n[ -n "$GH_ANSWER" ] || exit 1\necho "$GH_ANSWER"\n`,
   );
   chmodSync(join(bin, 'gh'), 0o755);
-  const result = spawnSync(SCRIPT, [], {
+  const result = spawnSync(SCRIPT, args, {
     cwd: repo,
     encoding: 'utf-8',
     env: {
@@ -283,5 +283,107 @@ describe('a change of manifests', () => {
   it('runs everything in the merge queue', () => {
     const manifest = { 'deploy/base/console/deployment.yaml': 'kind: Deployment\n# moved\n' };
     expect(kind(repository(manifest), queued).kind).toBe('code');
+  });
+});
+
+describe('the platform check (scripts/check-kind.sh platform)', () => {
+  const platform = (change: Record<string, string | null>, run: Run) =>
+    kind(repository(change), run, ['platform']).kind;
+  const anyone = { event: 'pull_request', author: 'someone', base: 'main' } as const;
+
+  it.each([
+    ['a manifest', { 'deploy/base/console/deployment.yaml': 'kind: Deployment\nspec: {}\n' }],
+    ['a chart’s values', { 'deploy/base/telemetry/values/loki.yaml': 'loki: {}\n' }],
+    ['the cluster’s k3s', { 'deploy/k3d/cluster.yaml': 'image: rancher/k3s:v2\n' }],
+    ['the Makefile, whose line installs Argo CD', { Makefile: 'ARGOCD_CHART := 11.0.0\n' }],
+    ['mise’s pins, k3d’s among them', { 'mise.lock': '[tools.k3d]\n' }],
+    ['the workflow', { '.github/workflows/platform.yml': 'name: platform\n' }],
+    ['a script it runs', { 'scripts/mark-refusals.sh': '#!/bin/sh\n' }],
+    ['a script that decides it', { 'scripts/check-kind.sh': '#!/bin/sh\n' }],
+    ['a module a record’s script imports', { 'policy/flags.ts': 'export {};\n' }],
+    ['how a signature is read', { 'apps/factory/src/github/signatures.ts': 'export {};\n' }],
+    ['deploy/ alongside code', { 'deploy/base/console/deployment.yaml': 'x\n', 'apps/console/src/main.ts': 'x\n' }],
+  ])('runs a cluster for a change of %s, anyone’s, in either place', (_, change) => {
+    expect(platform(change, anyone)).toBe('cluster');
+    expect(platform(change, { event: 'merge_group', branch: QUEUE, pull: { login: 'someone', base: 'main' } })).toBe(
+      'cluster',
+    );
+  });
+
+  it('runs none for a change a cluster cannot see, a module beside one the scripts import among them', () => {
+    expect(platform({ 'apps/console/src/main.ts': 'export const x = 1;\n' }, anyone)).toBe('none');
+    expect(platform({ 'policy/triage.ts': 'export {};\n' }, anyone)).toBe('none');
+    expect(platform({ 'apps/factory/src/scoreboard/figures.ts': 'export {};\n' }, anyone)).toBe('none');
+    // The answer key's script runs only with the private checkout, which the check's runner never has.
+    expect(platform({ 'apps/factory/src/scoreboard/key.ts': 'export {};\n' }, anyone)).toBe('none');
+    expect(platform({ 'scripts/review-gate.ts': 'x\n' }, anyone)).toBe('none');
+    expect(platform({ 'CHANGELOG.md': '# Changelog\n\n## 1.0.1\n' }, anyone)).toBe('none');
+  });
+
+  it.each(both)('runs none for the App’s deploy pin of our own images, on a %s (ADR 0017)', (_, run) => {
+    expect(platform({ [CONSOLE]: moved(CONSOLE), [FACTORY]: moved(FACTORY) }, run)).toBe('none');
+  });
+
+  it('runs a cluster for the same move by anyone else, or that the queue cannot tell is the App’s', () => {
+    expect(platform({ [CONSOLE]: moved(CONSOLE) }, anyone)).toBe('cluster');
+    expect(platform({ [CONSOLE]: moved(CONSOLE) }, { ...queued, pull: 'fail' })).toBe('cluster');
+  });
+
+  it('refuses a mode it does not know', () => {
+    const repo = repository({});
+    expect(spawnSync(SCRIPT, ['other'], { cwd: repo, encoding: 'utf-8', env: GIT_ENV }).status).toBe(2);
+  });
+});
+
+describe('what the platform check runs', () => {
+  /** The scripts the cluster's job runs on the host, each a file the rule names. */
+  const RUNS = [
+    'scripts/admission-ready.sh',
+    'scripts/wait-deployed.sh',
+    'scripts/platform-watch.sh',
+    'scripts/local-ca.ts',
+    'scripts/share-key.ts',
+    ...readdirSync('scripts')
+      .filter((f) => /-refusals\.(sh|ts)$/.test(f))
+      .map((f) => `scripts/${f}`),
+  ];
+  const rule = new RegExp(/^PLATFORM='(.+)'$/m.exec(readFileSync(SCRIPT, 'utf-8'))?.[1] ?? '^$');
+
+  /**
+   * Every file of this repository each script reaches: the scripts a shell script runs, and a module's imports. With
+   * them, each workspace package (`@software-factory/…`) a module imports, which the walk does not follow into.
+   */
+  function reached(files: string[]) {
+    const seen = new Set<string>();
+    const packages = new Set<string>();
+    const queue = [...files];
+    for (let file = queue.shift(); file; file = queue.shift()) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const text = readFileSync(file, 'utf-8');
+      if (file.endsWith('.sh')) {
+        // A script beside it, however it is named: `$here/x.ts`, `$(dirname "$0")/x.ts` or `scripts/x.ts`.
+        for (const m of text.matchAll(/(?:\$here|\$\(dirname "\$0"\)|\bscripts)\/([\w-]+\.(?:ts|sh))\b/g))
+          queue.push(`scripts/${m[1]}`);
+        continue;
+      }
+      // Each module it imports or re-exports, or imports for its effect alone.
+      for (const m of text.matchAll(/^(?:import|export) (?:[^;]*? from )?'([^']+)';$/gms)) {
+        const from = m[1] ?? '';
+        if (from.startsWith('.')) queue.push(join(dirname(file), from));
+        else if (from.startsWith('@software-factory/')) packages.add(`${file} imports ${from}`);
+      }
+    }
+    return { files: [...seen], packages: [...packages] };
+  }
+
+  it('names every file the scripts it runs reach, file by file', () => {
+    const { files, packages } = reached(RUNS);
+    // A workspace package's sources are not named: none is reached today, and one that is fails here, to be named.
+    expect(packages).toEqual([]);
+    expect(files).toEqual(
+      expect.arrayContaining(['scripts/signed-by.ts', 'scripts/policy-hash.ts', 'policy/flags.ts']),
+    );
+    for (const file of files) expect(file, file).toMatch(rule);
   });
 });

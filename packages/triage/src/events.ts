@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import {
   cutTo,
+  type DefectSymptom,
   type Dependency,
   type Environment,
   type EventType,
@@ -18,6 +19,7 @@ import {
   type Points,
   pointsAtSomething,
   pointWords,
+  type RouteSense,
   SECURITY_HEADERS,
   type Sense,
   type SignalSource,
@@ -111,6 +113,7 @@ const SENSE_NAMES: Record<Exclude<Sense, 'report'>, string> = {
   metrics: 'The metrics',
   logs: 'The log watcher',
   canary: 'The canary',
+  dependency: 'The dependency sense',
 };
 
 /** A ticket's title, from what was seen and where. */
@@ -131,6 +134,8 @@ const TITLES: Record<SymptomClass, string> = {
   'leaks-detail': 'Errors give away the server’s insides',
   'missing-log': 'Requests leave no log record',
   'wrong-metric': 'Metrics with a wrong label',
+  'vulnerable-dependency': 'A dependency with a known vulnerability',
+  'outdated-dependency': 'A dependency with a newer release',
 };
 
 /**
@@ -141,6 +146,15 @@ export const CANARY_ANY_ROUTE = 'routes it could not narrow to one';
 
 const where = (route: string, sense?: SignalSource) =>
   route !== '*' ? shortPath(route) : sense === 'canary' ? CANARY_ANY_ROUTE : 'every page';
+
+/**
+ * The route a signal names. Every signal triage takes today names one: a dependency's names a move in its place, and
+ * triage takes none yet, so it refuses one here rather than read a move as a route.
+ */
+export function routeOf(signal: { sense: SignalSource; route?: string | undefined }): string {
+  if (signal.route === undefined) throw new Error(`A signal from the ${signal.sense} sense names no route`);
+  return signal.route;
+}
 
 /** How many, in words, for a title. */
 const HOW_MANY = ['None', 'One', 'Two', 'Three', 'Four', 'Five'];
@@ -174,10 +188,11 @@ function whatIsWrong(symptom: SymptomClass, route: string, evidence: readonly Ev
  * what is wrong where it can: the security headers a page does not send, by name if the title has room for them.
  */
 export function ticketTitle(
-  fingerprint: Fingerprint,
+  fingerprint: PayloadOf<'ticket.opened'>['fingerprint'],
   sense?: SignalSource,
   evidence: readonly Evidence[] = [],
 ): string {
+  if ('ecosystem' in fingerprint) return cutTo(`Move ${fingerprint.name}, in ${fingerprint.ecosystem}`, LONGEST_TITLE);
   if (!('class' in fingerprint)) return `Wrong words on ${shortPath(fingerprint.page)}`;
   const titled = (named: boolean) => {
     const wrong = whatIsWrong(fingerprint.class, fingerprint.route, evidence, named);
@@ -209,7 +224,7 @@ function tracesOf(signal: InboxSignal): string[] {
 function signalEvent(writer: Writer, signal: Seen): Writer {
   const { observedAt: _at, summary, artifacts, ...payload } = signal;
   const actor = signal.sense === 'report' ? 'widget' : signal.sense;
-  const page = shortPath(payload.report?.page ?? payload.route);
+  const page = shortPath(payload.report?.page ?? routeOf(signal));
   const line =
     signal.sense === 'report'
       ? `A visitor reported a problem on ${page}`
@@ -221,9 +236,9 @@ function signalEvent(writer: Writer, signal: Seen): Writer {
 
 /** A sense's signal with a fingerprint no open ticket has: a new work item with its ticket, waiting for Plan. */
 export function senseTicket(signal: Seen, signalId: string, workItem: string, now: Date): NewEvent[] {
-  const symptom = signal.symptom as SymptomClass;
+  const symptom = signal.symptom as DefectSymptom;
   const { category, severity } = SYMPTOMS[symptom];
-  const fingerprint = { route: signal.route, class: symptom };
+  const fingerprint = { route: routeOf(signal), class: symptom };
   const title = ticketTitle(fingerprint, signal.sense, signal.evidence);
   const sense = SENSE_NAMES[signal.sense as Exclude<Sense, 'report'>];
   const writer = new Writer(signalId, workItem, now);
@@ -243,8 +258,8 @@ export function senseTicket(signal: Seen, signalId: string, workItem: string, no
   });
   const how =
     signal.sense === 'canary'
-      ? `The canary’s analysis found it on ${where(signal.route, signal.sense)} in version ${signal.version}, which did worse on ${signal.check} than the version it would have replaced, and the release rolled back.`
-      : `${sense} found it on ${where(signal.route)} in version ${signal.version}, on two checks in a row: ${signal.check}.`;
+      ? `The canary’s analysis found it on ${where(routeOf(signal), signal.sense)} in version ${signal.version}, which did worse on ${signal.check} than the version it would have replaced, and the release rolled back.`
+      : `${sense} found it on ${where(routeOf(signal))} in version ${signal.version}, on two checks in a row: ${signal.check}.`;
   return writer.add('work-item.summarised', 'triage', 'Summary written', {
     title,
     description: `${sense} found it: ${signal.check}. Triage opened a ticket, ${category} and ${severity}.`,
@@ -262,13 +277,13 @@ export function senseEvidence(signal: Seen, signalId: string, workItem: string, 
  * came back, and the signal joins it with its evidence.
  */
 export function senseReopened(signal: Seen, signalId: string, workItem: string, now: Date): NewEvent[] {
-  const sense = signal.sense as Exclude<Sense, 'report'>;
-  const reason = `${SENSE_NAMES[sense]} saw it again on ${where(signal.route, sense)} in version ${signal.version}: ${signal.check}`;
+  const sense = signal.sense as Exclude<RouteSense, 'report'>;
+  const reason = `${SENSE_NAMES[sense]} saw it again on ${where(routeOf(signal), sense)} in version ${signal.version}: ${signal.check}`;
   const writer = new Writer(signalId, workItem, now);
   writer.add('work-item.reopened', 'triage', `Reopened: ${SENSE_NAMES[sense].toLowerCase()} saw it again`, {
     sense,
     check: signal.check,
-    route: signal.route,
+    route: routeOf(signal),
     version: signal.version,
     reason: cutTo(reason, 200),
     dryRun: false,
@@ -301,7 +316,7 @@ export function burstEvents(signal: Seen, signalId: string, workItem: string, fo
   return summarise(writer, {
     title,
     description: `${sense} found ${found} new problems at once. Triage held them for Martin as one burst, before any has a ticket or reaches Plan.`,
-    story: `${sense} found ${found} new problems within ${BURST.minutes} minutes, first on ${where(signal.route)} in version ${signal.version}: ${signal.check}. That may be as many defects, or one fault in what the sense reads, and each ticket would cost a planner’s step and more. So triage opened none, and held the burst for Martin, for every new problem the sense found while it waited to join. An open ticket’s problem seen again in a version no release has just put live counts as new: the sense had stopped seeing it, or what it reads is at fault. Approving opens a ticket for each, as the sense’s would have been, or adds it to its open ticket; rejecting closes them all, and a problem still there is found again.`,
+    story: `${sense} found ${found} new problems within ${BURST.minutes} minutes, first on ${where(routeOf(signal))} in version ${signal.version}: ${signal.check}. That may be as many defects, or one fault in what the sense reads, and each ticket would cost a planner’s step and more. So triage opened none, and held the burst for Martin, for every new problem the sense found while it waited to join. An open ticket’s problem seen again in a version no release has just put live counts as new: the sense had stopped seeing it, or what it reads is at fault. Approving opens a ticket for each, as the sense’s would have been, or adds it to its open ticket; rejecting closes them all, and a problem still there is found again.`,
   });
 }
 
@@ -343,7 +358,7 @@ export function environmentEvents(signal: Seen, signalId: string, workItem: stri
     title: cutTo(title, 120),
     description: `${sense} found a new problem while ${which}. Triage held it for Martin before it had a ticket: no agent can mend the factory’s environment.`,
     story: cutTo(
-      `${sense} found a new problem on ${where(signal.route, signal.sense)} in version ${signal.version}: ${signal.check}. Before trusting it, triage looked at what the sense reads besides the app, as it stood then (${looked}). A sense reading a backend that stores nothing, or on a full disk, can see a fault in the app that is not there, and no agent can mend its environment: each ticket would cost a planner’s step and more for nothing. So triage opened none, and held it for Martin, for every new problem the sense found while it waited to join. Approving opens a ticket for each, as the sense’s would have been; rejecting closes them all, and a problem still there is found again.`,
+      `${sense} found a new problem on ${where(routeOf(signal), signal.sense)} in version ${signal.version}: ${signal.check}. Before trusting it, triage looked at what the sense reads besides the app, as it stood then (${looked}). A sense reading a backend that stores nothing, or on a full disk, can see a fault in the app that is not there, and no agent can mend its environment: each ticket would cost a planner’s step and more for nothing. So triage opened none, and held it for Martin, for every new problem the sense found while it waited to join. Approving opens a ticket for each, as the sense’s would have been; rejecting closes them all, and a problem still there is found again.`,
       1200,
     ),
   });
@@ -457,7 +472,7 @@ function judged(
   opened: (page: string) => { actor: 'visitor' | 'planner'; summary: string; payload: PayloadOf<'work-item.opened'> },
 ): { writer: Writer; page: string } {
   // The page without its query or anything private in its path: whoever sent it may have typed either.
-  const path = privatePath(signal.report?.page ?? signal.route);
+  const path = privatePath(signal.report?.page ?? routeOf(signal));
   const page = shortPath(path);
   if (decision.routed.route !== 'repeat') {
     const { actor, summary, payload } = opened(page);
@@ -466,7 +481,7 @@ function judged(
   const shot = decision.screenshot ? [decision.screenshot] : [];
   signalEvent(writer, {
     ...signal,
-    route: privatePath(signal.route),
+    route: privatePath(routeOf(signal)),
     report: { page: path, text: decision.text },
     artifacts: [...signal.artifacts, ...shot],
   });
@@ -622,7 +637,7 @@ export function findingEvents(
             ? `The planner noticed a defect outside its ticket, with that ticket’s fingerprint. A sense’s ticket can take it once #${behind} closes, or Martin can.`
             : 'The planner noticed a defect outside its ticket. Its word alone never opens a ticket: one opens when a sense sees it, or when Martin approves this.',
           defect: {
-            fingerprint: decision.fingerprint ?? { route: privatePath(signal.route), class: routed.defect.symptom },
+            fingerprint: decision.fingerprint ?? { route: privatePath(routeOf(signal)), class: routed.defect.symptom },
             symptom: routed.defect.symptom,
           },
         });

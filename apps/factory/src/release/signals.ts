@@ -25,7 +25,7 @@
  * older run still in the cluster, or a run of a release found live, was before the line watched. A retried release's
  * earlier attempts' failed runs are its own, each sent once: each failed the version the line watched.
  */
-import { cutTo, type InboxSignal, type PayloadOf, type SymptomClass } from '@software-factory/events';
+import { cutTo, type DefectSymptom, type InboxSignal, type PayloadOf } from '@software-factory/events';
 import { uuidFrom } from '@software-factory/triage/events';
 import type { Regression } from '../gates/journeys.ts';
 import type { RoutesWorse } from './read.ts';
@@ -37,7 +37,7 @@ type Started = PayloadOf<'release.started'>;
 type Measure = PayloadOf<'canary.stepped'>['analysis']['measures'][number];
 
 /** The symptom class each measure stands for. A measure not named here sends no signal. */
-const SYMPTOMS: Record<string, SymptomClass | 'journey'> = {
+const SYMPTOMS: Record<string, DefectSymptom | 'journey'> = {
   errors: 'server-error',
   latency: 'slow-response',
   journeys: 'journey',
@@ -47,7 +47,7 @@ const SYMPTOMS: Record<string, SymptomClass | 'journey'> = {
  * The class of a failed journey whose comparison could not be read, or whose check could not finish: a check that
  * passed on the baseline came out wrong on the canary.
  */
-export const JOURNEY_FALLBACK: SymptomClass = 'wrong-result';
+export const JOURNEY_FALLBACK: DefectSymptom = 'wrong-result';
 
 /** One failed measure of one run, and the release it judged. */
 export interface FailedMeasure {
@@ -111,7 +111,7 @@ export function canarySignal(failed: FailedMeasure, read: Read): { id: string; s
   const stands = SYMPTOMS[measure.name] ?? JOURNEY_FALLBACK;
   const first = read.journeys?.[0];
   const worse = read.routes?.worse ?? [];
-  const symptom: SymptomClass = stands === 'journey' ? (first?.symptom ?? JOURNEY_FALLBACK) : stands;
+  const symptom: DefectSymptom = stands === 'journey' ? (first?.symptom ?? JOURNEY_FALLBACK) : stands;
   const routes = stands === 'journey' ? [...new Set(read.journeys?.map((r) => r.route))] : worse.map((r) => r.route);
   const route = routes.length === 1 ? (routes[0] ?? '*') : '*';
   const at =

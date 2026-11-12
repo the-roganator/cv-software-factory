@@ -18,12 +18,16 @@
  *   its `lockfileVersion`:
  *   an unread lockfile would otherwise pass for one with nothing in it. So does one whose report is empty or cannot be
  *   parsed, and a `pnpm-lock.yaml` git tracks as anything but a regular file: pnpm follows a symbolic link, which
- *   could stand in for a vulnerable tree.
+ *   could stand in for a vulnerable tree. So does any other symbolic link git tracks: `lockfileDir` pointed through a
+ *   link to a directory installs from a lockfile outside the checkout, which nothing reads.
  * - A lockfile the same on both sides, byte for byte, is scanned once, as both.
+ * - Its notice gives what each side has in all, by severity, each finding once, excepted ones too (./counts.ts): the
+ *   counts the line records. It writes none when any lockfile on either side could not be judged.
  *
  * Its exceptions are the daily scan's: the entries of `policy/vulnerabilities.ts` in force, read from this repository's
- * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges (GITHUB_REPOSITORY), each for one lockfile, package and
- * advisory. A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
+ * `main` alone (the workflow puts `main`'s in place of the checkout's), for the repository the gate judges
+ * (GITHUB_REPOSITORY), each for one lockfile, package and advisory, matched by the same function the image scan and
+ * dependency review use (./exceptions.ts). A finding one excepts is named in the summary and fails nothing, so a fix whose release also brings in an
  * excepted finding is not held by it. Nothing is read from the change that could except anything.
  *
  * Both checkouts are data: nothing in them runs. Trivy runs in its pinned image, the advisory database pulled once,
@@ -35,7 +39,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { EXCEPTIONS, type Exception, exceptionFor } from '../../../../policy/vulnerabilities.ts';
+import { EXCEPTIONS, type Exception } from '../../../../policy/vulnerabilities.ts';
+import { countBySeverity, countsNote } from './counts.ts';
+import { except as exceptAll, LOCKFILE } from './exceptions.ts';
 import { annotate, cell, summarise } from './report.ts';
 
 const run = promisify(execFile);
@@ -133,7 +139,8 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
       }
       return found;
     });
-  const before = new Set(read('base', base).map(key));
+  const based = new Map(read('base', base).map((f) => [key(f), f]));
+  const before = new Set(based.keys());
   // Each package and advisory once, naming every version of it the lockfile holds.
   const after = new Map<string, Finding>();
   for (const f of read('change', change)) {
@@ -145,11 +152,17 @@ export function judge(base: Map<string, Scanned>, change: Map<string, Scanned>) 
   const added = [...after.values()].filter(
     (f) => !before.has(key(f)) && !(f.dev && before.has(key({ ...f, dev: false }))),
   );
-  return { added, unread, total: after.size };
+  // What each side has in all, by severity: the counts the gate's notice gives, each finding once, by its lockfile,
+  // advisory and package, however it is reached.
+  const once = (findings: Iterable<Finding>) =>
+    countBySeverity([...new Map([...findings].map((f) => [key({ ...f, dev: false }), f.severity])).values()]);
+  const counts = { before: once(based.values()), after: once(after.values()) };
+  return { added, unread, total: after.size, counts };
 }
 
 /**
- * What the change brings in, split into what fails and what an exception in force for the repository excepts: the
+ * What the change brings in, split into what fails and what an exception in force for the repository excepts, each
+ * for its own lockfile, by the shared reading the image scan and dependency review use too (./exceptions.ts): the
  * entries of policy/vulnerabilities.ts, which the workflow takes from `main`, or others, for the tests.
  */
 export function except(
@@ -158,14 +171,13 @@ export function except(
   entries: readonly Exception[] = EXCEPTIONS,
   today: Date | string = new Date(),
 ) {
-  const excepted: (Finding & { expires: string })[] = [];
-  const failing: Finding[] = [];
-  for (const f of added) {
-    const entry = exceptionFor(entries, { repository, item: f.lockfile, package: f.pkg, advisory: f.advisory }, today);
-    if (entry) excepted.push({ ...f, expires: entry.expires });
-    else failing.push(f);
-  }
-  return { excepted, failing };
+  return exceptAll(
+    added,
+    repository,
+    (f) => ({ item: f.lockfile, package: f.pkg, advisory: f.advisory }),
+    entries,
+    today,
+  );
 }
 
 /** The Trivy image a Dockerfile pins, by version and digest, as scripts/workflows.test.ts holds it. */
@@ -173,8 +185,7 @@ export function trivyPin(dockerfile: string) {
   return /^FROM (ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64})$/m.exec(dockerfile)?.[1];
 }
 
-/** A lockfile pnpm may install from: `pnpm-lock.yaml`, or a branch's `pnpm-lock.<name>.yaml`. */
-export const LOCKFILE = /(^|\/)pnpm-lock(\.[^/]+)?\.yaml$/;
+export { LOCKFILE };
 
 /**
  * A lockfile's YAML documents, each that holds more than blank lines and comments, split where a line is a document's
@@ -251,21 +262,33 @@ export function forTrivy(doc: string) {
 
 /**
  * Every lockfile a checkout tracks, at any depth, fixtures included: the regular files, which are scanned, and
- * the rest (a symbolic link, 120000, which pnpm would follow, or a submodule, 160000), which fail.
+ * the rest (a symbolic link, 120000, which pnpm would follow, or a submodule, 160000), which fail. And every other
+ * symbolic link it tracks, which fails too: pnpm follows a link to a directory, so `lockfileDir` pointed through one
+ * installs from a lockfile outside the checkout, which nothing here reads, and git cannot say where a link leads. The
+ * daily scan reads the same (../vulnerabilities/scan.ts).
  */
 export function trackedLockfiles(root: string) {
   const regular: string[] = [];
   const irregular: string[] = [];
+  const links: string[] = [];
   for (const entry of execFileSync('git', ['-C', root, '-c', 'core.fsmonitor=false', 'ls-files', '-s', '-z'], {
     encoding: 'utf-8',
     maxBuffer: 64 * 1024 * 1024,
   }).split('\0')) {
     const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
-    if (!file || !LOCKFILE.test(file)) continue;
+    if (!file) continue;
+    if (!LOCKFILE.test(file)) {
+      if (mode === '120000') links.push(file);
+      continue;
+    }
     (mode === '100644' || mode === '100755' ? regular : irregular).push(file);
   }
-  return { regular, irregular };
+  return { regular, irregular, links };
 }
+
+/** Why a symbolic link git tracks fails the gate and the daily scan. */
+export const LINK =
+  'git tracks it as a symbolic link, which pnpm follows: lockfileDir through it would install from a lockfile nothing reads';
 
 /** A lockfile that holds nothing but its version: pnpm installs nothing from it, and Trivy rightly reads nothing. */
 export function isEmptyLockfile(text: string) {
@@ -273,6 +296,32 @@ export function isEmptyLockfile(text: string) {
     .split(/\r?\n|\r/)
     .filter((line) => line.trim() && !line.trim().startsWith('#'))
     .every((line) => /^(---|lockfileVersion:\s*\S+)\s*$/.test(line));
+}
+
+/**
+ * Why Trivy's report on one document of a lockfile cannot be trusted, or undefined when it can: it read no package
+ * from a document that holds more than its `lockfileVersion`; the document cannot be read plainly; or it did not read
+ * every package the document lists under `packages:`, since Trivy builds its list from other sections, which a
+ * lockfile can leave a package out of (a config dependency outside `snapshots:`) while pnpm still installs it. `which`
+ * names the document in the reason. The daily scan judges each document by this too (../vulnerabilities/scan.ts).
+ */
+export function unreadDocument(
+  doc: string,
+  report: { Results?: { Packages?: { Name?: string; Version?: string }[] | null }[] | null },
+  which: string,
+): string | undefined {
+  const read = Array.isArray(report?.Results) ? report.Results : [];
+  if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
+    return `Trivy read no packages from ${which}`;
+  const listed = packageKeys(doc);
+  if (typeof listed === 'string') return `${which} cannot be read plainly: ${listed}`;
+  const seen = new Set(
+    read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
+  );
+  const unread = listed.filter((key) => !seen.has(key));
+  if (unread.length)
+    return `Trivy did not read ${unread.length} of the packages ${which} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`;
+  return undefined;
 }
 
 /** Where the advisory database is pulled from: GHCR, as the daily scan pulls it (../vulnerabilities/scan.ts). */
@@ -339,23 +388,9 @@ function trivy(image: string, cache: string) {
         } catch {
           return { unscannable: `Trivy's report on its document ${index + 1} could not be parsed` };
         }
-        const read = Array.isArray(report?.Results) ? report.Results : [];
-        if (!read.some((r) => Array.isArray(r?.Packages) && r.Packages.length) && !isEmptyLockfile(doc))
-          return { unscannable: `Trivy read no packages from its document ${index + 1} of ${docs.length}` };
-        // Every package the document lists, Trivy must have read: it builds its list from other sections, which a
-        // lockfile can leave a package out of while pnpm still installs it.
-        const listed = packageKeys(doc);
-        if (typeof listed === 'string')
-          return { unscannable: `its document ${index + 1} of ${docs.length} cannot be read plainly: ${listed}` };
-        const seen = new Set(
-          read.flatMap((r) => (Array.isArray(r?.Packages) ? r.Packages : []).map((p) => `${p.Name}@${p.Version}`)),
-        );
-        const unread = listed.filter((key) => !seen.has(key));
-        if (unread.length)
-          return {
-            unscannable: `Trivy did not read ${unread.length} of the packages its document ${index + 1} lists: ${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', …' : ''}`,
-          };
-        results.push(...read);
+        const why = unreadDocument(doc, report, `its document ${index + 1} of ${docs.length}`);
+        if (why) return { unscannable: why };
+        results.push(...(Array.isArray(report?.Results) ? report.Results : []));
       }
       return { report: JSON.stringify({ Results: results }), empty: isEmptyLockfile(text) };
     },
@@ -426,7 +461,7 @@ export async function main(args: string[]): Promise<number> {
     const text = (root: string, lockfile: string) => readFileSync(join(root, lockfile), 'utf-8');
     const scanAll = async (root: string, same?: { root: string; scans: Map<string, Scanned> }) => {
       const scans = new Map<string, Scanned>();
-      const { regular, irregular } = trackedLockfiles(root);
+      const { regular, irregular, links } = trackedLockfiles(root);
       for (const lockfile of regular) {
         if (!existsSync(join(root, lockfile))) {
           scans.set(lockfile, { unscannable: 'it is tracked but was not checked out' });
@@ -444,6 +479,7 @@ export async function main(args: string[]): Promise<number> {
         scans.set(lockfile, {
           unscannable: 'git tracks it as something other than a regular file, which is not scanned',
         });
+      for (const link of links) scans.set(link, { unscannable: LINK });
       return scans;
     };
     const base = await scanAll(basePath);
@@ -452,7 +488,7 @@ export async function main(args: string[]): Promise<number> {
       console.error('::error::The change tracks no lockfile to scan.');
       return 1;
     }
-    const { added: brought, unread, total } = judge(base, change);
+    const { added: brought, unread, total, counts } = judge(base, change);
     const { excepted, failing: added } = except(brought, repository);
     const rows = added
       .map(
@@ -477,6 +513,8 @@ export async function main(args: string[]): Promise<number> {
         .filter(Boolean)
         .join('\n\n'),
     );
+    // What it counted, which the line records (./counts.ts): only when it read every lockfile on both sides.
+    if (!unread.length) annotate('notice', countsNote('lockfile scan', counts));
     for (const u of unread)
       annotate('error', `The ${u.side}'s ${u.lockfile} could not be judged: ${u.why}`, u.lockfile);
     for (const f of added)

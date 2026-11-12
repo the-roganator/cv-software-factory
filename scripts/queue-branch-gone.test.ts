@@ -148,7 +148,8 @@ function job(env: Record<string, string>, step = `echo "step: $$"; sleep 120`) {
   const temp = mkdtempSync(join(tmpdir(), 'queue-watch-'));
   dirs.push(temp);
   const steps = `"${SCRIPT}" watch; bash -c '${step}'; echo "the step ended: $?"; sleep 120`;
-  const worker = spawn('bash', ['-c', `exec -a Runner.Worker bash -c '${steps.replaceAll("'", "'\\''")}'`], {
+  // Its output goes through a pipe, as the runner's does: Node would give it a socket, which /proc cannot reopen.
+  const worker = spawn('bash', ['-c', `(exec -a Runner.Worker bash -c '${steps.replaceAll("'", "'\\''")}') | cat`], {
     env: { ...process.env, ...env, RUNNER_TEMP: temp, INTERVAL: '1', CONFIRM: '1' },
     detached: true,
   });

@@ -537,7 +537,7 @@ const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: strin
   approval: [
     '{his} approval',
     (name) => `${name} waits for a review`,
-    'It changes more than a pin, or its fix is a major on, so the review gate passes its pull request only with {his} approval.',
+    'It changes more than a pin, or its fix is a major one, so the review gate passes its pull request only with {his} approval.',
   ],
   cluster: [
     '{his} cluster',

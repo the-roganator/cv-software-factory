@@ -196,7 +196,7 @@ test('each move that waits on Martin is a card in Needs you, which opens its row
   ]);
   const logs = cards.filter({ hasText: 'example-logs waits for a review' });
   await expect(logs.locator('.ev')).toHaveText(
-    'Clears 1 Critical and 21 High. It changes more than a pin, or its fix is a major on, so the review gate passes its pull request only with your approval.',
+    'Clears 1 Critical and 21 High. It changes more than a pin, or its fix is a major one, so the review gate passes its pull request only with your approval.',
   );
   // A card has no answer of its own: the move is moved on GitHub or the cluster, and the card goes with the next day.
   await expect(logs.locator('.answers')).toHaveCount(0);

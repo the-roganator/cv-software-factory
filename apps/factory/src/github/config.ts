@@ -21,6 +21,8 @@
  *                                     unset, it is not served
  *     PATCHING_PORT                   the dependency sense's door, on a port of its own: its two reads, and no
  *                                     action (server.ts's PATCHING_READS); unset, it is not served
+ *     PIN_WATCH_ONLY                  the moves the pin watch takes, by name, separated by commas, or * for every
+ *                                     one; unset or blank, it takes none, and opens, updates and closes nothing
  *     PORT                            default 8080
  *     HOST                            the address to listen on (default 127.0.0.1; the cluster's Deployment says
  *                                     0.0.0.0)
@@ -30,6 +32,7 @@ import { signingKey } from '../signed-refusals.ts';
 import type { AppCredentials } from './app.ts';
 import { API } from './client.ts';
 import type { DryRunTimes } from './dry-run-reads.ts';
+import { type PinScope, readPinScope } from './pins.ts';
 import { GHCR } from './registry.ts';
 
 /** The two public repositories: the factory's own, and the app it looks after. */
@@ -52,6 +55,8 @@ export interface GitHubConfig {
   attackPort: number | undefined;
   /** The dependency sense's door, which serves its two reads and nothing else; unset, the door is not served. */
   patchingPort: number | undefined;
+  /** The moves the pin watch takes (`PIN_WATCH_ONLY`): every one (`*`), those named, or, unset, none. */
+  pinWatchOnly: PinScope;
   port: number;
   host: string;
 }
@@ -86,6 +91,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     tufCacheDir: env.TUF_CACHE_DIR || undefined,
     attackPort: env.ATTACK_PORT?.trim() ? Number(env.ATTACK_PORT) : undefined,
     patchingPort: env.PATCHING_PORT?.trim() ? Number(env.PATCHING_PORT) : undefined,
+    pinWatchOnly: readPinScope(env.PIN_WATCH_ONLY),
     port: Number(env.PORT ?? 8080),
     host: env.HOST || '127.0.0.1',
   };

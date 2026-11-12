@@ -83,7 +83,10 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     // This repository's moves: one pull request of the App's for each it can write, one issue for each it cannot, each
     // recorded instead in a dry run. Its reads are the live ones: a dry run acts on the day as GitHub has it.
     for (const repo of PIN_REPOS.filter((r) => config.repositories.includes(r)))
-      poller.watch(`pins in ${repo}`, pinWatch({ github, reads: liveReads, actions, recorder, log }, repo));
+      poller.watch(
+        `pins in ${repo}`,
+        pinWatch({ github, reads: liveReads, actions, recorder, log, only: config.pinWatchOnly }, repo),
+      );
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.
     for (const repo of config.repositories)
       poller.watch(`issues in ${repo}`, outsideIssuesWatch(github, repo, actions, log));

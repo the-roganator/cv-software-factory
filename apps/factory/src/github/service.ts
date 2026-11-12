@@ -108,83 +108,76 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   let patchingDoor: Server | undefined;
   if (config.patchingPort !== undefined) {
     patchingDoor = createWorkerServer({
-      actions,
       reads: liveReads,
       repositories: config.repositories,
       health: () => ({ mode, door: 'patching' }),
       only: PATCHING_READS,
       log,
     });
-    // Before the main port and the watches: a port it cannot have leaves nothing running.
-    await listenOn(patchingDoor, config.patchingPort, config.host);
-    log.info({ port: config.patchingPort }, "the dependency sense's door listening");
   }
 
-  // Nothing runs before it listens, so a port it cannot have leaves nothing to close but the sense's door.
+  // Each server closed whether or not it is listening, and the watches stopped once started: a port it cannot have
+  // stops the worker whole, with nothing left running.
+  let attackDoor: ReturnType<typeof createAttackServer> | undefined;
+  let watching = false;
+  const close = (s: Server) =>
+    new Promise<void>((resolve) => {
+      s.close(() => resolve());
+      s.closeIdleConnections();
+    });
+  const stop = async () => {
+    if (watching) await poller.stop();
+    for (const s of [patchingDoor, attackDoor?.server, server]) if (s?.listening) await close(s);
+  };
   try {
+    if (patchingDoor && config.patchingPort !== undefined) {
+      await listenOn(patchingDoor, config.patchingPort, config.host);
+      log.info({ port: config.patchingPort }, "the dependency sense's door listening");
+    }
     await listenOn(server, config.port, config.host);
+    poller.start();
+    watching = true;
+    log.info(
+      { host: config.host, port: config.port, mode, repositories: config.repositories },
+      `github worker listening on ${config.host}:${config.port}`,
+    );
+
+    // The red-team harness's attack door (github/attacks.ts), on a port of its own, for attacks 2 and 3. It makes
+    // real attempts in GitHub, so it is served only when the worker can write and is not in a dry run, which must touch
+    // nothing in GitHub: with the door closed the harness records those two attacks unfinished. A NetworkPolicy opens
+    // the port to the harness's pod alone, never the line.
+    // Its attacks act in the two public repositories, and only when the worker is configured for both: a worker aimed at
+    // a stand-in or a subset (GITHUB_REPOSITORIES) serves no door.
+    const [factoryRepo, appRepo] = REPOSITORIES;
+    const bothConfigured = config.repositories.includes(factoryRepo) && config.repositories.includes(appRepo);
+    if (config.attackPort !== undefined && github.writable && !config.dryRun && bothConfigured) {
+      const doorActions = new LiveActions(github, { guard });
+      attackDoor = createAttackServer({
+        actions: doorActions,
+        liveActions: doorActions,
+        github,
+        reads: liveReads,
+        recorder,
+        factoryRepo,
+        appRepo,
+        port: config.attackPort,
+        host: config.host,
+        log,
+      });
+      await attackDoor.listening;
+      log.info({ port: config.attackPort }, 'red-team attack door listening');
+    } else if (config.attackPort !== undefined) {
+      const why = config.dryRun
+        ? 'the worker is in a dry run, which touches nothing in GitHub'
+        : !github.writable
+          ? 'the worker cannot write'
+          : 'the worker is not configured for both public repositories (GITHUB_REPOSITORIES)';
+      log.warn(`ATTACK_PORT is set but ${why}: the attack door is not served.`);
+    }
   } catch (error) {
-    patchingDoor?.close();
+    // The start's own failure is the one to report: a failure putting things away after it is only logged.
+    await stop().catch((stopping: unknown) => log.error({ err: stopping }, 'could not stop what had started'));
     throw error;
   }
-  poller.start();
-  log.info(
-    { host: config.host, port: config.port, mode, repositories: config.repositories },
-    `github worker listening on ${config.host}:${config.port}`,
-  );
-
-  // The red-team harness's attack door (github/attacks.ts), on a port of its own, for attacks 2 and 3. It makes
-  // real attempts in GitHub, so it is served only when the worker can write and is not in a dry run, which must touch
-  // nothing in GitHub: with the door closed the harness records those two attacks unfinished. A NetworkPolicy opens
-  // the port to the harness's pod alone, never the line.
-  // Its attacks act in the two public repositories, and only when the worker is configured for both: a worker aimed at
-  // a stand-in or a subset (GITHUB_REPOSITORIES) serves no door.
-  const [factoryRepo, appRepo] = REPOSITORIES;
-  const bothConfigured = config.repositories.includes(factoryRepo) && config.repositories.includes(appRepo);
-  let attackDoor: ReturnType<typeof createAttackServer> | undefined;
-  if (config.attackPort !== undefined && github.writable && !config.dryRun && bothConfigured) {
-    const doorActions = new LiveActions(github, { guard });
-    attackDoor = createAttackServer({
-      actions: doorActions,
-      liveActions: doorActions,
-      github,
-      reads: liveReads,
-      recorder,
-      factoryRepo,
-      appRepo,
-      port: config.attackPort,
-      host: config.host,
-      log,
-    });
-    await attackDoor.listening;
-    log.info({ port: config.attackPort }, 'red-team attack door listening');
-  } else if (config.attackPort !== undefined) {
-    const why = config.dryRun
-      ? 'the worker is in a dry run, which touches nothing in GitHub'
-      : !github.writable
-        ? 'the worker cannot write'
-        : 'the worker is not configured for both public repositories (GITHUB_REPOSITORIES)';
-    log.warn(`ATTACK_PORT is set but ${why}: the attack door is not served.`);
-  }
-
-  const stop = async () => {
-    await poller.stop();
-    if (patchingDoor) {
-      const door = patchingDoor;
-      await new Promise<void>((resolve) => {
-        door.close(() => resolve());
-        door.closeIdleConnections();
-      });
-    }
-    if (attackDoor)
-      await new Promise<void>((resolve) => {
-        attackDoor.server.close(() => resolve());
-        attackDoor.server.closeIdleConnections();
-      });
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-      server.closeIdleConnections();
-    });
-  };
   return { github, registry, actions, poller, server, mode, stop };
 }

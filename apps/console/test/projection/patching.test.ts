@@ -282,3 +282,50 @@ describe('a deadline in words', () => {
     expect(dueSoon(undefined, t)).toBe(false);
   });
 });
+
+describe('a lockfile’s package whose versions the scan could not read', () => {
+  const sample = day();
+  if (!sample) throw new Error('the samples have no patching.read');
+  // The factory's, whose package the public view keeps, as its pull request is open.
+  const app = sample.payload.repositories[0];
+  if (!app) throw new Error('the sample day has no factory');
+  const lockfile = app.moves.find((m) => m.lockfile && m.package);
+  if (!lockfile?.package) throw new Error('the factory has no named lockfile move');
+  const named = lockfile.package;
+  const row = (from: string, to: string) => {
+    const one: Day = {
+      ...sample.payload,
+      repositories: [{ ...app, moves: [{ ...lockfile, package: { ...named, from, to } }] }],
+      rows: [],
+    };
+    return read(dayView(one, END, [], END)).rows[0];
+  };
+
+  it('leaves an empty side unsaid, never drawn as half an arrow', () => {
+    expect(row('', '')).toMatchObject({ name: '@example/tokens', from: undefined, to: undefined });
+    expect(row('', '')?.pins.map((p) => p.change)).toEqual(['']);
+    expect(row('3.0.1', '')).toMatchObject({ from: '3.0.1', to: undefined });
+    expect(row('3.0.1', '')?.pins.map((p) => p.change)).toEqual(['3.0.1']);
+    expect(row('', '3.0.2')).toMatchObject({ from: undefined, to: '3.0.2' });
+    expect(row('', '3.0.2')?.pins.map((p) => p.change)).toEqual(['→ 3.0.2']);
+  });
+});
+
+describe('the sense’s rows', () => {
+  it('are keyed by what runs and where, not by a pod’s name, and two replicas get two keys', () => {
+    const sample = day();
+    if (!sample) throw new Error('the samples have no patching.read');
+    const unlisted = sample.payload.rows.find((r) => r.row === 'unlisted-image');
+    if (unlisted?.row !== 'unlisted-image') throw new Error('the samples have no unlisted image');
+    const keysOf = (rows: Day['rows']) =>
+      read(dayView({ ...sample.payload, rows }, END, [], END))
+        .rows.filter((r) => r.source.kind === 'unlisted-image')
+        .map((r) => r.key);
+    const before = keysOf([unlisted]);
+    // The same image in the same place after a restart, under a new pod name, keeps its key.
+    expect(keysOf([{ ...unlisted, pod: 'debug-shell-b81d' }])).toEqual(before);
+    const two = keysOf([unlisted, { ...unlisted, pod: 'debug-shell-b81d' }]);
+    expect(new Set(two).size).toBe(2);
+    expect(two.every((key) => !key.includes('debug-shell-7c9f') && !key.includes('debug-shell-b81d'))).toBe(true);
+  });
+});

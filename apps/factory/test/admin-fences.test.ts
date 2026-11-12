@@ -169,8 +169,8 @@ describe('the admin service', () => {
     expect(env.RELEASE_ROLLOUT).toBe('website/website');
     // The FeatureFlag its Role in `flagd` names (deploy/base/flagd/admin-stages-flags.yaml): any other is refused.
     expect(env.FEATURE_FLAGS).toBe('flagd/flags');
-    // In `factory`, only the line, the admin service, the red-team harness and the dependency sense hold a token for
-    // the API (the harness creates the egress and image attacks' pods, and the sense lists pods): every other pod, of any workload, says it holds none, and a pod
+    // In `factory`, only the line, the admin service and the red-team harness hold a token for the API (the harness
+    // creates the egress and image attacks' pods): every other pod, of any workload, says it holds none, and a pod
     // that does not say counts as holding one.
     const pods = all
       .filter(({ namespace }) => namespace === 'factory')
@@ -181,7 +181,7 @@ describe('the admin service', () => {
       .filter(({ pod }) => pod !== undefined);
     expect(pods.length).toBeGreaterThan(10);
     const withToken = pods.filter(({ pod }) => pod?.automountServiceAccountToken !== false).map(({ name }) => name);
-    expect(withToken.sort()).toEqual(['admin', 'line', 'patching', 'red-team']);
+    expect(withToken.sort()).toEqual(['admin', 'line', 'red-team']);
   });
 
   it('previews a flag on the app where a browser on the Mac reaches it', async () => {

@@ -60,15 +60,18 @@ export function digestOf(imageID: string | undefined): string | undefined {
 
 /** Every container running in the namespaces given, or in every one, in order of namespace, pod and container. */
 export async function runningContainers(kube: Kube, namespaces?: readonly string[]): Promise<RunningContainer[]> {
-  const found: RunningContainer[] = [];
-  for (const namespace of namespaces ?? [undefined]) await listPods(kube, namespace, found);
-  return found.sort(
-    (a, b) =>
-      a.namespace.localeCompare(b.namespace) || a.pod.localeCompare(b.pod) || a.container.localeCompare(b.container),
-  );
+  // Each namespace at once: one that cannot be listed fails the whole read, as it would one at a time.
+  const lists = await Promise.all((namespaces ?? [undefined]).map((ns) => listPods(kube, ns)));
+  return lists
+    .flat()
+    .sort(
+      (a, b) =>
+        a.namespace.localeCompare(b.namespace) || a.pod.localeCompare(b.pod) || a.container.localeCompare(b.container),
+    );
 }
 
-async function listPods(kube: Kube, namespace: string | undefined, found: RunningContainer[]): Promise<void> {
+async function listPods(kube: Kube, namespace: string | undefined): Promise<RunningContainer[]> {
+  const found: RunningContainer[] = [];
   const base = namespace ? `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods` : '/api/v1/pods';
   let next: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -92,7 +95,7 @@ async function listPods(kube: Kube, namespace: string | undefined, found: Runnin
       }
     }
     next = list.metadata?.continue || undefined;
-    if (!next) return;
+    if (!next) return found;
   }
   throw new Error(`More than ${PAGE * MAX_PAGES} pods${namespace ? ` in ${namespace}` : ''}: the sense reads no more`);
 }

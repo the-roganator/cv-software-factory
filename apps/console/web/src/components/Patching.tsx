@@ -261,7 +261,7 @@ function Row({
                 {row.from}
                 {row.to && (
                   <>
-                    {row.from ? ' → ' : ''}
+                    {row.from ? ' → ' : '→ '}
                     <span className="to">{row.to}</span>
                   </>
                 )}

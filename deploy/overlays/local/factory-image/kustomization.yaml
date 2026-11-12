@@ -1,8 +1,7 @@
 # The factory images CI built last, pinned by digest, and with them the workers that run them (deploy/base/factory), the
 # runners' and the red-team attacks' namespaces (deploy/base/runners, deploy/base/red-team), the scoreboard
 # (deploy/base/scoreboard) and the canary's analysis, whose journeys run on `factory-browser`
-# (deploy/base/analysis), the line's read of admission's denials (deploy/base/line-reads-admission) and the dependency
-# sense's list of pods (deploy/base/patching-reads-pods), so the cluster
+# (deploy/base/analysis), and the line's read of admission's denials (deploy/base/line-reads-admission), so the cluster
 # never has any of them without an image to run. The factory's GitHub worker moves the three digests together, in a
 # pull request, when CI has built all three from a newer commit.
 apiVersion: kustomize.config.k8s.io/v1alpha1
@@ -14,15 +13,14 @@ resources:
 - ../../../base/analysis
 - ../../../base/scoreboard
 - ../../../base/line-reads-admission
-- ../../../base/patching-reads-pods
 images:
-- digest: sha256:6b67a53c1b462428e8a0b4715a5885aafc5c1ce33304324fef8dc20bde5a8add
+- digest: sha256:afeff3e7dc64a578c8a8dcd8bbbdde30511055d052db132fee42d6a68bc497b0
   name: factory
   newName: ghcr.io/the-roganator/cv-software-factory/factory
-- digest: sha256:43b3c7cc0b1efa856dfb7a8bbbd6d5b3e8a4b43f268c0380acee110d963b7f0a
+- digest: sha256:6600bcb339d9746b2fb0c51905191c2cbe225f6c52dad8160f46a7588838157f
   name: factory-browser
   newName: ghcr.io/the-roganator/cv-software-factory/factory-browser
-- digest: sha256:9979dbb455f8b9f6affb4012d1ade83e7ae43ecac5d658a888e1bbac8b15c6cf
+- digest: sha256:bdaa6f49239c48d1bda2c156884e578a09f1f469a1cddb4fe9bf254714d9b508
   name: factory-runner
   newName: ghcr.io/the-roganator/cv-software-factory/factory-runner
 # The line starts runners with the runner image it is pinned to here, so its reference goes into the line's settings.

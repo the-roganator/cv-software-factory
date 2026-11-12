@@ -11,14 +11,14 @@ The daily [vulnerability scan](SECURITY-SCANNING.md) groups each day's findings 
 `factory patching` (`apps/factory/src/patching`), a worker of its own in `factory`, connecting to the store as its own role, `factory_patching`. As it starts, and each day at 05:30 UTC once the scan (04:17) has finished (`PATCHING_AT`), it:
 
 - asks the GitHub worker, through [its door](GITHUB-WORKER.md#the-senses-door), for both repositories' moves and open Dependabot pull requests;
-- lists the images every pod runs, by the reference its spec names and the digest its runtime resolved, in every namespace but three ([below](#the-namespaces-it-reads)), since an image the list lacks may run in any;
+- lists the images every pod runs, by the reference its spec names and the digest its runtime resolved, in every namespace but three (`PATCHING_NAMESPACES`), since an image the list lacks may run in any;
 - compares the two, and appends the day as one event, `patching.read`, when it differs from the last it appended.
 
 A read that fails, of either repository or of the cluster, appends nothing and says which failed in its log; it tries again an hour later, until the day's read comes round. A day that says what the last said appends nothing: a pod made again under a new name, or a Deployment scaled, is no new day while its row stands. It acts on no store of samples.
 
 ### The day
 
-`patching.read` (`packages/events/src/schemas.ts`) holds, for each repository, the scan's run it was read from (its id, how it was started, its conclusion, commit and link), when the scan judged its moves, why it failed as its moves show it (a finding past its deadline, one due within a day, a new High or Critical with a fix, or `other`), its totals as `moves.json` gives them, copied and never worked out here (results with a fix, the moves and the moves in each lane, and the findings with no fix, excepted, past their deadline, due within a day, and new today at High or Critical with a fix and without), how many images it read, and its moves as `moves.json` gives them, with two additions: a lockfile's move's package, versions and pins, which the alerts give and the artifact withholds (`package`), and the open Dependabot pull request moving a move's pin, matched by the dependency and directory its branch names (`pullRequest`). The public view leaves a lockfile's move's package out until such a pull request is open, which names it anyway; everything else is as the scan's log has it.
+`patching.read` (`packages/events/src/schemas.ts`) holds, for each repository, the scan's run it was read from (its id, how it was started, its conclusion, commit and link), when the scan judged its moves, why it failed as its own totals count it (a finding past its deadline, one due within a day, a new High or Critical with a fix, or `other`), its totals as `moves.json` gives them, copied and never worked out here (results with a fix, the moves and the moves in each lane, and the findings with no fix, excepted, past their deadline, due within a day, and new today at High or Critical with a fix and without), how many images it read, and its moves as `moves.json` gives them, with two additions: a lockfile's move's package, versions and pins, which the alerts give and the artifact withholds (`package`), and the open Dependabot pull request moving a move's pin, matched by the dependency and directory its branch names (`pullRequest`). The public view leaves a lockfile's move's package out until such a pull request is open, which names it anyway; everything else is as the scan's log has it.
 
 Only the sense's role appends it, by a restrictive policy every role's insert must meet, and Martin's command line only as samples (`0050_patching.sql`): the Patching panel, Needs you, the alert rules and the pin watch read what waits and what is due from it, so no worker that untrusted input had turned can write a day in which nothing waits.
 
@@ -32,24 +32,9 @@ Each is a row of the day, with no target, since each means the list or the clust
 
 A reference is compared by its repository, normalised as Docker does (`postgres` is `docker.io/library/postgres`), then by its digest when the pod names one, or else by its tag. With a repository's list missing, as when its scan failed before it wrote one, the cluster is not compared (`compared: false`), since every image of it would look unlisted.
 
-### The namespaces it reads
+### Where it runs
 
-Every namespace the cluster has, `default` included, but three, which `PATCHING_NAMESPACES` lists and the RoleBindings bind; a test holds the two together, and fails for a namespace `deploy/` makes, or the cluster has of its own, until it is in one or named as left out. A namespace made later is not read until then.
-
-- **`runners`**: an agent step's Job carries its job token in its spec, as a value (a pin step's and a lockfile's carry none), so whatever lists pods there can read live tokens; only the line may.
-- **`red-team`**: only the red-team harness's two attack pods run there, each held by an admission rule to one of two images and a pinned command, the unsigned one refused as it is created.
-- **`scoreboard`**: the answer key's namespace, where no role of ours is bound but the line's list of its Events, so that nothing can reach the key.
-
-Admission control admits only images `build.yml` signed, and the third-party images it names by digest, in all three (ADR 0010), so an image the list does not have cannot run there. What cannot be seen there is the first row: an older signed image of ours still running, a digest no result names, which admission does not stop.
-
-### Its fences
-
-- **The GitHub worker's reads, and no action.** The worker's main port acts in GitHub, so the sense asks its own door, on a port of its own (8083), which serves `moves` and `dependencyPulls` and nothing else; a NetworkPolicy opens it to the sense's pod alone.
-- **Pods, listed, and nothing else.** Its account's one right is a ClusterRole, `patching-lists-pods`: list pods, never get, watch or anything else, bound by a RoleBinding in each namespace it reads and by no ClusterRoleBinding (`deploy/base/patching-reads-pods`).
-- **Its own role.** `factory_patching` appends `patching.read` and nothing else, reads only its own events, and no other table; it is no member of `factory_worker`. Its password is in `postgres-patching`, which `make up` makes and the migrate Job sets.
-- **Its NetworkPolicy** gives it the store, the collector, the API server on 6443 and the worker's door, and takes nothing in.
-
-On the host, with Postgres forwarded, `kubectl proxy` running and the GitHub worker on the host with `PATCHING_PORT` set, `factory patching --once` makes one pass and says what it appended, or why not (AGENTS.md).
+Its role and its event are the store's (`0050_patching.sql`): `factory_patching` appends `patching.read` and nothing else, reads only its own events, and no other table, and is no member of `factory_worker`. Its password is in `postgres-patching`, which `make up` makes. What runs it in the cluster (its Deployment and account, the pods it may list, its NetworkPolicy, and the GitHub worker's door on its port) comes in a pull request of its own, which merges only once the image that carries `factory patching` is pinned on `main`, so `main` never runs a worker on an image without it.
 
 ## The pin watch
 

@@ -232,15 +232,11 @@ describe('who may write flags', () => {
       ),
     );
     expect(mutating.map(({ file }) => file)).toEqual([]);
-    // And no binding of ours is cluster-wide, which would reach flagd's namespace from outside it. The one ClusterRole,
-    // the dependency sense's, lists pods and touches no FeatureFlag, and is bound in each namespace it reads alone.
+    // And no binding of ours is cluster-wide, which would reach flagd's namespace from outside it.
     const clusterWide = (await manifests()).filter(({ manifest }) =>
       ['ClusterRole', 'ClusterRoleBinding'].includes(manifest.kind ?? ''),
     );
-    expect(clusterWide.map(({ manifest }) => `${manifest.kind} ${manifest.metadata?.name}`)).toEqual([
-      'ClusterRole patching-lists-pods',
-    ]);
-    expect(clusterWide[0]?.manifest.rules).toEqual([{ apiGroups: [''], resources: ['pods'], verbs: ['list'] }]);
+    expect(clusterWide).toEqual([]);
   });
 });
 

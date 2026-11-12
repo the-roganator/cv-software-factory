@@ -6,7 +6,8 @@
  *
  *     factory patching          the sense, until stopped
  *     factory patching --once   one pass, then out: what it appended, or why not; it exits 0 for a day read, 1 for
- *                               a read that failed, and 75 for a read the worker said to take again
+ *                               a read that failed, and 75 for a read the worker said to take again or its door
+ *                               refused
  *
  * Settings come from the environment:
  *

@@ -39,13 +39,28 @@ const application = ({ name, health, error, compared = 'then' }: App) => ({
   },
 });
 
-/** A kubectl that answers each look with the next list of Applications, and the last one from then on. */
-function kubectl(looks: App[][]) {
+/** What the cluster holds beside the Applications: root's own, the Jobs, the pods, and each pod's log. */
+interface Cluster {
+  root?: unknown;
+  jobs?: unknown[];
+  pods?: unknown[];
+  logs?: Record<string, string>;
+}
+
+/**
+ * A kubectl that answers each look with the next list of Applications, and the last one from then on, and the rest
+ * from `cluster`: nothing it does not hold.
+ */
+function kubectl(looks: App[][], cluster: Cluster = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'platform-watch-'));
   dirs.push(dir);
   looks.forEach((apps, i) => {
     writeFileSync(join(dir, `look-${i}.json`), JSON.stringify({ items: apps.map(application) }));
   });
+  if (cluster.root) writeFileSync(join(dir, 'root.json'), JSON.stringify(cluster.root));
+  if (cluster.jobs) writeFileSync(join(dir, 'jobs.json'), JSON.stringify({ items: cluster.jobs }));
+  if (cluster.pods) writeFileSync(join(dir, 'pods.json'), JSON.stringify({ items: cluster.pods }));
+  for (const [pod, log] of Object.entries(cluster.logs ?? {})) writeFileSync(join(dir, `${pod}.log`), log);
   const last = looks.length - 1;
   writeFileSync(
     join(dir, 'kubectl'),
@@ -58,6 +73,10 @@ case " $* " in *" --request-timeout="*) ;; *) echo "no --request-timeout" >&2; e
 case " $* " in
   *" annotate "*) echo "$*" | sed 's/--request-timeout=[^ ]* *//' >> "${dir}/asked" ;;
   *" get applications "*) echo $((n + 1)) > "${dir}/n"; cat "$look" ;;
+  *" get application root "*) cat "${dir}/root.json" 2>/dev/null || exit 1 ;;
+  *" get jobs "*) cat "${dir}/jobs.json" 2>/dev/null || echo '{"items":[]}' ;;
+  *" get pods "*) cat "${dir}/pods.json" 2>/dev/null || echo '{"items":[]}' ;;
+  *" logs "*) for arg; do [ -e "${dir}/$arg.log" ] && cat "${dir}/$arg.log"; done; true ;;
 esac
 `,
   );
@@ -76,8 +95,8 @@ const asked = (kubectlPath: string) => {
   }
 };
 
-function watch(looks: App[][], env: Record<string, string> = {}) {
-  const fake = kubectl(looks);
+function watch(looks: App[][], env: Record<string, string> = {}, cluster: Cluster = {}) {
+  const fake = kubectl(looks, cluster);
   const result = spawnSync(SCRIPT, [], {
     encoding: 'utf-8',
     timeout: 20_000,
@@ -99,9 +118,67 @@ describe('the watch of make up', () => {
     });
     expect(status).toBe(1);
     expect(out).toBe(
-      'ceiling: the cluster did not come up within 1 seconds. Not yet Synced and Healthy:\n' +
+      "ceiling: the cluster did not come up within 1 seconds; root's sync: not started\n" +
+        'Not yet Synced and Healthy:\n' +
         '  loki Synced Progressing\n    StatefulSet/telemetry/loki Synced Progressing Waiting for 1 pods to be ready...\n',
     );
+  });
+
+  it('names the hook root waits on, and each Job’s failed attempts with the last one’s last line, first', () => {
+    // As run 43255491870's first attempt was: root's sync held by the migrate hook, six attempts failed.
+    const attempt = (n: number, phase: string, finished: string) => ({
+      metadata: {
+        namespace: 'factory',
+        name: `migrate-${n}`,
+        creationTimestamp: finished,
+        ownerReferences: [{ kind: 'Job', name: 'migrate' }],
+      },
+      status: { phase, containerStatuses: [{ state: { terminated: { finishedAt: finished } } }] },
+    });
+    const cluster: Cluster = {
+      root: {
+        metadata: { name: 'root' },
+        status: {
+          operationState: { phase: 'Running', message: 'waiting for completion of hook batch/Job/migrate' },
+        },
+      },
+      jobs: [
+        { metadata: { namespace: 'factory', name: 'migrate' }, status: { failed: 6, active: 1 } },
+        {
+          metadata: { namespace: 'telemetry', name: 'done' },
+          status: { succeeded: 1, conditions: [{ type: 'Complete', status: 'True' }] },
+        },
+        {
+          metadata: { namespace: 'factory', name: 'retried' },
+          status: { failed: 1, succeeded: 1, conditions: [{ type: 'Complete', status: 'True' }] },
+        },
+      ],
+      pods: [
+        attempt(6, 'Failed', '2026-11-12T10:20:00Z'),
+        attempt(1, 'Failed', '2026-11-12T10:10:00Z'),
+        attempt(7, 'Running', '2026-11-12T10:30:00Z'),
+      ],
+      logs: {
+        'migrate-6':
+          'Error: connect ECONNREFUSED\n    at x\nThe migration failed: ECONNREFUSED: connect ECONNREFUSED 10.43.0.9:5432\n\n',
+        'migrate-1': 'not this one\n',
+      },
+    };
+    const { status, out } = watch([[{ name: 'root', health: 'Progressing' }]], { DEADLINE: '0' }, cluster);
+    expect(status).toBe(1);
+    expect(out.split('\n').slice(0, 4)).toEqual([
+      "ceiling: the cluster did not come up within 0 seconds; root's sync: Running: waiting for completion of hook batch/Job/migrate",
+      '  Job factory/migrate: 6 failed attempts, not complete; the last failed, migrate-6, ended: The migration failed: ECONNREFUSED: connect ECONNREFUSED 10.43.0.9:5432',
+      // Its failed attempt's pod is gone, so there is no last line to quote.
+      '  Job factory/retried: 1 failed attempt, then completed',
+      'Not yet Synced and Healthy:',
+    ]);
+    // On a stop as on the ceiling.
+    const degraded = watch([[{ name: 'loki', health: 'Degraded' }]], { DEGRADED: '0', INTERVAL: '1' }, cluster);
+    expect(degraded.out.split('\n').slice(1, 3)).toEqual([
+      "  root's sync: Running: waiting for completion of hook batch/Job/migrate",
+      expect.stringMatching(/^ {2}Job factory\/migrate: 6 failed attempts, not complete; the last failed, migrate-6, /),
+    ]);
   });
 
   it('stops on an Application Argo CD still cannot render after a hard refresh, and says why', () => {

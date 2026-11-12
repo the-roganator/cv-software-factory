@@ -1,7 +1,8 @@
 /**
  * When the dependency sense reads: as it starts, then each day once the scan has had time to finish; an hour after a
  * pass that failed, or that found a repository's last scan older than the day's (GitHub's schedule runs late); and ten
- * minutes after a read the worker asked for again (`READ_AGAIN`); each until the day's time comes round again. The scan
+ * minutes after a read the worker asked for again (`READ_AGAIN`); fifteen seconds after a pass the worker's door or the store
+ * refused (it is starting, as when a deploy restarts it beside the sense, or its policy has not admitted the sense); each until the day's time comes round again. The scan
  * runs at 04:17 UTC
  * (`.github/workflows/vulnerabilities.yml`) and takes under an hour, so the day's read is at 05:30 UTC by default.
  */
@@ -35,18 +36,22 @@ export function nextDaily(now: number, at: number): number {
 }
 
 /**
- * When the next read is: the day's, an hour on (after a failure, or a scan older than today's), or soon (a read to take
- * again).
+ * When the next read is: the day's, an hour on (after a failure, or a scan older than today's), soon (a read to take
+ * again), or shortly (the worker's door refused the pass).
  */
-export type Next = 'daily' | 'hour' | 'soon';
+export type Next = 'daily' | 'hour' | 'soon' | 'shortly';
 
 /** How soon a read to take again is taken: the scan that made it was finishing, which takes minutes. */
 export const SOON_MS = 10 * 60_000;
 
+/** How soon a pass the worker's door refused is taken again: the worker listens within seconds of starting. */
+export const SHORTLY_MS = 15_000;
+
 /** How long to wait after a pass: to the next day's read, or sooner as `next` says if that comes first. */
 export function waitAfter(now: number, at: number, next: Next): number {
   const daily = nextDaily(now, at) - now;
-  return next === 'daily' ? daily : Math.min(next === 'soon' ? SOON_MS : HOUR, daily);
+  if (next === 'daily') return daily;
+  return Math.min(next === 'soon' ? SOON_MS : next === 'shortly' ? SHORTLY_MS : HOUR, daily);
 }
 
 /** Runs passes until `signal` aborts: one now, then as `waitAfter` says. */

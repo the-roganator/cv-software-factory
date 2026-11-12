@@ -114,7 +114,7 @@ jobs:
           if ! WATCHED=$make scripts/platform-watch.sh; then
             kill -- "-$make" 2>/dev/null || true
             wait "$make" || true
-            echo "::error::The cluster did not come up: the line above says why."
+            echo "::error::The cluster did not come up: the watch's first line above says why, and the lines after it what it waited on."
             exit 1
           fi
           wait "$make"
@@ -184,6 +184,21 @@ jobs:
             echo "--- $worker's log"
             kubectl --context k3d-software-factory -n factory logs "deploy/$worker" --tail=40 || true
           done
+          # Every pod that failed (a Job's failed attempts, which the end passes over once the Job completes), with when
+          # it started and ended and its log, and Postgres's, so a refused connection can be set against when Postgres
+          # listened.
+          kubectl --context k3d-software-factory get pods -A --field-selector=status.phase=Failed -o json |
+            jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name) started \(.status.startTime // "-"), \([.status.initContainerStatuses[]?, .status.containerStatuses[]? | .state.terminated // empty |
+              "ended \(.finishedAt // "-") exit \(.exitCode // "-")"] | join(", "))"' |
+            while read -r ns pod times; do
+              echo "--- $ns/$pod: $times"
+              kubectl --context k3d-software-factory -n "$ns" logs "$pod" --all-containers --timestamps --tail=60 || true
+            done || true
+          echo "--- The migrate Job's last attempt (it waits for the store, saying each refusal's code once)"
+          kubectl --context k3d-software-factory -n factory logs job/migrate --timestamps --tail=40 || true
+          echo "--- Postgres: started $(kubectl --context k3d-software-factory -n factory get pod postgres-0 \
+            -o jsonpath='{.status.startTime}, ready {.status.conditions[?(@.type=="Ready")].lastTransitionTime}' || true)"
+          kubectl --context k3d-software-factory -n factory logs statefulset/postgres --all-containers --timestamps --tail=200 || true
           echo "--- Alertmanager's notifications, by integration"
           kubectl --context k3d-software-factory get --raw \
             '/api/v1/namespaces/telemetry/services/http:prometheus-alertmanager:9093/proxy/metrics' |
@@ -191,7 +206,7 @@ jobs:
           echo "--- Alertmanager's log"
           kubectl --context k3d-software-factory -n telemetry logs statefulset/prometheus-alertmanager -c alertmanager --tail=40 || true
       # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states, the
-      # runner's figures, and each pod the end found not running: its description, which shows an env value a manifest
+      # runner's figures, every failed pod's log and Postgres's, and each pod the end found not running: its description, which shows an env value a manifest
       # writes and only the name of a Secret another is read from, and its logs. No Secret is read, and the cluster
       # holds no key: its passwords and keys are made on the runner, and go with it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -141,8 +141,8 @@ const EVENT_PAGES = 5;
 /**
  * Whether only the App ever gave a pull request the `pin` label or took it off, by its events: given at least once,
  * and never by anyone else, so a label someone else put back after the App's was taken off is no pin's; and never
- * taken off by anyone else, so Martin holds a pin move by taking its label off, though the pin watch puts it back. A
- * pull request whose events run past `EVENT_PAGES` pages is not read whole, and waits.
+ * taken off by anyone else, so Martin holds a pin move by taking its label off, though the pin watch puts it back; and
+ * never reopened by the App. A pull request whose events run past `EVENT_PAGES` pages is not read whole, and waits.
  */
 export function labelWait(events: LabelEvents, whole: boolean): QueueWait | undefined {
   const not = (why: string): QueueWait => ({ waits: 'not-a-pin', why });
@@ -154,6 +154,9 @@ export function labelWait(events: LabelEvents, whole: boolean): QueueWait | unde
   if (unlabelled.some((e) => e.actor?.id !== APP_USER)) {
     return not(`someone but the App took its ${PIN_LABEL} label off`);
   }
+  // The pin watch never reopens a pull request: one the App reopened was closed, by Martin or the watch, and opened
+  // again by a worker that asked, so it is not the watch's to queue.
+  if (events.some((e) => e.event === 'reopened' && e.actor?.id === APP_USER)) return not('the App reopened it');
   return undefined;
 }
 
@@ -251,8 +254,9 @@ function queueState(deps: DeployQueueDependencies, repo: string, kind: string) {
 
 /**
  * Adds one pull request, already known to be the App's own of its kind, to the queue at its head once the gate passed
- * that head by the rule and its checks are green; otherwise says why it waits. `confirm`, when given, is what is read
- * last, once all else passes, as it costs more: a wait it gives is said as the others are.
+ * that head by the rule and its checks are green; otherwise says why it waits. `confirm`, when given, is read last,
+ * once all else passes and just before the enqueue, as it costs more and should be fresh: a wait it gives is said as
+ * the others are.
  */
 async function queueOne(
   deps: DeployQueueDependencies,
@@ -282,13 +286,15 @@ async function queueOne(
     const why = mergeable.conflicts ? 'it conflicts with main' : 'GitHub has not said whether it conflicts';
     return state.wait(number, head, { waits: 'conflict', why });
   }
-  const confirmed = await confirm?.();
-  if (confirmed) return state.wait(number, head, confirmed);
   const queue = await reads.mergeQueue(repo, number);
   if (queue.head === head && queue.queued) {
     attempt.done = true;
     return;
   }
+  // Read the last thing before the enqueue, so what it confirms (who labelled a pin move) is as fresh as it can be:
+  // GitHub's enqueue takes no condition on a label, so a change in the one request between is seen next pass.
+  const confirmed = await confirm?.();
+  if (confirmed) return state.wait(number, head, confirmed);
 
   try {
     const entry = await actions.enqueuePullRequest(repo, number, head);

@@ -18,7 +18,8 @@
  * open is 403 (`issue-refused`), as GitHub answers one the App may not change.
  *
  * An action refused by the worker's guard (a patch to a protected path, a branch, a deploy, an issue or pull request
- * not the App's, a pull request for the merge queue from a fork or a red-team branch) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
+ * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch or a
+ * `pin` label, which only the pin watch gives) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
  * `refusal`, for the worker that asked to record as `action.refused` (`../signed-refusals.ts`). Its status is as it
  * would be without it. A read refuses nothing, but the gate's verdict that holds a pull request (`reviewVerdict`)
  * carries the gate's refusal the same way, in its result.
@@ -29,12 +30,13 @@ import { z } from 'zod';
 import { entryProblem, MOST_CONTRADICTED } from '../gates/contradicts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
-import { BranchRefused } from './branches.ts';
+import { BranchRefused, pinBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
 import { DeployRefused, MAX_CARRIES } from './deploys.ts';
 import { IssueRefused } from './issues.ts';
 import { PatchRefused } from './patches.ts';
 import { plainPath } from './paths.ts';
+import { PIN_LABEL } from './pins.ts';
 import type { Reads } from './reads.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 import { DIGEST, RegistryError } from './registry.ts';
@@ -228,6 +230,20 @@ function actingFor(req: IncomingMessage): ActingFor {
   return on;
 }
 
+/**
+ * Throws `BranchRefused` for what only the pin watch does with a pull request: open one from a pin branch, or give one
+ * the `pin` label. The merge queue's pin watch (`deploy-queue.ts`) takes a pull request the App opened from a pin branch
+ * and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch wrote.
+ */
+function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
+  if (head !== undefined && pinBranch(head)) {
+    throw new BranchRefused(`${head} is the pin watch's: only the pin watch opens a pull request from it.`);
+  }
+  if (labels?.includes(PIN_LABEL)) {
+    throw new BranchRefused(`Only the pin watch gives a pull request or issue the ${PIN_LABEL} label.`);
+  }
+}
+
 /** Each action's call, from its checked arguments. */
 const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(typeof ARGS)[K]>) => Promise<unknown> } = {
   setBranch: (x, repo, { branch, sha, force }) => x.setBranch(repo, branch, sha, force === undefined ? {} : { force }),
@@ -241,17 +257,26 @@ const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(type
       },
     }),
   applyPatch: (x, repo, patch) => x.applyPatch(repo, patch),
-  openPullRequest: (x, repo, draft) => x.openPullRequest(repo, defined(draft)),
+  openPullRequest: async (x, repo, draft) => {
+    guardPinPull(draft);
+    return x.openPullRequest(repo, defined(draft));
+  },
   updatePullRequest: (x, repo, { number, ...change }) => x.updatePullRequest(repo, number, defined(change)),
   describeDeploy: (x, repo, { number, ...deploy }) => x.describeDeploy(repo, number, defined(deploy)),
-  addLabels: (x, repo, { number, labels }) => x.addLabels(repo, number, labels),
+  addLabels: async (x, repo, { number, labels }) => {
+    guardPinPull({ labels });
+    return x.addLabels(repo, number, labels);
+  },
   readyForReview: (x, repo, { pullRequest }) => x.readyForReview(repo, pullRequest),
   convertToDraft: (x, repo, { pullRequest }) => x.convertToDraft(repo, pullRequest),
   review: (x, repo, { number, ...review }) => x.review(repo, number, review),
   resolveThreads: (x, repo, { number, threads }) => x.resolveThreads(repo, number, threads),
   createCheckRun: (x, repo, report) => x.createCheckRun(repo, defined(report)),
   updateCheckRun: (x, repo, { id, ...report }) => x.updateCheckRun(repo, id, defined(report)),
-  openIssue: (x, repo, issue) => x.openIssue(repo, defined(issue)),
+  openIssue: async (x, repo, issue) => {
+    guardPinPull(issue);
+    return x.openIssue(repo, defined(issue));
+  },
   closeIssue: (x, repo, { number, reason, comment }) => x.closeIssue(repo, number, reason, comment),
   reopenIssue: (x, repo, { number, comment }) => x.reopenIssue(repo, number, comment),
   closePullRequest: (x, repo, { number, comment }) => x.closePullRequest(repo, number, comment),

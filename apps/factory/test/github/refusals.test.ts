@@ -124,6 +124,27 @@ describe('the GitHub worker’s refusals', () => {
     }
   });
 
+  it('refuses, signed, a pull request from a pin branch or a pin label from a worker that asks: only the pin watch makes one', async () => {
+    const asks = [
+      ['openPullRequest', { head: 'factory/pin/node-24', base: 'main', title: 't', body: '' }],
+      ['openPullRequest', { head: 'factory/pin-next/node-24', base: 'main', title: 't', body: '' }],
+      ['openPullRequest', { head: 'factory/1400-cart', base: 'main', title: 't', body: '', labels: ['pin'] }],
+      ['addLabels', { number: 1040, labels: ['bug', 'pin'] }],
+      ['openIssue', { title: 't', body: '', labels: ['pin'] }],
+    ] as const;
+    for (const [action, args] of asks) {
+      // The actions would fail as no refusal does: only the door's guard can answer this one refused.
+      const { worker } = await serve(new Error('the action was reached'));
+      const failed = (await worker.act(action, REPO, args as never).catch((e: unknown) => e)) as GitHubWorkerError;
+      expect(failed.status, JSON.stringify(args)).toBe(422);
+      expect(verifyRefusal(publicKey, failed.refusal), action).toMatchObject({
+        ok: true,
+        refusal: { payload: { mechanism: 'github-guard' } },
+      });
+      close?.();
+    }
+  });
+
   it('does not take a failure for a refusal: a patch that will not apply, a 401, a rate limit, a 404', async () => {
     const failures = [
       new PatchRefused('does-not-apply', 'The patch does not apply.'),

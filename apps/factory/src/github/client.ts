@@ -300,6 +300,11 @@ export class GitHub {
     etag?: string,
     redirect: 'follow' | 'manual' = 'follow',
   ) {
+    // A `.` or `..` segment (or its escape) is taken out of a URL before it is sent, so the path asked would not be the
+    // path named: no request names one, whatever built it.
+    if (/(^|\/)(\.|%2e){1,2}(\/|\?|$)/i.test(path.split('?')[0] ?? path)) {
+      throw new Error(`${method} ${path} has a dot segment, which would name another path: not sent.`);
+    }
     const url = `${this.api}${path}`;
     // Doing it twice is harmless: anything but a POST.
     const repeatable = method !== 'POST';

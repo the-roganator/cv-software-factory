@@ -16,6 +16,7 @@ import { listenLocal } from '@software-factory/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { exactPin } from '../../../../scripts/review-routing.ts';
 import { APP_LOGIN, LiveActions } from '../../src/github/actions.ts';
+import { WatchedHeads } from '../../src/github/branches.ts';
 import { GitHubError } from '../../src/github/client.ts';
 import {
   type DeployQueueDependencies,
@@ -189,8 +190,10 @@ async function worker() {
   const [target] = QUEUED_DEPLOYS;
   if (!target) throw new Error('no queued deploy');
   // The worker's own deploy queue, with the live actions: its enqueue is guarded as the worker guards it.
-  const queue = deployQueueWatch({ github, reads, actions, recorder, log: quiet }, target);
-  return { repo, url, sent, enqueues, queue, gate, actions };
+  // The deploy watch's record of its commit, which a test writes as the watch would.
+  const heads = new WatchedHeads();
+  const queue = deployQueueWatch({ github, reads, actions, recorder, heads, log: quiet }, target);
+  return { repo, url, sent, enqueues, queue, gate, actions, heads };
 }
 
 async function ask(url: string, action: string, body: unknown) {
@@ -205,7 +208,7 @@ async function ask(url: string, action: string, body: unknown) {
 
 describe('the deploy queue takes only what the deploy watch made and left', () => {
   it('refuses a worker’s commit to deploy/local under the watch’s open pull request, and queues the watch’s own head', async () => {
-    const { repo, url, enqueues, queue, actions } = await worker();
+    const { repo, url, enqueues, queue, actions, heads } = await worker();
     const main = repo.main;
     // The deploy watch's own pull request, made as the watch makes it (the actions, not the door): the three together.
     await actions.setBranch(FACTORY, 'deploy/local', main, { force: true });
@@ -215,6 +218,7 @@ describe('the deploy queue takes only what the deploy watch made and left', () =
       message: TITLE,
       changes: { additions: [{ path: PIN_FILE, contents: Buffer.from(pinFile(BUILT)) }], deletions: [] },
     });
+    heads.set(FACTORY, 'deploy/local', watched);
     const { number } = await actions.openPullRequest(FACTORY, {
       head: 'deploy/local',
       base: 'main',

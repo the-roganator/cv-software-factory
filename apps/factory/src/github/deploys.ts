@@ -62,7 +62,8 @@ import type { Logger } from 'pino';
 import { parse } from 'yaml';
 import { z } from 'zod';
 import type { Actions } from './actions.ts';
-import type { GitHub } from './client.ts';
+import type { WatchedHeads } from './branches.ts';
+import { type GitHub, GitHubError } from './client.ts';
 import type { Watch } from './poller.ts';
 import { outcomeOf } from './reads.ts';
 import type { Registry } from './registry.ts';
@@ -617,6 +618,11 @@ interface Dependencies {
   now?: () => number;
   /** Where the watch says which pull request is open for its target, and what it proposes. */
   proposals?: DeployProposals;
+  /**
+   * Where the watch records the commit it wrote to its branch, for its queue (`deploy-queue.ts`). Given, the watch also
+   * reads its branch each pass, and writes its commit again when the branch is at any other.
+   */
+  heads?: WatchedHeads;
 }
 
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
@@ -828,7 +834,7 @@ const runsOf = ({ pin, proposal }: Pick<Move, 'pin' | 'proposal'>): Runs => ({ p
  * its commit again on main's head when its pull request conflicts with main.
  */
 export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
-  const { github, signatures, actions, log, now = Date.now, proposals = new DeployProposals() } = deps;
+  const { github, signatures, actions, log, now = Date.now, proposals = new DeployProposals(), heads } = deps;
   const { repo } = target;
   const label = deployLabel(target);
   // What this worker last proposed, from which newer builds, and at which head of main: a pass does nothing more until
@@ -928,6 +934,17 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     return true;
   };
 
+  /** The commit the deploy branch is at, or undefined when there is none. */
+  const branchHead = async (): Promise<string | undefined> => {
+    try {
+      const { body } = await github.poll(repo, `/repos/${repo}/git/ref/heads/${target.branch}`, HEAD);
+      return body.object.sha;
+    } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found') return undefined;
+      throw error;
+    }
+  };
+
   /** Whether a deploy pull request conflicts with main, or GitHub has yet to say. */
   const conflicts = async (number: number): Promise<boolean | undefined> => {
     const { body: pull } = await github.poll(repo, `/repos/${repo}/pulls/${number}`, MERGEABLE);
@@ -969,7 +986,9 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     if (!ready.length) return;
     const all = deployTitle(target, ready.map(runsOf));
     const current = proposed?.found === all && proposed.head === head;
-    if (current && proposed?.settled !== false && proposed?.listed !== false) return;
+    // Its branch at any commit but the one it wrote (moved by anyone, or not yet written by this worker): written again.
+    const moved = heads !== undefined && (await branchHead()) !== heads.get(repo, target.branch);
+    if (current && !moved && proposed?.settled !== false && proposed?.listed !== false) return;
 
     const [owner] = repo.split('/');
     const { body: pulls } = await github.poll(
@@ -1017,17 +1036,24 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       proposals.set(target, open(existing.number));
       // Opened by a pass whose read of what it brings failed, or before the body listed them.
       if (!bringsIn(existing.body)) listed = await list(existing.number, existing.body, moves, commits);
-      // Only its list was left to read: whether it conflicts was settled at this head.
-      if (current && proposed?.settled !== false) {
-        proposed = { found: all, title, head, ...(listed ? {} : { listed: false as const }) };
-        return;
-      }
-      const conflicting = await conflicts(existing.number);
-      // Not known yet: the next pass asks again.
-      if (conflicting === undefined) return;
-      if (!conflicting) {
-        proposed = { found: all, title, head, settled: false, ...(listed ? {} : { listed: false as const }) };
-        return;
+      if (moved) {
+        log.warn(
+          { repo, number: existing.number, branch: target.branch },
+          'the deploy branch is not at the commit the watch wrote: the watch writes its own again',
+        );
+      } else {
+        // Only its list was left to read: whether it conflicts was settled at this head.
+        if (current && proposed?.settled !== false) {
+          proposed = { found: all, title, head, ...(listed ? {} : { listed: false as const }) };
+          return;
+        }
+        const conflicting = await conflicts(existing.number);
+        // Not known yet: the next pass asks again.
+        if (conflicting === undefined) return;
+        if (!conflicting) {
+          proposed = { found: all, title, head, settled: false, ...(listed ? {} : { listed: false as const }) };
+          return;
+        }
       }
     } else if (!existing && proposed?.title === title) {
       // A dry run's pull request, which GitHub has never heard of: recorded once, and not again as main moves.
@@ -1052,13 +1078,16 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       },
     });
     await actions.setBranch(repo, target.branch, pins, { force: true });
+    heads?.set(repo, target.branch, pins);
     await actions.deleteBranch(repo, scratch);
     // Its title and body follow the branch at once, before anything slow, so they never name a build it does not run.
     // What it brings is listed after, from the body just written: one made again on main lists what it did.
     if (existing?.title === title) {
       log.info(
         { repo, number: existing.number, commits: built },
-        'made the deploy pull request again on main, as it conflicted',
+        moved
+          ? 'made the deploy pull request again on main, as its branch was not the watch’s commit'
+          : 'made the deploy pull request again on main, as it conflicted',
       );
     } else if (existing) {
       // Moved, it keeps what the line said it carries, which the newer build carries too, until the line says again.

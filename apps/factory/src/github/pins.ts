@@ -40,7 +40,7 @@ import { compareVersions } from '../vulnerabilities/deadlines.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
 import { SEVERITIES } from '../vulnerabilities/sarif.ts';
 import { type Actions, APP_LOGIN } from './actions.ts';
-import { BranchRefused, PIN_PREFIX } from './branches.ts';
+import { BranchRefused, PIN_PREFIX, type WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { type DependencyPull, groupMovesTo } from './dependabot.ts';
 import { PatchRefused } from './patches.ts';
@@ -83,6 +83,11 @@ export interface PinWatchDependencies {
   source?: PinSource;
   /** What keeps, logs and signs a refusal of the guard's; without it, a refusal is only logged. */
   recorder?: RefusalRecorder | undefined;
+  /**
+   * Where the watch records the commit it wrote to each pin branch, for the pin queue (`deploy-queue.ts`). Given, a
+   * branch at any other commit, moved by anyone, or not yet written by this worker, is written again.
+   */
+  heads?: WatchedHeads;
   log: Logger;
   now?: () => number;
   /**
@@ -118,7 +123,11 @@ const PULLS = z.array(
     merged_at: z.string().nullable().optional(),
     user: z.object({ login: z.string() }).nullable(),
     labels: z.array(z.object({ name: z.string() })),
-    head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
+    head: z.object({
+      ref: z.string(),
+      sha: z.string().optional(),
+      repo: z.object({ full_name: z.string() }).nullable(),
+    }),
   }),
 );
 const PULL = z.object({ mergeable: z.boolean().nullable() });
@@ -382,7 +391,7 @@ export const pinTitle = (name: string, to: string): string =>
 
 /** Watches this repository's moves, and keeps one pull request, or one issue, for each. */
 export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
-  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github), only = [] } = deps;
+  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github), only = [], heads } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The pin watch does not move ${repo}'s pins: its line does.`);
   let last: number | undefined;
   /** The refusals kept, by the branch and the words, so each is recorded once a run; emptied as the run changes. */
@@ -679,8 +688,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       if (existing?.title === title) {
         if (!existing.labels.some((l) => l.name === PIN_LABEL))
           await actions.addLabels(repo, existing.number, [PIN_LABEL]);
+        // Its branch at any commit but the one the watch wrote (moved by anyone, or not yet written by this worker): the
+        // watch writes its own again, and its queue adds nothing meanwhile.
+        const ours =
+          heads === undefined || (existing.head.sha !== undefined && existing.head.sha === heads.get(repo, branch));
+        if (!ours) {
+          log.warn(
+            { repo, number: existing.number, branch },
+            'the pin branch is not at the commit the watch wrote: the watch writes its own again',
+          );
+        }
         // Its branch was committed with these edits: only its description, and a conflict with main, are left.
-        if (EDITS_MARK.exec(existing.body ?? '')?.[1] === editsHash(edits)) {
+        else if (EDITS_MARK.exec(existing.body ?? '')?.[1] === editsHash(edits)) {
           if ((existing.body ?? '') !== body) await actions.updatePullRequest(repo, existing.number, { body });
           const { body: pull } = await github.poll(repo, `/repos/${repo}/pulls/${existing.number}`, PULL);
           if (pull.mergeable !== false) continue;
@@ -710,6 +729,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         throw error;
       }
       recorded.set(branch, fingerprint);
+      heads?.set(repo, branch, commit);
       if (existing?.title === title) {
         await actions.updatePullRequest(repo, existing.number, { body });
         log.info({ repo, number: existing.number, commit }, 'made the pin move again on main');
@@ -735,6 +755,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         closeWith.get(pull.head.ref) ??
         `${RunText(day)} no longer lists this move as one a pull request of the factory's makes: \`main\` has moved its pin, the move needs more than its pins written, or nothing it cleared is left. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
+      heads?.delete(repo, pull.head.ref);
       log.info({ repo, number: pull.number }, 'closed a pin pull request whose move is gone');
     }
 

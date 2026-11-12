@@ -9,6 +9,7 @@ import type { Logger } from 'pino';
 import { listenOn } from '../listen.ts';
 import { type Actions, contentsReader, DryRunActions, LiveActions, queueCandidate } from './actions.ts';
 import { createAttackServer } from './attacks.ts';
+import { WatchedHeads } from './branches.ts';
 import { GitHub } from './client.ts';
 import { type GitHubConfig, REPOSITORIES } from './config.ts';
 import { deployQueueWatch, pinHeadsOf, pinQueueWatch, QUEUED_DEPLOYS } from './deploy-queue.ts';
@@ -65,11 +66,14 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
   if (mode === 'read-only') {
     log.warn('No App key (GITHUB_APP_PRIVATE_KEY): the worker reads GitHub and writes nothing.');
   } else {
+    // The commit each watch whose pull requests the worker queues last wrote to its branch: the only head its queue adds.
+    const heads = new WatchedHeads();
     // The App opens the deploy pull requests, and keeps the release pull requests, in every repository it acts on.
     for (const target of DEPLOYS.filter((t) => config.repositories.includes(t.repo))) {
+      const queued = QUEUED_DEPLOYS.includes(target) ? { heads } : {};
       poller.watch(
         `deploy ${target.branch} in ${target.repo}`,
-        deployWatch({ github, registry, signatures, actions, log, proposals }, target),
+        deployWatch({ github, registry, signatures, actions, log, proposals, ...queued }, target),
       );
     }
     // This repository's local deploy pull request is added to the merge queue once the gate passes it as an exact pin
@@ -77,20 +81,23 @@ export async function startGitHubWorker(config: GitHubConfig, log: Logger) {
     for (const target of QUEUED_DEPLOYS.filter((t) => config.repositories.includes(t.repo))) {
       poller.watch(
         `queue ${target.branch} in ${target.repo}`,
-        deployQueueWatch({ github, reads: liveReads, actions, recorder, log }, target),
+        deployQueueWatch({ github, reads: liveReads, actions, recorder, heads, log }, target),
       );
     }
     // This repository's moves: one pull request of the App's for each it can write, one issue for each it cannot, each
     // recorded instead in a dry run. Its reads are the live ones: a dry run acts on the day as GitHub has it.
     for (const repo of PIN_REPOS.filter((r) => config.repositories.includes(r))) {
       const only = config.pinWatchOnly;
-      poller.watch(`pins in ${repo}`, pinWatch({ github, reads: liveReads, actions, recorder, log, only }, repo));
+      poller.watch(
+        `pins in ${repo}`,
+        pinWatch({ github, reads: liveReads, actions, recorder, heads, log, only }, repo),
+      );
       // Each of those pull requests is added to the merge queue once the gate passes it as a pin move and its checks
       // are green (ADR 0017), recorded instead in a dry run; only a move the watch is told to take, as it opens only
       // those. One the gate held is Martin's, as is all else.
       poller.watch(
         `queue pins in ${repo}`,
-        pinQueueWatch({ github, reads: liveReads, actions, recorder, log }, repo, only),
+        pinQueueWatch({ github, reads: liveReads, actions, recorder, heads, log }, repo, only),
       );
     }
     // Each issue opened by anyone but Martin or the App gets one reply, recorded instead in a dry run.

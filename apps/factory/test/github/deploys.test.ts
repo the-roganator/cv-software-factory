@@ -4,7 +4,7 @@
 import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { type Actions, DryRunActions, LiveActions } from '../../src/github/actions.ts';
-import { ownsBranch } from '../../src/github/branches.ts';
+import { ownsBranch, WatchedHeads } from '../../src/github/branches.ts';
 import {
   type Brings,
   brings,
@@ -403,6 +403,43 @@ It brings one pull request merged since the pinned commit, newest first:
 <!-- factory: /brings -->`,
     );
     expect(writes(gh.sent)[5]?.body).toEqual({ labels: ['deploy: local'] });
+  });
+
+  it('writes its commit again when its branch is at any other, and records it for its queue: after a restart too', async () => {
+    const title = 'chore(deploy): run the factory bbbbbbb on the local cluster';
+    const gh = github(FACTORY, {
+      pulls: [{ number: 69, title, state: 'open', merged_at: null, labels: [{ name: 'deploy: local' }] }],
+    });
+    const heads = new WatchedHeads();
+    const pass = deployWatch(
+      {
+        github: gh.github,
+        registry: ghcr(),
+        signatures: signatures().check,
+        actions: new LiveActions(gh.github),
+        heads,
+        log: quiet,
+      },
+      FACTORY,
+    );
+    // A worker just started: its pull request is open at a commit this worker did not write, so it writes its own.
+    await pass();
+    expect(gh.branches.get('deploy/local')).toBe(commit('e'));
+    expect(heads.get(FACTORY.repo, 'deploy/local')).toBe(commit('e'));
+    // Nothing moved: nothing written.
+    let before = gh.sent.length;
+    await pass();
+    expect(writes(gh.sent.slice(before))).toEqual([]);
+    // Its branch moved by anyone, by any route: the watch writes its own again, the same pins, and records that one.
+    before = gh.sent.length;
+    gh.branches.set('deploy/local', commit('5'));
+    await pass();
+    expect(gh.branches.get('deploy/local')).toBe(commit('9'));
+    expect(heads.get(FACTORY.repo, 'deploy/local')).toBe(commit('9'));
+    expect(committed(gh.sent.slice(before)).file).toBe(
+      FACTORY_PIN.replace(digest('1'), digest('7')).replace(digest('2'), digest('8')),
+    );
+    expect(steps(gh.sent.slice(before))).not.toContain('POST pulls');
   });
 
   it('describes one image, with no changes link when the pinned commit is not known', () => {

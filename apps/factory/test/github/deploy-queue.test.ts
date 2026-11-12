@@ -92,8 +92,17 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
   ...over,
 });
 
+/**
+ * The watch's record of its commits, as if it wrote each pull request's head as it is now: what a test about anything
+ * but that record gives the queue.
+ */
+const vouching = (pulls: () => QueuePull[]) => ({
+  get: (_repo: string, branch: string) => pulls().find((p) => p.head.ref === branch)?.head.sha,
+});
+
 /** A worker's deploy queue watch against a deploy branch with these open pull requests, as each pass reads them. */
 function harness(o: {
+  heads?: DeployQueueDependencies['heads'];
   pulls?: () => QueuePull[];
   verdict?: () => ReviewVerdict;
   runs?: () => CheckRun[];
@@ -132,7 +141,17 @@ function harness(o: {
     },
     mergeQueue: async () => (o.queued ?? (() => queue()))(),
   };
-  const pass = deployQueueWatch({ github, reads, actions, recorder: o.recorder, log: quiet }, FACTORY);
+  const pass = deployQueueWatch(
+    {
+      github,
+      reads,
+      actions,
+      recorder: o.recorder,
+      heads: o.heads ?? vouching(o.pulls ?? (() => [pull()])),
+      log: quiet,
+    },
+    FACTORY,
+  );
   return { pass, enqueued, sent };
 }
 
@@ -140,7 +159,7 @@ describe('the deploy queue watch', () => {
   it('queues only this repository’s local deploy, never the app’s', () => {
     expect(QUEUED_DEPLOYS).toEqual([FACTORY]);
     const { github } = client([]);
-    const deps = { github, reads: {} as never, actions: {} as never, log: quiet };
+    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
     expect(() => deployQueueWatch(deps, APP)).toThrow(/does not queue/);
   });
 
@@ -151,6 +170,19 @@ describe('the deploy queue watch', () => {
     // Once for each head: the next pass does not ask again.
     await pass();
     expect(enqueued).toHaveLength(1);
+  });
+
+  it('adds no head but the commit the deploy watch wrote, whoever moved its branch, and reads nothing for it', async () => {
+    for (const written of [undefined, OLDER]) {
+      const { pass, enqueued, sent } = harness({ heads: { get: () => written } });
+      await pass();
+      expect(enqueued, String(written)).toEqual([]);
+      // The positive check comes first: no verdict, check or event is read for a head that is not the watch's.
+      expect(
+        sent.filter((x) => !/\/pulls\?|\/installation|access_tokens/.test(x.path)),
+        String(written),
+      ).toEqual([]);
+    }
   });
 
   it('queues a newer build’s head afresh once the gate and its checks pass it', async () => {
@@ -430,6 +462,7 @@ function pinHarness(o: {
   actions?: DeployQueueDependencies['actions'];
   queued?: (number: number) => MergeQueue['queued'];
   only?: PinScope;
+  heads?: DeployQueueDependencies['heads'];
   /** The closed pull requests GitHub lists from a branch, as the queue reads them for an earlier hold. */
   closed?: (branch: string) => unknown[];
 }) {
@@ -487,7 +520,11 @@ function pinHarness(o: {
       return queue({ number, head: headOf(number), queued: o.queued?.(number) ?? null });
     },
   };
-  const pass = pinQueueWatch({ github, reads, actions, log: quiet }, REPO, o.only ?? '*');
+  const pass = pinQueueWatch(
+    { github, reads, actions, heads: o.heads ?? vouching(pulls), log: quiet },
+    REPO,
+    o.only ?? '*',
+  );
   const order = () => [...read, ...sent.slice(seen).map((x) => x.path)];
   return { pass, enqueued, sent, order };
 }
@@ -495,7 +532,7 @@ function pinHarness(o: {
 describe('the pin queue watch', () => {
   it('queues pin moves in this repository alone, never the app’s', () => {
     const { github } = client([]);
-    const deps = { github, reads: {} as never, actions: {} as never, log: quiet };
+    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
     expect(() => pinQueueWatch(deps, APP.repo)).toThrow(/does not queue/);
   });
 
@@ -518,7 +555,7 @@ describe('the pin queue watch', () => {
         get: (_t, name) => async () => void sent.push(String(name)),
       });
       const actions = { enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }) };
-      const deps = { github, reads, actions, log: quiet };
+      const deps = { github, reads, actions, heads: { get: () => undefined }, log: quiet };
       await (none === undefined ? pinQueueWatch(deps, REPO) : pinQueueWatch(deps, REPO, none))();
       expect(sent).toEqual([]);
     }
@@ -623,6 +660,14 @@ describe('the pin queue watch', () => {
       const free = pinHarness({ closed: () => [earlier], events });
       await free.pass();
       expect(free.enqueued, JSON.stringify(earlier)).toEqual([[1040, PIN_HEAD]]);
+    }
+  });
+
+  it('adds no head but the commit the pin watch wrote, whoever moved its branch', async () => {
+    for (const written of [undefined, OLDER]) {
+      const { pass, enqueued } = pinHarness({ heads: { get: () => written } });
+      await pass();
+      expect(enqueued, String(written)).toEqual([]);
     }
   });
 

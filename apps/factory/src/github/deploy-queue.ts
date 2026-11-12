@@ -45,7 +45,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN } from './actions.ts';
-import { BranchRefused, pinBranch } from './branches.ts';
+import { BranchRefused, pinBranch, type WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
 import { APP_USER, IssueRefused } from './issues.ts';
@@ -207,7 +207,26 @@ export interface DeployQueueDependencies {
   actions: Pick<Actions, 'enqueuePullRequest'>;
   /** What keeps, logs and signs a refusal; without it, a refusal is only logged. */
   recorder?: RefusalRecorder | undefined;
+  /**
+   * The commit each watch last wrote to its branch (`WatchedHeads`): a pull request is added only at that commit, the
+   * watch's own work for its move or build, however its branch got anywhere else.
+   */
+  heads: Pick<WatchedHeads, 'get'>;
   log: Logger;
+}
+
+/**
+ * Whether a pull request's head is the commit its watch wrote to its branch: the positive check every queue makes
+ * before it reads anything more. A head at any other commit, whoever put it there, is not the watch's.
+ */
+export function headWait(
+  heads: Pick<WatchedHeads, 'get'>,
+  repo: string,
+  pull: QueuePull,
+  waits: 'not-a-deploy' | 'not-a-pin',
+): QueueWait | undefined {
+  if (heads.get(repo, pull.head.ref) === pull.head.sha) return undefined;
+  return { waits, why: `its head is not the commit the watch wrote to ${pull.head.ref}` };
 }
 
 /** A head the queue last tried to add, and how often a failure that may pass was met there. */
@@ -343,7 +362,7 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
     if (!pull) return;
     const attempt = state.attempt(pull.number, pull.head.sha);
     if (attempt.done) return;
-    const notOne = deployPullWait(target, pull);
+    const notOne = deployPullWait(target, pull) ?? headWait(deps.heads, repo, pull, 'not-a-deploy');
     if (notOne) return state.wait(pull.number, pull.head.sha, notOne);
     await queueOne(deps, state, repo, 'deploy', pull, 'exact-pin', attempt);
   };
@@ -435,7 +454,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
     }
   };
 
-  /** Whether each closed pull request of the App's, by its number and when it closed, was held: final once closed. */
+  /** Each closed pull request of the App's found held, or not read whole, by its number and when it closed. */
   const heldWhenClosed = new Map<string, boolean | 'unread'>();
 
   /**
@@ -477,8 +496,10 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       if (held === undefined) {
         const { events, whole } = await eventsOf(c.number);
         held = whole ? heldByLabel(events) : 'unread';
-        // Kept only once GitHub says when it closed: a pull request reopened and closed again is read again.
-        if (c.closed_at) heldWhenClosed.set(key, held);
+        // Kept only once GitHub says when it closed, and only a hold: Martin may take the label off a closed pull
+        // request later, so one not held is read again each pass. A pull request reopened and closed again is read
+        // again too.
+        if (c.closed_at && held !== false) heldWhenClosed.set(key, held);
       }
       if (held === 'unread') return { waits: 'not-a-pin', why: `#${c.number}, of this move, runs past what is read` };
       if (held) {
@@ -520,7 +541,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       const head = pull.head.sha;
       const attempt = state.attempt(number, head);
       if (attempt.done) continue;
-      const notOne = pinPullWait(repo, pull) ?? toldWait(only, pull);
+      const notOne = pinPullWait(repo, pull) ?? toldWait(only, pull) ?? headWait(deps.heads, repo, pull, 'not-a-pin');
       if (notOne) {
         state.wait(number, head, notOne);
         continue;

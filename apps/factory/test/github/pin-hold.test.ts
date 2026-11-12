@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import { APP_LOGIN, LiveActions } from '../../src/github/actions.ts';
+import { WatchedHeads } from '../../src/github/branches.ts';
 import { dependencyPulls } from '../../src/github/dependabot.ts';
 import { type DeployQueueDependencies, type LabelEvents, pinQueueWatch } from '../../src/github/deploy-queue.ts';
 import { APP_USER, IssueGuard, MARTIN, openedBy } from '../../src/github/issues.ts';
@@ -82,6 +83,8 @@ function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
   const guard = new IssueGuard({ openedBy: openedBy(github), recorder });
   const actions = new LiveActions(github, { guard });
   let clock = Date.parse('2026-11-12T07:00:00Z');
+  // One record of the watch's commits for both, as service.ts gives it.
+  const heads = new WatchedHeads();
   const watch = pinWatch(
     {
       github,
@@ -91,6 +94,7 @@ function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
       },
       actions,
       recorder,
+      heads,
       log: quiet,
       now: () => clock,
       only,
@@ -141,6 +145,7 @@ function worker(repo: FakeRepo, only: PinScope, today: () => Moves) {
           return { position: 1, state: 'QUEUED' };
         },
       },
+      heads,
       log: quiet,
     },
     FACTORY,

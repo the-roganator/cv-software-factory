@@ -128,7 +128,14 @@ function queue(repo: FakeRepo, only: PinScope) {
       return { position: 1, state: 'QUEUED' };
     },
   };
-  return { pass: pinQueueWatch({ github, reads, actions, log: quiet }, FACTORY, only), enqueued };
+  return {
+    pass: pinQueueWatch(
+      { github, reads, actions, heads: { get: (_r: string, branch: string) => headOf(branch) }, log: quiet },
+      FACTORY,
+      only,
+    ),
+    enqueued,
+  };
 }
 
 const heard = () => {

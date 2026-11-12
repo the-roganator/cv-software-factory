@@ -30,7 +30,7 @@ import { z } from 'zod';
 import { entryProblem, MOST_CONTRADICTED } from '../gates/contradicts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
-import { BranchRefused, guardWritable, pinBranch } from './branches.ts';
+import { BranchRefused, guardWritable, pinBranch, plainBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
 import { QUEUED_DEPLOYS, QUEUES_DEPLOYS_IN } from './deploy-queue.ts';
 import { DeployRefused, deployLabel, MAX_CARRIES, scratchBranch } from './deploys.ts';
@@ -50,7 +50,9 @@ const branch = z
   .string()
   .min(1)
   .max(200)
-  .regex(/^(?!\/|.*\/$|.*\.\.|.*\/\/)[A-Za-z0-9._/-]+$/, 'a branch name of letters, digits, dots, dashes and slashes');
+  .regex(/^(?!\/|.*\/$|.*\.\.|.*\/\/)[A-Za-z0-9._/-]+$/, 'a branch name of letters, digits, dots, dashes and slashes')
+  // No segment starts with a dot, as git has it: a `.` segment leaves the URL before it is sent (`plainBranch`).
+  .refine(plainBranch, 'no segment of a branch name starts with a dot');
 /** A path a commit names: one a patch may name (`plainPath`), whether or not it came from one. */
 const path = z.string().refine(plainPath, 'a plain relative path');
 /**

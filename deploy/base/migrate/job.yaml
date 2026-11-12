@@ -124,13 +124,6 @@ spec:
                   name: postgres-redteam
                   key: password
                   optional: true
-            # The dependency sense's (0050_patching.sql), made by `make up`. Optional for the same reason.
-            - name: PATCHING_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-patching
-                  key: password
-                  optional: true
           resources:
             requests:
               cpu: 20m

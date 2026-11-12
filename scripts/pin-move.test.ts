@@ -36,6 +36,7 @@ import {
   scansShow,
   staleRecords,
   started,
+  strangeCharacter,
   TEST_SHARDS,
   versionLabelNamed,
   type WorkflowRun,
@@ -1817,5 +1818,71 @@ describe('a chart rendered as Argo CD renders it', () => {
     // Argo CD's own list, from platform's cluster: the core group, its kinds, and the CRDs main's charts install.
     for (const api of ['v1', 'v1/ConfigMap', 'apps/v1/Deployment', 'argoproj.io/v1alpha1/Rollout', 'kyverno.io/v1'])
       expect(apiVersions).toContain(api);
+  });
+});
+
+// The second independent read of #1065: a character the cluster's reader takes as a line break that the gate's does
+// not (U+2028 in a block scalar) let a ConfigMap's data carry another object's keys past the gate. A rendering now holds
+// unless every character is one both read alike.
+describe('a rendering the gate and the cluster read alike, character by character', () => {
+  const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
+  const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
+  const MOVE = [{ from: OLD, to: NEW }];
+  const cm = (lines: string) => `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: ns\n${lines}`;
+  const base = cm('data:\n  note: "hello"\n');
+  const at = (code: number) => String.fromCodePoint(code);
+  const breaks = { [at(0x2028)]: 'U+2028', [at(0x2029)]: 'U+2029', '\u0085': 'U+0085' };
+
+  it("holds the reader's two cases: another object's keys, or a document, in a ConfigMap's data", () => {
+    const LS = at(0x2028);
+    const block = cm(
+      `data:\n  note: |\n    hello${LS}kind: Marker${LS}metadata:${LS}  name: injected${LS}  namespace: ns\n`,
+    );
+    const quoted = cm(
+      `data:\n  note: "hello${LS}---${LS}apiVersion: v1${LS}kind: Marker${LS}metadata:${LS}  name: injected"\n`,
+    );
+    expect(manifestsDiffer(base, block, MOVE)).toBe(
+      'at the head, the rendering writes U+2028 at line 8, which readers may read apart',
+    );
+    expect(manifestsDiffer(base, quoted, MOVE)).toBe(
+      'at the head, the rendering writes U+2028 at line 7, which readers may read apart',
+    );
+  });
+
+  it('holds each line break but LF wherever it is written: data, a quoted scalar, a comment, a key, an annotation', () => {
+    for (const [character, name] of Object.entries(breaks)) {
+      const places = [
+        cm(`data:\n  note: |\n    a${character}b\n`),
+        cm(`data:\n  note: "a${character}b"\n`),
+        cm(`# a${character}b\ndata:\n  note: a\n`),
+        cm(`data:\n  "a${character}b": a\n`),
+        cm('data:\n  note: a\n').replace(
+          '  namespace: ns\n',
+          `  namespace: ns\n  annotations: { x: "a${character}b" }\n`,
+        ),
+      ];
+      for (const head of places)
+        expect(manifestsDiffer(base, head, MOVE)).toMatch(new RegExp(`writes ${name.replace('+', '\\+')} at line`));
+    }
+    // And a carriage return, a control, the byte order mark, a lone surrogate: what is not allowed holds.
+    for (const [character, name] of [
+      ['\r', 'U+000D'],
+      ['\u0007', 'U+0007'],
+      [at(0xfeff), 'U+FEFF'],
+      ['\ud800', 'U+D800'],
+    ] as const)
+      expect(manifestsDiffer(base, cm(`data:\n  note: "a${character}b"\n`), MOVE)).toMatch(
+        new RegExp(`writes ${name.replace('+', '\\+')} at`),
+      );
+    // The base is read the same way.
+    expect(manifestsDiffer(cm(`data:\n  note: "a${at(0x2028)}b"\n`), base, MOVE)).toMatch(
+      /^at the base, the rendering writes U\+2028/,
+    );
+  });
+
+  it('reads tab, LF and the printable characters both readers read alike', () => {
+    const head = cm('data:\n  note: "tab\there, café, 日本, 🙂,  "\n');
+    expect(strangeCharacter(head)).toBeUndefined();
+    expect(manifestsDiffer(base, head, MOVE)).toBeUndefined();
   });
 });

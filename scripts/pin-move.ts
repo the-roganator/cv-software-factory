@@ -768,6 +768,32 @@ interface Rendered {
   body: unknown;
 }
 
+/**
+ * Whether a code point is one the gate's reader and the cluster's read alike: the gate reads with the `yaml` package,
+ * Argo CD with apimachinery's decoder and sigs.k8s.io/yaml, and they agree on a text's lines only where it holds tab, LF
+ * and printable characters: U+0020 to U+007E, U+00A0 to U+D7FF, U+E000 to U+FFFD and above U+FFFF, YAML's printable set,
+ * but for anything a reader may take as a line break other than LF (CR, U+0085, U+2028, U+2029) and the byte order mark.
+ * Everything else is refused by what it is not, not by name.
+ */
+const readAlike = (code: number) =>
+  code === 0x09 ||
+  code === 0x0a ||
+  (code >= 0x20 && code <= 0x7e) ||
+  (code >= 0xa0 && code <= 0xd7ff && code !== 0x2028 && code !== 0x2029) ||
+  (code >= 0xe000 && code <= 0xfffd && code !== 0xfeff) ||
+  code >= 0x10000;
+
+/** The first character of a rendering the readers may not read alike, with its line, or undefined. */
+export function strangeCharacter(rendered: string): string | undefined {
+  let line = 1;
+  for (const character of rendered) {
+    const code = character.codePointAt(0) as number;
+    if (!readAlike(code)) return `U+${code.toString(16).toUpperCase().padStart(4, '0')} at line ${line}`;
+    if (code === 0x0a) line++;
+  }
+  return undefined;
+}
+
 /** The YAML versions a rendering is read as: what Helm, kustomize, Argo CD and the API server read is 1.1 in places. */
 const YAML_VERSIONS = ['1.2', '1.1'] as const;
 
@@ -783,6 +809,8 @@ export function objectsOf(
   version: (typeof YAML_VERSIONS)[number] = '1.2',
 ): Map<string, Rendered> | string {
   const objects = new Map<string, Rendered>();
+  const strange = strangeCharacter(rendered);
+  if (strange) return `the rendering writes ${strange}, which readers may read apart`;
   // The stream split as Kubernetes' YAML reader splits it (kubectl, kustomize, Argo CD and Helm alike): on a line that is
   // `---`, with a comment or nothing after it, and on nothing else. Each part is one document: a part this parser reads
   // as more (after a `...`) is one whose later objects the cluster never gets.

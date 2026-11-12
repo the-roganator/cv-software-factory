@@ -28,8 +28,10 @@ function kill(pid: number) {
   } catch {}
 }
 
-/** A remote holding main at one commit and the queue's branch at the next, as the queue makes it. */
-function remote() {
+/**
+ * A remote holding main at `history` commits and the queue's branch at the next, as the queue makes it.
+ */
+function remote(history = 1) {
   const dir = mkdtempSync(join(tmpdir(), 'queue-branch-'));
   dirs.push(dir);
   const bare = join(dir, 'remote.git');
@@ -45,7 +47,7 @@ function remote() {
   git('init', '-q', '--bare', bare);
   git('init', '-q', 'work');
   const work = (...args: string[]) => git('-C', 'work', ...args);
-  work('commit', '-q', '--allow-empty', '-m', 'main');
+  for (let i = 0; i < history; i++) work('commit', '-q', '--allow-empty', '-m', `main ${i}`);
   const main = work('rev-parse', 'HEAD');
   work('commit', '-q', '--allow-empty', '-m', 'the entry');
   const sha = work('rev-parse', 'HEAD');
@@ -89,6 +91,13 @@ describe('asked once', () => {
     past.merge();
     past.pastIt();
     expect(ask(past.env)).toMatchObject({ status: 0, out: 'merged' });
+  });
+
+  it('says merged for an entry at the head of a history longer than it reads at once', () => {
+    // Its commit is the first of the fifty it reads: a search that stops there must not cut the read short and fail.
+    const long = remote(60);
+    long.merge();
+    expect(ask(long.env)).toMatchObject({ status: 0, out: 'merged' });
   });
 
   it('says gone, and exits 3, when the branch is gone and main does not hold its commit', () => {

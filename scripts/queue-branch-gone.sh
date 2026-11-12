@@ -49,7 +49,7 @@ valid() {
 
 # One word, as above.
 ask() {
-  local refs dir found
+  local refs dir found commits
   if ! refs=$(quiet_git ls-remote "$REMOTE" "$BASE_REF" "$QUEUE_BRANCH" 2>/dev/null); then
     echo unreachable
     return
@@ -68,9 +68,12 @@ ask() {
   # the job's checkout is not touched.
   dir=$(mktemp -d)
   found=unreachable
+  # The list is read whole before it is searched: piped to grep -q, which leaves at the first match, git would die of
+  # SIGPIPE, and pipefail would take a merge for no match.
   if git init -q --bare "$dir" &&
-    quiet_git -C "$dir" fetch -q --no-tags --depth=50 --filter=tree:0 "$REMOTE" "$BASE_REF" 2>/dev/null; then
-    if git -C "$dir" rev-list FETCH_HEAD | grep -qx "$QUEUE_SHA"; then found=merged; else found=gone; fi
+    quiet_git -C "$dir" fetch -q --no-tags --depth=50 --filter=tree:0 "$REMOTE" "$BASE_REF" 2>/dev/null &&
+    commits=$(git -C "$dir" rev-list FETCH_HEAD); then
+    if grep -qx "$QUEUE_SHA" <<<"$commits"; then found=merged; else found=gone; fi
   fi
   rm -rf "$dir"
   echo "$found"

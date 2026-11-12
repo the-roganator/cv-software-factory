@@ -59,7 +59,27 @@ describe('waiting for the store before migrating', () => {
       const failed = await waitForStore(sql, { withinMs: 10_000, everyMs: 100, say: (line) => said.push(line) });
       expect(failed).toBeGreaterThan(1);
       expect(said.filter((line) => line.startsWith('Waiting for the store: ECONNREFUSED'))).toHaveLength(1);
-      expect(said.at(-1)).toBe(`The store answered after ${failed} failed attempts.`);
+      expect(said.at(-1)).toMatch(
+        new RegExp(`^The store answered after ${failed} failed attempts, \\d+\\.\\d s after the first\\.$`),
+      );
+    } finally {
+      await sql.end({ timeout: 0 });
+    }
+  });
+
+  it('says it is still waiting at each report, and the code each time', async () => {
+    const port = await freePort();
+    const said: string[] = [];
+    const sql = connect(through(port), { max: 1, connect_timeout: 1 });
+    try {
+      setTimeout(() => void relay(port).then((s) => servers.push(s)), 1_200);
+      await waitForStore(sql, { withinMs: 10_000, everyMs: 100, reportMs: 500, say: (line) => said.push(line) });
+      const still = said.filter((line) => line.startsWith('Still waiting for the store: ECONNREFUSED at '));
+      expect(still.length).toBeGreaterThanOrEqual(1);
+      // One a report apart, never one an attempt.
+      const at = still.map((line) => Number(/ at (\d+\.\d) s/.exec(line)?.[1]));
+      for (let i = 1; i < at.length; i++) expect((at[i] ?? 0) - (at[i - 1] ?? 0)).toBeGreaterThanOrEqual(0.5);
+      expect(still[0]).toMatch(/at \d+\.\d s, \d+ attempts failed\.$/);
     } finally {
       await sql.end({ timeout: 0 });
     }
@@ -108,7 +128,7 @@ describe('waiting for the store before migrating', () => {
     });
     const lines = stdout.trim().split('\n');
     expect(lines[0]).toMatch(/^Waiting for the store: ECONNREFUSED at 0\.\d s/);
-    expect(lines.at(-2)).toMatch(/^The store answered after \d+ failed attempts?\.$/);
+    expect(lines.at(-2)).toMatch(/^The store answered after \d+ failed attempts?, \d+\.\d s after the first\.$/);
     expect(lines.at(-1)).toBe('Nothing to apply: the schema is current.');
   }, 30_000);
 });

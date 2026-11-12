@@ -6,7 +6,8 @@
  *
  * A read that fails, of either repository or of the cluster, appends nothing and says so: a day is never made from part
  * of what it says. A pass the worker's door refused outright, as when a deploy restarts the sense and the worker
- * together and the sense reads first, is taken again shortly, for about two minutes, before it counts as failed. It
+ * together and the sense reads first, or the store refused it, is taken again shortly, for about five minutes, before it
+ * counts as failed. It
  * acts only on a store of real events, or one that holds none yet: samples are not the factory's work.
  */
 import { type NewEvent, upcast, VERSIONS } from '@software-factory/events';
@@ -71,10 +72,11 @@ export function refused(error: unknown): boolean {
 }
 
 /**
- * How many refused passes in a row before they count as a failure: the eighth some 105 s after the first, time for a
- * worker that a deploy recreates to pull its new image, start and listen.
+ * How many refused passes in a row before they count as a failure: the 21st some five minutes after the first. A
+ * worker a deploy recreates pulls its image and listens within that, and on a new cluster the network policy has
+ * refused a new pod's connections for up to 2.5 minutes (platform run 43268720731); five is twice that.
  */
-export const MOST_REFUSED = 8;
+export const MOST_REFUSED = 21;
 
 /** How many reads to take again in a row before they count as a failure: the sixth some fifty minutes after the
  * first, at ten minutes apart. */
@@ -134,16 +136,25 @@ export class PatchingSense {
 
   async pass(): Promise<Pass> {
     // Reads to take again count only in a row: any other pass, a throw included, starts the count again.
+    let result: Pass;
     try {
-      const result = await this.#pass();
-      if (result.pass !== 'again') this.#again = 0;
-      if (result.pass !== 'refused') this.#refused = 0;
-      return result;
+      result = await this.#pass();
     } catch (error) {
       this.#again = 0;
-      this.#refused = 0;
-      throw error;
+      // The store refused the connection, as a new pod's are until the network policy admits it: taken again shortly,
+      // as the worker's door is.
+      if (!refused(error) || this.#refused + 1 >= MOST_REFUSED) {
+        this.#refused = 0;
+        throw error;
+      }
+      this.#refused++;
+      const why = [`the store: ${message(error)}`];
+      this.#log.info({ why }, 'patching: the store refused the connection, so the day is read again shortly');
+      return { pass: 'refused', why };
     }
+    if (result.pass !== 'again') this.#again = 0;
+    if (result.pass !== 'refused') this.#refused = 0;
+    return result;
   }
 
   async #pass(): Promise<Pass> {

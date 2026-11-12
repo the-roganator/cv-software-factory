@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
-import { DiskArtifacts, EventWriter } from '@software-factory/store';
+import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
 import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -369,6 +369,23 @@ describe('the dependency sense', () => {
       false,
       false,
     ]);
+  });
+
+  it('reads again shortly when the store refused the connection, and fails once the refusals reach the bound', async () => {
+    const reserved = createServer();
+    const { port } = await listenLocal(reserved);
+    await new Promise((resolve) => reserved.close(resolve));
+    const nowhere = connect(`postgres://factory_patching:x@127.0.0.1:${port}/factory`, { max: 1, connect_timeout: 1 });
+    try {
+      const s = sense(senses(), nowhere);
+      const first = await s.pass();
+      expect(first.pass).toBe('refused');
+      expect((first as { why: string[] }).why[0]).toMatch(/^the store: .*ECONNREFUSED/);
+      for (let i = 1; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
+      await expect(s.pass()).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+    } finally {
+      await nowhere.end({ timeout: 0 });
+    }
   });
 
   it('starts the count of refused passes anew after any other pass, on the same sense', async () => {

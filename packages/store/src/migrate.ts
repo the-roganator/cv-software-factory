@@ -15,7 +15,10 @@
  *
  * On a new cluster the Job starts moments after Postgres, and its first connection can be refused or cut while
  * Postgres, its Service or the network policy are still coming up. So it waits for the store first (`waitForStore`),
- * about a minute, before the first statement, and only then migrates: a refusal costs seconds, not the Job's backoff.
+ * up to five minutes, before the first statement, and only then migrates: a refusal costs the wait, not the Job's
+ * backoff. On new clusters the network policy has refused a new pod's connections to Postgres for up to 2.5 minutes
+ * (platform run 43268720731); why it takes minutes is not known, so the bound is twice that, and the wait says how long
+ * it took.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -110,25 +113,33 @@ export interface WaitOptions {
   withinMs?: number;
   /** How long between attempts. */
   everyMs?: number;
-  /** Told each code once, the first time it comes, and how long the wait had taken. */
+  /** How often to say it is still waiting. */
+  reportMs?: number;
+  /** Told each code the first time it comes, every `reportMs` while it waits, and how long the wait took. */
   say?: (line: string) => void;
 }
 
 /**
- * Waits until the store answers a query, trying about once a second for about a minute while its errors are those of
- * a store still coming up (`COMING_UP`), and saying each such error's code once. Returns how many attempts failed. Any
+ * Waits until the store answers a query, trying about once a second for up to five minutes while its errors are those
+ * of a store still coming up (`COMING_UP`), saying each such error's code the first time, a line every fifteen seconds
+ * while it waits, and how long it waited once the store answers. Returns how many attempts failed. Any
  * other error, or the last when the time is up, is thrown, as an error of the first attempt would have been.
  */
 export async function waitForStore(
   sql: Sql,
-  { withinMs = 60_000, everyMs = 1_000, say = console.log }: WaitOptions = {},
+  { withinMs = 300_000, everyMs = 1_000, reportMs = 15_000, say = console.log }: WaitOptions = {},
 ): Promise<number> {
   const start = performance.now();
   const said = new Set<string>();
+  let reported = 0;
+  const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
   for (let failed = 0; ; failed++) {
     try {
       await sql`select 1`;
-      if (failed) say(`The store answered after ${failed} failed ${failed === 1 ? 'attempt' : 'attempts'}.`);
+      if (failed)
+        say(
+          `The store answered after ${failed} failed ${failed === 1 ? 'attempt' : 'attempts'}, ${seconds(performance.now() - start)} after the first.`,
+        );
       return failed;
     } catch (error) {
       const code = codeOf(error);
@@ -140,8 +151,11 @@ export async function waitForStore(
       }
       if (!said.has(code)) {
         said.add(code);
-        say(`Waiting for the store: ${code} at ${(waited / 1000).toFixed(1)} s (${(error as Error).message}).`);
+        say(`Waiting for the store: ${code} at ${seconds(waited)} (${(error as Error).message}).`);
+      } else if (waited - reported >= reportMs) {
+        say(`Still waiting for the store: ${code} at ${seconds(waited)}, ${failed + 1} attempts failed.`);
       }
+      if (waited - reported >= reportMs) reported = waited;
       await new Promise((resolve) => setTimeout(resolve, everyMs));
     }
   }

@@ -114,7 +114,7 @@ jobs:
           if ! WATCHED=$make scripts/platform-watch.sh; then
             kill -- "-$make" 2>/dev/null || true
             wait "$make" || true
-            echo "::error::The cluster did not come up: the line above says why."
+            echo "::error::The cluster did not come up: the watch's first line above says why, and the lines after it what it waited on."
             exit 1
           fi
           wait "$make"
@@ -188,7 +188,7 @@ jobs:
           # it started and ended and its log, and Postgres's, so a refused connection can be set against when Postgres
           # listened.
           kubectl --context k3d-software-factory get pods -A --field-selector=status.phase=Failed -o json |
-            jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name) started \(.status.startTime // "-"), \([.status.containerStatuses[]?.state.terminated |
+            jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name) started \(.status.startTime // "-"), \([.status.initContainerStatuses[]?, .status.containerStatuses[]? | .state.terminated // empty |
               "ended \(.finishedAt // "-") exit \(.exitCode // "-")"] | join(", "))"' |
             while read -r ns pod times; do
               echo "--- $ns/$pod: $times"

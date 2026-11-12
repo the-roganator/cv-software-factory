@@ -6,8 +6,8 @@
  *
  * A read that fails, of either repository or of the cluster, appends nothing and says so: a day is never made from part
  * of what it says. A pass the worker's door refused outright, as when a deploy restarts the sense and the worker
- * together and the sense reads first, is taken again shortly, a few times, before it counts as failed. It acts only on a store of real events, or one that holds none yet: samples are not the factory's
- * work.
+ * together and the sense reads first, is taken again shortly, for about two minutes, before it counts as failed. It
+ * acts only on a store of real events, or one that holds none yet: samples are not the factory's work.
  */
 import { type NewEvent, upcast, VERSIONS } from '@software-factory/events';
 import { type EventWriter, storeKind } from '@software-factory/store';
@@ -70,8 +70,11 @@ export function refused(error: unknown): boolean {
   return false;
 }
 
-/** How many refused passes in a row before they count as a failure: the fourth some 45 s after the first. */
-export const MOST_REFUSED = 4;
+/**
+ * How many refused passes in a row before they count as a failure: the eighth some 105 s after the first, time for a
+ * worker that a deploy recreates to pull its new image, start and listen.
+ */
+export const MOST_REFUSED = 8;
 
 /** How many reads to take again in a row before they count as a failure: the sixth some fifty minutes after the
  * first, at ten minutes apart. */

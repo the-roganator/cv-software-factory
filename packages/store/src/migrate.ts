@@ -77,12 +77,15 @@ export type Passwords = { [name in keyof typeof PASSWORDS]?: string | undefined 
 
 /**
  * The errors of a store still coming up, worth trying again: refused, cut or timed out before it answered, its name not
- * yet resolving, or Postgres saying it is starting (57P03). A wrong password (28P01) is not one: the Job connects as
+ * yet resolving, or Postgres saying it is starting (57P03), ended the connection as it restarted (57P01), or had no
+ * connection free (53300). A wrong password (28P01) is not one: the Job connects as
  * the owner, whose password Postgres takes at initdb, before it listens on TCP, so it never comes right by waiting.
  */
 const COMING_UP = new Set([
   'ECONNREFUSED',
   'ECONNRESET',
+  'ECONNABORTED',
+  'EPIPE',
   'EHOSTUNREACH',
   'ENETUNREACH',
   'ENOTFOUND',
@@ -92,7 +95,9 @@ const COMING_UP = new Set([
   'CONNECTION_CLOSED',
   'CONNECTION_ENDED',
   'CONNECTION_DESTROYED',
+  '57P01',
   '57P03',
+  '53300',
 ]);
 
 const codeOf = (error: unknown) => {

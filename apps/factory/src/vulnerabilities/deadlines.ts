@@ -5,7 +5,7 @@
  * the scan's database, are read every run.
  *
  *     node apps/factory/src/vulnerabilities/deadlines.ts <scan's out dir> --checkout <dir> --trivy-pin <Dockerfile>
- *       (--write | --prove) [--memo <file>]
+ *       (--write | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]
  *
  * - **Severity** is the higher of Trivy's and the publisher's (`Finding.publisher`: Trivy's `VendorSeverity` for the
  *   advisory's own source, or Node's own rating for Node's).
@@ -47,7 +47,7 @@ import { promisify } from 'node:util';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
 import { type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
-import { type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
+import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
 import {
   APP,
   type Context,
@@ -1544,7 +1544,7 @@ interface Saved {
 }
 
 const USAGE =
-  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write | --prove) [--memo <file>]\n' +
+  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]\n' +
   '       deadlines.ts --verdict <scan out dir>';
 
 export async function main(args: string[]): Promise<number> {
@@ -1560,13 +1560,24 @@ export async function main(args: string[]): Promise<number> {
     if (!saved.passes) console.log(`::error::${saved.lines.find((line) => line.startsWith('The run fails')) ?? ''}`);
     return saved.passes ? 0 : 1;
   }
-  const [dir] = args.filter((arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo)$/));
+  const [dir] = args.filter(
+    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo|memo-day)$/),
+  );
   const checkout = option('--checkout');
   const pinFile = option('--trivy-pin');
   const prove = args.includes('--prove');
   const write = args.includes('--write');
   const memoFile = option('--memo');
-  if (!dir || !checkout || !pinFile || prove === write || (args.includes('--memo') && !memoFile)) {
+  // The day the workflow keyed the file by, so a run that crosses midnight keeps the answers under the key it read.
+  const memoDay = option('--memo-day');
+  if (
+    !dir ||
+    !checkout ||
+    !pinFile ||
+    prove === write ||
+    (args.includes('--memo') && !memoFile) ||
+    (memoDay !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(memoDay))
+  ) {
     console.error(USAGE);
     return 2;
   }
@@ -1580,9 +1591,11 @@ export async function main(args: string[]): Promise<number> {
   mkdirSync(work, { recursive: true });
   const now = Date.now();
   const real = realSources(handoff, checkout, pin[1], mkdtempSync(join(work, 'work-')), process.env.GH_TOKEN);
-  const memo = memoFile ? readMemo(memoFile, now) : undefined;
+  const memo = memoFile ? readMemo(memoFile, memoDay ?? dayOf(now)) : undefined;
   const asked: MemoCount = { kept: 0, asked: 0 };
-  const sources = memo ? memoised(real, memo, asked) : real;
+  // The Helm that renders a chart, from this repository's mise.lock, in the key of each rendering kept.
+  const helm = memo ? (await promisify(execFile)('helm', ['version', '--short'])).stdout.trim() : '';
+  const sources = memo ? memoised(real, memo, asked, helm) : real;
   let judged: Awaited<ReturnType<typeof assess>>;
   try {
     judged = await assess(handoff, sources, now, (line) => console.log(line));
@@ -1621,7 +1634,7 @@ export async function main(args: string[]): Promise<number> {
   if (run)
     for (const [index, move] of list.entries())
       for (const each of move.results) tags.set(each, { index: index + 1, run });
-  if (memoFile && memo) {
+  if (memo && memoFile) {
     writeMemo(memoFile, memo);
     console.log(
       `Lookups of registries and releases: ${asked.kept} answered from the day's (${memo.day}), ${asked.asked} asked.`,

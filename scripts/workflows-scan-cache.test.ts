@@ -38,7 +38,7 @@ describe('the scan’s caches', () => {
     for (const job of ['scan', 'prove']) {
       const layers = steps(job).find((step) => step.id === 'layers');
       // The databases are Trivy's db/ and java-db/ beside it, which scan.ts deletes and pulls afresh each run.
-      expect(layers?.with?.path, job).toBe(expression('runner.temp') + '/trivy/fanal');
+      expect(layers?.with?.path, job).toBe(`${expression('runner.temp')}/trivy/fanal`);
       expect(layers?.with?.key, job).toBe(
         `vulnerabilities-layers-${expression(PIN)}-${expression('steps.day.outputs.day')}`,
       );
@@ -57,12 +57,20 @@ describe('the scan’s caches', () => {
   it('keep the day’s lookups for runs on a push or a pull request, and leave the daily scan to ask afresh', () => {
     for (const job of ['scan', 'prove']) {
       const lookups = steps(job).find((step) => step.id === 'lookups');
-      expect(lookups?.if, job).toBe(expression("github.event_name == 'push' || github.event_name == 'pull_request'"));
+      // The proving run runs on a pull request alone; the scan asks afresh on the schedule and by hand.
+      if (job === 'scan')
+        expect(lookups?.if, job).toBe(expression("github.event_name == 'push' || github.event_name == 'pull_request'"));
+      else expect(lookups?.if, job).toBeUndefined();
       expect(lookups?.with?.key, job).toBe(`vulnerabilities-lookups-${expression('steps.day.outputs.day')}`);
       const deadlines = steps(job).find((step) =>
         step.run?.includes('vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan"'),
       );
       expect(deadlines?.run, job).toContain('--memo "$RUNNER_TEMP/lookups/deadlines.json"');
+      // Keyed by the day the cache's key names, so a run that crosses midnight keeps its answers under the key it read.
+      expect(deadlines?.run, job).toContain('--memo-day "$LOOKUPS_DAY"');
+      expect((deadlines as { env?: Record<string, string> } | undefined)?.env?.LOOKUPS_DAY, job).toBe(
+        expression('steps.day.outputs.day'),
+      );
     }
   });
 

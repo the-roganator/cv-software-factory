@@ -240,9 +240,11 @@ jobs:
         if: ${{ steps.scan.outputs.sarif == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          LOOKUPS_DAY: ${{ steps.day.outputs.day }}
         run: |
           node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --write --memo "$RUNNER_TEMP/lookups/deadlines.json"
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --write --memo "$RUNNER_TEMP/lookups/deadlines.json" \
+            --memo-day "$LOOKUPS_DAY"
       # The default branch's runs alone save, each entry once (a day's key is not saved again). Trivy writes its cache as
       # root, in its image: the runner's user is given it to read.
       - name: Give the runner Trivy's analysis to save
@@ -384,7 +386,6 @@ jobs:
           key: vulnerabilities-layers-${{ hashFiles('factory/deploy/images/trivy/Dockerfile') }}-${{ steps.day.outputs.day }}
           restore-keys: vulnerabilities-layers-${{ hashFiles('factory/deploy/images/trivy/Dockerfile') }}-${{ steps.day.outputs.month }}-
       - id: lookups
-        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lookups/deadlines.json
@@ -403,9 +404,11 @@ jobs:
       - name: Deadlines and moves, failing on none
         env:
           GH_TOKEN: ${{ github.token }}
+          LOOKUPS_DAY: ${{ steps.day.outputs.day }}
         run: |
           node factory/apps/factory/src/vulnerabilities/deadlines.ts "$RUNNER_TEMP/scan" --checkout scanned \
-            --trivy-pin factory/deploy/images/trivy/Dockerfile --prove --memo "$RUNNER_TEMP/lookups/deadlines.json"
+            --trivy-pin factory/deploy/images/trivy/Dockerfile --prove --memo "$RUNNER_TEMP/lookups/deadlines.json" \
+            --memo-day "$LOOKUPS_DAY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: moves

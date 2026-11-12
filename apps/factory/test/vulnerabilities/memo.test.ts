@@ -65,7 +65,7 @@ describe('the day’s lookups', () => {
   it('asks each once a day and answers the day’s other runs from the file, an answer of none included', async () => {
     const file = fileIn();
     const first = counting();
-    const memo = readMemo(file, NOON);
+    const memo = readMemo(file, dayOf(NOON));
     const asked: MemoCount = { kept: 0, asked: 0 };
     const sources = memoised(first.sources, memo, asked);
     expect(await sources.tags('docker.io/library/postgres')).toEqual(['1.0', '1.1']);
@@ -76,7 +76,7 @@ describe('the day’s lookups', () => {
     writeMemo(file, memo);
 
     const later = counting();
-    const again = memoised(later.sources, readMemo(file, NOON + 6 * 3_600_000), asked);
+    const again = memoised(later.sources, readMemo(file, dayOf(NOON + 6 * 3_600_000)), asked);
     expect(await again.tags('docker.io/library/postgres')).toEqual(['1.0', '1.1']);
     expect(await again.published('left-pad', '9.9.9')).toBeUndefined();
     expect(await again.k3s('v1.37.2+k3s1')).toBeUndefined();
@@ -87,21 +87,21 @@ describe('the day’s lookups', () => {
   it('asks afresh the next day, and reads a file of another shape, or that does not parse, as empty', () => {
     const file = fileIn();
     writeMemo(file, { version: 1, day: dayOf(NOON), answers: { releases: { value: [] } } });
-    expect(Object.keys(readMemo(file, NOON).answers)).toEqual(['releases']);
+    expect(Object.keys(readMemo(file, dayOf(NOON)).answers)).toEqual(['releases']);
     // Midnight, UTC: the next day.
-    expect(readMemo(file, Date.parse('2026-11-13T00:00:00Z')).answers).toEqual({});
+    expect(readMemo(file, dayOf(Date.parse('2026-11-13T00:00:00Z'))).answers).toEqual({});
     writeFileSync(file, JSON.stringify({ version: 2, day: dayOf(NOON), answers: { releases: { value: [] } } }));
-    expect(readMemo(file, NOON).answers).toEqual({});
+    expect(readMemo(file, dayOf(NOON)).answers).toEqual({});
     writeFileSync(file, JSON.stringify({ version: 1, day: dayOf(NOON), answers: [] }));
-    expect(readMemo(file, NOON).answers).toEqual({});
+    expect(readMemo(file, dayOf(NOON)).answers).toEqual({});
     writeFileSync(file, '{');
-    expect(readMemo(file, NOON).answers).toEqual({});
-    expect(readMemo(join(file, 'none'), NOON).answers).toEqual({});
+    expect(readMemo(file, dayOf(NOON)).answers).toEqual({});
+    expect(readMemo(join(file, 'none'), dayOf(NOON)).answers).toEqual({});
   });
 
   it('keeps no failed lookup, so the next call and the next run ask again', async () => {
     let fail = true;
-    const memo = readMemo(fileIn(), NOON);
+    const memo = readMemo(fileIn(), dayOf(NOON));
     const flaky = {
       ...counting().sources,
       releases: async () => {
@@ -119,13 +119,13 @@ describe('the day’s lookups', () => {
 
   it('shares one lookup between calls in a run, as the sources’ callers expect', async () => {
     const { sources, calls } = counting();
-    const memoed = memoised(sources, readMemo(fileIn(), NOON));
+    const memoed = memoised(sources, readMemo(fileIn(), dayOf(NOON)));
     await Promise.all([memoed.tags('a'), memoed.tags('a'), memoed.tags('b')]);
     expect(calls).toEqual(['tags a', 'tags b']);
   });
 
   it('renders a chart again when anything it is rendered from changes: its values files’ contents among them', async () => {
-    const memo = readMemo(fileIn(), NOON);
+    const memo = readMemo(fileIn(), dayOf(NOON));
     const one = counting({ 'values.yaml': 'a: 1' });
     expect(await memoised(one.sources, memo).render(CHART, '1.37.1')).toBe('rendered a: 1');
     const same = counting({ 'values.yaml': 'a: 1' });
@@ -137,12 +137,14 @@ describe('the day’s lookups', () => {
     await memoised(kube.sources, memo).render(CHART, '1.38.0');
     const version = counting({ 'values.yaml': 'a: 2' });
     await memoised(version.sources, memo).render({ ...CHART, version: '1.0.1' }, '1.38.0');
-    expect([changed.calls, kube.calls, version.calls].map((calls) => calls.length)).toEqual([1, 1, 1]);
+    const helm = counting({ 'values.yaml': 'a: 2' });
+    await memoised(helm.sources, memo, undefined, 'v4.1.0+g1').render({ ...CHART, version: '1.0.1' }, '1.38.0');
+    expect([changed.calls, kube.calls, version.calls, helm.calls].map((calls) => calls.length)).toEqual([1, 1, 1, 1]);
   });
 
   it('never keeps what the advisory database or code scanning answers', async () => {
     const { sources, calls } = counting();
-    const memo = readMemo(fileIn(), NOON);
+    const memo = readMemo(fileIn(), dayOf(NOON));
     const memoed = memoised(sources, memo);
     await memoed.alerts();
     await memoed.alerts();
@@ -154,7 +156,7 @@ describe('the day’s lookups', () => {
 
   it('writes the file where it is told, making its directory', () => {
     const file = fileIn();
-    writeMemo(file, readMemo(file, NOON));
+    writeMemo(file, readMemo(file, dayOf(NOON)));
     expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ version: 1, day: '2026-11-12', answers: {} });
   });
 });

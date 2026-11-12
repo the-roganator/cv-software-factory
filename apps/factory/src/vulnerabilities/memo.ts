@@ -28,9 +28,9 @@ export interface Memo {
   answers: Record<string, { value: unknown } | { none: true }>;
 }
 
-/** The kept answers, if the file holds today's; otherwise none. */
-export function readMemo(file: string, now: number): Memo {
-  const empty: Memo = { version: VERSION, day: dayOf(now), answers: {} };
+/** The kept answers, if the file holds the day's; otherwise none. */
+export function readMemo(file: string, day: string): Memo {
+  const empty: Memo = { version: VERSION, day, answers: {} };
   if (!existsSync(file)) return empty;
   try {
     const kept = JSON.parse(readFileSync(file, 'utf-8')) as Partial<Memo>;
@@ -57,7 +57,13 @@ export interface MemoCount {
  * The sources, each lookup answered from the memo when it holds the day's answer, and otherwise asked and the answer
  * kept. Two calls with the same arguments in one run share one lookup, as the sources' own callers expect.
  */
-export function memoised(sources: Sources, memo: Memo, count: MemoCount = { kept: 0, asked: 0 }): Sources {
+export function memoised(
+  sources: Sources,
+  memo: Memo,
+  count: MemoCount = { kept: 0, asked: 0 },
+  /** What renders a chart (`helm version`'s answer): a new Helm renders again. */
+  renderer = '',
+): Sources {
   const inFlight = new Map<string, Promise<unknown>>();
   const once = <T>(key: string, ask: () => Promise<T>): Promise<T> => {
     const held = memo.answers[key];
@@ -87,9 +93,9 @@ export function memoised(sources: Sources, memo: Memo, count: MemoCount = { kept
     manifests: (reference) => once(`manifests ${reference}`, () => sources.manifests(reference)),
     chartVersions: (repo, chart) => once(`chartVersions ${repo} ${chart}`, () => sources.chartVersions(repo, chart)),
     // A chart's rendering, keyed by everything it is rendered from: the chart, its version and repository, the
-    // Kubernetes version, and the contents of each values file in the checkout.
+    // Kubernetes version, the contents of each values file in the checkout, and the Helm that renders it.
     render: (chart, kubeVersion) =>
-      once(`render ${renderKey(sources, chart, kubeVersion)}`, () => sources.render(chart, kubeVersion)),
+      once(`render ${renderKey(sources, chart, kubeVersion, renderer)}`, () => sources.render(chart, kubeVersion)),
     // A tool's releases, keyed by the repository mise.lock names for it, so a tool that moves publisher is asked again.
     toolReleases: (tool) =>
       once(`toolReleases ${tool} ${aquaRepository(sources.file('mise.lock') ?? '', tool) ?? ''}`, () =>
@@ -99,9 +105,16 @@ export function memoised(sources: Sources, memo: Memo, count: MemoCount = { kept
   };
 }
 
-function renderKey(sources: Sources, chart: Parameters<Sources['render']>[0], kubeVersion: string | undefined) {
+function renderKey(
+  sources: Sources,
+  chart: Parameters<Sources['render']>[0],
+  kubeVersion: string | undefined,
+  renderer: string,
+) {
   const values = chart.values.map((file) => [file, sources.file(file) ?? null]);
   return createHash('sha256')
-    .update(JSON.stringify([chart.repo, chart.chart, chart.version, chart.release, kubeVersion ?? null, values]))
+    .update(
+      JSON.stringify([chart.repo, chart.chart, chart.version, chart.release, kubeVersion ?? null, values, renderer]),
+    )
     .digest('hex');
 }

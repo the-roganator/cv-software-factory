@@ -31,6 +31,7 @@ import {
   DB_MAX_AGE_MS,
   databaseAge,
   databases,
+  Fault,
   imagesIn,
   isAnswer,
   itemKey,
@@ -890,6 +891,10 @@ describe('trying again', () => {
       new Error('https://example.com/v1.404/list.txt: 500'),
       stderr('dial tcp: lookup ghcr.io: i/o timeout'),
       new Error('fetch failed'),
+      // A 404 logged on the way to another failure is not the answer: the failure's own line is.
+      stderr('GET https://ghcr.io/v2/x/y/referrers/sha256:ab: 404 Not Found\nFATAL\tdial tcp: i/o timeout'),
+      // A database's pull is tried again whatever it says: its tag may be mid-push.
+      new Fault('the database could not be pulled: MANIFEST_UNKNOWN: manifest unknown'),
     ];
     for (const error of faults) {
       waited.length = 0;

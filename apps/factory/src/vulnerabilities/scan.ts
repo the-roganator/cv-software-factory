@@ -805,9 +805,16 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
  * timeout, a 429, a 5xx, a denial a sign-in may still clear) is not one.
  */
 export function isAnswer(error: unknown) {
-  const text = `${(error as { stderr?: unknown })?.stderr ?? ''}\n${(error as Error)?.message ?? error}`;
-  return /\bMANIFEST_UNKNOWN\b|\bNAME_UNKNOWN\b|\bmanifest unknown\b|\b404 Not Found\b|: 404$/im.test(text);
+  if (error instanceof Fault) return false;
+  // The failure's own line, the last the tool printed: a 404 logged on the way to a timeout is not the answer.
+  const stderr = String((error as { stderr?: unknown })?.stderr ?? '').trim();
+  const text = stderr || String((error as Error)?.message ?? error).trim();
+  const last = text.split('\n').at(-1) ?? '';
+  return /\bMANIFEST_UNKNOWN\b|\bNAME_UNKNOWN\b|\bmanifest unknown\b|\b404 Not Found\b|: 404$/i.test(last);
 }
+
+/** A failure that is always tried again, whatever it says. */
+export class Fault extends Error {}
 
 /** Tries again after 15, 45 and 90 seconds on a fault; an answer (`isAnswer`) at once. */
 export async function retried<T>(
@@ -835,9 +842,15 @@ export async function retried<T>(
  */
 export async function databases(tools: Tools, trivyImage: string, cache: string) {
   for (const dir of DATABASE_DIRS) rmSync(join(cache, dir), { recursive: true, force: true });
+  // Tried again whatever the registry says: a database's tag is pushed again every few hours, and a pull at that moment
+  // may find no manifest for a few seconds.
   const pull = (args: string[]) =>
     tools.retry(() =>
-      run('docker', [...dockerRun(cache), trivyImage, 'image', '--cache-dir', '/cache', '--quiet', ...args]),
+      run('docker', [...dockerRun(cache), trivyImage, 'image', '--cache-dir', '/cache', '--quiet', ...args]).catch(
+        (error: unknown) => {
+          throw new Fault(`the database could not be pulled: ${firstLine(error)}`);
+        },
+      ),
     );
   await pull(['--download-db-only', '--db-repository', DB_REPOSITORY]);
   await pull(['--download-java-db-only', '--java-db-repository', JAVA_DB_REPOSITORY]);

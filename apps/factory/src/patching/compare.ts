@@ -10,7 +10,8 @@
  *   image instead: Argo CD after a merge, a k3s move not yet applied. A pin of an image no pod runs at all is no row,
  *   since an image may run only now and then (a runner's, a Job's).
  *
- * A reference is compared by its repository, normalised as Docker does (`postgres` is `docker.io/library/postgres`), and
+ * A reference is compared by its repository, normalised as Docker does (`postgres` is `docker.io/library/postgres`),
+ * and
  * then by its digest when the pod names one, or else by its tag. A pod's digest may be its index's or a platform's
  * manifest's, so the list gives every digest the scan saw of each image.
  */

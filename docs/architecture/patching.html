@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patching · Software Factory · Martin Rogan</title>
+<meta name="description" content="How a patch goes from an advisory to the running cluster, what proves it on the way, and which patches wait for Martin.">
+<link rel="icon" href="../design/system/mark/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../design/system/tokens.css">
+<link rel="stylesheet" href="architecture.css">
+<style>
+/* ---- Diagram and card ---------------------------------------------------------------- */
+.col { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; min-width: 0; }
+.col .stage { align-self: stretch; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 20px; align-items: start; }
+@media (max-width: 1150px) { .main { grid-template-columns: 1fr; } }
+svg#dia { display: block; width: 100%; min-width: 820px; height: auto; }
+/* The two ways through are told apart by line shape first: a move nobody looks at is a solid line, one that waits on
+   Martin is dashed and warm, his own act is a long dash, and reading is a quiet line. */
+.f-read { --flow: var(--text-muted); --dash: none; }
+.f-auto { --flow: var(--signal); --dash: none; }
+.f-held { --flow: var(--attn); --dash: 5 5; }
+.f-hand { --flow: var(--signal); --dash: 9 5; }
+.f-set { --flow: var(--text-2); --dash: 0.5 4.5; }
+.dot-read { fill: var(--text-muted); }
+.dot-auto { fill: var(--signal); }
+.dot-held { fill: var(--attn); }
+.dot-hand { fill: var(--bg); stroke: var(--signal); stroke-width: 1.8; }
+.dot-set { fill: var(--text-2); }
+.node { cursor: default; }
+#dia .node .name { font-size: 17px; }
+#dia .node .sub { font-size: 12.5px; }
+.node.dim { opacity: 0.22; }
+.node.person .box { stroke: var(--text); stroke-width: 2; }
+.node.waits .box { stroke: var(--attn); stroke-width: 2.2; }
+.ntag rect { fill: var(--text); }
+.ntag text { fill: var(--on-inverse); font: 500 11px var(--font-mono); letter-spacing: 0.6px; }
+.legend svg { width: 14px; height: 14px; flex: none; }
+
+/* ---- The card ------------------------------------------------------------------------ */
+.card ul, .card ol { margin: 0 0 10px; padding-left: 20px; color: var(--text-2); }
+.card li { margin-bottom: 4px; }
+.card ol.tight li { margin-bottom: 2px; }
+.card b { color: var(--text); font-weight: 500; }
+.card code { font: 12.5px var(--font-mono); color: var(--text); background: var(--surface); padding: 1px 5px; border-radius: var(--radius-small); }
+.callout { border-left: var(--stroke-rule) solid var(--signal-line); background: var(--signal-wash); padding: 10px 12px; margin: 0 0 12px; border-radius: 0 var(--radius-small) var(--radius-small) 0; color: var(--text-2); }
+.callout.attn { border-color: var(--attn); background: var(--attn-wash); }
+.card table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 12px; font-variant-numeric: tabular-nums; }
+.card th, .card td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); color: var(--text-2); }
+.card th { font-weight: 500; color: var(--text); }
+.card h3 { margin: 14px 0 6px; font: 500 10.5px var(--font-mono); letter-spacing: 1.2px; color: var(--text-muted); text-transform: uppercase; }
+details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+summary { cursor: pointer; font: 500 10.5px var(--font-mono); letter-spacing: 1.2px; color: var(--text-muted); text-transform: uppercase; }
+details p { font-size: 13.5px; margin-top: 8px; }
+.nav { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; }
+.nav .btn:disabled { opacity: 0.35; cursor: default; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="eyebrow"><a href="../AGENTS.md">Software Factory</a> · architecture</div>
+      <h1>Patching <em>· a fix, from advisory to cluster</em></h1>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="col">
+    <div class="seg" role="tablist" aria-label="Step" id="steps"></div>
+    <section class="stage" aria-label="Diagram">
+      <div class="scroll">
+        <svg id="dia" viewBox="0 0 1116 590" role="img" aria-labelledby="diaT">
+          <title id="diaT">The parts involved in this step, and what passes between them</title>
+          <g id="edges"></g><g id="nodes"></g><g id="dotsL"></g><g id="tags"></g>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><svg viewBox="0 0 14 14" aria-hidden="true"><circle class="dot-read" cx="7" cy="7" r="4"/></svg>something read</span>
+        <span><svg viewBox="0 0 14 14" aria-hidden="true"><circle class="dot-auto" cx="7" cy="7" r="5"/></svg>a move going through, nobody looking</span>
+        <span><svg viewBox="0 0 14 14" aria-hidden="true"><circle class="dot-held" cx="7" cy="7" r="4.5"/></svg>a move that waits on Martin</span>
+        <span><svg viewBox="0 0 14 14" aria-hidden="true"><circle class="dot-hand" cx="7" cy="7" r="4.5"/></svg>Martin's own act</span>
+      </div>
+    </section>
+    </div>
+
+    <aside>
+      <div class="card">
+        <div class="tag" id="count"></div>
+        <h2 id="title"></h2>
+        <div id="body"></div>
+        <div class="nav">
+          <button type="button" class="btn" id="prev">← Back</button>
+          <button type="button" class="btn primary" id="next">Next →</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="foot">
+    <div class="left">
+      <span>The details: <a href="../COMPONENTS/PATCHING.md">patching</a>, <a href="../COMPONENTS/SECURITY-SCANNING.md">the scan</a>, and <a href="adr/0019-the-gate-passes-a-pin-move-it-proves.md">why</a>.</span>
+      <a href="wiring.html">How the parts connect</a>
+      <a href="flags.html">Feature flags</a>
+      <a href="hosting.html">Where the factory lives</a>
+      <a href="../design/system/index.html">Design system</a>
+    </div>
+    <div class="right">
+      <div class="seg" role="group" aria-label="Theme"><button type="button" data-theme-set="paper">PAPER</button><button type="button" data-theme-set="ink">INK</button></div>
+      <div class="seg" role="group" aria-label="Motion"><button type="button" data-motion="on">MOTION</button><button type="button" data-motion="off">STILL</button></div>
+    </div>
+  </footer>
+</div>
+
+<script>
+(()=> {
+const NS = 'http://www.w3.org/2000/svg';
+const $ = (id) => document.getElementById(id);
+const DOCS = '../COMPONENTS';
+
+// Three rows, read as an S: found (left to right), proved (right to left), running (left to right).
+const NODES = {
+  advisories: { x: 20, y: 40, t: 'Advisories', s: "Trivy's database, Node's" },
+  versions: { x: 20, y: 130, t: 'New versions', s: "each publisher's own" },
+  scan: { x: 240, y: 40, t: 'The daily scan', s: '04:17 UTC, each merge' },
+  inventory: { x: 240, y: 130, t: 'The inventory', s: 'everything pinned' },
+  moves: { x: 460, y: 40, t: 'The moves', s: 'what to move, by when' },
+  watch: { x: 680, y: 40, t: 'The pin watch', s: 'in the GitHub worker' },
+  dependabot: { x: 680, y: 130, t: 'Dependabot', s: 'its own pull requests' },
+  pr: { x: 900, y: 40, t: 'A pin pull request', s: 'one move, one commit' },
+  ci: { x: 900, y: 145, t: 'A cluster in CI', s: 'built from the change' },
+  checks: { x: 900, y: 250, t: 'The checks', s: 'tests and scans' },
+  gate: { x: 680, y: 250, t: 'The review gate', s: 'proves the pin move' },
+  queue: { x: 460, y: 250, t: 'The merge queue', s: 'runs the checks again' },
+  martin: { x: 20, y: 250, t: 'Martin', s: 'the console, his phone', person: true },
+  sense: { x: 20, y: 440, t: 'Dependency sense', s: '05:30 UTC' },
+  build: { x: 240, y: 440, t: 'Build and sign', s: 'our own images only' },
+  argo: { x: 460, y: 440, t: 'Argo CD', s: 'deploys what is on main' },
+  admission: { x: 680, y: 440, t: 'Admission', s: 'signed, or by digest' },
+  cluster: { x: 900, y: 440, t: 'The cluster', s: 'runs the patch' },
+};
+for (const n of Object.values(NODES)) { n.w ??= 196; n.h ??= 60; }
+
+const EDGES = {
+  adv: ['advisories', 'scan'], ver: ['versions', 'scan'], inv: ['inventory', 'scan'],
+  sm: ['scan', 'moves'], mw: ['moves', 'watch'], wp: ['watch', 'pr'], dep: ['dependabot', 'pr'],
+  pk: ['pr', 'ci'], kc: ['ci', 'checks'], cg: ['checks', 'gate'],
+  gq: ['gate', 'queue'],
+  // A held move leaves the gate downwards and comes round to Martin; his answer goes straight to the queue.
+  gm: { d: 'M778,310 L778,345 Q778,360 763,360 L173,360 Q158,360 158,345 L158,310' },
+  mq: ['martin', 'queue'],
+  // A move with no pin to edit never becomes a pull request: it goes to Martin as an issue.
+  mi: { d: 'M558,100 L558,205 Q558,220 543,220 L133,220 Q118,220 118,235 L118,250' },
+  qa: ['queue', 'argo'],
+  qb: { d: 'M500,310 C 500,390 330,370 330,440' },
+  ba: ['build', 'argo'], aa: ['argo', 'admission'], ac: ['admission', 'cluster'],
+  cs: { d: 'M998,500 L998,535 Q998,550 983,550 L133,550 Q118,550 118,535 L118,500' },
+  sn: { d: 'M60,440 L60,310' },
+};
+function anchors(a, b) {
+  const A = NODES[a], B = NODES[b];
+  if (B.x >= A.x + A.w) return [[A.x + A.w, A.y + A.h / 2], [B.x, B.y + B.h / 2]];
+  if (B.x + B.w <= A.x) return [[A.x, A.y + A.h / 2], [B.x + B.w, B.y + B.h / 2]];
+  if (B.y > A.y + A.h) return [[A.x + A.w / 2, A.y + A.h], [B.x + B.w / 2, B.y]];
+  return [[A.x + A.w / 2, A.y], [B.x + B.w / 2, B.y + B.h]];
+}
+function pathFor(id) {
+  const e = EDGES[id];
+  if (e.d) return e.d;
+  const [[x1, y1], [x2, y2]] = anchors(e[0], e[1]);
+  if (Math.abs(x2 - x1) > Math.abs(y2 - y1)) { const m = (x1 + x2) / 2; return `M${x1},${y1} C ${m},${y1} ${m},${y2} ${x2},${y2}`; }
+  const m = (y1 + y2) / 2; return `M${x1},${y1} C ${x1},${m} ${x2},${m} ${x2},${y2}`;
+}
+
+const READ = { adv: 'read', ver: 'read', inv: 'read' };
+const ALL = { ...READ, sm: 'read', mw: 'read', wp: 'auto', dep: 'read', pk: 'read', kc: 'read', cg: 'read', gq: 'auto', gm: 'held', mq: 'hand', qa: 'auto', qb: 'auto', ba: 'auto', aa: 'auto', ac: 'auto', cs: 'read', sn: 'read' };
+const STEPS = [
+  {
+    title: 'A patch, end to end',
+    tab: 'The road',
+    nodes: Object.keys(NODES),
+    edges: ALL,
+    body: `
+<p>Everything the factory runs is <b>pinned</b>: a version written in a file. A patch is a <b>move</b>: one pin going to one version.</p>
+<p>Read the diagram as an S: the top row <b>finds</b> a move, the middle row <b>proves</b> it, the bottom row <b>runs</b> it.</p>
+<div class="callout"><b>Proved, not trusted.</b> A late patch is its own kind of unsafe, so most moves go through with nobody looking. Each is proved on the way, and what cannot be proved waits for Martin.</div>`,
+  },
+  {
+    title: 'Found, and given a deadline',
+    tab: 'Found',
+    nodes: ['advisories', 'versions', 'inventory', 'scan', 'moves', 'watch', 'dependabot', 'pr'],
+    edges: { ...READ, sm: 'read', mw: 'read', wp: 'auto', dep: 'read' },
+    tags: { inventory: '32 items', scan: 'fails if overdue', watch: 'hourly' },
+    body: `
+<p>The scan checks every pin, daily and on each merge. It believes only what it can check:</p>
+<table>
+<tr><th>Advisories</th><td>Trivy's database, under a day old, and Node's own list. Each run must catch a known-vulnerable image, or it fails.</td></tr>
+<tr><th>New versions</th><td>Each publisher's own list: npm, the image registry, the chart's index, the tool's releases.</td></tr>
+<tr><th>Images</th><td>Ours are built and signed on <code>main</code>. Anyone else's is pinned by digest: a tag can be moved, a digest cannot.</td></tr>
+</table>
+<p>A fix that can be installed starts a clock: <b>2 days</b> for a Critical, <b>7</b> High, <b>30</b> Medium, <b>90</b> Low. A missed deadline fails the scan.</p>
+<p>The pin watch opens <b>one pull request for each move</b>, changing the pin and nothing else. Dependabot keeps the ones it already makes.</p>
+<details><summary>In the docs</summary><p><a href="${DOCS}/SECURITY-SCANNING.md">The scan</a>, its <a href="${DOCS}/SECURITY-SCANNING.md#moves">moves</a> and <a href="${DOCS}/SECURITY-SCANNING.md#exceptions">exceptions</a>; <a href="${DOCS}/SUPPLY-CHAIN.md">signing</a>; <a href="adr/0013-vulnerabilities-found-everywhere-fixed-by-a-deadline.md">ADR 0013</a>.</p></details>`,
+  },
+  {
+    title: 'Proved by the gate',
+    tab: 'Proved',
+    nodes: ['pr', 'ci', 'checks', 'gate'],
+    edges: { pk: 'read', kc: 'read', cg: 'read' },
+    tags: { gate: 'pin-move or held', ci: 'platform' },
+    body: `
+<p>Nobody has read this pull request, so the review gate proves it, with code it cannot change:</p>
+<ol>
+<li>It is the pull request it claims to be.</li>
+<li>It changes one move's pins, and nothing else.</li>
+<li>It does not move a scanner or a policy engine.</li>
+<li>The image is its publisher's, by digest.</li>
+<li>It goes forward, and not across a major.</li>
+<li>No guardrail changes.</li>
+<li>What will run differs only by the image.</li>
+<li>The finding is gone, and nothing worse came.</li>
+<li>Something really ran the new image.</li>
+</ol>
+<div class="callout"><b>Tested on a real cluster.</b> A move that changes what the cluster runs gets a whole cluster, built in CI from the change. It passes only when every part comes up healthy and every image is admitted. The merge queue builds it again.</div>
+<p><b>A fact unread is a hold:</b> one condition unproved, and the move waits for Martin.</p>
+<details><summary>In the docs</summary><p><a href="${DOCS}/APPROVAL-ROUTING.md">Approval routing</a>; <a href="adr/0019-the-gate-passes-a-pin-move-it-proves.md">ADR 0019</a>.</p></details>`,
+  },
+  {
+    title: 'Lights-out, or held',
+    tab: 'Lights-out or held',
+    nodes: ['moves', 'pr', 'ci', 'checks', 'gate', 'queue', 'martin'],
+    edges: { pk: 'read', kc: 'read', cg: 'read', gq: 'auto', gm: 'held', mi: 'held', mq: 'hand' },
+    tags: { gate: 'the fork', martin: 'needs you', queue: 'cluster again' },
+    marks: { martin: 'waits' },
+    body: `
+<p>Same pull request, same checks, same gate. What differs is who adds it to the merge queue.</p>
+<table>
+<tr><th></th><th>Lights-out</th><th>Held</th></tr>
+<tr><th>Which</th><td>everything proved</td><td>a major, k3s, a scanner, Argo CD, or anything unproved</td></tr>
+<tr><th>Queued by</th><td>the GitHub worker</td><td>Martin, after approving</td></tr>
+<tr><th>He hears</th><td>nothing</td><td>a card in Needs you, and his phone, once</td></tr>
+</table>
+<ul>
+<li>The worker queues <b>only the commit it wrote itself</b>. A matching name or label is not enough.</li>
+<li>A move with <b>no pin to edit</b> (a tool, a workflow) goes to Martin as an issue.</li>
+<li>In <b>the app's repository</b> the line does the patching, and lights-out is a setting only Martin makes.</li>
+</ul>
+<details><summary>In the docs</summary><p><a href="${DOCS}/PATCHING.md">Patching</a>; <a href="${DOCS}/GITHUB-WORKER.md">the GitHub worker</a>; <a href="adr/0017-the-worker-queues-the-local-deploy-pins.md">ADR 0017</a>.</p></details>`,
+  },
+  {
+    title: 'Running, and seen to be',
+    tab: 'Running',
+    nodes: ['queue', 'build', 'argo', 'admission', 'cluster', 'sense', 'martin'],
+    edges: { qa: 'auto', qb: 'auto', ba: 'auto', aa: 'auto', ac: 'auto', cs: 'read', sn: 'read' },
+    tags: { build: 'signed', admission: 'refuses the rest', sense: 'daily' },
+    body: `
+<p>After the merge, both kinds of move take the same road.</p>
+<ul>
+<li><b>Argo CD</b> deploys what is on <code>main</code>. A change inside one of our own images is built and signed first.</li>
+<li><b>Admission</b> checks every image as it starts: ours must be signed by the build on <code>main</code>, anyone else's named by its exact digest. A wrong pin that somehow merged still cannot start.</li>
+<li><b>The dependency sense</b> compares, each morning, what the cluster runs with what the scan read, and the console's Patching panel shows it. Until it has looked, a merged pin is not a patched cluster.</li>
+</ul>
+<details><summary>In the docs</summary><p><a href="${DOCS}/ADMISSION-CONTROL.md">Admission control</a> (<a href="adr/0010-admission-control.md">ADR 0010</a>); <a href="${DOCS}/PATCHING.md">the sense</a>.</p></details>`,
+  },
+  {
+    title: 'Every guard',
+    tab: 'Guards',
+    nodes: Object.keys(NODES),
+    edges: {},
+    tags: { inventory: '1', scan: '2 · 3', moves: '4', watch: '5', gate: '6', ci: '7', queue: '8 · 9', build: '10', admission: '11', sense: '12', martin: '13' },
+    body: `
+<ol class="tight">
+<li>No pin is left off the list.</li>
+<li>The scanner is proved daily; a missed deadline fails it.</li>
+<li>An exception expires, and is Martin's to merge.</li>
+<li>The moves are checked against the alerts.</li>
+<li>One guard writes every pin commit: the pin only.</li>
+<li>The gate proves each move; unproved is held.</li>
+<li>A cluster built in CI really runs the new image.</li>
+<li>The worker queues only the commit it wrote.</li>
+<li>The queue runs every check again.</li>
+<li>Our images are signed by the build on <code>main</code>.</li>
+<li>Admission refuses any image nobody vouched for.</li>
+<li>The sense compares what runs with what was scanned.</li>
+<li>The rules themselves change only with Martin's approval.</li>
+</ol>
+<p><b>To stop one move:</b> take the <code>pin</code> label off its pull request. <b>To stop them all:</b> unset <code>PIN_WATCH_ONLY</code>.</p>
+<details><summary>In the docs</summary><p><a href="${DOCS}/GUARDRAILS.md">Guardrails</a>; <a href="${DOCS}/PATCHING.md">patching</a>.</p></details>`,
+  },
+];
+
+// Still when the reader asks for less motion, or picks STILL in the footer.
+let still = new URLSearchParams(location.search).get('motion') === 'off' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+let at = 0;
+const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); parent.appendChild(e); return e; };
+
+function paint() {
+  const step = STEPS[at];
+  for (const id of ['edges', 'nodes', 'dotsL', 'tags']) $(id).replaceChildren();
+  for (const [id, kind] of Object.entries(step.edges)) {
+    const p = el('path', { d: pathFor(id), id: `p-${id}`, class: `edge on f-${kind}` }, $('edges'));
+    const len = p.getTotalLength();
+    // A short hop between neighbours carries one dot: two, half a hop apart, read as one dot going back and forth.
+    const count = len > 500 ? 5 : len > 120 ? 3 : 1;
+    const r = { auto: 5, held: 4.5, hand: 4.5, read: 3.5 }[kind];
+    for (let i = 0; i < count; i++) {
+      const c = el('circle', { r, class: `dot-${kind}` }, $('dotsL'));
+      if (still) { const pt = p.getPointAtLength(len * (i + 1) / (count + 1)); c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y); continue; }
+      const dur = Math.max(1.6, len / 130), begin = `${(-i * dur) / count}s`;
+      const m = el('animateMotion', { dur: `${dur}s`, repeatCount: 'indefinite', begin, calcMode: 'linear' }, c);
+      el('mpath', { href: `#p-${id}` }, m);
+      // Each dot fades in as it leaves and out as it arrives, so the eye follows it one way only.
+      el('animate', { attributeName: 'opacity', values: '0;1;1;0', keyTimes: '0;0.2;0.8;1', dur: `${dur}s`, repeatCount: 'indefinite', begin }, c);
+    }
+  }
+  for (const [id, n] of Object.entries(NODES)) {
+    const on = step.nodes.includes(id);
+    const mark = on && step.marks?.[id] ? ` ${step.marks[id]}` : '';
+    const g = el('g', { class: `node${on ? '' : ' dim'}${n.person ? ' person' : ''}${mark}` }, $('nodes'));
+    el('rect', { class: 'box', x: n.x, y: n.y, width: n.w, height: n.h, rx: 6 }, g);
+    el('text', { class: 'name', x: n.x + 14, y: n.y + n.h / 2 - 3 }, g).textContent = n.t;
+    el('text', { class: 'sub', x: n.x + 14, y: n.y + n.h / 2 + 15 }, g).textContent = n.s;
+    const tag = step.tags?.[id];
+    if (tag) {
+      const tg = el('g', { class: 'ntag' }, $('tags'));
+      const t = el('text', { x: 0, y: 0 }, tg); t.textContent = tag.toUpperCase();
+      // The box's width comes from the text as drawn, letter-spacing and all.
+      const w = t.getBBox().width + 20, x = n.x + n.w - w + 8, y = n.y - 11;
+      t.setAttribute('x', x + 10); t.setAttribute('y', y + 15);
+      tg.insertBefore(el('rect', { x, y, width: w, height: 21, rx: 3 }, tg), t);
+    }
+  }
+}
+
+function show(i) {
+  at = Math.max(0, Math.min(STEPS.length - 1, i));
+  const s = STEPS[at];
+  paint();
+  $('count').textContent = `Step ${at + 1} of ${STEPS.length}`;
+  $('title').textContent = s.title;
+  $('body').innerHTML = s.body;
+  $('prev').disabled = at === 0;
+  $('next').disabled = at === STEPS.length - 1;
+  [...$('steps').children].forEach((b, j) => b.setAttribute('aria-selected', String(j === at)));
+  try { history.replaceState(null, '', `${location.search}#${at + 1}`); } catch {}
+}
+
+STEPS.forEach((s, i) => {
+  const b = document.createElement('button');
+  b.type = 'button'; b.setAttribute('role', 'tab');
+  b.textContent = s.tab;
+  b.title = s.title;
+  b.onclick = () => show(i);
+  $('steps').appendChild(b);
+});
+$('prev').onclick = () => show(at - 1);
+$('next').onclick = () => show(at + 1);
+addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea')) return;
+  if (e.key === 'ArrowRight') show(at + 1);
+  if (e.key === 'ArrowLeft') show(at - 1);
+});
+// Every card is as tall as the longest, so Back and Next stay where they are from step to step.
+function level() {
+  const body = $('body'), kept = body.innerHTML;
+  body.style.minHeight = '';
+  let tallest = 0;
+  for (const s of STEPS) { body.innerHTML = s.body; tallest = Math.max(tallest, body.offsetHeight); }
+  body.innerHTML = kept;
+  body.style.minHeight = `${tallest}px`;
+}
+addEventListener('resize', level);
+document.fonts?.ready.then(level);
+const fromHash = () => show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+addEventListener('hashchange', fromHash);
+
+/* ---------- theme and motion ---------- */
+// Paper always comes first; Ink and motion are choices made on the page, not remembered.
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  document.querySelectorAll('[data-theme-set]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+}
+function setMotion(on) {
+  still = !on;
+  document.querySelectorAll('[data-motion]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.motion === 'on') === on)));
+}
+document.querySelectorAll('[data-theme-set]').forEach((b) => (b.onclick = () => setTheme(b.dataset.themeSet)));
+document.querySelectorAll('[data-motion]').forEach((b) => (b.onclick = () => { setMotion(b.dataset.motion === 'on'); paint(); }));
+setTheme(new URLSearchParams(location.search).get('theme') === 'ink' ? 'ink' : 'paper');
+setMotion(!still);
+fromHash();
+level();
+})();
+</script>
+</body>
+</html>

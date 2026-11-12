@@ -152,6 +152,13 @@ jobs:
           name: refusal-records
           path: ${{ runner.temp }}/records
           if-no-files-found: warn
+      # The end: every pod running and ready, none restarting (scripts/platform-pods.sh), which Argo CD's health does
+      # not say of a Deployment with no readiness probe until its progress deadline. Each pod that is not is named here
+      # and in the step summary, with its logs and description kept for the `cluster` artifact.
+      - name: Every pod running and ready
+        env:
+          OUT: ${{ runner.temp }}/measure/pods
+        run: scripts/platform-pods.sh
       # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}

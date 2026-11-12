@@ -341,6 +341,7 @@ describe('what the platform check runs', () => {
     'scripts/admission-ready.sh',
     'scripts/wait-deployed.sh',
     'scripts/platform-watch.sh',
+    'scripts/platform-pods.sh',
     'scripts/local-ca.ts',
     'scripts/share-key.ts',
     ...readdirSync('scripts')

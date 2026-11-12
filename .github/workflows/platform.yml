@@ -194,6 +194,8 @@ jobs:
               echo "--- $ns/$pod: $times"
               kubectl --context k3d-software-factory -n "$ns" logs "$pod" --all-containers --timestamps --tail=60 || true
             done || true
+          echo "--- The migrate Job's last attempt (it waits for the store, saying each refusal's code once)"
+          kubectl --context k3d-software-factory -n factory logs job/migrate --timestamps --tail=40 || true
           echo "--- Postgres: started $(kubectl --context k3d-software-factory -n factory get pod postgres-0 \
             -o jsonpath='{.status.startTime}, ready {.status.conditions[?(@.type=="Ready")].lastTransitionTime}' || true)"
           kubectl --context k3d-software-factory -n factory logs statefulset/postgres --all-containers --timestamps --tail=200 || true

@@ -306,9 +306,12 @@ export class ReleaseControls {
   readonly #rollout: RolloutRef;
   readonly #sql: Sql;
   readonly #log: Logger;
+  /** How long Stop the line waits between its looks: a second, or less in the tests. */
+  readonly #waitMs: number;
 
-  constructor(kube: KubeWriter, rollout: RolloutRef, sql: Sql, log: Logger) {
+  constructor(kube: KubeWriter, rollout: RolloutRef, sql: Sql, log: Logger, { waitMs = 1_000 } = {}) {
     this.#kube = kube;
+    this.#waitMs = waitMs;
     this.#path =
       `/apis/argoproj.io/v1alpha1/namespaces/${encodeURIComponent(rollout.namespace)}` +
       `/rollouts/${encodeURIComponent(rollout.name)}`;
@@ -337,7 +340,7 @@ export class ReleaseControls {
       } catch (error) {
         if (error instanceof NoStablePod) looked += 1;
         else if (!(error instanceof BetweenReleases) || ++waited > STOP_WAITS) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await new Promise((resolve) => setTimeout(resolve, this.#waitMs));
       }
     }
   }

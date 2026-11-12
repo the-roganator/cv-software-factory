@@ -34,6 +34,7 @@ export async function startAdmin(
     port = config.port,
     host,
     recheckMs = RECHECK_MS,
+    stopWaitMs,
     kube,
     held: given,
   }: {
@@ -41,6 +42,8 @@ export async function startAdmin(
     port?: number;
     host?: string;
     recheckMs?: number;
+    /** How long Stop the line waits between its looks at the Rollout: a second unless the tests say less. */
+    stopWaitMs?: number;
     kube?: KubeWriter;
     /** Whether the app holds the flags as set: by default checked when it has both `flags` and the Rollout; false, never. */
     held?: FlagsHeld | false;
@@ -51,7 +54,8 @@ export async function startAdmin(
   await events.start();
   // The app's Rollout, through the admin service's own service account (or `kubectl proxy` on a host), when it has one.
   const api = config.rollout || config.flags ? (kube ?? kubeFrom()) : undefined;
-  const controls = api && config.rollout ? new ReleaseControls(api, config.rollout, sql, log) : undefined;
+  const controls =
+    api && config.rollout ? new ReleaseControls(api, config.rollout, sql, log, { waitMs: stopWaitMs }) : undefined;
   // Whether the app holds the flags as set: its pods, behind the Rollout's Services, asked for the revision of theirs.
   const held =
     given !== undefined

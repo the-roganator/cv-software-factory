@@ -135,6 +135,14 @@ test('signs out with a POST of JSON carrying the session’s token, and lands on
   page,
 }) => {
   await adminService(page, 'martin');
+  // The session ends when the sign-out is posted, and not before: SESSION's hour is long past, so the page asks again
+  // a second after it draws Martin, and a session gone by then would send it to the door as expired.
+  let signedOut = false;
+  await page.route('**/admin/session', (route) =>
+    signedOut
+      ? route.fulfill({ status: 401, json: { refused: 'session', message: 'Sign in first.' } })
+      : route.fallback(),
+  );
   const sent: { method: string; type: string | undefined; token: string | undefined; body: string | null }[] = [];
   await page.route('**/admin/sign-out*', (route) => {
     const request = route.request();
@@ -144,14 +152,13 @@ test('signs out with a POST of JSON carrying the session’s token, and lands on
       token: request.headers()['x-csrf-token'],
       body: request.postData(),
     });
+    signedOut = true;
     return route.fulfill({ json: { signedOut: 'everywhere' } });
   });
   await page.goto(consoleUrl());
   await ready(page);
   await page.getByRole('button', { name: 'Martin', exact: true }).click();
   // The door asks the service again, which now finds no session.
-  await page.unroute('**/admin/session');
-  await adminService(page, 'visitor');
   await page.getByRole('button', { name: /Sign out everywhere/ }).click();
   await expect(page).toHaveURL(/\/\?view=sign-in&ended=everywhere$/);
   await expect(page.getByRole('status')).toHaveText(

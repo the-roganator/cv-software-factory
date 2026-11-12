@@ -17,8 +17,9 @@
 # It runs with Martin's own kubeconfig. The factory holds no right to change a Rollout: the line may only read them.
 #
 # KUBECTL is the kubectl command, with its context (the Makefile's). WAIT is how long to wait, in seconds, for each
-# abort to take traffic off the canary (default 60). STABLE_TRIES is how many times, a second apart, it looks for a
-# stable pod ready to serve before it leaves a canary (default 3), so a moment's readiness blip aborts all the same.
+# abort to take traffic off the canary (default 60). STABLE_TRIES is how many times, STABLE_INTERVAL seconds apart
+# (default 3, 1 second), it looks for a stable pod ready to serve before it leaves a canary, so a moment's readiness
+# blip aborts all the same.
 set -euo pipefail
 
 read -r -a kubectl <<<"${KUBECTL:-kubectl --context k3d-software-factory}"
@@ -26,6 +27,11 @@ wait="${WAIT:-60}"
 tries="${STABLE_TRIES:-3}"
 if ! [[ "$tries" =~ ^[1-9][0-9]*$ ]]; then
   echo "STABLE_TRIES must be a whole number of looks, 1 or more, not '$tries'." >&2
+  exit 1
+fi
+interval="${STABLE_INTERVAL:-1}"
+if ! [[ "$interval" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "STABLE_INTERVAL must be a number of seconds, not '$interval'." >&2
   exit 1
 fi
 
@@ -102,7 +108,7 @@ look() {
 }
 
 # Every abort is sent before any is waited for, so a slow controller holds up no other release. A Rollout whose stable
-# version has no pod ready is looked at again, a second apart, up to STABLE_TRIES looks in all, with the others: one
+# version has no pod ready is looked at again, STABLE_INTERVAL apart, up to STABLE_TRIES looks in all, with the others: one
 # that has a pod again is aborted then, and one that still has none at the last look is left.
 candidates=()
 while IFS='|' read -r namespace name stable current abort; do
@@ -117,7 +123,7 @@ while IFS='|' read -r namespace name stable current abort; do
 done <<<"$rollouts"
 look ${candidates[@]+"${candidates[@]}"}
 for ((try = 2; try <= tries && ${#doubtful[@]} > 0; try++)); do
-  sleep 1
+  sleep "$interval"
   look "${doubtful[@]}"
 done
 for rollout in ${doubtful[@]+"${doubtful[@]}"}; do

@@ -1,0 +1,41 @@
+# Broken on purpose, on a throwaway pull request, to see the platform check fail. Never merged.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: never-ready
+  labels:
+    app.kubernetes.io/name: never-ready
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: never-ready
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: never-ready
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broken
+          image: factory
+          args: [-e, "require('http').createServer((q, s) => { s.statusCode = 503; s.end('never ready, on purpose') }).listen(8080)"]
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 1
+            successThreshold: 1
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

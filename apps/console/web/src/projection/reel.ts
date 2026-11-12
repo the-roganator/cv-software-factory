@@ -80,7 +80,8 @@ export type Picture =
       checks: { passed: number; total: number } | undefined;
       unchanged: Screenshot[];
     }
-  | { type: 'scan'; dependency: Dependency; findings: Findings; unchanged: Screenshot[] }
+  /** A security release: what each scan gate counted on the latest commit it counted, by its check's name. */
+  | { type: 'scan'; dependency: Dependency; scans: { check: string; findings: Findings }[]; unchanged: Screenshot[] }
   /** A canary rolled back: the series of the first measure that failed it, and how much of the traffic saw it. */
   | { type: 'rollback'; dependency: Dependency | undefined; weight: number; restored: string; series: Series }
   /**
@@ -331,6 +332,19 @@ export function segmentsLabel(list: readonly Segment[]): string {
 
 const last = <T>(list: readonly T[], test: (value: T) => boolean) => [...list].reverse().find(test);
 
+/**
+ * What each scan gate counted, as the line recorded it from the scan's own notice: on the latest commit any scan
+ * counted, the last run of each check there, by its name. Nothing from an earlier commit stands beside it.
+ */
+function scansOf(item: ItemState): { check: string; findings: Findings }[] {
+  const counted = ofType(item, 'gate.finished').filter((event) => event.payload.findings);
+  const commit = counted.at(-1)?.payload.commit;
+  const byCheck = new Map<string, Findings>();
+  for (const { payload } of counted)
+    if (payload.commit === commit && payload.findings) byCheck.set(payload.check, payload.findings);
+  return [...byCheck].sort(([a], [b]) => a.localeCompare(b)).map(([check, findings]) => ({ check, findings }));
+}
+
 /** An attack's picture at t: each refusal it met, and how it stands. */
 function attackPicture(item: ItemState, attack: AttackState, t: number): Picture {
   // Only those after its launch, and before its end once there is one: no other can be the attack's.
@@ -427,9 +441,9 @@ export function picture(
   }
 
   if (item.dependency) {
-    const findings = last(ofType(item, 'gate.finished'), (event) => Boolean(event.payload.findings))?.payload.findings;
-    if (item.dependency.security && findings) {
-      return { type: 'scan', dependency: item.dependency, findings, unchanged: unchangedPages(item) };
+    const scans = scansOf(item);
+    if (item.dependency.security && scans.length) {
+      return { type: 'scan', dependency: item.dependency, scans, unchanged: unchangedPages(item) };
     }
     const gates = last(ofType(item, 'gates.finished'), () => true)?.payload;
     return {

@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { LINK } from '../../src/gates/lockfile-scan.ts';
 import { INSTALL, inSbom, LIST, listed, missing, pnpmVersion } from '../../src/vulnerabilities/coverage.ts';
 import type { Item } from '../../src/vulnerabilities/inventory.ts';
 import {
@@ -29,8 +31,10 @@ import {
   databaseAge,
   imagesIn,
   itemKey,
+  links,
   lockfileLine,
   nodeFindingsOf,
+  readLockfile,
   readOurs,
   report,
   scan,
@@ -270,6 +274,152 @@ describe('an item it cannot read', () => {
       'GHSA-g3hv-75wg-m249',
     ]);
     expect(JSON.stringify(results)).not.toContain(PROOF.image);
+  });
+});
+
+/** A lockfile, as Trivy reads one document: each package under `packages:`, unless a test leaves some out. */
+const reportOf = (text: string, skip: string[] = []): TrivyReport => {
+  const keys = [...text.matchAll(/^ {2}'?(@?[^@\s']+)@([^\s':(]+)'?:/gm)];
+  const packages = text.includes('packages:')
+    ? keys
+        .filter((match) => match.index > text.indexOf('packages:'))
+        .filter((match) => text.indexOf('snapshots:') < 0 || match.index < text.indexOf('snapshots:'))
+        .map(([, name = '', version = '']) => ({ Name: name, Version: version }))
+        .filter((p) => !skip.includes(`${p.Name}@${p.Version}`))
+    : [];
+  return { Results: [{ Target: 'pnpm-lock.yaml', Type: 'pnpm', Packages: packages, Vulnerabilities: [] }] };
+};
+
+/** The scan's lockfile read, of one lockfile's text, and each document Trivy was given. */
+async function readText(text: string, skip: string[] = []) {
+  const root = temp();
+  writeFileSync(join(root, 'pnpm-lock.yaml'), text);
+  const given: string[] = [];
+  const t: Tools = {
+    ...tools({}).tools,
+    async trivy(_args, src) {
+      const doc = readFileSync(join(src ?? '', 'pnpm-lock.yaml'), 'utf-8');
+      given.push(doc);
+      return reportOf(doc, skip);
+    },
+  };
+  const item: Item = { kind: 'lockfile', name: 'pnpm-lock.yaml', file: 'pnpm-lock.yaml', line: 1 };
+  const read = await readLockfile(t, root, { item, key: 'lockfile pnpm-lock.yaml', label: 'pnpm-lock.yaml' });
+  return { read, given };
+}
+
+const MAIN = [
+  "lockfileVersion: '9.0'",
+  '',
+  'importers:',
+  '',
+  '  .:',
+  '    dependencies:',
+  '      yaml:',
+  '        specifier: 2.9.1',
+  '        version: 2.9.1',
+  '',
+  'packages:',
+  '',
+  '  yaml@2.9.1:',
+  '    resolution: {integrity: sha512-y}',
+  '',
+  'snapshots:',
+  '',
+  '  yaml@2.9.1: {}',
+].join('\n');
+
+/** pnpm's env lockfile, the document it writes before the main one for pnpm itself and its config dependencies. */
+const ENV = [
+  '---',
+  "lockfileVersion: '9.0'",
+  '',
+  'importers:',
+  '',
+  '  .:',
+  '    configDependencies: {}',
+  '    packageManagerDependencies:',
+  '      pnpm:',
+  '        specifier: 12.16.1',
+  '        version: 12.16.1',
+  '',
+  'packages:',
+  '',
+  '  pnpm@12.16.1:',
+  '    resolution: {integrity: sha512-p}',
+  '',
+  'snapshots:',
+  '',
+  '  pnpm@12.16.1: {}',
+  '',
+  '---',
+].join('\n');
+
+describe('a lockfile', () => {
+  it('is read a document at a time, as the gate reads it: pnpm itself from its env document, the rest from the main', async () => {
+    const { read, given } = await readText(`${ENV}\n${MAIN}\n`);
+    expect(read.unreadable).toBeUndefined();
+    expect(given).toHaveLength(2);
+    // The env document's dependencies under the names Trivy reads, so pnpm itself is scanned.
+    expect(given[0]).toContain('    optionalDependencies:\n      pnpm:');
+    expect(given[0]).not.toContain('yaml@2.9.1');
+    expect(given[1]).toContain('yaml@2.9.1');
+    expect(read.reports.flatMap((r) => r.Results?.[0]?.Packages ?? []).map((p) => `${p.Name}@${p.Version}`)).toEqual([
+      'pnpm@12.16.1',
+      'yaml@2.9.1',
+    ]);
+  });
+
+  it('cannot be read when Trivy did not read a package a document lists: one left out of snapshots is still installed', async () => {
+    // A config dependency under `packages:` alone, in neither the importers nor `snapshots:`, where Trivy looks.
+    const config = ENV.replace(
+      '\nsnapshots:',
+      '\n  config@1.0.0:\n    resolution: {integrity: sha512-c}\n\nsnapshots:',
+    );
+    const { read } = await readText(`${config}\n${MAIN}\n`, ['config@1.0.0']);
+    expect(read.unreadable).toBe('Trivy did not read 1 of the packages its document 1 of 2 lists: config@1.0.0');
+    const one = await readText(
+      `${MAIN.replace('\nsnapshots:', '\n  zod@4.0.0:\n    resolution: {}\n\nsnapshots:')}\n`,
+      ['zod@4.0.0'],
+    );
+    expect(one.read.unreadable).toBe('Trivy did not read 1 of the packages it lists: zod@4.0.0');
+  });
+
+  it('cannot be read when a second document is one Trivy reads nothing from', async () => {
+    const hidden = `${MAIN}\n---\nlockfileVersion: '9.0'\nsettings:\n  autoInstallPeers: true\n`;
+    const { read, given } = await readText(hidden);
+    expect(given).toHaveLength(2);
+    expect(read.unreadable).toBe('Trivy read no packages from its document 2 of 2');
+  });
+
+  it('cannot be read when a document cannot be read plainly', async () => {
+    const { read } = await readText(`${MAIN.replace('packages:', 'packages: {}')}\nsnapshots2: x\n`);
+    expect(read.unreadable).toBe('it cannot be read plainly: `packages` is not written as a block');
+  });
+
+  it('cannot be read when it holds no YAML document at all', async () => {
+    const { read, given } = await readText('# nothing\n\n');
+    expect(read.unreadable).toBe('it holds no YAML document');
+    expect(given).toEqual([]);
+  });
+
+  it("is never reached through a symbolic link: each link git tracks is a pin the scan cannot read, as the gate's", () => {
+    const root = temp();
+    writeFileSync(join(root, 'pnpm-lock.yaml'), MAIN);
+    symlinkSync('../outside', join(root, 'vendor'));
+    symlinkSync('README.md', join(root, 'docs'));
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['add', '-A'], { cwd: root });
+    expect(links(root)).toEqual([
+      { file: 'docs', line: 0, reference: 'docs', why: LINK },
+      { file: 'vendor', line: 0, reference: 'vendor', why: LINK },
+    ]);
+  });
+
+  it('holding nothing but its version, is read, with nothing in it', async () => {
+    const { read } = await readText("lockfileVersion: '9.0'\n");
+    expect(read.unreadable).toBeUndefined();
+    expect(read.reports).toHaveLength(1);
   });
 });
 

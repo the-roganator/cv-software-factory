@@ -7,8 +7,8 @@
  *     node scripts/github-settings.ts --check          # change nothing: say where the live settings differ
  *     node scripts/github-settings.ts --check --see-bypass   # and fail on what it could not see
  *
- * `--check` reads each repository's rulesets and environments and compares them with the ones here, and names any
- * ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
+ * `--check` reads each repository's rulesets, environments and fork-run approval and compares them with the ones
+ * here, and names any ruleset it does not know, such as one added in the browser. It exits 1 if anything it can see differs.
  * drift-check.yml runs it weekly. GitHub shows who may bypass a ruleset only to a reader who may change it: with a
  * token that cannot, such as the drift check App's, `--check` warns that it did not compare that list, and compares
  * the rest; with an admin's `gh`, it compares that too, and fails if anyone may bypass. `--see-bypass` fails on what
@@ -36,6 +36,8 @@ export const REPOSITORIES: Record<string, string[]> = {
     'image builds',
     'lockfile scan',
     'pull request title',
+    // A change to what the cluster runs, made into a cluster in CI (platform.yml); skipped, and so passed, for any other.
+    'platform',
   ],
   // The app's gates come from this repository (app-gates.yml); tests first is a signal, not a requirement.
   'the-roganator/cv-worlds-worst-website': [
@@ -46,6 +48,7 @@ export const REPOSITORIES: Record<string, string[]> = {
     'gates / test integrity',
     'gates / dependency review',
     'gates / image scan',
+    'gates / lockfile scan',
   ],
 };
 
@@ -206,6 +209,34 @@ export const MERGE_QUEUE = {
   check_response_timeout_minutes: 60,
 };
 
+/**
+ * Whose pull requests from a fork wait for Martin's approval before any workflow runs: everyone who is not a member or
+ * owner of the repository. On `pull_request` a fork supplies its own copy of every workflow, and its token may still
+ * read what the repository holds, code scanning's alerts and Dependabot's among them, so a run he did not let run could
+ * print its open vulnerabilities into a public log. GitHub's narrower settings stop asking once someone has had one pull
+ * request merged. Branches of the repository itself, Dependabot's and the factory's App's, are not forks, and never wait.
+ */
+export const FORK_RUN_APPROVAL = { approval_policy: 'all_external_contributors' };
+
+/** What differs between the live fork-run approval and this script's; unseen when this reader may not read it. */
+export function forkApprovalProblems(live: unknown): Findings {
+  if (live === undefined) {
+    return {
+      problems: [],
+      unseen: ['this token cannot read whose fork pull requests wait for approval, so that was not compared'],
+    };
+  }
+  const policy = (live as { approval_policy?: unknown } | null)?.approval_policy;
+  return policy === FORK_RUN_APPROVAL.approval_policy
+    ? { problems: [], unseen: [] }
+    : {
+        problems: [
+          `workflows on fork pull requests wait for approval for ${String(policy)}, not ${FORK_RUN_APPROVAL.approval_policy}`,
+        ],
+        unseen: [],
+      };
+}
+
 /** Rulesets that were here once, and are deleted where they are found: GitHub's review rule (ADR 0009), now `review`. */
 export const RETIRED = ['main: review'];
 
@@ -253,7 +284,7 @@ export interface Findings {
   unseen: string[];
 }
 
-/** Compares a repository's live rulesets and environments with these, and says what differs. */
+/** Compares a repository's live rulesets, environments and fork-run approval with these, and says what differs. */
 function check(requiredChecks: string[]): Findings {
   const wanted = [rules(requiredChecks)];
   const live = JSON.parse(gh('GET', '/rulesets?per_page=100')) as { id: number; name: string }[];
@@ -274,6 +305,11 @@ function check(requiredChecks: string[]): Findings {
   const used = bypassesUsed(readable(() => JSON.parse(gh('GET', `/rulesets/rule-suites?${BYPASSES_USED}`))));
   problems.push(...used.problems);
   unseen.push(...used.unseen);
+  const forks = forkApprovalProblems(
+    readable(() => JSON.parse(gh('GET', '/actions/permissions/fork-pr-contributor-approval'))),
+  );
+  problems.push(...forks.problems);
+  unseen.push(...forks.unseen);
   return { problems: [...problems, ...(ENVIRONMENTS[repo] ?? []).flatMap(checkEnvironment)], unseen };
 }
 
@@ -510,8 +546,8 @@ function apply(name: string, requiredChecks: string[]): void {
     }),
   );
 
-  step("first-time contributors' workflows wait for approval", () =>
-    gh('PUT', '/actions/permissions/fork-pr-contributor-approval', { approval_policy: 'first_time_contributors' }),
+  step("every outside contributor's workflows wait for approval", () =>
+    gh('PUT', '/actions/permissions/fork-pr-contributor-approval', FORK_RUN_APPROVAL),
   );
 
   // The release pull request carries release-please's labels; a deploy pull request, which the App opens, this one.

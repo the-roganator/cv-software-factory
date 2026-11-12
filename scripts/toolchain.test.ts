@@ -128,6 +128,26 @@ describe('every use of mise in CI', () => {
     expect([...versions][0]).toMatch(/^\d{4}\.\d+\.\d+$/);
   });
 
+  it('is the release the dev container installs, checked for each platform it is built for', () => {
+    // .devcontainer/Dockerfile downloads mise itself, for the platform being built, against the release's checksums.
+    // Its instructions with their continuations joined, so a step written over several lines reads as one.
+    const dockerfile = read('.devcontainer/Dockerfile').replace(/\\\n/g, ' ');
+    const arg = (name: string) => new RegExp(`^ARG ${name}=(\\S+)$`, 'm').exec(dockerfile)?.[1];
+    const [version] = new Set(uses.map(({ version }) => version));
+    expect(version).toMatch(/^\d{4}\.\d+\.\d+$/);
+    expect(arg('MISE_VERSION')).toBe(version);
+    expect(arg('MISE_SHA256_AMD64')).toMatch(/^[0-9a-f]{64}$/);
+    expect(arg('MISE_SHA256_ARM64')).toMatch(/^[0-9a-f]{64}$/);
+    expect(arg('MISE_SHA256_AMD64')).not.toBe(arg('MISE_SHA256_ARM64'));
+    // The download is that version's, and the one thing that installs it: not the apt repository's newest release, nor
+    // an install script.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion, as the Dockerfile writes it.
+    const release = 'https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-${platform}';
+    expect(dockerfile).toContain(release);
+    expect(dockerfile).toMatch(/sha256sum --check --strict/);
+    expect(dockerfile).not.toMatch(/mise\.jdx\.dev|mise\.run|apt-get install[^\n]*\bmise\b/);
+  });
+
   it("is cached on main for each set of tools any workflow installs, since a run reads only its own and main's", () => {
     const cache = read('.github/workflows/toolchain-cache.yml');
     // Each set as the matrix's include gives it, beside the job it is named for.

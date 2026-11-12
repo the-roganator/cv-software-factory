@@ -29,7 +29,7 @@ function judged(workItem: string, sense: 'report' | 'planner', text: string, ts 
       ...base,
       id: crypto.randomUUID(),
       type: 'work-item.opened',
-      version: 2,
+      version: 3,
       actor: sense === 'report' ? 'visitor' : 'planner',
       summary: 'A visitor sent a report from /about',
       payload: { kind: sense === 'report' ? 'visitor-report' : 'planner-finding', title: 'A report', sample: false },
@@ -38,7 +38,7 @@ function judged(workItem: string, sense: 'report' | 'planner', text: string, ts 
       ...base,
       id: crypto.randomUUID(),
       type: 'signal.received',
-      version: 5,
+      version: 6,
       actor: 'triage',
       summary: 'A visitor reported a problem on /about',
       payload: {

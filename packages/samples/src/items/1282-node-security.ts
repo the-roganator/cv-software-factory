@@ -2,8 +2,14 @@
 import { commitFor, Item } from '../build.ts';
 
 const SCAN = {
-  before: { critical: 0, high: 2, medium: 5, low: 11 },
-  after: { critical: 0, high: 0, medium: 3, low: 9 },
+  before: { critical: 0, high: 2, medium: 5, low: 11, unknown: 2 },
+  after: { critical: 0, high: 0, medium: 3, low: 9, unknown: 2 },
+};
+
+/** The lockfile is the same on both sides: the move changes no package, so it has what it had. */
+const LOCKFILE = {
+  before: { critical: 0, high: 0, medium: 1, low: 2, unknown: 0 },
+  after: { critical: 0, high: 0, medium: 1, low: 2, unknown: 0 },
 };
 
 export default new Item('1282', '2026-10-02T11:30:00+01:00')
@@ -27,7 +33,11 @@ export default new Item('1282', '2026-10-02T11:30:00+01:00')
   })
   .gates('0:10', {
     pullRequest: 1283,
-    details: { 'Image scan': { summary: 'No critical or high findings; two high findings fewer', findings: SCAN } },
+    more: [['Lockfile scan', 30]],
+    details: {
+      'Image scan': { summary: 'No critical or high findings; two high findings fewer', findings: SCAN },
+      'Lockfile scan': { findings: LOCKFILE },
+    },
   })
   .calls('reviewer', '3:00', '5:20', { calls: 2, input: 31_000, output: 1_700, cached: 0.5 })
   .at('5:30', 'review.submitted', 'reviewer', 'Approved; a dependency change, so it waits for Martin', {

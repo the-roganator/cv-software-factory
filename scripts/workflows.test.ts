@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { syftPin } from '../apps/factory/src/vulnerabilities/graph.ts';
 import { ENVIRONMENTS, KEY_BRANCH } from './github-settings.ts';
 
 /**
@@ -37,12 +40,16 @@ const CHECKED_OUT: Record<string, string[]> = {
 };
 
 interface Step {
+  id?: string;
   name?: string;
   uses?: string;
+  env?: Record<string, unknown>;
   run?: string;
   with?: Record<string, unknown>;
 }
 interface Job {
+  needs?: string | string[];
+  outputs?: Record<string, string>;
   'runs-on'?: unknown;
   if?: string;
   permissions?: unknown;
@@ -284,11 +291,6 @@ describe('reading a workflow', () => {
  */
 const TRIVY_PIN = 'deploy/images/trivy/Dockerfile';
 const BASE = expression('github.event.pull_request.base.sha || github.event.merge_group.base_sha');
-/**
- * Where a base from before the move out of `.github/` (#977) holds the pin. Only check.yml's lockfile scan, which reads
- * the base's, may name it, and reads it only when the base has no file at TRIVY_PIN.
- */
-const OLD_TRIVY_PIN = '.github/images/trivy/Dockerfile';
 /** check.yml's step that checks a scanner's pin is signed by its publisher (scripts/scanner-signatures.test.ts). */
 const SIGNATURES = "Check the scanners it moves to were signed by their publishers' release workflows";
 
@@ -364,14 +366,12 @@ describe("Trivy's pin", () => {
       // that may, left out of the file as written, from its name to the next line no deeper than it.
       const text = withoutStep(readFileSync(`${DIR}/${file}`, 'utf-8'), SIGNATURES);
       expect(text, file).not.toMatch(/aquasecurity\/trivy|aquasec\/trivy/);
-      // Every Trivy pin a workflow names is the one file, but the base's old one, in the lockfile scan alone.
+      // Every Trivy pin a workflow names is the one file.
       for (const [path] of text.matchAll(/[\w./-]*trivy[\w./-]*Dockerfile/gi)) {
         const named = path.replace(/^(?:[\w.-]*\/)*?(?:base|factory)\//, '');
-        if (file === 'check.yml' && named === OLD_TRIVY_PIN) continue;
         expect(named, file).toBe(TRIVY_PIN);
       }
       for (const [name, job] of Object.entries(workflow.jobs)) {
-        if (name !== 'lockfile-scan') expect(JSON.stringify(job), `${file} ${name}`).not.toContain(OLD_TRIVY_PIN);
         const steps = job.steps ?? [];
         const runs = steps
           .filter((step) => step.name !== SIGNATURES)
@@ -480,6 +480,7 @@ describe('vulnerabilities.yml', () => {
     expect(on.pull_request?.paths).toEqual([
       '.github/workflows/vulnerabilities.yml',
       'apps/factory/src/vulnerabilities/**',
+      'apps/factory/src/gates/**',
       'deploy/images/trivy/**',
     ]);
     const scanned = jobs.prove?.steps?.find((step) => step.with?.path === 'scanned');
@@ -490,12 +491,20 @@ describe('vulnerabilities.yml', () => {
     expect(scanned?.with?.ref).toBe(expression('needs.coverage.outputs.base'));
     expect((jobs.prove as { needs?: unknown } | undefined)?.needs).toBe('coverage');
   });
+
+  it('proves itself on a change to anything its scan reads: every module scan.ts imports', () => {
+    const paths = (workflow.on as Record<string, { paths?: string[] } | null>).pull_request?.paths ?? [];
+    const watched = (file: string) =>
+      paths.some((p) => (p.endsWith('/**') ? file.startsWith(p.slice(0, -2)) : file === p));
+    for (const file of importClosure('apps/factory/src/vulnerabilities/scan.ts'))
+      if (!file.startsWith('policy/')) expect(watched(file), file).toBe(true);
+  });
 });
 
 /**
  * The dependency graph (dependency-graph.yml): the job that submits holds `contents: write` and nothing else, and refuses
- * any event but a push to the default branch; the proving run, on a pull request, can write nothing. Syft is the one
- * build.yml attests SBOMs with, by digest, from its one pin.
+ * any event but a push to the default branch; the proving run, on a pull request, can write nothing. It runs Syft's
+ * image by digest from its one pin, whose version build.yml's sign job reads to attest SBOMs with.
  */
 describe('dependency-graph.yml', () => {
   const workflow = read('dependency-graph.yml');
@@ -559,15 +568,45 @@ describe('dependency-graph.yml', () => {
   });
 
   it('runs Syft by digest from its one pin, at the version build.yml attests with, and reads it from its own commit', () => {
-    const pin = /^FROM ghcr\.io\/anchore\/syft:(v\d+\.\d+\.\d+)@sha256:[0-9a-f]{64}$/m.exec(
-      readFileSync(SYFT_PIN, 'utf-8'),
-    );
-    const build = read('build.yml');
-    const attests = Object.values(build.jobs)
+    expect(syftPin(readFileSync(SYFT_PIN, 'utf-8'))).toBeTruthy();
+    // build.yml attests with the version the pin names, read from its own commit by a job that holds no OIDC token,
+    // and writes none of its own: no workflow names a Syft version, so Dependabot's bump of the pin is the whole change.
+    const build = read('build.yml').jobs;
+    const reader = build['syft-version'];
+    const sign = build.sign;
+    expect(reader?.permissions).toEqual({ contents: 'read' });
+    expect(reader?.outputs?.version).toBe(expression('steps.pin.outputs.version'));
+    const [own, reads, ...rest] = reader?.steps ?? [];
+    expect(rest).toEqual([]);
+    expect(own?.uses).toMatch(/^actions\/checkout@/);
+    expect(own?.with).toEqual({
+      repository: expression('job.workflow_repository'),
+      ref: expression('job.workflow_sha'),
+      path: 'factory',
+      'sparse-checkout': SYFT_PIN,
+      'sparse-checkout-cone-mode': false,
+      'persist-credentials': false,
+    });
+    expect(reads?.id).toBe('pin');
+    expect(reads?.env?.PIN).toBe(`factory/${SYFT_PIN}`);
+    // The sign job checks nothing out, and never runs without the version: download-syft given none installs the newest.
+    expect(sign?.needs).toContain('syft-version');
+    expect(sign?.if).toContain("needs.syft-version.result == 'success'");
+    expect((sign?.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@'))).toEqual([]);
+    const downloads = Object.values(build)
       .flatMap((job) => job.steps ?? [])
-      .find((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
-    expect(pin?.[1]).toBeDefined();
-    expect(attests?.with?.['syft-version']).toBe(pin?.[1]);
+      .filter((step) => step.uses?.startsWith('anchore/sbom-action/download-syft@'));
+    expect(downloads).toEqual([
+      expect.objectContaining({ with: { 'syft-version': expression('needs.syft-version.outputs.version') } }),
+    ]);
+    expect(sign?.steps).toContain(downloads[0]);
+    for (const { file } of workflows) {
+      const lines = readFileSync(`${DIR}/${file}`, 'utf-8').split('\n');
+      expect(
+        lines.filter((line) => /syft/i.test(line) && /v?\d+\.\d+\.\d+/.test(line.replace(/#\s*v\d+\.\d+\.\d+$/, ''))),
+        file,
+      ).toEqual([]);
+    }
     // check.yml's check of the scanners' signatures names Syft's image, and runs no Syft: it is left out, as for Trivy.
     for (const { file } of workflows)
       if (file !== 'build.yml')
@@ -580,5 +619,217 @@ describe('dependency-graph.yml', () => {
       const runs = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
       expect(runs, id).toContain(`factory/${SYFT_PIN}`);
     }
+  });
+
+  it("gives build.yml's Syft the version its pin names, and fails on any pin but one of Syft's image by version and digest", () => {
+    const step = read('build.yml').jobs['syft-version']?.steps?.find((s) => s.id === 'pin');
+    const dir = mkdtempSync(join(tmpdir(), 'syft-pin-'));
+    const version = (dockerfile: string) => {
+      const pin = join(dir, 'Dockerfile');
+      const output = join(dir, 'output');
+      writeFileSync(pin, dockerfile);
+      writeFileSync(output, '');
+      try {
+        execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+          env: { PATH: process.env.PATH, PIN: pin, GITHUB_OUTPUT: output },
+          stdio: 'pipe',
+        });
+      } catch {
+        return undefined;
+      }
+      const read = /^version=(.*)$/m.exec(readFileSync(output, 'utf-8'))?.[1];
+      // The dependency graph's reader (graph.ts) takes the same version from any pin this one takes.
+      if (read) expect(`v${syftPin(dockerfile)?.[2]}`, dockerfile).toBe(read);
+      return read;
+    };
+    try {
+      const pinned = `v${syftPin(readFileSync(SYFT_PIN, 'utf-8'))?.[2]}`;
+      expect(version(readFileSync(SYFT_PIN, 'utf-8'))).toBe(pinned);
+      const digest = `sha256:${'a'.repeat(64)}`;
+      expect(version(`# a comment\nFROM ghcr.io/anchore/syft:v1.57.1@${digest}\n`)).toBe('v1.57.1');
+      for (const bad of [
+        `FROM ghcr.io/anchore/syft:v1.57.1\n`,
+        `FROM ghcr.io/anchore/syft@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:latest@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:1.57.1@${digest}\n`,
+        `FROM ghcr.io/evil/syft:v1.57.1@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:v1.57.1@${digest} AS x\n`,
+        `FROM ghcr.io/anchore/syft:v1.57.1@${digest}\nFROM ghcr.io/anchore/syft:v1.54.0@${digest}\n`,
+        `FROM ghcr.io/anchore/syft:v1.57.1-rc1@${digest}\n`,
+        '',
+      ])
+        expect(version(bad), bad).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('platform.yml', () => {
+  const workflow = read('platform.yml');
+  const jobs = workflow.jobs;
+
+  function refuses(job: string, event: string) {
+    const step = jobs[job]?.steps?.[0];
+    expect(step?.name, job).toBe('Refuse a privileged context');
+    try {
+      execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
+        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event },
+        stdio: 'pipe',
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  it('runs on a pull request and the merge queue’s commit alone, and refuses any other event in each job', () => {
+    expect(triggers(workflow).sort()).toEqual(['merge_group', 'pull_request']);
+    for (const job of Object.keys(jobs)) {
+      for (const event of ['pull_request', 'merge_group']) expect(refuses(job, event), `${job} ${event}`).toBe(false);
+      for (const event of [
+        'push',
+        'pull_request_target',
+        'workflow_run',
+        'workflow_dispatch',
+        'schedule',
+        'issue_comment',
+      ])
+        expect(refuses(job, event), `${job} ${event}`).toBe(true);
+    }
+  });
+
+  it('gives the cluster a read of the contents alone, and the job that decides a read of the queue’s pull request', () => {
+    expect(workflow.permissions).toEqual({});
+    expect(Object.keys(jobs).sort()).toEqual(['platform', 'which']);
+    expect(jobs.platform?.permissions).toEqual({ contents: 'read' });
+    expect(jobs.which?.permissions).toEqual({ contents: 'read', 'pull-requests': 'read' });
+    for (const [id, job] of Object.entries(jobs)) {
+      for (const step of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@')))
+        expect(step.with?.['persist-credentials'], id).toBe(false);
+      // No cache but mise's, which saves on main alone (scripts/toolchain.test.ts), where this never runs.
+      expect(JSON.stringify(job).includes('actions/cache'), id).toBe(false);
+    }
+  });
+
+  it('runs the cluster as check-kind.sh says, and makes it with make up at the commit it checks', () => {
+    const decide = (jobs.which?.steps ?? []).map((step) => step.run ?? '').join('\n');
+    expect(decide).toContain('scripts/check-kind.sh platform');
+    expect(jobs.platform?.name).toBe('platform');
+    // Skipped on `none` alone: the job deciding failing, or saying anything else, makes the cluster.
+    expect(jobs.platform?.if).toBe(
+      expression("!cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none')"),
+    );
+    const steps = jobs.platform?.steps ?? [];
+    const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));
+    expect(make?.run).toContain('make up REVISION="$REVISION" PLATFORM_CHECK=1');
+    expect((make as { env?: Record<string, string> } | undefined)?.env?.REVISION).toBe(expression('github.sha'));
+    const runs = steps.map((step) => step.run ?? '').join('\n');
+    // Watched, and stopped at the ceiling or on what waiting will not mend (scripts/platform-watch.test.ts).
+    expect(make?.run).toContain('WATCHED=$make scripts/platform-watch.sh');
+    expect(runs).toContain('make admission-ready');
+    // What the cluster showed, kept on every outcome but success, cancellation included.
+    const kept = steps.find((step) => step.with?.name === 'cluster');
+    expect(kept?.uses).toMatch(/^actions\/upload-artifact@/);
+    expect((kept as { if?: string } | undefined)?.if).toBe(expression('failure() || cancelled()'));
+    expect(runs).not.toMatch(/get secrets?\b/);
+    // Each record the scripts take, with its own script, uploaded beside what the change checks in.
+    for (const file of readdirSync('deploy/test').filter((f) => f.endsWith('-refusals.json'))) {
+      const name = file.replace(/-refusals\.json$/, '');
+      expect(runs, file).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+    expect(steps.some((step) => step.uses?.startsWith('actions/upload-artifact@'))).toBe(true);
+  });
+
+  it('gives make up none of the keys it reads from the Keychain, so the cluster opens and attempts nothing', () => {
+    const keychain = [
+      ...readFileSync('Makefile', 'utf-8').matchAll(/security find-generic-password -s ([a-z-]+)/g),
+    ].map((m) => m[1]);
+    expect(new Set(keychain)).toEqual(
+      new Set([
+        'typesafe-api-key',
+        'anthropic-api-key',
+        'factory-github-app-key',
+        'pushover-app-token',
+        'pushover-user-key',
+      ]),
+    );
+    const make = (jobs.platform?.steps ?? []).find((step) => /\bmake up\b/.test(step.run ?? ''))?.run ?? '';
+    // The variables make up would read in the Keychain's place, each unset, and none given anywhere in the job.
+    const variables = [
+      'TYPESAFE_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'GITHUB_APP_PRIVATE_KEY',
+      'PUSHOVER_APP_TOKEN',
+      'PUSHOVER_USER_KEY',
+    ];
+    expect(make).toContain(`unset ${variables.join(' ')}`);
+    const job = JSON.stringify(jobs.platform);
+    for (const variable of variables) expect(job, variable).not.toMatch(new RegExp(`\\b${variable}=`));
+    expect(job).not.toContain('secrets.');
+  });
+});
+
+/**
+ * Every module a file reaches through its relative imports, itself included, as paths from the repository's root: what
+ * a sparse checkout that runs it must hold.
+ */
+function importClosure(start: string): Set<string> {
+  const seen = new Set<string>();
+  const walk = (file: string) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const source = readFileSync(file, 'utf-8');
+    for (const [, path] of source.matchAll(/^\s*(?:import|export)\b[^;]*?(?:from\s+)?'(\.[^']+)';?$/gm))
+      walk(new URL(path ?? '', new URL(file, 'file:///r/')).pathname.slice(3));
+  };
+  walk(start);
+  return seen;
+}
+
+/**
+ * A script a workflow runs from a sparse checkout runs only if every module it imports was checked out beside it: a new
+ * import fails here, not on a run of main's (as gates/counts.ts once did in the daily scan, imported through the
+ * lockfile gate it reads a lockfile with).
+ */
+describe('every workflow’s sparse checkouts', () => {
+  it('checks out, beside each script it runs with Node from a sparse checkout, every module that script imports', () => {
+    const NODE = /\bnode\s+(?:--\S+\s+)*"?(?:\$GITHUB_WORKSPACE\/)?([\w./-]+\.ts)\b/g;
+    let scripts = 0;
+    for (const { file, workflow } of workflows) {
+      for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+        // Each checkout of the job by where it puts the files: '' for the workspace itself.
+        const sparse = new Map<string, string[] | undefined>();
+        for (const step of job.steps ?? []) {
+          if (!step.uses?.startsWith('actions/checkout@')) continue;
+          const list = step.with?.['sparse-checkout'];
+          sparse.set(
+            String(step.with?.path ?? ''),
+            list === undefined
+              ? undefined
+              : String(list)
+                  .split('\n')
+                  .map((l) => l.trim())
+                  .filter(Boolean),
+          );
+        }
+        for (const step of job.steps ?? []) {
+          for (const [, ran] of (step.run ?? '').matchAll(NODE)) {
+            const at = [...sparse.keys()].find((path) => path && ran?.startsWith(`${path}/`)) ?? '';
+            const list = sparse.get(at);
+            // A whole checkout holds everything; a script of a checkout this job does not make is another's to hold.
+            if (!sparse.has(at) || list === undefined) continue;
+            scripts += 1;
+            const script = at ? (ran ?? '').slice(at.length + 1) : (ran ?? '');
+            const has = (path: string) =>
+              list.some((entry) => (entry.endsWith('/') ? path.startsWith(entry) : path === entry));
+            for (const module of importClosure(script))
+              expect(has(module), `${file} ${id}: ${script} imports ${module}, which is not checked out`).toBe(true);
+          }
+        }
+      }
+    }
+    // The gates', the daily scan's and the dependency graph's scripts, at least, are read here.
+    expect(scripts).toBeGreaterThanOrEqual(10);
   });
 });

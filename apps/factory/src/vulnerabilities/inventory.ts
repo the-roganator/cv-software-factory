@@ -7,7 +7,10 @@
  *
  * It reads, in this order, and lists an item once, at the first source that brings it:
  *
- * - each `pnpm-lock.yaml` git tracks;
+ * - each lockfile git tracks, at any depth, fixtures included: `pnpm-lock.yaml`, and a branch's `pnpm-lock.<name>.yaml`,
+ *   as the lockfile gate reads them (gates/lockfile-scan.ts), since whatever points pnpm at one (`lockfileDir` in
+ *   `pnpm-workspace.yaml`, a flag, a variable, a branch) can make a frozen install read it. One git tracks as anything
+ *   but a regular file, which pnpm would follow, is an item the scan cannot read;
  * - each image of ours the local overlay pins (`deploy/overlays/local/*image/kustomization.yaml`), with the identity
  *   that signed it, `build.yml` on its repository's `main`;
  * - each other image `kustomize build deploy/overlays/local` runs, with CI's copy of it where `scripts/ci-images.sh`
@@ -147,6 +150,13 @@ export function signerOf(image: string) {
   return `https://github.com/the-roganator/${repository}/.github/workflows/build.yml@refs/heads/main`;
 }
 
+/**
+ * A lockfile pnpm may install from: `pnpm-lock.yaml`, or a branch's `pnpm-lock.<name>.yaml`. The lockfile gate's
+ * LOCKFILE, which a test holds this to: the coverage job imports this module and checks out no gate, or the policy the
+ * gate imports.
+ */
+export const LOCKFILE = /(^|\/)pnpm-lock(\.[^/]+)?\.yaml$/;
+
 /** Whether a tracked file is prose or a test's fixture, whose references pin nothing that runs. */
 export function isFixture(file: string) {
   return (
@@ -168,6 +178,10 @@ const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 class Checkout {
   readonly root: string;
   readonly files: string[];
+  /** Lockfiles git tracks as something other than a regular file: a symbolic link, or a submodule. */
+  readonly irregularLockfiles: string[] = [];
+  /** Lockfiles git tracks that are not in the checkout. */
+  readonly missingLockfiles: string[] = [];
   private readonly texts = new Map<string, string[]>();
 
   constructor(root: string) {
@@ -181,7 +195,14 @@ class Checkout {
       .split('\0')
       .flatMap((entry) => {
         const [, mode, file] = /^(\d+) \S+ \d+\t(.+)$/s.exec(entry) ?? [];
-        return file && (mode === '100644' || mode === '100755') && existsSync(join(this.root, file)) ? [file] : [];
+        if (!file) return [];
+        if (mode === '100644' || mode === '100755') {
+          if (existsSync(join(this.root, file))) return [file];
+          if (LOCKFILE.test(file)) this.missingLockfiles.push(file);
+          return [];
+        }
+        if (LOCKFILE.test(file)) this.irregularLockfiles.push(file);
+        return [];
       });
   }
 
@@ -254,12 +275,16 @@ function chartSources(manifests: Manifest[]) {
     });
 }
 
-/** The list, and what it read along the way that `--unlisted` compares with it. */
-/** The lockfiles on a checkout's list: each `pnpm-lock.yaml` git tracks as a regular file, outside prose and fixtures. */
+/**
+ * The lockfiles pnpm installs where they lie, which coverage and the dependency graph install: each `pnpm-lock.yaml`
+ * git tracks as a regular file, outside prose and fixtures. The list itself has every lockfile (inventory below), and
+ * the scan holds Trivy to every package each lists.
+ */
 export function lockfiles(root: string) {
   return new Checkout(root).files.filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file) && !isFixture(file));
 }
 
+/** The list, and what it read along the way that `--unlisted` compares with it. */
 export function inventory(root: string) {
   const checkout = new Checkout(root);
   const items: Item[] = [];
@@ -276,10 +301,18 @@ export function inventory(root: string) {
   // Prose and test fixtures bring in nothing that runs.
   const tracked = checkout.files.filter((file) => !isFixture(file));
 
-  // Lockfiles.
-  for (const file of tracked.filter((file) => /(^|\/)pnpm-lock\.yaml$/.test(file)))
+  // Lockfiles, every one git tracks, fixtures and branches' included.
+  for (const file of checkout.files.filter((file) => LOCKFILE.test(file)))
     add({ kind: 'lockfile', name: file, file, line: 1 });
-  // lockfiles() above reads the same.
+  for (const file of checkout.irregularLockfiles)
+    unplaced.push({
+      file,
+      line: 0,
+      reference: file,
+      why: 'a lockfile git tracks as something other than a regular file, which pnpm would follow',
+    });
+  for (const file of checkout.missingLockfiles)
+    unplaced.push({ file, line: 0, reference: file, why: 'a lockfile git tracks that is not in the checkout' });
 
   // Images of ours, as the local overlay pins them.
   for (const file of tracked.filter((file) =>

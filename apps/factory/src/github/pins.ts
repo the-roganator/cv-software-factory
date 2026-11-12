@@ -366,9 +366,12 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
 
 /** A pull request's title: what it moves, and to what. */
 export function pullTitle(move: ReadMove, target: Target): string {
-  const to = versionOf(target) ?? move.to;
-  return `chore(pin): move ${move.name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
+  return pinTitle(move.name, versionOf(target) ?? move.to);
 }
+
+/** The title of a move's pull request, from its name and the version it moves to: what the pin queue reads it by. */
+export const pinTitle = (name: string, to: string): string =>
+  `chore(pin): move ${name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
 
 /** Watches this repository's moves, and keeps one pull request, or one issue, for each. */
 export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {

@@ -191,12 +191,13 @@ describe('the GitHub worker’s refusals', () => {
     expect(opened.status).toBe(500);
   });
 
-  it('refuses, signed, a check run named as one main requires, and posts any other', async () => {
+  it('refuses, signed, a check run named as the gate’s, or here as one main requires, and posts any other', async () => {
+    const FACTORY = 'the-roganator/cv-software-factory';
     const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
     const server = createWorkerServer({
       actions: failing(new Error('the action was reached')),
       reads: { requiredChecks: async () => ['lint, types, tests', 'Image builds'] } as never,
-      repositories: [REPO],
+      repositories: [REPO, FACTORY],
       health: () => ({}),
       recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT }),
       log: quiet,
@@ -205,18 +206,21 @@ describe('the GitHub worker’s refusals', () => {
     close = () => server.close();
     const worker = new GitHubWorker(url);
     const asked = { headSha: SHA, status: 'completed', conclusion: 'success', title: 't', summary: 's' } as const;
-    const answer = (name: string) =>
-      worker.act('createCheckRun', REPO, { name, ...asked }).catch((e: unknown) => e as GitHubWorkerError);
-    for (const name of ['image builds', 'lint, types, tests', 'review']) {
-      const failed = (await answer(name)) as GitHubWorkerError;
-      expect(failed.status, name).toBe(422);
-      expect(verifyRefusal(publicKey, failed.refusal), name).toMatchObject({ ok: true });
+    const answer = async (repo: string, name: string) =>
+      ((await worker.act('createCheckRun', repo, { name, ...asked }).catch((e: unknown) => e)) as GitHubWorkerError)
+        .status;
+    for (const name of ['image builds', 'lint, types, tests', 'review', ' Review ']) {
+      expect(await answer(FACTORY, name), name).toBe(422);
     }
-    expect(((await answer('factory review')) as GitHubWorkerError).status).toBe(500);
+    expect(await answer(FACTORY, 'factory review')).toBe(500);
+    // In the app's repository the line posts its own runs: only the gate's name is refused there.
+    expect(await answer(REPO, 'review')).toBe(422);
+    expect(await answer(REPO, 'image builds')).toBe(500);
     const renamed = (await worker
-      .act('updateCheckRun', REPO, { id: 1, name: 'Image builds' })
+      .act('updateCheckRun', FACTORY, { id: 1, name: 'Image builds' })
       .catch((e: unknown) => e)) as GitHubWorkerError;
     expect(renamed.status).toBe(422);
+    expect(verifyRefusal(publicKey, renamed.refusal)).toMatchObject({ ok: true });
   });
 
   it('does not take GitHub’s 403 to the door’s own read of a pull request for a refusal of the action', async () => {

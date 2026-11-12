@@ -206,7 +206,17 @@ describe('the door, asked for actions that name no pull request', () => {
       const failed = await failure(door.act('openPullRequest', FACTORY, { head, base: 'main', title: 't', body: '' }));
       expect(failed?.status, head).toBe(422);
     }
-    for (const label of ['pin\u200b', '\u200bpin', 'pin\u00ad', '\uff50\uff49\uff4e', 'p\u0131n']) {
+    for (const label of [
+      'pin\u200b',
+      '\u200bpin',
+      'pin\u00ad',
+      '\uff50\uff49\uff4e',
+      'p\u0131n',
+      'P\u0130N',
+      'pi\u034fn',
+      'pin\ufe0f',
+      'pi\u0301n',
+    ]) {
       const failed = await failure(door.act('openIssue', FACTORY, { title: 't', body: '', labels: [label] }));
       expect(failed?.status, JSON.stringify(label)).toBe(422);
     }

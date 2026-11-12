@@ -232,15 +232,15 @@ function actingFor(req: IncomingMessage): ActingFor {
   return on;
 }
 
-/** Whether a label is `pin` as GitHub takes it: label names are matched without regard to case. */
 /**
- * A label as GitHub may take it: compatibility forms folded (NFKC), the characters that show nothing (zero-width,
- * the soft hyphen, the byte-order mark) taken out, a dotless i read as i, without regard to case or the space round it.
+ * A label as GitHub may take it, read broadly so nothing that could be `pin` passes: decomposed (NFKD) with its marks
+ * taken out, so `PİN` is `pin`; every character Unicode says to ignore taken out (zero-width, the soft hyphen, variation
+ * selectors, fillers); a dotless i read as i; without regard to case or the space round it.
  */
 const labelAsRead = (label: string): string =>
   label
-    .normalize('NFKC')
-    .replace(/[\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff]/g, '')
+    .normalize('NFKD')
+    .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, '')
     .replace(/\u0131/g, 'i')
     .trim()
     .toLowerCase();
@@ -330,17 +330,21 @@ async function guardPinHead(
 }
 
 /**
- * Throws `BranchRefused` for a check run a worker asks to post or rename as one GitHub requires on `main`, or as the
- * review gate's: those are what a merge waits for, and only their own workflows and App post them.
+ * Throws `BranchRefused` for a check run a worker asks to post or rename as the review gate's, in any repository, or, in
+ * this one, as one GitHub requires on `main`: those are what a merge here waits for, and only their own workflows and
+ * App post them. In the app's repository the line posts its own (`factory review`), and its required checks are not
+ * read for it.
  */
 async function guardCheckName(repo: string, name: string | undefined, reads?: Reads): Promise<void> {
   if (name === undefined) return;
-  if (name.trim().toLowerCase() === REVIEW_CHECK) {
+  const asRead = name.trim().toLowerCase();
+  if (asRead === REVIEW_CHECK) {
     throw new BranchRefused(`A check run named ${name} is the review gate's: no worker that asks posts one.`);
   }
+  if (repo !== QUEUES_DEPLOYS_IN && !PIN_REPOS.includes(repo)) return;
   if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether ${name} is a check main requires.`);
   const required = await reads.requiredChecks(repo, 'main');
-  if (required.some((r) => r.trim().toLowerCase() === name.trim().toLowerCase())) {
+  if (required.some((r) => r.trim().toLowerCase() === asRead)) {
     throw new BranchRefused(`A check run named ${name} is one main requires: no worker that asks posts one.`);
   }
 }

@@ -450,7 +450,7 @@ function pinHarness(o: {
       },
       {
         method: 'GET',
-        path: /\/pulls\?state=closed&per_page=20&head=/,
+        path: /\/pulls\?state=closed&per_page=100&page=1&head=/,
         answer: ({ path }) => {
           const branch = decodeURIComponent(path.split('&head=')[1]?.split(':').slice(1).join(':') ?? '');
           return { body: o.closed?.(branch) ?? [] };
@@ -539,6 +539,12 @@ describe('the pin queue watch', () => {
       expect(toldWait([name], dashboards)?.waits, name).toBe('not-a-pin');
     }
     expect(toldWait(['example-dashboards'], dashboards)).toBeUndefined();
+    // A told name whose title prefixes another move's on the same branch (names cut at 80 characters fold to one).
+    const long = 'x'.repeat(80);
+    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to x to 1.0`))?.waits).toBe(
+      'not-a-pin',
+    );
+    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to 1.0`))).toBeUndefined();
     // A told name whose title prefixes another move's is still on its own branch.
     expect(toldWait(['zap'], at('factory/pin/zap-to-x', 'chore(pin): move zap to x to 1.0'))?.waits).toBe('not-a-pin');
     const folded = pinHarness({ only: ['Zap'] });
@@ -561,6 +567,15 @@ describe('the pin queue watch', () => {
     const held = pinHarness({ closed: () => [closed()], events });
     await held.pass();
     expect(held.enqueued).toEqual([]);
+
+    // Held, saying why, when the earlier one's events run past what is read.
+    const long = pinHarness({
+      closed: () => [closed()],
+      events: (n, p) =>
+        n === 1001 ? Array.from({ length: 100 }, () => labelled(APP_USER)) : p > 1 ? [] : [labelled(APP_USER)],
+    });
+    await long.pass();
+    expect(long.enqueued).toEqual([]);
 
     // Not held: an earlier target (another title), one the App alone unlabelled, a merged one, or someone else's.
     for (const earlier of [

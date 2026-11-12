@@ -51,7 +51,7 @@ import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploy
 import { APP_USER, IssueRefused } from './issues.ts';
 import { REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
 import { guardPinBranch, pinBranchFor } from './pin-guard.ts';
-import { PIN_LABEL, PIN_REPOS, type PinScope } from './pins.ts';
+import { PIN_LABEL, PIN_REPOS, type PinScope, pinTitle } from './pins.ts';
 import type { Watch } from './poller.ts';
 import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -150,10 +150,7 @@ export function labelWait(events: LabelEvents, whole: boolean): QueueWait | unde
   const labelled = events.filter((e) => e.event === 'labeled' && e.label?.name === PIN_LABEL);
   if (!labelled.length) return not(`nobody labelled it ${PIN_LABEL}`);
   if (labelled.some((e) => e.actor?.id !== APP_USER)) return not(`someone but the App labelled it ${PIN_LABEL}`);
-  const unlabelled = events.filter((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL);
-  if (unlabelled.some((e) => e.actor?.id !== APP_USER)) {
-    return not(`someone but the App took its ${PIN_LABEL} label off`);
-  }
+  if (heldByLabel(events)) return not(`someone but the App took its ${PIN_LABEL} label off`);
   // The pin watch never reopens a pull request: one the App reopened was closed, by Martin or the watch, and opened
   // again by a worker that asked, so it is not the watch's to queue.
   if (events.some((e) => e.event === 'reopened' && e.actor?.id === APP_USER)) return not('the App reopened it');
@@ -361,27 +358,43 @@ const MATCHING_REFS = z.array(z.object({ ref: z.string(), object: z.object({ sha
 export const pinHeadsOf =
   (github: GitHub) =>
   async (repo: string): Promise<string[]> => {
-    const { body } = await github.poll(repo, `/repos/${repo}/git/matching-refs/heads/factory/pin`, MATCHING_REFS);
-    return body.filter((ref) => pinBranch(ref.ref.replace(/^refs\/heads\//, ''))).map((ref) => ref.object.sha);
+    const refs: z.infer<typeof MATCHING_REFS> = [];
+    for (let page = 1; ; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/git/matching-refs/heads/factory/pin?per_page=100&page=${page}`,
+        MATCHING_REFS,
+      );
+      refs.push(...body);
+      if (body.length < 100) break;
+      // Past what is read, a head may be missed: no branch is set until the pin branches are fewer.
+      if (page === OPEN_PAGES) throw new Error(`More pin branches are in ${repo} than the door reads.`);
+    }
+    return refs.filter((ref) => pinBranch(ref.ref.replace(/^refs\/heads\//, ''))).map((ref) => ref.object.sha);
   };
+
+/** Whether a title is the one the pin watch gives a move of this name: the name, then one version, and nothing else. */
+const titleNames = (title: string, name: string): boolean => {
+  const prefix = pinTitle(name, '');
+  // A name so long the title is cut within it: the title is that cut alone.
+  if (prefix.length === 256) return title === prefix;
+  return title.startsWith(prefix) && /^\S+$/.test(title.slice(prefix.length));
+};
 
 /** Whether a pin branch is that of a move the pin watch is told to take (`PIN_WATCH_ONLY`), by the branch it opens. */
 export function toldWait(only: PinScope, pull: Pick<QueuePull, 'title' | 'head'>): QueueWait | undefined {
   if (only === '*') return undefined;
   // The move by its exact name, as the watch reads the setting: the branch the watch opens for that name, and the
   // title it gives it, which no worker that asks can change (the door refuses any action on a pin pull request).
-  const told = only.some(
-    (name) =>
-      pinBranchFor(name) === pull.head.ref &&
-      pull.title.startsWith(`chore(pin): move ${name.replace(/[`\r\n]/g, '')} to `),
-  );
+  const told = only.some((name) => pinBranchFor(name) === pull.head.ref && titleNames(pull.title, name));
   if (told) return undefined;
   return { waits: 'not-a-pin', why: 'its move is not one the pin watch is told to take (PIN_WATCH_ONLY)' };
 }
 
 /** Whether anyone but the App ever took the `pin` label off a pull request, by its events: Martin's hold of it. */
-export const heldByLabel = (events: LabelEvents): boolean =>
-  events.some((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER);
+export function heldByLabel(events: LabelEvents): boolean {
+  return events.some((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER);
+}
 
 const CLOSED = z.array(
   z.object({
@@ -428,23 +441,29 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
    */
   const heldBefore = async (pull: QueuePull): Promise<QueueWait | undefined> => {
     const [owner] = repo.split('/');
-    const { body } = await github.poll(
-      repo,
-      `/repos/${repo}/pulls?state=closed&per_page=20&head=${owner}:${encodeURIComponent(pull.head.ref)}`,
-      CLOSED,
-    );
-    for (const closed of body) {
-      if (closed.user?.id !== APP_USER || closed.head.repo?.full_name !== repo || closed.merged_at) continue;
-      if (closed.title !== pull.title || closed.head.ref !== pull.head.ref) continue;
-      const { events, whole } = await eventsOf(closed.number);
-      if (!whole || heldByLabel(events)) {
-        return {
-          waits: 'not-a-pin',
-          why: `Martin held this move at this target on #${closed.number} by taking its ${PIN_LABEL} label off`,
-        };
+    for (let page = 1; page <= OPEN_PAGES; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/pulls?state=closed&per_page=100&page=${page}&head=${owner}:${encodeURIComponent(pull.head.ref)}`,
+        CLOSED,
+      );
+      for (const closed of body) {
+        if (closed.user?.id !== APP_USER || closed.head.repo?.full_name !== repo || closed.merged_at) continue;
+        if (closed.title !== pull.title || closed.head.ref !== pull.head.ref) continue;
+        const { events, whole } = await eventsOf(closed.number);
+        if (!whole) {
+          return { waits: 'not-a-pin', why: `#${closed.number}, of this move at this target, runs past what is read` };
+        }
+        if (heldByLabel(events)) {
+          return {
+            waits: 'not-a-pin',
+            why: `Martin held this move at this target on #${closed.number} by taking its ${PIN_LABEL} label off`,
+          };
+        }
       }
+      if (body.length < 100) return undefined;
     }
-    return undefined;
+    return { waits: 'not-a-pin', why: 'more of its branch’s pull requests are closed than the queue reads' };
   };
 
   /** The open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */

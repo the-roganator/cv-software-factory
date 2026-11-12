@@ -52,6 +52,12 @@ export class PatchingSense {
   readonly #now: () => Date;
 
   constructor({ sql, events, senses, repositories, log, now = () => new Date() }: SenseOptions) {
+    // A day holds one or two repositories (`patching.read`): more could never be appended, so it would never read.
+    if (repositories.length < 1 || repositories.length > 2)
+      throw new Error(`The sense reads one or two repositories, not ${repositories.length}`);
+    // Each once, and each owner/name, or every day would fail the schema, or every read GitHub.
+    if (new Set(repositories).size !== repositories.length || repositories.some((r) => !/^[\w.-]+\/[\w.-]+$/.test(r)))
+      throw new Error(`The sense reads each repository once, as owner/name: ${repositories.join(', ')}`);
     this.#sql = sql;
     this.#events = events;
     this.#senses = senses;

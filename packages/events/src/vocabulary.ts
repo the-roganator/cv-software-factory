@@ -570,7 +570,7 @@ export type ScanSeverity = (typeof SCAN_SEVERITIES)[number];
 
 /**
  * How the day's scan ended, as the dependency sense reads it (`patching.read`): it passed, or it failed for one of the
- * scan's own reasons, which its moves show (a finding past its deadline, one due within a day, a new High or Critical
+ * scan's own reasons, which its totals count (a finding past its deadline, one due within a day, a new High or Critical
  * with a fix), or for none of them (`other`: the run itself failed, or wrote no moves).
  */
 export const SCAN_FAILURES = ['overdue', 'due-within-a-day', 'new-high-or-critical', 'other'] as const;

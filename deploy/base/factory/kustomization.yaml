@@ -19,7 +19,6 @@ resources:
   - line.yaml
   - triage.yaml
   - red-team.yaml
-  - patching.yaml
   - intake.yaml
   - logs.yaml
   - probes.yaml

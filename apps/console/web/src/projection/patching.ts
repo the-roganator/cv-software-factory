@@ -198,12 +198,13 @@ function moveRow(repository: string, move: ScanMove, items: readonly ItemState[]
         : move.pullRequest
           ? { kind: 'opened' }
           : { kind: 'lane', lane: move.lane };
-  const from = move.lockfile ? shown?.from : shortDigests(move.from).trim();
+  // A version the scan could not read is empty: it is left unsaid, never drawn as an empty side of an arrow.
+  const from = (move.lockfile ? shown?.from : shortDigests(move.from).trim()) || undefined;
   const unbuilt = move.to.startsWith('another line');
   const to = move.lockfile ? shown?.to || undefined : move.to && !unbuilt ? targetWords(move.to) : undefined;
   const pins = (move.lockfile ? (shown?.pins ?? []) : move.pins).map((pin) => ({
     at: pinText(pin),
-    change: from !== undefined && to ? `${from} → ${to}` : (from ?? ''),
+    change: changeWords(from, to),
   }));
   const first = (move.lockfile ? shown?.pins[0] : undefined) ?? move.pins[0];
   return {
@@ -224,6 +225,10 @@ function moveRow(repository: string, move: ScanMove, items: readonly ItemState[]
   };
 }
 
+/** What a move changes at a pin: "1.0 → 1.1", or the side the scan read when it could not read the other. */
+export const changeWords = (from: string | undefined, to: string | undefined) =>
+  from && to ? `${from} → ${to}` : to ? `→ ${to}` : (from ?? '');
+
 /** A pin's place: its file, and its line where it has one (a lockfile's move is the file). */
 export const pinText = ({ file, line }: { file: string; line: number }) => (line > 0 ? `${file}:${line}` : file);
 
@@ -240,7 +245,8 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unlisted ${row.namespace}/${row.pod}/${row.container}`,
+        // Named by what runs and where, not by its pod, whose name a restart changes.
+        key: `unlisted ${row.namespace} ${row.container} ${row.image}@${row.digest}`,
         repository: undefined,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -252,7 +258,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unscanned ${row.namespace}/${row.pod}/${row.container}`,
+        key: `unscanned ${row.namespace} ${row.container} ${row.image}@${row.digest}`,
         repository: row.repository,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -317,7 +323,15 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
       ),
     );
   });
-  const rows = ordered([...moves, ...day.rows.map(runningRow)]);
+  // Two pods of one workload running the same image make rows with one key: each after the first is told apart by
+  // its place among them, so a key never rests on a pod's name.
+  const seen = new Map<string, number>();
+  const sensed = day.rows.map(runningRow).map((row) => {
+    const n = (seen.get(row.key) ?? 0) + 1;
+    seen.set(row.key, n);
+    return n === 1 ? row : { ...row, key: `${row.key} ${n}` };
+  });
+  const rows = ordered([...moves, ...sensed]);
   const running = { 'unscanned-digest': 0, 'unlisted-image': 0, 'not-running': 0 };
   for (const row of day.rows) running[row.row]++;
   const failed = [...new Set(day.repositories.flatMap((r) => r.failed))];

@@ -212,9 +212,11 @@ describe('watched', { timeout: 40_000 }, () => {
     expect(run.output()).toContain('the step ended: 143');
     expect(run.log()).toMatch(/gone\n.*gone, asked again\n/);
     const notice = `::notice::The merge queue let this entry go (${QUEUE.replace('refs/heads/', '')} is gone, and ${queue.sha} is not on main): this run stops here, as its result would count for nothing.`;
-    expect(run.log()).toContain(notice);
-    // In the step's own log, where /proc lets the watcher reach it.
-    if (process.platform === 'linux') expect(run.output()).toContain(notice);
+    // In the step's own output, where /proc lets the watcher reach it, and in the watcher's log as a plain line, so
+    // that printing it makes no second notice.
+    if (process.platform === 'linux') expect(run.output()).toContain(`${notice}\n`);
+    expect(run.log()).toContain(`\n${notice.replace('::notice::', '')}\n`);
+    expect(run.log()).not.toContain('::notice::');
     expect(run.gone()).toBe(true);
     await run.until(() => !alive(watcher), 'the watcher to end');
   });

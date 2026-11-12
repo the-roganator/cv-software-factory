@@ -113,18 +113,24 @@ under() {
 }
 
 stop_steps() {
-  local root=$1 line=$2 pids pid steps
+  local root=$1 line=$2 pids pid steps told
   # Newest first: the running step, before anything an earlier one left running.
   steps=$(ps -A -o pid= -o ppid= | awk -v root="$root" -v self="$$" '$2 == root && $1 != 1 && $1 != self { print $1 }' |
     sort -rn)
   pids=$(under "$root")
   # The notice goes to the running step's own output, the pipe the runner reads for its log and annotations (where
   # /proc shows it: on Linux).
+  # Its own log says it without the command, so that printing the log makes no second notice.
+  told="no step's output could be reached, so no notice was made"
   for pid in $steps; do
     [ -p "/proc/$pid/fd/1" ] || continue
-    if { printf '%s\n' "$line" >"/proc/$pid/fd/1"; } 2>/dev/null; then break; fi
+    if { printf '%s\n' "$line" >"/proc/$pid/fd/1"; } 2>/dev/null; then
+      told="the notice went to process $pid's output"
+      break
+    fi
   done
-  echo "$line"
+  echo "${line#::notice::}"
+  echo "$told"
   echo "stopping: $(echo $pids)"
   # shellcheck disable=SC2086
   [ -z "$pids" ] || kill -TERM $pids 2>/dev/null

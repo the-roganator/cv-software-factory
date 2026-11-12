@@ -9,12 +9,13 @@ import { join } from 'node:path';
 import { DiskArtifacts } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import { DryRunActions, LiveActions } from '../../src/github/actions.ts';
-import { dependencyPulls } from '../../src/github/dependabot.ts';
+import { type DependencyPull, dependencyPulls } from '../../src/github/dependabot.ts';
 import { IssueGuard, openedBy } from '../../src/github/issues.ts';
 import { treeSource } from '../../src/github/pin-guard.ts';
-import { PASS_MS, PIN_LABEL, pinWatch } from '../../src/github/pins.ts';
+import { dependabotHas, PASS_MS, PIN_LABEL, pinWatch } from '../../src/github/pins.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
+import { readTarget, type Target } from '../../src/vulnerabilities/fixes.ts';
 import { client, quiet, type Sent } from './fake.ts';
 import { day, dependabotGroup, digest, FACTORY, FakeRepo, FILES, factoryMoves, move, writes } from './pins-harness.ts';
 
@@ -590,5 +591,61 @@ describe('the pin watch, as review found it', () => {
     expect(appPulls(repo)).toEqual([]);
     expect(repo.issues[0]?.body).toContain('is not a file the watch can read');
     expect(w.records().filter((r) => r.payload?.mechanism === 'github-guard')).toEqual([]);
+  });
+});
+
+describe('a group’s pull request of Dependabot’s that has a move', () => {
+  const file = 'apps/factory/Dockerfile.browser';
+  const pin = { file, line: 26 };
+  const [old, now, other] = [digest('playwright/old'), digest('playwright/new'), digest('playwright/other')];
+  const group = (before: string, after: string): DependencyPull => ({
+    number: 1035,
+    head: { ref: 'dependabot/docker/playwright-7f6daadee5', sha: 'a'.repeat(40) },
+    draft: false,
+    createdAt: '2026-11-12T00:00:00Z',
+    ecosystem: 'docker',
+    directory: null,
+    dependency: null,
+    version: null,
+    changed: [
+      {
+        file,
+        line: 26,
+        before: `FROM mcr.microsoft.com/playwright:${before}`,
+        after: `FROM mcr.microsoft.com/playwright:${after}`,
+      },
+    ],
+    unread: [],
+  });
+  const has = (to: string, pull: DependencyPull) =>
+    dependabotHas({ name: 'mcr.microsoft.com/playwright', pins: [pin] }, readTarget(`image ${to}`) as Target, [pull]);
+
+  it('moves only the digest, to the move’s', () => {
+    expect(has(`v1.65.0-noble@${now}`, group(`v1.65.0-noble@${old}`, `v1.65.0-noble@${now}`))?.number).toBe(1035);
+  });
+
+  it('moves only the digest, to another than the move’s: not the move', () => {
+    expect(has(`v1.65.0-noble@${now}`, group(`v1.65.0-noble@${old}`, `v1.65.0-noble@${other}`))).toBeUndefined();
+  });
+
+  it('moves only the tag, to the move’s or further', () => {
+    expect(has(`v1.66.0-noble@${now}`, group('v1.65.0-noble', 'v1.66.0-noble'))?.number).toBe(1035);
+    expect(has(`v1.66.0-noble@${now}`, group('v1.65.0-noble', 'v1.65.1-noble'))).toBeUndefined();
+  });
+
+  it('moves the digest to the move’s under a tag that is no version, or one older than the move’s', () => {
+    expect(has(`noble@${now}`, group(`noble@${old}`, `noble@${now}`))?.number).toBe(1035);
+    expect(has(`v1.66.0-noble@${now}`, group(`v1.65.0-noble@${old}`, `v1.65.1-noble@${now}`))?.number).toBe(1035);
+  });
+
+  it('gives a pin the move’s digest where it had none, or among two new ones', () => {
+    expect(has(`v1.65.0-noble@${now}`, group('v1.65.0-noble', `v1.65.0-noble@${now}`))?.number).toBe(1035);
+    expect(
+      has(`v1.65.0-noble@${now}`, group(`v1.65.0-noble@${old} # ${old}`, `v1.65.0-noble@${other} # ${now}`))?.number,
+    ).toBe(1035);
+  });
+
+  it('moves both, to the move’s', () => {
+    expect(has(`v1.66.0-noble@${now}`, group(`v1.65.0-noble@${old}`, `v1.66.0-noble@${now}`))?.number).toBe(1035);
   });
 });

@@ -157,7 +157,7 @@ describe('the GitHub worker’s refusals', () => {
     }
   });
 
-  it('refuses, signed, every action a worker asks on the pin watch’s pull request, and passes the same on another', async () => {
+  it('refuses, signed, every action a worker asks on the pin watch’s pull request by its number, and passes the same on another', async () => {
     const pullRequest = { number: 1040, url: 'https://github.com/x/pull/1040', nodeId: 'PR_x' };
     const asks = [
       ['enqueuePullRequest', { number: 1040, expectedHead: SHA }],
@@ -168,6 +168,10 @@ describe('the GitHub worker’s refusals', () => {
       ['addLabels', { number: 1040, labels: ['bug'] }],
       ['readyForReview', { pullRequest }],
       ['convertToDraft', { pullRequest }],
+      ['comment', { number: 1040, body: 'a worker’s comment' }],
+      ['review', { number: 1040, commit: SHA, body: 'a worker’s review', comments: [] }],
+      ['resolveThreads', { number: 1040, threads: [{ path: 'README.md', line: 1, body: 'x', reply: 'resolved' }] }],
+      ['describeDeploy', { number: 1040, commit: SHA, carries: [] }],
     ] as const;
     for (const [action, args] of asks) {
       const refused = await ask(action, args, { 1040: 'factory/pin/node-24' });
@@ -185,6 +189,29 @@ describe('the GitHub worker’s refusals', () => {
     }
     const opened = await ask('openPullRequest', { head: 'factory/1400-cart', base: 'main', title: 't', body: '' });
     expect(opened.status).toBe(500);
+  });
+
+  it('does not take GitHub’s 403 to the door’s own read of a pull request for a refusal of the action', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
+    const refused = async () => {
+      throw new GitHubError('refused', 'GET /repos/x/pulls/12 answered 403: secondary rate limit', 403);
+    };
+    const server = createWorkerServer({
+      actions: failing(new Error('the action was reached')),
+      reads: { pullRequest: refused } as never,
+      repositories: [REPO],
+      health: () => ({}),
+      recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT }),
+      log: quiet,
+    });
+    const { url } = await listenLocal(server);
+    close = () => server.close();
+    const failed = (await new GitHubWorker(url)
+      .act('comment', REPO, { number: 12, body: 'hello' })
+      .catch((e: unknown) => e)) as GitHubWorkerError;
+    expect(failed.status).toBe(500);
+    expect(failed.refusal).toBeUndefined();
+    expect(await readdir(dir)).toEqual([]);
   });
 
   it('does not take a failure for a refusal: a patch that will not apply, a 401, a rate limit, a 404', async () => {

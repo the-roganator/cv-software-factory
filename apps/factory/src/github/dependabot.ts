@@ -237,17 +237,27 @@ export function rewrittenLines(file: string, patch: string): ChangedLine[] {
 const WORDS = /[A-Za-z0-9._+-]+/g;
 const VERSION_WORD = /^v?\d+(\.\d+)*([-+][A-Za-z0-9.+-]*)?$/;
 
+const DIGESTS = /sha256:[0-9a-f]{64}/g;
+
 /**
- * The version a group's pull request moves a pin to, from the line it rewrites at the pin's place: the first word that
- * changes and is a version (`FROM ghcr.io/anchore/syft:v1.54.0@sha256:…` to `…:v1.57.1@sha256:…` is `v1.57.1`), or
- * undefined when it rewrites no line there, or none that reads as a version.
+ * Where a group's pull request moves a pin, from the line it rewrites at the pin's place: the first word that changes
+ * and is a version (`FROM ghcr.io/anchore/syft:v1.54.0@sha256:…` to `…:v1.57.1@sha256:…` is `v1.57.1`), read only when
+ * the line's words line up, and every digest the line has after that it did not have before, read whatever the words
+ * do (a digest-only move has no version; a line that gains a digest has a word more). Nothing when it rewrites no line
+ * there, or moves neither.
  */
-export function groupMovesTo(pull: Pick<DependencyPull, 'changed'>, pin: { file: string; line: number }) {
+export function groupMovesTo(
+  pull: Pick<DependencyPull, 'changed'>,
+  pin: { file: string; line: number },
+): { version: string | undefined; digests: string[] } | undefined {
   const line = pull.changed.find((each) => each.file === pin.file && each.line === pin.line);
   if (!line) return undefined;
   const [was, now] = [line.before.match(WORDS) ?? [], line.after.match(WORDS) ?? []];
-  if (was.length !== now.length) return undefined;
-  return now.find((word, i) => word !== was[i] && VERSION_WORD.test(word));
+  const version =
+    was.length === now.length ? now.find((word, i) => word !== was[i] && VERSION_WORD.test(word)) : undefined;
+  const before = new Set(line.before.match(DIGESTS) ?? []);
+  const digests = (line.after.match(DIGESTS) ?? []).filter((each) => !before.has(each));
+  return version === undefined && !digests.length ? undefined : { version, digests };
 }
 
 /** What a group's pull request changes, from its files' patches. */

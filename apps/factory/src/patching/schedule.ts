@@ -1,7 +1,8 @@
 /**
  * When the dependency sense reads: as it starts, then each day once the scan has had time to finish; an hour after a
  * pass that failed, or that found a repository's last scan older than the day's (GitHub's schedule runs late); and ten
- * minutes after a read the worker answered 409, to take again; each until the day's time comes round again. The scan runs at 04:17 UTC
+ * minutes after a read the worker answered 409, to take again; each until the day's time comes round again. The scan
+ * runs at 04:17 UTC
  * (`.github/workflows/vulnerabilities.yml`) and takes under an hour, so the day's read is at 05:30 UTC by default.
  */
 
@@ -33,7 +34,10 @@ export function nextDaily(now: number, at: number): number {
   return today > now ? today : today + DAY;
 }
 
-/** When the next read is: the day's, an hour on (after a failure, or a scan older than today's), or soon (a read to take again). */
+/**
+ * When the next read is: the day's, an hour on (after a failure, or a scan older than today's), or soon (a read to take
+ * again).
+ */
 export type Next = 'daily' | 'hour' | 'soon';
 
 /** How soon a read to take again is taken: the scan that made it was finishing, which takes minutes. */

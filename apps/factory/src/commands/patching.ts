@@ -74,8 +74,8 @@ export async function run(args: string[]): Promise<number> {
           result.pass === 'appended' ? 'patching: the day appended' : 'patching: nothing changed, nothing appended',
         );
       } else if (result.pass === 'not-real') log.warn('patching: the store holds samples; nothing appended');
-      const next = nextAfter(result, Date.now());
-      if (next === 'hour' && result.pass !== 'failed')
+      const { next, why } = nextAfter(result, Date.now());
+      if (why === 'stale')
         log.info('patching: a scan read is older than today’s, so the day is read again within the hour');
       return { next, code: exitCode(result) };
     } catch (error) {

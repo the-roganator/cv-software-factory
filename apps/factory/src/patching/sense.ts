@@ -31,7 +31,10 @@ export type Pass =
   | { pass: 'appended'; day: Day }
   | { pass: 'unchanged'; day: Day }
   | { pass: 'failed'; failed: string[] }
-  /** The worker answered a read with 409, read again: a scan finished during it. Nothing failed, and nothing is appended. */
+  /**
+   * The worker answered a read with 409, read again: a scan finished during it. Nothing failed, and nothing is
+   * appended.
+   */
   | { pass: 'again'; why: string[] }
   | { pass: 'not-real' };
 
@@ -48,15 +51,22 @@ export interface SenseOptions {
 /** Whether the moves read was answered 409, to be read again: a scan finished while its alerts were read. */
 const readAgain = (error: unknown) => error instanceof GitHubWorkerError && error.status === 409;
 
-/** How many reads to take again in a row before they count as a failure: an hour of them, at ten minutes apart. */
+/** How many reads to take again in a row before they count as a failure: the sixth some fifty minutes after the
+ * first, at ten minutes apart. */
 export const MOST_AGAIN = 6;
 
-/** When the next pass is, after this one: see `schedule.ts`. A day read from yesterday's scan is read again within the hour. */
-export function nextAfter(result: Pass, now: number): Next {
-  if (result.pass === 'again') return 'soon';
-  if (result.pass === 'failed') return 'hour';
-  if (result.pass === 'not-real') return 'daily';
-  return result.day.repositories.some((r) => stale(r.run.finished, now)) ? 'hour' : 'daily';
+/**
+ * When the next pass is, after this one (`schedule.ts`), and why when it is sooner than the day's: a read to take
+ * again,
+ * a read that failed, or a day read from yesterday's scan.
+ */
+export function nextAfter(result: Pass, now: number): { next: Next; why?: 'again' | 'failed' | 'stale' } {
+  if (result.pass === 'again') return { next: 'soon', why: 'again' };
+  if (result.pass === 'failed') return { next: 'hour', why: 'failed' };
+  if (result.pass === 'not-real') return { next: 'daily' };
+  return result.day.repositories.some((r) => stale(r.run.finished, now))
+    ? { next: 'hour', why: 'stale' }
+    : { next: 'daily' };
 }
 
 /** What `factory patching --once` exits with: 0 for a day read, 1 for a read that failed, 75 for one to take again. */
@@ -92,6 +102,18 @@ export class PatchingSense {
   }
 
   async pass(): Promise<Pass> {
+    // Reads to take again count only in a row: any other pass, a throw included, starts the count again.
+    try {
+      const result = await this.#pass();
+      if (result.pass !== 'again') this.#again = 0;
+      return result;
+    } catch (error) {
+      this.#again = 0;
+      throw error;
+    }
+  }
+
+  async #pass(): Promise<Pass> {
     if ((await storeKind(this.#sql)) === 'sample') return { pass: 'not-real' };
     const asked: { what: string; moves?: true; read: () => Promise<unknown> }[] = [
       ...this.#repositories.flatMap((repo) => [
@@ -104,19 +126,20 @@ export class PatchingSense {
     const failed = answers.flatMap((answer, i) =>
       answer.status === 'rejected' ? [`${asked[i]?.what}: ${message(answer.reason)}`] : [],
     );
-    // The moves read's 409 is no failure: the scan finished while the alerts were read, and the next read takes it whole.
+    // The moves read's 409 is no failure: the scan finished while the alerts were read, and the next read takes it
+    // whole.
     // Any other read's 409 is a failure, and so are the moves read's once they have come an hour in a row.
     const again =
       failed.length > 0 &&
       answers.every((answer, i) => answer.status === 'fulfilled' || (asked[i]?.moves && readAgain(answer.reason)));
-    if (again && ++this.#again < MOST_AGAIN) {
+    if (again && this.#again + 1 < MOST_AGAIN) {
+      this.#again++;
       this.#log.info({ why: failed }, 'patching: a scan finished during the read, so the day is read again soon');
       return { pass: 'again', why: failed };
     }
-    if (again) failed.push(`the moves read was answered 409, read again, ${MOST_AGAIN} times in a row`);
-    this.#again = 0;
     if (failed.length) {
-      this.#log.error({ failed }, `patching: ${failed.length} of the reads failed, so the day is not appended`);
+      const why = again ? `, answered 409 ${MOST_AGAIN} times in a row` : '';
+      this.#log.error({ failed }, `patching: ${failed.length} of the reads failed${why}, so the day is not appended`);
       return { pass: 'failed', failed };
     }
     const values = answers.map((answer) => (answer as PromiseFulfilledResult<unknown>).value);

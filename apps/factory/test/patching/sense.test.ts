@@ -214,20 +214,37 @@ describe('the dependency sense', () => {
     const passes: string[] = [];
     for (let i = 0; i < MOST_AGAIN; i++) passes.push((await s.pass()).pass);
     expect(passes).toEqual([...Array(MOST_AGAIN - 1).fill('again'), 'failed']);
-    expect(logged.filter((l) => l.level === 50)).toHaveLength(1);
-    // A read that answers starts the count again.
-    expect((await sense(senses()).pass()).pass).toBe('appended');
+    const errors = logged.filter((l) => l.level === 50);
+    expect(errors.map((l) => l.msg)).toEqual([
+      `patching: 2 of the reads failed, answered 409 ${MOST_AGAIN} times in a row, so the day is not appended`,
+    ]);
+  });
+
+  it('starts the count of reads to take again anew after any other pass, on the same sense', async () => {
+    const again = new GitHubWorkerError(409, 'conflict', 'read again');
+    let answer = false;
+    const s = sense(
+      senses({
+        moves: async (repo) => (answer ? (repo === FACTORY ? factoryMoves() : appMoves()) : Promise.reject(again)),
+      }),
+    );
+    for (let i = 0; i < MOST_AGAIN - 1; i++) expect((await s.pass()).pass).toBe('again');
+    answer = true;
+    expect((await s.pass()).pass).toBe('appended');
+    answer = false;
+    // Were the count kept, the next would be the sixth in a row, and a failure.
+    for (let i = 0; i < MOST_AGAIN - 1; i++) expect((await s.pass()).pass).toBe('again');
   });
 
   it('says when to read next and what --once exits with, for each pass', () => {
     const now = Date.parse('2026-11-11T06:00:00Z');
     const day = (finished: string) =>
       ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
-    expect(nextAfter({ pass: 'again', why: [] }, now)).toBe('soon');
-    expect(nextAfter({ pass: 'failed', failed: [] }, now)).toBe('hour');
-    expect(nextAfter({ pass: 'not-real' }, now)).toBe('daily');
-    expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toBe('daily');
-    expect(nextAfter(day('2026-11-10T04:58:00Z'), now)).toBe('hour');
+    expect(nextAfter({ pass: 'again', why: [] }, now)).toEqual({ next: 'soon', why: 'again' });
+    expect(nextAfter({ pass: 'failed', failed: [] }, now)).toEqual({ next: 'hour', why: 'failed' });
+    expect(nextAfter({ pass: 'not-real' }, now)).toEqual({ next: 'daily' });
+    expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toEqual({ next: 'daily' });
+    expect(nextAfter(day('2026-11-10T04:58:00Z'), now)).toEqual({ next: 'hour', why: 'stale' });
     expect([
       exitCode(day('2026-11-11T04:58:00Z')),
       exitCode({ pass: 'not-real' }),

@@ -409,12 +409,25 @@ describe('vulnerabilities.yml', () => {
   const jobs = workflow.jobs;
 
   /** A job's first step, its refusal, run as the runner would, with the event and ref given. */
-  function refuses(job: string, event: string, ref: string, defaultBranch = 'main') {
+  function refuses(
+    job: string,
+    event: string,
+    ref: string,
+    defaultBranch = 'main',
+    head = 'the-roganator/cv-software-factory',
+  ) {
     const step = jobs[job]?.steps?.[0];
     expect(step?.name, job).toBe('Refuse a privileged context');
     try {
       execFileSync('bash', ['-e', '-c', step?.run ?? 'exit 1'], {
-        env: { PATH: process.env.PATH, GITHUB_EVENT_NAME: event, GITHUB_REF: ref, DEFAULT_BRANCH: defaultBranch },
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_EVENT_NAME: event,
+          GITHUB_REF: ref,
+          DEFAULT_BRANCH: defaultBranch,
+          HEAD_REPOSITORY: head,
+          REPOSITORY: 'the-roganator/cv-software-factory',
+        },
         stdio: 'pipe',
       });
       return false;
@@ -452,6 +465,16 @@ describe('vulnerabilities.yml', () => {
       expect(refuses('scan', event, 'refs/heads/main'), event).toBe(true);
   });
 
+  it('refuses a fork’s pull request in the proving run, whose token would read the alerts', () => {
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge', 'main', 'someone/cv-software-factory')).toBe(true);
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge', 'main', '')).toBe(true);
+    expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
+    expect((jobs.prove?.steps?.[0] as { env?: unknown } | undefined)?.env).toEqual({
+      HEAD_REPOSITORY: expression('github.event.pull_request.head.repo.full_name'),
+      REPOSITORY: expression('github.repository'),
+    });
+  });
+
   it('runs the proving run on a pull request alone, and coverage, which writes nothing, on either', () => {
     expect(refuses('prove', 'pull_request', 'refs/pull/1/merge')).toBe(false);
     for (const event of ['push', 'schedule', 'workflow_dispatch', 'merge_group'])
@@ -462,17 +485,25 @@ describe('vulnerabilities.yml', () => {
       expect(refuses('coverage', event, 'refs/heads/main'), event).toBe(true);
   });
 
-  it('judges the deadlines after the upload and the exceptions, and fails a proving run on none of them', () => {
+  it('judges what fixes each finding before the upload, fails on its verdict after, and fails a proving run on none', () => {
     const steps = jobs.scan?.steps ?? [];
     const at = (name: string) => steps.findIndex((step) => step.name === name);
     const upload = steps.findIndex((step) => step.uses?.includes('upload-sarif'));
+    const moves = steps.findIndex((step) => step.uses?.includes('upload-artifact'));
+    // Each message ends with its fix before the upload, so no alert loses its day; a source not read uploads nothing.
+    expect(at('Deadlines and moves')).toBeGreaterThan(at('Scan'));
+    expect(at('Deadlines and moves')).toBeLessThan(upload);
+    expect(steps[at('Deadlines and moves')]?.run).toContain('--write');
+    expect(moves).toBeGreaterThan(at('Deadlines and moves'));
+    expect(steps[moves]?.with?.name).toBe('moves');
+    // The verdict fails the run after the upload and the exceptions, so each new finding's alert exists.
     expect(at('Deadlines')).toBeGreaterThan(at('Hold the alerts to the policy'));
     expect(at('Hold the alerts to the policy')).toBeGreaterThan(upload);
-    expect(steps[at('Deadlines')]?.run).toContain('deadlines.ts');
-    expect(steps[at('Deadlines')]?.run).not.toContain('--prove');
-    const proving = (jobs.prove?.steps ?? []).at(-1);
-    expect(proving?.name).toBe('Deadlines, failing on none');
-    expect(proving?.run).toContain('--prove');
+    expect(steps[at('Deadlines')]?.run).toContain('deadlines.ts --verdict');
+    const proving = jobs.prove?.steps ?? [];
+    const judged = proving.find((step) => step.name === 'Deadlines and moves, failing on none');
+    expect(judged?.run).toContain('--prove');
+    expect(proving.at(-1)?.with?.name).toBe('moves');
   });
 
   it('proves itself only on a change to the scan, against the base, as data', () => {

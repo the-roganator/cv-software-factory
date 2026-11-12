@@ -38,14 +38,47 @@
  * repository; Trivy runs in its pinned image, as the scan runs it, on the scan's database.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
-import { identity } from './inventory.ts';
+import { type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
+import { type Chart, identity, type Kind } from './inventory.ts';
+import {
+  APP,
+  type Context,
+  type DayCounts,
+  dependabotDirectories,
+  directPackages,
+  type Judged,
+  type Move,
+  moves,
+  movesFile,
+  table as movesTable,
+  publicMove,
+  type ScannedImage,
+} from './moves.ts';
 import { satisfies } from './node.ts';
-import { alertKey, type Finding, SEVERITIES, type Severity } from './sarif.ts';
-import { type Handoff, type ReadTarget, realTools, repositoryOf, type TrivyReport, trivyPin } from './scan.ts';
+import {
+  alertKey,
+  type Finding,
+  fingerprint,
+  messageOf,
+  overLimits,
+  type Sarif,
+  SEVERITIES,
+  type Severity,
+} from './sarif.ts';
+import {
+  type Handoff,
+  imagesIn,
+  type ReadTarget,
+  realTools,
+  repositoryOf,
+  type TrivyReport,
+  trivyPin,
+} from './scan.ts';
 
 const run = promisify(execFile);
 const DAY = 86_400_000;
@@ -110,6 +143,18 @@ export interface Sources {
   tags(repository: string): Promise<string[]>;
   /** Trivy's report of an image. */
   image(reference: string): Promise<TrivyReport>;
+  /** An image's index digest, as `scripts/ci-images.sh current` reads one: the SHA-256 of its raw manifest. */
+  digest(reference: string): Promise<string>;
+  /** An image's index digest, and every platform manifest it lists (none for a single manifest). */
+  manifests(reference: string): Promise<{ digest: string; platforms: string[] }>;
+  /** A chart's versions in its repository's index, each with when it was published. */
+  chartVersions(repo: string, chart: string): Promise<{ version: string; created: string }[]>;
+  /** A chart, rendered as the scan renders it, with its values files from the checkout. */
+  render(chart: Chart, kubeVersion?: string): Promise<string>;
+  /** A tool's releases, from its publisher's repository, as mise.lock names it, each with when it was published. */
+  toolReleases(tool: string): Promise<{ version: string; published: string }[]>;
+  /** Trivy's report of a tool's release, as mise.lock's download for linux-x64 at that version; none if not built. */
+  tool(tool: string, version: string): Promise<TrivyReport | undefined>;
   /** A k3s release (`v1.37.2+k3s1`): when it was published, and the images its `k3s-images.txt` lists. */
   k3s(release: string): Promise<{ published: string; images: string[] } | undefined>;
   /** A file of the scanned checkout, or undefined. */
@@ -154,20 +199,25 @@ export function firstFixed(installed: string, fixed: string | undefined) {
     .sort(compareVersions)[0];
 }
 
-/** How a finding's fix reaches us: through npm, Node's releases, or a newer image on its pin's line. */
+type Route = 'npm' | 'node' | 'image' | 'tool' | 'none';
+
+/** How a finding's fix reaches us: through npm, Node's releases, a newer image on its pin's line, or a tool's release. */
 export function routeOf(
   finding: Pick<Finding, 'type'>,
   kind: ReadTarget['kind'],
   fromBase = false,
   inLockfile = false,
-): 'npm' | 'node' | 'image' | 'none' {
+  fromTool = false,
+): Route {
   if (finding.type === 'node') return 'node';
   if (kind === 'lockfile') return 'npm';
   if (kind !== 'ours') return 'image';
   // An image of ours: what its runtime stage's image has comes with a newer one; an npm package a lockfile of ours
-  // resolves, through npm; anything else its Dockerfile adds itself, which no newer base brings, has no fix to count from.
+  // resolves, through npm; one a tool in mise.toml brings, with the tool's release; anything else its Dockerfile adds
+  // itself, which no newer base brings, has no fix to count from.
   if (fromBase) return 'image';
-  return NPM_TYPES.has(finding.type) && inLockfile ? 'npm' : 'none';
+  if (NPM_TYPES.has(finding.type) && inLockfile) return 'npm';
+  return fromTool ? 'tool' : 'none';
 }
 
 /** A reference's name and tag, its digest left off. */
@@ -303,17 +353,93 @@ export interface Row {
   bucket: Bucket;
 }
 
-/** When each result's fix became installable, by its index in `findings`, from the sources. */
+/** What moving a result writes: the kind of item the pin is, its name, where it is, and what it pins now (moves.ts). */
+export interface Where {
+  kind: Kind;
+  name: string;
+  pin: { file: string; line: number };
+  from: string;
+}
+
+/** How old a non-version tag's image may be and still be a line someone builds. */
+export const UNBUILT_DAYS = 180;
+
+/** How many majors past a chart's pinned one are rendered for a fix, at most. */
+const CHART_MAJORS = 3;
+
+/** How many versions of one chart's major, or of a tool's range, are tried for a fix, newest first, at most. */
+const CANDIDATES = 4;
+
+/** A tool in mise.toml whose release brings a package into an image of ours, from where Trivy found it (`opt/pnpm/…`). */
+export function toolOf(path: string | undefined, tools: string[]) {
+  const name = /^\/?opt\/([\w.-]+)\//.exec(path ?? '')?.[1];
+  return name && tools.includes(name) ? name : undefined;
+}
+
+/** The tools mise.lock holds, with each one's version. */
+export function miseTools(lock: string | undefined) {
+  const found = new Map<string, string>();
+  let tool: string | undefined;
+  for (const line of (lock ?? '').split('\n')) {
+    const header = /^\[\[tools\.([\w.-]+|"[^"]+")\]\]$/.exec(line.trim());
+    if (header?.[1]) {
+      tool = header[1].replace(/"/g, '');
+      continue;
+    }
+    const version = /^version = "([^"]+)"$/.exec(line.trim())?.[1];
+    if (tool && version && !found.has(tool)) found.set(tool, version);
+  }
+  return found;
+}
+
+/** A tool's range in mise.toml (`pnpm = "12"`), or undefined. */
+export function miseRange(toml: string | undefined, tool: string) {
+  let inTools = false;
+  for (const line of (toml ?? '').split('\n')) {
+    const section = /^\s*\[([^\]]+)\]\s*$/.exec(line)?.[1];
+    if (section !== undefined) {
+      inTools = section.trim() === 'tools';
+      continue;
+    }
+    const m = /^\s*"?([\w.:/-]+)"?\s*=\s*"([^"]+)"/.exec(line);
+    if (inTools && m?.[1] === tool) return m[2];
+  }
+  return undefined;
+}
+
+/** The line a Dockerfile's `FROM <image>` is on, or 0. */
+const fromLine = (dockerfile: string, image: string) =>
+  dockerfile
+    .split('\n')
+    .findIndex((line) =>
+      new RegExp(`^\\s*FROM\\s+(?:--\\S+\\s+)*${image.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`, 'i').test(line),
+    ) + 1;
+
+/** What an image pins, as a move's `from`: its tag, or its digest when it has none. */
+const pinned = (reference: string) => {
+  const { tag } = nameAndTag(reference);
+  const digest = reference.split('@')[1];
+  return tag ?? digest ?? reference;
+};
+
+/**
+ * When each result's fix became installable, and what fixes it, by its index in `findings`, from the sources; and
+ * where moving it writes.
+ */
 export async function installable(
   findings: Finding[],
   targets: ReadTarget[],
   sources: Sources,
   minimumReleaseAge = PNPM_DEFAULT_MINUTES,
   log: (line: string) => void = () => {},
+  now = Date.now(),
+  kubeVersion?: string,
 ) {
   const kinds = new Map(targets.map((target) => [target.key, target]));
   const at: (number | undefined)[] = findings.map(() => undefined);
-  const lines = { npm: 0, images: 0, k3s: { fixed: 0, none: 0 } };
+  const fixes: (Target | undefined)[] = findings.map(() => undefined);
+  const places: Where[] = [];
+  const lines = { npm: 0, images: 0, k3s: { fixed: 0, none: 0 }, charts: 0, tools: 0, unbuilt: 0 };
   const has = (pkg: string, advisory: string) => JSON.stringify([pkg, advisory]);
   // What each image the scan read has, by its reference without its tag, so an image of ours can tell what its
   // runtime stage brings from what its Dockerfile adds.
@@ -325,26 +451,38 @@ export async function installable(
     found.add(has(finding.package, finding.advisory));
     byImage.set(identity(image), found);
   }
+  const tools = miseTools(sources.file('mise.lock'));
   // npm: each package and version once; each repository's tags once; each line's newest once.
   const npm = new Map<string, Promise<string | undefined>>();
   const tags = new Map<string, Promise<string[]>>();
   let releases: Promise<{ version: string; date: string }[]> | undefined;
   const newest = new Map<string, Promise<{ created?: number | undefined; has: Set<string> }>>();
-  const pins = new Map<string, string | undefined>();
+  const pins = new Map<string, { image: string; dockerfile: string; line: number } | undefined>();
   /** The pin whose line brings a target's image findings: its own, or its Dockerfile's runtime stage for one of ours. */
-  const pinOf = (target: ReadTarget) => {
+  const stageOf = (target: ReadTarget) => {
     if (pins.has(target.key)) return pins.get(target.key);
-    let pin = target.image;
+    let stage: { image: string; dockerfile: string; line: number } | undefined;
     if (target.kind === 'ours') {
       const dockerfile = dockerfileOf(target.image ?? '', (path) => sources.file(path) !== undefined);
-      pin = dockerfile ? runtimeStage(sources.file(dockerfile) ?? '') : undefined;
-      if (!pin)
+      const text = dockerfile ? (sources.file(dockerfile) ?? '') : '';
+      const image = dockerfile ? runtimeStage(text) : undefined;
+      if (dockerfile && image) stage = { image, dockerfile, line: fromLine(text, image) || 1 };
+      else
         log(
           `::warning::No Dockerfile's runtime stage was found for ${repositoryOf(target.image ?? '')}: its image findings have no fix to count from.`,
         );
     }
-    pins.set(target.key, pin);
-    return pin;
+    pins.set(target.key, stage);
+    return stage;
+  };
+  const pinOf = (target: ReadTarget) => (target.kind === 'ours' ? stageOf(target)?.image : target.image);
+  const listTags = (repository: string) => {
+    let listed = tags.get(repository);
+    if (!listed) {
+      listed = sources.tags(repository);
+      tags.set(repository, listed);
+    }
+    return listed;
   };
   // The k3s releases after a pinned one on its line, oldest first, each read once.
   const k3sLines = new Map<string, Promise<string[]>>();
@@ -353,17 +491,12 @@ export async function installable(
     let once = k3sLines.get(list);
     if (!once) {
       once = (async () => {
-        const pinned = k3sReleaseOf(list);
-        if (!pinned) {
+        const pinnedRelease = k3sReleaseOf(list);
+        if (!pinnedRelease) {
           log(`::warning::No k3s release could be read from ${list}: the images it lists have no fix to count from.`);
           return [];
         }
-        let listed = tags.get(K3S_IMAGE);
-        if (!listed) {
-          listed = sources.tags(K3S_IMAGE);
-          tags.set(K3S_IMAGE, listed);
-        }
-        return k3sLine(pinned, await listed);
+        return k3sLine(pinnedRelease, await listTags(K3S_IMAGE));
       })();
       k3sLines.set(list, once);
     }
@@ -399,7 +532,8 @@ export async function installable(
       if (!reference || sameImage(reference, target.image ?? '')) continue;
       const image = await scanned(reference, false);
       const published = time(read.published);
-      if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(published)) return published;
+      if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(published))
+        return { at: published, release };
     }
     if (!listedLast) dropped.add(repositoryOf(target.image ?? ''));
     return undefined;
@@ -411,18 +545,7 @@ export async function installable(
     let once = newest.get(reference);
     if (!once) {
       lines.images++;
-      once = sources.image(reference).then((report) => {
-        let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
-        // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
-        if (Number.isNaN(created) || created < EARLIEST) {
-          created = undefined;
-        }
-        const found = new Set<string>();
-        for (const result of report.Results ?? [])
-          for (const v of result.Vulnerabilities ?? [])
-            if (v.PkgName && v.VulnerabilityID) found.add(has(v.PkgName, v.VulnerabilityID));
-        return { created, has: found };
-      });
+      once = sources.image(reference).then((report) => found(report));
       newest.set(reference, once);
     }
     return dated
@@ -435,18 +558,142 @@ export async function installable(
         })
       : once;
   };
+  const found = (report: TrivyReport) => {
+    let created: number | undefined = time(report.Metadata?.ImageConfig?.created);
+    // A reproducible build (distroless's) says it was made in 1970: it gives no day to count from.
+    if (Number.isNaN(created) || created < EARLIEST) created = undefined;
+    const set = new Set<string>();
+    for (const result of report.Results ?? [])
+      for (const v of result.Vulnerabilities ?? [])
+        if (v.PkgName && v.VulnerabilityID) set.add(has(v.PkgName, v.VulnerabilityID));
+    return { created, has: set };
+  };
   const undated = new Set<string>();
   const newestOf = async (pin: string) => {
     const { repository, tag } = nameAndTag(pin);
     if (!tag) return undefined;
     // A version's newest on its line; any other tag, the image it names now.
-    if (!tagLine(tag)) return `${repository}:${tag}`;
-    let listed = tags.get(repository);
-    if (!listed) {
-      listed = sources.tags(repository);
-      tags.set(repository, listed);
+    if (!tagLine(tag)) return { reference: `${repository}:${tag}`, tag, version: false };
+    const latest = newestOnLine(tag, await listTags(repository)) ?? tag;
+    return { reference: `${repository}:${latest}`, tag: latest, version: true };
+  };
+  const digests = new Map<string, Promise<string>>();
+  const digestOf = (reference: string) => {
+    let once = digests.get(reference);
+    if (!once) {
+      once = sources.digest(reference);
+      digests.set(reference, once);
     }
-    return `${repository}:${newestOnLine(tag, await listed) ?? tag}`;
+    return once;
+  };
+  // Charts: each chart's versions once, each version rendered once.
+  const chartVersions = new Map<string, Promise<{ version: string; created: string }[]>>();
+  const renders = new Map<string, Promise<string[] | undefined>>();
+  const rendered = (chart: Chart) => {
+    const key = JSON.stringify([chart.repo, chart.chart, chart.version, chart.values]);
+    let once = renders.get(key);
+    if (!once) {
+      lines.charts++;
+      once = sources.render(chart, kubeVersion).then(
+        (text) => imagesIn(text),
+        (error: unknown) => {
+          log(
+            `::warning::${chart.chart} ${chart.version} does not render with our values: passed over (${firstLine(error)}).`,
+          );
+          return undefined;
+        },
+      );
+      renders.set(key, once);
+    }
+    return once;
+  };
+  /**
+   * The newest chart on the pinned major whose rendering runs a copy of the image without the finding, or the first
+   * later major's newest that does, marked a major; dated from the chart's publication.
+   */
+  const chartFix = async (target: ReadTarget, finding: Finding) => {
+    const chart = target.chart;
+    if (!chart) return undefined;
+    const key = JSON.stringify([chart.repo, chart.chart]);
+    let listed = chartVersions.get(key);
+    if (!listed) {
+      listed = sources.chartVersions(chart.repo, chart.chart);
+      chartVersions.set(key, listed);
+    }
+    const versions = (await listed).filter(
+      (each) => /^\d+\.\d+\.\d+$/.test(each.version) && compareVersions(each.version, chart.version) > 0,
+    );
+    const majorOf = (version: string) => Number(version.split('.')[0]);
+    const pinnedMajor = majorOf(chart.version);
+    // Each major from the pinned one, in order; within it, its versions newest first, a few at most: the newest clean
+    // one on the earliest major that has one.
+    const byMajor = new Map<number, { version: string; created: string }[]>();
+    for (const each of versions) {
+      const major = majorOf(each.version);
+      if (major < pinnedMajor || major > pinnedMajor + CHART_MAJORS) continue;
+      byMajor.set(major, [...(byMajor.get(major) ?? []), each]);
+    }
+    for (const major of [...byMajor.keys()].sort((a, b) => a - b)) {
+      const newestFirst = (byMajor.get(major) ?? [])
+        .sort((a, b) => compareVersions(b.version, a.version))
+        .slice(0, CANDIDATES);
+      for (const candidate of newestFirst) {
+        const images = await rendered({ ...chart, version: candidate.version });
+        const reference = images?.find((image) => sameRepository(image, target.image ?? ''));
+        // A chart that no longer runs the image is not taken for a fix: the image may only have moved registry.
+        if (!reference || sameImage(reference, target.image ?? '')) continue;
+        const image = await scanned(reference, false);
+        const created = time(candidate.created);
+        if (!image.has.has(has(finding.package, finding.advisory)) && !Number.isNaN(created))
+          return {
+            at: created,
+            target: {
+              kind: 'chart',
+              chart: chart.chart,
+              version: candidate.version,
+              major: major > pinnedMajor,
+            } as Target,
+          };
+      }
+    }
+    return undefined;
+  };
+  /** The newest release of a tool in mise.toml's range for it whose build lacks the finding, and its day. */
+  const toolReleases = new Map<string, Promise<{ version: string; published: string }[]>>();
+  const toolScans = new Map<string, Promise<Set<string> | undefined>>();
+  const toolFix = async (tool: string, finding: Finding) => {
+    const locked = tools.get(tool);
+    if (!locked) return undefined;
+    let listed = toolReleases.get(tool);
+    if (!listed) {
+      listed = sources.toolReleases(tool);
+      toolReleases.set(tool, listed);
+    }
+    // Within mise.toml's range for it (`pnpm = "12"`, `kubectl = "1.37"`), as `mise upgrade` moves it; the locked
+    // major where mise.toml gives none.
+    const range = miseRange(sources.file('mise.toml'), tool) ?? locked.split('.')[0] ?? '';
+    // Newest first, a few at most: the newest release in the range whose download lacks the finding.
+    const candidates = (await listed)
+      .filter(
+        (each) =>
+          (each.version === range || each.version.startsWith(`${range}.`)) && compareVersions(each.version, locked) > 0,
+      )
+      .sort((a, b) => compareVersions(b.version, a.version))
+      .slice(0, CANDIDATES);
+    for (const candidate of candidates) {
+      const key = `${tool}@${candidate.version}`;
+      let once = toolScans.get(key);
+      if (!once) {
+        lines.tools++;
+        once = sources.tool(tool, candidate.version).then((report) => (report ? found(report).has : undefined));
+        toolScans.set(key, once);
+      }
+      const set = await once;
+      const published = time(candidate.published);
+      if (set && !set.has(has(finding.package, finding.advisory)) && !Number.isNaN(published))
+        return { at: published, target: { kind: 'tool', tool, version: candidate.version } as Target };
+    }
+    return undefined;
   };
   // The repository's lockfiles, read once: whether one resolves a package at a version.
   const lockfiles = targets
@@ -467,31 +714,81 @@ export async function installable(
     }
     return time(await once);
   };
+  /** Where moving a result writes, and what it pins now (moves.ts). */
+  const whereOf = (finding: Finding, target: ReadTarget | undefined, route: Route, tool?: string): Where => {
+    const own = { file: finding.file, line: finding.line };
+    if (!target)
+      return { kind: 'third-party', name: finding.listed ?? finding.item, pin: own, from: finding.installed };
+    if (route === 'npm') return { kind: 'lockfile', name: finding.package, pin: own, from: finding.installed };
+    const stage = target.kind === 'ours' ? stageOf(target) : undefined;
+    const stagePin = stage ? { file: stage.dockerfile, line: stage.line } : own;
+    if (route === 'tool' && tool) {
+      const lock = sources.file('mise.lock') ?? '';
+      const header = lock
+        .split('\n')
+        .findIndex((line) => [`[[tools.${tool}]]`, `[[tools."${tool}"]]`].includes(line.trim()));
+      return {
+        kind: target.kind,
+        name: tool,
+        pin: { file: 'mise.lock', line: header + 2 },
+        from: tools.get(tool) ?? '',
+      };
+    }
+    if (target.kind === 'ours' && stage)
+      return { kind: 'dockerfile', name: repositoryOf(stage.image), pin: stagePin, from: pinned(stage.image) };
+    if (target.kind === 'k3s' || target.kind === 'k3s-release')
+      return {
+        kind: target.kind,
+        name: 'k3s',
+        pin: own,
+        from:
+          (target.list
+            ? k3sReleaseOf(target.list)
+            : nameAndTag(target.image ?? '').tag?.replace(/-(k3s\d+)$/, '+$1')) ?? '',
+      };
+    if (target.kind === 'chart' && target.chart) {
+      const chartName = finding.listed ?? target.chart.release;
+      if (target.pin)
+        return {
+          kind: 'chart',
+          name: `${chartName}: ${repositoryOf(target.image ?? '')}`,
+          pin: target.pin,
+          from: pinned(target.image ?? ''),
+        };
+      return { kind: 'chart', name: chartName, pin: own, from: target.chart.version };
+    }
+    return { kind: target.kind, name: repositoryOf(target.image ?? ''), pin: own, from: pinned(target.image ?? '') };
+  };
   await pool(
     findings.map((finding, index) => async () => {
       const target = kinds.get(finding.item);
-      if (!target || !finding.fixed) return;
-      const pin = target.kind === 'ours' ? pinOf(target) : undefined;
+      const stage = target?.kind === 'ours' ? stageOf(target) : undefined;
       const fromBase =
-        pin !== undefined && (byImage.get(identity(pin))?.has(has(finding.package, finding.advisory)) ?? false);
-      const route = routeOf(
-        finding,
-        target.kind,
-        fromBase,
-        target.kind === 'ours' && finding.installed.split(', ').every((version) => resolves(finding.package, version)),
-      );
-      if (route === 'none') return;
+        stage !== undefined &&
+        (byImage.get(identity(stage.image))?.has(has(finding.package, finding.advisory)) ?? false);
+      const inLockfile =
+        target?.kind === 'ours' && finding.installed.split(', ').every((version) => resolves(finding.package, version));
+      const tool =
+        target?.kind === 'ours' && !fromBase && !inLockfile ? toolOf(finding.path, [...tools.keys()]) : undefined;
+      const route = target ? routeOf(finding, target.kind, fromBase, inLockfile, tool !== undefined) : 'none';
+      places[index] = whereOf(finding, target, route, tool);
+      if (!target || !finding.fixed || route === 'none') return;
       if (route === 'npm') {
         // Every copy of the package must be fixable: the clock runs from the last of their fixes.
         const versions = finding.installed.split(', ').filter(Boolean);
         const times: number[] = [];
+        const fixed: string[] = [];
         for (const installed of versions) {
           const version = firstFixed(installed, finding.fixed);
           const when = version ? await published(finding.package, version) : Number.NaN;
-          if (Number.isNaN(when)) return;
+          if (!version || Number.isNaN(when)) return;
           times.push(when);
+          if (!fixed.includes(version)) fixed.push(version);
         }
-        if (times.length) at[index] = Math.max(...times) + minimumReleaseAge * 60_000;
+        if (times.length) {
+          at[index] = Math.max(...times) + minimumReleaseAge * 60_000;
+          fixes[index] = { kind: 'version', versions: fixed.sort(compareVersions) };
+        }
         return;
       }
       if (route === 'node') {
@@ -499,30 +796,67 @@ export async function installable(
         const all = await releases;
         // A patched release on the installed major: moving to another major is not the fix.
         const major = finding.installed.split('.')[0];
-        const days = all
+        const patched = all
           .filter(
             (release) =>
               release.version.replace(/^v/, '').split('.')[0] === major &&
               compareVersions(release.version, finding.installed) > 0 &&
               satisfies(release.version, finding.fixed ?? ''),
           )
-          .map((release) => time(`${release.date}T00:00:00Z`))
-          .filter((n) => !Number.isNaN(n));
-        if (days.length) at[index] = Math.min(...days);
+          .map((release) => ({ version: release.version.replace(/^v/, ''), at: time(`${release.date}T00:00:00Z`) }))
+          .filter((each) => !Number.isNaN(each.at))
+          .sort((a, b) => a.at - b.at || compareVersions(a.version, b.version));
+        const first = patched[0];
+        if (first) {
+          at[index] = first.at;
+          fixes[index] = { kind: 'version', versions: [first.version] };
+        }
+        return;
+      }
+      if (route === 'tool' && tool) {
+        const fixed = await toolFix(tool, finding);
+        if (fixed) {
+          at[index] = fixed.at;
+          fixes[index] = fixed.target;
+        }
         return;
       }
       // An image that arrives only with a k3s release: from the first release after the pin that ships it fixed.
       if (target.kind === 'k3s-release') {
         const fixed = await k3sFix(target, finding);
         lines.k3s[fixed === undefined ? 'none' : 'fixed']++;
-        if (fixed !== undefined) at[index] = fixed;
+        if (fixed !== undefined) {
+          at[index] = fixed.at;
+          fixes[index] = { kind: 'k3s', release: fixed.release };
+        }
         return;
       }
-      const reference = await newestOf(pin ?? pinOf(target) ?? '');
-      if (!reference) return;
-      const image = await scanned(reference, true);
-      if (image.created !== undefined && !image.has.has(has(finding.package, finding.advisory)))
+      // A chart's image no values file pins: the chart moves, not the image.
+      if (target.kind === 'chart' && !target.pin) {
+        const fixed = await chartFix(target, finding);
+        if (fixed) {
+          at[index] = fixed.at;
+          fixes[index] = fixed.target;
+        }
+        return;
+      }
+      const latest = await newestOf(pinOf(target) ?? '');
+      if (!latest) return;
+      const image = await scanned(latest.reference, true);
+      if (image.created === undefined) return;
+      if (!image.has.has(has(finding.package, finding.advisory))) {
         at[index] = image.created;
+        fixes[index] =
+          target.kind === 'k3s'
+            ? { kind: 'k3s', release: latest.tag.replace(/-(k3s\d+)$/, '+$1') }
+            : { kind: 'image', tag: latest.tag, digest: await digestOf(latest.reference) };
+        return;
+      }
+      // A tag that is not a version, whose image nobody has made for half a year: a line no longer built.
+      if (!latest.version && now - image.created > UNBUILT_DAYS * DAY) {
+        lines.unbuilt++;
+        fixes[index] = { kind: 'unbuilt', built: image.created };
+      }
     }),
   );
   for (const repository of dropped)
@@ -533,7 +867,7 @@ export async function installable(
     log(
       `::warning::k3s ${release} has a node image and no published, stable release with its list of images: passed over.`,
     );
-  return { at, looked: lines };
+  return { at, fixes, places, looked: lines };
 }
 
 /**
@@ -598,6 +932,62 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
   });
 }
 
+/**
+ * The fix each result's own alert states (fixes.ts), from its open or dismissed alert's message, which code scanning
+ * keeps as the last upload wrote it, a dismissed alert's too. A message that does not parse states none, and is counted.
+ */
+export function stated(findings: Finding[], alerts: Alert[], log: (line: string) => void = () => {}) {
+  const byPlace = new Map<string, Fix>();
+  let unread = 0;
+  for (const alert of alerts) {
+    if (alert.state === 'fixed') continue;
+    const place = alertPlace(alert);
+    if (!place) continue;
+    let fix: Fix | undefined;
+    try {
+      fix = readFix(alert.most_recent_instance?.message?.text ?? '');
+    } catch {
+      unread++;
+    }
+    if (!fix) continue;
+    const key = placeKey(place);
+    const seenFix = byPlace.get(key);
+    if (!seenFix || fix.day < seenFix.day) byPlace.set(key, fix);
+  }
+  if (unread) log(`::warning::${unread} alerts end with a fix the grammar does not read: their day is read afresh.`);
+  return findings.map((finding) => byPlace.get(placeKey(placeOf(finding))));
+}
+
+/**
+ * Each result's fix: its target, and the earlier of the day the sources give and the day its alert states, so the day
+ * never moves forward. Where this run finds no fix installable but the alert states one, that fix stands: once a fix
+ * could be installed, the deadline it started stands, and the next message keeps its day. A fix not yet installable
+ * (inside pnpm's wait) with none stated is none yet. A line no longer built is first seen on the first run that found
+ * it so. A fix the grammar cannot write (fixes.ts) is none.
+ */
+export function fixesOf(
+  at: (number | undefined)[],
+  targets: (Target | undefined)[],
+  states: (Fix | undefined)[],
+  now: number,
+): (Fix | undefined)[] {
+  return targets.map((target, index) => {
+    const state = states[index];
+    const kept = state && state.target.kind !== 'unbuilt' && state.day <= now ? state : undefined;
+    let fix: Fix | undefined;
+    if (!target) fix = kept;
+    else if (target.kind === 'unbuilt')
+      fix = { target, day: state?.target.kind === 'unbuilt' ? Math.min(state.day, now) : now };
+    else {
+      const day = at[index];
+      if (day === undefined || day > now) fix = kept;
+      else fix = { target, day: kept ? Math.min(day, kept.day) : day };
+    }
+    // A fix the grammar cannot write is none: it would end no message the next run could read.
+    return fix && writable(fix) ? fix : undefined;
+  });
+}
+
 /** Each result's row: its severity, its clock and its deadline, against the time given. */
 export function rows(
   findings: Finding[],
@@ -629,8 +1019,8 @@ const BUCKETS: [Bucket, string][] = [
   ['none', 'no fix'],
 ];
 
-/** The run's verdict, in counts alone: what fails it, and whether it passes. */
-export function verdict(all: Row[], prove = false) {
+/** The run's verdict, in counts alone: what fails it, and whether it passes; with the moves, which hold each reason. */
+export function verdict(all: Row[], prove = false, moves: Move[] = []) {
   const open = all.filter((row) => !row.excepted);
   const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, open.filter((row) => row.severity === s).length]));
   const byBucket = Object.fromEntries(
@@ -651,27 +1041,90 @@ export function verdict(all: Row[], prove = false) {
         : `The run fails: ${fresh} new high or critical with a fix, ${byBucket.day} due within a day, ${byBucket.overdue} past their deadline.`
       : 'Nothing new at high or critical has a fix to install, and nothing is due within a day or past its deadline.',
   ];
-  return { lines, bySeverity, byBucket, fresh, waiting, passes: prove || failing === 0 };
+  // Each reason with the moves that hold it, by name (a lockfile's by its file alone), as the run's last lines.
+  const byResult = new Map<string, Move>();
+  for (const move of moves) for (const each of move.results) byResult.set(each, move);
+  const holding = (test: (row: Row) => boolean) => {
+    const names = new Set<string>();
+    for (const row of open.filter(test)) {
+      const move = byResult.get(fingerprint(row.finding));
+      if (move) names.add(`${publicMove(move).name}${move.lockfile ? '' : ` ${move.from}`}`);
+    }
+    return [...names];
+  };
+  if (failing) {
+    const reasons: [string, (row: Row) => boolean][] = [
+      [
+        'New high or critical with a fix',
+        (row) =>
+          row.firstSeenToday && row.bucket !== 'none' && (row.severity === 'CRITICAL' || row.severity === 'HIGH'),
+      ],
+      ['Due within a day', (row) => row.bucket === 'day'],
+      ['Past its deadline', (row) => row.bucket === 'overdue'],
+    ];
+    for (const [reason, test] of reasons) {
+      const count = open.filter(test).length;
+      if (!count) continue;
+      const names = holding(test);
+      lines.push(`${reason}: ${count}, held by ${names.length ? names.join('; ') : 'no move the scan could make'}.`);
+    }
+  }
+  const counts: DayCounts = {
+    noFix: byBucket.none,
+    excepted: all.length - open.length,
+    overdue: byBucket.overdue,
+    dueWithinDay: byBucket.day,
+    newHighWithFix: fresh,
+    newHighWithoutFix: waiting,
+  };
+  return { lines, bySeverity, byBucket, fresh, waiting, counts, passes: prove || failing === 0 };
 }
 
-/** The whole judgement of a scan's hand-off, against the time given. */
+/** The whole judgement of a scan's hand-off, against the time given: each result's row, its fix and its move. */
 export async function assess(handoff: Handoff, sources: Sources, now: number, log: (line: string) => void = () => {}) {
   const findings = handoff.findings;
-  const [fixes, alerts] = await Promise.all([
-    installable(findings, handoff.targets, sources, handoff.minimumReleaseAge ?? PNPM_DEFAULT_MINUTES, log),
+  const [found, alerts] = await Promise.all([
+    installable(
+      findings,
+      handoff.targets,
+      sources,
+      handoff.minimumReleaseAge ?? PNPM_DEFAULT_MINUTES,
+      log,
+      now,
+      handoff.kubeVersion,
+    ),
     sources.alerts(),
   ]);
   const ours = alerts.filter(isOurs);
-  return {
-    rows: rows(
-      findings,
-      new Set(handoff.excepted),
-      fixes.at,
-      seen(findings, handoff.targets, ours, now, time(handoff.started)),
-      now,
-    ),
-    looked: fixes.looked,
-  };
+  const fixes = fixesOf(found.at, found.fixes, stated(findings, ours, log), now);
+  // A fix's day where it has one; a fix still inside pnpm's wait keeps its time, so its row starts no clock yet.
+  const installableAt = fixes.map((fix, index) =>
+    fix && fix.target.kind !== 'unbuilt' ? fix.day : (found.at[index] ?? 0) > now ? found.at[index] : undefined,
+  );
+  const judgedRows = rows(
+    findings,
+    new Set(handoff.excepted),
+    installableAt,
+    seen(findings, handoff.targets, ours, now, time(handoff.started)),
+    now,
+  );
+  const judged: Judged[] = judgedRows.map((row, index) => {
+    const where = found.places[index] ?? {
+      kind: 'third-party' as Kind,
+      name: row.finding.item,
+      pin: { file: row.finding.file, line: row.finding.line },
+      from: row.finding.installed,
+    };
+    return {
+      finding: { ...row.finding, fix: fixes[index] },
+      severity: row.severity,
+      excepted: row.excepted,
+      due: row.due,
+      firstSeenToday: row.firstSeenToday,
+      ...where,
+    };
+  });
+  return { rows: judgedRows, fixes, judged, looked: found.looked };
 }
 
 /** Runs each task, a few at a time; the first failure is thrown once all have settled. */
@@ -798,6 +1251,101 @@ export function realSources(
     },
     image: (reference) =>
       tools.retry(() => tools.trivy(['image', '--scanners', 'vuln', '--image-src', 'remote', '--', reference])),
+    async digest(reference) {
+      // The tag's index, as scripts/ci-images.sh's `current` reads it: the SHA-256 of the raw manifest skopeo gives.
+      const { stdout } = await tools.retry(() =>
+        run('skopeo', ['inspect', '--raw', '--no-creds', skopeoName(reference)], {
+          encoding: 'buffer',
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 5 * 60 * 1000,
+        }),
+      );
+      return `sha256:${createHash('sha256').update(stdout).digest('hex')}`;
+    },
+    async manifests(reference) {
+      // The raw manifest, as the registry gives it to a pull: an index lists each platform's manifest by digest. With the
+      // job's registry credentials, so an image of ours in GHCR is read as it is pulled.
+      const { stdout } = await tools.retry(() =>
+        run('skopeo', ['inspect', '--raw', skopeoName(byDigest(reference))], {
+          encoding: 'buffer',
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 5 * 60 * 1000,
+        }),
+      );
+      return manifestDigests(stdout);
+    },
+    async chartVersions(repo, chart) {
+      const source = `the chart repository ${repo}`;
+      if (!/^https:\/\/[\w.-]+(\/[\w.~-]+)*\/?$/.test(repo))
+        throw new Permanent(`${source} is not an HTTPS repository`);
+      const { status, text } = await transient(() => request(`${repo.replace(/\/$/, '')}/index.yaml`, source));
+      if (status === 404) throw new Permanent(`${source} answered 404`);
+      // The index read through yq, as the list reads YAML: each version of the chart with when it was published.
+      const file = join(work, `index-${createHash('sha256').update(repo).digest('hex').slice(0, 12)}.yaml`);
+      writeFileSync(file, text);
+      const read = await run(
+        'yq',
+        [
+          'eval',
+          '--output-format=json',
+          '--indent=0',
+          '[.entries[strenv(CHART)][] | {"version": .version, "created": .created}]',
+          file,
+        ],
+        { env: { ...process.env, CHART: chart }, maxBuffer: 256 * 1024 * 1024, timeout: 5 * 60 * 1000 },
+      );
+      const versions = JSON.parse(read.stdout) as unknown;
+      if (!Array.isArray(versions)) throw new Error(`${source} gave no versions of ${chart}`);
+      return versions.filter(
+        (each): each is { version: string; created: string } =>
+          typeof each?.version === 'string' && typeof each?.created === 'string',
+      );
+    },
+    render: (chart, kubeVersion) => tools.retry(() => tools.render(chart, checkout, kubeVersion)),
+    async toolReleases(tool) {
+      const repository = aquaRepository(readLock(checkout), tool);
+      if (!repository) throw new Permanent(`mise.lock names no repository for ${tool}`);
+      const source = `${tool}'s releases`;
+      const answer = await transient(() =>
+        request(`https://api.github.com/repos/${repository}/releases?per_page=100`, source, {
+          headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        }),
+      );
+      const body = json(answer.text, source);
+      if (!Array.isArray(body)) throw new Error(`${source} is not a list`);
+      return (body as { tag_name?: unknown; published_at?: unknown; draft?: unknown; prerelease?: unknown }[]).flatMap(
+        (release) =>
+          typeof release.tag_name === 'string' &&
+          typeof release.published_at === 'string' &&
+          release.draft !== true &&
+          release.prerelease !== true
+            ? [{ version: release.tag_name.replace(/^v/, ''), published: release.published_at }]
+            : [],
+      );
+    },
+    async tool(tool, version) {
+      const url = toolUrl(readLock(checkout), tool, version);
+      if (!url) return undefined;
+      const { status, bytes } = await transient(async () => {
+        const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(300_000) });
+        if (response.status !== 404 && !response.ok) throw answered(`${tool} ${version}'s download`, response.status);
+        return { status: response.status, bytes: Buffer.from(await response.arrayBuffer()) };
+      });
+      if (status === 404) return undefined;
+      // Unpacked where Trivy reads it, as its own files: nothing in it runs.
+      const dir = mkdtempSync(join(work, `${tool}-`));
+      writeFileSync(join(dir, 'release.tar.gz'), bytes);
+      await run('tar', [
+        '--extract',
+        '--gzip',
+        '--no-same-owner',
+        '--file',
+        join(dir, 'release.tar.gz'),
+        '--directory',
+        dir,
+      ]);
+      return tools.retry(() => tools.trivy(['rootfs', '--scanners', 'vuln', '/src'], dir));
+    },
     file(path) {
       const full = resolve(checkout, path);
       return full.startsWith(`${resolve(checkout)}/`) && existsSync(full) ? readFileSync(full, 'utf-8') : undefined;
@@ -838,6 +1386,93 @@ export function realSources(
   };
 }
 
+/** A reference skopeo reads: one pinned by tag and digest is read by its digest alone, which skopeo requires. */
+export function byDigest(reference: string) {
+  const [name = '', digest] = reference.split('@');
+  return digest ? `${repositoryOf(name)}@${digest}` : reference;
+}
+
+/** A raw manifest's digest, and the digests of the platform manifests it lists when it is an index. */
+export function manifestDigests(raw: Buffer) {
+  const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
+  let body: unknown;
+  try {
+    body = JSON.parse(raw.toString('utf-8'));
+  } catch {
+    throw new Error('a registry gave a manifest that is not JSON');
+  }
+  const listed = (body as { manifests?: unknown }).manifests;
+  const platforms = (Array.isArray(listed) ? listed : [])
+    .map((each) => (each as { digest?: unknown }).digest)
+    .filter((each): each is string => typeof each === 'string' && /^sha256:[0-9a-f]{64}$/.test(each));
+  return { digest, platforms: [...new Set(platforms)].sort() };
+}
+
+/** Every image target the scan read, with its digests and its pin, for `moves.json`'s `scanned`. */
+export async function scannedImages(
+  targets: ReadTarget[],
+  sources: Pick<Sources, 'manifests'>,
+): Promise<ScannedImage[]> {
+  const read = new Map<string, Promise<{ digest: string; platforms: string[] }>>();
+  const out: ScannedImage[] = [];
+  await pool(
+    targets
+      .filter((target) => target.image)
+      .map((target) => async () => {
+        const image = target.image ?? '';
+        let once = read.get(image);
+        if (!once) {
+          once = sources.manifests(image);
+          read.set(image, once);
+        }
+        const { digest, platforms } = await once;
+        const pinned = image.split('@')[1];
+        out.push({
+          kind: target.kind,
+          item: target.name ?? target.label,
+          image,
+          digests: [...new Set([digest, ...(pinned ? [pinned] : []), ...platforms])],
+          pin: target.pin ?? { file: target.file, line: target.line ?? 1 },
+        });
+      }),
+  );
+  return out;
+}
+
+/** The scanned checkout's mise.lock. */
+const readLock = (checkout: string) => {
+  const file = join(checkout, 'mise.lock');
+  return existsSync(file) ? readFileSync(file, 'utf-8') : '';
+};
+
+/** A tool's section of mise.lock: from its header to the next tool's. */
+const lockSection = (lock: string, tool: string) => {
+  const plain = lock.indexOf(`[[tools.${tool}]]\n`);
+  const start = plain >= 0 ? plain : lock.indexOf(`[[tools."${tool}"]]\n`);
+  if (start < 0) return undefined;
+  const next = lock.indexOf('\n[[tools.', start + 1);
+  return lock.slice(start, next < 0 ? undefined : next);
+};
+
+/** The GitHub repository mise.lock's aqua backend names for a tool (`aqua:pnpm/pnpm`), or undefined. */
+export function aquaRepository(lock: string, tool: string) {
+  const backend = /^backend = "aqua:([\w.-]+\/[\w.-]+)"$/m.exec(lockSection(lock, tool) ?? '')?.[1];
+  return backend;
+}
+
+/** A tool's download for linux-x64 at another version, from mise.lock's at the locked one, on its publisher's releases. */
+export function toolUrl(lock: string, tool: string, version: string) {
+  const section = lockSection(lock, tool) ?? '';
+  const locked = /^version = "([^"]+)"$/m.exec(section)?.[1];
+  const platform = section.indexOf('platforms.linux-x64');
+  const url = platform < 0 ? undefined : /^url = "([^"]+)"$/m.exec(section.slice(platform))?.[1];
+  const repository = aquaRepository(lock, tool);
+  if (!locked || !url || !repository || !/^[\w.+-]+$/.test(version)) return undefined;
+  if (!url.startsWith(`https://github.com/${repository}/releases/download/`) || !url.endsWith('.tar.gz'))
+    return undefined;
+  return url.split(locked).join(version);
+}
+
 /** An answer trying again cannot change: a 4xx but 429. */
 class Permanent extends Error {}
 
@@ -871,19 +1506,58 @@ const reason = (error: unknown) => {
 const firstLine = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 300);
 
+/**
+ * Each result's message ended with its fix, in the SARIF the scan wrote and in the comments its excepted alerts are
+ * dismissed with (keyed by the message, sarif.ts's `alertKey`): what is uploaded is what was judged.
+ */
+export function rewrite(file: Sarif, excepted: Record<string, string>, findings: Finding[]) {
+  const byFingerprint = new Map(findings.map((finding) => [fingerprint(finding), finding]));
+  for (const run of file.runs)
+    for (const result of run.results) {
+      const finding = byFingerprint.get(result.partialFingerprints['vulnerabilities/v1'] ?? '');
+      if (finding?.fix) result.message.text = messageOf(finding);
+    }
+  const keys: Record<string, string> = {};
+  const byKey = new Map(
+    findings.map((finding) => [alertKey({ ...finding, fix: undefined, move: undefined }), finding]),
+  );
+  for (const [key, comment] of Object.entries(excepted)) {
+    const finding = byKey.get(key);
+    keys[finding ? alertKey(finding) : key] = comment;
+  }
+  return { file, excepted: keys };
+}
+
+/** The verdict a scan's step after the upload fails on: written before it, read after. */
+interface Saved {
+  passes: boolean;
+  lines: string[];
+}
+
+const USAGE =
+  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write | --prove)\n' +
+  '       deadlines.ts --verdict <scan out dir>';
+
 export async function main(args: string[]): Promise<number> {
   const option = (name: string) => {
     const at = args.indexOf(name);
     return at >= 0 ? args[at + 1] : undefined;
   };
+  // After the upload: the verdict judged before it, its last lines, and the run's end.
+  const after = option('--verdict');
+  if (after) {
+    const saved = JSON.parse(readFileSync(join(after, 'verdict.json'), 'utf-8')) as Saved;
+    for (const line of saved.lines) console.log(line);
+    if (!saved.passes) console.log(`::error::${saved.lines.find((line) => line.startsWith('The run fails')) ?? ''}`);
+    return saved.passes ? 0 : 1;
+  }
   const [dir] = args.filter((arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin)$/));
   const checkout = option('--checkout');
   const pinFile = option('--trivy-pin');
   const prove = args.includes('--prove');
-  if (!dir || !checkout || !pinFile) {
-    console.error(
-      'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> [--prove]',
-    );
+  const write = args.includes('--write');
+  if (!dir || !checkout || !pinFile || prove === write) {
+    console.error(USAGE);
     return 2;
   }
   const pin = trivyPin(readFileSync(pinFile, 'utf-8'));
@@ -900,13 +1574,66 @@ export async function main(args: string[]): Promise<number> {
   try {
     judged = await assess(handoff, sources, now, (line) => console.log(line));
   } catch (error) {
-    console.error(`::error::The deadlines could not be read: ${firstLine(error)}. The run fails.`);
+    console.error(
+      `::error::The deadlines could not be read: ${firstLine(error)}. The run fails${write ? ', and nothing is uploaded' : ''}.`,
+    );
     return 1;
   }
-  const { lines, bySeverity, byBucket, passes } = verdict(judged.rows, prove);
-  const looked = `Read the publish times of ${judged.looked.npm} npm versions, and ${judged.looked.images} newer images. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet.`;
-  for (const line of [looked, ...lines]) console.log(line);
-  if (!passes) console.log(`::error::${lines.at(-1)}`);
+  const context: Context = {
+    repository: handoff.repository,
+    app: handoff.repository === APP,
+    dependabot: dependabotDirectories(sources.file('.github/dependabot.yml')),
+    direct: new Set(
+      handoff.targets
+        .filter((target) => target.kind === 'lockfile')
+        .flatMap((target) => [...directPackages(sources.file(target.file))]),
+    ),
+    now,
+  };
+  const list = moves(judged.judged, context);
+  // Each result in a move names its place in moves.json and the run, after its fix (fixes.ts), so the alerts tie to it.
+  const run = /^\d+$/.test(process.env.GITHUB_RUN_ID ?? '') ? process.env.GITHUB_RUN_ID : undefined;
+  let scanned: ScannedImage[];
+  try {
+    scanned = await scannedImages(handoff.targets, sources);
+  } catch (error) {
+    console.error(
+      `::error::The images scanned could not be listed with their digests: ${firstLine(error)}. The run fails${write ? ', and nothing is uploaded' : ''}.`,
+    );
+    return 1;
+  }
+  const { lines, bySeverity, byBucket, passes, counts } = verdict(judged.rows, prove, list);
+  const file = movesFile(list, context, run, scanned, counts);
+  const tags = new Map<string, MoveTag>();
+  if (run)
+    for (const [index, move] of list.entries())
+      for (const each of move.results) tags.set(each, { index: index + 1, run });
+  const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
+  const table = movesTable(file);
+  const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;
+  for (const line of [looked, images, ...table, '', ...lines]) console.log(line);
+  writeFileSync(join(dir, 'moves.json'), `${JSON.stringify(file, null, 2)}\n`);
+  if (write) {
+    // What is uploaded carries each fix: the SARIF's messages, and the excepted alerts' keys, which name them.
+    const sarifPath = join(dir, 'vulnerabilities.sarif');
+    const exceptionsPath = join(dir, 'exceptions.json');
+    const exceptions = JSON.parse(readFileSync(exceptionsPath, 'utf-8')) as {
+      repository: string;
+      excepted: Record<string, string>;
+    };
+    const findings = judged.judged.map((each) => ({ ...each.finding, move: tags.get(fingerprint(each.finding)) }));
+    const rewritten = rewrite(JSON.parse(readFileSync(sarifPath, 'utf-8')) as Sarif, exceptions.excepted, findings);
+    const over = overLimits(rewritten.file);
+    if (over.length) {
+      console.error(
+        `::error::With each fix in its message, the results are over code scanning's limits: ${over.join('; ')}. Nothing is uploaded.`,
+      );
+      return 1;
+    }
+    writeFileSync(sarifPath, JSON.stringify(rewritten.file));
+    writeFileSync(exceptionsPath, JSON.stringify({ ...exceptions, excepted: rewritten.excepted }));
+    writeFileSync(join(dir, 'verdict.json'), JSON.stringify({ passes, lines: lines.slice(3) } satisfies Saved));
+  }
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
@@ -921,11 +1648,16 @@ export async function main(args: string[]): Promise<number> {
         }),
         `| all | ${Object.values(bySeverity).reduce((a, b) => a + b, 0)} | ${BUCKETS.map(([b]) => byBucket[b]).join(' | ')} |`,
         '',
-        `${lines[2]} ${lines.at(-1)}`,
+        ...lines.slice(2),
+        '',
+        '### Moves',
+        '',
+        ...table,
         '',
       ].join('\n'),
     );
-  return passes ? 0 : 1;
+  // A run that writes for the upload fails after it, on the verdict it saved; a proving run fails on none.
+  return 0;
 }
 
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2));

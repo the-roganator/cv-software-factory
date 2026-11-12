@@ -147,6 +147,8 @@ describe('the list of a fixture repository', () => {
         release: 'telemetry',
         values: ['deploy/base/values/chart.yaml'],
       },
+      // The image its values file pins by digest: a pin of the chart's, where that image's alerts are located.
+      pins: [{ file: 'deploy/base/values/chart.yaml', line: 2, digest: `sha256:${'3'.repeat(64)}` }],
     });
     expect(find('argocd')).toEqual({
       kind: 'chart',

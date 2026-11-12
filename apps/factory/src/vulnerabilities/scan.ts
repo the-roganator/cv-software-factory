@@ -88,6 +88,8 @@ const OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export interface TrivyVulnerability {
   VulnerabilityID?: string;
   PkgName?: string;
+  /** Where in an image the package was found, for a language's package. */
+  PkgPath?: string;
   InstalledVersion?: string;
   FixedVersion?: string;
   Severity?: string;
@@ -141,6 +143,11 @@ interface Target {
   label: string;
   /** Set for an image. */
   image?: string;
+  /**
+   * For a chart's image that one of its values files pins, that pin: the line a move of it writes. Its alerts stay at the
+   * chart's pin, where they always were, so no clock restarts.
+   */
+  pin?: { file: string; line: number } | undefined;
   ci?: string | undefined;
   signer?: string | undefined;
 }
@@ -253,6 +260,7 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
             description: v.Description,
             url: v.PrimaryURL,
             score: scoreOf(v),
+            ...(v.PkgPath ? { path: v.PkgPath } : {}),
           },
         ];
       }),
@@ -319,6 +327,34 @@ export async function readLockfile(tools: Tools, root: string, target: Target): 
 }
 
 /**
+ * Where Syft found each package in an image, by name and version, from its SPDX SBOM's `sourceInfo` (`… manifest file:
+ * /opt/pnpm/dist/node_modules/<name>/…`): Trivy keeps no path when it reads an SBOM.
+ */
+export function sbomPaths(predicate: unknown) {
+  const paths = new Map<string, Set<string>>();
+  const packages = (predicate as { packages?: unknown } | undefined)?.packages;
+  for (const each of Array.isArray(packages) ? packages : []) {
+    const { name, versionInfo, sourceInfo } = each as { name?: unknown; versionInfo?: unknown; sourceInfo?: unknown };
+    const path = typeof sourceInfo === 'string' ? /: (\/\S+)$/.exec(sourceInfo)?.[1] : undefined;
+    if (typeof name !== 'string' || typeof versionInfo !== 'string' || !path) continue;
+    const key = `${name}@${versionInfo}`;
+    paths.set(key, new Set([...(paths.get(key) ?? []), path.replace(/^\//, '')]));
+  }
+  return paths;
+}
+
+/** A report with each vulnerable package's path, where the SBOM gives it one place and Trivy gave none. */
+export function withPaths(report: TrivyReport, paths: Map<string, Set<string>>): TrivyReport {
+  for (const result of report.Results ?? [])
+    for (const v of result.Vulnerabilities ?? []) {
+      const found = paths.get(`${v.PkgName}@${v.InstalledVersion}`);
+      const [only] = found?.size === 1 ? [...found] : [];
+      if (!v.PkgPath && only) v.PkgPath = only;
+    }
+  return report;
+}
+
+/**
  * An image of ours: each platform's SBOM, verified against its signer, and its Node version from Syft's
  * `pkg:generic/node` there; and the image itself when no SBOM gives Node, for its findings and its `NODE_VERSION`. An
  * image of ours whose Node cannot be read either way is an item the scan cannot read: every one of ours runs Node.
@@ -339,7 +375,8 @@ export async function readOurs(tools: Tools, target: Target): Promise<Read> {
     const dir = tools.temp();
     writeFileSync(join(dir, 'sbom.spdx.json'), JSON.stringify(predicate));
     try {
-      reports.push(await tools.trivy(['sbom', '--scanners', 'vuln', '--list-all-pkgs', '/src/sbom.spdx.json'], dir));
+      const report = await tools.trivy(['sbom', '--scanners', 'vuln', '--list-all-pkgs', '/src/sbom.spdx.json'], dir);
+      reports.push(withPaths(report, sbomPaths(predicate)));
     } catch (error) {
       return { target, reports: [], unreadable: `Trivy could not read its SBOM: ${firstLine(error)}` };
     }
@@ -429,7 +466,14 @@ async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<st
     }
     const images = imagesIn(rendered);
     if (!images.length) return { targets: [], unreadable: 'its chart renders no image' };
-    return { targets: images.map(image) };
+    // An image one of the chart's values files pins is moved at that pin, its own line.
+    return {
+      targets: images.map((reference) => {
+        const digest = reference.split('@')[1];
+        const pin = digest ? item.pins?.find((each) => each.digest === digest) : undefined;
+        return { ...image(reference), pin: pin && { file: pin.file, line: pin.line } };
+      }),
+    };
   }
   if (item.kind === 'k3s-release' && item.list) {
     let list: string;
@@ -457,6 +501,13 @@ export interface ReadTarget {
   image?: string | undefined;
   /** For an image k3s's release brings, the URL of the release's list of images (inventory.ts's `list`). */
   list?: string | undefined;
+  /** For a chart's image, the chart, so a later version can be rendered with the same values. */
+  chart?: Chart | undefined;
+  /** For a chart's image one of its values files pins, that pin's file and line. */
+  pin?: { file: string; line: number } | undefined;
+  /** The item as the list names it (inventory.ts's `name`), and the line of its pin. */
+  name?: string | undefined;
+  line?: number | undefined;
 }
 
 export interface Outcome {
@@ -465,6 +516,8 @@ export interface Outcome {
   targets: ReadTarget[];
   unreadable: { name: string; why: string }[];
   read: number;
+  /** The Kubernetes version the charts are rendered for: the k3s node's. */
+  kubeVersion?: string | undefined;
   proof: {
     found: boolean;
     source?: 'sbom' | 'image' | undefined;
@@ -530,6 +583,10 @@ export async function scan(
         label: target.label,
         image: target.image,
         list: item.list,
+        name: item.name,
+        line: item.line,
+        ...(item.chart ? { chart: item.chart } : {}),
+        ...(target.pin ? { pin: target.pin } : {}),
       });
       findings.push(...findingsOf(result, lockfiles.get(item.file)), ...nodeFindingsOf(result, database));
     }
@@ -555,6 +612,7 @@ export async function scan(
     targets: targetsRead,
     unreadable,
     read,
+    kubeVersion,
     proof: { found, source: proofRead.source, unreadable: proofRead.unreadable, node: proofRead.node },
   };
 }
@@ -865,6 +923,8 @@ export interface Handoff {
   /** The alert key (sarif.ts's `alertKey`) of each excepted result. */
   excepted: string[];
   targets: ReadTarget[];
+  /** The Kubernetes version the charts were rendered for, for rendering a later chart the same way. */
+  kubeVersion?: string | undefined;
 }
 
 export function handoff(
@@ -884,6 +944,7 @@ export function handoff(
     findings: merge(outcome.findings).map(({ title: _t, description: _d, ...finding }) => finding),
     excepted: [...excepted.keys()],
     targets: outcome.targets,
+    kubeVersion: outcome.kubeVersion,
   };
 }
 

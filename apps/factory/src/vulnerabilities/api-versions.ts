@@ -11,7 +11,7 @@ import { join } from 'node:path';
  * (`scripts/api-versions.ts`). A chart may render otherwise for an API the cluster has, so the scan and the gate render
  * with this list, never a head's.
  */
-export const API_VERSIONS_RECORD = 'deploy/test/api-versions.json';
+export const API_VERSIONS_RECORD = 'deploy/k3d/api-versions.json';
 
 /** The record's API versions in a checkout, none where it keeps no record (the app's), or a throw when it cannot be read. */
 export function apiVersionsOf(root: string): string[] | undefined {

@@ -148,7 +148,7 @@ jobs:
           REFUSALS_OUT="$RUNNER_TEMP/records/flag-stages-refusals.json" node scripts/flag-stages-refusals.ts || { echo "::error::flag-stages-refusals failed"; failed=1; }
           exit "$failed"
       # The API versions Argo CD renders charts with on this cluster, its own list (scripts/api-versions.ts): the review
-      # gate and the scan render each chart with deploy/test/api-versions.json, so a chart that branches on an API
+      # gate and the scan render each chart with deploy/k3d/api-versions.json, so a chart that branches on an API
       # renders for them as Argo CD renders it. Taken beside the records, and checked against the change's after they
       # are uploaded, so a record that differs is retaken from the artifact.
       - name: Take the API versions

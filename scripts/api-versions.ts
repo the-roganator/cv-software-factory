@@ -1,6 +1,6 @@
 /**
  * The API versions Argo CD renders the cluster's charts with, as a record the review gate and the vulnerability scan
- * render with too (`deploy/test/api-versions.json`, apps/factory/src/vulnerabilities/scan.ts). platform.yml takes it on
+ * render with too (`deploy/k3d/api-versions.json`, apps/factory/src/vulnerabilities/scan.ts). platform.yml takes it on
  * its cluster made from the change, and checks it against the record the change carries:
  *
  *   node scripts/api-versions.ts take <file>     # Argo CD's own list, from its cluster cache (`argocd --core`)

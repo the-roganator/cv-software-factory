@@ -24,7 +24,7 @@ describe("the record of Argo CD's API versions", () => {
     ]);
     expect(differences({ apiVersions: ['v1'] }, { apiVersions: ['v1'] })).toEqual([]);
     expect(retake('42', 'o/r')).toBe(
-      'gh run download 42 -R o/r -n refusal-records -D /tmp/records && cp /tmp/records/api-versions.json deploy/test/api-versions.json',
+      'gh run download 42 -R o/r -n refusal-records -D /tmp/records && cp /tmp/records/api-versions.json deploy/k3d/api-versions.json',
     );
   });
 });

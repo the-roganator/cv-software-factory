@@ -34,6 +34,7 @@ import type { Admin } from '../admin.ts';
 import { clock, count, inWords, shortVersion, when } from '../format.ts';
 import { previewHref } from '../profile.ts';
 import {
+  askRow,
   type CanaryNeed,
   dueWords,
   type FlagNeed,
@@ -596,7 +597,10 @@ function PatchCard({ need, now, martin }: { need: PatchNeed; now: number; martin
         <button
           type="button"
           className="linkish"
-          onClick={() => window.dispatchEvent(new CustomEvent(OPEN_ROW, { detail: need.key }))}
+          onClick={() => {
+            askRow(need.key);
+            window.dispatchEvent(new CustomEvent(OPEN_ROW, { detail: need.key }));
+          }}
         >
           Open its row in Patching
         </button>

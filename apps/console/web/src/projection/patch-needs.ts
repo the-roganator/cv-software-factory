@@ -24,10 +24,25 @@ const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 
 /**
- * The event a card in Needs you sends to open its row in the Patching panel, which arrives in a chunk of its own, so
- * the two share no state: the panel opens the row the event names, and scrolls to it.
+ * The event a card in Needs you sends to open its row in the Patching panel, which arrives in a chunk of its own: the
+ * panel opens the row the event names, and scrolls to it.
  */
 export const OPEN_ROW = 'patching:open-row';
+
+/** The row a card asked for that the panel has not taken: a click before its chunk listens is kept for it, not lost. */
+let askedRow: string | undefined;
+
+/** A card asks for its row, kept until the panel takes it; the card then sends `OPEN_ROW` for a panel already listening. */
+export function askRow(key: string) {
+  askedRow = key;
+}
+
+/** The panel takes the row asked for, once: when it mounts, and on each `OPEN_ROW`. */
+export function takeAskedRow(): string | undefined {
+  const key = askedRow;
+  askedRow = undefined;
+  return key;
+}
 
 /** The lanes only Martin moves: his approval, his cluster's own command, and what no pull request of the App's can write. */
 export const HIS: readonly MoveLane[] = ['approval', 'cluster', 'issue'];
@@ -179,22 +194,21 @@ function needsOf(day: Day): Omit<PatchNeed, 'since'>[] {
  * sense's days, unbroken to the last, that had it waiting. Oldest first.
  */
 export function patchNeeds(events: readonly PublicEvent[]): PatchNeed[] {
-  const since = new Map<string, number>();
-  let last: Omit<PatchNeed, 'since'>[] = [];
+  const held = new Map<string, PatchNeed>();
   for (const event of events) {
     if (event.type !== 'patching.read' || event.appended_by !== PATCHING_ROLE) continue;
     const at = Date.parse(event.ts);
     const day = event.payload;
-    last = needsOf(day);
-    const now = new Set(last.map((need) => need.key));
+    const today = needsOf(day);
+    const now = new Set(today.map((need) => need.key));
     // A day that judged nothing of a repository, or compared nothing of the cluster, is not a day without its moves:
-    // their waits go on from where they began.
+    // their cards stay as the last day that read them said, and their waits go on from where they began.
     const unread = day.repositories.filter((r) => r.judged === null).map((r) => `${r.repository} `);
     const kept = (key: string) =>
       unread.some((prefix) => key.startsWith(prefix)) ||
       (!day.compared && /^(unlisted|unscanned|not-running) /.test(key));
-    for (const key of since.keys()) if (!now.has(key) && !kept(key)) since.delete(key);
-    for (const key of now) if (!since.has(key)) since.set(key, at);
+    for (const key of held.keys()) if (!now.has(key) && !kept(key)) held.delete(key);
+    for (const need of today) held.set(need.key, { ...need, since: held.get(need.key)?.since ?? at });
   }
-  return last.map((need) => ({ ...need, since: since.get(need.key) ?? 0 })).sort((a, b) => a.since - b.since);
+  return [...held.values()].sort((a, b) => a.since - b.since);
 }

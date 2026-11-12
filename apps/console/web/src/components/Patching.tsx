@@ -31,6 +31,7 @@ import {
   type PatchingRow,
   type PatchingView,
   pinText,
+  takeAskedRow,
   total,
 } from '../projection/patching.ts';
 import { renders } from '../renders.ts';
@@ -432,14 +433,16 @@ const Panel = memo(function Panel({
   const [open, setOpen] = useState<string | undefined>(asked);
   const panel = useRef<HTMLElement>(null);
   const asking = useRef(false);
-  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has.
+  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has. A card is
+  // in the first view and this panel is not, so a row asked for before it listened is taken as it mounts.
   useEffect(() => {
-    const ask = (event: Event) => {
-      const key = (event as CustomEvent<unknown>).detail;
-      if (typeof key !== 'string') return;
+    const ask = () => {
+      const key = takeAskedRow();
+      if (key === undefined) return;
       asking.current = true;
       setOpen(key);
     };
+    ask();
     window.addEventListener(OPEN_ROW, ask);
     return () => window.removeEventListener(OPEN_ROW, ask);
   }, []);

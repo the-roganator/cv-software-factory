@@ -15,7 +15,7 @@ import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-fa
 import type { ItemState } from './items.ts';
 import { DAY, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
 
-export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE, targetWords } from './patch-needs.ts';
+export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE, takeAskedRow, targetWords } from './patch-needs.ts';
 
 /** The sense's last day by t, from its own role. */
 export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {

@@ -2,7 +2,7 @@ import type { PayloadOf, PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { foldItems } from '../../web/src/projection/items.ts';
 import { needsView } from '../../web/src/projection/needs.ts';
-import { PATCHING_ROLE, patchNeeds } from '../../web/src/projection/patch-needs.ts';
+import { askRow, PATCHING_ROLE, patchNeeds, takeAskedRow } from '../../web/src/projection/patch-needs.ts';
 import { patchingView } from '../../web/src/projection/patching.ts';
 import { END, SAMPLES } from './support.ts';
 
@@ -134,6 +134,28 @@ describe('Needs you’s moves, over the days', () => {
     ]);
     expect(needs).toHaveLength(4);
     expect(needs.every((need) => need.since === Date.parse('2026-10-04T04:20:00.000Z'))).toBe(true);
+    // The last day judged nothing: its cards are the day before's, not none, with their waits unbroken.
+    const last = patchNeeds([readAt('2026-10-04T04:20:00.000Z', day), readAt('2026-10-05T04:20:00.000Z', failed)]);
+    expect(last).toEqual(patchNeeds([readAt('2026-10-04T04:20:00.000Z', day)]));
+    // A day that judged one repository keeps only the other's: the judged one says what still waits.
+    const [factory, ...rest] = day.repositories;
+    if (!factory) throw new Error('the sample day has no repository');
+    const oneJudged: Day = {
+      ...day,
+      repositories: [{ ...factory, moves: [] }, ...rest.map((r) => ({ ...r, judged: null, moves: [] }))],
+    };
+    const cleared = patchNeeds([
+      readAt('2026-10-04T04:20:00.000Z', day),
+      readAt('2026-10-05T04:20:00.000Z', oneJudged),
+    ]);
+    expect(cleared.map((need) => need.name)).toEqual(['example/debug-shell:1.4']);
+  });
+
+  it('keeps the row a card asks for until the panel takes it, so a click before the panel listens is not lost', () => {
+    askRow('a key');
+    askRow('the-roganator/cv-software-factory k3s');
+    expect(takeAskedRow()).toBe('the-roganator/cv-software-factory k3s');
+    expect(takeAskedRow()).toBeUndefined();
   });
 
   it('reads only the sense’s own role, and has nothing before its first day', () => {

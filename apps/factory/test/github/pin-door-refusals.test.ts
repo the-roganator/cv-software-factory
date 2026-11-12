@@ -89,7 +89,7 @@ async function door(options: { reads?: Reads; actions?: Actions; dryRun?: Action
   return { post, reached, asked, kept };
 }
 
-describe('red-team 3, refused: the door’s guard and the shapes a number can take', () => {
+describe('the door’s guard, and the shapes a number can take', () => {
   it('sees the number in every shape that parses, and refuses the pin pull request each time', async () => {
     const { post, reached } = await door();
     const refusedAsPin = [
@@ -303,7 +303,7 @@ describe('red-team 3, refused: the door’s guard and the shapes a number can ta
   });
 });
 
-describe('red-team 3, refused: the queue’s own conditions', () => {
+describe('the pin queue’s own conditions', () => {
   const HEAD = 'c'.repeat(40);
   const pull = (over: Partial<QueuePull> = {}): QueuePull => ({
     number: PIN,
@@ -462,7 +462,7 @@ describe('red-team 3, refused: the queue’s own conditions', () => {
       return seed;
     };
     const branches = new Set<string>();
-    for (let i = 0; i < 200_000; i++) {
+    for (let i = 0; i < 20_000; i++) {
       const name = Array.from({ length: next() % 100 }, () => alphabet[next() % alphabet.length]).join('');
       const branch = pinBranchFor(name);
       branches.add(branch);

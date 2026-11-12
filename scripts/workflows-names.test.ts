@@ -20,7 +20,7 @@ describe('run names', () => {
     const named = expression(
       "github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || ''",
     );
-    for (const file of ['check.yml', 'platform.yml', 'pr-title.yml']) {
+    for (const file of ['check.yml', 'platform.yml', 'pr-title.yml', 'review-requested.yml']) {
       const workflow = read(file);
       expect(workflow['run-name'], file).toBe(named);
       expect(Object.keys(workflow.on), file).toContain('merge_group');
@@ -33,17 +33,5 @@ describe('run names', () => {
         "format('review · {0} · after {1}', github.event.workflow_run.display_title, github.event.workflow_run.name)",
       ),
     );
-  });
-});
-
-describe("the review on the merge queue's commit", () => {
-  it('is asked for by check.yml, which runs on every entry, and not by review requested', () => {
-    const check = read('check.yml');
-    const gate = read('review.yml');
-    // Every entry: no filter on check.yml's merge_group but the one type the queue sends.
-    expect(check.on.merge_group).toEqual({ types: ['checks_requested'] });
-    expect(gate.on.workflow_run?.workflows).toContain(check.name);
-    expect(gate.on.workflow_run?.types).toEqual(['completed']);
-    expect(Object.keys(read('review-requested.yml').on)).not.toContain('merge_group');
   });
 });

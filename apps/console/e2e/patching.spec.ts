@@ -32,13 +32,13 @@ test('a visitor reads the day: what waits on Martin first, then by deadline, and
   await patching(page);
   await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('Patching');
   await expect(panel(page).locator('.panel-head .label')).toHaveText(
-    '11 moves · 1 image off the list · 4 wait on Martin · Read only',
+    '11 moves · 1 unscanned image running · 4 wait on Martin · Read only',
   );
   await expect(panel(page).locator('.pm .name')).toHaveText([
     'example-cd',
     'example-logs',
     'k3s',
-    'An image no list names',
+    'Unscanned image running',
     'example/scanner-proxy',
     'A package in the app’s lockfile',
     'example-dashboards',
@@ -94,7 +94,9 @@ test('a row opens in place, one at a time: why it waits, what to do, what it cle
 
 test('Martin reads the app’s lockfile move whole, and “you” for himself', async ({ page }) => {
   await patching(page, 'martin');
-  await expect(panel(page).locator('.panel-head .label')).toHaveText('11 moves · 1 image off the list · 4 wait on you');
+  await expect(panel(page).locator('.panel-head .label')).toHaveText(
+    '11 moves · 1 unscanned image running · 4 wait on you',
+  );
   await expect(row(page, '@example/parser')).toContainText('4.2.0 → 4.2.3');
   await expect(panel(page).locator('.pm.wait .v').first()).toHaveText('Waits on you');
 });
@@ -165,7 +167,7 @@ test('an event Patching does not read renders nothing there, and a new day rende
   await page.waitForTimeout(500);
   expect(await renders()).toBe(before);
 
-  // A new day from the sense, with the image off the list gone.
+  // A new day from the sense, with the unscanned image gone.
   const day = SAMPLES.findLast((e) => e.type === 'patching.read');
   if (!day) throw new Error('the samples have no patching.read');
   const payload = { ...(day.payload as { rows: unknown[] }), rows: [] };

@@ -211,6 +211,76 @@ describe('reading GitHub for the line', () => {
     ]);
   });
 
+  it('reads a scan’s notices from GitHub Actions’ latest run of it for the commit alone, whatever its conclusion', async () => {
+    // As GitHub listed the app's scans for a commit on its main (10 Nov), with the notices the scans now write.
+    const recorded = (id: number, name: string, more: object = {}) => ({
+      id,
+      name,
+      head_sha: SHA,
+      status: 'completed',
+      conclusion: 'success',
+      app: { slug: 'github-actions' },
+      started_at: '2026-11-10T18:35:27Z',
+      completed_at: '2026-11-10T18:36:41Z',
+      output: { title: null, annotations_count: 1 },
+      ...more,
+    });
+    const LOCKFILE =
+      'Lockfile scan counted, before: critical 0, high 1, medium 2, low 0, unknown 0; after: critical 0, high 0, medium 2, low 0, unknown 0';
+    const IMAGE =
+      'Image scan counted, before: critical 0, high 2, medium 5, low 11, unknown 0; after: critical 0, high 0, medium 3, low 9, unknown 0';
+    const runs = [
+      recorded(130041888910, 'gates / lockfile scan'),
+      recorded(130041888898, 'gates / image scan', { conclusion: 'failure' }),
+      // A run another app posted under a scan's name: never read, whatever it says.
+      recorded(130041888999, 'gates / lockfile scan', { app: { slug: 'mrogan-software-factory' } }),
+      // An earlier attempt of the image scan, and a run for another commit: neither is the head's latest.
+      recorded(130041888001, 'gates / image scan'),
+      recorded(130041889100, 'image scan', { head_sha: OTHER_SHA }),
+      recorded(130041889200, 'gates / tests'),
+    ];
+    const annotations = (id: number, body: unknown) => ({
+      method: 'GET',
+      path: `/repos/${REPO}/check-runs/${id}/annotations?per_page=50`,
+      answer: () => ({ body }),
+    });
+    const sent: Parameters<typeof calls>[0] = [];
+    const { github } = client(
+      [
+        {
+          method: 'GET',
+          path: `/repos/${REPO}/commits/${SHA}/check-runs?per_page=100`,
+          answer: () => ({ body: { check_runs: runs } }),
+        },
+        annotations(130041888910, [{ path: '.github', annotation_level: 'notice', message: LOCKFILE }]),
+        annotations(130041888898, [
+          { path: '.github', annotation_level: 'notice', message: IMAGE },
+          { path: '.github', annotation_level: 'failure', message: 'HIGH CVE-1 in openssl 3.1' },
+        ]),
+      ],
+      sent,
+    );
+    const read = await new LiveReads(github).checkRuns(REPO, SHA);
+    expect(read.map((run) => [run.id, run.notices, run.annotations])).toEqual([
+      [130041888910, [LOCKFILE], undefined],
+      [130041888898, [IMAGE], [{ path: '.github', message: 'HIGH CVE-1 in openssl 3.1' }]],
+      [130041888999, undefined, undefined],
+      [130041888001, undefined, undefined],
+      [130041889100, undefined, undefined],
+      [130041889200, undefined, undefined],
+    ]);
+    // One read for each of the head's latest scans that GitHub Actions ran, and none for the rest.
+    expect(
+      calls(sent)
+        .map((s) => s.path.split('?')[0])
+        .sort(),
+    ).toEqual([
+      `/repos/${REPO}/check-runs/130041888898/annotations`,
+      `/repos/${REPO}/check-runs/130041888910/annotations`,
+      `/repos/${REPO}/commits/${SHA}/check-runs`,
+    ]);
+  });
+
   it('fails the read of the runs while GitHub rate-limits or fails what a run said, so the line asks again', async () => {
     const failed = { id: 1, name: 'gates / test integrity', status: 'completed', conclusion: 'failure', app: null };
     for (const status of [429, 502]) {

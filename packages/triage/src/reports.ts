@@ -7,6 +7,8 @@
  */
 import {
   cutTo,
+  DEFECT_SYMPTOMS,
+  type DefectSymptom,
   elementsOf,
   PAGE_PATH,
   type PageElement,
@@ -16,8 +18,6 @@ import {
   REPORT_CATEGORIES,
   type ReportCategory,
   type Screenshot,
-  SYMPTOM_CLASSES,
-  type SymptomClass,
 } from '@software-factory/events';
 import type { Answer, Judge, JudgeResult, Question } from './judge.ts';
 import {
@@ -54,7 +54,8 @@ export interface PageView {
 export type PageReader = (path: string) => Promise<PageView | null>;
 
 export type Judgement = PayloadOf<'judgement.made'>;
-export type Fingerprint = PayloadOf<'ticket.opened'>['fingerprint'];
+/** A report's defect is fingerprinted by a route or a page, never a move. */
+export type Fingerprint = NonNullable<PayloadOf<'hold.started'>['defect']>['fingerprint'];
 
 export interface ReportDecision {
   routed: Routed;
@@ -109,7 +110,7 @@ export async function judgeReport(
   const repeat = result.answers.repeat;
   const answers = {
     category: label(result, 'category', REPORT_CATEGORIES) as ReportCategory,
-    symptom: label(result, 'symptom', SYMPTOM_CLASSES) as SymptomClass,
+    symptom: label(result, 'symptom', DEFECT_SYMPTOMS) as DefectSymptom,
     severity: answer(result, 'severity', 'score').score,
     injection: answer(result, 'injection', 'noul').noul,
   };

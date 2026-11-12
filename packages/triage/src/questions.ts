@@ -7,13 +7,13 @@
  * Choice's options is part of the key, and can move the answer.
  */
 import {
+  DEFECT_SYMPTOMS,
   type DefectCategory,
+  type DefectSymptom,
   elementWords,
   type PageElement,
   REPORT_CATEGORIES,
   type ReportCategory,
-  SYMPTOM_CLASSES,
-  type SymptomClass,
 } from '@software-factory/events';
 import type { Question } from './judge.ts';
 
@@ -47,7 +47,8 @@ const CATEGORY: Record<ReportCategory, string> = {
     'Nothing is wrong with the app: praise, chatter, noise, spam, a test, a question, a matter of taste, a complaint about a product itself, its price or an order, or a remark about something that works as it should',
 };
 
-const SYMPTOM: Record<SymptomClass, string> = {
+/** A visitor reports a defect's symptom, never a dependency's: no page shows a pin. */
+const SYMPTOM: Record<DefectSymptom, string> = {
   'broken-link': 'A link leads to a page that is not there',
   'broken-image': 'An image does not load',
   'redirect-loop': 'A page keeps redirecting and never arrives',
@@ -81,7 +82,7 @@ export interface Candidate {
   workItem: string;
   title: string;
   category: DefectCategory;
-  symptom?: SymptomClass | undefined;
+  symptom?: DefectSymptom | undefined;
 }
 
 /** The label a candidate is offered under, and the label for "none of these". */
@@ -110,7 +111,7 @@ export function triageQuestions(candidates: readonly Candidate[]): Record<string
     symptom: {
       type: 'choice',
       instructions: QUESTIONS.symptom,
-      criteria: Object.fromEntries(SYMPTOM_CLASSES.map((symptom) => [symptom, SYMPTOM[symptom]])),
+      criteria: Object.fromEntries(DEFECT_SYMPTOMS.map((symptom) => [symptom, SYMPTOM[symptom]])),
     },
     severity: { type: 'score', instructions: QUESTIONS.severity, criteria: SEVERITY },
     injection: {

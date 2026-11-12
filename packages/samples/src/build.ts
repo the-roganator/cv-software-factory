@@ -8,12 +8,13 @@ import type {
   Actor,
   Agent,
   ArtifactRef,
+  DefectSymptom,
   EventType,
   Evidence,
   NewEvent,
   PayloadOf,
+  RouteSense,
   Screenshot,
-  Sense,
 } from '@software-factory/events';
 import { VERSIONS } from '@software-factory/events';
 import { release } from '../../../policy/release.ts';
@@ -127,6 +128,8 @@ export interface GateRun {
   attempt?: number;
   /** A check that fails, with its own output. */
   failure?: { check: string; summary: string; output: string };
+  /** Required checks this run has beyond `GATES`, such as the lockfile scan of a change that moves a dependency. */
+  more?: [name: string, seconds: number][];
   /** Extra detail for a check that passes. */
   details?: Record<string, Partial<PayloadOf<'gate.finished'>>>;
   /**
@@ -452,9 +455,10 @@ export class Item {
   gates(offset: string, run: GateRun): this {
     const commit = commitFor(`${this.#name}/${run.pullRequest}/${run.attempt ?? 1}`);
     const { pullRequest, testsFirst } = run;
+    const gates = [...GATES, ...(run.more ?? [])];
     const start = seconds(offset);
     const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
-    const checks = [...GATES.map(([name]) => name), ...(testsFirst ? [TESTS_FIRST] : [])];
+    const checks = [...gates.map(([name]) => name), ...(testsFirst ? [TESTS_FIRST] : [])];
     this.at(offset, 'gates.started', 'actions', `${checks.length} checks started on PR #${pullRequest}`, {
       pullRequest,
       commit,
@@ -464,7 +468,7 @@ export class Item {
       conclusion: testsFirst.failing > 0 ? ('success' as const) : ('failure' as const),
       summary: `${testsFirst.failing} of ${testsFirst.of} new tests fail on the base`,
     };
-    const order = [...GATES, ...(testsFirst ? [[TESTS_FIRST, 41] as [string, number]] : [])].sort(
+    const order = [...gates, ...(testsFirst ? [[TESTS_FIRST, 41] as [string, number]] : [])].sort(
       (a, b) => a[1] - b[1],
     );
     for (const [check, duration] of order) {
@@ -494,14 +498,14 @@ export class Item {
     }
     const last = start + Math.max(...order.map(([, d]) => d)) + 8;
     const failed = run.failure ? [run.failure.check] : [];
-    const passed = GATES.length - failed.length + (signal?.conclusion === 'success' ? 1 : 0);
+    const passed = gates.length - failed.length + (signal?.conclusion === 'success' ? 1 : 0);
     this.at(
       clock(last),
       'gates.finished',
       'actions',
       failed.length
-        ? `${failed[0]} failed; ${GATES.length - 1} of ${GATES.length} required checks passed`
-        : `All ${GATES.length} required checks passed`,
+        ? `${failed[0]} failed; ${gates.length - 1} of ${gates.length} required checks passed`
+        : `All ${gates.length} required checks passed`,
       { pullRequest, commit, conclusion: failed.length ? 'failed' : 'passed', passed, failed },
     );
     return this;
@@ -668,7 +672,7 @@ interface ProbeTicket {
   check: string;
   route: string;
   version: string;
-  symptom: NonNullable<PayloadOf<'signal.received'>['symptom']>;
+  symptom: DefectSymptom;
   summary: string;
   exchange: Pick<Extract<Evidence, { kind: 'http' }>, 'method' | 'url' | 'status' | 'timings'>;
   title: string;
@@ -681,7 +685,7 @@ interface ProbeTicket {
 interface Verification {
   outcome?: PayloadOf<'verification.finished'>['outcome'];
   /** The sense that verified it: the one that saw the defect. */
-  sense?: Sense;
+  sense?: RouteSense;
   /** Who the event is by: the sense, as the line writes it now, or the factory, as the first samples have it. */
   actor?: Actor;
   check: string;

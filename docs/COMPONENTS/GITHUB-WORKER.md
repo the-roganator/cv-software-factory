@@ -23,7 +23,7 @@ flowchart LR
 Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checked with Zod and naming one of its repositories (`github/actions.ts`):
 
 - branches;
-- signed commits through GraphQL's `createCommitOnBranch`, never `git push`;
+- signed commits through GraphQL's `createCommitOnBranch`, never `git push`, of a runner's patch applied outside the sandbox (`applyPatch`), with [the pin step's](#the-pin-steps-patches) beside it;
 - opening, updating, labelling and readying pull requests (updating and labelling only the App's own, [as for issues](#its-issues-and-pull-requests-only)), and putting them back to draft, and updating a branch;
 - closing a pull request unmerged with a comment once (`closePullRequest`), as the line does for a held or waiting work item whose defect went with another change, and for one Martin rejects; one already closed is left as it is, and one from a branch the factory does not own is refused;
 - comment reviews anchored to lines, and resolving their threads (`resolveThreads`): on each open thread the App began with a finding now answered (matched by path, line and words), the reply it is given, made once, then the thread resolved. The reply names the commit when a later review finds the finding put right or the suggestion taken, gives the coder's reason when it declines a suggestion, and says Martin accepted the review when he approves its hold in the console;
@@ -35,6 +35,16 @@ Workers ask for actions over HTTP, `POST /v1/actions/<action>`, each body checke
   - closing one, as completed, with a comment once (which a fix verified in production gets);
   - reopening one with a comment (`reopenIssue`, only while it is closed, saying it once since it closed);
   - a comment on its own (`comment`), as the line's hand-over of an improvement makes, made only when the issue does not say it already, word for word, so asking again after a failure or a crash says it once.
+
+### The pin step's patches
+
+`applyPatch` takes, beside an agent's patch, the [pin step's](AGENT-RUNNERS.md#the-pin-step): its `pins`, made on the head before the agent ran, and its `lockfile`, written after the agent's patch changed a manifest. It applies the pins, the agent's patch on them and the lockfile on that, each reading the files as the one before left them, as one signed commit. The guard holds each to its own rule, and refuses the whole commit otherwise (`github/paths.ts`, `pinStepRefusals`):
+
+- **The agent's patch** may change no lockfile and none of pnpm's settings (`.npmrc`, `pnpm-workspace.yaml`, a pnpmfile, `patches/`), beside the workflows, the deployment and what CODEOWNERS gives a person: only the pin step moves a pin in a file Martin owns, even to the same line and value.
+- **The pins** may change the version or digest on a pin's line in a file CODEOWNERS gives a person (`mise.toml`, `mise.lock`, a `Dockerfile`'s `FROM`), a manifest's ranges, and a pnpm lockfile, whole. On a pin's line, each line it removes is replaced by one line, in order, that reads the same with its versions and digests taken out, and names one; another line of the same file, a new value that is not a version or digest, a line added or removed, a file added or deleted, the workflows, the deployment and pnpm's settings are refused.
+- **The lockfile** may be a pnpm lockfile and nothing else.
+
+Whose patch is whose is the line's to say, which reads the pin step's from its prepare pods' logs, never from an agent's handback (whose schema has no place for them).
 
 ### Descriptions
 

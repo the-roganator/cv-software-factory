@@ -3,14 +3,22 @@
  * `packages/triage`; the evaluation set (`make eval`) shows how far each threshold sits from the answers it
  * separates.
  */
-import type { DefectCategory, Dependency, Sense, Severity, SymptomClass } from '../packages/events/src/vocabulary.ts';
+import type {
+  AdvisorySeverity,
+  Dependency,
+  Sense,
+  Severity,
+  SymptomClass,
+  TicketCategory,
+} from '../packages/events/src/vocabulary.ts';
 
 /**
  * A sense knows what it saw, so its ticket's category and severity follow from the symptom class. Severity is how
  * badly a visitor is hurt: cosmetic (they may not notice), degraded (it works, worse than it should), broken (they
- * cannot do what they came to do).
+ * cannot do what they came to do). A vulnerable dependency's severity is its move's worst finding's
+ * (`vulnerableSeverity`); the table's is that of a move whose findings have no fix.
  */
-export const SYMPTOMS: Record<SymptomClass, { category: DefectCategory; severity: Severity }> = {
+export const SYMPTOMS: Record<SymptomClass, { category: TicketCategory; severity: Severity }> = {
   'broken-link': { category: 'navigation', severity: 'degraded' },
   'broken-image': { category: 'navigation', severity: 'cosmetic' },
   'redirect-loop': { category: 'navigation', severity: 'broken' },
@@ -27,7 +35,44 @@ export const SYMPTOMS: Record<SymptomClass, { category: DefectCategory; severity
   'leaks-detail': { category: 'security', severity: 'degraded' },
   'missing-log': { category: 'observability', severity: 'degraded' },
   'wrong-metric': { category: 'observability', severity: 'cosmetic' },
+  'vulnerable-dependency': { category: 'security', severity: 'cosmetic' },
+  // A routine update fixes no defect: a newer release is not a visitor's harm.
+  'outdated-dependency': { category: 'dependency', severity: 'cosmetic' },
 };
+
+/**
+ * A vulnerable dependency's severity, by the worse of each finding's ratings, the scanner's and its publisher's, as its
+ * deadline is: High or Critical is broken, Medium degraded, and Low, or a rating none gave, cosmetic.
+ */
+export const VULNERABLE: Record<AdvisorySeverity, Severity> = {
+  critical: 'broken',
+  high: 'broken',
+  medium: 'degraded',
+  low: 'cosmetic',
+  unknown: 'cosmetic',
+};
+
+const RANK: Severity[] = ['cosmetic', 'degraded', 'broken'];
+
+/**
+ * A move's severity: its worst finding's with a fix, by `VULNERABLE`. A finding with no fix is one the move does not
+ * clear, so it sets nothing; a move with none that has a fix is `SYMPTOMS`' cosmetic.
+ */
+export function vulnerableSeverity(
+  findings: readonly {
+    severity: { scanner: AdvisorySeverity; publisher?: AdvisorySeverity | undefined };
+    fixed?: string | undefined;
+  }[],
+): Severity {
+  let worst = SYMPTOMS['vulnerable-dependency'].severity;
+  for (const { severity, fixed } of findings) {
+    if (!fixed) continue;
+    for (const rating of [severity.scanner, severity.publisher]) {
+      if (rating && RANK.indexOf(VULNERABLE[rating]) > RANK.indexOf(worst)) worst = VULNERABLE[rating];
+    }
+  }
+  return worst;
+}
 
 /** The thresholds that route a report, applied in this order (TYPESAFE.md, "Routing"). */
 export const REPORTS = {
@@ -114,6 +159,8 @@ export const ENVIRONMENT = {
     logs: ['prometheus', 'loki', 'tempo', 'disk'],
     // The canary's analysis asks Prometheus.
     canary: ['prometheus', 'disk'],
+    // The dependency sense reads the scan's moves from GitHub, none of these.
+    dependency: [],
   } satisfies Record<Exclude<Sense, 'report'>, readonly Dependency[]>,
   /**
    * The targets Prometheus scrapes whose series the senses read, each by the labels of its `up` series. Prometheus is

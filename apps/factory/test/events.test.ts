@@ -81,7 +81,7 @@ describe('factory events', () => {
         ts: new Date().toISOString(),
         work_item: '1',
         type: 'work-item.opened',
-        version: 2,
+        version: 3,
         actor: 'factory',
         summary: 'Real work',
         payload: { kind: 'defect-fix', title: 'Real work', sample: false },

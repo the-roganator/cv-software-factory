@@ -216,7 +216,7 @@ const opened = (workItem: string): NewEvent<'work-item.opened'> => ({
   ts: new Date().toISOString(),
   work_item: workItem,
   type: 'work-item.opened',
-  version: 2,
+  version: 3,
   actor: 'visitor',
   summary: 'A visitor sent a report',
   payload: { kind: 'visitor-report', title: 'A report', sample: true, visitor: { key: 'amber-otter' } },

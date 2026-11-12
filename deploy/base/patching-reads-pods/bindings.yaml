@@ -1,7 +1,7 @@
 # The dependency sense's list of pods (apps/factory/src/patching/running.ts): in each namespace here, its account may
 # list pods, by the one ClusterRole `patching-lists-pods` (deploy/base/factory/patching.yaml), and nothing else. A
-# RoleBinding in each rather than one ClusterRoleBinding, so it reads no pod in `runners`, whose Jobs carry a step's
-# job token in their spec, nor in `red-team` or `scoreboard`: each of the three admits only images `build.yml` signed or
+# RoleBinding in each rather than one ClusterRoleBinding, so it reads no pod in `runners`, whose agent steps' Jobs carry
+# a job token in their spec, nor in `red-team` or `scoreboard`: each of the three admits only images `build.yml` signed or
 # admission names (ADR 0010), so no image the list lacks can run there. A namespace made later is read once it is added
 # here and to the sense's PATCHING_NAMESPACES (patching.yaml); a test holds the two together.
 apiVersion: rbac.authorization.k8s.io/v1

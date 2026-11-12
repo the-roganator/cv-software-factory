@@ -335,6 +335,9 @@ describe('admission control', () => {
           const by = namespace === 'flagd' && refusal.case === 'other-identity' ? 'misplaced' : refusal.case;
           expect(refusal.message, at).toContain(`Policy ${name} failed: ${REFUSED_BY[by]}`);
           expect(refusal.message, at).toContain(refusal.image);
+          // Admitted by digest by none of its copy's third-party images, as rendered now: the record's hash leaves
+          // those digests out (ADR 0018), so this, not the hash, keeps a pin from admitting an image it refused.
+          expect(all.find((c) => c.policy === name)?.allowed, at).not.toContain(refusal.image);
           // Every image of ours is one the policy verifies, by its globs, as Kyverno verifies no other's signature.
           // So one refused for its signature was looked at, and refused for the signature it has.
           const ours = refusal.case !== 'other-digest';

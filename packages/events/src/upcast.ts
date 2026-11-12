@@ -91,7 +91,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 2 of a judgement may offer a page's elements; a version 1 judgement offered passages at most.
   'judgement.made': { 1: (payload) => payload },
   // Version 2 of a ticket names what a visitor's report points at; a version 1 ticket never did.
-  'ticket.opened': { 1: (payload) => payload },
+  // Version 3 adds a dependency's fingerprint, its move's name and ecosystem, and the category `dependency`; a version 2
+  // ticket was a defect's, and reads as it was.
+  'ticket.opened': { 1: (payload) => payload, 2: (payload) => payload },
   // Version 2 adds Martin's reason, and the console's start names no autonomy level; a version 1 start named one, and
   // gave no reason.
   'line.started': { 1: (payload) => payload },
@@ -183,7 +185,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
     4: (payload) => payload,
   },
   // Version 2 adds the planner's findings to the kinds of work item; a version 1 work item reads as it was.
-  'work-item.opened': { 1: (payload) => payload },
+  // Version 3 adds Node to a dependency's ecosystems, and lets its versions be as long as an image's tag with its
+  // digest; a version 2 dependency, npm's or an image's with a short version, reads as it was.
+  'work-item.opened': { 1: (payload) => payload, 2: (payload) => payload },
   // Version 2 adds an improvement closed as its flag was turned off; a version 1 close reads as it was.
   // Version 3 adds a red-team attack closed as it ended; a version 2 close reads as it was.
   'work-item.closed': { 1: (payload) => payload, 2: (payload) => payload },
@@ -195,11 +199,14 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 4 adds how what the sense reads stood, as triage looked; a version 3 signal never said.
   // Version 5 lets an HTTP exchange name what its check found wanting: the security headers a page did not send, and
   // what an error page gave away. A version 4 signal's evidence named nothing, and an agent is told what it has.
+  // Version 6 adds the dependency sense, whose signal names a move in place of a route, with the scan's findings as its
+  // evidence; every version 5 signal named a route, and reads as it was.
   'signal.received': {
     1: (payload) => payload,
     2: (payload) => payload,
     3: (payload) => payload,
     4: (payload) => payload,
+    5: (payload) => payload,
   },
   // Version 2 lets the canary reopen a ticket as any sense may; a version 1 reopening reads as it was.
   // Version 3 adds the line's reopening of a ticket a dry run verified; a version 2 reopening was a sense's.
@@ -220,7 +227,8 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
   // Version 3 marks a path in the whole change cut to what an event records; a version 2 push cut none.
   'pull-request.pushed': { 1: (payload) => ({ ...payload, whole: payload.files }), 2: (payload) => payload },
   // Version 2 adds what a failed check said was wrong, its annotations; a version 1 check's reason was never read.
-  'gate.finished': { 1: (payload) => payload },
+  // Version 3 counts a scan's unrated findings, `unknown`; a version 2 scan's counts read as they were, without them.
+  'gate.finished': { 1: (payload) => payload, 2: (payload) => payload },
   // Version 2 adds the round the return starts and what sent it back as figures; a version 1 return reads as it was.
   // Version 3 adds the suggestions an approving review sends back; a version 2 return sent none.
   'work.returned': { 1: (payload) => payload, 2: (payload) => payload },

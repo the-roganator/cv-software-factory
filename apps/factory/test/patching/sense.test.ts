@@ -1,16 +1,28 @@
+import { createServer, type Server } from 'node:http';
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
+import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
-import { GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
+import { GitHubWorker, GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
 import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
-import { exitCode, MOST_AGAIN, nextAfter, type Pass, PatchingSense, type Senses } from '../../src/patching/sense.ts';
+import { waitAfter } from '../../src/patching/schedule.ts';
+import {
+  exitCode,
+  MOST_AGAIN,
+  MOST_REFUSED,
+  nextAfter,
+  type Pass,
+  PatchingSense,
+  refused,
+  type Senses,
+} from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
 import {
@@ -251,6 +263,7 @@ describe('the dependency sense', () => {
     const day = (finished: string) =>
       ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
     expect(nextAfter({ pass: 'again', why: [] }, now)).toEqual({ next: 'soon', why: 'again' });
+    expect(nextAfter({ pass: 'refused', why: [] }, now)).toEqual({ next: 'shortly', why: 'refused' });
     expect(nextAfter({ pass: 'failed', failed: [] }, now)).toEqual({ next: 'hour', why: 'failed' });
     expect(nextAfter({ pass: 'not-real' }, now)).toEqual({ next: 'daily' });
     expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toEqual({ next: 'daily' });
@@ -260,7 +273,8 @@ describe('the dependency sense', () => {
       exitCode({ pass: 'not-real' }),
       exitCode({ pass: 'failed', failed: [] }),
       exitCode({ pass: 'again', why: [] }),
-    ]).toEqual([0, 0, 1, 75]);
+      exitCode({ pass: 'refused', why: [] }),
+    ]).toEqual([0, 0, 1, 75, 75]);
   });
 
   it('is a failed pass when a 409 comes beside a read that failed', async () => {
@@ -314,6 +328,97 @@ describe('the dependency sense', () => {
           log,
         }),
     ).toThrow('one or two repositories');
+  });
+
+  it("reads again shortly when the worker's door refused every read that failed, a few times in a row", async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED 10.43.117.70:8083'), { code: 'ECONNREFUSED' });
+    // As `fetch` gives it: its own error, the refusal its cause.
+    const fetched = new TypeError('fetch failed', { cause: door });
+    const s = sense(
+      senses({ moves: async () => Promise.reject(door), dependencyPulls: async () => Promise.reject(fetched) }),
+    );
+    const passes: Pass[] = [];
+    for (let i = 0; i < MOST_REFUSED; i++) passes.push(await s.pass());
+    expect(passes.map((p) => p.pass)).toEqual([...Array(MOST_REFUSED - 1).fill('refused'), 'failed']);
+    expect(passes[0]).toEqual({
+      pass: 'refused',
+      why: [
+        `the moves of ${FACTORY}: connect ECONNREFUSED 10.43.117.70:8083`,
+        `the Dependabot pull requests of ${FACTORY}: fetch failed`,
+        `the moves of ${APP}: connect ECONNREFUSED 10.43.117.70:8083`,
+        `the Dependabot pull requests of ${APP}: fetch failed`,
+      ],
+    });
+    expect(await days()).toEqual([]);
+    expect(logged.filter((l) => l.level === 50).map((l) => l.msg)).toEqual([
+      `patching: 4 of the reads failed, refused by the GitHub worker's door ${MOST_REFUSED} times in a row, so the day is not appended`,
+    ]);
+  });
+
+  it("is a failed pass when a refusal comes beside another failure, or from the cluster's read", async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6443'), { code: 'ECONNREFUSED' });
+    for (const change of [
+      {
+        moves: async () => Promise.reject(door),
+        dependencyPulls: async () => Promise.reject(new Error('GitHub failed')),
+      },
+      { running: async () => Promise.reject(door) },
+    ] satisfies Partial<Senses>[])
+      expect((await sense(senses(change)).pass()).pass).toBe('failed');
+    expect([refused(new Error('reset')), refused(Object.assign(new Error('x'), { code: 'ECONNRESET' }))]).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  it('starts the count of refused passes anew after any other pass, on the same sense', async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    let listening = false;
+    const s = sense(senses({ dependencyPulls: async () => (listening ? [] : Promise.reject(door)) }));
+    for (let i = 0; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
+    listening = true;
+    expect((await s.pass()).pass).toBe('appended');
+    listening = false;
+    for (let i = 0; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
+  });
+
+  it('reads the day from a worker whose door listens a second after the sense first reads', async () => {
+    // The worker as a deploy restarts it: its port refuses until it listens, a second later.
+    const reserved = createServer();
+    const { port, url } = await listenLocal(reserved);
+    await new Promise((resolve) => reserved.close(resolve));
+    const worker = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const { repo } = JSON.parse(body) as { repo: string };
+        const result = req.url?.endsWith('/moves') ? (repo === FACTORY ? factoryMoves() : appMoves()) : [];
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ result }));
+      });
+    });
+    const github = new GitHubWorker(url);
+    const s = sense(
+      senses({
+        moves: (repo) => github.read('moves', repo, {}),
+        dependencyPulls: (repo) => github.read('dependencyPulls', repo, {}),
+      }),
+    );
+    const started = Date.now();
+    const listening = new Promise<Server>((resolve) =>
+      setTimeout(() => worker.listen(port, '127.0.0.1', () => resolve(worker)), 1_000),
+    );
+    try {
+      const first = await s.pass();
+      expect(first.pass).toBe('refused');
+      const { next } = nextAfter(first, started);
+      // Taken again within the minute, not the hour a failed pass waits.
+      expect(waitAfter(started, (5 * 60 + 30) * 60_000, next)).toBeLessThanOrEqual(60_000);
+      await listening;
+      expect((await s.pass()).pass).toBe('appended');
+      expect(await days()).toHaveLength(1);
+    } finally {
+      await new Promise((resolve) => worker.close(resolve));
+    }
   });
 
   it('acts on no sample store', async () => {

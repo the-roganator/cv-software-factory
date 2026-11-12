@@ -12,6 +12,10 @@
  * the dependency sense's. Martin's command
  * line's and the enrolment's are set by the make targets that use them (`operator.ts`), so no pod holds them. It
  * connects as the database's owner, the only role that may change its schema.
+ *
+ * On a new cluster the Job starts moments after Postgres, and its first connection can be refused or cut while
+ * Postgres, its Service or the network policy are still coming up. So it waits for the store first (`waitForStore`),
+ * about a minute, before the first statement, and only then migrates: a refusal costs seconds, not the Job's backoff.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -71,6 +75,73 @@ export const PASSWORDS = {
 
 export type Passwords = { [name in keyof typeof PASSWORDS]?: string | undefined };
 
+/**
+ * The errors of a store still coming up, worth trying again: refused, cut or timed out before it answered, its name not
+ * yet resolving, or Postgres saying it is starting (57P03). A wrong password (28P01) is not one: the Job connects as
+ * the owner, whose password Postgres takes at initdb, before it listens on TCP, so it never comes right by waiting.
+ */
+const COMING_UP = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'CONNECT_TIMEOUT',
+  'CONNECTION_CLOSED',
+  'CONNECTION_ENDED',
+  'CONNECTION_DESTROYED',
+  '57P03',
+]);
+
+const codeOf = (error: unknown) => {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : 'unknown';
+};
+
+export interface WaitOptions {
+  /** How long to keep trying, from the first attempt. */
+  withinMs?: number;
+  /** How long between attempts. */
+  everyMs?: number;
+  /** Told each code once, the first time it comes, and how long the wait had taken. */
+  say?: (line: string) => void;
+}
+
+/**
+ * Waits until the store answers a query, trying about once a second for about a minute while its errors are those of
+ * a store still coming up (`COMING_UP`), and saying each such error's code once. Returns how many attempts failed. Any
+ * other error, or the last when the time is up, is thrown, as an error of the first attempt would have been.
+ */
+export async function waitForStore(
+  sql: Sql,
+  { withinMs = 60_000, everyMs = 1_000, say = console.log }: WaitOptions = {},
+): Promise<number> {
+  const start = performance.now();
+  const said = new Set<string>();
+  for (let failed = 0; ; failed++) {
+    try {
+      await sql`select 1`;
+      if (failed) say(`The store answered after ${failed} failed ${failed === 1 ? 'attempt' : 'attempts'}.`);
+      return failed;
+    } catch (error) {
+      const code = codeOf(error);
+      const waited = performance.now() - start;
+      if (!COMING_UP.has(code) || waited + everyMs > withinMs) {
+        if (COMING_UP.has(code))
+          say(`The store did not answer within ${Math.round(withinMs / 1000)} s: the last attempt was ${code}.`);
+        throw error;
+      }
+      if (!said.has(code)) {
+        said.add(code);
+        say(`Waiting for the store: ${code} at ${(waited / 1000).toFixed(1)} s (${(error as Error).message}).`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, everyMs));
+    }
+  }
+}
+
 /** Applies what is pending and returns the names of the migrations it applied. */
 export async function migrate(sql: Sql, passwords: Passwords = {}): Promise<string[]> {
   const applied: string[] = [];
@@ -103,13 +174,22 @@ export async function migrate(sql: Sql, passwords: Passwords = {}): Promise<stri
 
 if (import.meta.main) {
   const url = process.env.DATABASE_URL;
-  const sql = connect(url);
+  // Five seconds for each attempt rather than postgres.js's thirty, so a connection dropped unanswered (by a network
+  // policy not yet in place) costs a few of the wait's attempts, not half of it.
+  const sql = connect(url, { connect_timeout: 5 });
   try {
     const passwords = Object.fromEntries(
       Object.entries(PASSWORDS).map(([name, { variable }]) => [name, process.env[variable]]),
     ) as Passwords;
+    // Only reaching the store is tried again: an error in a migration fails the Job at once.
+    await waitForStore(sql);
     const applied = await migrate(sql, passwords);
     console.log(applied.length ? `Applied ${applied.join(', ')}.` : 'Nothing to apply: the schema is current.');
+  } catch (error) {
+    // The whole error, then one line last, which the platform check's watch quotes of a failed attempt.
+    console.error(error);
+    console.error(`The migration failed: ${codeOf(error)}: ${(error as Error)?.message ?? String(error)}`);
+    process.exitCode = 1;
   } finally {
     await sql.end();
   }

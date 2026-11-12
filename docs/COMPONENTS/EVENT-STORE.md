@@ -7,7 +7,7 @@ An append-only record of every step, with captured artifacts (spec 5.1). Part of
 
 ## The table
 
-- **Migrations** are numbered, and a hook Job applies them before the console starts.
+- **Migrations** are numbered, and a hook Job applies them before the console starts. It waits for the store first, about a minute, trying about once a second while the connection is refused, cut, timed out or told Postgres is starting, and saying each such code once; a wrong password or an error in a migration fails it at once.
 - **Append-only.** A trigger refuses every delete and truncate, and every update but one: taking the text out of a visitor's report, once it has been [kept as long as it may be](TRIAGE.md#how-long-a-report-is-kept). That changes only the payload, which stays valid at its version, and never the public view, which never had the text. Appends commit in `seq` order and notify listeners.
 - **Idempotent appends.** An event appended again with the same `id` and content is stored once, so a worker can retry. The same `id` with different content is refused.
 - **Samples or real.** The store records once whether it holds [samples](SAMPLES.md) or real events, and numbers real work items from 1000.

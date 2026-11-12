@@ -184,6 +184,36 @@ describe('the dependency sense', () => {
     expect(said[2]?.failed).toEqual(["the cluster's pods: GET /api/v1/pods answered 403: forbidden"]);
   });
 
+  it('reads again, as nothing failed, when the worker answers the moves read 409, and appends nothing', async () => {
+    const again = new GitHubWorkerError(409, 'conflict', 'A scan finished during the read: read again.');
+    const result = await sense(
+      senses({ moves: async (repo) => (repo === APP ? Promise.reject(again) : factoryMoves()) }),
+    ).pass();
+    expect(result).toEqual({
+      pass: 'again',
+      why: [`the moves of ${APP}: A scan finished during the read: read again.`],
+    });
+    expect(await days()).toEqual([]);
+    expect(logged.filter((l) => l.level >= 50)).toEqual([]);
+    expect(
+      logged.some(
+        (l) => l.level === 30 && l.msg === 'patching: a scan finished during the read, so the day is read again',
+      ),
+    ).toBe(true);
+  });
+
+  it('is a failed pass when a 409 comes beside a read that failed', async () => {
+    const again = new GitHubWorkerError(409, 'conflict', 'read again');
+    const result = await sense(
+      senses({
+        moves: async () => Promise.reject(again),
+        running: async () => Promise.reject(new Error('GET /api/v1/pods answered 403: forbidden')),
+      }),
+    ).pass();
+    expect(result.pass).toBe('failed');
+    expect(await days()).toEqual([]);
+  });
+
   it('does not compare the cluster with a list a scan did not write, and says the scan failed', async () => {
     const failed = { ...appMoves([]), run: { ...appMoves().run, conclusion: 'failure' }, file: null };
     await sense(senses({ moves: async (repo) => (repo === FACTORY ? factoryMoves() : failed) })).pass();

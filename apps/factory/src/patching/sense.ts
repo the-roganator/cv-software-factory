@@ -14,6 +14,7 @@ import type { Logger } from 'pino';
 import type { Sql } from 'postgres';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves } from '../github/scanning.ts';
+import { GitHubWorkerError } from '../github/worker-client.ts';
 import { compare } from './compare.ts';
 import { type Day, dayOf, type RepositoryRead, sameDay, scannedOf } from './day.ts';
 import type { RunningContainer } from './running.ts';
@@ -29,6 +30,8 @@ export type Pass =
   | { pass: 'appended'; day: Day }
   | { pass: 'unchanged'; day: Day }
   | { pass: 'failed'; failed: string[] }
+  /** The worker answered a read with 409, read again: a scan finished during it. Nothing failed, and nothing is appended. */
+  | { pass: 'again'; why: string[] }
   | { pass: 'not-real' };
 
 export interface SenseOptions {
@@ -40,6 +43,9 @@ export interface SenseOptions {
   log: Logger;
   now?: () => Date;
 }
+
+/** Whether a read was answered 409, to be read again (the moves read, while a scan finishes). */
+const readAgain = (error: unknown) => error instanceof GitHubWorkerError && error.status === 409;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -79,6 +85,11 @@ export class PatchingSense {
     const failed = answers.flatMap((answer, i) =>
       answer.status === 'rejected' ? [`${asked[i]?.what}: ${message(answer.reason)}`] : [],
     );
+    // The worker's 409 is no failure: the scan finished while the alerts were read, and the next read takes it whole.
+    if (failed.length && answers.every((answer) => answer.status === 'fulfilled' || readAgain(answer.reason))) {
+      this.#log.info({ why: failed }, 'patching: a scan finished during the read, so the day is read again');
+      return { pass: 'again', why: failed };
+    }
     if (failed.length) {
       this.#log.error({ failed }, `patching: ${failed.length} of the reads failed, so the day is not appended`);
       return { pass: 'failed', failed };

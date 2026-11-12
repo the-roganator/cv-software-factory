@@ -78,15 +78,17 @@ export async function run(args: string[]): Promise<number> {
         (result.pass === 'appended' || result.pass === 'unchanged') &&
         result.day.repositories.some((r) => stale(r.run.finished, Date.now()));
       if (old) log.info('patching: a scan read is older than today’s, so the day is read again within the hour');
-      return { failed: result.pass === 'failed' || old };
+      // A read to take again (a scan finished during it) is read within the hour too, as nothing that failed.
+      return { failed: result.pass === 'failed' || result.pass === 'again' || old, broke: result.pass === 'failed' };
     } catch (error) {
       log.error({ err: error }, 'patching: the pass failed, so the day is not appended');
-      return { failed: true };
+      return { failed: true, broke: true };
     }
   };
 
   try {
-    if (once) return (await pass()).failed ? 1 : 0;
+    // One pass: 1 only when a read failed; a read to take again is no failure.
+    if (once) return (await pass()).broke ? 1 : 0;
     const abort = new AbortController();
     for (const signal of ['SIGTERM', 'SIGINT'] as const) {
       process.once(signal, () => {

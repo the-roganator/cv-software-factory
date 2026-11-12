@@ -72,4 +72,33 @@ describe("the sense's day", () => {
     );
     expect(passes).toBe(1);
   });
+
+  it('runs one pass at a time, however long a pass takes, and waits only after it ends', async () => {
+    vi.useFakeTimers();
+    try {
+      const abort = new AbortController();
+      let running = 0;
+      let most = 0;
+      let passes = 0;
+      // Each pass takes nine minutes, as a moves read of ten thousand alerts may, and fails, so the next is an hour on.
+      const pass = async () => {
+        running++;
+        most = Math.max(most, running);
+        passes++;
+        await new Promise((resolve) => setTimeout(resolve, 9 * 60_000));
+        running--;
+        return { failed: true };
+      };
+      const done = everyDay(pass, at, abort.signal, () => Date.now());
+      for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(most).toBe(1);
+      // 180 minutes: a pass of 9, a wait of 60, and so on: three passes begun.
+      expect(passes).toBe(3);
+      abort.abort();
+      await vi.advanceTimersByTimeAsync(9 * 60_000);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

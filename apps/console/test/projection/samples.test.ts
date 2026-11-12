@@ -370,9 +370,12 @@ describe('replay', () => {
   });
 
   it('draws the same sheet at t, the same way', () => {
+    // One view each way per instant, each sheet drawn from it: a sheet is drawn from the view alone.
     for (const t of instants.filter((_, i) => i % 7 === 0)) {
+      const whole = project(SAMPLES, t);
+      const replayed = project(upTo(SAMPLES, t), t);
       for (const number of ['1271', '1296', '1302', '1304', '1311', '1315', '1319', '1323']) {
-        expect(projectSheet(project(SAMPLES, t), number)).toEqual(projectSheet(project(upTo(SAMPLES, t), t), number));
+        expect(projectSheet(whole, number)).toEqual(projectSheet(replayed, number));
       }
     }
   });

@@ -464,8 +464,11 @@ describe('append-only, by mechanism', () => {
     await expect(metrics`select seq from events limit 1`).rejects.toThrow('permission denied');
     await expect(metrics`select count(*) from store`).rejects.toThrow('permission denied');
     await triage`select 1`;
+    // Other roles' sessions: Postgres shows a role its own sessions' queries, and other files' tests connect as this
+    // one at the same time, in databases of their own.
     const others = await metrics<{ query: string | null }[]>`
-      select distinct query from pg_stat_activity where pid <> pg_backend_pid() and usesysid is not null`;
+      select distinct query from pg_stat_activity
+      where pid <> pg_backend_pid() and usesysid is not null and usename <> current_user`;
     expect(others).toEqual([{ query: '<insufficient privilege>' }]);
     const [role] = await owner<{ rolconnlimit: number; member_of: string[] }[]>`
       select rolconnlimit, array(select b.rolname from pg_auth_members m join pg_roles b on b.oid = m.roleid

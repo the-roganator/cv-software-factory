@@ -45,6 +45,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { documents, forTrivy, LINK, trackedLockfiles, unreadDocument } from '../gates/lockfile-scan.ts';
+import { apiVersionsOf } from './api-versions.ts';
 import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
 import {
@@ -71,6 +72,8 @@ import {
 } from './sarif.ts';
 import { trivyPin } from './trivy-pin.ts';
 
+export { API_VERSIONS_RECORD, apiVersionsOf } from './api-versions.ts';
+
 export { trivyPin };
 
 const run = promisify(execFile);
@@ -80,28 +83,6 @@ const DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-db:2';
 const JAVA_DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-java-db:1';
 /** The oldest the advisory database may be when the scan starts. */
 export const DB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-/**
- * The API versions Argo CD renders the cluster's charts with (`--api-versions`), as `platform.yml` takes them from its
- * cluster made from `main`: each `group/version`, and each `group/version/Kind`, Argo CD's own list
- * (`scripts/api-versions.ts`). A chart may render otherwise for an API the cluster has, so the scan and the gate render
- * with this list, never a head's.
- */
-export const API_VERSIONS_RECORD = 'deploy/test/api-versions.json';
-
-/** The record's API versions in a checkout, none where it keeps no record (the app's), or a throw when it cannot be read. */
-export function apiVersionsOf(root: string): string[] | undefined {
-  const file = join(root, API_VERSIONS_RECORD);
-  if (!existsSync(file)) return undefined;
-  const { apiVersions } = JSON.parse(readFileSync(file, 'utf-8')) as { apiVersions?: unknown };
-  if (
-    !Array.isArray(apiVersions) ||
-    !apiVersions.length ||
-    !apiVersions.every((v) => typeof v === 'string' && /^[\w./-]+$/.test(v))
-  )
-    throw new Error(`${API_VERSIONS_RECORD} lists no API versions the gate can read`);
-  return apiVersions as string[];
-}
 
 /**
  * `helm template`'s arguments for a chart as Argo CD 3.6's repo-server gives them (util/helm/cmd.go `template`): its

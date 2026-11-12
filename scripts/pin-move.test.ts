@@ -37,6 +37,7 @@ import {
   staleRecords,
   started,
   TEST_SHARDS,
+  versionLabelNamed,
   type WorkflowRun,
   whatRunsIt,
   workflowsOf,
@@ -1395,9 +1396,10 @@ describe('the manifests, object by object', () => {
     expect(await chartMove('otel-collector', '0.174.0', '0.178.3')).toBeUndefined();
   });
 
-  it("holds prometheus's release on the nodeSelector it adds, and kyverno's on the first object it adds", async () => {
+  it("holds prometheus's release on its subchart's major, and kyverno's on the first object it adds", async () => {
+    // kube-state-metrics 8.6.0 to 9.0.1 inside prometheus 29.35.0 to 29.47.2: a subchart moves forward on its major alone.
     expect(await chartMove('prometheus', '29.35.0', '29.47.2')).toBe(
-      'the manifests change beyond the image: Deployment telemetry/prometheus-kube-state-metrics at spec.template.spec.nodeSelector',
+      'the manifests change beyond the image: ServiceAccount telemetry/prometheus-kube-state-metrics at metadata.labels["helm.sh/chart"]: kube-state-metrics-9.0.1 is not kube-state-metrics-8.6.0 forward on its major',
     );
     expect(manifestsDiffer(recorded('kyverno', '3.9.1'), recorded('kyverno', '3.10.0'), [])).toBe(
       'the head renders ServiceAccount kyverno/kyverno-check-legacy-policies, which the base does not',
@@ -1724,6 +1726,18 @@ spec:
     expect(manifestsDiffer(sub('2.0.1'), deploy(NEW, '1.0.0', 'other-2.5.1'), MOVE, ACME)).toMatch(
       /other-2\.5\.1 is not sub-2\.0\.1's chart at another version/,
     );
+    // Back, or across its major, is no subchart's move.
+    for (const v of ['1.9.0', '3.0.0'])
+      expect(manifestsDiffer(sub('2.0.1'), sub(v).replace(OLD, NEW), MOVE, ACME)).toMatch(
+        new RegExp(`sub-${v.replaceAll('.', '\\.')} is not sub-2\\.0\\.1 forward on its major`),
+      );
+  });
+
+  it("names what main's own manifests select by a version label, which the gate holds a chart's move on", () => {
+    expect(versionLabelNamed(netpol)).toBe(
+      'NetworkPolicy ns/lockdown names a version label at spec.podSelector.matchLabels["app.kubernetes.io/version"]',
+    );
+    expect(versionLabelNamed(deploy(OLD, '1.0.0'))).toBeUndefined();
   });
 
   it('holds the version labels moving where anything selects by one', () => {

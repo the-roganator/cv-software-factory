@@ -344,6 +344,7 @@ describe('what the platform check runs', () => {
     'scripts/platform-pods.sh',
     'scripts/local-ca.ts',
     'scripts/share-key.ts',
+    'scripts/api-versions.ts',
     ...readdirSync('scripts')
       .filter((f) => /-refusals\.(sh|ts)$/.test(f))
       .map((f) => `scripts/${f}`),

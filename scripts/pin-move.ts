@@ -917,8 +917,13 @@ function versionLabelWrong(label: string, was: string, now: string, chart?: Char
     return VERSION_WORD.test(was) && VERSION_WORD.test(now) ? undefined : `${short(now)} is no version`;
   const [own, next] = [`${chart.chart}-${chart.from}`, `${chart.chart}-${chart.to}`];
   if (was === own || now === next) return was === own && now === next ? undefined : `${short(now)} is not ${next}`;
+  // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward.
   const [a, b] = [CHART_LABEL.exec(was), CHART_LABEL.exec(now)];
-  return a && b && a[1] === b[1] ? undefined : `${short(now)} is not ${short(was)}'s chart at another version`;
+  const major = (version: string) => version.replace(/^v/, '').split('.')[0];
+  if (!a || !b || a[1] !== b[1]) return `${short(now)} is not ${short(was)}'s chart at another version`;
+  if (compareVersions(b[2] as string, a[2] as string) < 0 || major(a[2] as string) !== major(b[2] as string))
+    return `${short(now)} is not ${short(was)} forward on its major`;
+  return undefined;
 }
 
 /** Where an object names a version label anywhere but a place it may change (a selector, a policy), or undefined. */
@@ -937,6 +942,23 @@ function namesVersionLabel(value: unknown, places: ReadonlySet<unknown>, path = 
     if (VERSION_LABELS.has(key)) return `${path}${step(key)}`;
     const at = namesVersionLabel(each, places, `${path}${step(key)}`);
     if (at !== undefined) return at;
+  }
+  return undefined;
+}
+
+/**
+ * The first object of a rendering (main's overlay, say) that names a version label anywhere but its own labels, as a
+ * selector would: a chart's version labels moving would select other pods for it. Undefined when none does, or when the
+ * rendering cannot be read, which condition 6 holds on its own.
+ */
+export function versionLabelNamed(rendered: string): string | undefined {
+  const objects = objectsOf(rendered);
+  if (typeof objects === 'string') return undefined;
+  for (const { label, body } of objects.values()) {
+    const object = record(body);
+    if (object.apiVersion === 'v1' && object.kind === 'ConfigMap') continue;
+    const at = namesVersionLabel(object, new Set(labelPlaces(object).values()));
+    if (at !== undefined) return `${label} names a version label at ${at.replace(/^\./, '')}`;
   }
   return undefined;
 }
@@ -1188,6 +1210,11 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
     const versions = chart && { chart: chart.base.chart, from: chart.base.version, to: chart.head.version };
     const differ = manifestsDiffer(was, after, pairs, versions);
     if (differ) return { reason: differ };
+    // What main's own manifests select by: a chart's version labels moving would move its pods out from under them.
+    if (versions && versions.from !== versions.to) {
+      const named = versionLabelNamed(await io.overlay('base'));
+      if (named) return { reason: `${named} in deploy/, and the chart's version labels change` };
+    }
   }
   // 7. The scans show it.
   // Each platform we run apart, so a High new on one is never hidden by the other's findings.
@@ -1370,6 +1397,8 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
   const tools = realTools(trivyImage(), join(work, 'cache'), work);
   mkdirSync(join(work, 'cache'));
   let pulled: Promise<unknown> | undefined;
+  // The cluster main describes, read once from the gate's own checkout.
+  let cluster: { kubeVersion: string | undefined; apiVersions: string[] } | undefined;
   return {
     close: () => removeWork(work),
     async diff() {
@@ -1431,11 +1460,14 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
     },
     // As Argo CD renders it, on the cluster main describes: the k3s main pins and the API versions main's record keeps,
     // never the head's, so a head that changes either renders as main's cluster would run it.
-    render: (side, chart) => {
-      const apiVersions = apiVersionsOf(ROOT);
-      if (!apiVersions)
-        throw new Error(`the gate's checkout keeps no ${API_VERSIONS_RECORD} to render charts as Argo CD does`);
-      return tools.render(chart, dirs[side], kubeVersionOf(inventory(ROOT).items), apiVersions);
+    render: async (side, chart) => {
+      cluster ??= (() => {
+        const apiVersions = apiVersionsOf(ROOT);
+        if (!apiVersions)
+          throw new Error(`the gate's checkout keeps no ${API_VERSIONS_RECORD} to render charts as Argo CD does`);
+        return { kubeVersion: kubeVersionOf(inventory(ROOT).items), apiVersions };
+      })();
+      return tools.render(chart, dirs[side], cluster.kubeVersion, cluster.apiVersions);
     },
     async overlay(side) {
       const { stdout } = await exec('kustomize', ['build', join(dirs[side], 'deploy/overlays/local')], {

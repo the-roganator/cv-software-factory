@@ -74,7 +74,7 @@ test('a row opens in place, one at a time: why it waits, what to do, what it cle
   await logs.click();
   await expect(logs).toHaveAttribute('aria-expanded', 'true');
   const more = panel(page).locator(`#${await logs.getAttribute('aria-controls')}`);
-  await expect(more).toContainText('Its fix is a major on, so the review gate passes it only with your approval.');
+  await expect(more).toContainText('Its fix is a major one, so the review gate passes it only with your approval.');
   await expect(more).toContainText('Move it in a pull request of your own, and review it there.');
   await expect(more).toContainText('Clears · 56 findings');
   await expect(more).toContainText('1 Critical, 21 High, 30 Medium, 4 Low');

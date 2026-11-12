@@ -35,13 +35,9 @@ const migrateJob = async () => {
 describe('the store’s passwords', () => {
   it('are each set by the migrate Job from a Secret, for every role the migrations give one', async () => {
     const env = await migrateJob();
-    for (const [name, { variable }] of Object.entries(PASSWORDS)) {
-      // The dependency sense's role is made by 0050, with no password until its manifests give the Job one: the sense
-      // runs only once they merge, after the image that carries it is pinned.
-      if (name === 'patching') continue;
+    for (const { variable } of Object.values(PASSWORDS)) {
       expect(env.find((e) => e.name === variable)?.valueFrom?.secretKeyRef?.key, variable).toBe('password');
     }
-    expect(env.find((e) => e.name === PASSWORDS.patching.variable)).toBeUndefined();
   });
 
   it('include none for the factory’s writer, which is gone (0024), and nothing makes or reads its Secret', async () => {

@@ -1,16 +1,16 @@
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
-import { MOST_PINS, PAYLOADS } from '@software-factory/events/schemas';
+import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
-import { GitHubWorkerError } from '../../src/github/worker-client.ts';
+import { GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
 import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
-import { PatchingSense, type Senses } from '../../src/patching/sense.ts';
+import { exitCode, MOST_AGAIN, nextAfter, type Pass, PatchingSense, type Senses } from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
 import {
@@ -184,6 +184,97 @@ describe('the dependency sense', () => {
     expect(said[2]?.failed).toEqual(["the cluster's pods: GET /api/v1/pods answered 403: forbidden"]);
   });
 
+  it('reads again, as nothing failed, when the worker asks for the moves read again, and appends nothing', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'A scan finished during the read: read again.');
+    const result = await sense(
+      senses({ moves: async (repo) => (repo === APP ? Promise.reject(again) : factoryMoves()) }),
+    ).pass();
+    expect(result).toEqual({
+      pass: 'again',
+      why: [`the moves of ${APP}: A scan finished during the read: read again.`],
+    });
+    expect(await days()).toEqual([]);
+    expect(logged.filter((l) => l.level >= 50)).toEqual([]);
+    expect(
+      logged.some(
+        (l) => l.level === 30 && l.msg === 'patching: a scan finished during the read, so the day is read again soon',
+      ),
+    ).toBe(true);
+  });
+
+  it('is a failed pass when the Dependabot read is asked for again: only the moves read is read again', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    const result = await sense(senses({ dependencyPulls: async () => Promise.reject(again) })).pass();
+    expect(result.pass).toBe('failed');
+  });
+
+  it("is a failed pass when GitHub's own 409 comes from the moves read: only the worker's ask is read again", async () => {
+    const conflict = new GitHubWorkerError(409, 'conflict', 'GitHub answered 409');
+    const result = await sense(senses({ moves: async () => Promise.reject(conflict) })).pass();
+    expect(result).toEqual({
+      pass: 'failed',
+      failed: [`the moves of ${FACTORY}: GitHub answered 409`, `the moves of ${APP}: GitHub answered 409`],
+    });
+    expect(await days()).toEqual([]);
+  });
+
+  it('counts reads to take again as a failure once they have come an hour in a row', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    const s = sense(senses({ moves: async () => Promise.reject(again) }));
+    const passes: string[] = [];
+    for (let i = 0; i < MOST_AGAIN; i++) passes.push((await s.pass()).pass);
+    expect(passes).toEqual([...Array(MOST_AGAIN - 1).fill('again'), 'failed']);
+    const errors = logged.filter((l) => l.level === 50);
+    expect(errors.map((l) => l.msg)).toEqual([
+      `patching: 2 of the reads failed, asked for again ${MOST_AGAIN} times in a row, so the day is not appended`,
+    ]);
+  });
+
+  it('starts the count of reads to take again anew after any other pass, on the same sense', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    let answer = false;
+    const s = sense(
+      senses({
+        moves: async (repo) => (answer ? (repo === FACTORY ? factoryMoves() : appMoves()) : Promise.reject(again)),
+      }),
+    );
+    for (let i = 0; i < MOST_AGAIN - 1; i++) expect((await s.pass()).pass).toBe('again');
+    answer = true;
+    expect((await s.pass()).pass).toBe('appended');
+    answer = false;
+    // Were the count kept, the next would be the sixth in a row, and a failure.
+    for (let i = 0; i < MOST_AGAIN - 1; i++) expect((await s.pass()).pass).toBe('again');
+  });
+
+  it('says when to read next and what --once exits with, for each pass', () => {
+    const now = Date.parse('2026-11-11T06:00:00Z');
+    const day = (finished: string) =>
+      ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
+    expect(nextAfter({ pass: 'again', why: [] }, now)).toEqual({ next: 'soon', why: 'again' });
+    expect(nextAfter({ pass: 'failed', failed: [] }, now)).toEqual({ next: 'hour', why: 'failed' });
+    expect(nextAfter({ pass: 'not-real' }, now)).toEqual({ next: 'daily' });
+    expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toEqual({ next: 'daily' });
+    expect(nextAfter(day('2026-11-10T04:58:00Z'), now)).toEqual({ next: 'hour', why: 'stale' });
+    expect([
+      exitCode(day('2026-11-11T04:58:00Z')),
+      exitCode({ pass: 'not-real' }),
+      exitCode({ pass: 'failed', failed: [] }),
+      exitCode({ pass: 'again', why: [] }),
+    ]).toEqual([0, 0, 1, 75]);
+  });
+
+  it('is a failed pass when a 409 comes beside a read that failed', async () => {
+    const again = new GitHubWorkerError(409, READ_AGAIN, 'read again');
+    const result = await sense(
+      senses({
+        moves: async () => Promise.reject(again),
+        running: async () => Promise.reject(new Error('GET /api/v1/pods answered 403: forbidden')),
+      }),
+    ).pass();
+    expect(result.pass).toBe('failed');
+    expect(await days()).toEqual([]);
+  });
+
   it('does not compare the cluster with a list a scan did not write, and says the scan failed', async () => {
     const failed = { ...appMoves([]), run: { ...appMoves().run, conclusion: 'failure' }, file: null };
     await sense(senses({ moves: async (repo) => (repo === FACTORY ? factoryMoves() : failed) })).pass();
@@ -194,16 +285,35 @@ describe('the dependency sense', () => {
     expect(payload.repositories[1]).toMatchObject({ judged: null, totals: null, failed: ['other'], scanned: 0 });
   });
 
-  it('says why a scan failed, as its moves show it', async () => {
+  it('says why a scan failed from the scan’s own totals, not from its moves', async () => {
     const moves = factoryMoves();
-    const overdue = {
+    const totals = moves.file?.totals as NonNullable<Moves['file']>['totals'];
+    // An overdue finding with no fix is in no move; a move with a new Low that also clears an old High is no new High.
+    const failed = {
       ...moves,
       run: { ...moves.run, conclusion: 'failure' },
-      moves: moves.moves.map((m, i) => (i === 0 ? { ...m, deadline: '2026-11-10T00:00:00Z', newToday: 1 } : m)),
+      file: {
+        ...(moves.file as NonNullable<Moves['file']>),
+        totals: { ...totals, overdue: 1, dueWithinDay: 0, newHighWithFix: 0 },
+      },
+      moves: moves.moves.map((m, i) => (i === 0 ? { ...m, newToday: 1, clears: { ...m.clears, HIGH: 1 } } : m)),
     };
-    await sense(senses({ moves: async (repo) => (repo === FACTORY ? overdue : appMoves()) })).pass();
+    await sense(senses({ moves: async (repo) => (repo === FACTORY ? failed : appMoves()) })).pass();
     const payload = PAYLOADS['patching.read'].parse((await days())[0]?.payload);
-    expect(payload.repositories[0]?.failed).toEqual(['overdue', 'new-high-or-critical']);
+    expect(payload.repositories[0]?.failed).toEqual(['overdue']);
+  });
+
+  it('refuses to read more repositories than a day holds', () => {
+    expect(
+      () =>
+        new PatchingSense({
+          sql: database.patching,
+          events: new EventWriter(database.patching, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }),
+          senses: senses(),
+          repositories: [FACTORY, APP, 'the-roganator/a-third'],
+          log,
+        }),
+    ).toThrow('one or two repositories');
   });
 
   it('acts on no sample store', async () => {
@@ -285,5 +395,129 @@ describe('the day, made from the reads', () => {
     });
     expect(of(image, [npmNode, unversioned, dockerNode])).toEqual({ number: 83, version: '24.2.0' });
     expect(of(image, [npmNode])).toBeUndefined();
+  });
+
+  it('names the Dependabot pull request of an image outside Docker Hub, which its branch names without the registry', () => {
+    const image = withMove({
+      name: 'gcr.io/distroless/nodejs24-debian13',
+      pins: [{ file: 'apps/x/Dockerfile', line: 1 }],
+    });
+    const pull: DependencyPull = {
+      ...PULL,
+      number: 91,
+      ecosystem: 'docker',
+      directory: '/apps/x',
+      dependency: 'distroless/nodejs24-debian13',
+      version: '1.2.3',
+    };
+    expect(dayOf(read(image, [pull]), 0, []).repositories[0]?.moves[0]?.pullRequest).toEqual({
+      number: 91,
+      version: '1.2.3',
+    });
+  });
+
+  it('names the Dependabot pull request of an Action used by a subpath', () => {
+    const action = withMove({
+      name: 'github/codeql-action/upload-sarif',
+      pins: [{ file: '.github/workflows/scan.yml', line: 40 }],
+    });
+    const pull: DependencyPull = {
+      ...PULL,
+      number: 92,
+      ecosystem: 'github-actions',
+      directory: '/',
+      dependency: 'github/codeql-action',
+      version: '4.31.0',
+    };
+    expect(dayOf(read(action, [pull]), 0, []).repositories[0]?.moves[0]?.pullRequest).toEqual({
+      number: 92,
+      version: '4.31.0',
+    });
+  });
+
+  it('is the same day whatever copies of a row run: a Deployment scaled appends nothing', () => {
+    const row = (pod: string) =>
+      ({
+        row: 'unlisted-image',
+        namespace: 'default',
+        pod,
+        container: 'c',
+        image: 'nginx:1',
+        digest: digest(13),
+      }) as const;
+    const two = dayOf(read(), 2, [row('try-a'), row('try-b')]);
+    const three = dayOf(read(), 3, [row('try-a'), row('try-b'), row('try-c')]);
+    expect(sameDay(three, two)).toBe(true);
+  });
+
+  it('never builds a day that fails validation, whatever the reads hold', () => {
+    const moves = factoryMoves();
+    const lockfile = moves.moves[1] as ReadMove;
+    const many = {
+      ...moves,
+      moves: [
+        ...Array.from({ length: MOST_MOVES + 10 }, (_, i) => ({
+          ...(moves.moves[0] as ReadMove),
+          index: i + 1,
+          name: `m${i}`,
+        })),
+        { ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), from: '', to: '' } },
+      ],
+    };
+    const rows = Array.from({ length: MOST_ROWS + 50 }, (_, i) => ({
+      row: 'unlisted-image' as const,
+      namespace: 'default',
+      pod: `p${i}`,
+      container: 'c',
+      image: `nginx:1.${i}`,
+      digest: digest(13),
+    }));
+    const day = dayOf(read(many), rows.length, rows);
+    expect(PAYLOADS['patching.read'].safeParse(day).success).toBe(true);
+    expect(day.repositories[0]?.moves).toHaveLength(MOST_MOVES);
+    expect(day.rows).toHaveLength(MOST_ROWS);
+    const empty = {
+      ...moves,
+      moves: [{ ...lockfile, withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), from: '' } }],
+    };
+    expect(PAYLOADS['patching.read'].safeParse(dayOf(read(empty), 0, [])).success).toBe(true);
+  });
+
+  it('says a cancelled or unfinished scan did not fail', () => {
+    for (const conclusion of ['cancelled', 'skipped', null]) {
+      const moves = factoryMoves();
+      const day = dayOf(read({ ...moves, run: { ...moves.run, conclusion } }), 0, []);
+      expect(day.repositories[0]?.failed, String(conclusion)).toEqual([]);
+    }
+  });
+
+  it('matches a lockfile move only by its package, and one without its package to nothing', () => {
+    const moves = factoryMoves();
+    const lockfile = moves.moves[1] as ReadMove;
+    const scoped = (dependency: string): DependencyPull => ({ ...PULL, number: 95, dependency });
+    const of = (move: ReadMove, pulls: DependencyPull[]) =>
+      dayOf(read({ ...moves, moves: [move] }, pulls), 0, []).repositories[0]?.moves[0]?.pullRequest;
+    expect(of({ ...lockfile, withheld: undefined }, [scoped('@scope/a'), scoped('@scope/b')])).toBeUndefined();
+    const withPackage = {
+      ...lockfile,
+      withheld: { ...(lockfile.withheld as NonNullable<ReadMove['withheld']>), package: '@scope/b' },
+    };
+    expect(of(withPackage, [scoped('@scope/a'), scoped('@scope/b')])).toEqual({ number: 95, version: PULL.version });
+  });
+
+  it('keeps the same rows past its cap whatever the pods are called', () => {
+    const rows = (prefix: string) =>
+      Array.from({ length: MOST_ROWS + 40 }, (_, i) => ({
+        row: 'unlisted-image' as const,
+        namespace: 'default',
+        pod: `${prefix}-${String((i * 7919) % (MOST_ROWS + 40)).padStart(5, '0')}`,
+        container: 'c',
+        image: `nginx:1.${i}`,
+        digest: digest(13),
+      }));
+    const a = dayOf(read(), 0, rows('a'));
+    const b = dayOf(read(), 0, rows('z'));
+    expect(sameDay(b, a)).toBe(true);
+    expect(a.rows).toHaveLength(MOST_ROWS);
   });
 });

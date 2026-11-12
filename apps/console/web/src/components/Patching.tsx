@@ -261,7 +261,7 @@ function Row({
                 {row.from}
                 {row.to && (
                   <>
-                    {row.from ? ' → ' : ''}
+                    {row.from ? ' → ' : '→ '}
                     <span className="to">{row.to}</span>
                   </>
                 )}
@@ -469,13 +469,19 @@ const Panel = memo(function Panel({
         </p>
       )}
       <DayLine view={view} t={t} />
-      {empty && view.day.unjudged.length > 0 ? (
+      {view.nothing === 'unjudged' ? (
         // Nothing to show is not nothing to move: a run that wrote no moves judged nothing.
         <p className="patch-empty">
           No moves to show: the day’s scan wrote none, so nothing was judged. Its line above says which run, and links
           it.
         </p>
-      ) : empty ? (
+      ) : view.nothing === 'failed' ? (
+        // Nor is a run that failed in itself: what it judged cannot be said cleared.
+        <p className="patch-empty">
+          No moves to show, but the day’s scan failed in itself, so nothing can be said cleared. Its line above says
+          which run, and links it.
+        </p>
+      ) : view.nothing === 'cleared' ? (
         <p className="patch-empty">
           Nothing to move. Every finding with a fix has been cleared. {count(view.figures.noFix)}{' '}
           {view.figures.noFix === 1 ? 'has' : 'have'} no fix yet, and {view.figures.noFix === 1 ? 'is' : 'are'} looked
@@ -572,10 +578,10 @@ export function Patching({
   const read = lastRead(events, t);
   const carried = carriedKey(items);
   const minute = Math.floor(t / MINUTE) * MINUTE;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads only the day, the carried work items and the minute, and is kept while they are the same
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the view reads only the day and the carried work items, and is kept while they are the same
   const view: PatchingView = useMemo(
-    () => (read ? dayView(read.payload, Date.parse(read.ts), items, minute) : { state: 'unread' }),
-    [read, carried, minute],
+    () => (read ? dayView(read.payload, Date.parse(read.ts), items) : { state: 'unread' }),
+    [read, carried],
   );
   return <Panel view={view} t={minute} martin={admin.kind === 'martin'} onOpen={onOpen} />;
 }

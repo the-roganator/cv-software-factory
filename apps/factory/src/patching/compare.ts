@@ -10,7 +10,8 @@
  *   image instead: Argo CD after a merge, a k3s move not yet applied. A pin of an image no pod runs at all is no row,
  *   since an image may run only now and then (a runner's, a Job's).
  *
- * A reference is compared by its repository, normalised as Docker does (`postgres` is `docker.io/library/postgres`), and
+ * A reference is compared by its repository, normalised as Docker does (`postgres` is `docker.io/library/postgres`),
+ * and
  * then by its digest when the pod names one, or else by its tag. A pod's digest may be its index's or a platform's
  * manifest's, so the list gives every digest the scan saw of each image.
  */
@@ -72,11 +73,34 @@ export function parseReference(reference: string): Reference {
 function runs(container: RunningContainer, ran: Reference, image: ScannedImage, listed: Reference) {
   if (ran.repository !== listed.repository) return false;
   if (ran.digest) return ran.digest === listed.digest || image.digests.includes(ran.digest);
-  if (listed.digest) return image.digests.includes(container.digest);
+  // By its tag alone the pod runs the listed reference whatever the tag resolved to, so a tag rebuilt since the scan is
+  // the list's image at a digest no result names; a pin by digest alone matches a pod on any tag that resolved to it.
+  if (listed.digest && image.digests.includes(container.digest)) return true;
+  if (ran.tag !== undefined && listed.tag !== undefined) return ran.tag === listed.tag;
+  if (listed.digest) return false;
   return (ran.tag ?? 'latest') === (listed.tag ?? 'latest');
 }
 
 const where = ({ namespace, pod, container }: RunningContainer): Where => ({ namespace, pod, container });
+
+/** The most containers a `not-running` row names. */
+const MOST_RUNNING = 20;
+
+/**
+ * The containers a `not-running` row names: one for each namespace, container and image, chosen and ordered by those
+ * and not by the pods' names, so a pod made again under a new name keeps the same row.
+ */
+function kept(instead: RunningContainer[]): (Where & { image: string })[] {
+  const byKind = new Map<string, RunningContainer>();
+  for (const c of [...instead].sort((a, b) => a.pod.localeCompare(b.pod))) {
+    const k = `${c.namespace} ${c.container} ${c.image}`;
+    if (!byKind.has(k)) byKind.set(k, c);
+  }
+  return [...byKind.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, MOST_RUNNING)
+    .map(([, c]) => ({ ...where(c), image: c.image }));
+}
 
 const key = (row: Row) =>
   row.row === 'not-running'
@@ -132,7 +156,7 @@ export function compare(containers: RunningContainer[], lists: Listed[]): Row[] 
       item: listed.image.item,
       image: listed.image.image,
       pin: listed.image.pin,
-      running: instead.slice(0, 20).map((c) => ({ ...where(c), image: c.image })),
+      running: kept(instead),
     });
   }
   for (const { container } of unmatched) {

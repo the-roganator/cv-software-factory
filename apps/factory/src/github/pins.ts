@@ -28,8 +28,10 @@
  * What it writes names the move and its counts, never a package or advisory of an open finding: a lockfile's move,
  * which the scan names by its file alone, is only ever an issue, named by its file and its first alert's number.
  *
- * Nothing acts on a day it could not read whole: a moves read that fails, or a run that wrote no moves, opens and closes
- * nothing. A pin whose line has changed since the scan read it waits for the next scan, and its pull request stays.
+ * Nothing acts on a day it could not read whole: a moves read that fails, or a run that uploaded no `moves.json`, opens
+ * and closes nothing. A `moves.json` that lists no move, its count held to the alerts as every day's is, is a day with
+ * nothing to move, and closes what the watch has open. A pin whose line has changed since the scan read it waits for
+ * the next scan, and its pull request stays.
  */
 import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
@@ -506,7 +508,8 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
     };
 
     for (const move of day.moves) {
-      // A lockfile's move is only ever an issue, whatever its lane: a major's among them.
+      // A lockfile's move is only ever an issue, a major's among them; in the `dependabot` lane, its first day, it is
+      // Dependabot's alone, as any move there is.
       if (ISSUE_LANES.has(move.lane) || (move.lockfile && PULL_LANES.has(move.lane))) want(move);
       if (move.lane === 'dependabot' && !move.lockfile)
         closeWith.set(

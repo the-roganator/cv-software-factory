@@ -223,6 +223,18 @@ describe('the pin watch', () => {
     expect(openPins(repo)).toHaveLength(4);
   });
 
+  it('closes every pull request it has open on a day whose moves.json lists no move', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    let moves = factoryMoves();
+    const w = harness(repo, () => day(scanned, moves));
+    await w.pass();
+    expect(openPins(repo).length).toBeGreaterThan(0);
+    moves = [];
+    await w.pass();
+    expect(openPins(repo)).toEqual([]);
+  });
+
   it('does not open again a target whose pull request Martin closed without merging it', async () => {
     const repo = new FakeRepo(FILES);
     const scanned = repo.main;
@@ -481,6 +493,15 @@ describe('the pin watch, as review found it', () => {
     expect(repo.issues.map((i) => i.title)).toEqual([
       'Move a package in pnpm-lock.yaml (code scanning alert #5120) to the version its alerts name',
     ]);
+  });
+
+  it('leaves a lockfile’s move to Dependabot on its first day, opening nothing', async () => {
+    const repo = new FakeRepo(FILES);
+    const scanned = repo.main;
+    const lockfile = factoryMoves().find((m) => m.lockfile) as ReadMove;
+    const w = harness(repo, () => day(scanned, [{ ...lockfile, lane: 'dependabot' }]));
+    await w.pass();
+    expect(writes(w.sent)).toEqual([]);
   });
 
   it('opens again a target whose pull request it closed itself, once Dependabot’s that it gave way to is gone', async () => {

@@ -89,11 +89,13 @@ const CONFIG = z.object({
 export interface Ecosystems {
   directories: Map<string, string[]>;
   groups: Map<string, Set<string>>;
+  /** Whether the repository has a `dependabot.yml`: without one, only the root is read. */
+  read: boolean;
 }
 
 /** Each ecosystem's directories and groups, from `dependabot.yml`'s text; none from a file that is not its shape. */
 export function ecosystemsOf(text: string | null): Ecosystems {
-  const out: Ecosystems = { directories: new Map(), groups: new Map() };
+  const out: Ecosystems = { directories: new Map(), groups: new Map(), read: text !== null };
   if (!text) return out;
   let config: z.infer<typeof CONFIG>;
   try {
@@ -153,7 +155,8 @@ export function branchPin(
   const ecosystem = written === undefined ? undefined : ECOSYSTEMS[written];
   if (prefix !== 'dependabot' || !ecosystem || !rest.length) return { ecosystem: ecosystem ?? null, ...none };
   const path = rest.join('/');
-  const named = (ecosystems.directories.get(ecosystem) ?? ['/']).map((dir) => ({
+  // An ecosystem a `dependabot.yml` does not name has no directory it is sure of; with no file, only the root.
+  const named = (ecosystems.directories.get(ecosystem) ?? (ecosystems.read ? [] : ['/'])).map((dir) => ({
     dir,
     written: dir.replace(/^\/+|\/+$/g, ''),
   }));
@@ -273,8 +276,10 @@ export async function dependencyPulls(
 ): Promise<DependencyPull[]> {
   const out: DependencyPull[] = [];
   let ecosystems: Ecosystems | undefined;
-  for (let page = 1; page <= PAGES; page++) {
+  // One page past the most read, to tell exactly that many from more.
+  for (let page = 1; page <= PAGES + 1; page++) {
     const { body } = await github.poll(repo, `/repos/${repo}/pulls?state=open&per_page=100&page=${page}`, PULLS);
+    if (page > PAGES && body.length) break;
     for (const pull of body) {
       if (pull.user?.login !== DEPENDABOT || pull.head.repo?.full_name !== repo) continue;
       if (!pull.head.ref.startsWith('dependabot/')) continue;

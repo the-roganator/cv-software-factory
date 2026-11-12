@@ -88,7 +88,10 @@ export interface ScanDay {
   newHighWithoutFix: number;
   overdue: number;
   dueWithinDay: number;
-  /** How many rows below hold each: moves with something new today that clears a High or a Critical, and by deadline. */
+  /**
+   * How many rows below hold each: moves with something new today that clears a High or a Critical, and by deadline as
+   * the run judged it, so a day read long ago still names the rows its counts were made of.
+   */
   movesWithNew: number;
   movesOverdue: number;
   movesDueWithinDay: number;
@@ -121,6 +124,11 @@ export type PatchingView =
       /** How many rows the sense made of each kind. */
       running: Record<Running['row'], number>;
       day: ScanDay;
+      /**
+       * Why no row shows, when none does: a run wrote no moves, or judged its moves and itself failed, so nothing can
+       * be said cleared; or every finding with a fix was.
+       */
+      nothing: 'unjudged' | 'failed' | 'cleared' | undefined;
       figures: { noFix: number; cleared: number; excepted: number; overdue: number; clearingMoves: number };
       /** Whether the cluster was compared with the lists, and how many containers. */
       compared: boolean;
@@ -198,12 +206,13 @@ function moveRow(repository: string, move: ScanMove, items: readonly ItemState[]
         : move.pullRequest
           ? { kind: 'opened' }
           : { kind: 'lane', lane: move.lane };
-  const from = move.lockfile ? shown?.from : shortDigests(move.from).trim();
+  // A version the scan could not read is empty: it is left unsaid, never drawn as an empty side of an arrow.
+  const from = (move.lockfile ? shown?.from : shortDigests(move.from).trim()) || undefined;
   const unbuilt = move.to.startsWith('another line');
   const to = move.lockfile ? shown?.to || undefined : move.to && !unbuilt ? targetWords(move.to) : undefined;
   const pins = (move.lockfile ? (shown?.pins ?? []) : move.pins).map((pin) => ({
     at: pinText(pin),
-    change: from !== undefined && to ? `${from} → ${to}` : (from ?? ''),
+    change: changeWords(from, to),
   }));
   const first = (move.lockfile ? shown?.pins[0] : undefined) ?? move.pins[0];
   return {
@@ -224,6 +233,10 @@ function moveRow(repository: string, move: ScanMove, items: readonly ItemState[]
   };
 }
 
+/** What a move changes at a pin: "1.0 → 1.1", or the side the scan read when it could not read the other. */
+export const changeWords = (from: string | undefined, to: string | undefined) =>
+  from && to ? `${from} → ${to}` : to ? `→ ${to}` : (from ?? '');
+
 /** A pin's place: its file, and its line where it has one (a lockfile's move is the file). */
 export const pinText = ({ file, line }: { file: string; line: number }) => (line > 0 ? `${file}:${line}` : file);
 
@@ -240,7 +253,8 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unlisted ${row.namespace}/${row.pod}/${row.container}`,
+        // Named by what runs and where, not by its pod, whose name a restart changes.
+        key: `unlisted ${row.namespace} ${row.container} ${row.image}@${row.digest}`,
         repository: undefined,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -252,7 +266,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unscanned ${row.namespace}/${row.pod}/${row.container}`,
+        key: `unscanned ${row.namespace} ${row.container} ${row.image}@${row.digest}`,
         repository: row.repository,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -301,23 +315,38 @@ const sum = (repositories: readonly Repository[], field: 'noFix' | 'excepted' | 
 export function patchingView(events: readonly PublicEvent[], items: readonly ItemState[], t: number): PatchingView {
   const read = lastRead(events, t);
   if (!read) return { state: 'unread' };
-  return dayView(read.payload, Date.parse(read.ts), items, t);
+  return dayView(read.payload, Date.parse(read.ts), items);
 }
 
-/** One day's view at t. */
-export function dayView(day: Day, at: number, items: readonly ItemState[], t: number): PatchingView {
-  const moves = day.repositories.flatMap((r) => {
+/** One day's view, read at `at`: what it says holds whatever the time, and the deadlines' colour is the panel's, at t. */
+export function dayView(day: Day, at: number, items: readonly ItemState[]): PatchingView {
+  // Each move with the time its repository's run judged it: the day's line counts its reasons as the scan did then,
+  // so the rows it says hold each are found by the same clock, not by the viewer's.
+  const judgedMoves = day.repositories.flatMap((r) => {
     let lockfiles = 0;
-    return r.moves.map((move) =>
-      moveRow(
+    const judged = r.judged === null ? at : Date.parse(r.judged);
+    return r.moves.map((move) => ({
+      judged,
+      row: moveRow(
         r.repository,
         move,
         items,
         move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`,
       ),
-    );
+    }));
   });
-  const rows = ordered([...moves, ...day.rows.map(runningRow)]);
+  const moves = judgedMoves.map(({ row }) => row);
+  // Rows with one key are told apart by their place among them, the first keeping it: two pods of one workload running
+  // the same image, so a key never rests on a pod's name, or two moves of one name from two pins, as the scan groups
+  // by name and what it pins now.
+  const seen = new Map<string, number>();
+  const rows = ordered(
+    [...moves, ...day.rows.map(runningRow)].map((row) => {
+      const n = (seen.get(row.key) ?? 0) + 1;
+      seen.set(row.key, n);
+      return n === 1 ? row : { ...row, key: `${row.key} ${n}` };
+    }),
+  );
   const running = { 'unscanned-digest': 0, 'unlisted-image': 0, 'not-running': 0 };
   for (const row of day.rows) running[row.row]++;
   const failed = [...new Set(day.repositories.flatMap((r) => r.failed))];
@@ -333,9 +362,10 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
     dueWithinDay: sum(day.repositories, 'dueWithinDay'),
     movesWithNew: moves.filter((row) => row.newToday > 0 && row.clears && row.clears.critical + row.clears.high > 0)
       .length,
-    movesOverdue: moves.filter((row) => row.deadline !== undefined && row.deadline <= t).length,
-    movesDueWithinDay: moves.filter((row) => row.deadline !== undefined && row.deadline > t && row.deadline - t <= DAY)
-      .length,
+    movesOverdue: judgedMoves.filter(({ row, judged }) => row.deadline !== undefined && row.deadline <= judged).length,
+    movesDueWithinDay: judgedMoves.filter(
+      ({ row, judged }) => row.deadline !== undefined && row.deadline > judged && row.deadline - judged <= DAY,
+    ).length,
     unjudged: day.repositories.filter((r) => r.judged === null).map(runPage),
     broken: day.repositories
       .filter(
@@ -352,6 +382,14 @@ export function dayView(day: Day, at: number, items: readonly ItemState[], t: nu
     waiting: rows.filter((row) => row.waits).length,
     running,
     day: scanDay,
+    nothing:
+      rows.length > 0
+        ? undefined
+        : scanDay.unjudged.length > 0
+          ? 'unjudged'
+          : scanDay.broken.length > 0
+            ? 'failed'
+            : 'cleared',
     figures: {
       noFix: sum(day.repositories, 'noFix'),
       cleared: clearing.reduce((n, row) => n + (row.clears ? total(row.clears) : 0), 0),

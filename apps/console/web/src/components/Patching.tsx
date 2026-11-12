@@ -181,7 +181,7 @@ function why(row: PatchingRow, who: Who): string {
             ? `Dependabot opened #${row.link.number}, to ${row.link.version}, and the move has no High or Critical on a deadline, so the pin stays Dependabot’s.`
             : 'A pin Dependabot reads, with no High or Critical on a deadline, so it stays Dependabot’s.';
         case 'approval':
-          return `${source.major ? 'Its fix is a major on, so' : 'It changes more than a pin, so'} the review gate passes it only with ${yours(who)} approval.`;
+          return `${source.major ? 'Its fix is a major one, so' : 'It changes more than a pin, so'} the review gate passes it only with ${yours(who)} approval.`;
         case 'cluster':
           return 'Only the cluster’s own command applies a new k3s, with the line stopped: no pull request can show it works.';
         case 'issue':

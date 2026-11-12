@@ -157,7 +157,7 @@ describe('the GitHub worker’s refusals', () => {
     }
   });
 
-  it('refuses, signed, every action a worker asks on the pin watch’s pull request, and passes the same on another', async () => {
+  it('refuses, signed, every action a worker asks on the pin watch’s pull request by its number, and passes the same on another', async () => {
     const pullRequest = { number: 1040, url: 'https://github.com/x/pull/1040', nodeId: 'PR_x' };
     const asks = [
       ['enqueuePullRequest', { number: 1040, expectedHead: SHA }],
@@ -168,6 +168,10 @@ describe('the GitHub worker’s refusals', () => {
       ['addLabels', { number: 1040, labels: ['bug'] }],
       ['readyForReview', { pullRequest }],
       ['convertToDraft', { pullRequest }],
+      ['comment', { number: 1040, body: 'a worker’s comment' }],
+      ['review', { number: 1040, commit: SHA, body: 'a worker’s review', comments: [] }],
+      ['resolveThreads', { number: 1040, threads: [{ path: 'README.md', line: 1, body: 'x', reply: 'resolved' }] }],
+      ['describeDeploy', { number: 1040, commit: SHA, carries: [] }],
     ] as const;
     for (const [action, args] of asks) {
       const refused = await ask(action, args, { 1040: 'factory/pin/node-24' });

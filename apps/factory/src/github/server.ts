@@ -248,28 +248,14 @@ function guardPinPull({ head, labels }: { head?: string; labels?: readonly strin
 }
 
 /**
- * The actions a worker that asks takes on a pull request by its number, with how each names it: none may be taken on
- * one of the pin watch's, which only it reopens, closes, labels, drafts, rewrites or adds to the merge queue.
+ * Throws `BranchRefused` for any action a worker asks on one of the pin watch's pull requests, by its branch as GitHub
+ * has it now: every action that names a pull request or issue by its number (`numberOf`) is asked, so one added later
+ * is too, and none is allowed, as only the pin watch acts on its own. A number that is no pull request is an issue's,
+ * and not the pin queue's concern.
  */
-const BY_NUMBER: Partial<Record<Name, (args: Record<string, unknown>) => number>> = {
-  updatePullRequest: (a) => a.number as number,
-  addLabels: (a) => a.number as number,
-  readyForReview: (a) => (a.pullRequest as { number: number }).number,
-  convertToDraft: (a) => (a.pullRequest as { number: number }).number,
-  closeIssue: (a) => a.number as number,
-  reopenIssue: (a) => a.number as number,
-  closePullRequest: (a) => a.number as number,
-  enqueuePullRequest: (a) => a.number as number,
-};
-
-/**
- * Throws `BranchRefused` for an action a worker asks on one of the pin watch's pull requests, by its branch as GitHub
- * has it now. A number that is no pull request is an issue's, and not the pin queue's concern.
- */
-async function guardPinNumber(name: Name, repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
-  const numberOf = BY_NUMBER[name];
-  if (!numberOf) return;
+async function guardPinNumber(repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
   const number = numberOf(args);
+  if (number === null) return;
   if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether #${number} is the pin watch's.`);
   let head: string;
   try {
@@ -548,7 +534,7 @@ export function createWorkerServer({
     if (!actions) return send(res, 404, { error: 'not-found', message: 'No such action.' });
     let result: unknown;
     try {
-      await guardPinNumber(name as Name, repo, parsed.data as Record<string, unknown>, reads);
+      await guardPinNumber(repo, parsed.data as Record<string, unknown>, reads);
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(
         actions,
         repo,

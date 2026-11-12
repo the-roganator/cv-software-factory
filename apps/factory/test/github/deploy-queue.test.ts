@@ -591,6 +591,28 @@ describe('the pin queue watch', () => {
     await before.pass();
     expect(before.enqueued).toEqual([]);
 
+    // By GitHub's times when it gives them: a merge after the held one closed ends it, wherever it is listed; a merge
+    // before it does not, though the merged pull request is listed newer (Martin reopened an older one and merged it).
+    const at = (closedAt: string, mergedAt?: string) => ({ closed_at: closedAt, merged_at: mergedAt ?? null });
+    const heldOne = closed(at('2026-11-05T00:00:00Z'));
+    const mergedAfter = closed({ number: 999, ...at('2026-11-06T00:00:00Z', '2026-11-06T00:00:00Z') });
+    const mergedBefore = closed({ number: 1004, ...at('2026-11-04T00:00:00Z', '2026-11-04T00:00:00Z') });
+    const reopened = pinHarness({ closed: () => [heldOne, mergedAfter], events });
+    await reopened.pass();
+    expect(reopened.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const older = pinHarness({ closed: () => [mergedBefore, heldOne], events });
+    await older.pass();
+    expect(older.enqueued).toEqual([]);
+
+    // A closed pull request's events are read once: a second pass asks GitHub for none of them again.
+    const twice = pinHarness({ closed: () => [heldOne], events });
+    await twice.pass();
+    const read = () => twice.sent.filter((x) => x.path.includes('/issues/1001/events')).length;
+    const first = read();
+    await twice.pass();
+    expect(first).toBeGreaterThan(0);
+    expect(read()).toBe(first);
+
     // Not held: one the App alone unlabelled, a merged one, or someone else's, or another branch's.
     for (const earlier of [
       closed({ number: 1002 }),

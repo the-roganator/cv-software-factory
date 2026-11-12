@@ -35,7 +35,7 @@ afterEach(() => {
   for (const close of closing.splice(0)) close();
 });
 
-const PIN_FILE = 'deploy/overlays/local/factory-image/kustomization.yaml';
+const PIN_FILE = 'deploy/overlays/local/example-image/kustomization.yaml';
 const IMAGE = 'ghcr.io/the-roganator/cv-software-factory';
 const PINNED = {
   factory: digest('factory/pinned'),
@@ -239,6 +239,8 @@ describe('the deploy queue takes only what the deploy watch made and left', () =
     const refused = [
       ['setBranch', { branch: 'deploy/local', sha: main, force: true }],
       ['setBranch', { branch: 'factory/deploy/local', sha: main }],
+      ['setBranch', { branch: 'factory/deploy', sha: main }],
+      ['setBranch', { branch: 'factory/deploy/local/x', sha: main }],
       ['deleteBranch', { branch: 'deploy/local' }],
       ['applyPatch', { branch: 'factory/deploy/local', expectedHead: main, patch: 'diff', message: 'm' }],
       ['comment', { number, body: 'a worker’s words' }],

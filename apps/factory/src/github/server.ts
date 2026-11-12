@@ -18,11 +18,11 @@
  * open is 403 (`issue-refused`), as GitHub answers one the App may not change.
  *
  * An action refused by the worker's guard (a patch to a protected path, a branch, a deploy, an issue or pull request
- * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch, a
- * `pin` label, or any action on the pin watch's pull requests, which only it takes) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
- * `refusal`, for the worker that asked to record as `action.refused` (`../signed-refusals.ts`). Its status is as it
- * would be without it. A read refuses nothing, but the gate's verdict that holds a pull request (`reviewVerdict`)
- * carries the gate's refusal the same way, in its result.
+ * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch,
+ * a `pin` label, or any action on the pin watch's pull requests, which only it takes) or by GitHub with a 403 is kept,
+ * logged and signed (`refusals.ts`), and the answer carries it as `refusal`, for the worker that asked to record as
+ * `action.refused` (`../signed-refusals.ts`). Its status is as it would be without it. A read refuses nothing, but the
+ * gate's verdict that holds a pull request (`reviewVerdict`) carries the gate's refusal the same way, in its result.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
@@ -234,8 +234,8 @@ function actingFor(req: IncomingMessage): ActingFor {
 
 /**
  * A label as GitHub may take it, read broadly so nothing that could be `pin` passes: decomposed (NFKD) with its marks
- * taken out, so `PİN` is `pin`; every character Unicode says to ignore taken out (zero-width, the soft hyphen, variation
- * selectors, fillers); a dotless i read as i; without regard to case or the space round it.
+ * taken out, so `PİN` is `pin`; every character Unicode says to ignore taken out (zero-width, the soft hyphen,
+ * variation selectors, fillers); a dotless i read as i; without regard to case or the space round it.
  */
 const labelAsRead = (label: string): string =>
   label
@@ -250,8 +250,9 @@ const isPinLabel = (label: string): boolean => labelAsRead(label) === PIN_LABEL;
 
 /**
  * Throws `BranchRefused` for what only the pin watch does with a pull request: open one from a pin branch, or give one
- * the `pin` label. The merge queue's pin watch (`deploy-queue.ts`) takes a pull request the App opened from a pin branch
- * and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch wrote.
+ * the `pin` label. The merge queue's pin watch (`deploy-queue.ts`) takes a pull request the App opened from a pin
+ * branch and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch
+ * wrote.
  */
 function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
   const branch = head?.replace(/^refs\/heads\//, '');
@@ -268,10 +269,10 @@ function guardPinPull({ head, labels }: { head?: string; labels?: readonly strin
 }
 
 /**
- * Throws `BranchRefused` for any action a worker asks on one of the pin watch's pull requests, by its branch as GitHub
- * has it now: every action that names a pull request or issue by its number (`numberOf`: `number`, or `pullRequest`'s),
- * so one added later that names it so is too, and none is allowed, as only the pin watch acts on its own. A number that is no pull request is an issue's,
- * and not the pin queue's concern.
+ * Throws `BranchRefused` for any action a worker asks on one of the pin watch's pull requests, or here the deploy
+ * watch's, by its branch as GitHub has it now: every action that names a pull request or issue by its number
+ * (`numberOf`: `number`, or `pullRequest`'s), so one added later that names it so is too, and none is allowed, as only
+ * each watch acts on its own. A number that is no pull request is an issue's, and not the queues' concern.
  */
 async function guardPinNumber(repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
   const number = numberOf(args);
@@ -309,7 +310,10 @@ async function guardPinNumber(repo: string, args: Record<string, unknown>, reads
  */
 function deployBranch(repo: string, branch: string): boolean {
   if (repo !== QUEUES_DEPLOYS_IN) return false;
-  return QUEUED_DEPLOYS.some((target) => target.branch === branch || scratchBranch(target) === branch);
+  // A branch at a prefix of one, or under one, is no branch of anyone else's: git keeps one ref of a path.
+  const related = (watched: string) =>
+    watched === branch || `${watched}/`.startsWith(`${branch}/`) || branch.startsWith(`${watched}/`);
+  return QUEUED_DEPLOYS.some((target) => related(target.branch) || related(scratchBranch(target)));
 }
 
 /**
@@ -347,9 +351,9 @@ function guardEnqueue(repo: string): void {
 }
 
 /**
- * Throws `BranchRefused` for a branch a worker asks to set, or a check run it asks to post, at a pin branch's commit, in a repository the pin watch
- * writes: a second pull request with the pin move's head would have the gate hold the move (two pull requests that
- * have had one head), so only the pin watch's branches are at its commits.
+ * Throws `BranchRefused` for a branch a worker asks to set, or a check run it asks to post, at a pin branch's commit,
+ * in a repository the pin watch writes: a second pull request with the pin move's head would have the gate hold the
+ * move (two pull requests that have had one head), so only the pin watch's branches are at its commits.
  */
 async function guardPinHead(
   repo: string,
@@ -365,9 +369,9 @@ async function guardPinHead(
 }
 
 /**
- * Throws `BranchRefused` for a check run a worker asks to post or rename as the review gate's, in any repository, or, in
- * this one, as one GitHub requires on `main`: those are what a merge here waits for, and only their own workflows and
- * App post them. In the app's repository the line posts its own (`factory review`), and its required checks are not
+ * Throws `BranchRefused` for a check run a worker asks to post or rename as the review gate's, in any repository, or,
+ * in this one, as one GitHub requires on `main`: those are what a merge here waits for, and only their own workflows
+ * and App post them. In the app's repository the line posts its own (`factory review`), and its required checks are not
  * read for it.
  */
 async function guardCheckName(repo: string, name: string | undefined, reads?: Reads): Promise<void> {

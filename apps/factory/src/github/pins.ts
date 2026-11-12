@@ -370,8 +370,11 @@ export function pullTitle(move: ReadMove, target: Target): string {
 }
 
 /** Whether a move's title holds its name and version as they are: nothing taken out, nothing cut. */
-export const titleIsExact = (name: string, to: string): boolean =>
-  pinTitle(name, to) === `chore(pin): move ${name} to ${to}`;
+export const titleIsExact = (name: string, to: string): boolean => {
+  const whole = `chore(pin): move ${name} to ${to}`;
+  // Under GitHub's 256, so a title is never one cut to that length: the queue reads one that long as cut.
+  return whole.length < 256 && pinTitle(name, to) === whole;
+};
 
 /** The title of a move's pull request, from its name and the version it moves to: what the pin queue reads it by. */
 export const pinTitle = (name: string, to: string): string =>

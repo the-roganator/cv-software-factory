@@ -46,6 +46,12 @@ describe('a move the setting does not name, under a name it does', () => {
     expect(told(`${long}/one`, `${long}/two`)?.waits).toBe('not-a-pin');
     expect(told(`${long}/one`, `${long}/one`)?.waits).toBe('not-a-pin');
     expect(told('example/sidecar`', 'example/sidecar`')?.waits).toBe('not-a-pin');
+    // A name that fits, with a version that takes the title to GitHub's 256: cut there, and read as cut.
+    const fits = `registry.example/${'b'.repeat(210)}`;
+    const version = 'v1.10.2-rc.1+build.12345678901234567890';
+    expect(`chore(pin): move ${fits} to ${version}`.length).toBeGreaterThan(256);
+    expect(told(fits, fits, version)?.waits).toBe('not-a-pin');
+    expect(told(fits, fits, 'v1')).toBeUndefined();
     // Controls: every other difference is two names to the queue.
     expect(told('example/sidecar', 'example-sidecar')?.waits).toBe('not-a-pin');
     expect(told('example/sidecar', 'Example/Sidecar')?.waits).toBe('not-a-pin');

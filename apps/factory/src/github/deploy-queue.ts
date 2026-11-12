@@ -51,7 +51,7 @@ import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploy
 import { APP_USER, IssueRefused } from './issues.ts';
 import { REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
 import { guardPinBranch, pinBranchFor } from './pin-guard.ts';
-import { PIN_LABEL, PIN_REPOS, type PinScope, pinTitle } from './pins.ts';
+import { PIN_LABEL, PIN_REPOS, type PinScope, pinTitle, titleIsExact } from './pins.ts';
 import type { Watch } from './poller.ts';
 import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -375,10 +375,11 @@ export const pinHeadsOf =
 
 /** Whether a title is the one the pin watch gives a move of this name: the name, then one version, and nothing else. */
 const titleNames = (title: string, name: string): boolean => {
-  const prefix = pinTitle(name, '');
-  // A name the title would alter or cut is no move the watch opens a pull request for (it opens an issue): none is it.
-  if (prefix !== `chore(pin): move ${name} to `) return false;
-  return title.startsWith(prefix) && /^\S+$/.test(title.slice(prefix.length));
+  const prefix = `chore(pin): move ${name} to `;
+  if (!title.startsWith(prefix)) return false;
+  const to = title.slice(prefix.length);
+  // The name and version whole, as the watch writes them: one it would alter or cut gets an issue, so none is it.
+  return /^\S+$/.test(to) && titleIsExact(name, to) && pinTitle(name, to) === title;
 };
 
 /** Whether a pin branch is that of a move the pin watch is told to take (`PIN_WATCH_ONLY`), by the branch it opens. */
@@ -403,6 +404,7 @@ const CLOSED = z.array(
     user: z.object({ id: z.number().int() }).nullable(),
     head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
     merged_at: z.string().nullable().optional(),
+    closed_at: z.string().nullable().optional(),
   }),
 );
 
@@ -433,38 +435,60 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
     }
   };
 
+  /** Whether each closed pull request of the App's, by its number and when it closed, was held: final once closed. */
+  const heldWhenClosed = new Map<string, boolean | 'unread'>();
+
   /**
    * Martin's hold of a move carried across the pin watch closing its pull request and opening another (a day the scan
    * left it out, or Dependabot took it), at any target: an earlier closed, unmerged pull request of the App's from the
-   * same branch whose `pin` label anyone but the App took off holds this one. They are read newest first, back to the
-   * last one merged from the branch: a merge ends every hold before it. One that cannot be read whole holds too, saying
-   * so, as do more than `OPEN_PAGES` pages of them.
+   * same branch whose `pin` label anyone but the App took off holds this one, unless a pull request from the branch
+   * merged after it closed: a merge ends every hold before it. Without GitHub's times, a merge listed newer (they are
+   * read newest first) ends it. One that cannot be read whole holds too, saying so, as do more than `OPEN_PAGES` pages.
    */
   const heldBefore = async (pull: QueuePull): Promise<QueueWait | undefined> => {
     const [owner] = repo.split('/');
     const head = `${owner}:${encodeURIComponent(pull.head.ref)}`;
-    for (let page = 1; page <= OPEN_PAGES; page++) {
+    const closed: z.infer<typeof CLOSED> = [];
+    for (let page = 1; ; page++) {
       const { body } = await github.poll(
         repo,
         `/repos/${repo}/pulls?state=closed&sort=created&direction=desc&per_page=100&page=${page}&head=${head}`,
         CLOSED,
       );
-      for (const closed of body) {
-        if (closed.head.repo?.full_name !== repo || closed.head.ref !== pull.head.ref) continue;
-        if (closed.merged_at) return undefined;
-        if (closed.user?.id !== APP_USER) continue;
-        const { events, whole } = await eventsOf(closed.number);
-        if (!whole) return { waits: 'not-a-pin', why: `#${closed.number}, of this move, runs past what is read` };
-        if (heldByLabel(events)) {
-          return {
-            waits: 'not-a-pin',
-            why: `Martin held this move on #${closed.number} by taking its ${PIN_LABEL} label off, and has merged none since`,
-          };
-        }
+      closed.push(...body.filter((c) => c.head.repo?.full_name === repo && c.head.ref === pull.head.ref));
+      if (body.length < 100) break;
+      if (page === OPEN_PAGES) {
+        return { waits: 'not-a-pin', why: 'more of its branch’s pull requests are closed than the queue reads' };
       }
-      if (body.length < 100) return undefined;
     }
-    return { waits: 'not-a-pin', why: 'more of its branch’s pull requests are closed than the queue reads' };
+    const merges = closed.filter((c) => c.merged_at);
+    const lastMerged = merges
+      .map((c) => c.merged_at as string)
+      .sort()
+      .at(-1);
+    for (const [i, c] of closed.entries()) {
+      if (c.merged_at || c.user?.id !== APP_USER) continue;
+      const ended =
+        lastMerged !== undefined &&
+        (c.closed_at ? c.closed_at < lastMerged : closed.slice(0, i).some((newer) => newer.merged_at));
+      if (ended) continue;
+      const key = `${c.number} ${c.closed_at ?? ''}`;
+      let held = heldWhenClosed.get(key);
+      if (held === undefined) {
+        const { events, whole } = await eventsOf(c.number);
+        held = whole ? heldByLabel(events) : 'unread';
+        // Kept only once GitHub says when it closed: a pull request reopened and closed again is read again.
+        if (c.closed_at) heldWhenClosed.set(key, held);
+      }
+      if (held === 'unread') return { waits: 'not-a-pin', why: `#${c.number}, of this move, runs past what is read` };
+      if (held) {
+        return {
+          waits: 'not-a-pin',
+          why: `Martin held this move on #${c.number} by taking its ${PIN_LABEL} label off, and nothing has merged since`,
+        };
+      }
+    }
+    return undefined;
   };
 
   /** The open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */

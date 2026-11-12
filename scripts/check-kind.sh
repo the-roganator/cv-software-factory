@@ -13,7 +13,7 @@
 #   code       anything else: every check runs. A pin move of the App's (scripts/pin-move.ts) is this kind: the review
 #              gate passes one only once the job that runs its pin (ZAP scan, image builds, tests) succeeded at its
 #              head, so none of them may be skipped for it. One under deploy/ that only a cluster runs is `manifests`,
-#              and the gate holds it until the platform check.
+#              and the gate passes it once `platform`, which every change to deploy/ runs, succeeded at its head.
 #
 # `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
 # HEAD changes from HEAD^1 anything a cluster made from the change runs or makes it with (deploy/, the Makefile, mise's

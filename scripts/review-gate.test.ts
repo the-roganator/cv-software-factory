@@ -394,8 +394,12 @@ describe("the review gate's workflows", () => {
     // workflow_run runs the workflow as main has it; pull_request would run the change's copy. GitHub's default event
     // policy blocks pull_request_target in public repositories.
     expect(triggers(gate)).toEqual(['workflow_call', 'workflow_run']);
-    // And after check.yml, so a pin move that waited for the job running its pin is judged again.
-    expect(gate).toMatch(/workflow_run:\n {4}# [^\n]*\n {4}workflows: \[review requested, check\]\n/);
+    // And after check.yml and platform.yml, so a pin move that waited for the job running its pin is judged again.
+    expect(gate).toMatch(/workflow_run:\n(?: {4}# [^\n]*\n)+ {4}workflows: \[review requested, check, platform\]\n/);
+    // The pin move job reads, and holds no secret: which workflow made a check run is an Actions read.
+    expect(gate).toMatch(
+      /^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n(?: {6}# [^\n]*\n)? {6}actions: read\n {4}outputs:/m,
+    );
     expect(requested).toMatch(/^name: review requested$/m);
     // The key is in an environment only main may use: a pull request into another branch runs that branch's copy.
     expect(gate).toMatch(/^ {4}environment: review$/m);
@@ -676,6 +680,26 @@ describe('judging a pull request through the API', () => {
       );
       // Nor is a run that says nothing of where its answers come from.
       expect((await judge({ ...run, repo: FACTORY }, here)).title).toContain('gave the gate no answers');
+    });
+
+    it('holds on the reader’s own words when it throws, rather than reading the pull request as unread', async () => {
+      github({ '/pulls/9/files': zap });
+      const throwing = {
+        ...run,
+        repo: FACTORY,
+        moves: {
+          kind: 'read' as const,
+          read: async () => {
+            throw new Error("EACCES, Permission denied: '/home/runner/work/_temp/pin-move-x'");
+          },
+        },
+      };
+      const said = await judge(throwing, here);
+      expect(said).toMatchObject({ pass: false, rule: 'held' });
+      expect(said.title).toContain(
+        "nor a pin move: the pin move job could not work it out (EACCES, Permission denied: '/home/runner/work/_temp/pin-move-x')",
+      );
+      expect(said.title).not.toContain('could not read the pull request whole');
     });
 
     it('never takes one for someone else’s pull request, or in the app’s repository', async () => {

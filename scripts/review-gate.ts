@@ -60,6 +60,7 @@ import {
   notJudged,
   type OwnerRule,
   type PullRequest,
+  RETARGETED,
   REVIEW_APP,
   type Review,
   riskLabelsRemoved,
@@ -310,7 +311,13 @@ async function pinMoveOf(each: Run, pr: PullRequest): Promise<PinMoveAnswer> {
       }
     );
   }
-  const answer = await moves.read(each, pr, { api, paged });
+  // A reader that throws still gives an answer, which the job hands on: the gate then says the job's own reason, never
+  // that the job gave none.
+  const answer = await moves.read(each, pr, { api, paged }).catch(
+    (error: unknown): PinMoveAnswer => ({
+      reason: `the pin move job could not work it out (${(error instanceof Error ? error.message : String(error)).split('\n')[0]?.slice(0, 200)})`,
+    }),
+  );
   // Cut to what the gate reads, so one long reason (a path the head names) never spoils the others' answers.
   if (moves.kind === 'work')
     WORKED.set(answerKey(pr), 'title' in answer ? { title: cutTo(answer.title) } : { reason: cutTo(answer.reason) });
@@ -679,7 +686,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       tags,
       testIntegrity,
       labelsRemoved: riskLabelsRemoved(events),
-      retargeted: events.some((e) => e.event === 'base_ref_changed'),
+      // Anyone's change of base, or GitHub's own when the base branch went.
+      retargeted: events.some((e) => RETARGETED.has(e.event)),
       ...(pin ? { pin } : {}),
       ...(pinMove ? { pinMove } : {}),
     });

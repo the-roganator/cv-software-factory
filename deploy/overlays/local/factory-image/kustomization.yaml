@@ -1,7 +1,8 @@
 # The factory images CI built last, pinned by digest, and with them the workers that run them (deploy/base/factory), the
 # runners' and the red-team attacks' namespaces (deploy/base/runners, deploy/base/red-team), the scoreboard
 # (deploy/base/scoreboard) and the canary's analysis, whose journeys run on `factory-browser`
-# (deploy/base/analysis), and the line's read of admission's denials (deploy/base/line-reads-admission), so the cluster
+# (deploy/base/analysis), the line's read of admission's denials (deploy/base/line-reads-admission) and the dependency
+# sense's list of pods (deploy/base/patching-reads-pods), so the cluster
 # never has any of them without an image to run. The factory's GitHub worker moves the three digests together, in a
 # pull request, when CI has built all three from a newer commit.
 apiVersion: kustomize.config.k8s.io/v1alpha1
@@ -13,6 +14,7 @@ resources:
 - ../../../base/analysis
 - ../../../base/scoreboard
 - ../../../base/line-reads-admission
+- ../../../base/patching-reads-pods
 images:
 - digest: sha256:49e02c31f829d62ad678062e12611470d8fbed225a1c94af00bc3d68de1efa8b
   name: factory

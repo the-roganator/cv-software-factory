@@ -18,8 +18,8 @@
  * open is 403 (`issue-refused`), as GitHub answers one the App may not change.
  *
  * An action refused by the worker's guard (a patch to a protected path, a branch, a deploy, an issue or pull request
- * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch or a
- * `pin` label, which only the pin watch gives) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
+ * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch, a
+ * `pin` label, or any action on the pin watch's pull requests, which only it takes) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
  * `refusal`, for the worker that asked to record as `action.refused` (`../signed-refusals.ts`). Its status is as it
  * would be without it. A read refuses nothing, but the gate's verdict that holds a pull request (`reviewVerdict`)
  * carries the gate's refusal the same way, in its result.
@@ -230,17 +230,58 @@ function actingFor(req: IncomingMessage): ActingFor {
   return on;
 }
 
+/** Whether a label is `pin` as GitHub takes it: label names are matched without regard to case. */
+const isPinLabel = (label: string): boolean => label.trim().toLowerCase() === PIN_LABEL;
+
 /**
  * Throws `BranchRefused` for what only the pin watch does with a pull request: open one from a pin branch, or give one
  * the `pin` label. The merge queue's pin watch (`deploy-queue.ts`) takes a pull request the App opened from a pin branch
  * and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch wrote.
  */
 function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
-  if (head !== undefined && pinBranch(head)) {
+  if (head !== undefined && pinBranch(head.replace(/^refs\/heads\//, ''))) {
     throw new BranchRefused(`${head} is the pin watch's: only the pin watch opens a pull request from it.`);
   }
-  if (labels?.includes(PIN_LABEL)) {
+  if (labels?.some(isPinLabel)) {
     throw new BranchRefused(`Only the pin watch gives a pull request or issue the ${PIN_LABEL} label.`);
+  }
+}
+
+/**
+ * The actions a worker that asks takes on a pull request by its number, with how each names it: none may be taken on
+ * one of the pin watch's, which only it reopens, closes, labels, drafts, rewrites or adds to the merge queue.
+ */
+const BY_NUMBER: Partial<Record<Name, (args: Record<string, unknown>) => number>> = {
+  updatePullRequest: (a) => a.number as number,
+  addLabels: (a) => a.number as number,
+  readyForReview: (a) => (a.pullRequest as { number: number }).number,
+  convertToDraft: (a) => (a.pullRequest as { number: number }).number,
+  closeIssue: (a) => a.number as number,
+  reopenIssue: (a) => a.number as number,
+  closePullRequest: (a) => a.number as number,
+  enqueuePullRequest: (a) => a.number as number,
+};
+
+/**
+ * Throws `BranchRefused` for an action a worker asks on one of the pin watch's pull requests, by its branch as GitHub
+ * has it now. A number that is no pull request is an issue's, and not the pin queue's concern.
+ */
+async function guardPinNumber(name: Name, repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
+  const numberOf = BY_NUMBER[name];
+  if (!numberOf) return;
+  const number = numberOf(args);
+  if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether #${number} is the pin watch's.`);
+  let head: string;
+  try {
+    ({
+      head: { ref: head },
+    } = await reads.pullRequest(repo, number));
+  } catch (error) {
+    if (error instanceof GitHubError && error.kind === 'not-found') return;
+    throw error;
+  }
+  if (pinBranch(head)) {
+    throw new BranchRefused(`#${number} is the pin watch's pull request, from ${head}: only the pin watch acts on it.`);
   }
 }
 
@@ -507,6 +548,7 @@ export function createWorkerServer({
     if (!actions) return send(res, 404, { error: 'not-found', message: 'No such action.' });
     let result: unknown;
     try {
+      await guardPinNumber(name as Name, repo, parsed.data as Record<string, unknown>, reads);
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(
         actions,
         repo,

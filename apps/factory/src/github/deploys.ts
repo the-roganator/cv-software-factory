@@ -951,16 +951,105 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     return pull.mergeable === null ? undefined : !pull.mergeable;
   };
 
+  /**
+   * Commits the moves on main's head, off to the side, so the deploy branch goes from its older commit straight to this
+   * one (see above), and records the commit for the queue. Each pin file moves in the one commit, so that they merge,
+   * and deploy, together.
+   */
+  const write = async (head: string, title: string, moves: readonly Move[]): Promise<string> => {
+    const scratch = scratchBranch(target);
+    await actions.setBranch(repo, scratch, head, { force: true });
+    const pins = await actions.commit(repo, {
+      branch: scratch,
+      expectedHead: head,
+      message: title,
+      changes: {
+        additions: moves.map(({ pin, proposal, pinFile }) => ({
+          path: pin.file,
+          contents: new TextEncoder().encode(repin(pinFile, proposal)),
+        })),
+        deletions: [],
+      },
+    });
+    await actions.setBranch(repo, target.branch, pins, { force: true });
+    heads?.set(repo, target.branch, pins);
+    await actions.deleteBranch(repo, scratch);
+    return pins;
+  };
+
+  /** What the watch said last of an open pull request it could not write again, so it says each once. */
+  let unwritten: string | undefined;
+
+  /**
+   * Where the open pull request stays as it is (a build of one of its pins still being signed, or refused), but its
+   * branch is not at the commit this worker wrote (moved, or a restart): the watch writes the builds its title runs
+   * again, each pin at the commit it names, each still signed by its pipeline, so the queue can add it; or, when it
+   * cannot, records nothing and says why, once.
+   */
+  const keepAsIs = async (
+    head: string,
+    commits: readonly { sha: string }[],
+    files: ReadonlyMap<Pin, string>,
+    open?: { number: number; title: string },
+  ): Promise<void> => {
+    let existing = open;
+    if (!existing) {
+      const [owner] = repo.split('/');
+      const { body: pulls } = await github.poll(
+        repo,
+        `/repos/${repo}/pulls?state=all&sort=created&direction=desc&per_page=20&head=${owner}:${encodeURIComponent(target.branch)}`,
+        PULLS,
+      );
+      existing = pulls.find((p) => p.state === 'open');
+    }
+    if (!existing) return;
+    const why = async (): Promise<string | Move[]> => {
+      const moves: Move[] = [];
+      for (const pin of target.pins) {
+        const run = said(target, existing.title).find((r) => !pin.what || r.startsWith(`${pin.what} `));
+        if (run === undefined) continue;
+        const short = run.slice(-7);
+        const pinFile = files.get(pin);
+        const at = commits.findIndex((c) => c.sha.startsWith(short));
+        if (pinFile === undefined || at === -1) return `${short} is not among main's last commits`;
+        const proposal = await newerBuild(deps, pin, pinFile, commits.slice(at));
+        if (!proposal?.commit.startsWith(short)) return `no build of ${pin.file} at ${short} is found`;
+        if ((await signed(proposal)).state !== 'signed') return `the build at ${short} is not signed by its pipeline`;
+        moves.push({ pin, proposal, pinFile });
+      }
+      if (!moves.length || deployTitle(target, moves.map(runsOf)) !== existing.title) {
+        return 'its title names no build the watch writes';
+      }
+      return moves;
+    };
+    const moves = await why();
+    if (typeof moves === 'string') {
+      const words = `${existing.number} ${moves}`;
+      if (unwritten !== words) {
+        unwritten = words;
+        log.warn(
+          { repo, number: existing.number, why: moves },
+          'the deploy pull request stays as it is and its branch is not the watch’s commit: it is not queued until the watch writes it',
+        );
+      }
+      return;
+    }
+    const commit = await write(head, existing.title, moves);
+    log.info({ repo, number: existing.number, commit }, 'wrote the deploy pull request’s own builds again on main');
+  };
+
   return async () => {
     // One head of main for the whole pass: the pin files, the commits and the branch all come from it.
     const { body: main } = await github.poll(repo, `/repos/${repo}/git/ref/heads/main`, HEAD);
     const head = main.object.sha;
     const { body: commits } = await github.poll(repo, `/repos/${repo}/commits?sha=${head}&per_page=100`, COMMITS);
+    const files = new Map<Pin, string>();
     const found = (
       await Promise.all(
         target.pins.map(async (pin): Promise<Move | undefined> => {
           const { body: file } = await github.poll(repo, `/repos/${repo}/contents/${pin.file}?ref=${head}`, CONTENT);
           const pinFile = Buffer.from(file.content, 'base64').toString('utf-8');
+          files.set(pin, pinFile);
           const proposal = await newerBuild(deps, pin, pinFile, commits);
           return proposal && { pin, proposal, pinFile };
         }),
@@ -980,14 +1069,15 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     const [only] = found;
     const [check] = checks;
     if (target.pins.length === 1 && only && check) proposals.setBuild(target, await buildOf(only, check));
-    if (states.includes('waiting')) return;
+    // Its branch at any commit but the one it wrote (moved by anyone, or not yet written by this worker): written again,
+    // even where the pull request stays as it is below, so the queue never waits on a record a restart lost.
+    const moved = heads !== undefined && (await branchHead()) !== heads.get(repo, target.branch);
+    if (states.includes('waiting')) return moved ? keepAsIs(head, commits, files) : undefined;
     const ready = found.filter((_, i) => states[i] === 'signed');
     const refused = found.filter((_, i) => states[i] === 'refused');
-    if (!ready.length) return;
+    if (!ready.length) return moved ? keepAsIs(head, commits, files) : undefined;
     const all = deployTitle(target, ready.map(runsOf));
     const current = proposed?.found === all && proposed.head === head;
-    // Its branch at any commit but the one it wrote (moved by anyone, or not yet written by this worker): written again.
-    const moved = heads !== undefined && (await branchHead()) !== heads.get(repo, target.branch);
     if (current && !moved && proposed?.settled !== false && proposed?.listed !== false) return;
 
     const [owner] = repo.split('/');
@@ -999,7 +1089,9 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
     const existing = pulls.find((p) => p.state === 'open');
     // A pin whose newest build was refused keeps the older one the open pull request runs: moving the pull request
     // without it would drop that pin, so it stays as it is until the pin has a build that is signed.
-    if (existing && refused.some((m) => titleNames(target, existing.title, m.pin))) return;
+    if (existing && refused.some((m) => titleNames(target, existing.title, m.pin))) {
+      return moved ? keepAsIs(head, commits, files, existing) : undefined;
+    }
     // A build whose pull request Martin closed without merging is not proposed again, alone or beside another; the
     // next build of that pin is.
     const closed = pulls.filter((p) => p.state === 'closed' && !p.merged_at);
@@ -1061,25 +1153,7 @@ export function deployWatch(deps: Dependencies, target: DeployTarget): Watch {
       return;
     }
 
-    // Committed off to the side, so the deploy branch goes from its older commit straight to this one (see above).
-    // Each pin file moves in the one commit, so that they merge, and deploy, together.
-    const scratch = scratchBranch(target);
-    await actions.setBranch(repo, scratch, head, { force: true });
-    const pins = await actions.commit(repo, {
-      branch: scratch,
-      expectedHead: head,
-      message: title,
-      changes: {
-        additions: moves.map(({ pin, proposal, pinFile }) => ({
-          path: pin.file,
-          contents: new TextEncoder().encode(repin(pinFile, proposal)),
-        })),
-        deletions: [],
-      },
-    });
-    await actions.setBranch(repo, target.branch, pins, { force: true });
-    heads?.set(repo, target.branch, pins);
-    await actions.deleteBranch(repo, scratch);
+    await write(head, title, moves);
     // Its title and body follow the branch at once, before anything slow, so they never name a build it does not run.
     // What it brings is listed after, from the body just written: one made again on main lists what it did.
     if (existing?.title === title) {

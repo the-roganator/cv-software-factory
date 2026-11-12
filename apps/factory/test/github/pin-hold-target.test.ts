@@ -3,7 +3,7 @@
  * by `heldBefore`, by the move's branch: whatever target the move comes back at, and however its title changes in
  * place, the hold stands until a pull request from the branch is merged.
  *
- * The watch and the queue are the real ones, over one fake repository (the author's harness of pin-hold.test.ts); the
+ * The watch and the queue are the real ones, over one fake repository (the harness of pin-hold.test.ts); the
  * gate's verdict and the checks are stubbed as passing.
  */
 import { describe, expect, it } from 'vitest';

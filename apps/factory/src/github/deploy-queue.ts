@@ -12,12 +12,15 @@
  * Each pass reads the open pull requests it watches, and adds each to the queue at its head only when every one of
  * these holds; otherwise it waits, and says why once for each head:
  *
+ * - **the positive check, first**: its head is the very commit its watch last wrote to its branch (`WatchedHeads`), so
+ *   a branch moved by anyone, by any route, is not the watch's work and is not added; the watch writes its own again;
  * - **the deploy pin**: it is the App's (`APP_USER`), from this repository's deploy branch into main, not a draft, with
  *   the profile's label (`deploy: local`) and a title the deploy watch writes (`chore(deploy): run … on the local
  *   cluster`), and the gate's rule is `exact-pin`;
  * - **a pin move**: it is the App's, from this repository's `factory/pin/<move>` (the pin watch's branch, one segment,
  *   as `guardPinBranch` has it) into main, not a draft, labelled `pin` by the App and by nobody else, every time it was
- *   labelled, and the gate's rule is `pin-move`. The gate trusts no branch, label or title (ADR 0019); the queue reads
+ *   labelled, its move one `PIN_WATCH_ONLY` names, by its exact name, and none Martin holds on its branch, and the gate's
+ *   rule is `pin-move`. The gate trusts no branch, label or title (ADR 0019); the queue reads
  *   them so that nothing but the pin watch's own pull request rides the rule, and the verdict is what passes it;
  * - the review App's own `review` check on that head concluded with a verdict that passes it by that rule at that head
  *   (`merging.ts`): no other rule, and never a hold, a pending one, Martin's approval, or one for another head;
@@ -36,10 +39,9 @@
  * the pull request, and the worker does not add that head again; a worker that restarts may, once, and the queue tests
  * it again as before.
  *
- * In a dry run the watches read GitHub as it is, and the actions record the enqueue they would make of the App's pull
- * requests there in the artifact store, changing nothing (`DryRunActions`). A dry run's own deploy and pin pull
- * requests, which GitHub never had, are not seen here: the dry run's reads merge its deploy on their own clock
- * (`dry-run-reads.ts`).
+ * In a dry run the watches write nothing to GitHub and record no commit, so no head in GitHub is one a watch wrote: the
+ * queues add nothing and record no enqueue. A dry run's own deploy and pin pull requests, which GitHub never had, are
+ * not seen here: the dry run's reads merge its deploy on their own clock (`dry-run-reads.ts`).
  */
 import type { Logger } from 'pino';
 import { z } from 'zod';
@@ -131,6 +133,7 @@ const LABEL_EVENTS = z.array(
     event: z.string(),
     actor: z.object({ id: z.number().int() }).nullable(),
     label: z.object({ name: z.string() }).optional(),
+    created_at: z.string().optional(),
   }),
 );
 export type LabelEvents = z.infer<typeof LABEL_EVENTS>;
@@ -416,6 +419,15 @@ export function heldByLabel(events: LabelEvents): boolean {
   return events.some((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER);
 }
 
+/** When anyone but the App last took the `pin` label off, by GitHub's times, or undefined when it gives none. */
+const heldSince = (events: LabelEvents): string | undefined =>
+  events
+    .filter((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER)
+    .map((e) => e.created_at)
+    .filter((t) => t !== undefined)
+    .sort()
+    .at(-1);
+
 const CLOSED = z.array(
   z.object({
     number: z.number().int().positive(),
@@ -455,7 +467,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
   };
 
   /** Each closed pull request of the App's found held, or not read whole, by its number and when it closed. */
-  const heldWhenClosed = new Map<string, boolean | 'unread'>();
+  const heldWhenClosed = new Map<string, { since: string | undefined }>();
 
   /**
    * Martin's hold of a move carried across the pin watch closing its pull request and opening another (a day the scan
@@ -487,27 +499,29 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only:
       .at(-1);
     for (const [i, c] of closed.entries()) {
       if (c.merged_at || c.user?.id !== APP_USER) continue;
-      const ended =
-        lastMerged !== undefined &&
-        (c.closed_at ? c.closed_at < lastMerged : closed.slice(0, i).some((newer) => newer.merged_at));
-      if (ended) continue;
       const key = `${c.number} ${c.closed_at ?? ''}`;
-      let held = heldWhenClosed.get(key);
+      let held: { since: string | undefined } | 'unread' | false | undefined = heldWhenClosed.get(key);
       if (held === undefined) {
         const { events, whole } = await eventsOf(c.number);
-        held = whole ? heldByLabel(events) : 'unread';
+        held = !whole ? 'unread' : heldByLabel(events) ? { since: heldSince(events) } : false;
         // Kept only once GitHub says when it closed, and only a hold: Martin may take the label off a closed pull
         // request later, so one not held is read again each pass (a conditional request), as is one not read whole.
         // A pull request reopened and closed again is read again too.
-        if (c.closed_at && held === true) heldWhenClosed.set(key, held);
+        if (c.closed_at && typeof held === 'object') heldWhenClosed.set(key, held);
       }
       if (held === 'unread') return { waits: 'not-a-pin', why: `#${c.number}, of this move, runs past what is read` };
-      if (held) {
-        return {
-          waits: 'not-a-pin',
-          why: `Martin held this move on #${c.number} by taking its ${PIN_LABEL} label off, and nothing has merged since`,
-        };
-      }
+      if (!held) continue;
+      // A merge from the branch after Martin took the label off ends the hold: by when he took it off, which may be
+      // after the pull request closed; without GitHub's time for it, by when it closed, or else by the list's order.
+      const since = held.since ?? c.closed_at ?? undefined;
+      const ended =
+        lastMerged !== undefined &&
+        (since !== undefined ? since < lastMerged : closed.slice(0, i).some((newer) => newer.merged_at));
+      if (ended) continue;
+      return {
+        waits: 'not-a-pin',
+        why: `Martin held this move on #${c.number} by taking its ${PIN_LABEL} label off, and nothing has merged since`,
+      };
     }
     return undefined;
   };

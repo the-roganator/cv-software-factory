@@ -44,11 +44,13 @@ export const pinBranch = (branch: string): boolean =>
   `${branch}/` === PIN_NEXT_PREFIX;
 
 /**
- * Whether a branch's name is plain: no segment empty or starting with a dot, as git refuses. A `.` or `..` segment is
- * taken out of a URL before it is sent, so `factory/./pin/x` would name `factory/pin/x` to GitHub and nothing a guard
- * compares; no such name is acted on.
+ * Whether a branch's name is plain: letters, digits, dots, dashes and slashes alone, and no segment empty or starting
+ * with a dot, as git refuses. A `.` segment, a tab or a line break is taken out of a URL before it is sent, and GitHub
+ * decodes an escape, so `factory/./pin/x` or `factory/%70in/x` would name `factory/pin/x` to GitHub and nothing a
+ * guard compares; no such name is acted on.
  */
-export const plainBranch = (branch: string): boolean => branch.split('/').every((s) => s !== '' && !s.startsWith('.'));
+export const plainBranch = (branch: string): boolean =>
+  /^[A-Za-z0-9._/-]+$/.test(branch) && branch.split('/').every((s) => s !== '' && !s.startsWith('.'));
 
 /**
  * The commit each of the worker's own watches last wrote to a branch of its own, by repository and branch: what that

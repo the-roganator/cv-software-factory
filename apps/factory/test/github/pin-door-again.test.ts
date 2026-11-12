@@ -164,7 +164,7 @@ describe('the door, asked again each earlier bypass', () => {
       message: 'chore(pin): move example-dashboards to 13.7.2',
       changes: { additions: [{ path: file, contents: Buffer.from(text).toString('base64') }], deletions: [] },
     });
-    // The door's commit has no path guard: a file CODEOWNERS gives Martin is written, as the author says.
+    // The door's commit has no path guard: a file CODEOWNERS gives Martin is written, as the description says.
     expect(committed.status).toBe(200);
     const opened = await ask(url, 'openPullRequest', {
       repo: FACTORY,

@@ -685,7 +685,8 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       tags,
       testIntegrity,
       labelsRemoved: riskLabelsRemoved(events),
-      retargeted: events.some((e) => e.event === 'base_ref_changed'),
+      // Anyone's change of base, or GitHub's own when the base branch went (pin-moves.ts's RETARGETED, the same two).
+      retargeted: events.some((e) => e.event === 'base_ref_changed' || e.event === 'automatic_base_change_succeeded'),
       ...(pin ? { pin } : {}),
       ...(pinMove ? { pinMove } : {}),
     });

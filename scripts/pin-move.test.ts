@@ -20,9 +20,11 @@ import {
   PLATFORM_WORKFLOW,
   PLATFORMS,
   POSTGRES_FILE,
+  patchedByTheCheck,
   pinMove,
   type Rewritten,
   type Run,
+  ranIt,
   realPinMoveIO,
   removeWork,
   type Scan,
@@ -106,12 +108,13 @@ function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
     // The overlay runs Postgres, and the admission policy copies its digest: both move with the pin, and nothing else.
     overlay: async (side) => {
       const pg = lines.some((l) => l.file === POSTGRES_FILE) && side === 'head' ? PG_B : PG_A;
-      return `kind: StatefulSet\nspec:\n  image: ${pg}\n---\nkind: ImageValidatingPolicy\nallowed: ['${pg.split('@')[1]}']\n`;
+      return `kind: StatefulSet\nmetadata:\n  name: postgres\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${pg}\n---\nkind: ImageValidatingPolicy\nallowed: ['${pg.split('@')[1]}']\n`;
     },
     hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
     scan: async (reference) =>
       reference.endsWith(hex('a')) || reference.endsWith(hex('d')) || reference.includes('2.11.2') ? FIXED : CLEAN,
     runs: async () => ALL_RAN(),
+    patched: async () => [],
     ...io,
   };
 }
@@ -133,12 +136,16 @@ function rendered(side: 'base' | 'head', chart: Chart) {
   return [
     'kind: Deployment',
     'metadata:',
+    '  name: grafana',
     '  labels:',
     `    helm.sh/chart: grafana-${chart.version}`,
     'spec:',
-    `  image: ${grafana}`,
-    `  sidecar: ${sidecar}`,
-    `        image: ${sidecar}`,
+    '  replicas: 1',
+    '  template:',
+    '    spec:',
+    '      containers:',
+    `        - image: ${grafana}`,
+    `        - image: ${sidecar}`,
   ].join('\n');
 }
 
@@ -255,7 +262,11 @@ describe('a pin move, replayed as the App would make it', () => {
     // Its latest attempt counts: a success re-run into a failure holds, a failure re-run into a success passes.
     const failedLast = [run(PLATFORM_CHECK, 'success', { id: 1 }), run(PLATFORM_CHECK, 'failure', { id: 2 })];
     expect(await at([...others, ...failedLast])).toMatch(/is failure, not a success/);
-    const passedLast = [run(PLATFORM_CHECK, 'failure', { id: 1 }), run(PLATFORM_CHECK, 'success', { id: 2 })];
+    // Attempts of one workflow run share its check suite: a re-run that succeeds counts.
+    const passedLast = [
+      run(PLATFORM_CHECK, 'failure', { id: 1, check_suite: { id: 5 } }),
+      run(PLATFORM_CHECK, 'success', { id: 2, check_suite: { id: 5 } }),
+    ];
     expect(await at([...others, ...passedLast])).toBe(
       "passed: grafana's value at deploy/base/telemetry/values/grafana.yaml:32",
     );
@@ -357,7 +368,7 @@ describe('a pin move, replayed as the App would make it', () => {
   it('holds an image no running workload starts: platform never pulled it', () => {
     const ref = `kiwigrid/k8s-sidecar:2.14.3@sha256:${hex('5')}`;
     const doc = (kind: string, extra = '') =>
-      `apiVersion: v1\nkind: ${kind}\nmetadata:\n  name: x${extra}\nspec:\n  image: ${ref}\n`;
+      `apiVersion: v1\nkind: ${kind}\nmetadata:\n  name: x${extra}\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
     expect(started(doc('Deployment'), [ref])).toBeUndefined();
     expect(started(`${doc('Job')}---\n${doc('StatefulSet')}`, [ref])).toBeUndefined();
     for (const rendering of [
@@ -366,7 +377,7 @@ describe('a pin move, replayed as the App would make it', () => {
       doc('Deployment', '\n  annotations:\n    helm.sh/hook: pre-delete'),
       doc('Deployment', '\n  annotations:\n    argocd.argoproj.io/hook: PreSync'),
       doc('Deployment').replace('spec:\n', 'spec:\n  replicas: 0\n'),
-      'kind: Deployment\nspec:\n  image: another\n',
+      'kind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n        - image: another\n',
     ])
       expect(started(rendering, [ref])).toMatch(/^no workload the platform check runs starts kiwigrid\/k8s-sidecar/);
   });
@@ -396,6 +407,8 @@ describe('a pin move, replayed as the App would make it', () => {
       path: PLATFORM_WORKFLOW,
       event: 'pull_request',
       head_sha: HEAD,
+      head_branch: 'factory/pin/x',
+      created_at: '2026-11-12T10:00:00Z',
       check_suite_id: 7,
       repository: { full_name: 'o/r' },
       head_repository: { full_name: 'o/r' },
@@ -404,7 +417,8 @@ describe('a pin move, replayed as the App would make it', () => {
     });
     const { workflow: _, ...check } = run(PLATFORM_CHECK, 'success', { check_suite: { id: 7 } });
     const of = (workflows: WorkflowRun[], c: Run = check, open = true) =>
-      workflowsOf([c], workflows, 'o/r', { number: 9, open })[0]?.workflow;
+      workflowsOf([c], workflows, 'o/r', { number: 9, ref: 'factory/pin/x', created: '2026-11-12T09:00:00Z', open })[0]
+        ?.workflow;
     expect(of([wf({})])).toBe(PLATFORM_WORKFLOW);
     expect(of([wf({ check_suite_id: 8 })])).toBeNull();
     expect(of([])).toBeNull();
@@ -835,6 +849,7 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
       user: { id: 1 },
       head: { sha: HEAD, ref: 'factory/pin/x', repo: { full_name: 'o/r' } },
       base: { ref: 'main', repo: { full_name: 'o/r' } },
+      created_at: '2026-11-12T09:00:00Z',
     };
     const run = { repo: 'o/r', read: 't', token: '', autonomy: '', print: true };
     expect(await readPinMove(run, pr, github)).toEqual({
@@ -851,15 +866,18 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
       user: { id: 1 },
       head: { sha: HEAD, ref: 'factory/pin/x', repo: { full_name: 'o/r' } },
       base: { ref: 'main', repo: { full_name: 'o/r' } },
+      created_at: '2026-11-12T09:00:00Z',
     };
     const github = {
       api: async () => {
         throw new Error('not asked: the shared head holds first');
       },
       paged: async <T>(path: string) =>
-        (path.includes('/pulls')
+        (path.includes('/commits/')
           ? [pr, { ...pr, number: 10, state: 'closed', base: { ...pr.base, ref: 'gutted' } }]
-          : []) as T[],
+          : path.includes('/pulls?state=all')
+            ? [pr]
+            : []) as T[],
     };
     const run = { repo: 'o/r', read: 't', token: '', autonomy: '', print: true };
     expect(await readPinMove(run, pr, github)).toEqual({
@@ -993,5 +1011,264 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
     const io = { chartVersions: async () => ['13.5.0', '13.7.0', '13.8.0-rc.1'] };
     expect(await chartForward(move('13.8.0-rc.1'), io)).toBe('grafana 13.8.0-rc.1 is a prerelease, not a release');
     expect(await chartForward(move('13.7.0'), io)).toBeUndefined();
+  });
+});
+
+// An independent adversarial read of the platform rule (#1057): each attack it showed passing, now a hold.
+describe('the platform rule holds where an adversarial read aimed at it', () => {
+  const REPO = 'o/r';
+  const BRANCH = 'factory/pin/x';
+  const OPENED = '2026-11-12T09:00:00Z';
+  const VALUES = 'deploy/base/telemetry/values/grafana.yaml';
+  const OLD = `kiwigrid/k8s-sidecar:2.11.2@sha256:${hex('4')}`;
+  const NEW = `kiwigrid/k8s-sidecar:2.14.3@sha256:${hex('5')}`;
+  const valueItem = (digest: string, version = '13.5.0'): Item => ({
+    kind: 'chart',
+    name: 'grafana',
+    file: 'deploy/base/telemetry/grafana.yaml',
+    line: 12,
+    chart: { ...GRAFANA, version },
+    pins: [{ file: VALUES, line: 3, digest: `sha256:${hex(digest)}` }],
+  });
+  const workload = (images: string[], version = '13.5.0') =>
+    [
+      'kind: Deployment',
+      'metadata:',
+      '  name: grafana',
+      '  labels:',
+      `    helm.sh/chart: grafana-${version}`,
+      'spec:',
+      '  replicas: 1',
+      '  template:',
+      '    spec:',
+      '      containers:',
+      ...images.map((image) => `        - image: ${image}`),
+    ].join('\n');
+  /** Grafana's sidecar value moved in one line, every condition true but what the case gives it. */
+  const sidecarIO = (more: Partial<PinMoveIO> = {}): PinMoveIO => {
+    const text = (line: string) => `sidecar:\n  image:\n${line}\n`;
+    return {
+      diff: async () => ({
+        raw: `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\t${VALUES}`,
+        files: [
+          {
+            path: VALUES,
+            before: text(`    tag: 2.11.2@sha256:${hex('4')}`),
+            after: text(`    tag: 2.14.3@sha256:${hex('5')}`),
+          },
+        ],
+      }),
+      list: async (side) => [valueItem(side === 'base' ? '4' : '5')],
+      unlisted: async () => [],
+      tags: async () => ['2.11.2', '2.14.3'],
+      digest: async () => `sha256:${hex('5')}`,
+      chartVersions: async () => ['13.5.0', '13.7.0'],
+      render: async (side) => workload(['grafana/grafana:12.0.0', side === 'base' ? OLD : NEW]),
+      overlay: async () => 'kind: ConfigMap\n',
+      hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
+      scan: async (reference) => (reference.includes(hex('4')) || reference.endsWith('12.0.0') ? FIXED : CLEAN),
+      runs: async () => [],
+      patched: async () => [],
+      ...more,
+    };
+  };
+  const check = (id: number, conclusion: string | null, suite: number): Run => ({
+    ...run(PLATFORM_CHECK, conclusion, { id }),
+    check_suite: { id: suite },
+  });
+  const workflowRun = (suite: number, more: Partial<WorkflowRun> = {}): WorkflowRun => ({
+    id: suite,
+    path: PLATFORM_WORKFLOW,
+    event: 'pull_request',
+    head_sha: HEAD,
+    head_branch: BRANCH,
+    created_at: '2026-11-12T10:00:00Z',
+    check_suite_id: suite,
+    repository: { full_name: REPO },
+    head_repository: { full_name: REPO },
+    pull_requests: [{ number: 9, base: { ref: 'main' } }],
+    ...more,
+  });
+  const FOR = { number: 9, ref: BRANCH, created: OPENED, open: true };
+  const pr = {
+    number: 9,
+    state: 'open',
+    user: { id: 1 },
+    head: { sha: HEAD, ref: BRANCH, repo: { full_name: REPO } },
+    base: { ref: 'main', repo: { full_name: REPO } },
+    created_at: OPENED,
+  };
+  const each = { repo: REPO, read: 't', token: '', autonomy: '', print: true };
+  /** readPinMove's guards, then the compare: reaching it means no guard held. */
+  const guards = (events: { event: string }[], branch: unknown[]) =>
+    readPinMove(each, pr, {
+      api: async () => {
+        throw new Error('past every guard');
+      },
+      paged: async <T>(path: string) =>
+        (path.includes('/events')
+          ? events
+          : path.includes('/pulls?state=all')
+            ? branch
+            : path.includes('/commits/')
+              ? [pr]
+              : []) as T[],
+    });
+
+  it('a platform run made for a sibling from the same branch into a gutted base: the sibling holds, closed or open', async () => {
+    const sibling = { ...pr, number: 10, base: { ...pr.base, ref: 'gutted' } };
+    expect(await guards([], [pr, { ...sibling, state: 'closed', closed_at: '2026-11-12T10:30:00Z' }])).toEqual({
+      reason: '#10 comes from the same branch, so a run at its head may have been made for it',
+    });
+    expect(await guards([], [pr, sibling])).toEqual({
+      reason: '#10 comes from the same branch, so a run at its head may have been made for it',
+    });
+    // One closed before this pull request was opened made no run for its time: that is the run's own binding.
+    expect(await guards([], [pr, { ...sibling, state: 'closed', closed_at: '2026-11-12T08:00:00Z' }])).toEqual({
+      reason: 'the gate could not read what it proves a pin move by (past every guard)',
+    });
+  });
+
+  it("a later run's success never hides an earlier run's failure at the same head", async () => {
+    const runs = workflowsOf(
+      [check(100, 'failure', 1), check(200, 'success', 2)],
+      [workflowRun(1), workflowRun(2)],
+      REPO,
+      FOR,
+    );
+    expect(ranIt(runs, HEAD, [PLATFORM_CHECK])).toBe(
+      'platform at ccccccc is failure, not a success: something must run it',
+    );
+    expect(await pinMove(sidecarIO({ runs: async () => runs }), HEAD)).toEqual({
+      reason: 'platform at ccccccc is failure, not a success: something must run it',
+    });
+  });
+
+  it('a run from another branch, or made before the pull request was opened, is not its run', () => {
+    const of = (more: Partial<WorkflowRun>) =>
+      workflowsOf([check(1, 'success', 1)], [workflowRun(1, more)], REPO, FOR)[0]?.workflow;
+    expect(of({})).toBe(PLATFORM_WORKFLOW);
+    expect(of({ head_branch: 'gutted-source' })).toBeNull();
+    expect(of({ head_branch: null })).toBeNull();
+    expect(of({ created_at: '2026-11-12T08:59:59Z' })).toBeNull();
+  });
+
+  it('a base GitHub changed by itself is a base that was changed, for the pin move job and for the gate', async () => {
+    for (const event of ['base_ref_changed', 'automatic_base_change_succeeded'])
+      expect(await guards([{ event }], [pr])).toEqual({
+        reason: 'its base was changed: a pin move is proved only into main from the start',
+      });
+    expect(
+      await readPinMove(each, (({ created_at: _, ...rest }) => rest)(pr), {
+        api: async () => ({}) as never,
+        paged: async <T>() => [] as T[],
+      }),
+    ).toEqual({
+      reason: 'GitHub named no time the pull request was opened, to read its runs from',
+    });
+  });
+
+  it("a chart's new image on a tag that is no version, back on its line or across a major, holds", async () => {
+    const chartItem = (version: string): Item => ({
+      kind: 'chart',
+      name: 'grafana',
+      file: 'deploy/base/telemetry/grafana.yaml',
+      line: 12,
+      chart: { ...GRAFANA, version },
+    });
+    const io = (image: string) =>
+      sidecarIO({
+        diff: async () => ({
+          raw: `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\tdeploy/base/telemetry/grafana.yaml`,
+          files: [
+            {
+              path: 'deploy/base/telemetry/grafana.yaml',
+              before: `${'\n'.repeat(11)}      targetRevision: 13.5.0\n`,
+              after: `${'\n'.repeat(11)}      targetRevision: 13.7.0\n`,
+            },
+          ],
+        }),
+        list: async (side) => [chartItem(side === 'base' ? '13.5.0' : '13.7.0')],
+        render: async (side) =>
+          side === 'base' ? workload(['grafana/grafana:12.0.0', OLD]) : workload([image, OLD], '13.7.0'),
+        runs: async () => [{ ...check(1, 'success', 1), workflow: PLATFORM_WORKFLOW }],
+      });
+    const reason = async (image: string) => {
+      const result = await pinMove(io(image), HEAD);
+      return 'reason' in result ? result.reason : 'passed';
+    };
+    expect(await reason('grafana/grafana:nightly')).toBe(
+      'grafana/grafana:nightly is not pinned to a version tag: no line to hold it to',
+    );
+    expect(await reason('grafana/grafana:11.9.0')).toBe('a move backwards in grafana/grafana, from 12.0.0 to 11.9.0');
+    expect(await reason('grafana/grafana:13.0.0')).toBe('a major in grafana/grafana, from 12.0.0 to 13.0.0');
+    expect(await reason(`grafana/grafana:12.0.1@sha256:${hex('9')}`)).toMatch(/^a digest that is not the tag's/);
+    // A later version on its line, by tag alone as its publisher writes it, is the chart's publisher's: it passes.
+    expect(await reason('grafana/grafana:12.0.1')).toBe('passed');
+  });
+
+  it('`started` reads manifests, not text: an argument, replicas written any way, a quoted hook key', () => {
+    const ref = NEW;
+    const job = `kind: Job\nmetadata:\n  name: once\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    const named = `kind: Deployment\nmetadata:\n  name: controller\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - image: other/controller:1.0.0\n          args:\n            - --job-image=${ref}\n`;
+    expect(started(`${job}---\n${named}`, [ref])).toMatch(/^no workload/);
+    const scaled = (replicas: string) =>
+      `kind: Deployment\nmetadata:\n  name: x\nspec:\n${replicas}\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    for (const replicas of [
+      '  replicas: 0',
+      '  replicas: 0 # off until the feature ships',
+      '  replicas: 00',
+      '  replicas: 0x0',
+      '  "replicas": 0',
+      "  replicas: '1'",
+    ])
+      expect(started(scaled(replicas), [ref])).toMatch(/^no workload/);
+    expect(started(scaled('  replicas: 2'), [ref])).toBeUndefined();
+    const hooked = (key: string) =>
+      `kind: Deployment\nmetadata:\n  name: x\n  annotations:\n    ${key}: pre-install,pre-upgrade\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${ref}\n`;
+    for (const key of ['helm.sh/hook', '"helm.sh/hook"', "'argocd.argoproj.io/hook'"])
+      expect(started(hooked(key), [ref])).toMatch(/^no workload/);
+    // An init container starts with its pod, so it counts.
+    expect(
+      started(
+        `kind: DaemonSet\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      initContainers:\n        - image: ${ref}\n`,
+        [ref],
+      ),
+    ).toBeUndefined();
+  });
+
+  it('a workload the platform check scales to nothing on its own cluster, read from main’s platform-check.yaml', () => {
+    const github = `kind: Deployment\nmetadata:\n  name: github\n  namespace: factory\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - image: ${NEW}\n`;
+    const patched = patchedByTheCheck();
+    expect(patched).toContainEqual({ kind: 'Deployment', name: 'github', namespace: 'factory' });
+    expect(started(github, [NEW], patched)).toMatch(/^no workload/);
+    expect(started(github, [NEW], [])).toBeUndefined();
+  });
+
+  it("a value of Argo CD's own chart, which make up installs and no merge applies, whatever file pins it", () => {
+    const pin = (file: string, item: string): Move => ({
+      what: 'value',
+      name: `${item}'s value at ${file}:40`,
+      kind: 'chart',
+      from: `sha256:${hex('4')}`,
+      to: `sha256:${hex('5')}`,
+      pins: [
+        {
+          what: 'value',
+          kind: 'chart',
+          item,
+          place: { file, line: 40 },
+          from: `sha256:${hex('4')}`,
+          to: `sha256:${hex('5')}`,
+        },
+      ],
+    });
+    expect(whatRunsIt(pin('deploy/argocd/values.yaml', 'argocd'))).toEqual({
+      reason: "argocd's value at deploy/argocd/values.yaml:40 is installed by make up: a merge does not apply it",
+    });
+    expect(whatRunsIt(pin('deploy/base/telemetry/values/x.yaml', 'argocd'))).toMatchObject({
+      reason: /installed by make up/,
+    });
+    expect(whatRunsIt(pin('deploy/argocd/other.yaml', 'other'))).toMatchObject({ reason: /installed by make up/ });
   });
 });

@@ -100,6 +100,7 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
     console.log(`::warning::${cause(error).replace(/::/g, ': :')}`);
     return { reason: `the gate could not read what it proves a pin move by (${cause(error)})` };
   } finally {
+    // Tidying never replaces the answer: a reader's close does not throw (pin-move.ts's removeWork).
     for (const each of closing) each.close();
   }
 }

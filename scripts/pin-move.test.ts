@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,6 +24,7 @@ import {
   type Rewritten,
   type Run,
   realPinMoveIO,
+  removeWork,
   type Scan,
   scansShow,
   staleRecords,
@@ -794,6 +795,32 @@ describe('the manifests and the records', () => {
 });
 
 // An adversarial read of the rule's inputs, each weakness it showed now a hold.
+describe("the reader's directory, as the pin move job leaves it", () => {
+  it("never throws when Trivy's cache, root's on a runner, cannot be removed: the answer stands", () => {
+    // A runner's temp after Trivy ran as root in its container: a cache directory the job's own user cannot read. Made
+    // here by taking every permission off it, which the job's user meets the same way.
+    const work = mkdtempSync(join(tmpdir(), 'pin-move-'));
+    const db = join(work, 'cache', 'db');
+    mkdirSync(db, { recursive: true });
+    writeFileSync(join(db, 'trivy.db'), 'x');
+    chmodSync(db, 0o000);
+    const errors: string[] = [];
+    const error = console.error;
+    console.error = (line: string) => errors.push(line);
+    try {
+      // Linux, as on the runner, says EACCES on the directory itself; macOS says the directory is not empty.
+      expect(() => rmSync(work, { recursive: true, force: true })).toThrow(/EACCES|ENOTEMPTY|EPERM/);
+      expect(removeWork(work)).toBe(false);
+      expect(errors.join('\n')).toMatch(/^left .*pin-move-.*(EACCES|ENOTEMPTY|EPERM)/);
+    } finally {
+      console.error = error;
+      chmodSync(db, 0o755);
+      rmSync(work, { recursive: true, force: true });
+    }
+    expect(removeWork(work)).toBe(true);
+  });
+});
+
 describe('a pin move holds where an attacker would aim at its inputs', () => {
   it('a pull request whose base was ever changed: a check may have run for another base', async () => {
     const github = {

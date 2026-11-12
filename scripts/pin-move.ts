@@ -897,6 +897,22 @@ export interface RealOptions {
   runs: () => Promise<Run[]>;
 }
 
+/**
+ * Removes a reader's directory, as far as it can, and never throws: Trivy runs as root in its container and writes its
+ * cache there, which a runner's own user cannot then remove (`EACCES` on the directory, as Node names it). What it
+ * leaves is in the runner's temp, which goes with the job; a failure to tidy is never a failure to judge. It says
+ * what it could not remove, on stderr, so the answers on stdout stay the job's own.
+ */
+export function removeWork(dir: string): boolean {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.error(`left ${dir}: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`);
+    return false;
+  }
+}
+
 /** The readers on two commits of `repo`, fetched into a directory of their own, as data. */
 export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & { close(): void }> {
   const work = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'pin-move-'));
@@ -946,7 +962,7 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
   mkdirSync(join(work, 'cache'));
   let pulled: Promise<unknown> | undefined;
   return {
-    close: () => rmSync(work, { recursive: true, force: true }),
+    close: () => removeWork(work),
     async diff() {
       const raw = (await git('diff', '--raw', '--no-renames', '--no-abbrev', sides.base, sides.head)).stdout;
       // Each modified file's blob at both commits, as bytes git stores: no patch to parse, no filter or driver run.

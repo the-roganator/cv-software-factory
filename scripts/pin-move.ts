@@ -19,7 +19,10 @@
  * 5. **No record goes stale.** Each refusal record's hash (scripts/policy-hash.ts), computed at the base and at the
  *    head, is the same.
  * 6. **Nothing else that runs changes.** For a chart, a value or an image the cluster runs, the manifests rendered at
- *    the base and at the head differ only in the moved image's references and the chart's own version labels.
+ *    the base and at the head, compared object by object, have the same objects (kind, namespace, name: none added,
+ *    none gone), and differ only in the moved image's references, the chart's own version labels' values, the `data` of
+ *    a ConfigMap that was there at the base, and a pod template's `checksum/` annotations. The configuration a chart's
+ *    ConfigMaps carry is the publisher's, as its image is; what runs it, and what may reach what, stays Martin's.
  * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
@@ -43,7 +46,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { parseAllDocuments, parse as parseYaml } from 'yaml';
+import { isAlias, isNode, isPair, isScalar, parseAllDocuments, parse as parseYaml, visit } from 'yaml';
 import { compareVersions, newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import { readTarget, type Target, targetText } from '../apps/factory/src/vulnerabilities/fixes.ts';
 import {
@@ -736,29 +739,174 @@ export function staleRecords(base: Record<string, string>, head: Record<string, 
   return undefined;
 }
 
-/**
- * Two renderings with the moved image's references and the chart's own version labels written the same, so that what
- * is left of a difference is something else that runs. Another image's line stays as it is: a change to it is a change.
- */
-export function normalised(rendered: string, references: readonly string[]): string[] {
-  const refs = [...new Set(references.filter(Boolean))].sort((a, b) => b.length - a.length);
-  return rendered.split('\n').map((line) => {
-    let text = line;
-    for (const ref of refs) text = text.split(ref).join('<image>');
-    // The chart's own version labels, by their exact keys: any other key, a `chart:` an Application installs among
-    // them, is compared.
-    return text.replace(/^(\s*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>');
-  });
+/** The labels whose values are the chart's own versions, by their exact keys, in an object's or a template's metadata. */
+const VERSION_LABELS = new Set(['helm.sh/chart', 'app.kubernetes.io/version']);
+
+/** Where each workload of the core API writes its pod template; a kind of another group is no pod template. */
+const POD_TEMPLATES: Readonly<Record<string, readonly string[]>> = {
+  'apps/v1 Deployment': ['spec', 'template'],
+  'apps/v1 StatefulSet': ['spec', 'template'],
+  'apps/v1 DaemonSet': ['spec', 'template'],
+  'apps/v1 ReplicaSet': ['spec', 'template'],
+  'batch/v1 Job': ['spec', 'template'],
+  'batch/v1 CronJob': ['spec', 'jobTemplate', 'spec', 'template'],
+};
+
+/** An object of a rendering: how it is named in a hold, and what it is once the move's own differences are written the same. */
+interface Rendered {
+  label: string;
+  body: unknown;
 }
 
-/** Whether two renderings differ in anything but the moved image and the chart's version labels. */
+/** The YAML versions a rendering is read as: what Helm, kustomize, Argo CD and the API server read is 1.1 in places. */
+const YAML_VERSIONS = ['1.2', '1.1'] as const;
+
+/**
+ * A rendering as its objects, keyed by kind, namespace and name, or why it cannot be read so. Anything that a second
+ * reader could read another way holds: a document with an error (a duplicate key among them), a directive, an explicit
+ * tag, an anchor, an alias or a merge key; and anything the cluster would not take as one object: a document that is not
+ * a mapping, one with no kind or name, a List that wraps objects, or two documents with one key. A document with nothing
+ * in it (a comment, an empty `---`) is no object.
+ */
+export function objectsOf(
+  rendered: string,
+  version: (typeof YAML_VERSIONS)[number] = '1.2',
+): Map<string, Rendered> | string {
+  const objects = new Map<string, Rendered>();
+  for (const doc of parseAllDocuments(rendered, { version, intAsBigInt: true })) {
+    if (doc.errors.length)
+      return `the rendering is not YAML the gate can read (${doc.errors[0]?.code}), so nothing shows what changes`;
+    if (doc.directives?.yaml.explicit || Object.keys(doc.directives?.tags ?? {}).some((handle) => handle !== '!!'))
+      return 'the rendering writes a YAML directive, which readers may read apart';
+    let unsure: string | undefined;
+    visit(doc, (_, node) => {
+      if (isAlias(node)) unsure = 'an alias';
+      else if (isPair(node)) {
+        if (!isScalar(node.key)) unsure = 'a key that is not a scalar';
+        else if (node.key.value === '<<') unsure = 'a merge key';
+      } else if (isNode(node)) {
+        if (node.tag) unsure = `a tag (${short(node.tag)})`;
+        else if (node.anchor) unsure = 'an anchor';
+      }
+      return unsure ? visit.BREAK : undefined;
+    });
+    if (unsure) return `the rendering writes ${unsure}, which readers may read apart`;
+    const value = doc.toJS({ maxAliasCount: 0 }) as unknown;
+    if (value === null || value === undefined) continue;
+    const object = record(value);
+    if (object !== value) return 'the rendering has a document that is not an object';
+    const metadata = record(object.metadata);
+    const { kind } = object;
+    const { name, namespace } = metadata;
+    if (typeof kind !== 'string' || !kind || typeof name !== 'string' || !name)
+      return 'the rendering has an object with no kind or no name';
+    if (namespace !== undefined && typeof namespace !== 'string')
+      return `${kind} ${name} has a namespace that is not a name`;
+    if (kind.endsWith('List') || 'items' in object)
+      return `the rendering has a ${kind} that wraps objects the gate does not key`;
+    const label = `${kind} ${namespace ? `${namespace}/` : ''}${name}`;
+    const key = JSON.stringify([kind, namespace ?? '', name]);
+    if (objects.has(key)) return `the rendering has ${label} twice`;
+    objects.set(key, { label, body: object });
+  }
+  return objects;
+}
+
+/** A value with every string's references to the moved image written the same. */
+function withoutImage(value: unknown, refs: readonly string[]): unknown {
+  if (typeof value === 'string') return refs.reduce((text, ref) => text.split(ref).join('<image>'), value);
+  if (Array.isArray(value)) return value.map((each) => withoutImage(each, refs));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, withoutImage(each, refs)]));
+  return value;
+}
+
+/** A value with the chart's own version labels written the same in every `metadata.labels`, where they are there. */
+function withoutVersionLabels(value: unknown, parent?: string): unknown {
+  if (Array.isArray(value)) return value.map((each) => withoutVersionLabels(each));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, each]) => {
+      if (parent === 'metadata' && key === 'labels' && each && typeof each === 'object' && !Array.isArray(each))
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(each).map(([label, text]) => [label, VERSION_LABELS.has(label) ? '<version>' : text]),
+          ),
+        ];
+      return [key, withoutVersionLabels(each, key)];
+    }),
+  );
+}
+
+/**
+ * An object as condition 6 compares it: the moved image's references and the chart's own version labels written the
+ * same, a core ConfigMap's `data` set aside (its `binaryData`, metadata, labels and annotations are not `data`), and a
+ * core workload's pod template's annotations by the `checksum/` prefix taken out, which a chart writes from the
+ * configuration so a change to it restarts the pods. Nothing else is set aside.
+ */
+function comparable(body: unknown, refs: readonly string[]): unknown {
+  const object = record(withoutVersionLabels(withoutImage(body, refs)));
+  if (object.apiVersion === 'v1' && object.kind === 'ConfigMap' && 'data' in object) object.data = '<configuration>';
+  const path = POD_TEMPLATES[`${object.apiVersion} ${object.kind}`];
+  const template = path?.reduce<unknown>((at, step) => record(at)[step], object);
+  const metadata = template === undefined ? undefined : record(record(template).metadata);
+  const annotations = metadata?.annotations;
+  if (metadata && annotations && typeof annotations === 'object' && !Array.isArray(annotations)) {
+    const kept = Object.entries(annotations).filter(([key]) => !key.startsWith('checksum/'));
+    if (kept.length) metadata.annotations = Object.fromEntries(kept);
+    else delete metadata.annotations;
+  }
+  return object;
+}
+
+const step = (key: string) => (/^[A-Za-z_][\w-]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
+
+/** The first place two values differ, by its path from the object, or undefined when they are the same. */
+function firstDifference(a: unknown, b: unknown, path = ''): string | undefined {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if (i >= a.length || i >= b.length) return `${path}[${i}]`;
+      const at = firstDifference(a[i], b[i], `${path}[${i}]`);
+      if (at !== undefined) return at;
+    }
+    return undefined;
+  }
+  const objects = [a, b].every((each) => each !== null && typeof each === 'object' && !Array.isArray(each));
+  if (!objects) return a === b ? undefined : path;
+  const [x, y] = [a, b] as [Record<string, unknown>, Record<string, unknown>];
+  for (const key of new Set([...Object.keys(y), ...Object.keys(x)])) {
+    if (!(key in x) || !(key in y)) return `${path}${step(key)}`;
+    const at = firstDifference(x[key], y[key], `${path}${step(key)}`);
+    if (at !== undefined) return at;
+  }
+  return undefined;
+}
+
+/**
+ * Whether two renderings differ in anything but the moved image, the chart's own version labels, a ConfigMap's data and
+ * a pod template's checksums, compared object by object: the same objects at the base and at the head, none added or
+ * gone, each the same once those are set aside. Each is read as YAML 1.2 and as YAML 1.1, and a difference in either
+ * holds, so a scalar two readers read apart (`yes`, `0777`) is read both ways. Whitespace YAML does not read is no
+ * difference. The first difference is named, with its object and field.
+ */
 export function manifestsDiffer(base: string, head: string, references: readonly string[]): string | undefined {
-  const [a, b] = [normalised(base, references), normalised(head, references)];
-  if (!a.join('').trim() || !b.join('').trim()) return 'a rendering came out empty: nothing to compare';
-  if (a.length !== b.length)
-    return `the manifests rendered at the head have ${b.length} lines, at the base ${a.length}`;
-  const at = a.findIndex((line, i) => line !== b[i]);
-  if (at >= 0) return `the manifests change beyond the image: ${short((b[at] as string).trim())}`;
+  const refs = [...new Set(references.filter(Boolean))].sort((a, b) => b.length - a.length);
+  for (const version of YAML_VERSIONS) {
+    const [was, now] = [objectsOf(base, version), objectsOf(head, version)];
+    if (typeof was === 'string') return `at the base, ${was}`;
+    if (typeof now === 'string') return `at the head, ${now}`;
+    if (!was.size || !now.size) return 'a rendering came out empty: nothing to compare';
+    const as = version === '1.2' ? '' : ` (as YAML ${version} reads it)`;
+    for (const [key, object] of now)
+      if (!was.has(key)) return `the head renders ${object.label}, which the base does not`;
+    for (const [key, object] of was) if (!now.has(key)) return `the head no longer renders ${object.label}`;
+    for (const [key, object] of now) {
+      const at = firstDifference(comparable((was.get(key) as Rendered).body, refs), comparable(object.body, refs));
+      if (at !== undefined)
+        return `the manifests change beyond the image: ${object.label} at ${at.replace(/^\./, '') || 'the object'}${as}`;
+    }
+  }
   return undefined;
 }
 
@@ -789,7 +937,10 @@ export function scansShow(
 }
 
 /** The image references before and after each moved image, for the scans and the renderings. */
-async function imagePairs(move: Move, io: PinMoveIO): Promise<{ from: string; to: string }[] | string> {
+export async function imagePairs(
+  move: Move,
+  io: Pick<PinMoveIO, 'render'>,
+): Promise<{ from: string; to: string }[] | string> {
   if (move.what === 'image') return [{ from: move.from, to: move.to }];
   const chart = move.pins[0]?.chart;
   if (!chart) return `${move.name} names no chart`;

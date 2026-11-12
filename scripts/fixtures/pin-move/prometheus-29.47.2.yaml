@@ -1,0 +1,2576 @@
+---
+# Source: prometheus/charts/alertmanager/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-alertmanager
+  labels:
+    helm.sh/chart: alertmanager-2.5.1
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "v0.35.0"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+automountServiceAccountToken: true
+
+---
+# Source: prometheus/charts/kube-state-metrics/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  labels:    
+    helm.sh/chart: kube-state-metrics-9.0.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "2.20.0"
+  name: prometheus-kube-state-metrics
+  namespace: default
+---
+# Source: prometheus/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+  namespace: default
+  annotations:
+    {}
+
+---
+# Source: prometheus/charts/alertmanager/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alertmanager
+  labels:
+    helm.sh/chart: alertmanager-2.5.1
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "v0.35.0"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+data:
+  alertmanager.yml: |
+    global: {}
+    inhibit_rules:
+    - source_matchers:
+      - alertname="StoreDown"
+      target_matchers:
+      - alertname=~"LineStuck|LeaseOverrun|WorkerCrashLooping|SecurityEventsUncounted|AdminActionUncounted"
+    - source_matchers:
+      - alertname="StoreDown"
+      target_matchers:
+      - alertname="ArgoCDDegraded"
+      - name="root"
+    - source_matchers:
+      - alertname="SpendCapReached"
+      target_matchers:
+      - alertname="LineStuck"
+    - equal:
+      - worker
+      source_matchers:
+      - alertname="WorkerCrashLooping"
+      target_matchers:
+      - alertname!="WorkerCrashLooping"
+      - worker=~".+"
+    - source_matchers:
+      - alertname="WorkerCrashLooping"
+      target_matchers:
+      - alertname="ArgoCDDegraded"
+      - name="root"
+    - source_matchers:
+      - alertname="PhoneOff"
+      target_matchers:
+      - level=~"page|notify|inform"
+      - kind!~"phone-off|phone-on"
+    receivers:
+    - name: dashboard
+    - name: intake
+      webhook_configs:
+      - send_resolved: false
+        url: http://intake.factory.svc:8080/v1/alerts
+    - name: page
+      pushover_configs:
+      - html: true
+        message: '{{ template "martin.message" . }}'
+        priority: "1"
+        send_resolved: false
+        title: '{{ or .CommonAnnotations.summary .CommonLabels.alertname }}'
+        token_file: /etc/pushover/app-token
+        url: ""
+        user_key_file: /etc/pushover/user-key
+    - name: notify
+      pushover_configs:
+      - html: true
+        message: '{{ template "martin.message" . }}'
+        priority: "0"
+        send_resolved: false
+        title: '{{ or .CommonAnnotations.summary .CommonLabels.alertname }}'
+        token_file: /etc/pushover/app-token
+        url: ""
+        user_key_file: /etc/pushover/user-key
+    - name: inform
+      pushover_configs:
+      - html: true
+        message: '{{ template "martin.message" . }}'
+        priority: "-1"
+        send_resolved: false
+        title: '{{ or .CommonAnnotations.summary .CommonLabels.alertname }}'
+        token_file: /etc/pushover/app-token
+        url: ""
+        user_key_file: /etc/pushover/user-key
+    route:
+      group_interval: 1m
+      group_wait: 10s
+      receiver: dashboard
+      repeat_interval: 4h
+      routes:
+      - group_by:
+        - route
+        - objective
+        matchers:
+        - objective=~".+"
+        - level=""
+        receiver: intake
+        repeat_interval: 1h
+      - group_by:
+        - '...'
+        matchers:
+        - level="page"
+        receiver: page
+      - group_by:
+        - '...'
+        matchers:
+        - level="notify"
+        receiver: notify
+      - group_by:
+        - '...'
+        matchers:
+        - level="inform"
+        receiver: inform
+    templates:
+    - /etc/alertmanager/*.tmpl
+  martin.tmpl: |-
+    {{ define "martin.message" }}{{ range .Alerts.Firing }}{{ or .Annotations.description .Annotations.summary .Labels.alertname }}
+    Firing since {{ .StartsAt.UTC.Format "15:04 UTC, 2 January" }}.{{ with .Labels.work_item }}{{ if match "^[1-9][0-9]*$" . }}
+    <a href="{{ template "console.origin" }}/?item={{ . }}&sheet">#{{ . }} in the console</a>{{ end }}{{ end }}{{ $deploy := eq .Labels.cause "deploy" }}{{ with .Labels.pull_request }}{{ if match "^[1-9][0-9]*$" . }} · <a href="https://github.com/the-roganator/cv-worlds-worst-website/pull/{{ . }}">{{ if $deploy }}Deploy{{ else }}Pull request{{ end }} #{{ . }}</a>{{ end }}{{ end }}{{ end }}{{ end }}
+  profile.tmpl: |-
+    {{ define "console.origin" }}https://console.localhost:8443{{ end }}
+
+---
+# Source: prometheus/templates/cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+  namespace: default
+data:
+  allow-snippet-annotations: "false"
+  alerting_rules.yml: |
+    groups:
+    - name: objectives
+      rules:
+      - alert: RouteErrorRatioAboveObjective
+        annotations:
+          description: Over 15 minutes, with at least 20 requests.
+          summary: '{{ $labels.http_route }}: more than 5% of requests answered with a
+            5xx status'
+          threshold: "0.05"
+        expr: (((sum by (http_route) (rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!="", http_response_status_code=~"5.."}[15m]))
+          or sum by (http_route) (rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m])) * 0) /
+          sum by (http_route) (rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m]))) and on
+          (http_route) (sum by (http_route) (increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m])) >= 20))
+          > 0.05
+        for: 2m
+        labels:
+          objective: error-ratio
+          route: '{{ $labels.http_route }}'
+          symptom: server-error
+      - alert: RouteLatencyAboveObjective
+        annotations:
+          description: Over 15 minutes, with at least 20 requests.
+          summary: '{{ $labels.http_route }}: p95 latency above 1 s'
+          threshold: "1"
+        expr: (histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m]))) and on
+          (http_route) (sum by (http_route) (increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m])) >= 20))
+          > 1
+        for: 2m
+        labels:
+          objective: latency
+          route: '{{ $labels.http_route }}'
+          symptom: slow-response
+    - name: martin
+      rules:
+      - alert: SecurityEvent
+        annotations:
+          description: A passkey signed in to the console.
+          summary: Signed in as Martin
+        expr: max(increase(line_security_events_total{kind="sign-in", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: sign-in
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: A new passkey can sign in as Martin.
+          summary: A passkey was enrolled
+        expr: max(increase(line_security_events_total{kind="passkey-enrolled", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: passkey-enrolled
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: A passkey can no longer sign in as Martin.
+          summary: A passkey was revoked
+        expr: max(increase(line_security_events_total{kind="passkey-revoked", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: passkey-revoked
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: An agent's model or effort, or a spend cap, was changed in the
+            console.
+          summary: A setting was changed
+        expr: max(increase(line_security_events_total{kind="setting-changed", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: setting-changed
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: The app's canary was promoted, or a stopped release retried, from
+            the console.
+          summary: A release was promoted or retried
+        expr: max(increase(line_security_events_total{kind="release-control", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: release-control
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: A hold whose cause is a guardrail was approved.
+          summary: A guardrail was overridden
+        expr: max(increase(line_security_events_total{kind="guardrail-approved", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: guardrail-approved
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: The line takes work again.
+          summary: The line was started
+        expr: max(increase(line_security_events_total{kind="line-started", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: line-started
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: The line takes no work until it is started again.
+          summary: The line was stopped
+        expr: max(increase(line_security_events_total{kind="line-stopped", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: line-stopped
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: The line's autonomy level was made looser in the console.
+          summary: Autonomy was loosened
+        expr: max(increase(line_security_events_total{kind="autonomy-loosened", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: autonomy-loosened
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: The line's autonomy level was made stricter in the console.
+          summary: Autonomy was tightened
+        expr: max(increase(line_security_events_total{kind="autonomy-tightened", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: autonomy-tightened
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: Agents were let take new work in the console.
+          summary: Agents take new work again
+        expr: max(increase(line_security_events_total{kind="new-work-on", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: new-work-on
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: Agents were stopped taking new work in the console.
+          summary: Agents take no new work
+        expr: max(increase(line_security_events_total{kind="new-work-off", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: new-work-off
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: Auto-merge of low-risk changes was turned on in the console.
+          summary: Auto-merge was turned on
+        expr: max(increase(line_security_events_total{kind="auto-merge-on", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: auto-merge-on
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: Auto-merge of low-risk changes was turned off in the console.
+          summary: Auto-merge was turned off
+        expr: max(increase(line_security_events_total{kind="auto-merge-off", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: auto-merge-off
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: What the line takes was widened in the console.
+          summary: The line takes more
+        expr: max(increase(line_security_events_total{kind="take-widened", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: take-widened
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: What the line takes was narrowed in the console.
+          summary: The line takes less
+        expr: max(increase(line_security_events_total{kind="take-narrowed", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: take-narrowed
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: 'Auto-rollback was turned off in the console: a canary whose errors
+            or latency the analysis judges bad now pauses for you to promote or abort,
+            rather than rolling back by itself. A failed journeys check still rolls it
+            back, and Stop the line still aborts one.'
+          summary: Auto-rollback was turned off
+        expr: max(increase(line_security_events_total{kind="auto-rollback-off", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: auto-rollback-off
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: 'Auto-rollback was turned on in the console: a canary the analysis
+            judges bad rolls back by itself. One already paused for you stays paused until
+            you promote or abort it.'
+          summary: Auto-rollback was turned on
+        expr: max(increase(line_security_events_total{kind="auto-rollback-on", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: auto-rollback-on
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: A feature flag's stage was widened in the console, or a flag turned
+            back on for everyone.
+          summary: A feature flag was widened
+        expr: max(increase(line_security_events_total{kind="flag-widened", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: flag-widened
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: A feature flag's stage was narrowed in the console.
+          summary: A feature flag was narrowed
+        expr: max(increase(line_security_events_total{kind="flag-narrowed", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: flag-narrowed
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: A feature flag was turned off for everyone in the console.
+          summary: A feature flag was turned off
+        expr: max(increase(line_security_events_total{kind="flag-off", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: flag-off
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: An improvement was asked for in the console, with the passkey given
+            again.
+          summary: An improvement was asked for
+        expr: max(increase(line_security_events_total{kind="improvement-requested", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: improvement-requested
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: 'An improvement''s spec was approved in the console: the line will
+            build it.'
+          summary: An improvement's spec was approved
+        expr: max(increase(line_security_events_total{kind="improvement-approved", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: improvement-approved
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: 'Your answer to a hold on a work item a visitor''s report opened
+            was shared in the console, with the passkey given again: the agents read it,
+            and it is public.'
+          summary: Your words on a visitor's report were shared
+        expr: max(increase(line_security_events_total{kind="words-shared", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: words-shared
+          level: notify
+      - alert: SecurityEvent
+        annotations:
+          description: 'Alerts to your phone were switched on in the console: every alert
+            reaches it, at its level.'
+          summary: Alerts reach your phone again
+        expr: max(increase(line_security_events_total{kind="phone-on", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: phone-on
+          level: inform
+      - alert: SecurityEvent
+        annotations:
+          description: 'Alerts to your phone were switched off in the console: none reaches
+            it until they are switched on again. Grafana''s Alerts dashboard still shows
+            every alert.'
+          summary: Alerts no longer reach your phone
+        expr: max(increase(line_security_events_total{kind="phone-off", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: phone-off
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: A proof make guardrails took did not hold, so its guardrail may
+            not be holding. make guardrails said which, and why, and the audit log records
+            it.
+          summary: A guardrail did not hold
+        expr: max(increase(line_security_events_total{kind="guardrail-not-held", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: guardrail-not-held
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: 'An attack you launched from the console got through: an attempt
+            it made was not refused, so its guardrail did not hold. Its card shows each
+            attempt and what came back, and the line’s log says which.'
+          summary: A red-team attack was not refused
+        expr: max(increase(line_security_events_total{kind="attack-not-refused", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: attack-not-refused
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: An attack you launched from the console was not seen to its end
+            within its limit, so it proves nothing. The red-team harness’s log says why;
+            you can launch it again.
+          summary: A red-team attack did not finish
+        expr: max(increase(line_security_events_total{kind="attack-unfinished", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: attack-unfinished
+          level: page
+      - alert: SecurityEvent
+        annotations:
+          description: 'The harness says an attack you launched was refused, but the line,
+            reading the refusals it cites again, cannot agree: one is missing, by another
+            mechanism, from a role that may not record it, unverified, or about something
+            else. The line’s log says why.'
+          summary: A red-team attack was not refused as it should be
+        expr: max(increase(line_security_events_total{kind="attack-wrong-mechanism", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0
+        for: 0s
+        labels:
+          kind: attack-wrong-mechanism
+          level: page
+      - alert: SecurityEventsUncounted
+        annotations:
+          description: The line has not counted sign-ins and the rest for some minutes,
+            so none of them would reach you.
+          summary: Security events are not being counted
+        expr: (count(last_over_time(line_security_events_total{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[6h])) unless count(line_security_events_total{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"})) or max(line_security_events_counting{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}) == 0
+        for: 5m
+        labels:
+          level: page
+          worker: line
+      - alert: AdminActionUncounted
+        annotations:
+          description: 'flagd''s flags hold a stage or a revision that no move of yours
+            recorded: they were changed outside the console, or the admin service changed
+            them without recording it. The console''s Flags panel shows each flag''s stage
+            as it is: move each that differs there, which records it, and look in the
+            admin service''s log.'
+          summary: The flags changed with no record
+        expr: max by (action) (last_over_time(line_admin_actions_uncounted{action="flags",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+          == 1
+        for: 2m
+        labels:
+          level: page
+      - alert: AdminActionUncounted
+        annotations:
+          description: 'The app''s Rollout was paused, resumed or promoted fully with
+            no control of yours recorded: outside the Canary panel, or by the admin service
+            without recording it. The Canary panel shows it as it is: act there, which
+            records it, and look in the admin service''s log.'
+          summary: The app's Rollout changed with no record
+        expr: max by (action) (last_over_time(line_admin_actions_uncounted{action="rollout",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+          == 1
+        for: 2m
+        labels:
+          level: page
+      - alert: AdminActionUncounted
+        annotations:
+          description: 'The store holds a session of the last hour that no sign-in recorded:
+            someone made it outside the admin service’s sign-in, or the admin service
+            did without recording it. End every session with make enrol REVOKE_OTHERS=1,
+            then enrol your passkey again. This ends an hour after the session started.'
+          summary: A session started with no sign-in
+        expr: max by (action) (last_over_time(line_admin_actions_uncounted{action="sessions",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+          == 1
+        for: 2m
+        labels:
+          level: page
+      - alert: AdminActionUncounted
+        annotations:
+          description: For ten minutes the line has not been able to compare the flags'
+            stages with the events that record them, so a change none records would not
+            reach you. The line’s log says why.
+          summary: The line is not comparing the flags' stages
+        expr: max by (action) (last_over_time(line_admin_actions_compared{action="flags",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+          == 0
+        for: 10m
+        labels:
+          level: page
+          worker: line
+      - alert: AdminActionUncounted
+        annotations:
+          description: For ten minutes the line has not been able to compare the app's
+            Rollout's controls with the events that record them, so a change none records
+            would not reach you. The line’s log says why.
+          summary: The line is not comparing the app's Rollout's controls
+        expr: max by (action) (last_over_time(line_admin_actions_compared{action="rollout",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+          == 0
+        for: 10m
+        labels:
+          level: page
+          worker: line
+      - alert: AdminActionUncounted
+        annotations:
+          description: For ten minutes the line has not been able to compare the sessions
+            with the events that record them, so a change none records would not reach
+            you. The line’s log says why.
+          summary: The line is not comparing the sessions
+        expr: max by (action) (last_over_time(line_admin_actions_compared{action="sessions",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+          == 0
+        for: 10m
+        labels:
+          level: page
+          worker: line
+      - alert: AdminActionUncounted
+        annotations:
+          description: 'The admin service says auto-rollback is one way and your latest
+            switch in the store says the other: it reports what you did not record, or
+            cannot read the store. A canary is paused for you only while both say off.
+            Controls shows the switch as recorded: switch it there, which records it,
+            and look in the admin service''s log.'
+          summary: Auto-rollback differs from your switch
+        expr: max(last_over_time(admin_auto_rollback{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"}[1m]))
+          != on () max(last_over_time(line_auto_rollback{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[1m]))
+        for: 2m
+        labels:
+          action: auto-rollback
+          level: page
+      - alert: AlertmanagerSilenced
+        annotations:
+          description: Alertmanager has a silence in place, which keeps the alerts it
+            matches from your phone.
+          summary: Alerts are silenced
+        expr: max(alertmanager_silences{state=~"active|pending"}) > 0
+        for: 0s
+        labels:
+          level: page
+      - alert: PhoneOff
+        annotations:
+          description: 'Alerts to your phone are switched off in the console''s Controls,
+            or have not been switched on on this profile: Alertmanager sends none of them,
+            and Grafana''s Alerts dashboard shows them all.'
+          summary: Alerts are not reaching your phone
+        expr: max(last_over_time(admin_alerts_phone{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"}[1m]))
+          == 0 and on () max(last_over_time(line_alerts_phone{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[1m])) == 0
+        for: 0s
+        labels: {}
+      - alert: HoldWaits
+        annotations:
+          description: 'Triage parked a suggestion: only you ask for improvements.'
+          summary: '#{{ $labels.work_item }} waits for you: a suggestion'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="suggestion",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="suggestion", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="suggestion",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="suggestion",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="suggestion",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The planner noticed a defect outside its ticket, which its word
+            alone never opens.
+          summary: '#{{ $labels.work_item }} waits for you: the planner found something'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="finding",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="finding", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="finding",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="finding",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="finding",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: One sense found more new problems at once than a handful, so their
+            tickets wait unopened.
+          summary: '#{{ $labels.work_item }} waits for you: a burst of problems'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="burst",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="burst", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="burst",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="burst",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="burst",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: Something its sense reads besides the app was not healthy when
+            it saw the problem.
+          summary: '#{{ $labels.work_item }} waits for you: held for its backends'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="environment",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="environment", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="environment",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="environment",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="environment",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: 'A visitor reported it, and triage could point at nothing narrower
+            than the page: no planner starts until you describe it.'
+          summary: '#{{ $labels.work_item }} waits for you to describe a report'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="report-undescribed",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="report-undescribed", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="report-undescribed",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="report-undescribed",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="report-undescribed",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: Nothing is built until you approve it.
+          summary: '#{{ $labels.work_item }} waits for your approval of its spec'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spec",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="spec", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spec",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spec",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spec",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: An agent asks you something only you can say.
+          summary: '#{{ $labels.work_item }} waits for your answer'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="question",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="question", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="question",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="question",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="question",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The planner judged it a ticket it cannot turn into a testable fix.
+          summary: '#{{ $labels.work_item }} waits for you: the planner turned it down'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="ticket-rejected",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="ticket-rejected", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="ticket-rejected",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="ticket-rejected",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="ticket-rejected",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The coder changed files outside the spec's scope.
+          summary: '#{{ $labels.work_item }} waits for you: held by the fence'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="scope",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="scope", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="scope",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="scope",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="scope",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The coder says the code already does what the spec asks.
+          summary: '#{{ $labels.work_item }} waits for you: the coder found nothing'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="nothing-to-fix",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="nothing-to-fix", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="nothing-to-fix",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="nothing-to-fix",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="nothing-to-fix",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: A step failed as often as the line allows.
+          summary: '#{{ $labels.work_item }} waits for you: a step kept failing'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="failures",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="failures", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="failures",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="failures",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="failures",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The gates kept failing after the returns to the coder the line
+            allows.
+          summary: '#{{ $labels.work_item }} waits for you: held by a gate'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="gates",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="gates", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="gates",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="gates",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="gates",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The reviewer escalated, or still asked for changes after the last
+            review the line allows.
+          summary: '#{{ $labels.work_item }} waits for you: held by review'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="review",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="review", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="review",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="review",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="review",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: The reviewer found the spec or the change going beyond what the
+            ticket asks, or the spec short of what Martin answered.
+          summary: '#{{ $labels.work_item }} waits for you: beyond or short of its ticket'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="beyond-ticket",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="beyond-ticket", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="beyond-ticket",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="beyond-ticket",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="beyond-ticket",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: Its fix has passed its gates and review.
+          summary: '#{{ $labels.work_item }} waits for your merge'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="merge",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="merge", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="merge",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="merge",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="merge",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: '{{ if $labels.pull_request }}Its fix is merged, and the deploy
+            pull request that carries it has passed its checks.{{ else }}Its release rolled
+            back, was aborted or erred, and waits for your retry or the next deploy.{{
+            end }}'
+          summary: '#{{ $labels.work_item }} waits for your deploy'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="deploy",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="deploy", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="deploy",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="deploy",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="deploy",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: 'With auto-rollback off, the analysis judged its canary bad, and
+            it keeps its share of the traffic until you promote it fully or abort it:
+            switching auto-rollback on again leaves it paused.'
+          summary: '#{{ $labels.work_item }} waits for you: a canary paused'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="canary",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="canary", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="canary",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="canary",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="canary",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: Verification after the release could not settle its ticket by itself.
+          summary: '#{{ $labels.work_item }} waits for you: Verify asks'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="verify",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="verify", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="verify",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="verify",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="verify",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: It has spent as much on models as one may.
+          summary: '#{{ $labels.work_item }} waits for you: at its spend cap'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spend",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="spend", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spend",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spend",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="spend",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: Its new tests pass without the fix.
+          summary: '#{{ $labels.work_item }} waits for you: tests that prove nothing'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="tests-first",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="tests-first", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="tests-first",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="tests-first",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="tests-first",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldWaits
+        annotations:
+          description: It is held for your answer.
+          summary: '#{{ $labels.work_item }} waits for you'
+        expr: ((max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="unknown",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 < 1800) unless (max by (work_item, cause, pull_request)
+          (label_replace(line_hold_age_seconds{cause="unknown", work_item=~"[1-9][0-9]*",
+          pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}
+          offset 30m, "pull_request", "", "pull_request", "[1-9][0-9]{9,}")) == max by
+          (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="unknown",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")))) or (max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="unknown",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}, "pull_request", "", "pull_request",
+          "[1-9][0-9]{9,}")) > 0 unless max by (work_item, cause, pull_request) (label_replace(line_hold_age_seconds{cause="unknown",
+          work_item=~"[1-9][0-9]*", pull_request=~"|[1-9][0-9]*", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"} offset 30m, "pull_request", "",
+          "pull_request", "[1-9][0-9]{9,}")) > 0)
+        for: 0s
+        labels:
+          level: notify
+      - alert: HoldStarted
+        annotations:
+          description: 'A work item is held for your answer: {{ $labels.cause }}. The
+            line takes no work, so it cannot say which: Needs you lists it.'
+          summary: A hold waits for you
+        expr: max by (cause) (increase(line_holds_stored_total{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}[5m])) > 0 unless on () max(line_work_items{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"})
+        for: 0s
+        labels:
+          level: notify
+      - alert: ShopPodOld
+        annotations:
+          description: 'Its container logs on the node may hold a visitor''s report, and
+            they go only with the pod. Release the shop (merge a pending update, or its
+            deploy pull request), so a new pod replaces it before a report in its logs
+            is 30 days old. With none pending, restart its Rollout: with one replica,
+            the shop is down until the new pod is ready.'
+          summary: The shop's pod is 25 days old
+        expr: max by (pod) (time() - kube_pod_start_time{namespace="website"}) > 2160000
+          and on (pod) (max by (pod) (kube_pod_owner{namespace="website", owner_kind="ReplicaSet"})
+          and on (pod) max by (pod) (kube_pod_status_phase{namespace="website", phase="Running"}
+          == 1))
+        for: 1h
+        labels:
+          level: notify
+    - name: flags
+      rules:
+      - alert: FlagsNotTaken
+        annotations:
+          description: 'A minute after you narrowed a flag or turned one off, the admin
+            service has not seen every pod of the app hold the flags as you set them,
+            or could not ask them: the app may still show the feature to those you took
+            it from. Restart flagd, which reads them again as it starts.'
+          summary: The app has not been seen to take a flag you narrowed
+        expr: max(admin_flags_narrowing_seconds{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"})
+          > 60
+        for: 0s
+        labels:
+          level: page
+      - alert: FlagsDiffer
+        annotations:
+          description: 'For more than 5 minutes a pod of the app has held other flags
+            than the ones set: flagd may have stopped watching them. Restart flagd, which
+            reads them again as it starts.'
+          summary: The app does not hold the flags as set
+        expr: max(admin_flags_differing_seconds{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"})
+          > 300 and on () max(max_over_time(admin_flags_checked{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="admin"}[5m])) == 1
+        for: 0s
+        labels:
+          level: notify
+      - alert: FlagsUnchecked
+        annotations:
+          description: For more than 5 minutes the admin service has not been able to
+            ask every pod of the app which flags it holds, so a change of a flag that
+            did not reach the app would not be told.
+          summary: The flags the app holds are not being checked
+        expr: max(admin_flags_differing_seconds{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"})
+          > 300 and on () max(max_over_time(admin_flags_checked{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="admin"}[5m])) == 0
+        for: 0s
+        labels:
+          level: notify
+          worker: admin
+      - alert: FlagsUnchecked
+        annotations:
+          description: For more than 5 minutes the admin service has not been able to
+            ask every pod of the app which flags it holds, so a change of a flag that
+            did not reach the app would not be told.
+          summary: The flags the app holds are not being checked
+        expr: max(last_over_time(admin_flags_set{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"}[6h]))
+          == 1 unless on () count(admin_flags_set{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="admin"})
+        for: 0s
+        labels:
+          level: notify
+          worker: admin
+    - name: factory
+      rules:
+      - alert: ConsoleDown
+        annotations:
+          description: 'For two minutes the probes have had no answer from the console
+            at {{ $labels.address }}: you cannot see or steer the factory there.'
+          summary: The console is not answering
+        expr: max by (address) (increase(probes_checks_total{target="console", outcome="answered",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[2m]))
+          == 0 and on (address) max by (address) (increase(probes_checks_total{target="console",
+          outcome="failed", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[2m]))
+          > 0 and on (address) max by (address) (count_over_time(probes_checks_total{target="console",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[1m]))
+          > 0
+        for: 1m
+        keep_firing_for: 10m
+        labels:
+          level: page
+          worker: console
+      - alert: AppDown
+        annotations:
+          description: 'For two minutes the probes have had no answer from the app at
+            {{ $labels.address }}: visitors see nothing.'
+          summary: The app is not answering
+        expr: max by (address) (increase(probes_checks_total{target="app", outcome="answered",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[2m]))
+          == 0 and on (address) max by (address) (increase(probes_checks_total{target="app",
+          outcome="failed", k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[2m]))
+          > 0 and on (address) max by (address) (count_over_time(probes_checks_total{target="app",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[1m]))
+          > 0
+        for: 1m
+        keep_firing_for: 10m
+        labels:
+          level: page
+      - alert: ProbesDown
+        annotations:
+          description: The probes have said nothing for some minutes of whether the console
+            and the app answer, so neither going down would reach you.
+          summary: The probes have stopped checking
+        expr: sum(increase(probes_checks_total{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"}[5m]))
+          == 0 or absent(probes_checks_total{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="probes"})
+        for: 2m
+        keep_firing_for: 10m
+        labels:
+          level: page
+          worker: probes
+      - alert: LineStuck
+        annotations:
+          description: 'A work item the line is carrying has stood at {{ $labels.stage
+            }} longer than its limit: a step, a release or a look that should have ended
+            has not. The line''s dashboard shows which.'
+          summary: The line is stuck at {{ $labels.stage }}
+        expr: max by (stage) (line_taken_oldest_seconds{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"}) > on (stage) max by (stage) (line_taken_limit_seconds{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="line"})
+        for: 0s
+        keep_firing_for: 10m
+        labels:
+          level: page
+          worker: line
+      - alert: LeaseOverrun
+        annotations:
+          description: 'A work item has been held for more than five minutes past its
+            lease: the worker that took it neither finished nor let it go, and no line
+            has taken it back.'
+          summary: A lease on the line has run out unreleased
+        expr: max(line_lease_overrun_seconds{k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"})
+          > 300
+        for: 0s
+        keep_firing_for: 10m
+        labels:
+          level: page
+          worker: line
+      - alert: StoreDown
+        annotations:
+          description: 'Postgres has not answered its exporter for a minute: the line,
+            triage and the console cannot read or record anything.'
+          summary: The store is not answering
+        expr: min(pg_up) == 0
+        for: 1m
+        keep_firing_for: 10m
+        labels:
+          level: page
+      - alert: StoreUnwatched
+        annotations:
+          description: Postgres's exporter has reported nothing for some minutes, so the
+            store going down would not be told.
+          summary: Nothing says whether the store answers
+        expr: absent(pg_up)
+        for: 5m
+        keep_firing_for: 10m
+        labels:
+          level: page
+      - alert: WorkerCrashLooping
+        annotations:
+          description: '{{ $labels.pod }} in factory has restarted three times in five
+            minutes, and Kubernetes waits longer each time to start it again.'
+          summary: A worker is crash-looping
+        expr: max by (pod, worker) (label_replace((max_over_time(kube_pod_container_status_restarts_total{namespace="factory"}[5m])
+          - min_over_time(kube_pod_container_status_restarts_total{namespace="factory"}[5m]))
+          and on (namespace, pod) group by (namespace, pod) (kube_pod_owner{namespace="factory",
+          owner_kind="ReplicaSet"}), "worker", "$1", "pod", "(.+)-[a-z0-9]{5,10}-[a-z0-9]{5}")
+          or ((max_over_time(kube_pod_container_status_restarts_total{namespace="factory"}[5m])
+          - min_over_time(kube_pod_container_status_restarts_total{namespace="factory"}[5m]))
+          unless on (namespace, pod) group by (namespace, pod) (kube_pod_owner{namespace="factory",
+          owner_kind="ReplicaSet"}))) >= 3
+        for: 0s
+        keep_firing_for: 10m
+        labels:
+          level: page
+      - alert: SpendCapReached
+        annotations:
+          description: The gateway refuses every model call until the cap clears, when
+            its window ends or you raise it in the console, and the line starts no step
+            meanwhile.
+          summary: The {{ $labels.cap }}'s spend cap is reached
+        expr: max by (cap, profile) (gateway_cap_spent_usd{cap=~"day|month", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="gateway"}) >= on (cap, profile) (min by
+          (cap, profile) (gateway_cap_limit_usd{cap=~"day|month", k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="gateway"}) >= 0)
+        for: 0s
+        labels:
+          level: page
+      - alert: JudgementsUnauthorized
+        annotations:
+          description: 'The gateway answered a judgement 401. If triage''s log says the
+            gateway refused its token, triage judges no report until it has the gateway''s:
+            run make judgements-token. If not, something else in the cluster asked Jev,
+            which only triage may.'
+          summary: A judgement came without triage's token
+        expr: max(increase(gateway_judgements_unauthorized_total{k8s_namespace_name="factory",
+          k8s_pod_label_app_kubernetes_io_name="gateway"}[5m])) > 0
+        for: 0s
+        keep_firing_for: 10m
+        labels:
+          level: page
+      - alert: ReleaseRolledBack
+        annotations:
+          description: The canary's analysis failed it, or judged it bad and you aborted
+            it, and the stable version serves every visitor again. Its work items wait
+            for the next deploy, or your retry.
+          summary: A release rolled back
+        expr: max by (outcome) (increase(line_releases_total{outcome=~"rolled-back", dry_run="false",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[5m]))
+          > 0
+        for: 0s
+        labels:
+          level: notify
+      - alert: ReleaseRolledBack
+        annotations:
+          description: Its canary was stopped, by Stop the line or by hand, and the stable
+            version serves every visitor again. Its work items wait for your retry.
+          summary: A release was aborted
+        expr: max by (outcome) (increase(line_releases_total{outcome=~"aborted", dry_run="false",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[5m]))
+          > 0
+        for: 0s
+        labels:
+          level: notify
+      - alert: ReleaseErrored
+        annotations:
+          description: 'The canary''s analysis could not judge it, so it was stopped:
+            the stable version still serves every visitor, and its work items wait for
+            your retry.'
+          summary: A release ended in error
+        expr: max by (outcome) (increase(line_releases_total{outcome=~"errored", dry_run="false",
+          k8s_namespace_name="factory", k8s_pod_label_app_kubernetes_io_name="line"}[5m]))
+          > 0
+        for: 0s
+        labels:
+          level: notify
+      - alert: ArgoCDDegraded
+        annotations:
+          description: 'It has been Degraded for 30 minutes: something it deploys is not
+            healthy.'
+          summary: 'Argo CD: {{ $labels.name }} is degraded'
+        expr: max by (name) (argocd_app_info{health_status="Degraded"}) == 1
+        for: 30m
+        keep_firing_for: 10m
+        labels:
+          level: notify
+      - alert: ArgoCDOutOfSync
+        annotations:
+          description: For 30 minutes what runs has not been what main says.
+          summary: 'Argo CD: {{ $labels.name }} is out of sync'
+        expr: max by (name) (argocd_app_info{sync_status="OutOfSync"}) == 1
+        for: 30m
+        keep_firing_for: 10m
+        labels:
+          level: notify
+  alerts: |
+    {}
+  prometheus.yml: |
+    global:
+      evaluation_interval: 1m
+      scrape_interval: 1m
+      scrape_timeout: 10s
+    storage:
+      tsdb:
+        out_of_order_time_window: 30m
+        retention:
+          size: 3GB
+          time: 7d
+    otlp:
+        promote_resource_attributes:
+        - service.namespace
+        - service.version
+        - deployment.environment.name
+        - k8s.pod.label.rollouts-pod-template-hash
+        - k8s.namespace.name
+        - k8s.pod.label.app.kubernetes.io/name
+    scrape_configs:
+    - job_name: kubernetes-nodes
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      metric_relabel_configs:
+      - action: drop
+        regex: .+_bucket
+        source_labels:
+        - __name__
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+    - job_name: kubernetes-nodes-cadvisor
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      metrics_path: /metrics/cadvisor
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - source_labels:
+        - __metrics_path__
+        target_label: metrics_path
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+    - job_name: kubernetes-pods
+      honor_labels: true
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - argo-rollouts
+          - argocd
+          - factory
+          - kube-system
+          - kyverno
+          - pod-logs
+          - telemetry
+        role: pod
+      metric_relabel_configs:
+      - action: drop
+        regex: target_info
+        source_labels:
+        - __name__
+      - action: labeldrop
+        regex: k8s_pod_label_rollouts_pod_template_hash
+      - action: labeldrop
+        regex: k8s_namespace_name|k8s_pod_label_app_kubernetes_io_name
+      - regex: pg_settings_max_connections
+        replacement: "true"
+        source_labels:
+        - __name__
+        target_label: keep_setting
+      - action: drop
+        regex: pg_settings_.+;
+        source_labels:
+        - __name__
+        - keep_setting
+      - action: labeldrop
+        regex: keep_setting
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+      - action: drop
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape_slow
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+        replacement: '[$2]:$1'
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        - __meta_kubernetes_pod_ip
+        target_label: __address__
+      - action: replace
+        regex: (\d+);((([0-9]+?)(\.|$)){4})
+        replacement: $2:$1
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        - __meta_kubernetes_pod_ip
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_annotation_prometheus_io_param_(.+)
+        replacement: __param_$1
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: pod
+      - action: drop
+        regex: Pending|Succeeded|Failed|Completed
+        source_labels:
+        - __meta_kubernetes_pod_phase
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: node
+    - job_name: kubernetes-pods-slow
+      honor_labels: true
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - argo-rollouts
+          - argocd
+          - factory
+          - kube-system
+          - kyverno
+          - pod-logs
+          - telemetry
+        role: pod
+      metric_relabel_configs:
+      - action: drop
+        regex: target_info
+        source_labels:
+        - __name__
+      - action: labeldrop
+        regex: k8s_pod_label_rollouts_pod_template_hash
+      - action: labeldrop
+        regex: k8s_namespace_name|k8s_pod_label_app_kubernetes_io_name
+      - regex: pg_settings_max_connections
+        replacement: "true"
+        source_labels:
+        - __name__
+        target_label: keep_setting
+      - action: drop
+        regex: pg_settings_.+;
+        source_labels:
+        - __name__
+        - keep_setting
+      - action: labeldrop
+        regex: keep_setting
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape_slow
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+        replacement: '[$2]:$1'
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        - __meta_kubernetes_pod_ip
+        target_label: __address__
+      - action: replace
+        regex: (\d+);((([0-9]+?)(\.|$)){4})
+        replacement: $2:$1
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        - __meta_kubernetes_pod_ip
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_annotation_prometheus_io_param_(.+)
+        replacement: __param_$1
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: pod
+      - action: drop
+        regex: Pending|Succeeded|Failed|Completed
+        source_labels:
+        - __meta_kubernetes_pod_phase
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: node
+      scrape_interval: 5m
+      scrape_timeout: 30s
+    - job_name: kubernetes-service-endpoints
+      honor_labels: true
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - argo-rollouts
+          - argocd
+          - factory
+          - kube-system
+          - kyverno
+          - pod-logs
+          - telemetry
+        role: endpointslice
+      metric_relabel_configs:
+      - action: drop
+        regex: target_info
+        source_labels:
+        - __name__
+      - action: labeldrop
+        regex: k8s_pod_label_rollouts_pod_template_hash
+      - action: labeldrop
+        regex: k8s_namespace_name|k8s_pod_label_app_kubernetes_io_name
+      - regex: pg_settings_max_connections
+        replacement: "true"
+        source_labels:
+        - __name__
+        target_label: keep_setting
+      - action: drop
+        regex: pg_settings_.+;
+        source_labels:
+        - __name__
+        - keep_setting
+      - action: labeldrop
+        regex: keep_setting
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape
+      - action: drop
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape_slow
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: (.+?)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_service_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_service_annotation_prometheus_io_param_(.+)
+        replacement: __param_$1
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_service_name
+        target_label: service
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: node
+    - job_name: kubernetes-service-endpoints-slow
+      honor_labels: true
+      kubernetes_sd_configs:
+      - namespaces:
+          names:
+          - argo-rollouts
+          - argocd
+          - factory
+          - kube-system
+          - kyverno
+          - pod-logs
+          - telemetry
+        role: endpointslice
+      metric_relabel_configs:
+      - action: drop
+        regex: target_info
+        source_labels:
+        - __name__
+      - action: labeldrop
+        regex: k8s_pod_label_rollouts_pod_template_hash
+      - action: labeldrop
+        regex: k8s_namespace_name|k8s_pod_label_app_kubernetes_io_name
+      - regex: pg_settings_max_connections
+        replacement: "true"
+        source_labels:
+        - __name__
+        target_label: keep_setting
+      - action: drop
+        regex: pg_settings_.+;
+        source_labels:
+        - __name__
+        - keep_setting
+      - action: labeldrop
+        regex: keep_setting
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape_slow
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: (.+?)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_service_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_service_annotation_prometheus_io_param_(.+)
+        replacement: __param_$1
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_service_name
+        target_label: service
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: node
+      scrape_interval: 5m
+      scrape_timeout: 30s
+    - job_name: prometheus
+      static_configs:
+      - targets:
+        - localhost:9090
+    rule_files:
+    - /etc/config/recording_rules.yml
+    - /etc/config/alerting_rules.yml
+    - /etc/config/rules
+    - /etc/config/alerts
+    alerting:
+      alertmanagers:
+        - static_configs:
+          - targets:
+            - prometheus-alertmanager.telemetry.svc:9093
+  recording_rules.yml: |
+    groups:
+    - name: routes
+      rules:
+      - expr: sum by (http_route) (increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m]))
+        record: website:route_requests:increase15m
+      - expr: ((sum by (http_route) (rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!="", http_response_status_code=~"5.."}[15m]))
+          or sum by (http_route) (rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m])) * 0) /
+          sum by (http_route) (rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m]))) and on
+          (http_route) (sum by (http_route) (increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m])) >= 20)
+        record: website:route_errors:ratio_rate15m
+      - expr: histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m]))) and on
+          (http_route) (sum by (http_route) (increase(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[15m])) >= 20)
+        record: website:route_latency_seconds:p95_rate15m
+    - interval: 5m
+      name: error-budget-rates
+      rules:
+      - expr: sum(rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[5m]))
+        record: website:requests:rate5m
+      - expr: sum(rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!="", http_response_status_code=~"5.."}[5m]))
+          or vector(0)
+        labels:
+          objective: error-ratio
+        record: website:requests_bad:rate5m
+      - expr: sum(rate(http_server_request_duration_seconds_count{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!=""}[5m])) - sum(rate(http_server_request_duration_seconds_bucket{job="worlds-worst-website/website",
+          k8s_pod_label_rollouts_pod_template_hash!="", http_route!="", le="1"}[5m]))
+        labels:
+          objective: latency
+        record: website:requests_bad:rate5m
+    - name: error-budget
+      rules:
+      - expr: vector(0.05)
+        labels:
+          objective: error-ratio
+        record: website:error_budget:ratio
+      - expr: vector(0.05)
+        labels:
+          objective: latency
+        record: website:error_budget:ratio
+      - expr: sum_over_time(website:requests_bad:rate5m[1h]) / ignoring (objective) group_left
+          () (sum_over_time(website:requests:rate5m[1h]) > 0)
+        record: website:requests_bad:ratio_rate1h
+      - expr: website:requests_bad:ratio_rate1h / on (objective) website:error_budget:ratio
+        record: website:error_budget_burn:rate1h
+      - expr: sum_over_time(website:requests_bad:rate5m[6h]) / ignoring (objective) group_left
+          () (sum_over_time(website:requests:rate5m[6h]) > 0)
+        record: website:requests_bad:ratio_rate6h
+      - expr: website:requests_bad:ratio_rate6h / on (objective) website:error_budget:ratio
+        record: website:error_budget_burn:rate6h
+      - expr: sum_over_time(website:requests_bad:rate5m[7d]) / ignoring (objective) group_left
+          () (sum_over_time(website:requests:rate5m[7d]) > 0)
+        record: website:requests_bad:ratio_rate7d
+      - expr: 1 - website:requests_bad:ratio_rate7d / on (objective) website:error_budget:ratio
+        record: website:error_budget_remaining:ratio7d
+    - name: line
+      rules:
+      - expr: vector(5400)
+        labels:
+          stage: plan
+        record: line:stage_limit_seconds
+      - expr: vector(7200)
+        labels:
+          stage: build
+        record: line:stage_limit_seconds
+      - expr: vector(3600)
+        labels:
+          stage: gates
+        record: line:stage_limit_seconds
+      - expr: vector(7200)
+        labels:
+          stage: review
+        record: line:stage_limit_seconds
+      - expr: vector(3600)
+        labels:
+          stage: release
+        record: line:stage_limit_seconds
+      - expr: vector(90000)
+        labels:
+          stage: verify
+        record: line:stage_limit_seconds
+      - expr: max by (stage) (line_work_items)
+        record: line:work_items:max
+      - expr: max by (stage) (line_stage_oldest_seconds)
+        record: line:stage_oldest_seconds:max
+      - expr: line:stage_oldest_seconds:max / on (stage) line:stage_limit_seconds
+        record: line:stage_oldest:ratio_to_limit
+      - expr: timestamp(sum(increase(line_steps_total[5m])) > 0)
+        record: line:steps:last_timestamp_seconds
+  rules: |
+    {}
+---
+# Source: prometheus/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: "4Gi"
+---
+# Source: prometheus/charts/kube-state-metrics/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:    
+    helm.sh/chart: kube-state-metrics-9.0.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "2.20.0"
+  name: prometheus-kube-state-metrics
+rules:
+
+- apiGroups: ["apps"]
+  resources:
+  - daemonsets
+  verbs: ["list", "watch"]
+
+- apiGroups: ["apps"]
+  resources:
+  - deployments
+  verbs: ["list", "watch"]
+
+- apiGroups: ["batch"]
+  resources:
+  - jobs
+  verbs: ["list", "watch"]
+
+- apiGroups: [""]
+  resources:
+  - nodes
+  verbs: ["list", "watch"]
+
+- apiGroups: [""]
+  resources:
+  - persistentvolumeclaims
+  verbs: ["list", "watch"]
+
+- apiGroups: [""]
+  resources:
+  - pods
+  verbs: ["list", "watch"]
+
+- apiGroups: ["apps"]
+  resources:
+  - statefulsets
+  verbs: ["list", "watch"]
+
+
+---
+# Source: prometheus/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+      - ingresses
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "networking.k8s.io"
+    resources:
+      - ingresses/status
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "discovery.k8s.io"
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
+  - nonResourceURLs:
+      - "/metrics"
+    verbs:
+      - get
+
+---
+# Source: prometheus/charts/kube-state-metrics/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:    
+    helm.sh/chart: kube-state-metrics-9.0.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "2.20.0"
+  name: prometheus-kube-state-metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-kube-state-metrics
+subjects:
+- kind: ServiceAccount
+  name: prometheus-kube-state-metrics
+  namespace: default
+---
+# Source: prometheus/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-server
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-server
+
+---
+# Source: prometheus/charts/alertmanager/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-alertmanager
+  labels:
+    helm.sh/chart: alertmanager-2.5.1
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "v0.35.0"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9093
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+
+---
+# Source: prometheus/charts/alertmanager/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-alertmanager-headless
+  labels:
+    helm.sh/chart: alertmanager-2.5.1
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "v0.35.0"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+spec:
+  clusterIP: None
+  ports:
+    - port: 9093
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+
+---
+# Source: prometheus/charts/kube-state-metrics/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-kube-state-metrics
+  namespace: default
+  labels:    
+    helm.sh/chart: kube-state-metrics-9.0.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "2.20.0"
+  annotations:
+spec:
+  type: "ClusterIP"
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8080
+    targetPort: http
+  selector:    
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: prometheus
+
+---
+# Source: prometheus/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+  namespace: default
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 9090
+  selector:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+  sessionAffinity: None
+  type: "ClusterIP"
+---
+# Source: prometheus/charts/kube-state-metrics/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-kube-state-metrics
+  namespace: default
+  labels:    
+    helm.sh/chart: kube-state-metrics-9.0.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "2.20.0"
+spec:
+  selector:
+    matchLabels:      
+      app.kubernetes.io/name: kube-state-metrics
+      app.kubernetes.io/instance: prometheus
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  revisionHistoryLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: metrics
+        app.kubernetes.io/instance: prometheus
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/part-of: kube-state-metrics
+        app.kubernetes.io/version: 2.20.0
+      annotations:
+      
+        prometheus.io/port: "8080"
+        prometheus.io/scrape: "true"
+    spec:
+      automountServiceAccountToken: true
+      hostNetwork: false
+      serviceAccountName: prometheus-kube-state-metrics
+      securityContext:
+        fsGroup: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      dnsPolicy: ClusterFirst
+      containers:
+      - name: kube-state-metrics
+        args:
+        - --port=8080
+        - --resources=daemonsets,deployments,jobs,nodes,persistentvolumeclaims,pods,statefulsets
+        imagePullPolicy: IfNotPresent
+        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8081
+          name: metrics
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /livez
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /readyz
+            port: metrics
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      nodeSelector:
+        kubernetes.io/os: linux
+
+---
+# Source: prometheus/templates/deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.16.0
+    helm.sh/chart: prometheus-29.47.2
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus-server
+  namespace: default
+spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: server
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/instance: prometheus
+  replicas: 1
+  revisionHistoryLimit: 10
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: prometheus-server
+      labels:
+        app.kubernetes.io/component: server
+        app.kubernetes.io/instance: prometheus
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: prometheus
+        app.kubernetes.io/version: v3.16.0
+    spec:
+      enableServiceLinks: true
+      serviceAccountName: prometheus-server
+      containers:
+
+        - name: prometheus-server
+          image: "quay.io/prometheus/prometheus:v3.16.0"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - --config.file=/etc/config/prometheus.yml
+            - --storage.tsdb.path=/data
+            - --web.console.libraries=/etc/prometheus/console_libraries
+            - --web.console.templates=/etc/prometheus/consoles
+            - --config.auto-reload
+            - --web.enable-otlp-receiver
+            - --web.enable-remote-write-receiver
+          ports:
+            - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 3
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+            - name: storage-volume
+              mountPath: /data
+              subPath: ""
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+      dnsPolicy: ClusterFirst
+      securityContext:
+        fsGroup: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 300
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-server
+        - name: storage-volume
+          persistentVolumeClaim:
+            claimName: prometheus-server
+
+---
+# Source: prometheus/charts/alertmanager/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus-alertmanager
+  labels:
+    helm.sh/chart: alertmanager-2.5.1
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: "v0.35.0"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+spec:
+  replicas: 1
+  minReadySeconds: 0
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+      app.kubernetes.io/instance: prometheus
+  serviceName: prometheus-alertmanager-headless
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/instance: prometheus
+      annotations:
+        kubectl.kubernetes.io/default-container: alertmanager
+        prometheus.io/port: "9093"
+        prometheus.io/scrape: "true"
+    spec:
+      automountServiceAccountToken: true
+      serviceAccountName: prometheus-alertmanager
+      securityContext:
+        fsGroup: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: alertmanager-configmap-reload
+          image: "quay.io/prometheus-operator/prometheus-config-reloader:v0.95.2"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - "--watched-dir=/etc/alertmanager"
+            - "--reload-url=http://127.0.0.1:9093/-/reload"
+            - "--listen-address=0.0.0.0:8080"
+          ports:
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+              scheme: HTTP
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+              scheme: HTTP
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 65534
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+        - name: alertmanager
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 65534
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          image: "quay.io/prometheus/alertmanager:v0.35.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+          args:
+            - "--storage.path=/alertmanager"
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--cluster.listen-address="
+          ports:
+            - name: http
+              containerPort: 9093
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 10
+          resources:
+            limits:
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+            - name: pushover
+              mountPath: /etc/pushover
+              subPath: 
+              readOnly: true
+            - name: storage
+              mountPath: /alertmanager
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-alertmanager
+        - name: pushover
+          secret:
+            secretName: pushover
+            optional: true
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Mi

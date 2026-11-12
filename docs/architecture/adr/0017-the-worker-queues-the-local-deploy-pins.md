@@ -11,7 +11,7 @@ The factory's own deploy pull request for the local profile (`chore(deploy): run
 
 It goes in at the head the gate judged (`expectedHeadOid`), through the same action and guards the line's enqueue uses. A failure that may pass is tried again on the next pass, a few times; a refusal is kept and signed as the worker keeps its others. In a dry run the watch reads GitHub as it is and records the enqueue it would make, changing nothing; a dry run's own deploy pull request, which GitHub never had, merges by the dry run's clock as before.
 
-Nothing else is queued this way: not the app's deploy pull request, which stays the line's within Martin's autonomy level and auto-merge; not a release, an improvement, a pull request of any other profile, or anything that is not the App's.
+Nothing else is queued this way: not the app's deploy pull request, which stays the line's within Martin's autonomy level and auto-merge; not a pin move the gate passed (ADR 0019), which Martin adds; not a release, an improvement, a pull request of any other profile, or anything that is not the App's.
 
 ## Why
 

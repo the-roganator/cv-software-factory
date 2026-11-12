@@ -14,7 +14,8 @@
  * - `improvement`: the app's typed list of flag names changed, or a line of the app's code, added or removed, that
  *   names a flag or asks one, so new behaviour behind a flag already on the list is caught too.
  *
- * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin`, `low-risk`, `lights-out`, or
+ * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin`, here `pin-move` (a pin of the
+ * scan's list moved forward and proved, scripts/pin-move.ts), in the app's repository `low-risk` and `lights-out`, or
  * `held` (`route`).
  */
 import {
@@ -40,6 +41,9 @@ export const REVIEW_APP = 5470762;
 /** The factory's App's bot user (`mrogan-software-factory[bot]`), which opens its pull requests. */
 export const FACTORY_APP = 337765427;
 
+/** This repository, the factory's: the only one where the App's pin moves pass (ADR 0019). */
+export const FACTORY_REPO = 'the-roganator/cv-software-factory';
+
 /** The app's repository: the only one where Lights-out applies, and the App's pull requests may pass untagged. */
 export const APP_REPO = 'the-roganator/cv-worlds-worst-website';
 
@@ -52,7 +56,7 @@ export interface PullRequest {
   state: string;
   user: { id: number } | null;
   head: { sha: string; ref: string; repo: { full_name: string } | null };
-  base: { ref: string; repo: { full_name: string } };
+  base: { ref: string; repo: { full_name: string }; sha?: string };
   /** How many files it changes, which the files API lists up to 3,000 of. */
   changed_files?: number;
 }
@@ -617,6 +621,11 @@ export interface Facts {
    * it changes digests alone), or why the check could not be made, after the gate tried again.
    */
   pin?: { pins: Pin[] } | { reason: string; digests?: true } | { unchecked: string };
+  /**
+   * The pin move's result, for a pull request of the App's here that is no exact pin: the move it proved, with its
+   * verdict's title, or the first condition it could not prove, a fact not read among them.
+   */
+  pinMove?: { title: string } | { reason: string };
 }
 
 const tagNames = (tags: readonly Found[]) => tags.map((t) => t.tag).join(', ');
@@ -664,8 +673,19 @@ export function route(facts: Facts): Decision {
     };
   }
   if (repo !== APP_REPO) {
-    const why = pin && 'reason' in pin ? `: ${pin.reason}` : '';
-    return held(`Not an exact pin${why}, and here only a pin passes without Martin`);
+    // Tried after the exact pin, and never in the app's repository, whose line moves its own pins.
+    const move = facts.pinMove;
+    // A check that ran before a retarget ran for another base: a pin move is proved only into main from the start.
+    if (move && 'title' in move && repo === FACTORY_REPO && facts.retargeted)
+      return held('Not a pin move: its base was changed, and a pin move is proved only into main from the start');
+    if (move && 'title' in move && repo === FACTORY_REPO)
+      return { pass: true, title: move.title, rule: 'pin-move', tags };
+    const exact = pin && 'reason' in pin ? pin.reason : undefined;
+    if (move && 'reason' in move)
+      return held(
+        `Not an exact pin${exact ? ` (${exact})` : ''}, nor a pin move: ${move.reason}, and here only a pin passes without Martin`,
+      );
+    return held(`Not an exact pin${exact ? `: ${exact}` : ''}, and here only a pin passes without Martin`);
   }
   // A change of digests alone passes only as an exact pin, in the app's repository too, and its hold says why not.
   if (pin && 'reason' in pin && pin.digests)

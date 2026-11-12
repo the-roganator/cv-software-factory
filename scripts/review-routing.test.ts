@@ -192,6 +192,45 @@ describe('approval routing: the rule, the first that holds', () => {
     }
   });
 
+  it('passes a pin move here, tried after the exact pin, and holds one it could not prove with both reasons', () => {
+    const here = facts({ repo: FACTORY_REPO, pr: pr(FACTORY_APP, FACTORY_REPO), tags: [tag('code-owned')] });
+    const pin = { reason: 'apps/console/zap/scan.ts is not a pin file under deploy/' };
+    const title = 'A pin move of ghcr.io/zaproxy/zaproxy to 2.17.0, forward on its line';
+    expect(route({ ...here, pin, pinMove: { title } })).toMatchObject({ pass: true, rule: 'pin-move', title });
+    const held = route({ ...here, pin, pinMove: { reason: 'a move backwards, from 2.17.0 to 2.16.0' } });
+    expect(held).toMatchObject({ pass: false, rule: 'held' });
+    expect(held.title).toBe(
+      'Not an exact pin (apps/console/zap/scan.ts is not a pin file under deploy/), nor a pin move: a move backwards, from 2.17.0 to 2.16.0, and here only a pin passes without Martin: waits for Martin to approve aaaaaaa',
+    );
+    // An exact pin decides first; one whose check could not be made waits, and no pin move passes it.
+    expect(route({ ...here, pin: { unchecked: 'ghcr.io did not answer' }, pinMove: { title } })).toMatchObject({
+      pass: false,
+      pending: 'the gate could not check its exact pin: ghcr.io did not answer',
+    });
+    // Martin's say comes first, and someone else's pull request is never a pin move.
+    expect(route({ ...here, reviews: [approved()], pinMove: { reason: 'x' } })).toMatchObject({
+      rule: 'martin-approved-head',
+    });
+    expect(route({ ...here, pr: pr(42, FACTORY_REPO), pinMove: { title } })).toMatchObject({
+      pass: false,
+      rule: 'held',
+    });
+    // One whose base was ever changed: a check may have run for that other base.
+    expect(route({ ...here, pin, retargeted: true, pinMove: { title } })).toMatchObject({ pass: false, rule: 'held' });
+    // A removed risk label, and a read that failed, hold it whatever the move.
+    expect(route({ ...here, labelsRemoved: ['code-owned'], pinMove: { title } })).toMatchObject({ pass: false });
+    expect(route({ ...here, unread: 'GET /files: 502', pinMove: { title } })).toMatchObject({ pass: false });
+  });
+
+  it('never passes a pin move in the app’s repository, whose line moves its own pins', () => {
+    const there = facts({ tags: [tag('dependency-change')], pinMove: { title: 'A pin move of x' } });
+    expect(route(there)).toMatchObject({ pass: false, rule: 'held' });
+    // Nor in any repository but this one, whatever calls the gate.
+    const other = 'someone/else';
+    const elsewhere = facts({ repo: other, pr: pr(FACTORY_APP, other), pinMove: { title: 'A pin move of x' } });
+    expect(route(elsewhere)).toMatchObject({ pass: false, rule: 'held' });
+  });
+
   it('passes it at Lights-out, in the app’s repository, but never a release, an improvement or a code-owned path', () => {
     const lightsOut = (tags: Found[]) => route(facts({ autonomy: 'lights-out', tags }));
     expect(lightsOut([tag('test-loosening'), tag('dependency-change'), tag('security-headers')])).toMatchObject({

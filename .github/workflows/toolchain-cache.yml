@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [static, tests, zap, node, review, scan, graph, platform]
+        job: [static, tests, zap, node, review, moves, scan, graph, platform]
         include:
           - job: static
             tools: node pnpm kustomize
@@ -47,6 +47,9 @@ jobs:
           # Node and cosign, for review.yml, which checks an exact pin's signatures.
           - job: review
             tools: node cosign
+          # review.yml's pin move job: the list, the charts rendered, and policy-hash.ts's one dependency.
+          - job: moves
+            tools: node pnpm kustomize yq helm
           # The daily scan (vulnerabilities.yml): the list, its charts rendered, and the SBOMs of ours verified.
           - job: scan
             tools: node kustomize helm yq cosign

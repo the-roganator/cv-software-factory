@@ -39,6 +39,9 @@ const CHECKED_OUT: Record<string, string[]> = {
   'copilot-held-runs.yml': ['mise.toml', 'mise.lock', 'scripts/copilot-held-runs.ts'],
 };
 
+/** review.yml's job that works out the gate's pin moves (scripts/pin-moves.ts), with no secret. */
+const PIN_MOVE_JOB = 'pin-move';
+
 interface Step {
   id?: string;
   name?: string;
@@ -185,7 +188,10 @@ describe('every workflow', () => {
     // Every workflow that holds a secret is here, so a new one with no list of its own fails.
     for (const file of Object.keys(WITH_A_SECRET)) expect(Object.keys(CHECKED_OUT), file).toContain(file);
     for (const file of Object.keys(CHECKED_OUT)) {
-      const steps = Object.values(read(file).jobs).flatMap((job) => job.steps ?? []);
+      // review.yml's pin move job holds no secret and reads main whole: the test below holds it to that.
+      const steps = Object.entries(read(file).jobs)
+        .filter(([id]) => !(file === 'review.yml' && id === PIN_MOVE_JOB))
+        .flatMap(([, job]) => job.steps ?? []);
       const checkouts = steps.filter((s) => s.uses?.startsWith('actions/checkout@'));
       expect(checkouts, file).toHaveLength(1);
       const options = checkouts[0]?.with ?? {};
@@ -207,6 +213,30 @@ describe('every workflow', () => {
         /head_sha|\.head\.(sha|ref)|pull_request\.head/,
       );
     }
+  });
+
+  it("works out the gate's pin moves in a job of review.yml's own, with no secret, nothing to write and main's code", () => {
+    const workflow = read('review.yml');
+    const job = workflow.jobs[PIN_MOVE_JOB] as Job;
+    expect(secretsOf(workflow, job)).toEqual({ names: [], passed: false });
+    expect(job.environment).toBeUndefined();
+    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', checks: 'read' });
+    const checkouts = (job.steps ?? []).filter((s) => s.uses?.startsWith('actions/checkout@'));
+    expect(checkouts).toHaveLength(1);
+    expect(checkouts[0]?.with).toEqual({
+      repository: expression('job.workflow_repository'),
+      ref: expression('job.workflow_sha'),
+      'persist-credentials': false,
+    });
+    // The gate, which holds the key, takes its answers and reads no head itself; it runs whatever the job did.
+    const review = workflow.jobs.review as Job & { needs?: unknown };
+    expect(review.needs).toBe(PIN_MOVE_JOB);
+    expect(review.if).toBe(expression('!cancelled()'));
+    const judge = (review.steps ?? []).find((s) => s.run === 'node scripts/review-gate.ts') as Step & {
+      env?: Record<string, unknown>;
+    };
+    expect(judge.env?.PIN_MOVES).toBe(expression(`needs.${PIN_MOVE_JOB}.outputs.answers`));
+    for (const step of job.steps ?? []) expect(step.run ?? '').not.toMatch(/\bgit\b|CHECKS_TOKEN/);
   });
 
   it('gives the token no more than a read of the contents in the drift check, whose reads are the App’s', () => {

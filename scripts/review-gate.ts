@@ -1,10 +1,13 @@
 /**
  * The review gate (ADR 0014): whether a pull request has Martin's say, posted as the `review` check by the review App.
  * It passes when Martin opened the pull request from a branch here, or when his latest verdict on it approves the commit
- * at its head. Nothing in the rule depends on the base, so a pull request into any branch is judged, a stacked one's
- * into the branch below it too.
+ * at its head; otherwise by the rest of approval routing's rules (`review-routing.ts`). A pin move's answer, which reads
+ * the pull request's commits, is worked out by review.yml's `pin move` job, with no secret (`scripts/pin-moves.ts`), and
+ * taken here from `PIN_MOVES`: the gate itself, which holds the key, imports nothing that reads a head. Nothing in the
+ * rule depends on the base, so a pull request into any branch is judged, a stacked one's into the branch below it too.
  *
- *     node scripts/review-gate.ts      # in review.yml, which GitHub runs from main's copy only
+ *     node scripts/review-gate.ts                                 # in review.yml, which GitHub runs from main's copy only
+ *     node scripts/review-gate.ts --print <owner/name> <number>   # by hand, posting nothing
  *
  * It reads the event GitHub hands the workflow, and the pull request and its reviews through the API, and never the
  * pull request's code. It runs on `workflow_run`, after `review-requested.yml` ran, which runs as the pull request or
@@ -37,7 +40,7 @@
  *     GITHUB_EVENT_NAME, GITHUB_EVENT_PATH, GITHUB_REPOSITORY, GITHUB_API_URL   as Actions sets them
  */
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { cutPending, type Found, type Judged, readVerdict, verdictBlock } from '../policy/review-verdict.ts';
 import {
@@ -48,6 +51,8 @@ import {
   type Decision,
   exactPin,
   excusedTests,
+  FACTORY_APP,
+  FACTORY_REPO,
   type Facts,
   type FileChange,
   type IssueEvent,
@@ -228,6 +233,88 @@ export interface Run {
   autonomy: string;
   /** Print each verdict and its summary, and post nothing, whatever the token: for trying the gate by hand. */
   print: boolean;
+  /**
+   * Where a pin move's answer comes from (`pinMoveOf`): read here, by hand; worked out, by review.yml's `pin move` job,
+   * which holds no secret, for the gate to take; or taken from that job's answers, by the gate, which holds the key and
+   * reads no pull request's head itself. Undefined answers to take are none: every pin move is then held.
+   */
+  moves?:
+    | { kind: 'read'; read: PinMoveReader }
+    | { kind: 'work'; read: PinMoveReader }
+    | { kind: 'take'; answers: Map<string, PinMoveAnswer> | undefined };
+}
+
+/**
+ * Works out a pin move's answer for a pull request, with the gate's reads of GitHub: `scripts/pin-moves.ts` gives one,
+ * so the gate, which holds the key, imports nothing that reads a head.
+ */
+export type PinMoveReader = (each: Run, pr: PullRequest, github: GitHub) => Promise<PinMoveAnswer>;
+
+/** The gate's reads of GitHub's API, for a pin move's reader. */
+export interface GitHub {
+  api: <T>(method: string, path: string, token: string) => Promise<T>;
+  paged: <T>(path: string, token: string, key?: string) => Promise<T[]>;
+}
+
+/** A pin move's answer for one pull request at one head: the verdict's title when it was proved, or the reason not. */
+export type PinMoveAnswer = { title: string } | { reason: string };
+
+/** The answers the `pin move` job worked out, by `<number>@<head>`, which it writes for the gate to take. */
+const WORKED = new Map<string, PinMoveAnswer>();
+
+const answerKey = (pr: PullRequest) => `${pr.number}@${pr.head.sha}`;
+
+/** The most a pin move's answer may say: a reason, not a log. */
+const ANSWER_LIMIT = 1_000;
+const cutTo = (text: string) => (text.length > ANSWER_LIMIT ? `${text.slice(0, ANSWER_LIMIT - 1)}…` : text);
+
+/**
+ * The `pin move` job's answers, as review.yml hands them to the gate, or undefined when they are not all well formed:
+ * an object of `<number>@<head>` to `{ title }` or `{ reason }`, each a string of at most ANSWER_LIMIT characters.
+ */
+export function readAnswers(text: string | undefined): Map<string, PinMoveAnswer> | undefined {
+  if (!text?.trim()) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+  const answers = new Map<string, PinMoveAnswer>();
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!/^[1-9]\d*@[0-9a-f]{40}$/.test(key) || typeof value !== 'object' || value === null) return undefined;
+    const keys = Object.keys(value);
+    const said = (value as Record<string, unknown>)[keys[0] ?? ''];
+    if (keys.length !== 1 || !['title', 'reason'].includes(keys[0] ?? '') || typeof said !== 'string') return undefined;
+    if (!said || said.length > ANSWER_LIMIT) return undefined;
+    answers.set(key, keys[0] === 'title' ? { title: said } : { reason: said });
+  }
+  return answers;
+}
+
+/**
+ * The pin move's answer for a pull request, from where the run takes it: worked out and kept, by the `pin move` job;
+ * read afresh, by hand; or taken from that job, by the gate, a missing answer a hold that says so.
+ */
+async function pinMoveOf(each: Run, pr: PullRequest): Promise<PinMoveAnswer> {
+  const moves = each.moves ?? { kind: 'take', answers: undefined };
+  if (moves.kind === 'take') {
+    // Proved against main's merge base: a pull request retargeted since is judged afresh, never by that answer.
+    if (pr.base.ref !== 'main')
+      return { reason: `it is into ${pr.base.ref}, and a pin move is judged into main alone` };
+    if (!moves.answers) return { reason: 'the pin move job gave the gate no answers it could read' };
+    return (
+      moves.answers.get(answerKey(pr)) ?? {
+        reason: `the pin move job gave no answer for #${pr.number} at ${short(pr.head.sha)}`,
+      }
+    );
+  }
+  const answer = await moves.read(each, pr, { api, paged });
+  // Cut to what the gate reads, so one long reason (a path the head names) never spoils the others' answers.
+  if (moves.kind === 'work')
+    WORKED.set(answerKey(pr), 'title' in answer ? { title: cutTo(answer.title) } : { reason: cutTo(answer.reason) });
+  return answer;
 }
 
 const apiUrl = () => process.env.GITHUB_API_URL ?? 'https://api.github.com';
@@ -555,8 +642,10 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
     });
     // Martin's say passes it before an exact pin is looked at, so cosign is not asked. A check that could not be made
     // is tried again, and if it still cannot be, says why: no judgement of the pin, which `route` never passes.
+    // The pin move job works out pin moves alone: the gate checks the exact pin, with cosign, and decides.
+    const working = each.moves?.kind === 'work';
     const pin: Facts['pin'] =
-      appOpened(judged) && !verdict(judged, reviews).pass
+      appOpened(judged) && !verdict(judged, reviews).pass && !working
         ? await retrying(
             () =>
               exactPin(
@@ -581,6 +670,10 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
               : { unchecked: cause(error) },
           )
         : undefined;
+    // Here, a pull request of the App's that is no exact pin may be a pin move: proved from its two commits, never
+    // tried when the exact pin's check could not be made, which is a wait of its own.
+    const wanted = working ? appOpened(judged) && !verdict(judged, reviews).pass : pin !== undefined && 'reason' in pin;
+    const pinMove = each.repo === FACTORY_REPO && wanted ? await pinMoveOf(each, judged) : undefined;
     return route({
       ...facts(),
       tags,
@@ -588,6 +681,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
       labelsRemoved: riskLabelsRemoved(events),
       retargeted: events.some((e) => e.event === 'base_ref_changed'),
       ...(pin ? { pin } : {}),
+      ...(pinMove ? { pinMove } : {}),
     });
   } catch (error) {
     // Martin's say needs only his reviews, if they were read; anything else unread holds the pull request, saying what.
@@ -605,8 +699,9 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
 
 const RULE =
   "Passes a pull request Martin opened, or whose head he approved; an exact pin of the factory's App's, of images " +
-  "build.yml signed on main; and in the app's repository the App's with no risk tags, or at Lights-out those whose " +
-  'tags it allows (spec 4.3, ADR 0014).';
+  "build.yml signed on main; here, the App's pin move, one pin of the scan's list moved forward, proved from the pull " +
+  "request (ADR 0019); and in the app's repository the App's with no risk tags, or at Lights-out those whose tags it " +
+  'allows (spec 4.3, ADR 0014).';
 
 /** The most a check run's summary may hold, GitHub's 65,535 characters, with room to spare. */
 export const SUMMARY_LIMIT = 60_000;
@@ -645,6 +740,8 @@ export function summaryOf(commit: string, judged: readonly { pr: PullRequest; sa
 
 /** Posts the `review` check on a commit, as the review App, or says why it does not. */
 async function post(each: Run, commit: string, pass: boolean, title: string, summary: string) {
+  // The pin move job posts nothing: its answers go to the gate.
+  if (each.moves?.kind === 'work') return;
   if (each.print) {
     console.log(`Would post ${CHECK}: ${pass ? 'success' : 'failure'} on ${commit}: ${title}\n\n${summary}\n`);
     return;
@@ -786,27 +883,81 @@ async function judgeHead(each: Run, pr: PullRequest): Promise<void> {
 }
 
 /** What a run is asked, from the environment Actions sets, or, by hand, `--print <owner/name> <number>`. */
-function asked(args: readonly string[]): { each: Run; event?: Event; name: string; number?: number } {
-  const { GH_TOKEN: read = '', CHECKS_TOKEN: token = '', AUTONOMY: autonomy = '' } = process.env;
+function asked(
+  args: readonly string[],
+  read?: PinMoveReader,
+): {
+  each: Run;
+  event?: Event;
+  name: string;
+  number?: number;
+  asApp?: boolean;
+} {
+  const { GH_TOKEN: reading = '', CHECKS_TOKEN: token = '', AUTONOMY: autonomy = '' } = process.env;
   if (args[0] === '--print') {
-    const [, repo = '', number = ''] = args;
+    const asApp = args[1] === '--as-app';
+    const [repo = '', number = ''] = args.slice(asApp ? 2 : 1);
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[1-9]\d*$/.test(number)) {
-      throw new Error('usage: review-gate.ts --print <owner/name> <number>');
+      throw new Error('usage: review-gate.ts --print [--as-app] <owner/name> <number>');
     }
-    return { each: { repo, read, token: '', autonomy, print: true }, name: 'print', number: Number(number) };
+    return {
+      // By hand, a pin move is worked out only through scripts/pin-moves.ts, which gives the reader.
+      each: {
+        repo,
+        read: reading,
+        token: '',
+        autonomy,
+        print: true,
+        moves: read ? { kind: 'read', read } : { kind: 'take', answers: undefined },
+      },
+      name: 'print',
+      number: Number(number),
+      asApp,
+    };
   }
   const repo = process.env.GITHUB_REPOSITORY ?? '';
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH ?? '', 'utf-8')) as Event;
-  return { each: { repo, read, token, autonomy, print: false }, event, name: process.env.GITHUB_EVENT_NAME ?? '' };
+  // review.yml's `pin move` job works the answers out, with no key; the gate takes them, and never reads a head.
+  if (args[0] === '--pin-moves' && !read)
+    throw new Error('the pin move job runs scripts/pin-moves.ts, which reads them');
+  const moves: Run['moves'] =
+    args[0] === '--pin-moves' && read
+      ? { kind: 'work', read }
+      : { kind: 'take', answers: readAnswers(process.env.PIN_MOVES) };
+  return {
+    each: { repo, read: reading, token: moves.kind === 'work' ? '' : token, autonomy, print: false, moves },
+    event,
+    name: process.env.GITHUB_EVENT_NAME ?? '',
+  };
 }
 
-async function main(): Promise<void> {
-  const { each, event, name, number } = asked(process.argv.slice(2));
+/**
+ * The gate, as review.yml runs it, or by hand; with a pin move's reader, as `scripts/pin-moves.ts` runs it. The pin
+ * move job's answers are written as its output once it has judged every pull request.
+ */
+export async function main(args: readonly string[], read?: PinMoveReader): Promise<void> {
+  const asking = asked(args, read);
+  try {
+    await gate(asking);
+  } finally {
+    if (asking.each.moves?.kind === 'work' && process.env.GITHUB_OUTPUT)
+      appendFileSync(process.env.GITHUB_OUTPUT, `answers=${JSON.stringify(Object.fromEntries(WORKED))}\n`);
+  }
+}
+
+async function gate({ each, event, name, number, asApp }: ReturnType<typeof asked>): Promise<void> {
   const { repo, read } = each;
   console.log(`AUTONOMY is ${each.autonomy ? JSON.stringify(each.autonomy) : 'unset'} for ${repo}.`);
   if (number !== undefined) {
     // By hand, a pull request is judged alone at its head, merged or closed too, to compare with what main's gate said.
     const pr = await api<PullRequest>('GET', `/repos/${repo}/pulls/${number}`, read);
+    // `--as-app` replays a past pull request as if the factory's App had opened it, with no say of Martin's: what the
+    // rules would have said of the same change.
+    if (asApp) {
+      const said = await judge(each, { ...pr, user: { id: FACTORY_APP } }, true);
+      console.log(`#${number} as the App's, at ${short(pr.head.sha)}: ${said.rule}: ${said.title}.`);
+      return;
+    }
     const judged = await judgeEach(each, [pr]);
     const said = together(judged);
     await settle(each, pr.head.sha, said, judged);
@@ -888,7 +1039,7 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  await main(process.argv.slice(2));
   // A try ended at its deadline may leave cosign running: the verdict is said, so nothing is left to wait for.
   process.exit();
 }

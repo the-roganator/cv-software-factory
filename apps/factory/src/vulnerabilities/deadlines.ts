@@ -241,6 +241,20 @@ export function newestOnLine(tag: string, tags: string[]) {
     .at(-1);
 }
 
+/**
+ * What a pin's tag names now: for a version, the newest tag on its line (`newestOnLine`), and for any other tag, that
+ * tag, whose image is what it names today; undefined for a pin with no tag. The one way a target is resolved: the scan
+ * takes a fix from it, and the review gate (scripts/pin-move.ts) holds a pin move to it.
+ */
+export async function newestOf(pin: string, listTags: (repository: string) => Promise<string[]>) {
+  const { repository, tag } = nameAndTag(pin);
+  if (!tag) return undefined;
+  // A version's newest on its line; any other tag, the image it names now.
+  if (!tagLine(tag)) return { reference: `${repository}:${tag}`, tag, version: false };
+  const latest = newestOnLine(tag, await listTags(repository)) ?? tag;
+  return { reference: `${repository}:${latest}`, tag: latest, version: true };
+}
+
 /** A tag's line, or undefined for a tag that is not a version. */
 function tagLine(tag: string) {
   const head = tag.split('-')[0] ?? '';
@@ -569,14 +583,6 @@ export async function installable(
     return { created, has: set };
   };
   const undated = new Set<string>();
-  const newestOf = async (pin: string) => {
-    const { repository, tag } = nameAndTag(pin);
-    if (!tag) return undefined;
-    // A version's newest on its line; any other tag, the image it names now.
-    if (!tagLine(tag)) return { reference: `${repository}:${tag}`, tag, version: false };
-    const latest = newestOnLine(tag, await listTags(repository)) ?? tag;
-    return { reference: `${repository}:${latest}`, tag: latest, version: true };
-  };
   const digests = new Map<string, Promise<string>>();
   const digestOf = (reference: string) => {
     let once = digests.get(reference);
@@ -840,7 +846,7 @@ export async function installable(
         }
         return;
       }
-      const latest = await newestOf(pinOf(target) ?? '');
+      const latest = await newestOf(pinOf(target) ?? '', listTags);
       if (!latest) return;
       const image = await scanned(latest.reference, true);
       if (image.created === undefined) return;

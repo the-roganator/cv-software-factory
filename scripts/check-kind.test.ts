@@ -388,3 +388,30 @@ describe('what the platform check runs', () => {
     for (const file of files) expect(file, file).toMatch(rule);
   });
 });
+
+// A pin move of the App's (scripts/pin-move.ts) passes only once the job that runs its pin succeeded at its head, never
+// skipped: so each pin it can pass is `code`, which runs them all.
+describe('a pin move', () => {
+  const ZAP = 'apps/console/zap/scan.ts';
+  const pins: [string, string, string, string][] = [
+    ["ZAP's image, which ZAP scan runs", ZAP, `const ZAP = 'zap:2.17.0@sha256:${'a'.repeat(64)}';\n`, 'b'],
+    [
+      "a Dockerfile's stage, which image builds builds",
+      'apps/factory/Dockerfile',
+      `FROM node:24@sha256:${'a'.repeat(64)}\n`,
+      'b',
+    ],
+    [
+      "Postgres, whose pin the tests' database is",
+      'deploy/base/postgres/statefulset.yaml',
+      `image: postgres:18@sha256:${'a'.repeat(64)}\n`,
+      'b',
+    ],
+  ];
+  for (const [what, file, text, digit] of pins)
+    for (const [where, run] of both)
+      it(`is code for ${what}, ${where}`, () => {
+        const repo = repository({ [file]: text.replace(/a{64}/, digit.repeat(64)) }, {}, { [file]: text });
+        expect(kind(repo, run).kind).toBe('code');
+      });
+});

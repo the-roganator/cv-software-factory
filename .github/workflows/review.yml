@@ -2,7 +2,8 @@
 # App, on a pull request's head and on the merge queue's commit for it (scripts/review-gate.ts). It passes, by the
 # first rule that holds (scripts/review-routing.ts): when Martin opened the pull request, or approved its head after the
 # last push; an exact pin of the factory's App's, every changed line a digest of an image build.yml signed on main,
-# from a commit that descends from the one it replaces; and, in the app's repository alone, the App's pull request with
+# from a commit that descends from the one it replaces; here, the App's pin move, one pin of the vulnerability scan's
+# list moved forward, proved from its two commits (below); and, in the app's repository alone, the App's pull request with
 # no risk tags, which the gate works out from the diff and test integrity's run, or, while the caller's AUTONOMY
 # variable is `lights-out`, one whose tags are not a release, an improvement or a path CODEOWNERS on main gives Martin.
 # Anything else is held for Martin. Its summary names the rule and the tags in a block the line reads
@@ -20,13 +21,23 @@
 # and only an admin of that repository (Martin) can set one; neither the factory's App nor any worker's credential may
 # write variables. It is read here, in main's copy, never from an input, so neither a pull request nor the caller's
 # own file can say Lights-out. The gate heeds it in the app's repository alone: in this one, the App's pull requests
-# pass only as exact pins.
+# pass only as exact pins, or as pin moves.
+#
+# A pin move (scripts/pin-move.ts, ADR 0019) is one pin of the vulnerability scan's list moved forward by the App here,
+# proved from its two commits: the list at each, the registries, the charts' renderings, the refusal records' hashes,
+# Trivy on the image before and after, and the checks that ran it. Working that out reads the pull request's head, as
+# data, which the job holding the App's key never does: the `pin move` job below does it, with no secret and read-only
+# permissions, from main's whole checkout and its locked dependencies, and hands the gate one answer for each pull
+# request it would judge, `<number>@<head>`, which the gate takes only for a pull request of the App's here that is no
+# exact pin. A missing or unreadable answer holds it. The gate runs again when check.yml finishes, as a pin move waits
+# for the job that runs what it pins.
 #
 # Only main's copy runs with the App's key. `workflow_run` runs the workflow as main has it, with GITHUB_REF main, and
 # the key is in the `review` environment, which only main may use: a run on any other ref, a pull request's merge ref
 # included, is refused it. It reads the pull request's metadata through the API and never checks out, builds or runs
 # its code: the diff, the files an exact pin changes and CODEOWNERS come through the API, the images' signatures from
-# GHCR through cosign. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
+# GHCR through cosign. The pin move job, which holds no secret, fetches the pull request's two commits as data, and
+# runs none of them. A pull request opened, pushed to, edited or unlabelled, a review, and the merge queue each run
 # review-requested.yml, which runs on `pull_request`, `pull_request_review` or `merge_group` as the change has it and
 # holds nothing; its run starts this one, here, from main. Nothing here runs on `pull_request_target`, which GitHub's
 # default event policy blocks in public repositories.
@@ -70,7 +81,8 @@ name: review
 
 on:
   workflow_run:
-    workflows: [review requested]
+    # check.yml too, so a pin move held only because the job that runs its pin had not finished is judged again.
+    workflows: [review requested, check]
     types: [completed]
   workflow_call:
     secrets:
@@ -92,8 +104,47 @@ concurrency:
     github.event.workflow_run.head_branch }}
 
 jobs:
+  # The pin moves the gate would judge, worked out with no secret: main's code on the pull request's two commits.
+  # Nothing here can post a check; its one output is the answers.
+  pin-move:
+    name: pin move
+    # The app's line moves its own pins: its pull requests are never pin moves.
+    if: ${{ github.repository != 'the-roganator/cv-worlds-worst-website' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    outputs:
+      answers: ${{ steps.moves.outputs.answers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          # Its own set of tools, so its own cache key, which toolchain-cache.yml warms on main: never the gate's.
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          # kustomize and yq for the list, helm for the charts, pnpm for policy-hash.ts's one dependency; Trivy runs in
+          # its pinned image through Docker.
+          install_args: node pnpm kustomize yq helm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: moves
+        name: Work out the pin moves
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTONOMY: ${{ vars.AUTONOMY }}
+        run: node scripts/pin-moves.ts --pin-moves
+
   review:
     name: review gate
+    needs: pin-move
+    # Whatever the pin move job did: the gate always gives a verdict, and holds a pin move it has no answer for.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: review
@@ -139,4 +190,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHECKS_TOKEN: ${{ steps.app.outputs.token }}
           AUTONOMY: ${{ vars.AUTONOMY }}
+          PIN_MOVES: ${{ needs.pin-move.outputs.answers }}
         run: node scripts/review-gate.ts

@@ -803,7 +803,7 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
 }
 
 /** The advisory databases, pulled from GHCR with retries, and how old the main one is. */
-async function databases(tools: Tools, trivyImage: string, cache: string) {
+export async function databases(tools: Tools, trivyImage: string, cache: string) {
   const pull = (args: string[]) =>
     tools.retry(() =>
       run('docker', [...dockerRun(cache), trivyImage, 'image', '--cache-dir', '/cache', '--quiet', ...args]),

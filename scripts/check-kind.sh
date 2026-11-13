@@ -104,8 +104,11 @@ queued() {
 # The modules the scripts import are named file by file, as scripts/check-kind.test.ts finds them: a directory would
 # give a cluster to every change beside one of them. scripts/answer-key.ts is not among them: `make up` runs it only
 # with the private checkout, which the check's runner never has.
+# Mise's pins are every file mise-action reads as config at the root (mise.local.toml overrides mise.toml; an
+# environment's mise.<env>.toml; .config/mise.toml, mise/ and .mise/; .tool-versions; the idiomatic version files),
+# and how the files are checked out is .gitattributes, at any depth, and .gitmodules, whose submodules Argo CD inits.
 # A diff it cannot read counts as a change.
-PLATFORM='^(deploy/|Makefile$|mise\.(toml|lock)$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|platform-watch\.sh|platform-pods\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
+PLATFORM='^(deploy/|Makefile$|(\.config/)?\.?mise(\.[A-Za-z0-9_-]+)*\.(toml|lock)$|\.?mise/|\.config/mise/|\.tool-versions$|\.node-version$|\.nvmrc$|(.+/)?\.gitattributes$|\.gitmodules$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|platform-watch\.sh|platform-pods\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
 # Each path whole, however git would quote it: a path a line of its own, or more for one with a newline in it, any of
 # which may match.
 changes_platform() {
@@ -119,7 +122,7 @@ changes_platform() {
 # lockfile and the workspace's manifests). An input is read as git holds it, its mode, type and object, so a mode, a
 # symlink or a deletion differs; the App's deploy pins of our own images are read with their digests written the same,
 # as ADR 0017 reads them, where their move alone makes no cluster either.
-INSTALLS='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc|(.+/)?package\.json)$'
+INSTALLS='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc|\.pnpmfile\.cjs|(.+/)?package\.json)$'
 # How long a pass at the head stands: what the cluster pulls that no input pins by digest (the app's main, which the
 # website follows, each chart at its version, k3s at its tag, the runner's image) moves by itself.
 PASS_HOURS=24

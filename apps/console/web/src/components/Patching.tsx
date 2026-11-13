@@ -7,9 +7,9 @@
  * line; under them, four figures for the findings no row can clear.
  *
  * It is a chunk of its own, with its stylesheet and its projection (`projection/patching.ts`), which the console loads
- * once the first view has shown: it sits under the bottom row, and the first view carries none of it. The view is
- * worked out here, from the events, and kept while what it reads is the same, so an event that changes nothing here
- * renders nothing here.
+ * once the first view has shown, as it does the bottom row's and Guardrails', and draws with theirs: the first view
+ * carries none of it. The view is worked out here, from the events, and kept while what it reads is the same, so an
+ * event that changes nothing here renders nothing here.
  *
  * A visitor reads all of it, read-only, with "Martin" for "you", no link into code scanning, and a lockfile's package
  * withheld until its pull request is open, as the public view withholds it.

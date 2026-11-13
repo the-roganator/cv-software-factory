@@ -12,14 +12,10 @@ import { OriginContext } from './artifacts.ts';
 import { attacksOffered } from './attacks-seam.ts';
 import { Bird } from './components/Bird.tsx';
 import { Canary } from './components/Canary.tsx';
-import { Controls, SpendPanel } from './components/Controls.tsx';
-import { FlagsPanel, useHeld } from './components/Flags.tsx';
 import { Footer } from './components/Footer.tsx';
-import { Guardrails } from './components/Guardrails.tsx';
 import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
 import { Line } from './components/Line.tsx';
 import { LogoSymbols } from './components/Logos.tsx';
-import { NeedsYou } from './components/NeedsYou.tsx';
 import { PreviewBanner } from './components/Preview.tsx';
 import { Reel } from './components/Reel.tsx';
 import { EmptyReel, States } from './components/States.tsx';
@@ -29,6 +25,7 @@ import { foldOf, project, settingsAt } from './projection/index.ts';
 import { useRefusalChecks } from './refusals.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
 import { type Origin, origin, useEvents } from './source.ts';
+import { useHeld } from './use-held.ts';
 
 const params = new URLSearchParams(location.search);
 
@@ -44,11 +41,18 @@ const Settings = lazy(() => import('./components/Settings.tsx').then((module) =>
 /** The audit log's code arrives only on its page. */
 const AuditLog = lazy(() => import('./components/AuditLog.tsx').then((module) => ({ default: module.AuditLog })));
 
-/**
- * The Patching panel's code, its stylesheet and its projection arrive once the first view has shown: it sits under the
- * bottom row, so the first view needs none of it.
+/*
+ * Everything under the reel arrives once the first view has shown, each panel's code in a chunk of its own: the bottom
+ * row (Needs you, and Controls, Flags and Spend beside it), Patching, with its stylesheet and its projection, and
+ * Guardrails. The first view is the header, the intro, the line, the canary and the reel, and its entry chunk carries
+ * none of theirs. They draw together, under one Suspense, so none moves another as it arrives.
  */
+const NeedsYou = lazy(() => import('./components/NeedsYou.tsx').then((module) => ({ default: module.NeedsYou })));
+const Controls = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.Controls })));
+const FlagsPanel = lazy(() => import('./components/Flags.tsx').then((module) => ({ default: module.FlagsPanel })));
+const SpendPanel = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.SpendPanel })));
 const Patching = lazy(() => import('./components/Patching.tsx').then((module) => ({ default: module.Patching })));
+const Guardrails = lazy(() => import('./components/Guardrails.tsx').then((module) => ({ default: module.Guardrails })));
 
 /** The privacy page's too. */
 const Privacy = lazy(() => import('./components/Privacy.tsx').then((module) => ({ default: module.Privacy })));
@@ -290,48 +294,47 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
               motion={motion}
             />
           )}
+          {/* Under the reel, once the store has answered and the first view has shown: until every panel's chunk has
+              arrived, nothing holds their place, and then they draw at once, under everything above them. */}
           {settled && (
-            <section
-              className="bottom"
-              aria-label={
-                admin.kind === 'martin'
-                  ? 'Needs you, controls, flags and spend'
-                  : 'Waiting on Martin, controls, flags and spend'
-              }
-            >
-              <NeedsYou
-                needs={view.needs}
-                flags={view.flags}
-                admin={admin}
-                app={factory.app}
-                now={view.t}
-                onOpen={setOpen}
-                onMoved={held.refresh}
-              />
-              <div className="bottom-side">
-                <Controls profile={factory.profile} controls={view.controls} admin={admin} />
-                <FlagsPanel
+            <Suspense fallback={null}>
+              <section
+                className="bottom"
+                aria-label={
+                  admin.kind === 'martin'
+                    ? 'Needs you, controls, flags and spend'
+                    : 'Waiting on Martin, controls, flags and spend'
+                }
+              >
+                <NeedsYou
+                  needs={view.needs}
                   flags={view.flags}
                   admin={admin}
                   app={factory.app}
-                  held={held.answer}
                   now={view.t}
                   onOpen={setOpen}
                   onMoved={held.refresh}
                 />
-                <SpendPanel spend={settings.spend} admin={admin} />
-              </div>
-            </section>
-          )}
-          {/* What must move, and who moves it: one row for each move, full width under the bottom row. Its chunk
-              arrives once the store has answered, after the first view; until then, nothing holds its place. */}
-          {settled && (
-            <Suspense fallback={null}>
+                <div className="bottom-side">
+                  <Controls profile={factory.profile} controls={view.controls} admin={admin} />
+                  <FlagsPanel
+                    flags={view.flags}
+                    admin={admin}
+                    app={factory.app}
+                    held={held.answer}
+                    now={view.t}
+                    onOpen={setOpen}
+                    onMoved={held.refresh}
+                  />
+                  <SpendPanel spend={settings.spend} admin={admin} />
+                </div>
+              </section>
+              {/* What must move, and who moves it: one row for each move, full width under the bottom row. */}
               <Patching view={view} admin={admin} onOpen={setOpen} />
+              {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under Patching. */}
+              <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />
             </Suspense>
           )}
-          {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under the bottom row. */}
-          {settled && <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />}
         </div>
       </main>
       <Footer signIn={signedIn.kind === 'visitor'} />

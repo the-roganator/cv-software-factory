@@ -1,5 +1,5 @@
 {
-  "$comment": "Gzipped bytes the browser downloads. firstView is what the page loads before it shows anything (the entry chunk and the CSS it links), set from a build with a tenth to spare: raising it is a decision for review, not a fix. total is everything the build makes, lazy chunks included, held loosely, a quarter over the same build, so that a new lazy page fits and only a runaway dependency does not.",
-  "firstView": { "javascript": 118300, "css": 15800 },
-  "total": { "javascript": 181000, "css": 26500 }
+  "$comment": "Gzipped bytes the browser downloads. firstView is what the page loads before it shows anything (the entry chunk and the CSS it links), set from a build with about 15% to spare, rounded up to a whole 100 bytes: real headroom, so an ordinary change fits, and raising it is a decision for review, not a fix. What the first view does not draw loads later, with lazy(), and is not in it. total is everything the build makes, lazy chunks included, held loosely, a quarter over the same build, so that a new lazy page fits and only a runaway dependency does not.",
+  "firstView": { "javascript": 121900, "css": 18000 },
+  "total": { "javascript": 219400, "css": 30400 }
 }

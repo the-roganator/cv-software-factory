@@ -23,7 +23,7 @@
 # glibc build runs on the Playwright image's Ubuntu.
 FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node
 
-FROM mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d AS browsers
+FROM mcr.microsoft.com/playwright:v1.65.0-noble@sha256:9beb546099e11f52d62e505537914870e01a67e0e6b00ae41da4775324e73dbe AS browsers
 
 # Playwright's browsers on mise.toml's Node. `make e2e` runs the browser tests in this stage too. The image's Node is
 # its Debian package, and npm's global packages (npm itself and yarn) beside it; dpkg takes the package out with no

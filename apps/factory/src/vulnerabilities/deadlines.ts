@@ -64,7 +64,7 @@ import {
   type ScannedImage,
 } from './moves.ts';
 import { satisfies } from './node.ts';
-import { DIGEST, DIGEST_PATTERN, hasRegistry, repositoryOf, splitReference } from './reference.ts';
+import { DIGEST, hasRegistry, repositoryOf, splitReference } from './reference.ts';
 import {
   alertKey,
   type Finding,
@@ -317,8 +317,8 @@ interface Place {
   repository: string;
 }
 
-/** The digest `findingsOf` writes after an image's reference in its label. */
-const LABEL_DIGEST = new RegExp(String.raw` \(${DIGEST_PATTERN}\)$`);
+/** The digest `findingsOf` writes after an image's reference in its label, of any length, as it always was read. */
+const LABEL_DIGEST = / \(sha256:[0-9a-f]+\)$/;
 const itemOf = (label: string) => repositoryOf(label.replace(LABEL_DIGEST, ''));
 const placeOf = (finding: Finding): Place => ({
   advisory: finding.advisory,
@@ -438,8 +438,7 @@ const fromLine = (dockerfile: string, image: string) =>
 
 /** What an image pins, as a move's `from`: its tag, or its digest when it has none. */
 const pinned = (reference: string) => {
-  const { tag } = nameAndTag(reference);
-  const { digest } = splitReference(reference);
+  const { tag, digest } = splitReference(reference);
   return tag ?? digest ?? reference;
 };
 

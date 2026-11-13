@@ -15,7 +15,7 @@ export interface Retry {
   after?: (error: unknown, planned: number) => number;
   /** Told of each failure that is tried again. */
   failed?: (error: unknown) => void;
-  wait?: (ms: number) => Promise<unknown>;
+  wait?: ((ms: number) => Promise<unknown>) | undefined;
 }
 
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));

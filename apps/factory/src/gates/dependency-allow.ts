@@ -34,8 +34,6 @@ export type Lookup = (advisory: string, pkg: string) => Promise<string[]>;
 
 const GHSA = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
 
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * GitHub's global advisory database, asked once for each entry, three times before it gives up: a second, then four,
  * apart, or as long as a rate limit's `retry-after` asks, up to a minute.
@@ -43,7 +41,7 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export function githubLookup(
   token: string | undefined,
   fetcher: typeof fetch = fetch,
-  wait: (ms: number) => Promise<unknown> = pause,
+  wait?: (ms: number) => Promise<unknown>,
 ): Lookup {
   return async (advisory, pkg) => {
     const query = new URLSearchParams({

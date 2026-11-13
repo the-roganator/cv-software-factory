@@ -21,6 +21,7 @@ import { type Contradicted, parse } from './contradicts.ts';
 import { filesIn, TEST_FILE } from './files.ts';
 import { compare, type Finding } from './integrity.ts';
 import { annotate, cell, summarise } from './report.ts';
+import { retried } from './retry.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -77,6 +78,9 @@ export function pullRequestNumber(env: Env): number | { error: string } {
 }
 
 /** The pull request's description as it is now, through the API, or why it could not be read. */
+/** GitHub's answer to a read that asking again will not change. */
+class Refused extends Error {}
+
 export async function description(
   env: Env,
   fetcher: typeof fetch = fetch,
@@ -89,34 +93,29 @@ export async function description(
     return { error: 'Test integrity needs GITHUB_TOKEN and GITHUB_REPOSITORY to read the description' };
   const api = env.GITHUB_API_URL || 'https://api.github.com';
   const url = `${api}/repos/${repo}/pulls/${number}`;
-  let problem = '';
-  // Three tries, a second and then three apart, so a moment's trouble at GitHub does not fail the gate.
-  for (const wait of [0, 1_000, 3_000]) {
-    if (wait) await pause(wait);
-    try {
-      const response = await fetcher(url, {
-        headers: {
-          accept: 'application/vnd.github+json',
-          authorization: `Bearer ${token}`,
-          'x-github-api-version': '2022-11-28',
-        },
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (response.ok) {
-        // An answer that is not a pull request will not become one if asked again.
-        const pull = (await response.json().catch(() => null)) as { number?: unknown; body?: unknown } | null;
-        if (typeof pull !== 'object' || pull === null) return { error: "GitHub's answer is not a pull request" };
-        if (pull.number !== number) return { error: `GitHub answered for another pull request than #${number}` };
-        return typeof pull.body === 'string' ? pull.body : '';
-      }
-      problem = `GitHub answered ${response.status}`;
-      // Only a server's error is worth asking again: a refusal or a missing pull request will not change.
-      if (response.status < 500) break;
-    } catch (error) {
-      problem = (error as Error).message;
-    }
+  const read = async (): Promise<string | { error: string }> => {
+    const response = await fetcher(url, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    // Only a server's error is worth asking again: a refusal or a missing pull request will not change.
+    if (!response.ok) throw new (response.status < 500 ? Refused : Error)(`GitHub answered ${response.status}`);
+    // An answer that is not a pull request will not become one if asked again.
+    const pull = (await response.json().catch(() => null)) as { number?: unknown; body?: unknown } | null;
+    if (typeof pull !== 'object' || pull === null) return { error: "GitHub's answer is not a pull request" };
+    if (pull.number !== number) return { error: `GitHub answered for another pull request than #${number}` };
+    return typeof pull.body === 'string' ? pull.body : '';
+  };
+  try {
+    // Three tries, a second and then three apart, so a moment's trouble at GitHub does not fail the gate.
+    return await retried(read, { waits: [1_000, 3_000], permanent: (error) => error instanceof Refused, wait: pause });
+  } catch (error) {
+    return { error: `Pull request #${number}'s description could not be read: ${(error as Error).message}` };
   }
-  return { error: `Pull request #${number}'s description could not be read: ${problem}` };
 }
 
 /** The tests the description names, or the problem that fails the gate instead. */

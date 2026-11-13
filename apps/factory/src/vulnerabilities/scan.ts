@@ -844,7 +844,7 @@ export function isAnswer(error: unknown) {
 export class Fault extends Error {}
 
 /** The waits before each pull tried again: 15, 45 and 90 seconds. */
-export const PULL_WAITS = [15_000, 45_000, 90_000];
+export const PULL_WAITS: readonly number[] = [15_000, 45_000, 90_000];
 
 /** A pull, tried again on a fault and given up at once on an answer (`isAnswer`). */
 export const PULL: Retry = { waits: PULL_WAITS, permanent: isAnswer };

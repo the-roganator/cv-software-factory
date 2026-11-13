@@ -250,6 +250,32 @@ describe('pre-push.sh', () => {
     expect(r.out).toMatch(/3 thing\(s\) to put in the same push/);
   });
 
+  it('reads every page of review threads, after the first hundred too', () => {
+    const open = (path: string) => ({
+      isResolved: false,
+      path,
+      line: 1,
+      comments: { nodes: [{ author: { login: 'someone' }, body: 'fix it' }] },
+    });
+    const page = (next: string | null, ...nodes: object[]) =>
+      JSON.stringify({
+        data: {
+          repository: {
+            pullRequest: { reviewThreads: { pageInfo: { hasNextPage: next !== null, endCursor: next }, nodes } },
+          },
+        },
+      });
+    github({
+      'pr view': [view()],
+      'api graphql': [page('c1', open('a.ts')), page(null, open('b.ts'))],
+      'pr checks': [checks(check('lint', 'pass'))],
+    });
+    const r = run('pre-push.sh', '7');
+    expect(r.out).toMatch(/threads: 2 unresolved/);
+    expect(r.out).toContain('b.ts:1');
+    expect(readFileSync(join(dir, 'calls'), 'utf8')).toMatch(/-f cursor=c1/);
+  });
+
   it('exits 2 when GitHub cannot be read', () => {
     github({ 'pr view': [view()], 'api graphql': [{ out: 'HTTP 502', status: 1 }] });
     expect(run('pre-push.sh', '7').status).toBe(2);

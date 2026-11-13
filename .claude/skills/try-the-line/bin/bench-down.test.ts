@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const SCRIPT = join(import.meta.dirname, 'bench-down.sh');
+// The checkout this test runs in: where the bench's gateway is started from.
+const CHECKOUT = join(import.meta.dirname, '..', '..', '..', '..');
 let dir: string;
 let children: ChildProcess[] = [];
 
@@ -28,7 +30,7 @@ esac
 }
 
 /** A process listening on a free port of 127.0.0.1, its command line ending with these words; and the port. */
-async function listener(...words: string[]): Promise<{ child: ChildProcess; port: number }> {
+async function listener(cwd: string, ...words: string[]): Promise<{ child: ChildProcess; port: number }> {
   const child = spawn(
     process.execPath,
     [
@@ -36,7 +38,7 @@ async function listener(...words: string[]): Promise<{ child: ChildProcess; port
       "const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => console.log(s.address().port))",
       ...words,
     ],
-    { stdio: ['ignore', 'pipe', 'ignore'] },
+    { cwd, stdio: ['ignore', 'pipe', 'ignore'] },
   );
   children.push(child);
   const port = await new Promise<number>((r) => child.stdout?.once('data', (d) => r(Number(String(d).trim()))));
@@ -63,7 +65,7 @@ afterEach(() => {
 
 describe('bench-down', () => {
   it("stops the bench's gateway, and removes only the bench's containers, saying what each cost", async () => {
-    const { child: gateway, port } = await listener('apps/factory/src/cli.ts', 'gateway');
+    const { child: gateway, port } = await listener(CHECKOUT, 'apps/factory/src/cli.ts', 'gateway');
     docker(true, ['sf-bench-pg', 'k3d-software-factory-server-0', 'other-sf-bench-pg']);
     const r = down(port);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -75,12 +77,20 @@ describe('bench-down', () => {
   });
 
   it("leaves whatever else listens on the bench's port", async () => {
-    const { child: other, port } = await listener('something-else');
+    const { child: other, port } = await listener(import.meta.dirname, 'something-else');
     docker(true, []);
     const r = down(port);
     expect(r.out).toMatch(/Left pid \d+ on port \d+: it is not the factory's gateway/);
     expect(alive(other)).toBe(true);
     expect(r.out).toMatch(/Nothing of the bench was running/);
+  });
+
+  it('leaves a gateway run from outside this checkout and its worktrees', async () => {
+    const { child: gateway, port } = await listener(dir, 'apps/factory/src/cli.ts', 'gateway');
+    docker(true, []);
+    const r = down(port);
+    expect(r.out).toMatch(/Left pid \d+ on port \d+: a gateway, but not run from this checkout or its worktrees/);
+    expect(alive(gateway)).toBe(true);
   });
 
   it('says when Docker is not running, and removes nothing', async () => {

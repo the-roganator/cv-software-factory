@@ -27,12 +27,21 @@ case $state/$mergeable in
   OPEN/UNKNOWN) echo "conflict: GitHub has not worked out yet whether #$pr merges cleanly; run this again in a minute" ;;
 esac
 
-threads=$(gh api graphql -F owner="${repo%/*}" -F name="${repo#*/}" -F n="$pr" -f query='
-  query($owner:String!, $name:String!, $n:Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$n) {
-    reviewThreads(first:100) { nodes { isResolved path line comments(first:1) { nodes { author { login } body } } } }
-  } } }' -q '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)
-    | "  \(.path):\(.line // "-") (\(.comments.nodes[0].author.login // "?")) \(.comments.nodes[0].body | split("\n")[0] | .[0:160])"]
-    | "\(length)\n\(join("\n"))"') || { echo "pre-push: could not read the review threads of #$pr" >&2; exit 2; }
+# Every review thread, a page of 100 at a time.
+nodes='[]' cursor=''
+while :; do
+  page=$(gh api graphql -F owner="${repo%/*}" -F name="${repo#*/}" -F n="$pr" ${cursor:+-f cursor="$cursor"} -f query='
+    query($owner:String!, $name:String!, $n:Int!, $cursor:String) { repository(owner:$owner, name:$name) {
+      pullRequest(number:$n) { reviewThreads(first:100, after:$cursor) { pageInfo { hasNextPage endCursor }
+        nodes { isResolved path line comments(first:1) { nodes { author { login } body } } } } } } }') &&
+    nodes=$(jq -c --argjson so_far "$nodes" '$so_far + .data.repository.pullRequest.reviewThreads.nodes' <<<"$page") ||
+    { echo "pre-push: could not read the review threads of #$pr" >&2; exit 2; }
+  [[ $(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' <<<"$page") == true ]] || break
+  cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$page")
+done
+threads=$(jq -r '[.[] | select(.isResolved | not)
+  | "  \(.path):\(.line // "-") (\(.comments.nodes[0].author.login // "?")) \(.comments.nodes[0].body | split("\n")[0] | .[0:160])"]
+  | "\(length)\n\(join("\n"))"' <<<"$nodes")
 count=$(head -1 <<<"$threads")
 if (( count > 0 )); then
   echo "threads: $count unresolved: answer each in the same push, and resolve it after"

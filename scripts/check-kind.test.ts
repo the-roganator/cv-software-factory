@@ -1099,6 +1099,12 @@ describe('the queue’s cluster, made once already', () => {
     ['a run in another repository', (a) => Object.assign(run(a), { repository: fork }), 'platform job at'],
     ['a run from a fork', (a) => Object.assign(run(a), { head_repository: fork }), 'platform job at'],
     ['a head in a fork', (a) => Object.assign(pull(a).head as Row, { repo: fork }), 'head is in someone/fork'],
+    // An empty field, split on tabs, would shift every field after it, and the reason with them.
+    [
+      'a head whose repository is gone',
+      (a) => Object.assign(pull(a).head as Row, { repo: null }),
+      'head is in no repository',
+    ],
     ['a run from another branch', (a) => Object.assign(run(a), { head_branch: 'other' }), 'platform job at'],
     ['a run made before the pull request', (a) => Object.assign(run(a), { created_at: ago(40) }), 'platform job at'],
     [

@@ -24,8 +24,9 @@
  *    `from` for its `to`, the chart's own version labels moving as the chart's, the `data` of a ConfigMap that was there
  *    at the base, and a pod template's `checksum/` annotations. And the text: every line outside those ConfigMaps'
  *    `data` and those annotations, where the gate's parser places them, is the base's line, in order, with the moved
- *    images' references and the version labels' values written alike. The configuration a chart's ConfigMaps carry is
- *    the publisher's, as its image is; its objects, permissions, pod specs and network policies stay Martin's.
+ *    images' references and the version labels that moved as the chart's written alike. The configuration a chart's
+ *    ConfigMaps carry is the publisher's, as its image is; its objects, permissions, pod specs and network policies stay
+ *    Martin's.
  * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.

@@ -1751,8 +1751,8 @@ spec:
     );
     // Back, or across its major, is no subchart's move.
     for (const v of ['1.9.0', '3.0.0'])
-      expect(manifestsDiffer(sub('2.0.1'), sub(v).replace(OLD, NEW), MOVE, ACME)).toMatch(
-        new RegExp(`sub-${v.replaceAll('.', '\\.')} is not sub-2\\.0\\.1 forward on its major`),
+      expect(manifestsDiffer(sub('2.0.1'), sub(v).replace(OLD, NEW), MOVE, ACME)).toContain(
+        `sub-${v} is not sub-2.0.1 forward on its major`,
       );
   });
 
@@ -1883,8 +1883,7 @@ describe('a rendering the gate and the cluster read alike, character by characte
           `  namespace: ns\n  annotations: { x: "a${character}b" }\n`,
         ),
       ];
-      for (const head of places)
-        expect(manifestsDiffer(base, head, MOVE)).toMatch(new RegExp(`writes ${name.replace('+', '\\+')} at line`));
+      for (const head of places) expect(manifestsDiffer(base, head, MOVE)).toContain(`writes ${name} at line`);
     }
     // And a carriage return, a control, the byte order mark, a lone surrogate: what is not allowed holds.
     for (const [character, name] of [
@@ -1893,9 +1892,7 @@ describe('a rendering the gate and the cluster read alike, character by characte
       [at(0xfeff), 'U+FEFF'],
       ['\ud800', 'U+D800'],
     ] as const)
-      expect(manifestsDiffer(base, cm(`data:\n  note: "a${character}b"\n`), MOVE)).toMatch(
-        new RegExp(`writes ${name.replace('+', '\\+')} at`),
-      );
+      expect(manifestsDiffer(base, cm(`data:\n  note: "a${character}b"\n`), MOVE)).toContain(`writes ${name} at`);
     // The base is read the same way.
     expect(manifestsDiffer(cm(`data:\n  note: "a${at(0x2028)}b"\n`), base, MOVE)).toMatch(
       /^at the base, the rendering writes U\+2028/,
@@ -1977,7 +1974,8 @@ spec:
         if (typeof a === 'string' || typeof b === 'string') throw new Error(`${what}: ${a} ${b}`);
         expect([...a.keys()], what).toEqual([...b.keys()]);
       }
-      expect(manifestsDiffer(base, head, MOVE), what).toMatch(new RegExp(`: ${text.replace(/[.+]/g, '\\$&')}$`));
+      const verdict = manifestsDiffer(base, head, MOVE) ?? '';
+      expect(verdict.slice(-text.length - 2), what).toBe(`: ${text}`);
     }
     // A numeric key the object rule already holds, and one it reads as a string, which the text rule holds.
     expect(manifestsDiffer(deployment(OLD) + service('"1": web'), deployment(NEW) + service('1: web'), MOVE)).toMatch(

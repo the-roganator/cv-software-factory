@@ -308,6 +308,10 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
     ['a module a record’s script imports', { 'policy/flags.ts': 'export {};\n' }],
     ['how a signature is read', { 'apps/factory/src/github/signatures.ts': 'export {};\n' }],
     ['deploy/ alongside code', { 'deploy/base/console/deployment.yaml': 'x\n', 'apps/console/src/main.ts': 'x\n' }],
+    // Fail closed: a path in no excluded class is an input, whatever it is.
+    ['a file at the root that no rule names', { 'something.conf': 'x\n' }],
+    ['a file in a directory that is new', { 'tools/new/thing.sh': '#!/bin/sh\n' }],
+    ['lefthook.yml, which pnpm install’s prepare script reads', { 'lefthook.yml': 'pre-commit: {}\n' }],
   ])('runs a cluster for a change of %s, anyone’s, in either place', (_, change) => {
     expect(platform(change, anyone)).toBe('cluster');
     expect(platform(change, { event: 'merge_group', branch: QUEUE, pull: { login: 'someone', base: 'main' } })).toBe(
@@ -726,6 +730,26 @@ describe('the queue’s cluster, made once already', () => {
     });
     expect(answered(built).said).toBe('matched');
   });
+
+  // mise reads its rc files before any config (`.miserc.toml`, `.miserc.local.toml`, `.config/miserc.toml`, as mise
+  // 2026.11.7 does): `env = ["x"]` there loads mise.x.toml, and `ignored_config_paths` drops mise.toml, so
+  // mise-action installs other versions of every tool than mise.toml and mise.lock pin.
+  it.each(['.miserc.toml', '.config/miserc.toml', '.miserc.local.toml'])(
+    'makes one when main adds %s, which mise reads before its config',
+    (rc) => {
+      const built = line({ main: [{ [rc]: 'ignored_config_paths = ["mise.toml"]\n' }] });
+      expect(answered(built).said).toBe('cluster');
+    },
+  );
+
+  // Fail closed: a file nobody has listed, at the root or in a new directory, is an input.
+  it.each(['something.conf', 'tools/new/thing.sh', 'lefthook.yml'])(
+    'makes one when main adds %s, which no rule names',
+    (file) => {
+      const built = line({ main: [{ [file]: 'x\n' }] });
+      expect(answered(built).said).toBe('cluster');
+    },
+  );
 
   it('makes one when main moved a pin file in more than its digests', () => {
     const built = line({ main: [{ [CONSOLE]: `${moved(CONSOLE)}# and more\n` }, { [CONSOLE]: moved(CONSOLE) }] });

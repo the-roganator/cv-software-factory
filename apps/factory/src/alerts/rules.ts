@@ -21,6 +21,7 @@ import { REPORT_TEXT } from '../../../../policy/triage.ts';
 import { DRY_RUN_NUMBERS_FROM } from '../github/actions.ts';
 import { ADMIN_ACTIONS, type AdminAction } from '../line/admin-actions.ts';
 import { NUMBER_PATTERN, RELEASE_ENDINGS } from '../line/metrics.ts';
+import { PATCHING_KINDS, type PatchingKind } from '../line/patching-alerts.ts';
 import { SECURITY_KINDS, type SecurityKind } from '../line/security.ts';
 import { TARGETS, type Target } from '../probes/health.ts';
 import {
@@ -253,6 +254,38 @@ const SECURITY_WORDS: Record<SecurityKind, { summary: string; description: strin
     summary: 'A red-team attack did not finish',
     description:
       'An attack you launched from the console was not seen to its end within its limit, so it proves nothing. The red-team harness’s log says why; you can launch it again.',
+  },
+};
+
+/**
+ * What an alert says of each move Martin hears of (`patching-alerts.ts`), each at Notify: a move is something he can
+ * act on, and a day has at most a message or two of one. Never a finding with no fix, which nothing counts.
+ */
+const PATCHING_WORDS: Record<PatchingKind, { summary: string; description: string }> = {
+  'move-fix': {
+    summary: 'A move clears a new High or Critical',
+    description:
+      'The day’s scan found a fix for a High or Critical finding, and a move has it, with a deadline by its severity. Patching in the console says which, and who moves it.',
+  },
+  'move-waits': {
+    summary: 'A move waits on you',
+    description:
+      'A pin only you can move: the review gate holds it for your approval, only your cluster’s own command applies it, no pull request of the App’s can write it, or the sense found something running that no scan read. It is a card in Needs you.',
+  },
+  'move-due-soon': {
+    summary: 'A move is due within a day',
+    description:
+      'A move has not merged, and its deadline is within a day: the scan fails from it. Patching in the console says which.',
+  },
+  'move-overdue': {
+    summary: 'A move is past its deadline',
+    description:
+      'A move passed its deadline unmerged, so the scan fails until it moves or is excepted. Patching in the console says which.',
+  },
+  'app-fix-merged': {
+    summary: 'A fix for the app’s vulnerable dependency merged without you',
+    description:
+      'The line merged a work item’s fix for a vulnerable dependency of the app, by the review gate’s rule, with nobody’s approval. The canary still guards it, and its sheet in the console says which.',
   },
 };
 
@@ -566,6 +599,9 @@ const RECENT = '5m';
  * The alerts to Martin (docs/COMPONENTS/ALERTING.md):
  * - an alert for each kind of security event, at its kind's level (`SECURITY_LEVELS`), the first of a kind included,
  *   from the line's count of them in the store, which starts at 0; several of a kind within five minutes are one alert;
+ * - a notification for each move Martin hears of (`PATCHING_WORDS`), from the line's count of the dependency sense's
+ *   days and its merges, each once for each move: a new High or Critical fix, a move that waits on him, one within a
+ *   day of its deadline, one past it, and the app's vulnerable dependency fixed without him; never a finding with no fix;
  * - a page when that count has gone missing for ten minutes, having been there in the six hours before, or the line
  *   has not been able to read the store for five: no security event would reach him meanwhile;
  * - a page when a change the admin service makes (the flags, the app's Rollout, a session) stands for two minutes with
@@ -600,8 +636,18 @@ export function martinRules(): Rule[] {
     labels: { level: SECURITY_LEVELS[kind], kind },
     annotations: SECURITY_WORDS[kind],
   }));
+  // Each move Martin hears of, once, from the line's count of the sense's days and its merges, which goes stale with
+  // the security events' count: the same read makes both, and `SecurityEventsUncounted` says when it fails.
+  const patching = PATCHING_KINDS.map((kind) => ({
+    alert: 'PatchingMove',
+    expr: `max(increase(${fromTheLine('line_patching_moves_total', `kind="${kind}"`)}[${RECENT}])) > 0`,
+    for: '0s',
+    labels: { level: LEVELS.notify, kind },
+    annotations: PATCHING_WORDS[kind],
+  }));
   return [
     ...security,
+    ...patching,
     {
       alert: 'SecurityEventsUncounted',
       expr: `(count(last_over_time(${SECURITY_EVENTS}[6h])) unless count(${SECURITY_EVENTS})) or max(${COUNTING}) == 0`,

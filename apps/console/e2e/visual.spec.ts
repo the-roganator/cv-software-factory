@@ -21,7 +21,7 @@
  * 23's refusals in a row, the attack in flight in its row, and Launch's dialog for each, at all three widths and in Ink; and an attack's card for
  * each way one stands (refused twice, a refusal cut at five lines, not refused, running), and a sheet's refusals whole.
  * Task 32's Patching from the samples' day, in Paper and Ink at laptop and phone width, for Martin and for a visitor, and
- * a row opened.
+ * a row opened; and its cards in Needs you, a held pin's for Martin and a running pod's for a visitor, the same.
  */
 import type { Page } from '@playwright/test';
 import { STAGES as KINDS } from '@software-factory/events';
@@ -1466,5 +1466,34 @@ for (const width of ['laptop', 'phone'] as const) {
       const panel = await patchingAt(page, 'martin', 'paper', 'the-roganator/cv-software-factory example-logs');
       await expect(panel).toHaveScreenshot(`m07-patching-open-${width}.png`);
     });
+  });
+}
+
+/** Task 32: a move's card in Needs you, from the samples' day, by its title. */
+async function patchCardAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' | 'ink', title: string) {
+  await adminService(page, as);
+  await page.goto(consoleUrl({ theme }));
+  await ready(page);
+  const card = page.locator('article.needs .need').filter({ has: page.locator('h3', { hasText: title }) });
+  await card.scrollIntoViewIfNeeded();
+  await page.evaluate(() => document.fonts.ready);
+  return card;
+}
+
+for (const width of ['laptop', 'phone'] as const) {
+  test.describe(`${width}, Patching in Needs you`, () => {
+    test.use({ viewport: WIDTHS[width] });
+
+    for (const theme of THEMES) {
+      test(`a held pin’s card for Martin, in ${theme}`, async ({ page }) => {
+        const card = await patchCardAt(page, 'martin', theme, 'example-logs waits for a review');
+        await expect(card).toHaveScreenshot(`m07-needs-patch-martin-${theme}-${width}.png`);
+      });
+
+      test(`a running pod’s card for a visitor, in ${theme}`, async ({ page }) => {
+        const card = await patchCardAt(page, 'visitor', theme, 'An unscanned image is running');
+        await expect(card).toHaveScreenshot(`m07-needs-patch-visitor-${theme}-${width}.png`);
+      });
+    }
   });
 }

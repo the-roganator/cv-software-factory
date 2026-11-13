@@ -44,7 +44,8 @@
  *   agree; and `attack-unfinished` for each launch by Martin's roles with no end within its limit, or one the harness
  *   says it could not see to its end. An attack refused as it should be, like a refusal, is the guardrail working.
  *
- * And every hold started, by its cause, whoever started it.
+ * And every hold started, by its cause, whoever started it; and the moves Martin hears of, from the dependency sense's
+ * days and the line's merges (`patching-alerts.ts`), each once, its deadlines judged by the clock.
  *
  * Both are counts of what the store holds, read each time the SDK collects, as the line's stages are: a line that
  * restarts, or a second replica, reports the same figure, so a count never falls and a reader takes the `max`. Every
@@ -54,6 +55,7 @@
  * and the log: the alert on the count going stale or missing pages instead.
  */
 import { type BatchObservableResult, metrics } from '@opentelemetry/api';
+import type { PayloadOf } from '@software-factory/events';
 import { HOLD_CAUSES, type HoldCause, type ReleaseControl, upcast } from '@software-factory/events';
 import { PAYLOADS } from '@software-factory/events/schemas';
 import { fromMartin, openedAsImprovement } from '@software-factory/store';
@@ -73,6 +75,16 @@ import {
   type Verdict,
   type Verifier,
 } from './attacks.ts';
+import {
+  addDay,
+  addMerge,
+  copyPatchingTally,
+  emptyPatchingTally,
+  judgeDeadlines,
+  PATCHING_KINDS,
+  PATCHING_ROLE,
+  type PatchingTally,
+} from './patching-alerts.ts';
 
 const meter = metrics.getMeter('factory-line');
 
@@ -137,6 +149,8 @@ const TYPES = [
   'guardrail.proved',
   'attack.finished',
   'hold.started',
+  'patching.read',
+  'pull-request.merged',
 ] as const;
 
 /** One stored event, as far as counting it goes. */
@@ -309,6 +323,8 @@ export interface Tally {
   autoRollback: boolean;
   kinds: Record<SecurityKind, number>;
   holds: Record<HoldCause, number>;
+  /** The moves Martin hears of (`patching-alerts.ts`). */
+  patching: PatchingTally;
 }
 
 export const emptyTally = (): Tally => ({
@@ -316,6 +332,7 @@ export const emptyTally = (): Tally => ({
   autoRollback: controlsInForce().autoRollback,
   kinds: Object.fromEntries(SECURITY_KINDS.map((kind) => [kind, 0])) as Record<SecurityKind, number>,
   holds: Object.fromEntries(HOLD_CAUSES.map((cause) => [cause, 0])) as Record<HoldCause, number>,
+  patching: emptyPatchingTally(),
 });
 
 /**
@@ -323,13 +340,15 @@ export const emptyTally = (): Tally => ({
  * counts and the last `seq` it says it read are of one snapshot; an answer's hold is read by its work item's index.
  * Read in the order stored, as auto-rollback in force is followed from one change to the next. Each new end of an
  * attack is judged against the refusals it cites, relayed ones verified with `verifier`, and the unfinished launches
- * are counted afresh, by the store's clock. One judged not refused, or by the wrong mechanism, is logged with why.
+ * are counted afresh, by the store's clock. One judged not refused, or by the wrong mechanism, is logged with why. The
+ * last day's deadlines are judged at `now`.
  */
 export async function readOn(
   sql: Sql,
   tally: Tally,
   verifier: Verifier = NO_VERIFIER,
   log?: Pick<Logger, 'warn'>,
+  now: number = Date.now(),
 ): Promise<Tally> {
   const rows = await sql<
     {
@@ -353,6 +372,10 @@ export async function readOn(
       in_force: boolean | null;
       hold_version: number | null;
       hold_payload: Record<string, unknown> | null;
+      day: PayloadOf<'patching.read'> | null;
+      merged_by: string | null;
+      security_fix: boolean | null;
+      merge_held: boolean | null;
     }[]
   >`
     with upto as (select max(seq) as last from events)
@@ -365,7 +388,18 @@ export async function readOn(
            case when e.type = 'flag.staged' then jsonb_build_object('from', e.payload->'from', 'to', e.payload->'to')
            end as staged,
            case when e.type = 'hold.answered' then ${openedAsImprovement(sql, 'e.work_item')} end as improvement,
-           h.version as hold_version, h.payload as hold_payload
+           h.version as hold_version, h.payload as hold_payload,
+           case when e.type = 'patching.read' then e.payload end as day,
+           case when e.type = 'pull-request.merged' then e.payload->>'by' end as merged_by,
+           case when e.type = 'pull-request.merged' then (
+             select (o.payload->'dependency'->>'security')::boolean from events o
+             where o.work_item = e.work_item and o.type = 'work-item.opened' order by o.seq limit 1
+           ) end as security_fix,
+           case when e.type = 'pull-request.merged' then exists (
+             select 1 from events h
+             where h.work_item = e.work_item and h.type = 'hold.started' and h.seq < e.seq
+               and h.payload->>'cause' = 'merge'
+           ) end as merge_held
     from upto
     left join events e
       on e.seq > ${tally.seq}::bigint and e.seq <= upto.last and e.type in ${sql([...TYPES])} and not e.sample
@@ -402,9 +436,29 @@ export async function readOn(
     autoRollback: tally.autoRollback,
     kinds: { ...tally.kinds },
     holds: { ...tally.holds },
+    patching: copyPatchingTally(tally.patching),
   };
   for (const row of rows) {
     if (!row.type) continue;
+    // Only the sense's role may append its day (0050_patching.sql), and only its day is read.
+    if (row.type === 'patching.read') {
+      if (row.day && row.appended_by === PATCHING_ROLE && row.appended_at) {
+        addDay(next.patching, row.day, row.appended_at.getTime());
+      }
+      continue;
+    }
+    if (row.type === 'pull-request.merged') {
+      if (row.work_item) {
+        addMerge(next.patching, {
+          workItem: row.work_item,
+          by: row.merged_by,
+          appendedBy: row.appended_by,
+          securityFix: row.security_fix,
+          held: row.merge_held,
+        });
+      }
+      continue;
+    }
     const stored: Stored = {
       type: row.type,
       action: row.action,
@@ -430,6 +484,7 @@ export async function readOn(
     }
   }
   next.kinds['attack-unfinished'] = Math.max(next.kinds['attack-unfinished'], unfinished);
+  judgeDeadlines(next.patching, now);
   return next;
 }
 
@@ -445,6 +500,11 @@ const holdsStored = meter.createObservableCounter('line.holds.stored', {
   description: 'Holds for Martin the store holds, by cause, whoever started them',
 });
 
+const patchingMoves = meter.createObservableCounter('line.patching_moves', {
+  description:
+    'The moves Martin hears of, each once, by kind: a new High or Critical fix, waiting on him, due within a day, past its deadline, and the app’s vulnerable dependency fixed without him',
+});
+
 const counting = meter.createObservableGauge('line.security_events.counting', {
   description: 'Whether the last read of Martin’s security events from the store succeeded: 1 if it did, 0 if not',
 });
@@ -456,12 +516,17 @@ const counting = meter.createObservableGauge('line.security_events.counting', {
  * `verifier` is the GitHub worker's public key and the artifact store its records are in: without them, an attack whose
  * refusals were relayed is judged by the wrong mechanism, as the line cannot verify them.
  */
-export function observeSecurity(sql: Sql, log: Logger, verifier: Verifier = NO_VERIFIER): () => void {
+export function observeSecurity(
+  sql: Sql,
+  log: Logger,
+  verifier: Verifier = NO_VERIFIER,
+  now: () => number = Date.now,
+): () => void {
   let tally = emptyTally();
   let failing = false;
   const callback = async (result: BatchObservableResult) => {
     try {
-      tally = await readOn(sql, tally, verifier, log);
+      tally = await readOn(sql, tally, verifier, log, now());
     } catch (error) {
       if (!failing) log.warn({ err: error }, 'could not count Martin’s security events: the count is stale');
       failing = true;
@@ -473,8 +538,9 @@ export function observeSecurity(sql: Sql, log: Logger, verifier: Verifier = NO_V
     result.observe(counting, 1);
     for (const kind of SECURITY_KINDS) result.observe(securityEvents, tally.kinds[kind], { kind });
     for (const cause of HOLD_CAUSES) result.observe(holdsStored, tally.holds[cause], { cause });
+    for (const kind of PATCHING_KINDS) result.observe(patchingMoves, tally.patching.kinds[kind], { kind });
   };
-  const observed = [securityEvents, holdsStored, counting];
+  const observed = [securityEvents, holdsStored, patchingMoves, counting];
   meter.addBatchObservableCallback(callback, observed);
   return () => meter.removeBatchObservableCallback(callback, observed);
 }

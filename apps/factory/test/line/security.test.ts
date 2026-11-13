@@ -3,6 +3,8 @@
  * OpenTelemetry SDK collects it: a meter provider is installed for this file before the module loads, as `telemetry.ts`
  * is before the line's.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { metrics as api } from '@opentelemetry/api';
 import * as metrics from '@opentelemetry/sdk-metrics';
 import { HOLD_CAUSES, RELEASE_CONTROLS, VERSIONS } from '@software-factory/events';
@@ -494,5 +496,89 @@ describe('what counts as a security event', () => {
       const approved = countAs({ type: 'hold.answered', decision: 'approved', cause });
       expect(approved !== null, cause).toBe((GUARDRAIL_HOLDS as readonly string[]).includes(cause));
     }
+  });
+});
+
+describe('the moves Martin hears of, read from the store', () => {
+  const day = JSON.parse(
+    readFileSync(join(import.meta.dirname, '../../../../packages/events/test/fixtures/patching-day.json'), 'utf8'),
+  );
+
+  it('counts the sense’s days from its role alone, and the line’s merge of a vulnerable dependency’s fix', async () => {
+    // The store dates each event by its own clock: the sidecar's deadline two days from now, the rest ten.
+    const now = Date.now();
+    const D = 86_400_000;
+    const dated = {
+      ...day,
+      repositories: day.repositories.map((r: { moves: { name: string }[] }) => ({
+        ...r,
+        moves: r.moves.map((m) => ({
+          ...m,
+          deadline: new Date(now + (m.name === 'ghcr.io/example/sidecar' ? 2 : 10) * D).toISOString(),
+        })),
+      })),
+    };
+    await append(database.patching, 'patching.read', dated);
+    // Row security lets no other role append the sense's day.
+    await expect(append(database.as.line, 'patching.read', day)).rejects.toThrow(/row-level security/);
+    await append(
+      database.as.line,
+      'work-item.opened',
+      {
+        kind: 'ticket',
+        title: 'The base image has a fix',
+        sample: false,
+        dependency: { name: 'example/base', ecosystem: 'docker', from: '1.0', to: '1.1', security: true },
+      },
+      'WI-40',
+    );
+    await append(
+      database.as.line,
+      'pull-request.merged',
+      { number: 61, commit: 'a'.repeat(40), by: 'factory' },
+      'WI-40',
+    );
+    await append(database.as.line, 'work-item.opened', { kind: 'ticket', title: 'A defect', sample: false }, 'WI-41');
+    // One held for Martin's merge, which he approved: the line queued it, and it is his.
+    await append(
+      database.as.line,
+      'work-item.opened',
+      {
+        kind: 'ticket',
+        title: 'The parser has a fix',
+        sample: false,
+        dependency: { name: 'example-parser', ecosystem: 'npm', from: '1.0', to: '1.1', security: true },
+      },
+      'WI-42',
+    );
+    await append(database.as.line, 'hold.started', { cause: 'merge' }, 'WI-42');
+    await append(
+      database.as.line,
+      'pull-request.merged',
+      { number: 63, commit: 'c'.repeat(40), by: 'factory' },
+      'WI-42',
+    );
+    await append(
+      database.as.line,
+      'pull-request.merged',
+      { number: 62, commit: 'b'.repeat(40), by: 'factory' },
+      'WI-41',
+    );
+
+    const tally = await readOn(database.as.line, emptyTally(), undefined, undefined, now);
+    expect(tally.patching.kinds).toEqual({
+      'move-fix': 3,
+      'move-waits': 4,
+      'move-due-soon': 0,
+      'move-overdue': 0,
+      'app-fix-merged': 1,
+    });
+    // Read on with nothing new stored: the sidecar comes within a day of its deadline, then passes it, each once.
+    const soon = await readOn(database.as.line, tally, undefined, undefined, now + 1.5 * D);
+    expect(soon.patching.kinds).toMatchObject({ 'move-due-soon': 1, 'move-overdue': 0 });
+    const past = await readOn(database.as.line, soon, undefined, undefined, now + 2.5 * D);
+    expect(past.patching.kinds).toMatchObject({ 'move-due-soon': 1, 'move-overdue': 1 });
+    const again = await readOn(database.as.line, past, undefined, undefined, now + 3 * D);
+    expect(again.patching.kinds).toEqual(past.patching.kinds);
   });
 });

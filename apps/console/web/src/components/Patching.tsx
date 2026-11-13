@@ -14,7 +14,7 @@
  * A visitor reads all of it, read-only, with "Martin" for "you", no link into code scanning, and a lockfile's package
  * withheld until its pull request is open, as the public view withholds it.
  */
-import { memo, useId, useMemo, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
 import { clock, count, dayLabel, plural, startOfDay, when } from '../format.ts';
 import { foldOf, type View } from '../projection/index.ts';
@@ -27,9 +27,11 @@ import {
   dueWords,
   lastRead,
   type MoveState,
+  OPEN_ROW,
   type PatchingRow,
   type PatchingView,
   pinText,
+  takeAskedRow,
   total,
 } from '../projection/patching.ts';
 import { renders } from '../renders.ts';
@@ -429,10 +431,32 @@ const Panel = memo(function Panel({
   renders.patching = (renders.patching ?? 0) + 1;
   const who: Who = { martin };
   const [open, setOpen] = useState<string | undefined>(asked);
+  const panel = useRef<HTMLElement>(null);
+  const asking = useRef(false);
+  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has. A card is
+  // in the first view and this panel is not, so a row asked for before it listened is taken as it mounts.
+  useEffect(() => {
+    const ask = () => {
+      const key = takeAskedRow();
+      if (key === undefined) return;
+      asking.current = true;
+      setOpen(key);
+    };
+    ask();
+    window.addEventListener(OPEN_ROW, ask);
+    return () => window.removeEventListener(OPEN_ROW, ask);
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the row to bring into view is the one just opened
+  useEffect(() => {
+    if (!asking.current) return;
+    asking.current = false;
+    const row = panel.current?.querySelector('.pm > button[aria-expanded="true"]') ?? panel.current;
+    row?.scrollIntoView({ block: 'start' });
+  }, [open]);
   const readOnly = !martin && <> · Read only</>;
   if (view.state === 'unread') {
     return (
-      <section className="panel patching" id="patching" aria-labelledby="patching-title">
+      <section className="panel patching" id="patching" aria-labelledby="patching-title" ref={panel}>
         <div className="panel-head">
           <h2 id="patching-title">Patching</h2>
           <span className="label">No read yet{readOnly}</span>
@@ -446,7 +470,7 @@ const Panel = memo(function Panel({
   const head = headWords(view);
   const empty = view.rows.length === 0;
   return (
-    <section className="panel patching" id="patching" aria-labelledby="patching-title">
+    <section className="panel patching" id="patching" aria-labelledby="patching-title" ref={panel}>
       <div className="panel-head">
         <h2 id="patching-title">Patching</h2>
         <span className="label">

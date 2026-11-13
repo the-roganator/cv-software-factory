@@ -2,7 +2,7 @@
 
 The app's objectives, and what Martin must hear about, watched by the standard tools. Part of the [runtime plane](README.md#runtime-plane).
 
-- **v1:** Prometheus's alerting rules, generated from policy, and Alertmanager, which sends the objectives' alerts to the intake and pages, notifies or informs Martin through Pushover, of his security events, the holds that wait for him, and the factory's health, releases and spend, while [a switch in Controls](#alerts-to-the-phone) sends them to his phone, off on the laptop; and Grafana's Alerts dashboard, which shows every alert, whatever its level.
+- **v1:** Prometheus's alerting rules, generated from policy, and Alertmanager, which sends the objectives' alerts to the intake and pages, notifies or informs Martin through Pushover, of his security events, the holds that wait for him, the moves he must know of, and the factory's health, releases and spend, while [a switch in Controls](#alerts-to-the-phone) sends them to his phone, off on the laptop; and Grafana's Alerts dashboard, which shows every alert, whatever its level.
 - **Later:** alerts on the factory's images' vulnerabilities (milestone 7, Part D); a dead man's switch and a check from outside, since alerts from inside a cluster stop with it (milestone 10).
 
 ```mermaid
@@ -25,7 +25,7 @@ flowchart LR
 
 ## The rules
 
-`apps/factory/src/alerts/rules.ts` generates Prometheus's alerting rules from it, and the alerts to Martin ([security events](#security-events), [holds](#holds), [the flags the app holds](#the-flags-the-app-holds), [the shop's pod](#the-shops-pod), and [the factory's health, releases and spend](#the-factorys-health)), into `deploy/base/telemetry/values/prometheus-rules.yaml`, labelled with the route and the symptom class (`server-error`, `slow-response`). Each rule compares every route's error ratio or p95 over the window, once it has had enough requests, with the objective, by the same expression Prometheus records for dashboards ([recording rules](TELEMETRY.md#each-route-against-the-objectives)), and reads only the app's own series. `make check` fails when the file is out of date.
+`apps/factory/src/alerts/rules.ts` generates Prometheus's alerting rules from it, and the alerts to Martin ([security events](#security-events), [holds](#holds), [moves](#moves), [the flags the app holds](#the-flags-the-app-holds), [the shop's pod](#the-shops-pod), and [the factory's health, releases and spend](#the-factorys-health)), into `deploy/base/telemetry/values/prometheus-rules.yaml`, labelled with the route and the symptom class (`server-error`, `slow-response`). Each rule compares every route's error ratio or p95 over the window, once it has had enough requests, with the objective, by the same expression Prometheus records for dashboards ([recording rules](TELEMETRY.md#each-route-against-the-objectives)), and reads only the app's own series. `make check` fails when the file is out of date.
 
 The rules reach Prometheus when their pull request merges, as Argo CD syncs `main`, and a new image only when the App's deploy pull request pins it. So a rule that fires on a series missing (`absent`, as `ProbesDown` does, or a count of nothing read as 0), where only an image not yet pinned exports that series, pages from its merge until the pin syncs; a rule that compares a series with a threshold returns nothing while it is missing, and waits. Write such a rule to wait until the series has existed, or say in its pull request that it pages until the pin, so Martin knows before he merges it.
 
@@ -36,7 +36,7 @@ Each rule says how loudly it is told by a `level` label, and Alertmanager routes
 | Level | Label | Sent to | For |
 |---|---|---|---|
 | Page | `level: page` | Pushover, at high priority, which sounds through Martin's quiet hours | the console or the app down, the probes silent, the line stuck, a lease run out unreleased, the store down, a worker crash-looping, a spend cap reached; the security events that loosen a guardrail, change who can sign in or keep alerts from his phone, the security events' count missing or stale, a change by the admin service that no event records, or the line unable to compare them, a silence in place, a narrowing or Off of a flag the app has not taken within a minute |
-| Notify | `level: notify` | Pushover, at normal priority | a release rolled back, aborted or in error, an Argo CD application Degraded or OutOfSync for half an hour, each hold that waits for Martin, the shop's pod 25 days old, the security events that widen what the line does (an improvement asked for or its spec approved among them) or a feature flag, act on a release, change a setting or tighten autonomy, the app holding other flags than those set, or not checked, for more than five minutes |
+| Notify | `level: notify` | Pushover, at normal priority | a release rolled back, aborted or in error, an Argo CD application Degraded or OutOfSync for half an hour, each hold that waits for Martin, each move he must know of, once, the shop's pod 25 days old, the security events that widen what the line does (an improvement asked for or its spec approved among them) or a feature flag, act on a release, change a setting or tighten autonomy, the app holding other flags than those set, or not checked, for more than five minutes |
 | Inform | `level: inform` | Pushover, at low priority, with no sound or vibration | the security events that tighten, but for autonomy, or only record Martin's own use |
 | Dashboard only | none | no one: a receiver that sends nothing; [Grafana's Alerts dashboard](#seeing-them) shows it | `PhoneOff`, and everything else |
 
@@ -170,6 +170,23 @@ Martin is notified of each hold that waits for him, once, as it starts to wait (
 - **Nothing but numbers make a link.** Each rule matches only a work item and a pull request of digits, and alerts for no other: the line checks its labels the same way before it sends them, and the message links a label only if it is digits, so an alert from anything else that reaches Alertmanager links nothing. No title, reason or visitor's words is in a label or a message. A dry run's pull request (from 1,000,000,000) is on no GitHub, so the rule takes it off and links the sheet alone.
 - **The console's origin is the profile's,** a template each overlay defines (`console.origin`, in its Prometheus values), the origin its passkeys are bound to: `https://console.localhost:8443` locally. A test fails for a profile without it, as Alertmanager could render no message to Martin without it.
 - **A deploy hold whose pull request is not ready alerts no one.** While its checks run, fail, or it is merged or closed, the hold is not yet his ([its state](RELEASE-AND-VERIFY.md#the-deploy-pull-requests-state)), and the console says what it waits for. Nothing alerts on one that stays there: the `held` stage has no stuck limit, as it waits for Martin.
+
+## Moves
+
+Martin hears of a move, never of a finding: a finding with no fix is nothing he can do anything about, and the scan looks at it again each day ([patching](PATCHING.md)). Each move is counted from the dependency sense's days (`patching.read`, from its role alone) and the line's merges (`apps/factory/src/line/patching-alerts.ts`), in the same read of the store as the security events, and each kind is told once for each move, ever, at Notify (`PatchingMove`, one rule for each, with its own words in `PATCHING_WORDS`):
+
+| Kind | When |
+| --- | --- |
+| `move-fix` | a move first clears a High or a Critical: the scan found a fix |
+| `move-waits` | a move first waits on him: the review gate holds its pin for his approval, only his cluster's own command applies it, no pull request of the App's can write it, or the sense found something running that no scan read, known by what runs and where, not by its pod, so a rollout is not a new one. It is a card in Needs you |
+| `move-due-soon` | a move in the sense's last day comes within a day of its deadline. One first seen within a day of it, or past it, is told by `move-fix` alone, which names its deadline in Patching |
+| `move-overdue` | a move in the sense's last day passes its deadline |
+| `app-fix-merged` | the line queues and merges (its own role's `pull-request.merged`) a work item's pull request for a vulnerable dependency of the app (its `work-item.opened` carries `dependency.security`) that no merge hold waited on him for: one he approved after a hold is his. At Guarded only the review gate's rule for a Critical fix allows it |
+
+- **Nothing repeats on a timer.** A kind is counted once for each move, so a day has at most a message or two of one: a move that first waits on him with a new fix is two, and nothing more that day. A day the sense reads again, with nothing new, is no message.
+- **A merged move is told no more once the next day has read it gone.** A deadline is judged only for the moves of the sense's last day, which is the scan's, once a day: a move merged since may still be told of as due until the next day, and then tells no one. A repository whose run judged nothing keeps its moves' deadlines, as its moves did not go. It is judged at the clock's time, and, for the day a newer one replaces, at that newer day's time, so a line that restarts and reads the store from the start counts what it counted before, and the counter does not appear to reset: a deadline that passed while no line judged it is counted due within a day and past together, as a line running then would have counted each.
+- **It goes stale with the security events,** whose read makes it: `SecurityEventsUncounted` pages while that read fails. A sample's day is not counted.
+- **Proved** by `apps/factory/test/line/patching-alerts.test.ts`, with the clock given (once each, nothing for a finding with no fix, a merged move's deadline told no one, a restart counting the same), and by `apps/factory/test/line/security.test.ts` against a store.
 
 ## The flags the app holds
 

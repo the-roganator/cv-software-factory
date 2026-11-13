@@ -304,6 +304,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                 flags={view.flags}
                 admin={admin}
                 app={factory.app}
+                now={view.t}
                 onOpen={setOpen}
                 onMoved={held.refresh}
               />

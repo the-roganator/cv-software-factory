@@ -13,9 +13,20 @@
  */
 import type { MoveLane, PayloadOf, PublicEvent, ScanFailure } from '@software-factory/events';
 import type { ItemState } from './items.ts';
+import { DAY, HIS, PATCHING_ROLE, rowKeys, shortDigests, targetWords } from './patch-needs.ts';
 
-/** The role that appends the sense's day: a `patching.read` from any other is not read. */
-export const PATCHING_ROLE = 'factory_patching';
+export { dueSoon, dueWords, OPEN_ROW, PATCHING_ROLE, takeAskedRow, targetWords } from './patch-needs.ts';
+
+/** The sense's last day by t, from its own role. */
+export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event?.type !== 'patching.read' || event.appended_by !== PATCHING_ROLE) continue;
+    if (Date.parse(event.ts) <= t) return event;
+  }
+  return undefined;
+}
+
 /** The app's repository, whose moves go down the line and whose pins read "the app's". */
 export const APP_REPOSITORY = 'the-roganator/cv-worlds-worst-website';
 
@@ -23,9 +34,6 @@ type Day = PayloadOf<'patching.read'>;
 type Repository = Day['repositories'][number];
 type ScanMove = Repository['moves'][number];
 type Running = Day['rows'][number];
-
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
 
 /** A row's state, each a glyph and a word in the design system: who moves it, or where its pull request is. */
 export type MoveState =
@@ -135,43 +143,8 @@ export type PatchingView =
       containers: number;
     };
 
-/** The sense's last day by t, from its own role. */
-export function lastRead(events: readonly PublicEvent[], t: number): PublicEvent<'patching.read'> | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i];
-    if (event?.type !== 'patching.read' || event.appended_by !== PATCHING_ROLE) continue;
-    if (Date.parse(event.ts) <= t) return event;
-  }
-  return undefined;
-}
-
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
 export const total = (counts: Counts) => SEVERITIES.reduce((n, s) => n + counts[s], 0);
-
-/** A digest shortened to its first eight, as the console writes a commit's seven. */
-const shortDigests = (text: string) => text.replace(/@?sha256:([0-9a-f]{8})[0-9a-f]{56}/g, ' $1');
-
-/**
- * A target in a row's few characters, from the scan's grammar (`apps/factory/src/vulnerabilities/fixes.ts`): the
- * version, the image's tag and its digest's first eight, the chart's version and whether it is a major, the tool's.
- * What the grammar does not read is shown as it is.
- */
-export function targetWords(to: string): string {
-  let m = /^versions? (.+)$/.exec(to);
-  if (m?.[1]) return m[1].split(' and ').join(', ');
-  m = /^image (\S+)$/.exec(to);
-  if (m?.[1]) return shortDigests(m[1]).trim();
-  m = /^chart \S+ (\S+)( \(a major\))?$/.exec(to);
-  if (m?.[1]) return m[2] ? `${m[1]}, a major` : m[1];
-  m = /^k3s (\S+)$/.exec(to);
-  if (m?.[1]) return m[1];
-  m = /^tool (\S+) (\S+)$/.exec(to);
-  if (m?.[1] && m[2]) return `${m[1]} ${m[2]}`;
-  return shortDigests(to).trim();
-}
-
-/** The lanes only Martin moves: his approval, his cluster's own command, and what no pull request of the App's can write. */
-const HIS: readonly MoveLane[] = ['approval', 'cluster', 'issue'];
 
 /**
  * The line's work item that carries an app's move: open, and naming the same package or image. Only the app's moves go
@@ -240,7 +213,7 @@ export const changeWords = (from: string | undefined, to: string | undefined) =>
 /** A pin's place: its file, and its line where it has one (a lockfile's move is the file). */
 export const pinText = ({ file, line }: { file: string; line: number }) => (line > 0 ? `${file}:${line}` : file);
 
-function runningRow(row: Running): PatchingRow {
+function runningRow(row: Running, key: string): PatchingRow {
   const base = {
     source: { kind: row.row } as RowSource,
     state: { kind: 'waits' } as const,
@@ -253,8 +226,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        // Named by what runs and where, not by its pod, whose name a restart changes.
-        key: `unlisted ${row.namespace} ${row.container} ${row.image}@${row.digest}`,
+        key,
         repository: undefined,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -266,7 +238,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `unscanned ${row.namespace} ${row.container} ${row.image}@${row.digest}`,
+        key,
         repository: row.repository,
         name: shortDigests(row.image).trim(),
         where: { namespace: row.namespace, pod: row.pod },
@@ -281,7 +253,7 @@ function runningRow(row: Running): PatchingRow {
       return {
         ...base,
         ...none,
-        key: `not-running ${row.repository} ${row.item}`,
+        key,
         repository: row.repository,
         name: shortDigests(row.image).trim(),
         where: row.pin,
@@ -322,31 +294,13 @@ export function patchingView(events: readonly PublicEvent[], items: readonly Ite
 export function dayView(day: Day, at: number, items: readonly ItemState[]): PatchingView {
   // Each move with the time its repository's run judged it: the day's line counts its reasons as the scan did then,
   // so the rows it says hold each are found by the same clock, not by the viewer's.
-  const judgedMoves = day.repositories.flatMap((r) => {
-    let lockfiles = 0;
+  const keys = rowKeys(day);
+  const judgedMoves = day.repositories.flatMap((r, i) => {
     const judged = r.judged === null ? at : Date.parse(r.judged);
-    return r.moves.map((move) => ({
-      judged,
-      row: moveRow(
-        r.repository,
-        move,
-        items,
-        move.lockfile ? `${r.repository} lockfile ${++lockfiles}` : `${r.repository} ${move.name}`,
-      ),
-    }));
+    return r.moves.map((move, j) => ({ judged, row: moveRow(r.repository, move, items, keys.moves[i]?.[j] ?? '') }));
   });
   const moves = judgedMoves.map(({ row }) => row);
-  // Rows with one key are told apart by their place among them, the first keeping it: two pods of one workload running
-  // the same image, so a key never rests on a pod's name, or two moves of one name from two pins, as the scan groups
-  // by name and what it pins now.
-  const seen = new Map<string, number>();
-  const rows = ordered(
-    [...moves, ...day.rows.map(runningRow)].map((row) => {
-      const n = (seen.get(row.key) ?? 0) + 1;
-      seen.set(row.key, n);
-      return n === 1 ? row : { ...row, key: `${row.key} ${n}` };
-    }),
-  );
+  const rows = ordered([...moves, ...day.rows.map((row, i) => runningRow(row, keys.running[i] ?? ''))]);
   const running = { 'unscanned-digest': 0, 'unlisted-image': 0, 'not-running': 0 };
   for (const row of day.rows) running[row.row]++;
   const failed = [...new Set(day.repositories.flatMap((r) => r.failed))];
@@ -401,25 +355,3 @@ export function dayView(day: Day, at: number, items: readonly ItemState[]): Patc
     containers: day.containers,
   };
 }
-
-/**
- * A deadline as a row says it: "in 40 min", "in 21 h", "in 1 day 20 h", "in 4 days", or how long past. Each unit is
- * counted down, never rounded up, so a row never says a deadline is further off, or longer past, than it is.
- */
-export function dueWords(deadline: number | undefined, t: number): string {
-  if (deadline === undefined) return 'none';
-  const left = deadline - t;
-  const span = Math.abs(left);
-  const words =
-    span < HOUR
-      ? `${Math.max(1, Math.floor(span / 60_000))} min`
-      : span < DAY
-        ? `${Math.floor(span / HOUR)} h`
-        : span < 2 * DAY
-          ? `1 day${Math.floor((span - DAY) / HOUR) ? ` ${Math.floor((span - DAY) / HOUR)} h` : ''}`
-          : `${Math.floor(span / DAY)} days`;
-  return left > 0 ? `in ${words}` : `${words} past`;
-}
-
-/** Whether a deadline is within a day or past: the one place a deadline takes the warm colour. */
-export const dueSoon = (deadline: number | undefined, t: number) => deadline !== undefined && deadline - t <= DAY;

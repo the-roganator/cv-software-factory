@@ -223,24 +223,24 @@ const STEPS = [
 <li>The finding is gone, and nothing worse came.</li>
 <li>Something really ran the new image.</li>
 </ol>
-<div class="callout"><b>Tested on a real cluster.</b> A move that changes what the cluster runs gets a whole cluster, built in CI from the change. It passes only when every part comes up healthy and every image is admitted. The merge queue builds it again.</div>
+<div class="callout"><b>Tested on a real cluster.</b> A move that changes what the cluster runs gets a whole cluster, built in CI from the change. It passes only when every part comes up healthy and every image is admitted. The merge queue builds it again, unless a cluster made from the same inputs passed at the pull request's head within the day.</div>
 <p><b>A fact unread is a hold:</b> one condition unproved, and the move waits for Martin.</p>
 <details><summary>In the docs</summary><p><a href="${DOCS}/APPROVAL-ROUTING.md">Approval routing</a>; <a href="adr/0019-the-gate-passes-a-pin-move-it-proves.md">ADR 0019</a>.</p></details>`,
   },
   {
-    title: 'Lights-out, or held',
-    tab: 'Lights-out or held',
+    title: 'Queued, or held',
+    tab: 'Queued or held',
     nodes: ['moves', 'pr', 'ci', 'checks', 'gate', 'queue', 'martin'],
     edges: { pk: 'read', kc: 'read', cg: 'read', gq: 'auto', gm: 'held', mi: 'held', mq: 'hand' },
-    tags: { gate: 'the fork', martin: 'needs you', queue: 'cluster again' },
+    tags: { gate: 'the fork', martin: 'needs you', queue: 'checks again' },
     marks: { martin: 'waits' },
     body: `
 <p>Same pull request, same checks, same gate. What differs is who adds it to the merge queue.</p>
 <table>
-<tr><th></th><th>Lights-out</th><th>Held</th></tr>
+<tr><th></th><th>Proved</th><th>Held</th></tr>
 <tr><th>Which</th><td>everything proved</td><td>a major, k3s, a scanner, Argo CD, or anything unproved</td></tr>
 <tr><th>Queued by</th><td>the GitHub worker</td><td>Martin, after approving</td></tr>
-<tr><th>He hears</th><td>nothing</td><td>a card in Needs you, and his phone, once</td></tr>
+<tr><th>He hears</th><td>nothing</td><td>for a major, k3s or an issue, a card in Needs you, and his phone, once; for a pull request the gate held, its check on GitHub, with the reason</td></tr>
 </table>
 <ul>
 <li>The worker queues <b>only the commit it wrote itself</b>. A matching name or label is not enough.</li>
@@ -259,7 +259,7 @@ const STEPS = [
 <p>After the merge, both kinds of move take the same road.</p>
 <ul>
 <li><b>Argo CD</b> deploys what is on <code>main</code>. A change inside one of our own images is built and signed first.</li>
-<li><b>Admission</b> checks every image as it starts: ours must be signed by the build on <code>main</code>, anyone else's named by its exact digest. A wrong pin that somehow merged still cannot start.</li>
+<li><b>Admission</b> checks every image as it starts where the factory and the app run: ours must be signed by the build on <code>main</code>, anyone else's named by its exact digest. A wrong pin that somehow merged still cannot start.</li>
 <li><b>The dependency sense</b> compares, each morning, what the cluster runs with what the scan read, and the console's Patching panel shows it. Until it has looked, a merged pin is not a patched cluster.</li>
 </ul>
 <details><summary>In the docs</summary><p><a href="${DOCS}/ADMISSION-CONTROL.md">Admission control</a> (<a href="adr/0010-admission-control.md">ADR 0010</a>); <a href="${DOCS}/PATCHING.md">the sense</a>.</p></details>`,
@@ -280,9 +280,9 @@ const STEPS = [
 <li>The gate proves each move; unproved is held.</li>
 <li>A cluster built in CI really runs the new image.</li>
 <li>The worker queues only the commit it wrote.</li>
-<li>The queue runs every check again.</li>
+<li>The queue runs the checks again on what will merge.</li>
 <li>Our images are signed by the build on <code>main</code>.</li>
-<li>Admission refuses any image nobody vouched for.</li>
+<li>Admission refuses, where it guards, any image nobody vouched for.</li>
 <li>The sense compares what runs with what was scanned.</li>
 <li>The rules themselves change only with Martin's approval.</li>
 </ol>

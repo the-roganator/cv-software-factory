@@ -1,6 +1,6 @@
 # Patching
 
-How the factory keeps what both repositories run and pin patched: the scan's moves, and the dependency sense that reads them each day. Part of the [factory plane](README.md#factory-plane). A **move** is one thing (a package, an image, Node, a chart, k3s) going from what is pinned to a target, in one repository, with every pin that names it: the unit of work, as a finding, one package and one advisory in one item, is the unit of evidence ([terms](../TERMS.md)).
+How the factory keeps what both repositories run and pin patched: the scan's moves, and the dependency sense that reads them each day. Part of the [factory plane](README.md#factory-plane); [the patching diagram](../architecture/patching.html) follows one from advisory to cluster. A **move** is one thing (a package, an image, Node, a chart, k3s) going from what is pinned to a target, in one repository, with every pin that names it: the unit of work, as a finding, one package and one advisory in one item, is the unit of evidence ([terms](../TERMS.md)).
 
 ## The moves
 
@@ -20,7 +20,7 @@ A read that fails, of either repository or of the cluster, appends nothing and s
 
 `patching.read` (`packages/events/src/schemas.ts`) holds, for each repository, the scan's run it was read from (its id, how it was started, its conclusion, commit and link), when the scan judged its moves, why it failed as its own totals count it (a finding past its deadline, one due within a day, a new High or Critical with a fix, or `other`), its totals as `moves.json` gives them, copied and never worked out here (results with a fix, the moves and the moves in each lane, and the findings with no fix, excepted, past their deadline, due within a day, and new today at High or Critical with a fix and without), how many images it read, and its moves as `moves.json` gives them, with two additions: a lockfile's move's package, versions and pins, which the alerts give and the artifact withholds (`package`), and the open Dependabot pull request moving a move's pin, matched by the dependency and directory its branch names (`pullRequest`). The public view leaves a lockfile's move's package out until such a pull request is open, which names it anyway; everything else is as the scan's log has it.
 
-Only the sense's role appends it, by a restrictive policy every role's insert must meet, and Martin's command line only as samples (`0050_patching.sql`): the Patching panel, Needs you, the alert rules and the pin watch read what waits and what is due from it, so no worker that untrusted input had turned can write a day in which nothing waits.
+Only the sense's role appends it, by a restrictive policy every role's insert must meet, and Martin's command line only as samples (`0050_patching.sql`): the Patching panel, Needs you and the alerts to Martin's phone read what waits and what is due from it, so no worker that untrusted input had turned can write a day in which nothing waits.
 
 ### What the cluster runs that the list does not say
 
@@ -49,7 +49,7 @@ Admission control admits only images `build.yml` signed, and the third-party ima
 - **Its own role.** `factory_patching` appends `patching.read` and nothing else, reads only its own events, and no other table; it is no member of `factory_worker`. Its password is in `postgres-patching`, which `make up` makes and the migrate Job sets.
 - **Its NetworkPolicy** gives it the store, the collector, the API server on 6443 and the worker's door, and takes nothing in.
 
-On the host, `factory patching --once` makes one pass against the cluster's GitHub worker and says what it appended, or why not: root `AGENTS.md` has the commands.
+On the host, `factory patching --once` makes one pass against the cluster's GitHub worker and says what it appended, or why not: [on the host](../ON-THE-HOST.md#the-dependency-sense) has the commands.
 
 ## The pin watch
 
@@ -57,4 +57,4 @@ This repository's moves are the GitHub worker's to make ([its pin watch](GITHUB-
 
 ### Not yet
 
-The day's cards in Needs you and its messages to Martin's phone (task 32), the worker queueing a pin pull request the gate passed (task 33), and the app's moves sent to triage's inbox (task 35), for which the inbox already knows the sense by name, `dependency`.
+The app's moves sent to triage's inbox (task 35), for which the inbox already knows the sense by name, `dependency`.

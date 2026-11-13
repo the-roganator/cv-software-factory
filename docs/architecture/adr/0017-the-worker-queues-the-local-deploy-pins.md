@@ -18,7 +18,7 @@ The pin watch's pull request for a move of the scan's (ADR 0013), which the gate
 - the review App's own `review` check on that head passed it as `pin-move`: no other rule, so not a hold, and not Martin's approval of a held one (`martin-approved-head`), which leaves adding it his;
 - every other required check, and the conflict and the queue, as for the deploy pin.
 
-It goes in at the head the gate judged (`expectedHeadOid`), through the same action and guards the line's enqueue uses. A failure that may pass is tried again on the next pass, a few times; a refusal is kept and signed as the worker keeps its others. In a dry run the watches write nothing to GitHub, so no head there is one they wrote, and the queues add and record nothing; a dry run's own deploy pull request, which GitHub never had, merges by the dry run's clock as before.
+It goes in at the head the gate judged (`expectedHeadOid`), through the same action and guards the line's enqueue uses. A failure that may pass is tried again on the next pass, a few times; a refusal is kept and signed as the worker keeps its others. In a dry run the watches write nothing to GitHub, so no head there is one they wrote, and the queues add and record nothing; a dry run's own deploy pull request, which GitHub never had, merges on the dry run's own clock (`dry-run-reads.ts`).
 
 Nothing else is queued this way: not the app's deploy pull request, which stays the line's within Martin's autonomy level and auto-merge; not a pull request the gate held, even once Martin approved its head; not a release, an improvement, a pull request of any other profile, or anything that is not the App's.
 
@@ -36,6 +36,6 @@ Nothing else is queued this way: not the app's deploy pull request, which stays 
 - An image built on `main` reaches the local cluster without Martin: the deploy watch opens the pin, the gate passes it, the worker queues it, the queue merges it, and Argo CD syncs it.
 - A pin move the scan found reaches `main` without Martin: the pin watch opens it, the gate proves it, the worker queues it, the queue merges it. One the gate holds waits for him, with its reason.
 - The worker's log says why a deploy or pin pull request waits, once for each head and reason (`the deploy pull request waits to be queued`, `the pin pull request waits to be queued`), and that it queued it (`added the deploy pull request to the merge queue`, `added the pin pull request to the merge queue`).
-- The queue taking it out leaves that head for Martin, as the line leaves the app's. A worker that restarts may add the same head once more; the queue tests it again as before.
+- The queue taking it out leaves that head for Martin, as the line leaves the app's. A worker that restarts may add the same head once more, and the queue tests it again.
 - A branch protection or permission change that stops the App enqueueing is kept, signed and logged as a `token-permission` refusal (`refusals.ts`), and the head waits for Martin.
 - `AGENTS.md`'s rule on who merges names the worker beside Martin and the line.

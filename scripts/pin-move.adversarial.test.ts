@@ -8,7 +8,10 @@ import { describe, expect, it } from 'vitest';
 import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import {
   type ChartVersions,
+  chartForward,
+  chartImageForward,
   type ImagePair,
+  imageForward,
   type Move,
   manifestsDiffer,
   type PinMoveIO,
@@ -23,6 +26,7 @@ import {
   whatRunsIt,
   workflowsOf,
 } from './pin-move.ts';
+import { majorOf, sameMajor } from './pin-move-shared.ts';
 
 const REPO = 'o/r';
 const HEAD = 'c'.repeat(40);
@@ -741,5 +745,89 @@ ${opts.extra ?? ''}`;
       '  labels:\n    app.kubernetes.io/version: 2001-01-01\n    helm.sh',
     );
     expect(judge(base, head, true)).toBeUndefined();
+  });
+});
+
+// Conditions 4 and 6 hold a major by one reading of it, exact at any length, and a chart's label read every way it
+// splits into a name and a version, so neither a number past 2^53 nor a name that holds a version passes a major.
+describe('one reading of a major, where a move could pass a major as a minor', () => {
+  const ref = (tag: string, d: string) => `docker.io/acme/app:${tag}@sha256:${hex(d)}`;
+  const io = (from: string, to: string) => ({
+    chartVersions: async () => [to],
+    tags: async () => [from, to],
+    digest: async () => `sha256:${hex('c')}`,
+  });
+  const chartMove = (from: string, to: string) =>
+    ({
+      what: 'chart',
+      name: 'x',
+      kind: 'chart',
+      from,
+      to,
+      pins: [{ chart: { head: { chart: 'x', repo: 'https://r', version: to } } }],
+    }) as unknown as Move;
+  /** Condition 4's three readers of a move from one version to another: a chart's, its image's, and an image's. */
+  const forward = async (from: string, to: string) => [
+    await chartForward(chartMove(from, to), io(from, to)),
+    await chartImageForward(ref(from, 'a'), ref(to, 'c'), io(from, to)),
+    await imageForward(ref(from, 'a'), ref(to, 'c'), io(from, to)),
+  ];
+  const ACME: ChartVersions = { chart: 'acme', from: '1.0.0', to: '1.1.0' };
+  const labelled = (label: string) =>
+    `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  namespace: ns\n  labels:\n    helm.sh/chart: ${label}\n`;
+  const label = (was: string, now: string) => manifestsDiffer(labelled(was), labelled(now), [], ACME);
+
+  it('reads a major as its digits, exact past 2^53, with or without a v, and none where it opens with a zero', () => {
+    expect(majorOf('9007199254740993.1.0')).toBe('9007199254740993');
+    expect(sameMajor('9007199254740992.0.0', '9007199254740993.1.0')).toBe(false);
+    expect(sameMajor('v1.9.0', '1.10.0')).toBe(true);
+    expect(sameMajor('0.174.0', '0.178.3')).toBe(true);
+    expect(majorOf('01.10.0')).toBeUndefined();
+    expect(majorOf('nonroot')).toBeUndefined();
+    expect(sameMajor('nonroot', 'nonroot')).toBe(false);
+  });
+
+  it('holds a major past 2^53, whose first numbers are one Number, in a chart, its image and an image', async () => {
+    expect(await forward('9007199254740992.0.0', '9007199254740993.1.0')).toEqual([
+      'a major, from 9007199254740992.0.0 to 9007199254740993.1.0',
+      'a major in docker.io/acme/app, from 9007199254740992.0.0 to 9007199254740993.1.0',
+      'a major, from 9007199254740992.0.0 to 9007199254740993.1.0',
+    ]);
+    expect(label('sub-9007199254740992.0.0', 'sub-9007199254740993.1.0')).toContain(
+      'sub-9007199254740993.1.0 is not sub-9007199254740992.0.0 forward on its major',
+    );
+  });
+
+  it('holds a leading zero, with or without a v, which names no one major, in both conditions alike', async () => {
+    for (const [from, to] of [
+      ['1.9.0', '01.10.0'],
+      ['v1.9.0', 'v01.10.0'],
+    ] as const) {
+      const [chart, chartImage] = await forward(from, to);
+      expect(chart).toBe(`a major, from ${from} to ${to}`);
+      expect(chartImage).toBe(`a major in docker.io/acme/app, from ${from} to ${to}`);
+      expect(label(`sub-${from}`, `sub-${to}`)).toContain('forward on its major');
+    }
+    // A v alone is the same major in both: a move on it passes each.
+    expect(await forward('v1.9.0', 'v1.10.0')).toEqual([undefined, undefined, undefined]);
+    expect(label('sub-v1.9.0', 'sub-v1.10.0')).toBeUndefined();
+  });
+
+  it('holds a subchart whose name holds a version, read either way: `foo-1.5-1.0.0` to `foo-1.5-2.0.0` is a major', () => {
+    expect(label('foo-1.5-1.0.0', 'foo-1.5-2.0.0')).toContain(
+      'foo-1.5-2.0.0 is not foo-1.5-1.0.0 forward on its major',
+    );
+    // Read as `foo` at 1.0.0-1.0.0, the second reading is a prerelease's change: held too.
+    expect(label('foo-1.0.0-1.0.0', 'foo-1.0.0-2.0.0')).toContain('forward on its major');
+    expect(label('foo-2-1.0.0', 'foo-2-2.0.0')).toContain('forward on its major');
+    // Each way forward on its major, as a subchart's honest release is, passes.
+    expect(label('foo-1.5-1.0.0', 'foo-1.5-1.1.0')).toBeUndefined();
+    expect(label('alertmanager-2.0.1', 'alertmanager-2.5.1')).toBeUndefined();
+  });
+
+  it("holds what the first-dot reading held: a subchart's version that is no chart's, or whose variant moves", () => {
+    expect(label('sub-1-a.1', 'sub-1-b.1')).toContain("sub-1-b.1 is not sub-1-a.1's chart at another version");
+    expect(label('sub-9007199254740992-1.0.0', 'sub-9007199254740992.1-1.0.0')).toContain('chart at another version');
+    expect(label('sub-1.0.0-a.1', 'sub-1.0.0-b.1')).toContain('forward on its major');
   });
 });

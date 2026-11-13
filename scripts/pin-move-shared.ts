@@ -13,3 +13,23 @@ export const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\
 
 export const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+/**
+ * A version's major, the one reading both conditions hold a major by (ADR 0019, 4 and 6): the digits after an optional
+ * `v`, as text, so it is exact at any length, where a number past 2^53 would round to its neighbour. Undefined where
+ * the version opens with no digit, or with a zero before another digit (`01.10.0`), which names no one major: each
+ * holds, as no major is proved unchanged.
+ */
+export function majorOf(version: string): string | undefined {
+  const digits = /^v?(\d+)/.exec(version)?.[1];
+  return digits === undefined || /^0\d/.test(digits) ? undefined : digits;
+}
+
+/** Whether two versions are proved on one major: each has one, and it is the same. */
+export function sameMajor(a: string, b: string): boolean {
+  const major = majorOf(a);
+  return major !== undefined && major === majorOf(b);
+}
+
+/** A version's variant, what follows its numbers (`-alpine` of `1.4.0-alpine`): its line, which a move keeps. */
+export const variantOf = (version: string) => version.replace(/^v?\d+(\.\d+)*/, '');

@@ -5,7 +5,7 @@
 import { isAlias, isMap, isNode, isPair, isScalar, parseAllDocuments, visit } from 'yaml';
 import { compareVersions } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import type { Side } from './pin-move-readers.ts';
-import { literal, record, short, VERSION_WORD } from './pin-move-shared.ts';
+import { literal, record, sameMajor, short, VERSION_WORD, variantOf } from './pin-move-shared.ts';
 
 /** The labels whose values are the chart's own versions, by their exact keys, in an object's or a template's metadata. */
 const VERSION_LABELS = new Set(['helm.sh/chart', 'app.kubernetes.io/version']);
@@ -324,8 +324,20 @@ function labelPlaces(object: Record<string, unknown>): Map<string, Record<string
   return places;
 }
 
-/** A chart's label (`tempo-3.2.1`, a subchart's `alertmanager-2.5.1`): its name and its version. */
-const CHART_LABEL = /^(.+?)-(v?\d+(?:\.\d+)*(?:[-+][A-Za-z0-9.+-]*)?)$/;
+/** A chart's version, as Helm requires one: SemVer's three numbers, then a prerelease or build if any. */
+const CHART_VERSION = /^v?\d+\.\d+\.\d+([-+][A-Za-z0-9.+-]*)?$/;
+
+/**
+ * Each way a chart's label (`tempo-3.2.1`, a subchart's `alertmanager-2.5.1`) reads as a name and a version: split at
+ * any `-` with a chart's version after it, so a name that holds part of a version (`foo-1-2.0.0`, `k-1.0.0-2.0.0`) is
+ * read both ways where both are versions, and neither reading hides the other's.
+ */
+function chartLabelReadings(label: string): Map<string, string> {
+  const readings = new Map<string, string>();
+  for (let at = label.indexOf('-'); at > 0; at = label.indexOf('-', at + 1))
+    if (CHART_VERSION.test(label.slice(at + 1))) readings.set(label.slice(0, at), label.slice(at + 1));
+  return readings;
+}
 
 /**
  * Why a version label's change is not the chart's, or undefined when it is: `helm.sh/chart` the chart's own label at
@@ -344,11 +356,16 @@ function versionLabelWrong(label: string, was: string, now: string, chart?: Char
     value.startsWith(`${chart.chart}-`) && VERSION_WORD.test(value.slice(chart.chart.length + 1));
   if (owns(was) || owns(now)) return `${short(now)} is not ${next}`;
   // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward.
-  const [a, b] = [CHART_LABEL.exec(was), CHART_LABEL.exec(now)];
-  const major = (version: string) => version.replace(/^v/, '').split('.')[0];
-  if (!a || !b || a[1] !== b[1]) return `${short(now)} is not ${short(was)}'s chart at another version`;
-  if (compareVersions(b[2] as string, a[2] as string) < 0 || major(a[2] as string) !== major(b[2] as string))
-    return `${short(now)} is not ${short(was)} forward on its major`;
+  // Every reading that names one chart at both must be forward on its major and its line (its variant, as an image a
+  // chart runs keeps its), so a name that may hold part of the version cannot pass a major as a minor.
+  const [a, b] = [chartLabelReadings(was), chartLabelReadings(now)];
+  const names = [...a.keys()].filter((name) => b.has(name));
+  if (!names.length) return `${short(now)} is not ${short(was)}'s chart at another version`;
+  for (const name of names) {
+    const [from, to] = [a.get(name) as string, b.get(name) as string];
+    if (compareVersions(to, from) < 0 || !sameMajor(from, to) || variantOf(from) !== variantOf(to))
+      return `${short(now)} is not ${short(was)} forward on its major`;
+  }
   return undefined;
 }
 

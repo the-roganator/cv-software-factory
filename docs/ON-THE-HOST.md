@@ -2,7 +2,7 @@
 
 How to run each part of the factory on the Mac, against the local cluster, for working on it. The inner loop runs on the host, not through GitOps. The cluster itself, its console and its state are [the local cluster](LOCAL-CLUSTER.md)'s.
 
-A worker that takes work (triage, the red-team harness, the dependency sense, the traffic generator), run on the host, takes the place of the cluster's: each section below says how to scale the cluster's to nothing first, and back to one after, so two do not take the same work. The gateway, the admin service and the probes run beside the cluster's, on ports of their own. The GitHub worker is the exception: never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs ([below](#the-github-worker)).
+A worker that takes work (triage, the probes, the red-team harness, the dependency sense, the traffic generator), run on the host, takes the place of the cluster's: each section below says how to scale the cluster's to nothing first, and back to one after, so two do not take the same work. The gateway and the admin service run beside the cluster's, on ports of their own. The GitHub worker is the exception: never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs ([below](#the-github-worker)).
 
 ## The store and the collector
 
@@ -40,7 +40,7 @@ export JUDGEMENTS_TOKEN="$(kubectl --context k3d-software-factory -n factory get
 (store_role probes && APP_URL=http://website.localhost:8080 ARTIFACTS_DIR=/tmp/artifacts PORT=8090 node apps/factory/src/cli.ts probes run)
 ```
 
-Scale the cluster's copy of a worker to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/triage --replicas=0`), and back to one after, so two do not take the same signals. Add `PAGES_URL=http://localhost:8090` to triage to have it read the pages reports name, and `PROMETHEUS_URL=http://localhost:9090 LOKI_URL=http://localhost:3100 TEMPO_URL=http://localhost:3200` to have it look at what each sense reads before it trusts a signal.
+Scale the cluster's copy of a worker to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/triage --replicas=0`, and `deployment/probes` for the probes, which sense and signal as the cluster's do), and back to one after, so two do not take or send the same signals. Add `PAGES_URL=http://localhost:8090` to triage to have it read the pages reports name, and `PROMETHEUS_URL=http://localhost:9090 LOKI_URL=http://localhost:3100 TEMPO_URL=http://localhost:3200` to have it look at what each sense reads before it trusts a signal.
 
 ## The admin service
 

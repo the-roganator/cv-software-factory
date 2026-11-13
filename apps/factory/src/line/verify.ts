@@ -95,6 +95,8 @@ export interface Target {
   dryRun: boolean;
   /** The image the release runs, by digest, as its start recorded it: none for a dry run's. */
   digest?: string;
+  /** The app's commit the release runs, as its start or promotion recorded it, where `version` is a tag. */
+  commit?: string;
   /**
    * The canary's analysis of that release: the version it was compared with, and each measure at its last step. None
    * for a release the line found live, or a dry run's, which no analysis judged.
@@ -137,6 +139,8 @@ export interface VerifyClients {
 /** The scan's moves of a repository, as the GitHub worker reads them: the last finished run on its default branch. */
 export interface ScansPort {
   moves(repo: string): Promise<Moves>;
+  /** Whether `head`, a later commit of the repository's main, has `base` in its history. */
+  carries(repo: string, base: string, head: string): Promise<boolean>;
 }
 
 export interface LookOptions extends VerifyClients {
@@ -261,36 +265,47 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
   const scan = signal.evidence.find((e): e is SignalScan => e.kind === 'scan');
   const { move } = signal;
   if (!move) return { kind: 'hold', reason: 'The ticket’s signal names no move for the scan to look for' };
-  if (!c.scans) return { kind: 'wait', why: 'the line has no way to the scan’s moves (the GitHub worker)' };
-  const read = await c.scans.moves(move.repository);
-  if (!sameVersion(read.run.headSha, target.version)) {
+  // The findings the move fixes, by advisory and package: with none, the scan has nothing to show closed.
+  const fixed = (scan?.findings ?? []).filter((finding) => finding.fixed !== undefined);
+  if (!fixed.length) {
     return {
-      kind: 'wait',
-      why: `the scan’s last run on main is of ${short(read.run.headSha)}, not the release, ${short(target.version)}`,
+      kind: 'hold',
+      reason: 'The move’s signal lists no finding with a fix for the scan to look for: Martin judges it',
     };
   }
-  if (!read.file) return { kind: 'wait', why: `the scan of ${short(target.version)} wrote no moves (${read.run.url})` };
+  if (!c.scans) return { kind: 'wait', why: 'the line has no way to the scan’s moves (the GitHub worker)' };
+  // A release names its version by tag; the commit it runs is what a scan's run is of.
+  const released = target.commit ?? target.version;
+  const read = await c.scans.moves(move.repository);
+  const of = short(read.run.headSha);
+  if (!sameVersion(read.run.headSha, released)) {
+    // A run of a later commit of main counts, as long as it has the release's and read the image running (below).
+    const later =
+      /^[0-9a-f]{40}$/.test(released) && (await c.scans.carries(move.repository, released, read.run.headSha));
+    if (!later) {
+      return {
+        kind: 'wait',
+        why: `the scan’s last run on main is of ${of}, which does not carry the release, ${short(released)}`,
+      };
+    }
+  }
+  if (!read.file) return { kind: 'wait', why: `the scan of ${of} wrote no moves (${read.run.url})` };
   const { digest } = target;
   if (!digest) return { kind: 'hold', reason: `No image is recorded for ${short(target.version)}: Martin judges it` };
   if (!read.file.scanned.some((image) => image.digests.includes(digest))) {
-    return {
-      kind: 'wait',
-      why: `the image running, ${digest.slice(0, 19)}, is not one the scan of ${short(target.version)} read`,
-    };
+    return { kind: 'wait', why: `the image running, ${digest.slice(0, 19)}, is not one the scan of ${of} read` };
   }
-  const open = read.moves.flatMap((each) => each.findings);
-  const fixed = (scan?.findings ?? []).filter((finding) => finding.fixed !== undefined);
-  const still = fixed.filter((finding) =>
-    open.some((each) => each.advisory === finding.advisory && each.package === finding.package),
+  const isFixed = (each: { advisory: string; package: string }) =>
+    fixed.some((finding) => finding.advisory === each.advisory && finding.package === each.package);
+  // What the scan still has open of the move: every finding on its pins (its moves of the same name, a lockfile's by
+  // its package), and any finding the signal listed wherever the scan now groups it, each once.
+  const open = read.moves.flatMap((each) =>
+    each.findings.filter((finding) => (each.withheld?.package ?? each.name) === move.name || isFixed(finding)),
   );
-  // What the scan still has open on the move's pins: its moves of the same name, a lockfile's by its package.
   const after = noCounts();
-  for (const each of read.moves) {
-    if ((each.withheld?.package ?? each.name) !== move.name) continue;
-    for (const finding of each.findings) {
-      const rating = finding.severity.toLowerCase() as keyof ScanCounts;
-      after[rating in after ? rating : 'unknown'] += 1;
-    }
+  for (const finding of open) {
+    const rating = finding.severity.toLowerCase() as keyof ScanCounts;
+    after[rating in after ? rating : 'unknown'] += 1;
   }
   const evidence: Verified = {
     kind: 'scan',
@@ -298,18 +313,18 @@ async function byScan(signal: FirstSignal, target: Target, c: Context): Promise<
     before: scan ? countedBefore(scan) : noCounts(),
     after,
   };
-  if (still.length) return finished(signal, target, 'persists', evidence);
+  if (open.some(isFixed)) return finished(signal, target, 'persists', evidence);
   const journeys = target.analysis?.measures.find((m) => m.name === 'journeys');
   if (!target.analysis) {
     return {
       kind: 'hold',
-      reason: `The scan of ${short(target.version)} shows the move’s findings closed, but no analysis ran its journeys: Martin judges it`,
+      reason: `The scan of ${of} shows the move’s findings closed, but no analysis ran its journeys: Martin judges it`,
     };
   }
   if (journeys?.phase !== 'successful') {
     return {
       kind: 'hold',
-      reason: `The scan of ${short(target.version)} shows the move’s findings closed, but its journeys did not pass at the last step: Martin judges it`,
+      reason: `The scan of ${of} shows the move’s findings closed, but its journeys did not pass at the last step: Martin judges it`,
     };
   }
   return finished(signal, target, 'cleared', evidence);
@@ -639,7 +654,7 @@ export function whatCleared(
   const { evidence } = verification;
   if (evidence?.kind === 'scan') {
     const was = countWords(evidence.before);
-    return `The app’s scan of ${short(evidence.commit)}, the release, shows none of the move’s findings that had a fix, of ${was || 'none'} before, and the journeys passed`;
+    return `The app’s scan of ${short(evidence.commit)}, which carries the release, shows none of the move’s findings that had a fix, of ${was || 'none'} before, and the journeys passed`;
   }
   return clearedBy({ ...verification, evidence }, undefined, policy);
 }

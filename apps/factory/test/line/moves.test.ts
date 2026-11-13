@@ -231,6 +231,11 @@ describe('what the line says of a move', () => {
         patch: '@@ -1 +1 @@\n-import { a } from "invented-pkg";\n+import { b } from "invented-pkg";',
       },
     ];
+    const others = {
+      path: 'pnpm-lock.yaml',
+      patch: `@@ -90,2 +90,2 @@\n-  items@12.0.0:\n+  items@12.0.1:\n-  '@invented-pkg/sub@2.0.01':\n+  '@invented-pkg/sub@2.0.10':`,
+    };
+    expect(pinChanges([others], { ...MOVE, pins: PINS }, ['pnpm-lock.yaml'])).toEqual([]);
     expect(pinChanges(files, { ...MOVE, pins: PINS }, ['pnpm-lock.yaml'])).toEqual([
       { file: 'pnpm-lock.yaml', before: 'invented-pkg@2.0.0:', after: 'invented-pkg@2.0.1:' },
     ]);

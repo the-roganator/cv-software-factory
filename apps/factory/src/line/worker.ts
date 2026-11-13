@@ -1295,7 +1295,12 @@ export class Line {
     let found: Look;
     try {
       found = await look(first, target, {
-        scans: { moves: (repo) => this.#o.github.read('moves', repo, {}) },
+        scans: {
+          moves: (repo) => this.#o.github.read('moves', repo, {}),
+          // Whether main's later commit has the release's: GitHub's comparison of the two.
+          carries: async (repo, base, head) =>
+            ['ahead', 'identical'].includes((await this.#o.github.read('commits', repo, { base, head })).status),
+        },
         ...this.#o.verify,
         now,
         dryRun: this.#o.dryRun,
@@ -1354,7 +1359,11 @@ export class Line {
       case 'finished': {
         const { pages, artifacts } = await shown(true);
         const v = { ...found.verification, pages };
-        const said = v.dryRun ? 'by the dry run’s word' : `by the ${v.sense ?? 'sense'}`;
+        const said = v.dryRun
+          ? 'by the dry run’s word'
+          : v.evidence?.kind === 'scan'
+            ? 'by the scan of the release'
+            : `by the ${v.sense ?? 'sense'}`;
         await this.#append(workItem, [
           {
             type: 'verification.finished',
@@ -1399,6 +1408,7 @@ export class Line {
   async #latestPromotion(from?: string): Promise<Promotion | undefined> {
     const [latest] = await this.#o.sql<(Omit<Promotion, 'at'> & { at: Date })[]>`
       select payload->>'version' as version, payload->>'release' as release, payload->>'previous' as previous,
+             payload->>'commit' as commit,
              (payload->>'watched')::boolean is not false as watched, ts as at, seq from events
       where type = 'release.promoted' and (payload->>'dryRun')::boolean is not true
         ${from === undefined ? this.#o.sql`` : this.#o.sql`and seq >= ${from}`}
@@ -1419,8 +1429,8 @@ export class Line {
           order by seq desc limit 1`
       : [];
     // The image the release runs, as its start recorded it: what a move's scan must have read.
-    const [started] = await this.#o.sql<{ digest: string | null }[]>`
-      select payload->'image'->>'digest' as digest from events
+    const [started] = await this.#o.sql<{ digest: string | null; commit: string | null }[]>`
+      select payload->'image'->>'digest' as digest, payload->>'commit' as commit from events
       where type = 'release.started' and payload->>'release' = ${release}
       order by seq desc limit 1`;
     return {
@@ -1429,6 +1439,7 @@ export class Line {
       version: promotion.version,
       at: promotion.at,
       ...(started?.digest ? { digest: started.digest } : {}),
+      ...(started?.commit || promotion.commit ? { commit: (started?.commit ?? promotion.commit) as string } : {}),
       ...(watched ? { analysis: { release, against: promotion.previous, measures: step?.measures ?? [] } } : {}),
     };
   }
@@ -2670,6 +2681,8 @@ const untaken = (workItem: string): QueueItem => ({
 interface Promotion {
   release: string;
   version: string;
+  /** The app's commit the release runs, as its promotion names it: none before release.promoted version 2. */
+  commit?: string | null | undefined;
   previous: string;
   watched: boolean;
   at: Date;

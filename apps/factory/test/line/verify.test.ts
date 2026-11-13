@@ -695,11 +695,14 @@ describe('Verify by the scan', () => {
     return { repository: REPO, run, ...joined(REPO, run, day, open) };
   }
 
-  const scans = (moves: Moves) => ({
+  const scans = (moves: Moves, carried = false) => ({
     asked: [] as string[],
     async moves(repo: string) {
       this.asked.push(repo);
       return moves;
+    },
+    async carries() {
+      return carried;
     },
   });
 
@@ -778,12 +781,31 @@ describe('Verify by the scan', () => {
     });
   });
 
-  it('waits while the scan’s last run on main is of another commit than the release', async () => {
+  it('waits while the scan’s last run on main is of a commit that does not carry the release', async () => {
     const other = { ...released, version: 'd'.repeat(40) };
     expect(await look(move, other, options({ scans: scans(recorded(true)) }))).toEqual({
       kind: 'wait',
-      why: 'the scan’s last run on main is of ccccccc, not the release, ddddddd',
+      why: 'the scan’s last run on main is of ccccccc, which does not carry the release, ddddddd',
     });
+  });
+
+  it('takes a run of a later commit of main that carries the release, and a release named by its tag', async () => {
+    const tagged = { ...released, version: 'v0.9.3', commit: 'd'.repeat(40) };
+    expect(await look(move, tagged, options({ scans: scans(recorded(true), true) }))).toMatchObject({
+      kind: 'finished',
+      verification: { outcome: 'cleared', version: 'v0.9.3', evidence: { commit: SCANNED } },
+    });
+    const same = { ...released, version: 'v0.9.3', commit: SCANNED };
+    expect(await look(move, same, options({ scans: scans(recorded(true)) }))).toMatchObject({
+      verification: { outcome: 'cleared' },
+    });
+  });
+
+  it('holds for Martin when the signal lists no finding with a fix, with nothing for the scan to show closed', async () => {
+    const routine: FirstSignal = { ...move, symptom: 'outdated-dependency', evidence: [] };
+    const read = scans(recorded(true));
+    expect(await look(routine, released, options({ scans: read }))).toMatchObject({ kind: 'hold' });
+    expect(read.asked).toEqual([]);
   });
 
   it('waits while the image running is not one the scan read', async () => {
@@ -831,7 +853,7 @@ describe('Verify by the scan', () => {
       dryRun: false,
     });
     expect(said).toBe(
-      'The app’s scan of ccccccc, the release, shows none of the move’s findings that had a fix, of 1 high, 1 low before, and the journeys passed',
+      'The app’s scan of ccccccc, which carries the release, shows none of the move’s findings that had a fix, of 1 high, 1 low before, and the journeys passed',
     );
   });
 });

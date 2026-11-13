@@ -1,7 +1,7 @@
 /**
  * Whether the app holds the flags as set, asked of the admin service while the page is shown (`held.ts` reads the
  * answer). A module of its own, apart from the Flags panel's, because the page asks from its first view and hands the
- * answer to Flags and Needs you, whose code arrives after it.
+ * answer to Flags, and its refresh to Flags and Needs you, whose code arrives after it.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type HeldAnswer, heldFlags } from './held.ts';

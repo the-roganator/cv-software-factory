@@ -265,6 +265,8 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await emptyStore(page, 'real');
       await page.goto(consoleUrl());
       await page.getByText('Watching, nothing yet').waitFor();
+      // The panels under the reel arrive in chunks of their own, after the first view: the page is whole once the last is in.
+      await page.locator('#guardrails').waitFor();
       await page.evaluate(() => document.fonts.ready);
       await expect(page).toHaveScreenshot(`m04-empty-real-${width}.png`, { fullPage: true });
     });

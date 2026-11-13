@@ -14,6 +14,7 @@ import { Bird } from './components/Bird.tsx';
 import { Canary } from './components/Canary.tsx';
 import { Footer } from './components/Footer.tsx';
 import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
+import { Later } from './components/Later.tsx';
 import { Line } from './components/Line.tsx';
 import { LogoSymbols } from './components/Logos.tsx';
 import { PreviewBanner } from './components/Preview.tsx';
@@ -45,7 +46,8 @@ const AuditLog = lazy(() => import('./components/AuditLog.tsx').then((module) =>
  * Everything under the reel arrives once the first view has shown, each panel's code in a chunk of its own: the bottom
  * row (Needs you, and Controls, Flags and Spend beside it), Patching, with its stylesheet and its projection, and
  * Guardrails. The first view is the header, the intro, the line, the canary and the reel, and its entry chunk carries
- * none of theirs. They draw together, under one Suspense, so none moves another as it arrives.
+ * none of theirs. The bottom row draws first and the two panels under it after, so none moves another as it arrives
+ * (`Later`, which says so if a chunk never comes).
  */
 const NeedsYou = lazy(() => import('./components/NeedsYou.tsx').then((module) => ({ default: module.NeedsYou })));
 const Controls = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.Controls })));
@@ -294,10 +296,11 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
               motion={motion}
             />
           )}
-          {/* Under the reel, once the store has answered and the first view has shown: until every panel's chunk has
-              arrived, nothing holds their place, and then they draw at once, under everything above them. */}
+          {/* Under the reel, once the store has answered and the first view has shown: the bottom row once its chunks
+              have arrived, then Patching and Guardrails under it once theirs have, never before it, so nothing that has
+              drawn moves. Until then nothing holds their place. */}
           {settled && (
-            <Suspense fallback={null}>
+            <Later what="Needs you, Controls, Flags and Spend">
               <section
                 className="bottom"
                 aria-label={
@@ -329,11 +332,13 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                   <SpendPanel spend={settings.spend} admin={admin} />
                 </div>
               </section>
-              {/* What must move, and who moves it: one row for each move, full width under the bottom row. */}
-              <Patching view={view} admin={admin} onOpen={setOpen} />
-              {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under Patching. */}
-              <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />
-            </Suspense>
+              <Later what="Patching and Guardrails">
+                {/* What must move, and who moves it: one row for each move, full width under the bottom row. */}
+                <Patching view={view} admin={admin} onOpen={setOpen} />
+                {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under Patching. */}
+                <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />
+              </Later>
+            </Later>
           )}
         </div>
       </main>

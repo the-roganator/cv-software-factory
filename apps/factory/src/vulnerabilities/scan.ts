@@ -51,6 +51,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { documents, forTrivy, LINK, trackedLockfiles, unreadDocument } from '../gates/lockfile-scan.ts';
+import { apiVersionsOf } from './api-versions.ts';
 import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
 import {
@@ -77,6 +78,8 @@ import {
 } from './sarif.ts';
 import { trivyPin } from './trivy-pin.ts';
 
+export { API_VERSIONS_RECORD, apiVersionsOf } from './api-versions.ts';
+
 export { trivyPin };
 
 const run = promisify(execFile);
@@ -86,6 +89,37 @@ const DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-db:2';
 const JAVA_DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-java-db:1';
 /** The oldest the advisory database may be when the scan starts. */
 export const DB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `helm template`'s arguments for a chart as Argo CD 3.6's repo-server gives them (util/helm/cmd.go `template`): its
+ * release, in its namespace, for the cluster's Kubernetes version, with its values files, each of the cluster's API
+ * versions, and its `crds/` unless its Application skips them.
+ */
+export function helmTemplateArgs(
+  chart: Chart,
+  root: string,
+  kubeVersion?: string,
+  apiVersions?: readonly string[],
+): string[] {
+  return [
+    'template',
+    chart.release,
+    chart.chart,
+    '--repo',
+    chart.repo,
+    '--version',
+    chart.version,
+    ...(chart.namespace ? ['--namespace', chart.namespace] : []),
+    ...(kubeVersion ? ['--kube-version', kubeVersion] : []),
+    ...chart.values.flatMap((file) => ['--values', join(root, file)]),
+    ...(apiVersions ?? []).flatMap((version) => ['--api-versions', version]),
+    ...(chart.skipCrds ? [] : ['--include-crds']),
+  ];
+}
+
+/** The Kubernetes version the charts are rendered for: the k3s node's, from the list's k3s item. */
+export const kubeVersionOf = (items: readonly Item[]) =>
+  items.find((item) => item.kind === 'k3s')?.image?.match(/:v?(\d+\.\d+\.\d+)/)?.[1];
 /** Where Trivy keeps its advisory databases in its cache: never kept from a run before. */
 export const DATABASE_DIRS = ['db', 'java-db'];
 /** The platform an image of ours is scanned on when its SBOM gives no Node: its Node is the same release on both. */
@@ -135,8 +169,11 @@ export interface Tools {
   trivy(args: string[], src?: string): Promise<TrivyReport>;
   /** The SPDX SBOM predicates an image carries, each verified against its signer; none, or a throw, when unverified. */
   attestations(image: string, signer: string): Promise<unknown[]>;
-  /** A chart, rendered as `helm template` renders it, with its values files from the checkout. */
-  render(chart: Chart, root: string, kubeVersion?: string): Promise<string>;
+  /**
+   * A chart, rendered as Argo CD's `helm template` renders it: its release, in its namespace, with its values files from
+   * the checkout and its `crds/` (unless `skipCrds`), for the cluster's Kubernetes version and API versions where given.
+   */
+  render(chart: Chart, root: string, kubeVersion?: string, apiVersions?: readonly string[]): Promise<string>;
   fetch(url: string): Promise<string>;
   /** Tries again, as a pull or a download needs. */
   retry<T>(what: () => Promise<T>): Promise<T>;
@@ -448,7 +485,14 @@ const firstLine = (error: unknown) =>
     ?.slice(0, 300) ?? '';
 
 /** The targets an item is read as: itself, or each image a chart renders or a k3s release lists. */
-async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<string>, kubeVersion?: string) {
+async function targetsOf(
+  tools: Tools,
+  root: string,
+  item: Item,
+  tracked: Set<string>,
+  kubeVersion?: string,
+  apiVersions?: readonly string[],
+) {
   const image = (reference: string): Target => ({
     item,
     key: itemKey(item, reference),
@@ -468,7 +512,7 @@ async function targetsOf(tools: Tools, root: string, item: Item, tracked: Set<st
       return { targets: [], unreadable: `a values file it names is not a file the checkout tracks: ${outside}` };
     let rendered: string;
     try {
-      rendered = await tools.retry(() => tools.render(item.chart as Chart, root, kubeVersion));
+      rendered = await tools.retry(() => tools.render(item.chart as Chart, root, kubeVersion, apiVersions));
     } catch (error) {
       return { targets: [], unreadable: `its chart does not render: ${firstLine(error)}` };
     }
@@ -553,10 +597,11 @@ export async function scan(
   const lockfiles = new Map<string, string[]>();
   // An image several items run is pulled once, and its findings are each item's.
   const pulled = new Map<string, Promise<Read>>();
-  const kubeVersion = items.find((item) => item.kind === 'k3s')?.image?.match(/:v?(\d+\.\d+\.\d+)/)?.[1];
+  const kubeVersion = kubeVersionOf(items);
+  const apiVersions = apiVersionsOf(root);
   let read = 0;
   for (const item of items) {
-    const { targets, unreadable: why } = await targetsOf(tools, root, item, tracked, kubeVersion);
+    const { targets, unreadable: why } = await targetsOf(tools, root, item, tracked, kubeVersion, apiVersions);
     if (why) {
       unreadable.push({ name: item.name, why });
       continue;
@@ -760,34 +805,20 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
             .predicate;
         });
     },
-    async render(chart, root, kubeVersion) {
+    async render(chart, root, kubeVersion, apiVersions) {
       const home = temp();
-      const { stdout } = await run(
-        'helm',
-        [
-          'template',
-          chart.release,
-          chart.chart,
-          '--repo',
-          chart.repo,
-          '--version',
-          chart.version,
-          ...(kubeVersion ? ['--kube-version', kubeVersion] : []),
-          ...chart.values.flatMap((file) => ['--values', join(root, file)]),
-        ],
-        {
-          maxBuffer: 64 * 1024 * 1024,
-          timeout: 5 * 60 * 1000,
-          // Helm's own state in a directory of the run's: no plugins, repositories or registry logins but none.
-          env: {
-            PATH: process.env.PATH ?? '',
-            HOME: home,
-            HELM_CACHE_HOME: join(home, 'cache'),
-            HELM_CONFIG_HOME: join(home, 'config'),
-            HELM_DATA_HOME: join(home, 'data'),
-          },
+      const { stdout } = await run('helm', helmTemplateArgs(chart, root, kubeVersion, apiVersions), {
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 5 * 60 * 1000,
+        // Helm's own state in a directory of the run's: no plugins, repositories or registry logins but none.
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: home,
+          HELM_CACHE_HOME: join(home, 'cache'),
+          HELM_CONFIG_HOME: join(home, 'config'),
+          HELM_DATA_HOME: join(home, 'data'),
         },
-      );
+      });
       return stdout;
     },
     async fetch(url) {

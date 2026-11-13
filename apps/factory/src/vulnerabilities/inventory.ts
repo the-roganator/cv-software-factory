@@ -58,6 +58,10 @@ export interface Chart {
   release: string;
   /** The values files, as paths in the checkout, in the order Helm reads them. */
   values: string[];
+  /** The namespace Argo CD renders it in: its source's `helm.namespace`, or its Application's destination's. */
+  namespace?: string;
+  /** Whether its Application has Argo CD leave the chart's `crds/` out (`helm.skipCrds`); Argo CD includes them otherwise. */
+  skipCrds?: boolean;
 }
 
 export interface Item {
@@ -256,13 +260,13 @@ interface Source {
   repoURL?: string;
   targetRevision?: string;
   ref?: string;
-  helm?: { releaseName?: string; valueFiles?: string[] };
+  helm?: { releaseName?: string; valueFiles?: string[]; namespace?: string; skipCrds?: boolean };
 }
 
 interface Manifest {
   kind?: string;
   metadata?: { name?: string };
-  spec?: { source?: Source; sources?: Source[] };
+  spec?: { source?: Source; sources?: Source[]; destination?: { namespace?: string } };
   images?: { name?: string; newName?: string; newTag?: string; digest?: string }[];
 }
 
@@ -287,8 +291,10 @@ function chartSources(manifests: Manifest[]) {
       const name = application.metadata?.name ?? '';
       const sources = application.spec?.sources ?? (application.spec?.source ? [application.spec.source] : []);
       const charts = sources.filter((source) => source.chart);
+      const namespace = application.spec?.destination?.namespace;
       return charts.map((source) => ({
         application: name,
+        namespace: source.helm?.namespace ?? namespace,
         name: charts.length > 1 ? `${name}/${source.chart}` : name,
         source,
         values: (source.helm?.valueFiles ?? []).map((file) => file.replace(/^\$values\//, '')),
@@ -368,7 +374,7 @@ export function inventory(root: string) {
     if (placed) add({ kind: 'third-party', name: reference, ...placed, image: reference, ci: ciCopy(reference) });
     else unread(reference, 'rendered, but pinned in no file');
   }
-  for (const { application, name, source, values } of charts) {
+  for (const { application, name, namespace, source, values } of charts) {
     const placed = placeApplication(checkout, deployFiles, application, source);
     if (!placed) {
       unread(`Application ${name}`, 'its chart is pinned in no file');
@@ -387,6 +393,8 @@ export function inventory(root: string) {
         version: source.targetRevision ?? '',
         release: source.helm?.releaseName ?? application,
         values,
+        ...(namespace ? { namespace } : {}),
+        ...(source.helm?.skipCrds ? { skipCrds: true } : {}),
       },
       ...(pins.length ? { pins } : {}),
     });

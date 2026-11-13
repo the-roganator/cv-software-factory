@@ -298,7 +298,7 @@ describe('triage', () => {
       ts: at,
       work_item: item,
       type: 'verification.finished',
-      version: 5,
+      version: VERSIONS['verification.finished'],
       actor: 'factory',
       summary: 'Cleared',
       payload: { outcome: 'cleared', check: 'links lead somewhere', against: 'c0ffee1', pages: [], dryRun },

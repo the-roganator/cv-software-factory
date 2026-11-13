@@ -4,8 +4,9 @@
  * talks to GitHub.
  *
  * Every call goes over `fetch`, but for `moves`, which goes over `node:http` (`longPost`): Node's `fetch` stops waiting
- * for a response's headers after 300 s whatever the caller's signal, and the worker answers `moves` only once it has
- * read every open alert, which can take longer. There the only limit is the read's own timeout.
+ * for a response's headers after 300 s whatever the caller's signal, and the worker answers `moves`, the first time for
+ * each scan run, only once it has read every open alert, which can take longer. There the only limit is the read's own
+ * timeout.
  */
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -42,8 +43,8 @@ export { READ_AGAIN };
 const TIMEOUT_MS = 120_000;
 
 /**
- * How long `moves` may take: it reads every open alert of the scan, a hundred to a page, one page after another (the
- * factory's ten thousand took 108 s on 12 November).
+ * How long `moves` may take: the first read of a scan run pages every open alert of the scan, a hundred to a page, one
+ * page after another (the factory's ten thousand took 108 s on 12 November); the worker keeps it for the next.
  */
 export const MOVES_TIMEOUT_MS = 10 * 60_000;
 

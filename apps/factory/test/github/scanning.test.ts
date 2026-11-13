@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { GitHubError } from '../../src/github/client.ts';
+import { GitHub, GitHubError } from '../../src/github/client.ts';
 import { branchPin, ecosystemsOf, groupMovesTo, rewrittenLines } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
-import { ScanReads } from '../../src/github/scanning.ts';
+import { ScanReads, SETTLED_MS } from '../../src/github/scanning.ts';
 import { zipEntry } from '../../src/github/zip.ts';
-import { client, REPO, type Route, type Sent } from './fake.ts';
+import { CLIENT_ID, client, fakeGitHub, PRIVATE_KEY, quiet, REPO, type Route, type Sent } from './fake.ts';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'scanning');
 const fixture = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8'));
@@ -58,12 +58,20 @@ const RUNS_PATH = `/repos/${REPO}/actions/workflows/vulnerabilities.yml/runs?bra
 const ALERTS_PATH = (page: number) =>
   `/repos/${REPO}/code-scanning/alerts?state=open&tool_name=Trivy&per_page=100&page=${page}`;
 
+const LATEST_PATH = `/repos/${REPO}/code-scanning/alerts?tool_name=Trivy&sort=updated&direction=desc&per_page=1`;
+const GOING_PATH = `/repos/${REPO}/actions/workflows/vulnerabilities.yml/runs?branch=main&status=in_progress&exclude_pull_requests=true&per_page=20`;
+const LATEST = [{ number: 104, state: 'open', updated_at: '2026-11-10T06:19:30Z' }];
+
 interface Day {
   runs?: unknown;
   artifacts?: unknown;
   moves?: unknown;
   /** Each page of alerts, in order. */
   pages?: unknown[][];
+  /** The scan's runs going on main, as GitHub lists them: none unless a test says. */
+  going?: unknown[];
+  /** The scan's alert that changed last, as GitHub answers the one-alert read sorted by change. */
+  latest?: unknown[];
   /** What GitHub answers each permission's read with, when the App lacks it. */
   refuse?: { actions?: boolean; alerts?: boolean };
 }
@@ -94,10 +102,21 @@ function routes(day: Day = {}): Route[] {
       path: '/artifact/77/moves.zip?sig=x',
       answer: () => ({ body: zipOf({ 'moves.json': JSON.stringify(day.moves ?? fixture('moves.json')) }) }),
     },
-    ...pages.map((body, i) => ({
+    {
+      method: 'GET',
+      path: GOING_PATH,
+      answer: () => (day.refuse?.actions ? refused : { body: { total_count: 0, workflow_runs: day.going ?? [] } }),
+    },
+    {
+      method: 'GET',
+      path: LATEST_PATH,
+      answer: () => (day.refuse?.alerts ? refused : { body: day.latest ?? LATEST }),
+    },
+    // Each page as the day has it when it is asked for, so a test may change the alerts between reads.
+    ...pages.map((_, i) => ({
       method: 'GET',
       path: ALERTS_PATH(i + 1),
-      answer: () => (day.refuse?.alerts ? refused : { body }),
+      answer: () => (day.refuse?.alerts ? refused : { body: (day.pages ?? pages)[i] ?? [] }),
     })),
   ];
 }
@@ -677,5 +696,313 @@ describe('Dependabot’s pull requests', () => {
         ecosystemsOf('updates:\n  - package-ecosystem: npm\n    directory: /\n'),
       ),
     ).toMatchObject({ ecosystem: 'github-actions', dependency: null });
+  });
+});
+
+describe('the scan’s moves, kept for each run', () => {
+  const pageReads = (sent: Sent[]) =>
+    sent.filter((each) => each.path.includes('code-scanning/alerts?state=open')).length;
+  const asked = (sent: Sent[], path: string) => sent.filter((each) => each.path === path).length;
+  /** The run after the fixtures' last, finished, with its own artifact, and alerts that name it. */
+  const NEXT = 42000000005;
+  function nextRun(day: Day): Route[] {
+    const runs = fixture('runs.json');
+    runs.workflow_runs.unshift({
+      ...runs.workflow_runs[3],
+      id: NEXT,
+      event: 'push',
+      updated_at: '2026-11-11T06:20:00Z',
+    });
+    day.runs = runs;
+    day.pages = [
+      alerts().map((a) => ({
+        ...a,
+        most_recent_instance: {
+          ...a.most_recent_instance,
+          message: { text: a.most_recent_instance.message.text.replace('run 42000000001', `run ${NEXT}`) },
+        },
+      })),
+    ];
+    day.latest = [{ number: 101, state: 'open', updated_at: '2026-11-11T06:19:30Z' }];
+    return [
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/actions/runs/${NEXT}/artifacts?name=moves&per_page=10`,
+        answer: () => ({
+          body: { total_count: 1, artifacts: [{ ...fixture('artifacts.json').artifacts[0], id: 78 }] },
+        }),
+      },
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/actions/artifacts/78/zip`,
+        answer: () => ({ status: 302, headers: { location: 'https://storage.test/artifact/78/moves.zip?sig=x' } }),
+      },
+      {
+        method: 'GET',
+        path: '/artifact/78/moves.zip?sig=x',
+        answer: () => ({
+          body: zipOf({ 'moves.json': JSON.stringify({ ...fixture('moves.json'), run: String(NEXT) }) }),
+        }),
+      },
+    ];
+  }
+
+  it('page the alerts once for a run, and still ask each time which run is the last and which alert changed last', async () => {
+    const sent: Sent[] = [];
+    const reads = new ScanReads(client(routes(), sent).github);
+    const first = await reads.moves(REPO);
+    const second = await reads.moves(REPO);
+    const third = await reads.moves(REPO);
+    expect(second).toEqual(first);
+    expect(third).toEqual(first);
+    expect(pageReads(sent)).toBe(1);
+    expect(asked(sent, RUNS_PATH)).toBe(3);
+    expect(asked(sent, LATEST_PATH)).toBe(3);
+  });
+
+  it('read a new run at once, the first call after it finished', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const extra: Route[] = [];
+    const reads = new ScanReads(
+      client(
+        [
+          ...routes(day),
+          {
+            method: 'GET',
+            path: /./,
+            answer: (r) => {
+              const route = extra.find((each) => each.path === r.path);
+              if (!route) throw new Error(`No fake answer for ${r.path}`);
+              return route.answer(r);
+            },
+          },
+        ],
+        sent,
+      ).github,
+    );
+    expect((await reads.moves(REPO)).run.id).toBe(42000000001);
+    extra.push(...nextRun(day));
+    const next = await reads.moves(REPO);
+    expect(next.run.id).toBe(NEXT);
+    expect(next.moves.flatMap((m) => m.findings.map((f) => f.alert))).toEqual([101, 102, 103, 104]);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('read again when an alert changed with no new run, and hide no failure behind the kept read', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const reads = new ScanReads(client(routes(day), sent).github);
+    await reads.moves(REPO);
+    // Martin dismisses alert 101 by hand: it is no longer open, and it changed last.
+    day.pages = [alerts().filter((a) => a.number !== 101)];
+    day.latest = [{ number: 101, state: 'dismissed', updated_at: '2026-11-10T09:00:00Z' }];
+    const after = await reads.moves(REPO).catch((e) => e);
+    expect(after.message).toMatch(/move 1 clears 2 results and 1 alerts name it/);
+    // The kept read is the day before the change: never served again for it.
+    const again = await reads.moves(REPO).catch((e) => e);
+    expect(again.message).toMatch(/move 1 clears 2 results and 1 alerts name it/);
+    expect(pageReads(sent)).toBe(3);
+    // Reopened: the alerts are the run's again, and so is the answer.
+    day.pages = [alerts()];
+    day.latest = [{ number: 101, state: 'open', updated_at: '2026-11-10T09:05:00Z' }];
+    expect((await reads.moves(REPO)).moves[0]?.findings.map((f) => f.alert)).toEqual([101, 102]);
+  });
+
+  it('serve nothing kept while a run of the scan is going, which may have uploaded without changing an alert', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const going: Route = {
+      method: 'GET',
+      path: `/repos/${REPO}/actions/runs/42000000003`,
+      answer: () => ({ body: { id: 42000000003, status: 'in_progress' } }),
+    };
+    const reads = new ScanReads(client([going, ...routes(day)], sent).github);
+    await reads.moves(REPO);
+    // Run 3 is going, and its upload names it in each alert it saw again: GitHub changes no alert's time for that.
+    day.going = [fixture('runs.json').workflow_runs[1]];
+    day.pages = [withText(101, (t) => t.replace('run 42000000001', 'run 42000000003'))];
+    for (let i = 0; i < 2; i++)
+      expect(await reads.moves(REPO).catch((e) => e)).toMatchObject({ kind: 'read-again', status: 409 });
+    expect(pageReads(sent)).toBe(3);
+    // Going and not yet uploaded: read whole, as the day it is, and not kept while the run goes.
+    day.pages = [alerts()];
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(5);
+    // A pull request's run, or a fork's, going is not the scan's.
+    day.going = [fixture('runs.json').workflow_runs[0], fixture('runs.json').workflow_runs[2]].map((run) => ({
+      ...run,
+      status: 'in_progress',
+    }));
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(6);
+  });
+
+  it('keep a read under the last change’s time alone, whichever of the alerts changed then GitHub names', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const reads = new ScanReads(client(routes(day), sent).github);
+    await reads.moves(REPO);
+    // Forty dismissed in one second: GitHub may name any of them.
+    day.latest = [{ ...LATEST[0], number: 117, state: 'fixed' }];
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(1);
+  });
+
+  it('keep no read whose last change is under a minute old, or whose time GitHub does not give', async () => {
+    const sent: Sent[] = [];
+    const changed = Date.parse(LATEST[0]?.updated_at ?? '');
+    let now = changed + 10_000;
+    const reads = new ScanReads(client(routes(), sent).github, { now: () => now });
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+    now = changed + SETTLED_MS;
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(3);
+    const untimed: Sent[] = [];
+    const without = new ScanReads(client(routes({ latest: [{ number: 104, state: 'open' }] }), untimed).github);
+    await without.moves(REPO);
+    await without.moves(REPO);
+    expect(pageReads(untimed)).toBe(2);
+  });
+
+  it('serve no kept read past its artifact’s expiry', async () => {
+    const sent: Sent[] = [];
+    const expires = Date.parse(fixture('artifacts.json').artifacts[0].expires_at);
+    let now = expires - 1;
+    const reads = new ScanReads(client(routes(), sent).github, { now: () => now });
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(1);
+    now = expires;
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('keep no read that failed part way, and read whole the next time', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { pages: [alerts().filter((a) => a.number !== 104)] };
+    const reads = new ScanReads(client(routes(day), sent).github);
+    expect((await reads.moves(REPO).catch((e) => e)).message).toMatch(/move 2 clears 2 results and 1 alerts name it/);
+    day.pages = [alerts()];
+    expect((await reads.moves(REPO)).moves[1]?.findings.map((f) => f.alert)).toEqual([103, 104]);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  /** A reader whose pages of alerts wait for `open()`, as a read of a hundred pages is still going. */
+  function held(day: Day, sent: Sent[], now: () => number = Date.now) {
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const fake = fakeGitHub(routes(day), sent);
+    const github = new GitHub({
+      credentials: { clientId: CLIENT_ID, privateKey: PRIVATE_KEY },
+      api: 'https://api.github.test',
+      log: quiet,
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).includes('code-scanning/alerts?state=open')) await gate;
+        return fake.fetch(input, init);
+      }) as typeof fetch,
+      sleep: async () => {},
+    });
+    return { reads: new ScanReads(github, { now }), open };
+  }
+
+  it('share one read in flight between callers at once', async () => {
+    const sent: Sent[] = [];
+    const { reads, open } = held({}, sent);
+    const both = Promise.all([reads.moves(REPO), reads.moves(REPO)]);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    const [a, b] = await both;
+    expect(a).toEqual(b);
+    expect(pageReads(sent)).toBe(1);
+  });
+
+  it('fail every caller of a shared read that failed, and keep nothing of it', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { pages: [alerts().filter((a) => a.number !== 104)] };
+    const { reads, open } = held(day, sent);
+    const both = Promise.allSettled([reads.moves(REPO), reads.moves(REPO)]);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    const results = await both;
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(pageReads(sent)).toBe(1);
+    day.pages = [alerts()];
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('ask whether a run is going before which run is the last finished, so a run that finishes between is seen', async () => {
+    const sent: Sent[] = [];
+    await new ScanReads(client(routes(), sent).github).moves(REPO);
+    const paths = sent.map((each) => each.path);
+    expect(paths.indexOf(GOING_PATH)).toBeGreaterThanOrEqual(0);
+    expect(paths.indexOf(GOING_PATH)).toBeLessThan(paths.indexOf(RUNS_PATH));
+  });
+
+  it('keep no read whose last change was under a minute old when it was asked, however long its pages took', async () => {
+    const sent: Sent[] = [];
+    const changed = Date.parse(LATEST[0]?.updated_at ?? '');
+    let now = changed + 10_000;
+    const day: Day = {};
+    const { reads, open } = held(day, sent, () => now);
+    const first = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    // The pages take minutes: the change is old by the time they are read, and was not when it was asked.
+    now = changed + 200_000;
+    open();
+    await first;
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('start a read of its own when a run is going that the read in flight did not see', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const { reads, open } = held(day, sent);
+    const first = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    day.going = [fixture('runs.json').workflow_runs[1]];
+    const second = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    await Promise.all([first, second]);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('join a later read in flight from an earlier point, and start a new one from a later point', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { latest: [{ number: 104, state: 'open', updated_at: '2026-11-10T07:00:00Z' }] };
+    const { reads, open } = held(day, sent);
+    const first = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    // A slower answer from before that change: it waits for the read already going.
+    day.latest = [{ number: 104, state: 'open', updated_at: '2026-11-10T06:00:00Z' }];
+    const earlier = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pageReads(sent)).toBe(0);
+    // A change after it: a read of its own.
+    day.latest = [{ number: 104, state: 'open', updated_at: '2026-11-10T08:00:00Z' }];
+    const later = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    await Promise.all([first, earlier, later]);
+    expect(pageReads(sent)).toBe(2);
+    // The later read is the one kept.
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('hand each caller its own copy: one caller’s change is not the next one’s answer', async () => {
+    const reads = new ScanReads(client(routes()).github);
+    const first = await reads.moves(REPO);
+    first.moves.length = 0;
+    expect((await reads.moves(REPO)).moves).toHaveLength(2);
   });
 });

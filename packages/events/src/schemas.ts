@@ -757,17 +757,13 @@ export const PAYLOADS = {
   /**
    * A ticket closed as verified came back: a sense's signal on the same fingerprint, so the same defect, regressed.
    * The ticket and its work item open again, and the work goes back to Plan for a fresh pass. What came back is the
-   * signal's: the sense, its check, the route and the version it was seen on. The signal's own event follows, with its
-   * evidence.
+   * signal's: the sense, its check, where it was seen and the version it was seen on. A route's sense names its route;
+   * the dependency sense names its move's name and ecosystem in its place, the ticket's fingerprint, with no version
+   * or advisory. The signal's own event follows, with its evidence.
    *
    * Or, with `dryRun`, the line running live reopened a ticket a dry run verified, whose fix never shipped: nothing came
-   * back, as the defect never left. Then it names the ticket's first signal, whatever its source, and the version the
-   * dry run's fix would have replaced.
-   */
-  /**
-   * A ticket closed as verified, open again: a sense saw its problem again, or the fix a dry run verified never shipped.
-   * A route's sense names its route; the dependency sense names its move's name and ecosystem in its place (the ticket's
-   * fingerprint), with no version or advisory. A version 3 reopening always named a route.
+   * back, as the defect never left. Then it names the ticket's first signal, whatever its source (its move, for a
+   * move's ticket), and the version the dry run's fix would have replaced. A version 3 reopening always named a route.
    */
   'work-item.reopened': z
     .strictObject({

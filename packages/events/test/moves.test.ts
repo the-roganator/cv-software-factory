@@ -121,7 +121,7 @@ describe("a move's public views", () => {
       to: '',
       security: true,
     });
-    // A routine update's names no finding, and Dependabot's pull request names its package anyway.
+    // The work item Dependabot's own pull request opens names what that pull request makes public already.
     const routine = { ...opened, category: 'dependency', dependency: { ...opened.dependency, security: false } };
     expect(view('work-item.opened', routine).dependency).toEqual(routine.dependency);
     const reopened = {

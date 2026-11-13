@@ -17,10 +17,12 @@ import type { Sql } from 'postgres';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves } from '../github/scanning.ts';
 import { GitHubWorkerError, READ_AGAIN } from '../github/worker-client.ts';
+import type { Outbox } from '../outbox.ts';
 import { compare } from './compare.ts';
 import { type Day, dayOf, type RepositoryRead, sameDay, scannedOf } from './day.ts';
 import type { RunningContainer } from './running.ts';
 import { type Next, stale } from './schedule.ts';
+import { sendsOf } from './sends.ts';
 
 /** What the sense reads through: the GitHub worker's two reads, and the cluster's pods. */
 export interface Senses {
@@ -48,6 +50,11 @@ export type Pass =
 interface SenseOptions {
   sql: Sql;
   events: EventWriter;
+  /**
+   * Where the app's moves go to triage (`sends.ts`): the inbox, as the sense's role. Without one, as a dry run or a
+   * test that needs none, nothing is sent.
+   */
+  outbox?: Outbox | undefined;
   senses: Senses;
   /** Both repositories, as `owner/name`. */
   repositories: readonly string[];
@@ -110,6 +117,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 export class PatchingSense {
   readonly #sql: Sql;
   readonly #events: EventWriter;
+  readonly #outbox: Outbox | undefined;
   readonly #senses: Senses;
   readonly #repositories: readonly string[];
   readonly #log: Logger;
@@ -119,7 +127,7 @@ export class PatchingSense {
   /** How many passes in a row the worker's door has refused. */
   #refused = 0;
 
-  constructor({ sql, events, senses, repositories, log, now = () => new Date() }: SenseOptions) {
+  constructor({ sql, events, outbox, senses, repositories, log, now = () => new Date() }: SenseOptions) {
     // A day holds one or two repositories (`patching.read`): more could never be appended, so it would never read.
     if (repositories.length < 1 || repositories.length > 2)
       throw new Error(`The sense reads one or two repositories, not ${repositories.length}`);
@@ -128,6 +136,7 @@ export class PatchingSense {
       throw new Error(`The sense reads each repository once, as owner/name: ${repositories.join(', ')}`);
     this.#sql = sql;
     this.#events = events;
+    this.#outbox = outbox;
     this.#senses = senses;
     this.#repositories = repositories;
     this.#log = log;
@@ -229,9 +238,36 @@ export class PatchingSense {
       );
     const day = dayOf(reads, containers.length, compared ? compare(containers, lists) : null);
 
-    if (sameDay(day, await this.#last())) return { pass: 'unchanged', day };
-    await this.#events.append(dayEvent(day, this.#now()));
-    return { pass: 'appended', day };
+    const unchanged = sameDay(day, await this.#last());
+    if (!unchanged) await this.#events.append(dayEvent(day, this.#now()));
+    // Every pass that reads sends, the day changed or not: the same send has the same id, and the inbox keeps the first,
+    // so a sense restarted sends nothing twice, and a send that failed goes again at the next pass.
+    const unsent = await this.#send(reads.map((read) => read.moves));
+    if (unsent.length) {
+      this.#log.error({ failed: unsent }, `patching: ${unsent.length} of the moves were not sent to triage`);
+      return { pass: 'failed', failed: unsent };
+    }
+    return unchanged ? { pass: 'unchanged', day } : { pass: 'appended', day };
+  }
+
+  /** Sends each repository's moves for the line to triage (`sends.ts`), and says which could not be sent. */
+  async #send(all: Moves[]): Promise<string[]> {
+    const outbox = this.#outbox;
+    if (!outbox) return [];
+    const failed: string[] = [];
+    let sent = 0;
+    for (const moves of all) {
+      for (const { id, signal } of sendsOf(moves, moves.file?.judged ?? moves.run.updatedAt)) {
+        try {
+          await outbox.send(signal, id);
+          sent++;
+        } catch (error) {
+          failed.push(`a move of ${moves.repository} to triage: ${message(error)}`);
+        }
+      }
+    }
+    if (sent) this.#log.info({ sent }, 'patching: the moves for the line sent to triage');
+    return failed;
   }
 
   /** The last day appended, which the sense's role alone appends and reads. */

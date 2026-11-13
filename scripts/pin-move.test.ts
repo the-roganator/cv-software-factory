@@ -2081,4 +2081,54 @@ spec:
       line(22, 'app.kubernetes.io/version: 9e999'),
     );
   });
+
+  it('sets aside a moved reference only whole: never one that begins, ends or carries it', () => {
+    const [FROM, TO] = ['docker.io/acme/app:1.1', 'docker.io/acme/app:1.2'];
+    const CHART = { chart: 'app', from: '1.0.0', to: '1.1.0' };
+    const operator = (image: string, extra: string) =>
+      `apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: operator\n  namespace: ns\nspec:\n  template:\n    spec:\n      containers:\n        - name: operator\n          image: ${image}\n${extra}`;
+    const env = (value: string) => `          env:\n            - name: SIDECAR_IMAGE\n              value: ${value}\n`;
+    const args = (value: string) => `          args: ["--sidecar=${value}"]\n`;
+    const judge = (was: string, now: string) => manifestsDiffer(was, now, [{ from: FROM, to: TO }], CHART);
+    // Another tag that begins with the old one, in an env value and in an argument.
+    expect(judge(operator(FROM, env(`${FROM}0`)), operator(TO, env(`${TO}0`)))).toMatch(
+      /Deployment ns\/operator at spec\.template\.spec\.containers\[0\]\.env\[0\]\.value$/,
+    );
+    expect(judge(operator(FROM, args(`${FROM}0`)), operator(TO, args(`${TO}0`)))).toMatch(
+      /containers\[0\]\.args\[0\]$/,
+    );
+    // A tag with a suffix (`-alpine`), and the same reference under another registry's path.
+    expect(judge(operator(FROM, env(`${FROM}-alpine`)), operator(TO, env(`${TO}-alpine`)))).toMatch(/env\[0\]\.value$/);
+    expect(judge(operator(FROM, env(`mirror.io/${FROM}`)), operator(TO, env(`mirror.io/${TO}`)))).toMatch(
+      /env\[0\]\.value$/,
+    );
+    // The reference whole, in a value, after `=`, or quoted: the moved image, set aside.
+    expect(judge(operator(FROM, env(FROM)), operator(TO, env(TO)))).toBeUndefined();
+    expect(judge(operator(FROM, args(FROM)), operator(TO, args(TO)))).toBeUndefined();
+    // A digest alone, as a value's move writes it, and after `@`; never one a longer digest begins with.
+    const [A, B] = [`sha256:${hex('a')}`, `sha256:${hex('b')}`];
+    const pinned = [{ from: `${FROM}@${A}`, to: `${TO}@${B}` }];
+    const digest = (image: string, d: string) =>
+      operator(image, `          env:\n            - name: D\n              value: ${d}\n`);
+    expect(manifestsDiffer(digest(`${FROM}@${A}`, A), digest(`${TO}@${B}`, B), pinned, CHART)).toBeUndefined();
+    expect(
+      manifestsDiffer(digest(`${FROM}@${A}`, `x@${A}`), digest(`${TO}@${B}`, `x@${B}`), pinned, CHART),
+    ).toBeUndefined();
+    expect(manifestsDiffer(digest(`${FROM}@${A}`, `${A}0`), digest(`${TO}@${B}`, `${B}0`), pinned, CHART)).toMatch(
+      /env\[0\]\.value$/,
+    );
+  });
+
+  it("moves a chart's version label only whole: `x-1.1` to `x-1.2` never covers `x-1.10` to `x-1.20`", () => {
+    const X = { chart: 'x', from: '1.1', to: '1.2' };
+    const labelled = (own: string, other: string) =>
+      `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  labels:\n    helm.sh/chart: ${own}\n  annotations:\n    note: ${other}\n`;
+    expect(manifestsDiffer(labelled('x-1.1', 'x-1.10'), labelled('x-1.2', 'x-1.20'), [], X)).toBe(
+      'the manifests change beyond the image: Service s at metadata.annotations.note',
+    );
+    // A subchart's label that only begins with the chart's own is a subchart's, judged as one.
+    expect(manifestsDiffer(labelled('x-1.10', 'a'), labelled('x-1.20', 'a'), [], X)).toMatch(
+      /x-1\.20 is not x-1\.2|forward on its major|chart at another version/,
+    );
+  });
 });

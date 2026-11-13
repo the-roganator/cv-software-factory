@@ -945,7 +945,7 @@ export function comparedLines(
       const label = VERSION_LINE.exec(line);
       const text =
         label && moved.has(label[3] as string) ? `${label[1]}${label[2]}<version>${label[2]}${label[4]}` : line;
-      lines.push({ line: i + 1, text: written.reduce((at, [ref, as]) => at.split(ref).join(as), text) });
+      lines.push({ line: i + 1, text: writtenAlike(text, written) });
     }
     start = end + 1;
   }
@@ -1013,9 +1013,25 @@ export function placeholders(pairs: readonly ImagePair[], side: Side): [string, 
   return entries.filter(([text]) => text).sort(([a], [b]) => b.length - a.length);
 }
 
+/** Any character an image reference may hold: a registry, a path, a tag, a digest. */
+const REFERENCE_CHARACTER = 'A-Za-z0-9._/:@+-';
+
+/**
+ * A text with each moved reference written as its placeholder where it stands whole: nothing a reference may hold on
+ * either side of it, so `app:1.1` never covers `app:1.10`, `app:1.1-alpine` or `mirror.io/app:1.1`. A digest alone may
+ * follow `@`, as an image a chart writes by its digest alone does, but nothing may follow it.
+ */
+export function writtenAlike(text: string, written: readonly [string, string][]): string {
+  return written.reduce((at, [ref, as]) => {
+    const before = ref.startsWith('sha256:') ? REFERENCE_CHARACTER.replace('@', '') : REFERENCE_CHARACTER;
+    const whole = new RegExp(`(?<![${before}])${literal(ref)}(?![${REFERENCE_CHARACTER}])`, 'g');
+    return at.replace(whole, () => as);
+  }, text);
+}
+
 /** A value with every string's moved references written as their placeholders. */
 function withoutImage(value: unknown, written: readonly [string, string][]): unknown {
-  if (typeof value === 'string') return written.reduce((text, [ref, as]) => text.split(ref).join(as), value);
+  if (typeof value === 'string') return writtenAlike(value, written);
   if (Array.isArray(value)) return value.map((each) => withoutImage(each, written));
   if (isPlain(value))
     return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, withoutImage(each, written)]));
@@ -1058,10 +1074,12 @@ function versionLabelWrong(label: string, was: string, now: string, chart?: Char
     return VERSION_WORD.test(was) && VERSION_WORD.test(now) ? undefined : `${short(now)} is no version`;
   const [own, next] = [`${chart.chart}-${chart.from}`, `${chart.chart}-${chart.to}`];
   if (was === own || now === next) return was === own && now === next ? undefined : `${short(now)} is not ${next}`;
-  // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward.
+  // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward. A label
+  // of the chart's own name is the chart's, which moves from its version to its version alone.
   const [a, b] = [CHART_LABEL.exec(was), CHART_LABEL.exec(now)];
   const major = (version: string) => version.replace(/^v/, '').split('.')[0];
   if (!a || !b || a[1] !== b[1]) return `${short(now)} is not ${short(was)}'s chart at another version`;
+  if (a[1] === chart.chart) return `${short(now)} is not ${next}`;
   if (compareVersions(b[2] as string, a[2] as string) < 0 || major(a[2] as string) !== major(b[2] as string))
     return `${short(now)} is not ${short(was)} forward on its major`;
   return undefined;

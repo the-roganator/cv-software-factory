@@ -2,13 +2,13 @@
  * Forward on its line (ADR 0019, condition 4): the target resolved by the gate itself, as the scan resolves a fix, and
  * the images a chart's or a value's move runs in place of the ones before.
  */
-import { compareVersions, newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
+import { newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import { readTarget, type Target, targetText } from '../apps/factory/src/vulnerabilities/fixes.ts';
 import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
 import { repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import type { Move } from './pin-move-one.ts';
 import type { PinMoveIO } from './pin-move-readers.ts';
-import { sameMajor, short, VERSION_WORD, variantOf } from './pin-move-shared.ts';
+import { notForward, sameMajor, short, VERSION_WORD, variantOf } from './pin-move-shared.ts';
 import { tagAndDigest } from './pin-move-sides.ts';
 
 /** The image a chart's rendering runs at a digest: the one reference there that carries it. */
@@ -42,10 +42,10 @@ export async function imageForward(
   if (read?.kind !== 'image' || read.tag !== now.tag || read.digest !== now.digest)
     return `${short(to)} is not a target the scan's grammar writes`;
   if (now.tag !== was.tag) {
-    const order = compareVersions(now.tag, was.tag);
     if (!/^v?\d/.test(now.tag) || !/^v?\d/.test(was.tag))
       return `${now.tag} is another tag than ${was.tag}, which is not a version`;
-    if (order < 0) return `a move backwards, from ${was.tag} to ${now.tag}`;
+    const back = notForward(was.tag, now.tag);
+    if (back) return `${back}, from ${was.tag} to ${now.tag}`;
     if (!sameMajor(now.tag, was.tag)) return `a major, from ${was.tag} to ${now.tag}`;
     const newest = await newestOf(from, io.tags);
     if (!newest?.version) return `${was.tag} names no line the gate can resolve`;
@@ -59,7 +59,7 @@ export async function imageForward(
 
 /**
  * Whether an image a chart's new version runs in place of one its old version ran is forward on its line: a version
- * tag on both, the same or later, on the same major, and, where the chart pins a digest, the tag's index digest now.
+ * tag on both, the same or later in the gate's exact order, on the same major, and, where the chart pins a digest, the tag's index digest now.
  * A chart pins its images as its publisher writes them, often by tag alone, so a bare version tag is whatever it names
  * when the cluster pulls it: that much is the chart's publisher's, as the chart is. A tag that is no version
  * (`nightly`, `latest`), a move back or across a major, or a digest the tag does not name, holds.
@@ -81,7 +81,8 @@ export async function chartImageForward(
   if (/^[-+.]?(rc|alpha|beta|pre|dev|snapshot|nightly|canary)/i.test(variantOf(b)))
     return `${repository} ${b} is a prerelease, not a release`;
   if (was.digest && !now.digest) return `${short(to)} drops the digest ${short(from)} was pinned to`;
-  if (compareVersions(b, a) < 0) return `a move backwards in ${repository}, from ${a} to ${b}`;
+  const back = a === b ? undefined : notForward(a, b);
+  if (back) return `${back} in ${repository}, from ${a} to ${b}`;
   if (!sameMajor(b, a)) return `a major in ${repository}, from ${a} to ${b}`;
   if (now.digest) {
     const current = await io.digest(`${repository}:${b}`);
@@ -95,7 +96,8 @@ export async function chartImageForward(
 export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersions'>): Promise<string | undefined> {
   const chart = move.pins[0]?.chart?.head;
   if (!chart) return `${move.name} names no chart`;
-  if (compareVersions(move.to, move.from) <= 0) return `a move backwards, from ${move.from} to ${move.to}`;
+  const back = notForward(move.from, move.to);
+  if (back) return `${back}, from ${move.from} to ${move.to}`;
   if (!/^v?\d+(\.\d+)*$/.test(move.to)) return `${chart.chart} ${move.to} is a prerelease, not a release`;
   const target: Target = {
     kind: 'chart',

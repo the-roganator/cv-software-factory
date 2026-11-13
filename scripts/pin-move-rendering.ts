@@ -3,9 +3,8 @@
  * versions, compared object by object and then line by line, with only the move's own differences set aside.
  */
 import { isAlias, isMap, isNode, isPair, isScalar, parseAllDocuments, visit } from 'yaml';
-import { compareVersions } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import type { Side } from './pin-move-readers.ts';
-import { literal, record, sameMajor, short, VERSION_WORD, variantOf } from './pin-move-shared.ts';
+import { literal, notForward, record, sameMajor, short, VERSION_WORD, variantOf } from './pin-move-shared.ts';
 
 /** The labels whose values are the chart's own versions, by their exact keys, in an object's or a template's metadata. */
 const VERSION_LABELS = new Set(['helm.sh/chart', 'app.kubernetes.io/version']);
@@ -357,14 +356,16 @@ function versionLabelWrong(label: string, was: string, now: string, chart?: Char
     value.startsWith(`${chart.chart}-`) && VERSION_WORD.test(value.slice(chart.chart.length + 1));
   if (owns(was) || owns(now)) return `${short(now)} is not ${next}`;
   // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward.
-  // Every reading that names one chart at both must be forward on its major and its line (its variant, as an image a
-  // chart runs keeps its), so a name that may hold part of the version cannot pass a major as a minor.
+  // Every reading that names one chart at both must be forward in the gate's exact order, on its major and on its line
+  // (its variant, as an image a chart runs keeps its, and its `v`, kept or not), so a name that may hold part of the
+  // version cannot pass a major as a minor, nor a move back as a tie.
   const [a, b] = [chartLabelReadings(was), chartLabelReadings(now)];
   const names = [...a.keys()].filter((name) => b.has(name));
   if (!names.length) return `${short(now)} is not ${short(was)}'s chart at another version`;
   for (const name of names) {
     const [from, to] = [a.get(name) as string, b.get(name) as string];
-    if (compareVersions(to, from) < 0 || !sameMajor(from, to) || variantOf(from) !== variantOf(to))
+    const lineKept = variantOf(from) === variantOf(to) && from.startsWith('v') === to.startsWith('v');
+    if (notForward(from, to) || !sameMajor(from, to) || !lineKept)
       return `${short(now)} is not ${short(was)} forward on its major`;
   }
   return undefined;

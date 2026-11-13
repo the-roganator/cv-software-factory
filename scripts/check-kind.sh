@@ -119,8 +119,9 @@ EXCLUDED_CLASSES=(
   '^\.github/'
   # Claude Code's own files and the dev container's: nothing the job runs reads them.
   '^\.claude/' '^\.devcontainer/'
-  # What installs the modules (an accepted limit): a change here can break `pnpm install` in the job, which fails the
-  # check, but is no change to what the cluster runs.
+  # What installs the modules (an accepted limit): a change here chooses the versions of the modules the job's scripts
+  # run on the host and the root's lifecycle scripts `pnpm install` runs, and can break the install, failing the check;
+  # it changes no manifest, chart or image the cluster runs. In the queue, such a change merged ahead is not run again.
   '^pnpm-lock\.yaml$' '^pnpm-workspace\.yaml$' '(^|/)package\.json$'
 )
 EXCLUDED=$(IFS='|'; echo "${EXCLUDED_CLASSES[*]}")

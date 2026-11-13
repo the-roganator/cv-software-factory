@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -603,6 +604,18 @@ describe('the classes a cluster is not made from', () => {
     const read = [...named, ...files, 'Makefile'];
     const inputs = inputsOf(read);
     for (const path of read) expect(inputs.has(path), path).toBe(true);
+  });
+
+  it('has no symlink from an input to a file in an excluded class, whose text the hash would not see', () => {
+    const links = execFileSync('git', ['ls-files', '-s', '-z'], { encoding: 'utf-8' })
+      .split('\0')
+      .filter((entry) => entry.startsWith('120000 '))
+      .map((entry) => entry.split('\t')[1] ?? '');
+    const targets = links.map((link) => join(dirname(link), readlinkSync(link)));
+    const inputs = inputsOf([...links, ...targets]);
+    links.forEach((link, i) => {
+      if (inputs.has(link)) expect(inputs.has(targets[i] ?? ''), `${link} -> ${targets[i]}`).toBe(true);
+    });
   });
 
   it('has nothing the job runs name Claude Code’s files or the dev container’s', () => {

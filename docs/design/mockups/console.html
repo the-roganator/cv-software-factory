@@ -667,10 +667,21 @@ table.steps { width: 100%; border-collapse: collapse; font: 12px/1.35 var(--font
 .pm-total .clr-wrap { grid-column: 4; }
 .pm-total .pm, .sum-clr .pm, .pm-head .pm { border: 0; }
 .sum-clr > div { font-size: 13px; }
-.sum-clr .pm .clr { font-size: 17px; color: var(--text); grid-template-columns: repeat(4, 6ch); gap: 10px; }
+.sum-clr .pm .clr { display: grid; font-size: 17px; color: var(--text); grid-template-columns: repeat(4, 6ch); gap: 10px; }
 .sum-clr .pm .clr-head span { font-size: 10px; }
 .clr .cleared { color: var(--ok); }
 .sum-clr .pm .clr .zero { color: var(--text-muted); }
+/* The summary's counts go by the panel's own width, not the page's: the right column is narrowest beside Needs you,
+   just above a phone's width. Narrower, the counts get smaller; narrower still, each label goes above its counts. */
+.summary { container-type: inline-size; }
+@container (max-width: 440px) {
+  .sum-clr .pm .clr { font-size: 15px; grid-template-columns: repeat(4, 5ch); gap: 6px; }
+}
+@container (max-width: 340px) {
+  .sum-clr > div { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .sum-clr > div > .pm { justify-self: end; }
+  .sum-clr > div:first-child > span:first-child { display: none; }
+}
 .sum-clr .pm .clr-head span, .sum-clr .pm .clr span { text-align: right; }
 .sum-figs + .sum-label { margin-top: 12px; }
 .clr .crit { color: var(--attn); }

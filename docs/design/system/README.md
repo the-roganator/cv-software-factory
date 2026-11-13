@@ -287,6 +287,12 @@ Where the tool is already drawn in the picture (Trivy over an image scan, OpenTe
 - A quarantined report's withheld block says it gave orders to the system, and that its text is kept, shown only to Martin and its sender.
 - For Martin, signed in, what the visitor wrote is quoted under the withheld block: a 2px `line-strong` rule on its left, "Only you see this: a visitor wrote it" in 12px `text-muted`, then the text in quotation marks in `text`; a planner's finding the same way, "the planner wrote it". Nowhere else, and never on the card.
 
+### A panel's sheet
+
+Patching and Guardrails are summaries in the bottom row, and each opens its panel whole in the sheet: the same frame, rising to 90% (94% on a phone), with the same close, Escape, scrim and focus, and focus back on what opened it. Its head is the panel's: its count as the kicker, in `t-label` ("9 moves · 1 unscanned image running · 4 wait on you", "10 held · 1 did not", with what needs Martin in `attn`, and "· Read only" for a visitor), the panel's name as the title, and Close; no previous and next, which step between work items. Its body is the panel, in one column the sheet's width at every width: the rows open in place, one at a time, as they would on the page. A link inside it to a work item opens that work item's sheet in its place.
+
+Each is addressed: `?sheet=patching` and `?sheet=guardrails` open them; `?move=<key>` opens Patching's at that row, opened, scrolled to and focused, which is what Needs you's **Open its row in Patching** does; `?open=<1..11>` opens Guardrails' at that row. `?item=<n>&sheet`, with no value, opens the work item's sheet.
+
 ### A visitor's report
 
 Report text is untrusted. The console shows it only to Martin and to the visitor whose key sent it, sanitised to at most 140 characters of plain ASCII letters, digits and basic punctuation, with links, email addresses and long numbers removed, and inserted as a text node, never as markup. Everyone else sees that a report was made, and what triage made of it.
@@ -322,13 +328,13 @@ An **MR monogram**: Martin Rogan's initials in Instrument Serif, with the R set 
 
 One page, three widths. The console is designed to be read from top to bottom: *is it running → what is happening → what does it need from me*.
 
-The Canary panel sits full width directly under the line, at every width: it is the Release station opened up. The bottom row, Needs you on the left and Controls, Flags and Spend one above the other on the right, sits under the reel, for everyone; Try it yourself joins it for visitors in milestone 8. Patching sits full width under the bottom row, and Guardrails full width under Patching, both for everyone. Guardrails is a checklist of the eleven, in two columns from 1180 up and one below. Sign-in, enrolment, the settings and the audit log are pages of their own (see Admin).
+The Canary panel sits full width directly under the line, at every width: it is the Release station opened up. The bottom row, Needs you on the left and on the right Controls, Flags, Patching, Guardrails and Spend one above the other, sits under the reel, for everyone, and ends the page; Try it yourself joins it for visitors in milestone 8. Patching and Guardrails are summaries there, each opening its panel whole in a sheet (see "A panel's sheet"), so the page stays as long as what needs reading on it. Sign-in, enrolment, the settings and the audit log are pages of their own (see Admin).
 
 | Width | The line | The Canary panel | The reel and the sheet | Bottom row |
 |---|---|---|---|---|
-| ≥ 1180 | 8 stations in a row, scaled to fit; captions show state and one figure | The steps on the left, the measures on the right | Cards up to 620px with both neighbours showing; the sheet in two columns | Needs you on the left; Controls, Flags and Spend one above the other on the right, the two columns equally wide |
+| ≥ 1180 | 8 stations in a row, scaled to fit; captions show state and one figure | The steps on the left, the measures on the right | Cards up to 620px with both neighbours showing; the sheet in two columns | Needs you on the left; Controls, Flags, the Patching and Guardrails summaries, and Spend one above the other on the right, the two columns equally wide |
 | 721–1179 | Same row, smaller; captions show state only | The same, narrower | The same reel; the sheet in one column, its side column as two cards side by side | The same |
-| ≤ 720 | **Two rows of four stations**, reading left to right like text; the current return becomes one line of text underneath; tapping a station opens a bottom sheet | One column: the steps, then the measures, each baseline under its canary figure | Cards the width of the screen with neighbours just showing; the timeline the same window as at every width, a few work items either side of the playhead; the sheet at 94% height, one column, its scrubber showing dots and the current label | One column: Needs you, then Controls, Flags and Spend |
+| ≤ 720 | **Two rows of four stations**, reading left to right like text; the current return becomes one line of text underneath; tapping a station opens a bottom sheet | One column: the steps, then the measures, each baseline under its canary figure | Cards the width of the screen with neighbours just showing; the timeline the same window as at every width, a few work items either side of the playhead; the sheet at 94% height, one column, its scrubber showing dots and the current label | One column: Needs you, then Controls, Flags, the two summaries and Spend |
 
 The phone keeps the stations: they are the thing people remember, and at a quarter of the width the face, hatch and beacon still read. What goes on the phone is detail: figures, the parcels on the belt, and the return arcs.
 
@@ -347,8 +353,8 @@ Each panel does one job:
 - **Controls:** autonomy, three switches and what the line takes. Guardrails that can't be switched off are not drawn as switches; one line says so, and points to Guardrails.
 - **Flags:** each feature flag an improvement ships behind, and its stage.
 - **Spend:** spend against the day's, the month's and a work item's caps; the models and the caps themselves are on the settings page.
-- **Patching:** what must move, and who moves it: one row for each move of a pin the daily scan found a fix for, what waits on Martin first. It is not a vulnerability browser: code scanning is one, and the panel links to it.
-- **Guardrails:** a checklist of spec 6's eleven, each held or not and how old its proof is; each opens in place to what holds it, its refusals and its red-team attack. It is how a visitor sees that the factory can be trusted, so it is on the console, not a page of its own, and kept short there.
+- **Patching:** what must move, and who moves it. On the page, a summary: what the moves clear by severity, the next deadline and the day's scan; in its sheet, one row for each move of a pin the daily scan found a fix for, what waits on Martin first. It is not a vulnerability browser: code scanning is one, and the sheet links to it.
+- **Guardrails:** spec 6's eleven. On the page, a summary: how many hold, the eleven as a strip, the last proof and the last attack; in its sheet, the checklist, each held or not and how old its proof is, each opening in place to what holds it, its refusals and its red-team attack. It is how a visitor sees that the factory can be trusted, so it is on the console, not a page of its own, and kept short there.
 - **Left out on purpose:** placeholders for other apps, a live-feed ticker (the stations and the reel already show what is happening), an always-on feedback loop under the belt (production feeding Sense is a return like any other), sparklines, and help text that repeats itself.
 
 ## Sensing and triage
@@ -502,7 +508,7 @@ One card per hold, the line's and triage's, oldest first, so what has waited lon
 
 **A merge held for its risk tags.** Under Guarded, the review gate passes the factory's pull request on its own only when it is low-risk. When it does not, the line holds the merge: **Held for its risk tags**, with the gate's summary as its evidence on the station face, as the gate wrote it for the line: the rule ("Guarded: the factory's App opened #1327, so it passes only if low-risk"), a cross in `station-led-attn` for each reason, with what in the diff gave it (`dependency-change` and the lockfile or manifest, `test-loosening` and the test, `security-headers`, a path CODEOWNERS gives Martin, a release, an improvement; `out-of-scope` is held before any code, at Plan), a tick for each it did not find, and what it waits for: his approval of its head commit, named. Under it, that his approval is his own review of the head commit on GitHub, so the console has no Approve, and that a push after he approves needs him again. Its way forward is **Review** and GitHub's mark, drawn as a merge's is, a link to the pull request (a screen reader hears "Review #1327 on GitHub (opens GitHub in a new tab)"), beside what to do there: approve its head commit, and the line adds it to the merge queue under Guarded with auto-merge on, or otherwise Martin merges it there; then Answer in words (back to the coder) and Reject. A visitor's card keeps the link, beside "Martin approves its head commit there, with his own review". Its picture on the reel is the waiting-for-merge panel, with a cross for each tag.
 
-**A move that waits on Martin** (Patching, below): **Patch ·** and who moves it ("Patch · your approval", "Patch · your cluster", "Patch · an issue"), and on the right the move and its deadline ("Loki chart · due in 21 h") in place of a work item. Its evidence says what it clears and why no pull request of the App's passes on its own. One answer, the way to its pull request or issue (**Review**, **Merge** or **Open**, and GitHub's mark), and under the answers, in `text-muted`, what happens if he leaves it ("Left as it is, the scan fails from 11 Nov 17:49 UTC."). No Hold and no Except: holding is not merging, and an exception is an entry in `policy/vulnerabilities.ts`, reviewed as a pull request. A row the dependency sense made of an unscanned image running has no pull request, so no answer, only that sentence. Its foot is **Open its row in Patching**, since a move is not a work item; a visitor's adds "Martin moves it, on GitHub or his cluster". These cards head the list: each has waited since the morning's scan, longer than any hold of the day.
+**A move that waits on Martin** (Patching, below): **Patch ·** and who moves it ("Patch · your approval", "Patch · your cluster", "Patch · an issue"), and on the right the move and its deadline ("Loki chart · due in 21 h") in place of a work item. Its evidence says what it clears and why no pull request of the App's passes on its own. One answer, the way to its pull request or issue (**Review**, **Merge** or **Open**, and GitHub's mark), and under the answers, in `text-muted`, what happens if he leaves it ("Left as it is, the scan fails from 11 Nov 17:49 UTC."). No Hold and no Except: holding is not merging, and an exception is an entry in `policy/vulnerabilities.ts`, reviewed as a pull request. A row the dependency sense made of an unscanned image running has no pull request, so no answer, only that sentence. Its foot is **Open its row in Patching**, which opens Patching's sheet at its row, opened, since a move is not a work item; a visitor's adds "Martin moves it, on GitHub or his cluster". These cards head the list: each has waited since the morning's scan, longer than any hold of the day.
 
 **A canary paused for Martin** (auto-rollback off): **A canary paused for you**, "#1302 · Release · 50% · 3min", the analysis's words on the station face, what it judged bad and by how much, that it waits even with auto-rollback switched on again, and that Stop the line still aborts it; Promote fully, with the key, and Abort, in the alarm colour's outline, each as the Canary panel's own control. Abort says it counts as a rollback: the work item fails Release, and triage gets the analysis's verdict.
 
@@ -512,7 +518,7 @@ The card keeps the `attn` rule on its left edge. A count in the panel's head say
 
 ### Controls and Spend
 
-Controls, Flags and Spend are three panels, one above the other, each under its own heading. Controls holds four groups, each under a `t-label`, then a key to the key and a link to the audit log; Spend, its meters, a line on who sets the caps and a link to the settings. Flags is below, in "Improvements and flags".
+Controls, Flags and Spend are three panels in the bottom row's right column, each under its own heading, with the summaries of Patching and Guardrails between Flags and Spend (below, in "Guardrails" and "Patching"). Controls holds four groups, each under a `t-label`, then a key to the key and a link to the audit log; its line on the guardrails names **Guardrails** as a link that opens their sheet. Spend, its meters, a line on who sets the caps and a link to the settings. Flags is below, in "Improvements and flags".
 
 - **Autonomy** and **What the line takes** are drawn alike: each a segmented control the panel's full width, its choices equally wide and ordered tightest to loosest, with one line under it saying what the choice in force means. In both, the key sits on each choice looser than the one in force, so it moves with the selection: moving there needs the passkey, and tightening never does.
 - **Autonomy:** Supervised, Guarded, Lights-out. Loosening asks for the passkey and tells Martin's phone; tightening is immediate. Lights-out is never the default.
@@ -647,20 +653,31 @@ The same views, read-only, by the rules above: the "+" and its form as described
 
 ## Guardrails
 
-Spec 6's eleven guardrails, how each is held and when it was last proved, and the red-team attacks that try them, agreed as a set: the Guardrails checklist and its rows opened, each attack in its guardrail's row and its launch, an attack's card and sheet, an attack nothing refused, auto-rollback's switch and a canary paused for Martin, Lights-out's note, and a merge held for its risk tags. The last four are in "Controls", "The Canary panel" and "Needs you" above. The mockup draws each (`?open=`, `?attack=`, `?canary=held`, `?autonomy=lightsout` and the rest in its comment). Visitors see all of it, read-only by the rules in "Read only": it is part of the demo.
+Spec 6's eleven guardrails, how each is held and when it was last proved, and the red-team attacks that try them, agreed as a set: the Guardrails summary, the checklist in its sheet and its rows opened, each attack in its guardrail's row and its launch, an attack's card and sheet, an attack nothing refused, auto-rollback's switch and a canary paused for Martin, Lights-out's note, and a merge held for its risk tags. The last four are in "Controls", "The Canary panel" and "Needs you" above. The mockup draws each (`?open=`, `?attack=`, `?canary=held`, `?autonomy=lightsout` and the rest in its comment). Visitors see all of it, read-only by the rules in "Read only": it is part of the demo.
 
-### The panel
+### The summary
 
-Full width under Patching, headed **Guardrails** with how many hold on the right ("11 held", or "10 held · 1 did not" in `attn`), one line saying each is held by a mechanism and proved, then the checklist, and under it one line: only auto-rollback can be switched off, in Controls; Stop the line always works.
+A panel in the bottom row's right column, under Patching's summary and above Spend, headed **Guardrails** with how many hold on the right, as the sheet's head says it: "11 held", "10 held · 1 did not" in `attn`, or, before they are all proved, "2 held · 9 not proved yet". Then:
 
-- **A row** is one line and a button: a tick and **Held** in `ok`, or a cross and **Did not hold** in `attn`; the guardrail's number in mono and its name in spec 6's words; how old its last proof is, in mono; and a chevron. Eleven rows, in two columns from 1180 up (1 to 6, 7 to 11), one column below.
+- **The eleven as a strip:** one cell each, in order, its glyph over its number in 10.5px mono, on a 2px `line` rule: a tick in `ok`, a cross in `attn` on an `attn` rule, or a dash in `text-faint`. It is a picture, not eleven controls: a screen reader hears it as one list ("1 held, 2 held, …"), and the sheet is one press away.
+- **Lines** in 12px mono, each a glyph and a few words: for each guardrail that did not hold, in `attn`, its number, when, its name and that Martin was paged; when the last proof ran ("Last proved 2h ago", and "· make guardrails proves the rest" while any is not proved); and the last attack, its name and its outcome in the attack's words and tone ("Last attack: Shipping an image it built itself · Refused, 2h ago", "An attack is running: …", or "No attack launched yet", faint).
+- **All eleven guardrails** under a hairline, which opens the sheet.
+
+It needs Martin only when a guardrail did not hold: then it takes Needs you's 2px `attn` rule down its left edge, and its count and that guardrail's line are in `attn`. A guardrail not proved yet is not a reason: it reads faint, and `make guardrails` proves it. A visitor's says "Martin was paged".
+
+### The sheet
+
+The checklist, whole ("A panel's sheet", above): its head's kicker says how many hold, then one line saying each is held by a mechanism and proved, the checklist, and under it one line: only auto-rollback can be switched off, in Controls; Stop the line always works. The sheet is wider than the panel was, so a row's columns are as they were and its name takes the rest.
+
+- **A row** is one line and a button: a tick and **Held** in `ok`, a cross and **Did not hold** in `attn`, or a dash in `text-faint` and **Not proved** in `text-muted`; the guardrail's number in mono and its name in spec 6's words; how old its last proof is, in mono, or "never"; and a chevron. Eleven rows, in two columns from 1180 up (1 to 6, 7 to 11), one column below.
 - **Opening a row** shows its details in place, under it: not a popup or a drawer. The row has `aria-expanded`, and one is open at a time: opening another closes it. The chevron turns. Open, it says:
   - **what holds it,** its mechanism in a sentence;
   - **its last proof:** held or not, where the proof came from ("make guardrails", "attack #1323", or "tests in CI on main · 5b2c0d9", which `make guardrails` records from main's last run of the tests that prove it, held only if that run passed at main's head or a day before), and when; an attack's number opens its sheet;
   - **its refusals** in the last seven days, the last three, a line each: the time, its mechanism in `attn` mono (scope fence, GitHub worker's guard, token permission, ruleset, review gate, egress policy, admission control, gateway, typed judgement), what was refused in a few words, and its work item, opening its sheet, or, with none (Kyverno refusing a pod applied by hand), **Audit log**. Where the guardrail is a structure with nothing to refuse, a line says what proves it instead (2's tests on every pull request; 9's last rollback, and that auto-rollback is off while it is). The panel counts each refusal by the role that appended it;
   - **its attack,** for the five guardrails one proves (below): a `raised` card with its name, its last run in mono (a tick and REFUSED in `ok`; a cross and NOT REFUSED · MARTIN PAGED in `attn`, with the card's `attn` rule; or a ring and RUNNING in `signal`), when, and its work item; and **Launch** on the right.
+- **Not proved yet:** its last proof says "None yet: its attack, or make guardrails, proves it." (or "make guardrails proves it." where no attack does), and its attack's last run a dash and NOT LAUNCHED YET, faint.
 - **A proof that did not hold** takes the `attn` rule down its row's left edge; opened, it says what got through, that Martin's phone was paged and when, and that it reads as not held until an attack or `make guardrails` proves it again.
-- **Nothing long on the main page:** a refusal in its own words is on the attack's card and sheet, which the row links to.
+- **Nothing long in the sheet:** a refusal in its own words is on the attack's card and sheet, which the row links to.
 - **On a phone** the row keeps its word, number and name, with the proof's age under the name, and opens the same way.
 
 ### The attacks
@@ -695,11 +712,21 @@ The audit log has each launch (`attack.launched`, with no passkey asked) and eac
 
 ## Patching
 
-Everything the factory and the app build or run is scanned every day, and a finding with a fix has a deadline by its severity. There are thousands of findings and about ten moves, so the panel's unit is the move: one thing (an image, a chart, a package, Node, k3s) going from what is pinned to a target, in one repository, with every pin that names it. It answers three questions, in order: does anything wait on me, is anything about to be late, and why was the scan red today. The mockup draws it (`?move=`, `?patching=none`).
+Everything the factory and the app build or run is scanned every day, and a finding with a fix has a deadline by its severity. There are thousands of findings and about ten moves, so the panel's unit is the move: one thing (an image, a chart, a package, Node, k3s) going from what is pinned to a target, in one repository, with every pin that names it. It answers three questions, in order: does anything wait on me, is anything about to be late, and why was the scan red today. The summary answers each in a line; the sheet answers them whole. The mockup draws both (`?sheet=patching`, `?move=`, `?patching=none`).
 
-### The panel
+### The summary
 
-Full width under the bottom row and above Guardrails, headed **Patching** with how many moves and how many wait on Martin on the right ("9 moves · 1 unscanned image running · 4 wait on you", the last part in `attn`); a line saying what is scanned and what a row is; then:
+A panel in the bottom row's right column, between Flags and Guardrails' summary, headed **Patching** with how many moves and how many wait on Martin on the right ("9 moves · 4 wait on you", the second part in `attn`, and left off at none). Then:
+
+- **What the moves clear,** a `t-label`, and four figures in 17px mono, each over its severity's label: **Critical**, **High**, **Medium**, **Low**, the sums of the rows' counts, as Clears says them, a zero in `text-muted`. They say how much the moves are worth, so they keep their meaning however few moves there are once most move by themselves. No colour: severity has none of its own.
+- **Lines** in 12px mono, each a glyph and a few words: how many unscanned images are running, while any is; the next deadline still to meet ("Next due in 21 h: Argo CD", the move named only when it is within a day or past; "No deadline to meet" with none); the day's scan ("Scan failed today · 04:17 UTC" with a cross, or "Scan passed today" with a tick in `ok`).
+- **All 9 moves** under a hairline (**Open Patching** with none), which opens the sheet.
+
+It needs Martin when a move waits on him, a deadline is within a day or past, or the scan failed: then it takes Needs you's 2px `attn` rule down its left edge, and each line that is a reason is in `attn`, so it says why in words. A Critical in flight is not a reason. Empty, it reads "0 moves", four zeros under "Nothing left to clear", "No deadline to meet" and the passed scan, with no rule.
+
+### The sheet
+
+The panel, whole ("A panel's sheet", above): its head's kicker says how many moves and how many wait on Martin ("9 moves · 1 unscanned image running · 4 wait on you", the last part in `attn`); then a line saying what is scanned and what a row is; then:
 
 - **The day's scan, in one line** of 11px mono: a cross and **Scan failed today** in `attn` (a tick and **Scan passed today** in `ok`), the time, then each of its three reasons with where it landed: new High or Critical, split into those with a fix (in how many moves below) and those with none yet; overdue; due within a day (in how many moves below), in `attn` when above zero. A zero is written `0` in `text-muted`, so a run of zeros reads as quiet.
 - **The rows,** what waits on Martin first, then every other row by earliest deadline, then those with none. Not by severity: a Critical a pull request is already clearing needs nobody.
@@ -716,11 +743,11 @@ A row is a Guardrails row with more columns: one line and a button, opening in p
 | State | 150px | A glyph and a word (below) |
 | What | the rest | The name in 14px, and under it the pin's file and line in 11px mono `text-muted`, the place the scan's alert and the pull request name too |
 | From → to | 190px | 12px mono, the target in `text`, where it stands in `text-2` |
-| Clears | 152px | `2C 45H 60M 12L` in four fixed columns of tabular mono, so a column of rows reads down; the letters in `text-muted`, a zero wholly so. "not scanned" for a row the sense made, and "nothing: no fix yet" for a move with nothing to move to, whose findings count under No fix yet |
+| Clears | 216px | `2C 45H 60M 12L` in four fixed columns of tabular mono, each 7ch, which holds a count up to `99,999` and its letter, so `1,363H 3,321M 2,727L` stands apart and a column of rows reads down; counts take a thousands separator; the letters in `text-muted`, a zero wholly so. "not scanned" for a row the sense made, and "nothing: no fix yet" for a move with nothing to move to, whose findings count under No fix yet |
 | Due | 104px | 11px mono `text-muted` ("in 6 days", "cleared 10 Nov", "none"), in `attn` within a day or past |
 | Who | 172px | An outlined pill, 1px `line-strong`: The line, Dependabot, The worker, Your approval, Your cluster, An issue, None yet, with its pull request's number |
 
-From 721 to 1179 a row is two lines: state, what and who on the first; from, to, clears and due under what, separated by `·`. On a phone, three: state and who; what; from, to, clears and due in 11px mono. The pin is dropped there, one tap away in the opened row. The four figures stack two by two.
+The sheet is the page's width, so from 1180 up the What column takes what the fixed columns leave, about 160px at 1180 and 420px at 1440: a long name or pin wraps there rather than pushing a column. From 721 to 1179 a row is two lines: state, what and who on the first; from, to, clears and due under what, separated by `·`. On a phone, three: state and who; what; from, to, clears and due in 11px mono. The pin is dropped there, one tap away in the opened row. The four figures stack two by two.
 
 **Severity has no colour of its own.** The one warm colour marks two things, each on its own: a row that waits on Martin, whatever its deadline, by Needs you's 2px `attn` rule down its left edge; and a deadline within a day or past, by its due in `attn`. A Critical in flight is ink like everything else in flight.
 
@@ -736,11 +763,11 @@ From 721 to 1179 a row is two lines: state, what and who on the first; from, to,
 
 **Opened,** a row says, indented to the name: **Why it waits** (or **Where it is**), a sentence; for a row that waits, **What to do**: its one answer, drawn as Needs you's way to a pull request, and what happens if it is left; **Clears · n findings**, by severity in words, with the packages and advisories left to code scanning; and **Every pin**, each file and line in mono beside what changes there. A row the dependency sense made (an image the list does not name, a running digest no result names, a pin `main` holds that the cluster does not run yet) has no target and no counts, and says where it runs.
 
-Every row that waits on Martin is also a card in Needs you (above), and its card opens its row.
+Every row that waits on Martin is also a card in Needs you (above), and its card opens the sheet at its row.
 
 ### For visitors
 
-Everything, read-only, by "Read only": "Read only" in the head, "Martin" for "you" and "Martin's" for "your", the foot naming his passkey, and no link into code scanning. A row names no advisory, and a move in a lockfile reads "A package in the app's lockfile", its versions replaced by "versions once its pull request opens", until its pull request is open and its diff names it anyway.
+Everything, read-only, by "Read only": the same summary, with "wait on Martin"; in the sheet, "Read only" in the head, "Martin" for "you" and "Martin's" for "your", the foot naming his passkey, and no link into code scanning. A row names no advisory, and a move in a lockfile reads "A package in the app's lockfile", its versions replaced by "versions once its pull request opens", until its pull request is open and its diff names it anyway.
 
 ## Not decided yet
 

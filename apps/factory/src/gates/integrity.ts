@@ -20,12 +20,12 @@ export interface Finding {
 }
 
 /** A test the spec contradicts that the change deleted (or renamed) or rewrote. */
-export interface Excused extends Finding {
+interface Excused extends Finding {
   test: string;
   change: 'deleted' | 'rewritten';
 }
 
-export interface Integrity {
+interface Integrity {
   /** What weakens the tests: any one fails the gate. */
   problems: Finding[];
   /** Tests added, for the summary. */

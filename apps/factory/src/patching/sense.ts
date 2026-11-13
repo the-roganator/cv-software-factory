@@ -45,7 +45,7 @@ export type Pass =
   | { pass: 'refused'; why: string[] }
   | { pass: 'not-real' };
 
-export interface SenseOptions {
+interface SenseOptions {
   sql: Sql;
   events: EventWriter;
   senses: Senses;
@@ -246,7 +246,7 @@ export class PatchingSense {
 }
 
 /** The day's event, with a summary in a line. */
-export function dayEvent(day: Day, now: Date): NewEvent<'patching.read'> {
+function dayEvent(day: Day, now: Date): NewEvent<'patching.read'> {
   const moves = day.repositories.map((r) => `${r.moves.length} in ${r.repository.split('/')[1]}`).join(', ');
   const rows = day.compared
     ? day.rows.length

@@ -38,7 +38,7 @@ interface TrivyReport {
   Results?: { Target: string; Vulnerabilities?: Vulnerability[] | null }[];
 }
 
-export const FAILING = new Set(['HIGH', 'CRITICAL']);
+const FAILING = new Set(['HIGH', 'CRITICAL']);
 
 const key = (v: Vulnerability) => `${v.VulnerabilityID} ${v.PkgName}`;
 
@@ -54,7 +54,7 @@ export function vulnerabilities(report: TrivyReport): Vulnerability[] {
  * A report Trivy wrote, as far as counting it goes: its own schema, with a list of results, each vulnerability in them
  * an object with its severity in words.
  */
-export function countable(report: TrivyReport): boolean {
+function countable(report: TrivyReport): boolean {
   const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
   const results: unknown = report?.Results;
   return (

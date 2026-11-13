@@ -16,7 +16,8 @@ import { MOST_MOVES, MOST_PINS, MOST_ROWS } from '@software-factory/events/schem
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves, ReadMove } from '../github/scanning.ts';
 import type { Counts, MovesFile } from '../vulnerabilities/moves.ts';
-import { parseReference, type Row } from './compare.ts';
+import { parseReference } from '../vulnerabilities/reference.ts';
+import type { Row } from './compare.ts';
 
 export type Day = PayloadOf<'patching.read'>;
 type DayMove = Day['repositories'][number]['moves'][number];
@@ -39,14 +40,14 @@ const counts = (from: Counts): Record<ScanSeverity, number> => ({
  * An image's path as Dependabot's branch names it: its repository without the registry, and without Docker Hub's
  * `library/`, so `node`, `docker.io/library/node` and `gcr.io/distroless/static` match `node` and `distroless/static`.
  */
-export function imagePath(name: string): string {
+function imagePath(name: string): string {
   // parseReference always names the registry (Docker Hub's as docker.io): the path is what follows it.
   const [, ...path] = parseReference(name).repository.split('/');
   return path.join('/').replace(/^library\//, '');
 }
 
 /** An Action as Dependabot names it: its owner and repository, without a subpath or a ref (`github/codeql-action`). */
-export const actionPath = (name: string) => (name.split('@')[0] ?? name).split('/').slice(0, 2).join('/').toLowerCase();
+const actionPath = (name: string) => (name.split('@')[0] ?? name).split('/').slice(0, 2).join('/').toLowerCase();
 
 /** A pin's directory as `dependabot.yml` writes one: `/` for the root. */
 const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';

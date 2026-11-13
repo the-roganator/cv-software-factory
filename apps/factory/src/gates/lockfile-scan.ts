@@ -43,6 +43,7 @@ import { EXCEPTIONS, type Exception } from '../../../../policy/vulnerabilities.t
 import { countBySeverity, countsNote } from './counts.ts';
 import { except as exceptAll, LOCKFILE } from './exceptions.ts';
 import { annotate, cell, summarise } from './report.ts';
+import { retried } from './retry.ts';
 
 const run = promisify(execFile);
 
@@ -118,7 +119,7 @@ export function findingsOf(lockfile: string, scanned: Scanned): Finding[] | stri
 
 const key = (f: Finding) => JSON.stringify([f.lockfile, f.advisory, f.pkg, f.dev]);
 
-export interface Unread {
+interface Unread {
   side: 'base' | 'change';
   lockfile: string;
   why: string;
@@ -361,18 +362,13 @@ function trivy(image: string, cache: string) {
     );
   return {
     async database() {
-      let last: unknown;
-      for (const wait of [0, 15, 30, 60]) {
-        await new Promise((resolve) => setTimeout(resolve, wait * 1000));
-        try {
-          await docker([], ['image', '--cache-dir', '/cache', '--quiet', '--download-db-only', '--db-repository', DB]);
-          return;
-        } catch (error) {
-          last = error;
-          console.log(`::warning::Trivy's database could not be pulled; trying again.`);
-        }
-      }
-      throw last;
+      await retried(
+        () => docker([], ['image', '--cache-dir', '/cache', '--quiet', '--download-db-only', '--db-repository', DB]),
+        {
+          waits: [15_000, 30_000, 60_000],
+          failed: () => console.log(`::warning::Trivy's database could not be pulled; trying again.`),
+        },
+      );
     },
     /** One lockfile, each YAML document of it alone in a directory of its own, the reports as one. */
     async scan(root: string, lockfile: string): Promise<Scanned> {

@@ -17,7 +17,7 @@ import { filesIn, TEST_FILE, TEST_SUPPORT } from './files.ts';
 import { annotate, cell, summarise } from './report.ts';
 import { testsIn } from './tests.ts';
 
-export interface Manifest {
+interface Manifest {
   /** The base's checkout, which Vitest names its files under. */
   root: string;
   /** Test files to run on the base. */

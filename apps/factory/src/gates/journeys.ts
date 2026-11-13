@@ -183,7 +183,7 @@ const message = z.object({
   /** Missing from what an older gate wrote, and dropped when it is not counts, leaving the regressions to be read. */
   counts: z.object({ base: count, change: count }).optional().catch(undefined),
 });
-export type ComparisonMessage = z.infer<typeof message>;
+type ComparisonMessage = z.infer<typeof message>;
 
 /**
  * What a comparison message says, or undefined for one that is missing, is not JSON, or does not say what

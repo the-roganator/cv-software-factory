@@ -23,7 +23,7 @@ export interface CoreEntry {
 }
 
 /** An advisory of Node's that a version has: one per CVE, or the entry's own id where it names none. */
-export interface NodeAdvisory {
+interface NodeAdvisory {
   advisory: string;
   severity: Severity;
   title?: string | undefined;

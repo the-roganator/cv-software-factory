@@ -11,7 +11,7 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
 /** When the scan starts each day (`vulnerabilities.yml`'s schedule), as milliseconds into a UTC day. */
-export const SCAN_AT = (4 * 60 + 17) * 60_000;
+const SCAN_AT = (4 * 60 + 17) * 60_000;
 
 /**
  * Whether a scan that finished at `finished` is older than the day's: once the day's scan time has passed, a run that

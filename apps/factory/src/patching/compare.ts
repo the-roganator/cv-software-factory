@@ -15,8 +15,10 @@
  * then by its digest when the pod names one, or else by its tag. A pod's digest may be its index's or a platform's
  * manifest's, so the list gives every digest the scan saw of each image.
  */
+
 import type { Kind } from '../vulnerabilities/inventory.ts';
 import type { Pin, ScannedImage } from '../vulnerabilities/moves.ts';
+import { parseReference, type Reference } from '../vulnerabilities/reference.ts';
 import type { RunningContainer } from './running.ts';
 
 export type { ScannedImage };
@@ -46,27 +48,6 @@ interface Where {
   namespace: string;
   pod: string;
   container: string;
-}
-
-/** A reference's parts, as Docker reads one. */
-export interface Reference {
-  repository: string;
-  tag?: string | undefined;
-  digest?: string | undefined;
-}
-
-/** `postgres:17@sha256:…` as `{ repository: 'docker.io/library/postgres', tag: '17', digest: 'sha256:…' }`. */
-export function parseReference(reference: string): Reference {
-  const [named = '', digest] = reference.split('@');
-  const slash = named.lastIndexOf('/');
-  const colon = named.lastIndexOf(':');
-  const tag = colon > slash ? named.slice(colon + 1) : undefined;
-  let repository = colon > slash ? named.slice(0, colon) : named;
-  const [first = '', ...rest] = repository.split('/');
-  const registry = rest.length > 0 && (first.includes('.') || first.includes(':') || first === 'localhost');
-  if (!registry) repository = `docker.io/${rest.length ? repository : `library/${repository}`}`;
-  else if (first === 'index.docker.io') repository = `docker.io/${rest.join('/')}`;
-  return { repository: repository.toLowerCase(), tag, digest };
 }
 
 /** Whether a container runs the reference an image of the list names. */

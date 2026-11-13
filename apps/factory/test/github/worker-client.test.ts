@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { listenLocal } from '@software-factory/testing';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GitHubError } from '../../src/github/client.ts';
 import type { Reads } from '../../src/github/reads.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
@@ -98,13 +98,38 @@ describe('the worker’s client', () => {
   });
 
   it('gives moves up at its own deadline, naming the read and the time it had, over node:http', async () => {
-    // Fetch's own deadline fails as `The operation was aborted`; this message is the node:http path's alone.
-    const client = await slow(2_000, { movesTimeoutMs: 100 });
-    const started = Date.now();
-    const error = await client.read('moves', REPO, {}).catch((e) => e);
-    expect(Date.now() - started).toBeLessThan(1_500);
-    expect(error).not.toBeInstanceOf(GitHubWorkerError);
-    expect(error.message).toBe('/v1/reads/moves gave no whole answer within 0.1 s');
+    // Fetch's own deadline fails as `The operation was aborted`; this message is the node:http path's alone. The worker
+    // never answers, and the deadline's timer is the test's to move: the read is still waiting a moment before it, and
+    // has failed at it, however fast or slow the machine.
+    let arrived = () => {};
+    const asked = new Promise<void>((resolve) => (arrived = resolve));
+    const server = createServer((req) => {
+      req.resume();
+      arrived();
+    });
+    const { url } = await listenLocal(server);
+    close = () => {
+      server.closeAllConnections();
+      server.close();
+    };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let outcome: unknown;
+      const read = new GitHubWorker(url, { movesTimeoutMs: 60_000 }).read('moves', REPO, {}).then(
+        (answer) => (outcome = answer),
+        (error) => (outcome = error),
+      );
+      await asked;
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await read;
+      expect(outcome).toBeInstanceOf(Error);
+      expect(outcome).not.toBeInstanceOf(GitHubWorkerError);
+      expect((outcome as Error).message).toBe('/v1/reads/moves gave no whole answer within 60 s');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reads every other call over fetch, as before', async () => {

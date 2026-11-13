@@ -15,6 +15,12 @@
  * own artifact agrees with it. Only the parts the grammar reads are returned: an advisory's id, never its title or its text.
  *
  * What the App lacks is named: a read refused for want of `actions: read` or `security_events: read` says which.
+ *
+ * A whole read is kept, one for each repository, and served again while it is still the day GitHub holds: each call
+ * still asks which run is the last finished and which of the scan's alerts changed last (one alert, sorted by when it
+ * changed: whatever state it is in now, a dismissal or a reopening by hand, a run's upload or the run's own dismissals),
+ * and pages the alerts again only when either differs from the kept read's. Callers at once share one read in flight.
+ * A read that fails, or is asked for again (`READ_AGAIN`), is never kept.
  */
 import { z } from 'zod';
 import { isOurs } from '../vulnerabilities/alerts.ts';
@@ -155,6 +161,15 @@ const ALERTS = z.array(
       })
       .nullable()
       .optional(),
+  }),
+);
+
+/** The alert that changed last, whatever its state: what a kept read is checked against. */
+const LATEST = z.array(
+  z.object({
+    number: z.number().int().positive(),
+    state: z.string(),
+    updated_at: z.string().nullable().optional(),
   }),
 );
 
@@ -309,6 +324,11 @@ export class ScanReads {
   /** Each artifact's `moves.json`, by its id: an artifact never changes, so it is downloaded once. */
   readonly #files = new Map<number, unknown>();
 
+  /** Each repository's last whole read, and what it was read at: the run's id and the alert that changed last. */
+  readonly #kept = new Map<string, { key: string; moves: Moves }>();
+  /** Each repository's read in flight, which a caller asking at the same key waits for instead of reading again. */
+  readonly #reading = new Map<string, { key: string; read: Promise<Moves> }>();
+
   readonly #maxAlerts: number;
 
   /** `maxAlerts` for a test of the cap; the scan's own is `MAX_ALERTS`. */
@@ -334,22 +354,63 @@ export class ScanReads {
     }
     const branch = await defaultBranch(this.#github, repo);
     // Both reads first, so a read the App may not make names every permission it lacks, not only the first.
-    const [runs, alerts] = await Promise.allSettled([this.#run(repo, branch), this.#alerts(repo)]);
+    const [runs, latest] = await Promise.allSettled([this.#run(repo, branch), this.#latest(repo)]);
     const missing = [
       runs.status === 'rejected' ? lacking(runs.reason, '`actions: read`') : undefined,
-      alerts.status === 'rejected' ? lacking(alerts.reason, '`security_events: read`') : undefined,
+      latest.status === 'rejected' ? lacking(latest.reason, '`security_events: read`') : undefined,
     ].filter(Boolean);
     if (missing.length) throw lacksError(repo, missing as string[]);
     if (runs.status === 'rejected') throw runs.reason;
-    if (alerts.status === 'rejected') throw alerts.reason;
+    if (latest.status === 'rejected') throw latest.reason;
     const run = runs.value;
+    const key = `${run.id} ${latest.value}`;
+    const kept = this.#kept.get(repo);
+    if (kept?.key === key) return structuredClone(kept.moves);
+    let reading = this.#reading.get(repo);
+    if (reading?.key !== key) {
+      const own = { key, read: this.#read(repo, run) };
+      reading = own;
+      this.#reading.set(repo, own);
+      // Kept once whole, unless a later key was asked for meanwhile; a read that fails is never kept.
+      own.read.then(
+        (moves) => {
+          if (this.#reading.get(repo) !== own) return;
+          this.#reading.delete(repo);
+          this.#kept.set(repo, { key, moves });
+        },
+        () => {
+          if (this.#reading.get(repo) === own) this.#reading.delete(repo);
+        },
+      );
+    }
+    return structuredClone(await reading.read);
+  }
+
+  /** One whole read: every open alert, the run's `moves.json`, each held to the other. */
+  async #read(repo: string, run: ScanRun): Promise<Moves> {
+    const alerts = await this.#alerts(repo).catch((error: unknown) => {
+      const lacks = lacking(error, '`security_events: read`');
+      throw lacks ? lacksError(repo, [lacks]) : error;
+    });
     const file = await this.#file(repo, run);
     if (!file) {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
       return { repository: repo, run, file: null, moves: [] };
     }
-    await this.#settled(repo, run, alerts.value);
-    return { repository: repo, run, ...joined(repo, run, file, alerts.value) };
+    await this.#settled(repo, run, alerts);
+    return { repository: repo, run, ...joined(repo, run, file, alerts) };
+  }
+
+  /**
+   * Which of the scan's alerts changed last, and to what: one alert, of any state, by when GitHub last changed it. A
+   * dismissal, a reopening, a run's upload or its dismissals all change one, so a kept read whose answer this still is
+   * holds what the alerts hold. An unchanged answer is GitHub's 304, which costs nothing against the rate limit.
+   */
+  async #latest(repo: string): Promise<string> {
+    const path = `/repos/${repo}/code-scanning/alerts?tool_name=Trivy&sort=updated&direction=desc&per_page=1`;
+    const { body } = await this.#github.poll(repo, path, LATEST);
+    const [last] = body;
+    return last ? `${last.number} ${last.state} ${last.updated_at ?? ''}` : 'none';
   }
 
   /**

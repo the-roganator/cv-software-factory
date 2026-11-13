@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { GitHubError } from '../../src/github/client.ts';
+import { GitHub, GitHubError } from '../../src/github/client.ts';
 import { branchPin, ecosystemsOf, groupMovesTo, rewrittenLines } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
 import { ScanReads } from '../../src/github/scanning.ts';
 import { zipEntry } from '../../src/github/zip.ts';
-import { client, REPO, type Route, type Sent } from './fake.ts';
+import { CLIENT_ID, client, fakeGitHub, PRIVATE_KEY, quiet, REPO, type Route, type Sent } from './fake.ts';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'scanning');
 const fixture = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8'));
@@ -58,12 +58,17 @@ const RUNS_PATH = `/repos/${REPO}/actions/workflows/vulnerabilities.yml/runs?bra
 const ALERTS_PATH = (page: number) =>
   `/repos/${REPO}/code-scanning/alerts?state=open&tool_name=Trivy&per_page=100&page=${page}`;
 
+const LATEST_PATH = `/repos/${REPO}/code-scanning/alerts?tool_name=Trivy&sort=updated&direction=desc&per_page=1`;
+const LATEST = [{ number: 104, state: 'open', updated_at: '2026-11-10T06:19:30Z' }];
+
 interface Day {
   runs?: unknown;
   artifacts?: unknown;
   moves?: unknown;
   /** Each page of alerts, in order. */
   pages?: unknown[][];
+  /** The scan's alert that changed last, as GitHub answers the one-alert read sorted by change. */
+  latest?: unknown[];
   /** What GitHub answers each permission's read with, when the App lacks it. */
   refuse?: { actions?: boolean; alerts?: boolean };
 }
@@ -94,10 +99,16 @@ function routes(day: Day = {}): Route[] {
       path: '/artifact/77/moves.zip?sig=x',
       answer: () => ({ body: zipOf({ 'moves.json': JSON.stringify(day.moves ?? fixture('moves.json')) }) }),
     },
-    ...pages.map((body, i) => ({
+    {
+      method: 'GET',
+      path: LATEST_PATH,
+      answer: () => (day.refuse?.alerts ? refused : { body: day.latest ?? LATEST }),
+    },
+    // Each page as the day has it when it is asked for, so a test may change the alerts between reads.
+    ...pages.map((_, i) => ({
       method: 'GET',
       path: ALERTS_PATH(i + 1),
-      answer: () => (day.refuse?.alerts ? refused : { body }),
+      answer: () => (day.refuse?.alerts ? refused : { body: (day.pages ?? pages)[i] ?? [] }),
     })),
   ];
 }
@@ -677,5 +688,195 @@ describe('Dependabot’s pull requests', () => {
         ecosystemsOf('updates:\n  - package-ecosystem: npm\n    directory: /\n'),
       ),
     ).toMatchObject({ ecosystem: 'github-actions', dependency: null });
+  });
+});
+
+describe('the scan’s moves, kept for each run', () => {
+  const pageReads = (sent: Sent[]) =>
+    sent.filter((each) => each.path.includes('code-scanning/alerts?state=open')).length;
+  const asked = (sent: Sent[], path: string) => sent.filter((each) => each.path === path).length;
+  /** The run after the fixtures' last, finished, with its own artifact, and alerts that name it. */
+  const NEXT = 42000000005;
+  function nextRun(day: Day): Route[] {
+    const runs = fixture('runs.json');
+    runs.workflow_runs.unshift({
+      ...runs.workflow_runs[3],
+      id: NEXT,
+      event: 'push',
+      updated_at: '2026-11-11T06:20:00Z',
+    });
+    day.runs = runs;
+    day.pages = [
+      alerts().map((a) => ({
+        ...a,
+        most_recent_instance: {
+          ...a.most_recent_instance,
+          message: { text: a.most_recent_instance.message.text.replace('run 42000000001', `run ${NEXT}`) },
+        },
+      })),
+    ];
+    day.latest = [{ number: 101, state: 'open', updated_at: '2026-11-11T06:19:30Z' }];
+    return [
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/actions/runs/${NEXT}/artifacts?name=moves&per_page=10`,
+        answer: () => ({
+          body: { total_count: 1, artifacts: [{ ...fixture('artifacts.json').artifacts[0], id: 78 }] },
+        }),
+      },
+      {
+        method: 'GET',
+        path: `/repos/${REPO}/actions/artifacts/78/zip`,
+        answer: () => ({ status: 302, headers: { location: 'https://storage.test/artifact/78/moves.zip?sig=x' } }),
+      },
+      {
+        method: 'GET',
+        path: '/artifact/78/moves.zip?sig=x',
+        answer: () => ({
+          body: zipOf({ 'moves.json': JSON.stringify({ ...fixture('moves.json'), run: String(NEXT) }) }),
+        }),
+      },
+    ];
+  }
+
+  it('page the alerts once for a run, and still ask each time which run is the last and which alert changed last', async () => {
+    const sent: Sent[] = [];
+    const reads = new ScanReads(client(routes(), sent).github);
+    const first = await reads.moves(REPO);
+    const second = await reads.moves(REPO);
+    const third = await reads.moves(REPO);
+    expect(second).toEqual(first);
+    expect(third).toEqual(first);
+    expect(pageReads(sent)).toBe(1);
+    expect(asked(sent, RUNS_PATH)).toBe(3);
+    expect(asked(sent, LATEST_PATH)).toBe(3);
+  });
+
+  it('read a new run at once, the first call after it finished', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const extra: Route[] = [];
+    const reads = new ScanReads(
+      client(
+        [
+          ...routes(day),
+          {
+            method: 'GET',
+            path: /./,
+            answer: (r) => {
+              const route = extra.find((each) => each.path === r.path);
+              if (!route) throw new Error(`No fake answer for ${r.path}`);
+              return route.answer(r);
+            },
+          },
+        ],
+        sent,
+      ).github,
+    );
+    expect((await reads.moves(REPO)).run.id).toBe(42000000001);
+    extra.push(...nextRun(day));
+    const next = await reads.moves(REPO);
+    expect(next.run.id).toBe(NEXT);
+    expect(next.moves.flatMap((m) => m.findings.map((f) => f.alert))).toEqual([101, 102, 103, 104]);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('read again when an alert changed with no new run, and hide no failure behind the kept read', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const reads = new ScanReads(client(routes(day), sent).github);
+    await reads.moves(REPO);
+    // Martin dismisses alert 101 by hand: it is no longer open, and it changed last.
+    day.pages = [alerts().filter((a) => a.number !== 101)];
+    day.latest = [{ number: 101, state: 'dismissed', updated_at: '2026-11-10T09:00:00Z' }];
+    const after = await reads.moves(REPO).catch((e) => e);
+    expect(after.message).toMatch(/move 1 clears 2 results and 1 alerts name it/);
+    // The kept read is the day before the change: never served again for it.
+    const again = await reads.moves(REPO).catch((e) => e);
+    expect(again.message).toMatch(/move 1 clears 2 results and 1 alerts name it/);
+    expect(pageReads(sent)).toBe(3);
+    // Reopened: the alerts are the run's again, and so is the answer.
+    day.pages = [alerts()];
+    day.latest = [{ number: 101, state: 'open', updated_at: '2026-11-10T09:05:00Z' }];
+    expect((await reads.moves(REPO)).moves[0]?.findings.map((f) => f.alert)).toEqual([101, 102]);
+  });
+
+  it('ask again, not serve the kept read, while a later run has uploaded its results and not finished', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const going: Route = {
+      method: 'GET',
+      path: `/repos/${REPO}/actions/runs/42000000003`,
+      answer: () => ({ body: { id: 42000000003, status: 'in_progress' } }),
+    };
+    const reads = new ScanReads(client([going, ...routes(day)], sent).github);
+    await reads.moves(REPO);
+    // Run 3's upload changes the alerts while run 1 is still the last finished.
+    day.pages = [withText(101, (t) => t.replace('run 42000000001', 'run 42000000003'))];
+    day.latest = [{ number: 101, state: 'open', updated_at: '2026-11-10T07:50:00Z' }];
+    for (let i = 0; i < 2; i++)
+      expect(await reads.moves(REPO).catch((e) => e)).toMatchObject({ kind: 'read-again', status: 409 });
+    expect(pageReads(sent)).toBe(3);
+  });
+
+  it('keep no read that failed part way, and read whole the next time', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { pages: [alerts().filter((a) => a.number !== 104)] };
+    const reads = new ScanReads(client(routes(day), sent).github);
+    expect((await reads.moves(REPO).catch((e) => e)).message).toMatch(/move 2 clears 2 results and 1 alerts name it/);
+    day.pages = [alerts()];
+    expect((await reads.moves(REPO)).moves[1]?.findings.map((f) => f.alert)).toEqual([103, 104]);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  /** A reader whose pages of alerts wait for `open()`, as a read of a hundred pages is still going. */
+  function held(day: Day, sent: Sent[]) {
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const fake = fakeGitHub(routes(day), sent);
+    const github = new GitHub({
+      credentials: { clientId: CLIENT_ID, privateKey: PRIVATE_KEY },
+      api: 'https://api.github.test',
+      log: quiet,
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).includes('code-scanning/alerts?state=open')) await gate;
+        return fake.fetch(input, init);
+      }) as typeof fetch,
+      sleep: async () => {},
+    });
+    return { reads: new ScanReads(github), open };
+  }
+
+  it('share one read in flight between callers at once', async () => {
+    const sent: Sent[] = [];
+    const { reads, open } = held({}, sent);
+    const both = Promise.all([reads.moves(REPO), reads.moves(REPO)]);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    const [a, b] = await both;
+    expect(a).toEqual(b);
+    expect(pageReads(sent)).toBe(1);
+  });
+
+  it('fail every caller of a shared read that failed, and keep nothing of it', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { pages: [alerts().filter((a) => a.number !== 104)] };
+    const { reads, open } = held(day, sent);
+    const both = Promise.allSettled([reads.moves(REPO), reads.moves(REPO)]);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    const results = await both;
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(pageReads(sent)).toBe(1);
+    day.pages = [alerts()];
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('hand each caller its own copy: one caller’s change is not the next one’s answer', async () => {
+    const reads = new ScanReads(client(routes()).github);
+    const first = await reads.moves(REPO);
+    first.moves.length = 0;
+    expect((await reads.moves(REPO)).moves).toHaveLength(2);
   });
 });

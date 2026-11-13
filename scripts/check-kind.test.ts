@@ -514,6 +514,23 @@ describe('the classes a cluster is not made from', () => {
       if (next.file.endsWith('.sh'))
         for (const m of text.matchAll(/(?:\$here|\$\(dirname "\$0"\))\/([\w-]+\.(?:ts|sh))\b/g))
           follow(join(dirname(next.file), m[1] ?? ''));
+      if (/\.(ts|js|mjs|cjs)$/.test(next.file)) {
+        // A path made from the module's own directory, `join(import.meta.dirname, '..', 'deploy', …)`, or from a name
+        // bound to one, as far as its arguments are words: the directory it names, and the file, which is followed.
+        const bases = new Map([['import.meta.dirname', dirname(next.file)]]);
+        const words = (args: string) => [...args.matchAll(/'([^']*)'/g)].map((w) => w[1] ?? '');
+        for (const m of text.matchAll(/\bconst (\w+) = join\(import\.meta\.dirname((?:,\s*'[^']*')+)\);/g))
+          bases.set(m[1] ?? '', join(dirname(next.file), ...words(m[2] ?? '')));
+        const names = [...bases.keys()].map((name) => name.replace(/\./g, '\\.')).join('|');
+        for (const m of text.matchAll(new RegExp(`\\bjoin\\((${names})((?:,\\s*'[^']*')+)`, 'g'))) {
+          const path = join(bases.get(m[1] ?? '') ?? '', ...words(m[2] ?? ''));
+          if (path === '.' || !existsSync(path)) continue;
+          named.add(path);
+          follow(path);
+        }
+        // Anything else it could load is not followed, so none may be there: an import made at run time.
+        expect(text, next.file).not.toMatch(/\bimport\(|new URL\([^)]*import\.meta\.url/);
+      }
       if (/\.(ts|js|mjs|cjs)$/.test(next.file))
         for (const m of text.matchAll(/^(?:import|export) (?:[^;]*? from )?'([^']+)';$/gms)) {
           const from = m[1] ?? '';
@@ -660,9 +677,11 @@ describe('the classes a cluster is not made from', () => {
       expect(code('Makefile', text)).not.toMatch(/\b(docker (build|buildx|load|import)|k3d image)\b/);
   });
 
-  it('installs the modules as the lockfile has them, so a lockfile the manifests do not match fails the job', () => {
+  it('installs the modules as the lockfile has them, running none of their scripts, before the cluster', () => {
     const platform = workflow.jobs.platform?.steps ?? [];
-    const install = platform.findIndex((step) => step.run === 'pnpm install --frozen-lockfile');
+    const install = platform.findIndex(
+      (step) => step.run === 'pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile',
+    );
     const make = platform.findIndex((step) => step.name === 'Make the cluster');
     expect(install).toBeGreaterThan(-1);
     expect(install).toBeLessThan(make);

@@ -111,17 +111,19 @@ queued() {
 KEPT='^(deploy/|\.github/workflows/platform\.yml$|\.github/actions/|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
 EXCLUDED_CLASSES=(
   # Words for people, and tests: nothing the job runs reads them.
-  '^docs/' '\.md$' '(^|/)test/' '\.test\.ts$' '(^|/)e2e/'
+  '^docs(/|$)' '\.md$' '(^|/)test(/|$)' '\.test\.ts$' '(^|/)e2e(/|$)'
   # Source that reaches the cluster only as an image built on main and pinned by digest in deploy/overlays/local, which
   # `make up` builds none of: the console's browser code among it.
-  '^apps/(factory|runner|console)/' '^packages/(events|store|triage)/' '^policy/'
+  '^apps/(factory|runner|console)(/|$)' '^packages/(events|store|triage)(/|$)' '^policy(/|$)'
   # Every other workflow: the job runs none of them.
-  '^\.github/'
+  '^\.github(/|$)'
   # Claude Code's own files and the dev container's: nothing the job runs reads them.
-  '^\.claude/' '^\.devcontainer/'
-  # What installs the modules (an accepted limit): a change here chooses the versions of the modules the job's scripts
-  # run on the host and the root's lifecycle scripts `pnpm install` runs, and can break the install, failing the check;
-  # it changes no manifest, chart or image the cluster runs. In the queue, such a change merged ahead is not run again.
+  '^\.claude(/|$)' '^\.devcontainer(/|$)'
+  # What installs the modules (an accepted limit). The job installs with --ignore-scripts and --ignore-pnpmfile, so a
+  # change here runs nothing: it can change which versions of the modules install, which the job's scripts run on the
+  # host, and can break the install, failing the check. A change to these alone makes no cluster, so such a break shows
+  # on the next change that makes one; in the queue, one merged ahead is not run again.
+  # Each class names a directory with what is in it, the directory itself too, as a link to it reads.
   '^pnpm-lock\.yaml$' '^pnpm-workspace\.yaml$' '(^|/)package\.json$'
 )
 EXCLUDED=$(IFS='|'; echo "${EXCLUDED_CLASSES[*]}")

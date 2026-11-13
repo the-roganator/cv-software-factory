@@ -109,7 +109,10 @@ jobs:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
           install_args: node pnpm kubectl k3d helm kustomize cosign step yq
-      - run: pnpm install --frozen-lockfile
+      # As the lockfile has them, and running none of their scripts: a manifest's lifecycle script, which the lockfile
+      # does not record, or a .pnpmfile.cjs, would run here, before the cluster, with $GITHUB_PATH in reach. The job needs
+      # no install script (lefthook's prepare included), and allows no dependency's build.
+      - run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
       # `make up`, at the change's commit, with none of the keys it would take from the Keychain, which the runner has
       # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
       # any kind would have it try: the GitHub worker, given one, acts as the App and polls GitHub each pass, and

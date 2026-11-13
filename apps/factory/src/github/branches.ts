@@ -36,12 +36,46 @@ export const ownsBranch = (branch: string): boolean =>
 export const PIN_PREFIX = `${FACTORY_PREFIX}pin/`;
 export const PIN_NEXT_PREFIX = `${FACTORY_PREFIX}pin-next/`;
 
-/** Whether a branch is one only `commitPins` writes. */
+/** Whether a branch is one only `commitPins` writes, or the prefix of one, which no branch of anyone else's may be. */
 export const pinBranch = (branch: string): boolean =>
-  branch.startsWith(PIN_PREFIX) || branch.startsWith(PIN_NEXT_PREFIX);
+  branch.startsWith(PIN_PREFIX) ||
+  branch.startsWith(PIN_NEXT_PREFIX) ||
+  `${branch}/` === PIN_PREFIX ||
+  `${branch}/` === PIN_NEXT_PREFIX;
 
-/** Throws `BranchRefused` for a branch the factory does not own. */
+/**
+ * Whether a branch's name is plain: letters, digits, dots, dashes and slashes alone, and no segment empty or starting
+ * with a dot, as git refuses. A `.` segment, a tab or a line break is taken out of a URL before it is sent, and GitHub
+ * decodes an escape, so `factory/./pin/x` or `factory/%70in/x` would name `factory/pin/x` to GitHub and nothing a
+ * guard compares; no such name is acted on.
+ */
+export const plainBranch = (branch: string): boolean =>
+  /^[A-Za-z0-9._/-]+$/.test(branch) && branch.split('/').every((s) => s !== '' && !s.startsWith('.'));
+
+/**
+ * The commit each of the worker's own watches last wrote to a branch of its own, by repository and branch: what that
+ * watch's queue may add to the merge queue, and nothing else. A branch at any other commit, however it got there, is
+ * not the watch's work; the watch puts its own back on its next pass. Kept in memory: a worker that starts again knows
+ * none, and each watch writes its commit again before its queue adds anything.
+ */
+export class WatchedHeads {
+  readonly #heads = new Map<string, string>();
+  set(repo: string, branch: string, sha: string): void {
+    this.#heads.set(`${repo} ${branch}`, sha);
+  }
+  get(repo: string, branch: string): string | undefined {
+    return this.#heads.get(`${repo} ${branch}`);
+  }
+  delete(repo: string, branch: string): void {
+    this.#heads.delete(`${repo} ${branch}`);
+  }
+}
+
+/** Throws `BranchRefused` for a branch the factory does not own, or one whose name is not plain. */
 export function guardBranch(branch: string): void {
+  if (!plainBranch(branch)) {
+    throw new BranchRefused(`${branch} is not a plain branch name: no segment may be empty or start with a dot.`);
+  }
   if (!ownsBranch(branch)) {
     throw new BranchRefused(
       `${branch} is not the factory's: it acts only on branches under ${FACTORY_PREFIX} and its deploy branches.`,

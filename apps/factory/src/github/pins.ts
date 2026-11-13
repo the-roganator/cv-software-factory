@@ -40,7 +40,7 @@ import { compareVersions } from '../vulnerabilities/deadlines.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
 import { SEVERITIES } from '../vulnerabilities/sarif.ts';
 import { type Actions, APP_LOGIN } from './actions.ts';
-import { BranchRefused, PIN_PREFIX } from './branches.ts';
+import { BranchRefused, PIN_PREFIX, type WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { type DependencyPull, groupMovesTo } from './dependabot.ts';
 import { PatchRefused } from './patches.ts';
@@ -83,6 +83,11 @@ export interface PinWatchDependencies {
   source?: PinSource;
   /** What keeps, logs and signs a refusal of the guard's; without it, a refusal is only logged. */
   recorder?: RefusalRecorder | undefined;
+  /**
+   * Where the watch records the commit it wrote to each pin branch, for the pin queue (`deploy-queue.ts`). Given, a
+   * branch at any other commit, moved by anyone, or not yet written by this worker, is written again.
+   */
+  heads?: WatchedHeads;
   log: Logger;
   now?: () => number;
   /**
@@ -122,6 +127,7 @@ const PULLS = z.array(
   }),
 );
 const PULL = z.object({ mergeable: z.boolean().nullable() });
+const BRANCH = z.object({ object: z.object({ sha: z.string() }) });
 const ISSUES = z.array(
   z.object({
     number: z.number().int().positive(),
@@ -299,7 +305,7 @@ export function pullBody(move: ReadMove, edits: readonly PinEdit[], moves: Moves
   lines.push(
     waits
       ? `**It waits for you.** ${waits}`
-      : 'The review gate passes it as `pin-move` when it proves the move from this pull request alone. If it cannot, its `review` check says why it waits for you, and your approval of its head passes it.',
+      : 'The review gate passes it as `pin-move` when it proves the move from this pull request alone, and the worker then adds it to the merge queue once its checks are green. If it cannot, its `review` check says why it waits for you: your approval of its head passes it, and adding it to the queue is yours.',
     '',
     `<!-- factory: pin-edits ${editsHash(edits)} -->`,
   );
@@ -366,13 +372,23 @@ export function issueOf(move: ReadMove, moves: Moves, why?: string): { title: st
 
 /** A pull request's title: what it moves, and to what. */
 export function pullTitle(move: ReadMove, target: Target): string {
-  const to = versionOf(target) ?? move.to;
-  return `chore(pin): move ${move.name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
+  return pinTitle(move.name, versionOf(target) ?? move.to);
 }
+
+/** Whether a move's title holds its name and version as they are: nothing taken out, nothing cut. */
+export const titleIsExact = (name: string, to: string): boolean => {
+  const whole = `chore(pin): move ${name} to ${to}`;
+  // Under GitHub's 256, so a title is never one cut to that length: the queue reads one that long as cut.
+  return whole.length < 256 && pinTitle(name, to) === whole;
+};
+
+/** The title of a move's pull request, from its name and the version it moves to: what the pin queue reads it by. */
+export const pinTitle = (name: string, to: string): string =>
+  `chore(pin): move ${name.replace(/[`\r\n]/g, '')} to ${to}`.slice(0, 256);
 
 /** Watches this repository's moves, and keeps one pull request, or one issue, for each. */
 export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
-  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github), only = [] } = deps;
+  const { github, reads, actions, recorder, log, now = Date.now, source = treeSource(github), only = [], heads } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The pin watch does not move ${repo}'s pins: its line does.`);
   let last: number | undefined;
   /** The refusals kept, by the branch and the words, so each is recorded once a run; emptied as the run changes. */
@@ -421,6 +437,17 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       return file.text.split('\n');
     } catch (error) {
       if (error instanceof PatchRefused) return undefined;
+      throw error;
+    }
+  };
+
+  /** The commit a branch is at, or undefined when there is none. */
+  const branchAt = async (branch: string): Promise<string | undefined> => {
+    try {
+      const { body } = await github.poll(repo, `/repos/${repo}/git/ref/heads/${branch}`, BRANCH);
+      return body.object.sha;
+    } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found') return undefined;
       throw error;
     }
   };
@@ -586,6 +613,12 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         want(move, `its target, ${move.to || 'none'}, is not a version or digest a pin's line writes`);
         continue;
       }
+      // A pull request's title names its move exactly, for the pin queue reads the move by it: a name the title would
+      // alter (a backtick, a line break) or cut (past 256 characters) gets an issue instead.
+      if (!titleIsExact(move.name, versionOf(target) ?? move.to)) {
+        want(move, 'its name cannot be a pull request’s title whole: a backtick or line break in it, or too long');
+        continue;
+      }
       const twice = [...new Set(move.pins.flatMap((pin) => byPlace.get(`${pin.file}:${pin.line}`) ?? []))];
       if (twice.length > 1 || (byBranch.get(branch)?.length ?? 0) > 1) {
         keep.add(branch);
@@ -663,8 +696,18 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
       if (existing?.title === title) {
         if (!existing.labels.some((l) => l.name === PIN_LABEL))
           await actions.addLabels(repo, existing.number, [PIN_LABEL]);
+        // Its branch at any commit but the one the watch wrote (moved by anyone, or not yet written by this worker): the
+        // watch writes its own again, and its queue adds nothing meanwhile.
+        // Read from the branch itself, as GitHub's list of pull requests may name a head a push since has moved.
+        const ours = heads === undefined || (await branchAt(branch)) === heads.get(repo, branch);
+        if (!ours) {
+          log.warn(
+            { repo, number: existing.number, branch },
+            'the pin branch is not at the commit the watch wrote: the watch writes its own again',
+          );
+        }
         // Its branch was committed with these edits: only its description, and a conflict with main, are left.
-        if (EDITS_MARK.exec(existing.body ?? '')?.[1] === editsHash(edits)) {
+        else if (EDITS_MARK.exec(existing.body ?? '')?.[1] === editsHash(edits)) {
           if ((existing.body ?? '') !== body) await actions.updatePullRequest(repo, existing.number, { body });
           const { body: pull } = await github.poll(repo, `/repos/${repo}/pulls/${existing.number}`, PULL);
           if (pull.mergeable !== false) continue;
@@ -694,6 +737,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         throw error;
       }
       recorded.set(branch, fingerprint);
+      heads?.set(repo, branch, commit);
       if (existing?.title === title) {
         await actions.updatePullRequest(repo, existing.number, { body });
         log.info({ repo, number: existing.number, commit }, 'made the pin move again on main');
@@ -719,6 +763,7 @@ export function pinWatch(deps: PinWatchDependencies, repo: string): Watch {
         closeWith.get(pull.head.ref) ??
         `${RunText(day)} no longer lists this move as one a pull request of the factory's makes: \`main\` has moved its pin, the move needs more than its pins written, or nothing it cleared is left. Closed; the watch opens another if the scan lists one.`;
       await actions.closePullRequest(repo, pull.number, sentence);
+      heads?.delete(repo, pull.head.ref);
       log.info({ repo, number: pull.number }, 'closed a pin pull request whose move is gone');
     }
 

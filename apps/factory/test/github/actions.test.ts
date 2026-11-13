@@ -13,6 +13,7 @@ import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker } from '../../src/github/worker-client.ts';
 import { describerResult } from '../../src/line/agents/describer.ts';
+import { doorReads } from './door-reads.ts';
 import {
   CLIENT_ID,
   calls,
@@ -1012,6 +1013,7 @@ describe('the worker over HTTP', () => {
   async function serve(actions: ConstructorParameters<typeof LiveActions>[0] | DryRunActions) {
     const server = createWorkerServer({
       actions: actions instanceof DryRunActions ? actions : new LiveActions(actions, { guard: appsOwn() }),
+      reads: doorReads(),
       repositories: [REPO],
       health: () => ({ mode: 'test' }),
       log: quiet,
@@ -1061,6 +1063,7 @@ describe('the worker over HTTP', () => {
     const dir = await mkdtemp(join(tmpdir(), 'dry-run-'));
     const server = createWorkerServer({
       actions: new DryRunActions(new DiskArtifacts(dir), quiet, () => new Date('2026-10-17T12:00:00Z')),
+      reads: doorReads(),
       repositories: [REPO],
       health: () => ({ mode: 'test' }),
       log: pino({ level: 'info' }, { write: (line: string) => void logged.push(JSON.parse(line)) }),

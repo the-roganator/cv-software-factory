@@ -8,6 +8,7 @@ import { DiskArtifacts, EventWriter, flagsTaken, nextWorkItem } from '@software-
 import { listenLocal } from '@software-factory/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { DryRunActions } from '../../src/github/actions.ts';
+import { GitHubError } from '../../src/github/client.ts';
 import type { DeployBuild } from '../../src/github/deploys.ts';
 import { DryRunReads } from '../../src/github/dry-run-reads.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
@@ -1728,7 +1729,7 @@ describe('the line', () => {
 
   it('goes all the way round in a dry run, through the GitHub worker’s dry run, with each step on the change', async () => {
     // GitHub as it is: main, its ruleset and its CODEOWNERS. Nothing else is there.
-    const no = (what: string) => () => Promise.reject(new Error(`GitHub has no ${what}`));
+    const no = (what: string) => () => Promise.reject(new GitHubError('not-found', `GitHub has no ${what}`, 404));
     const github: Reads = {
       head: async () => MAIN,
       requiredChecks: async () => ['test'],
@@ -2385,7 +2386,7 @@ describe('the line', () => {
 
     it('has the GitHub worker’s dry run record the threads it would have resolved', async () => {
       const { workItem } = await heldReview();
-      const no = (what: string) => () => Promise.reject(new Error(`GitHub has no ${what}`));
+      const no = (what: string) => () => Promise.reject(new GitHubError('not-found', `GitHub has no ${what}`, 404));
       const reads: Reads = {
         head: async () => MAIN,
         requiredChecks: async () => ['test'],

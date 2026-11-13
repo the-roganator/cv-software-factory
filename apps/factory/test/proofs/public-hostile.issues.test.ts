@@ -19,6 +19,7 @@ import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker } from '../../src/github/worker-client.ts';
 import { closeIssue } from '../../src/line/issues.ts';
+import { doorReads } from '../github/door-reads.ts';
 import { calls, quiet, REPO } from '../github/fake.ts';
 import { AT, github, records, writes } from '../github/issues-harness.ts';
 
@@ -267,6 +268,7 @@ describe('the issue guard over HTTP, as the line asks', () => {
     const server = createWorkerServer({
       actions: made,
       dryRun: made,
+      reads: doorReads(),
       repositories: [REPO],
       health: () => ({}),
       log: quiet,

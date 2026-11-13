@@ -13,6 +13,7 @@
  *     GITHUB_DRY_RUN_CHECKS_SECONDS   how long after a dry run's commit its checks pass (default 120)
  *     GITHUB_DRY_RUN_MERGE_SECONDS    how long after a dry run's pull request is readied it is merged (default 1200)
  *     GITHUB_REPOSITORIES             the repositories it acts on, separated by commas (default: both public ones)
+ *                                     written as GitHub names them: one of those two in another case is refused
  *     GITHUB_POLL_SECONDS             how often it polls (default 60)
  *     GITHUB_API_URL, GHCR_URL        GitHub's API and GHCR, for a stand-in
  *     TUF_CACHE_DIR                   where Sigstore's trust root is kept, to check images' signatures (default: the
@@ -121,6 +122,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
   for (const repo of config.repositories) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo))
       throw new Error(`GITHUB_REPOSITORIES has ${JSON.stringify(repo)}, not owner/name.`);
+    // The worker's guards name these two exactly: another case is the same repository to GitHub and none to them.
+    const known = REPOSITORIES.find((r) => r.toLowerCase() === repo.toLowerCase());
+    if (known && known !== repo) {
+      throw new Error(
+        `GITHUB_REPOSITORIES has ${JSON.stringify(repo)}: write it ${known}, as the worker's guards name it.`,
+      );
+    }
   }
   if (!(config.pollMs >= 10_000)) throw new Error('GITHUB_POLL_SECONDS must be at least 10.');
   return config;

@@ -15,6 +15,7 @@ import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { createWorkerServer } from '../../src/github/server.ts';
 import { GitHubWorker, GitHubWorkerError } from '../../src/github/worker-client.ts';
 import { verifyRefusal } from '../../src/signed-refusals.ts';
+import { doorReads } from './door-reads.ts';
 import { quiet, REPO, SHA } from './fake.ts';
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -34,13 +35,14 @@ describe('the GitHub worker’s refusals', () => {
   let close: (() => void) | undefined;
   afterEach(() => close?.());
 
-  async function serve(error: unknown, { signed = true } = {}) {
+  async function serve(error: unknown, { signed = true, heads = {} as Record<number, string> } = {}) {
     const key = signed ? privateKey : undefined;
     const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
     const logged: Record<string, unknown>[] = [];
     const log = pino({ level: 'warn' }, { write: (line: string) => void logged.push(JSON.parse(line)) });
     const server = createWorkerServer({
       actions: failing(error),
+      reads: doorReads(heads),
       repositories: [REPO],
       health: () => ({}),
       recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key, log, now: AT }),
@@ -122,6 +124,126 @@ describe('the GitHub worker’s refusals', () => {
       });
       close?.();
     }
+  });
+
+  /** An action asked through the door, answered as the guard would, or as the action itself fails when it passes. */
+  async function ask(action: string, args: unknown, heads: Record<number, string> = {}) {
+    // The actions would fail as no refusal does: only the door's guard can answer one refused.
+    const { worker } = await serve(new Error('the action was reached'), { heads });
+    const failed = (await worker
+      .act(action as never, REPO, args as never)
+      .catch((e: unknown) => e)) as GitHubWorkerError;
+    close?.();
+    return failed;
+  }
+
+  it('refuses, signed, a pull request from a pin branch or a pin label from a worker that asks: only the pin watch makes one', async () => {
+    const asks = [
+      ['openPullRequest', { head: 'factory/pin/node-24', base: 'main', title: 't', body: '' }],
+      ['openPullRequest', { head: 'factory/pin-next/node-24', base: 'main', title: 't', body: '' }],
+      ['openPullRequest', { head: 'refs/heads/factory/pin/node-24', base: 'main', title: 't', body: '' }],
+      ['openPullRequest', { head: 'factory/1400-cart', base: 'main', title: 't', body: '', labels: ['pin'] }],
+      ['addLabels', { number: 1040, labels: ['bug', 'pin'] }],
+      ['addLabels', { number: 1040, labels: ['Pin'] }],
+      ['openIssue', { title: 't', body: '', labels: [' PIN '] }],
+    ] as const;
+    for (const [action, args] of asks) {
+      const failed = await ask(action, args);
+      expect(failed.status, JSON.stringify(args)).toBe(422);
+      expect(verifyRefusal(publicKey, failed.refusal), action).toMatchObject({
+        ok: true,
+        refusal: { payload: { mechanism: 'github-guard' } },
+      });
+    }
+  });
+
+  it('refuses, signed, every action a worker asks on the pin watch’s pull request by its number, and passes the same on another', async () => {
+    const pullRequest = { number: 1040, url: 'https://github.com/x/pull/1040', nodeId: 'PR_x' };
+    const asks = [
+      ['enqueuePullRequest', { number: 1040, expectedHead: SHA }],
+      ['reopenIssue', { number: 1040, comment: 'again' }],
+      ['closeIssue', { number: 1040, reason: 'completed' }],
+      ['closePullRequest', { number: 1040, comment: 'gone' }],
+      ['updatePullRequest', { number: 1040, title: 't' }],
+      ['addLabels', { number: 1040, labels: ['bug'] }],
+      ['readyForReview', { pullRequest }],
+      ['convertToDraft', { pullRequest }],
+      ['comment', { number: 1040, body: 'a worker’s comment' }],
+      ['review', { number: 1040, commit: SHA, body: 'a worker’s review', comments: [] }],
+      ['resolveThreads', { number: 1040, threads: [{ path: 'README.md', line: 1, body: 'x', reply: 'resolved' }] }],
+      ['describeDeploy', { number: 1040, commit: SHA, carries: [] }],
+    ] as const;
+    for (const [action, args] of asks) {
+      const refused = await ask(action, args, { 1040: 'factory/pin/node-24' });
+      expect(refused.status, action).toBe(422);
+      expect(verifyRefusal(publicKey, refused.refusal), action).toMatchObject({
+        ok: true,
+        refusal: { payload: { mechanism: 'github-guard' }, number: 1040 },
+      });
+      // The same action on the line's own pull request, or on an issue, passes the door and reaches the action.
+      for (const heads of [{ 1040: 'factory/1400-cart' }, {}]) {
+        const passed = await ask(action, args, heads);
+        expect(passed.status, `${action} ${JSON.stringify(heads)}`).toBe(500);
+        expect(passed.refusal).toBeUndefined();
+      }
+    }
+    const opened = await ask('openPullRequest', { head: 'factory/1400-cart', base: 'main', title: 't', body: '' });
+    expect(opened.status).toBe(500);
+  });
+
+  it('refuses, signed, a check run named as the gate’s, or here as one main requires, and posts any other', async () => {
+    const FACTORY = 'the-roganator/cv-software-factory';
+    const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
+    const server = createWorkerServer({
+      actions: failing(new Error('the action was reached')),
+      reads: { requiredChecks: async () => ['lint, types, tests', 'Image builds'] } as never,
+      repositories: [REPO, FACTORY],
+      health: () => ({}),
+      recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT }),
+      log: quiet,
+    });
+    const { url } = await listenLocal(server);
+    close = () => server.close();
+    const worker = new GitHubWorker(url);
+    const asked = { headSha: SHA, status: 'completed', conclusion: 'success', title: 't', summary: 's' } as const;
+    const answer = async (repo: string, name: string) =>
+      ((await worker.act('createCheckRun', repo, { name, ...asked }).catch((e: unknown) => e)) as GitHubWorkerError)
+        .status;
+    for (const name of ['image builds', 'lint, types, tests', 'review', ' Review ']) {
+      expect(await answer(FACTORY, name), name).toBe(422);
+    }
+    expect(await answer(FACTORY, 'factory review')).toBe(500);
+    // In the app's repository the line posts its own runs: only the gate's name is refused there.
+    expect(await answer(REPO, 'review')).toBe(422);
+    expect(await answer(REPO, 'image builds')).toBe(500);
+    const renamed = (await worker
+      .act('updateCheckRun', FACTORY, { id: 1, name: 'Image builds' })
+      .catch((e: unknown) => e)) as GitHubWorkerError;
+    expect(renamed.status).toBe(422);
+    expect(verifyRefusal(publicKey, renamed.refusal)).toMatchObject({ ok: true });
+  });
+
+  it('does not take GitHub’s 403 to the door’s own read of a pull request for a refusal of the action', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'refusals-'));
+    const refused = async () => {
+      throw new GitHubError('refused', 'GET /repos/x/pulls/12 answered 403: secondary rate limit', 403);
+    };
+    const server = createWorkerServer({
+      actions: failing(new Error('the action was reached')),
+      reads: { pullRequest: refused } as never,
+      repositories: [REPO],
+      health: () => ({}),
+      recorder: new RefusalRecorder({ artifacts: new DiskArtifacts(dir), key: privateKey, log: quiet, now: AT }),
+      log: quiet,
+    });
+    const { url } = await listenLocal(server);
+    close = () => server.close();
+    const failed = (await new GitHubWorker(url)
+      .act('comment', REPO, { number: 12, body: 'hello' })
+      .catch((e: unknown) => e)) as GitHubWorkerError;
+    expect(failed.status).toBe(500);
+    expect(failed.refusal).toBeUndefined();
+    expect(await readdir(dir)).toEqual([]);
   });
 
   it('does not take a failure for a refusal: a patch that will not apply, a 401, a rate limit, a 404', async () => {

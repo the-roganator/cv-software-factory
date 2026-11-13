@@ -18,10 +18,11 @@
  * open is 403 (`issue-refused`), as GitHub answers one the App may not change.
  *
  * An action refused by the worker's guard (a patch to a protected path, a branch, a deploy, an issue or pull request
- * not the App's, a pull request for the merge queue from a fork or a red-team branch) or by GitHub with a 403 is kept, logged and signed (`refusals.ts`), and the answer carries it as
- * `refusal`, for the worker that asked to record as `action.refused` (`../signed-refusals.ts`). Its status is as it
- * would be without it. A read refuses nothing, but the gate's verdict that holds a pull request (`reviewVerdict`)
- * carries the gate's refusal the same way, in its result.
+ * not the App's, a pull request for the merge queue from a fork or a red-team branch, a pull request from a pin branch,
+ * a `pin` label, or any action on the pin watch's pull requests, which only it takes) or by GitHub with a 403 is kept,
+ * logged and signed (`refusals.ts`), and the answer carries it as `refusal`, for the worker that asked to record as
+ * `action.refused` (`../signed-refusals.ts`). Its status is as it would be without it. A read refuses nothing, but the
+ * gate's verdict that holds a pull request (`reviewVerdict`) carries the gate's refusal the same way, in its result.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
@@ -29,12 +30,15 @@ import { z } from 'zod';
 import { entryProblem, MOST_CONTRADICTED } from '../gates/contradicts.ts';
 import type { SignedRefusal } from '../signed-refusals.ts';
 import type { Actions } from './actions.ts';
-import { BranchRefused } from './branches.ts';
+import { BranchRefused, guardWritable, pinBranch, plainBranch } from './branches.ts';
 import { GitHubError } from './client.ts';
-import { DeployRefused, MAX_CARRIES } from './deploys.ts';
+import { QUEUED_DEPLOYS, QUEUES_DEPLOYS_IN } from './deploy-queue.ts';
+import { DeployRefused, deployLabel, MAX_CARRIES, scratchBranch } from './deploys.ts';
 import { IssueRefused } from './issues.ts';
+import { REVIEW_CHECK } from './merging.ts';
 import { PatchRefused } from './patches.ts';
 import { plainPath } from './paths.ts';
+import { PIN_LABEL, PIN_REPOS } from './pins.ts';
 import type { Reads } from './reads.ts';
 import type { GitHubRefusal, RefusalRecorder } from './refusals.ts';
 import { DIGEST, RegistryError } from './registry.ts';
@@ -46,7 +50,9 @@ const branch = z
   .string()
   .min(1)
   .max(200)
-  .regex(/^(?!\/|.*\/$|.*\.\.|.*\/\/)[A-Za-z0-9._/-]+$/, 'a branch name of letters, digits, dots, dashes and slashes');
+  .regex(/^(?!\/|.*\/$|.*\.\.|.*\/\/)[A-Za-z0-9._/-]+$/, 'a branch name of letters, digits, dots, dashes and slashes')
+  // No segment starts with a dot, as git has it: a `.` segment leaves the URL before it is sent (`plainBranch`).
+  .refine(plainBranch, 'no segment of a branch name starts with a dot');
 /** A path a commit names: one a patch may name (`plainPath`), whether or not it came from one. */
 const path = z.string().refine(plainPath, 'a plain relative path');
 /**
@@ -228,6 +234,162 @@ function actingFor(req: IncomingMessage): ActingFor {
   return on;
 }
 
+/**
+ * A label as GitHub may take it, read broadly so nothing that could be `pin` passes: decomposed (NFKD) with its marks
+ * taken out, so `PİN` is `pin`; every character Unicode says to ignore taken out (zero-width, the soft hyphen,
+ * variation selectors, fillers); a dotless i read as i; without regard to case or the space round it.
+ */
+const labelAsRead = (label: string): string =>
+  label
+    .normalize('NFKD')
+    .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, '')
+    .replace(/\u0131/g, 'i')
+    .trim()
+    .toLowerCase();
+
+/** Whether a label is `pin` as GitHub takes it. */
+const isPinLabel = (label: string): boolean => labelAsRead(label) === PIN_LABEL;
+
+/**
+ * Throws `BranchRefused` for what only the pin watch does with a pull request: open one from a pin branch, or give one
+ * the `pin` label. The merge queue's pin watch (`deploy-queue.ts`) takes a pull request the App opened from a pin
+ * branch and labelled `pin` as the pin watch's own, so no worker that asks may make one, even from a branch the watch
+ * wrote.
+ */
+function guardPinPull({ head, labels }: { head?: string; labels?: readonly string[] | undefined }): void {
+  const branch = head?.replace(/^refs\/heads\//, '');
+  // A head is a branch by its name, or `refs/heads/` and its name; any other ref's form is not read as a branch here.
+  if (branch !== undefined && /^(refs|heads|pull)\//.test(branch)) {
+    throw new BranchRefused(`${head} is not a branch by its name: a pull request is opened from a branch's name.`);
+  }
+  if (branch !== undefined && pinBranch(branch)) {
+    throw new BranchRefused(`${head} is the pin watch's: only the pin watch opens a pull request from it.`);
+  }
+  if (labels?.some(isPinLabel)) {
+    throw new BranchRefused(`Only the pin watch gives a pull request or issue the ${PIN_LABEL} label.`);
+  }
+}
+
+/**
+ * Throws `BranchRefused` for any action a worker asks on one of the pin watch's pull requests, or here the deploy
+ * watch's, by its branch as GitHub has it now: every action that names a pull request or issue by its number
+ * (`numberOf`: `number`, or `pullRequest`'s), so one added later that names it so is too, and none is allowed, as only
+ * each watch acts on its own. A number that is no pull request is an issue's, and not the queues' concern.
+ */
+async function guardPinNumber(repo: string, args: Record<string, unknown>, reads?: Reads): Promise<void> {
+  const number = numberOf(args);
+  if (number === null) return;
+  if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether #${number} is the pin watch's.`);
+  let head: string;
+  try {
+    ({
+      head: { ref: head },
+    } = await reads.pullRequest(repo, number));
+  } catch (error) {
+    if (error instanceof GitHubError && error.kind === 'not-found') return;
+    // GitHub's 403 to the door's own read is no refusal of the action, which was never asked: kept as a failure.
+    if (error instanceof GitHubError && error.status === 403) {
+      throw new Error(`The door could not read #${number}, so it cannot tell whether it is the pin watch's.`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  if (pinBranch(head)) {
+    throw new BranchRefused(`#${number} is the pin watch's pull request, from ${head}: only the pin watch acts on it.`);
+  }
+  if (deployBranch(repo, head)) {
+    throw new BranchRefused(
+      `#${number} is the deploy watch's pull request, from ${head}: only the deploy watch acts on it.`,
+    );
+  }
+}
+
+/**
+ * Whether a branch is one of the deploy watch's in a repository whose deploy pull requests the worker queues itself:
+ * the deploy branch, or the scratch branch its commit is made on. The deploy queue takes a pull request from it as the
+ * watch's own, so no worker that asks writes it, opens a pull request from it, or acts on one (ADR 0017).
+ */
+function deployBranch(repo: string, branch: string): boolean {
+  if (repo !== QUEUES_DEPLOYS_IN) return false;
+  // A branch at a prefix of one, or under one, is no branch of anyone else's: git keeps one ref of a path.
+  const related = (watched: string) =>
+    watched === branch || `${watched}/`.startsWith(`${branch}/`) || branch.startsWith(`${watched}/`);
+  return QUEUED_DEPLOYS.some((target) => related(target.branch) || related(scratchBranch(target)));
+}
+
+/**
+ * Throws `BranchRefused` for what only the deploy watch does in this repository: write its branches (`branch`), open a
+ * pull request from one (`head`), or give one of its labels (`deploy: <profile>`).
+ */
+function guardDeployWatch(repo: string, args: Record<string, unknown>): void {
+  if (repo !== QUEUES_DEPLOYS_IN) return;
+  for (const field of ['branch', 'head'] as const) {
+    const named = args[field];
+    if (typeof named === 'string' && deployBranch(repo, named.replace(/^refs\/heads\//, ''))) {
+      throw new BranchRefused(`${named} is the deploy watch's: no worker that asks writes it or opens it.`);
+    }
+  }
+  const labels = args.labels;
+  if (Array.isArray(labels)) {
+    const watched = QUEUED_DEPLOYS.map((target) => labelAsRead(deployLabel(target)));
+    if (labels.some((label) => typeof label === 'string' && watched.includes(labelAsRead(label)))) {
+      throw new BranchRefused(`Only the deploy watch gives a pull request or issue a deploy label.`);
+    }
+  }
+}
+
+/**
+ * Throws `BranchRefused` for an enqueue a worker asks in a repository whose merge queue only the worker's own watches
+ * add to: this one's, where the deploy queue and the pin queue add only what their watches opened and the gate passed
+ * (ADR 0017). The line adds to the app's alone.
+ */
+function guardEnqueue(repo: string): void {
+  if (repo === QUEUES_DEPLOYS_IN || PIN_REPOS.includes(repo)) {
+    throw new BranchRefused(
+      `In ${repo} only the worker's own watches add to the merge queue: no worker that asks adds a pull request there.`,
+    );
+  }
+}
+
+/**
+ * Throws `BranchRefused` for a branch a worker asks to set, or a check run it asks to post, at a pin branch's commit,
+ * in a repository the pin watch writes: a second pull request with the pin move's head would have the gate hold the
+ * move (two pull requests that have had one head), so only the pin watch's branches are at its commits.
+ */
+async function guardPinHead(
+  repo: string,
+  sha: string,
+  pinHeads: ((repo: string) => Promise<readonly string[]>) | undefined,
+  what: string,
+): Promise<void> {
+  if (!PIN_REPOS.includes(repo)) return;
+  if (!pinHeads) throw new Error(`The door cannot read the pin watch's branches in ${repo}, so nothing is set there.`);
+  if ((await pinHeads(repo)).includes(sha)) {
+    throw new BranchRefused(`${sha.slice(0, 7)} is a pin branch's head: no worker that asks has ${what} at it.`);
+  }
+}
+
+/**
+ * Throws `BranchRefused` for a check run a worker asks to post or rename as the review gate's, in any repository, or,
+ * in this one, as one GitHub requires on `main`: those are what a merge here waits for, and only their own workflows
+ * and App post them. In the app's repository the line posts its own (`factory review`), and its required checks are not
+ * read for it.
+ */
+async function guardCheckName(repo: string, name: string | undefined, reads?: Reads): Promise<void> {
+  if (name === undefined) return;
+  const asRead = name.trim().toLowerCase();
+  if (asRead === REVIEW_CHECK) {
+    throw new BranchRefused(`A check run named ${name} is the review gate's: no worker that asks posts one.`);
+  }
+  if (repo !== QUEUES_DEPLOYS_IN && !PIN_REPOS.includes(repo)) return;
+  if (!reads) throw new Error(`The door reads nothing, so it cannot tell whether ${name} is a check main requires.`);
+  const required = await reads.requiredChecks(repo, 'main');
+  if (required.some((r) => r.trim().toLowerCase() === asRead)) {
+    throw new BranchRefused(`A check run named ${name} is one main requires: no worker that asks posts one.`);
+  }
+}
+
 /** Each action's call, from its checked arguments. */
 const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(typeof ARGS)[K]>) => Promise<unknown> } = {
   setBranch: (x, repo, { branch, sha, force }) => x.setBranch(repo, branch, sha, force === undefined ? {} : { force }),
@@ -241,17 +403,26 @@ const CALLS: { [K in Name]: (actions: Actions, repo: string, args: z.infer<(type
       },
     }),
   applyPatch: (x, repo, patch) => x.applyPatch(repo, patch),
-  openPullRequest: (x, repo, draft) => x.openPullRequest(repo, defined(draft)),
+  openPullRequest: async (x, repo, draft) => {
+    guardPinPull(draft);
+    return x.openPullRequest(repo, defined(draft));
+  },
   updatePullRequest: (x, repo, { number, ...change }) => x.updatePullRequest(repo, number, defined(change)),
   describeDeploy: (x, repo, { number, ...deploy }) => x.describeDeploy(repo, number, defined(deploy)),
-  addLabels: (x, repo, { number, labels }) => x.addLabels(repo, number, labels),
+  addLabels: async (x, repo, { number, labels }) => {
+    guardPinPull({ labels });
+    return x.addLabels(repo, number, labels);
+  },
   readyForReview: (x, repo, { pullRequest }) => x.readyForReview(repo, pullRequest),
   convertToDraft: (x, repo, { pullRequest }) => x.convertToDraft(repo, pullRequest),
   review: (x, repo, { number, ...review }) => x.review(repo, number, review),
   resolveThreads: (x, repo, { number, threads }) => x.resolveThreads(repo, number, threads),
   createCheckRun: (x, repo, report) => x.createCheckRun(repo, defined(report)),
   updateCheckRun: (x, repo, { id, ...report }) => x.updateCheckRun(repo, id, defined(report)),
-  openIssue: (x, repo, issue) => x.openIssue(repo, defined(issue)),
+  openIssue: async (x, repo, issue) => {
+    guardPinPull(issue);
+    return x.openIssue(repo, defined(issue));
+  },
   closeIssue: (x, repo, { number, reason, comment }) => x.closeIssue(repo, number, reason, comment),
   reopenIssue: (x, repo, { number, comment }) => x.reopenIssue(repo, number, comment),
   closePullRequest: (x, repo, { number, comment }) => x.closePullRequest(repo, number, comment),
@@ -366,6 +537,11 @@ export interface WorkerServerOptions {
   only?: readonly ReadName[] | undefined;
   /** What keeps, logs and signs each refusal, for the answer to carry; without it, a refusal is answered as it is. */
   recorder?: RefusalRecorder | undefined;
+  /**
+   * The commits the pin watch's branches point at in a repository (`pinHeadsOf`): a branch a worker asks to set in one
+   * of `PIN_REPOS` is refused at any of them. Without it, such a branch is refused in those repositories.
+   */
+  pinHeads?: ((repo: string) => Promise<readonly string[]>) | undefined;
   log: Logger;
 }
 
@@ -417,6 +593,7 @@ export function createWorkerServer({
   health,
   recorder,
   only,
+  pinHeads,
   log,
 }: WorkerServerOptions): Server {
   /** Each refusal kept for an action's failure, for its answer. */
@@ -482,6 +659,21 @@ export function createWorkerServer({
     if (!actions) return send(res, 404, { error: 'not-found', message: 'No such action.' });
     let result: unknown;
     try {
+      guardDeployWatch(repo, parsed.data as Record<string, unknown>);
+      await guardPinNumber(repo, parsed.data as Record<string, unknown>, reads);
+      if (name === 'enqueuePullRequest') guardEnqueue(repo);
+      if (name === 'setBranch') {
+        const { branch, sha } = parsed.data as unknown as { branch: string; sha: string };
+        // The branch's own refusal first, as the action gives it, before anything is read.
+        guardWritable(branch);
+        await guardPinHead(repo, sha, pinHeads, 'a branch is set');
+      }
+      if (name === 'createCheckRun' || name === 'updateCheckRun') {
+        const { name: called, headSha } = parsed.data as unknown as { name?: string; headSha?: string };
+        await guardCheckName(repo, called, reads);
+        // A run at a pin move's head, named to look like a check it is not, would be shown beside the gate's.
+        if (headSha !== undefined) await guardPinHead(repo, headSha, pinHeads, 'a check run is posted');
+      }
       result = await (CALLS[name as Name] as (x: Actions, r: string, a: unknown) => Promise<unknown>)(
         actions,
         repo,

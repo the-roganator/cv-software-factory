@@ -300,7 +300,18 @@ export class GitHub {
     etag?: string,
     redirect: 'follow' | 'manual' = 'follow',
   ) {
-    const url = `${this.api}${path}`;
+    // What is sent must be what was built: the URL parser takes out a `.` or `..` segment (or its escape), a tab or a
+    // line break, reads a backslash as a slash, and ends the path at a `#`, and GitHub decodes an escape, so any of
+    // those would name another path. Each is refused, before anything is sent, whatever built the path.
+    const built = `${this.api}${path}`;
+    const parsed = URL.parse(built);
+    const sent = parsed ? `${parsed.origin}${parsed.pathname}${parsed.search}` : undefined;
+    const dotted = /(^|\/)(\.|%2e){1,2}(\/|\?|$)/i.test(path.split('?')[0] ?? path);
+    if (sent !== built || dotted || /%(?![0-9A-Fa-f]{2})/.test(path)) {
+      // Refused, not a conflict: it is never sent, so no caller takes it for a state that may pass and tries again.
+      throw new GitHubError('refused', `${method} ${path} would name another path than it says: not sent.`);
+    }
+    const url = built;
     // Doing it twice is harmless: anything but a POST.
     const repeatable = method !== 'POST';
     for (let attempt = 0; ; attempt++) {

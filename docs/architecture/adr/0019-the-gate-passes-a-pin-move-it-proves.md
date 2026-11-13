@@ -17,7 +17,7 @@ The gate trusts nothing the pull request says of itself: not its title, label, d
 
 `review.yml` works the move out in a job of its own, `pin move` (`scripts/pin-moves.ts`), with read-only permissions (`actions: read` among them, for which workflow made each check run) and no secret, from `main`'s whole checkout and its locked dependencies, and hands the gate one answer for each pull request it would judge, by number and head. The gate, which holds the review App's key, reads no head itself: it takes an answer only for the App's pull request here that is no exact pin, at the head it judges, and holds one it has no answer for. The gate runs again when `check.yml` or `platform.yml` finishes, as a pin move waits for the job that runs its pin.
 
-Nothing is queued on the rule yet: a pull request it passes is Martin's to add to the merge queue, as before.
+The GitHub worker adds a pull request the rule passed to the merge queue, once its other required checks are green, and only the pin watch's own, at the very commit the watch wrote (ADR 0017); one it holds is Martin's to add, his approval of its head included.
 
 ## Why
 

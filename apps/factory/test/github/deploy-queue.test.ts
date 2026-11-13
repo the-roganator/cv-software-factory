@@ -1,24 +1,31 @@
 /**
  * The worker adds this repository's local deploy pull request to the merge queue (ADR 0017), through the watch itself:
  * a fake GitHub for the pull request, fake reads for the gate's verdict, the checks and the queue, and fake actions for
- * the enqueue, or the dry run's own.
+ * the enqueue, or the dry run's own. The pin queue watch beside it adds the pin watch's pull requests the gate passed
+ * as pin moves, each condition tested alone against one that passes.
  */
 import { describe, expect, it } from 'vitest';
 import { DryRunActions } from '../../src/github/actions.ts';
 import { GitHubError } from '../../src/github/client.ts';
 import {
   checksWait,
-  type DeployPull,
   type DeployQueueDependencies,
   deployPullWait,
   deployQueueWatch,
+  type LabelEvents,
+  labelWait,
   MAX_TRIES,
+  pinPullWait,
+  pinQueueWatch,
   QUEUED_DEPLOYS,
+  type QueuePull,
+  toldWait,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
 import { DEPLOYS, type DeployTarget } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import type { MergeQueue, ReviewVerdict } from '../../src/github/merging.ts';
+import type { PinScope } from '../../src/github/pins.ts';
 import type { CheckRun } from '../../src/github/reads.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { calls, client, quiet, type Sent } from './fake.ts';
@@ -38,7 +45,7 @@ const REQUIRED = [
   'review',
 ];
 
-const pull = (over: Partial<DeployPull> = {}): DeployPull => ({
+const pull = (over: Partial<QueuePull> = {}): QueuePull => ({
   number: 973,
   title: TITLE,
   draft: false,
@@ -85,9 +92,18 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
   ...over,
 });
 
+/**
+ * The watch's record of its commits, as if it wrote each pull request's head as it is now: what a test about anything
+ * but that record gives the queue.
+ */
+const vouching = (pulls: () => QueuePull[]) => ({
+  get: (_repo: string, branch: string) => pulls().find((p) => p.head.ref === branch)?.head.sha,
+});
+
 /** A worker's deploy queue watch against a deploy branch with these open pull requests, as each pass reads them. */
 function harness(o: {
-  pulls?: () => DeployPull[];
+  heads?: DeployQueueDependencies['heads'];
+  pulls?: () => QueuePull[];
   verdict?: () => ReviewVerdict;
   runs?: () => CheckRun[];
   conflicts?: boolean | null;
@@ -125,7 +141,17 @@ function harness(o: {
     },
     mergeQueue: async () => (o.queued ?? (() => queue()))(),
   };
-  const pass = deployQueueWatch({ github, reads, actions, recorder: o.recorder, log: quiet }, FACTORY);
+  const pass = deployQueueWatch(
+    {
+      github,
+      reads,
+      actions,
+      recorder: o.recorder,
+      heads: o.heads ?? vouching(o.pulls ?? (() => [pull()])),
+      log: quiet,
+    },
+    FACTORY,
+  );
   return { pass, enqueued, sent };
 }
 
@@ -133,7 +159,7 @@ describe('the deploy queue watch', () => {
   it('queues only this repository’s local deploy, never the app’s', () => {
     expect(QUEUED_DEPLOYS).toEqual([FACTORY]);
     const { github } = client([]);
-    const deps = { github, reads: {} as never, actions: {} as never, log: quiet };
+    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
     expect(() => deployQueueWatch(deps, APP)).toThrow(/does not queue/);
   });
 
@@ -144,6 +170,19 @@ describe('the deploy queue watch', () => {
     // Once for each head: the next pass does not ask again.
     await pass();
     expect(enqueued).toHaveLength(1);
+  });
+
+  it('adds no head but the commit the deploy watch wrote, whoever moved its branch, and reads nothing for it', async () => {
+    for (const written of [undefined, OLDER]) {
+      const { pass, enqueued, sent } = harness({ heads: { get: () => written } });
+      await pass();
+      expect(enqueued, String(written)).toEqual([]);
+      // The positive check comes first: no verdict, check or event is read for a head that is not the watch's.
+      expect(
+        sent.filter((x) => !/\/pulls\?|\/installation|access_tokens/.test(x.path)),
+        String(written),
+      ).toEqual([]);
+    }
   });
 
   it('queues a newer build’s head afresh once the gate and its checks pass it', async () => {
@@ -207,7 +246,7 @@ describe('the deploy queue watch', () => {
       { ...verdict(HEAD), judged: { number: 973, head: NEWER, rule: 'exact-pin' as const, tags: [] } },
     ];
     for (const v of verdicts) {
-      expect(verdictWait(v, HEAD)?.waits).toBe('verdict');
+      expect(verdictWait(v, HEAD, 'exact-pin')?.waits).toBe('verdict');
       const { pass, enqueued } = harness({ verdict: () => v });
       await pass();
       expect(enqueued, JSON.stringify(v.judged)).toEqual([]);
@@ -381,5 +420,566 @@ describe('the deploy queue watch', () => {
     expect(records).toEqual([
       expect.objectContaining({ payload: expect.objectContaining({ mechanism: 'github-guard' }) }),
     ]);
+  });
+});
+
+const PIN_HEAD = 'c'.repeat(40);
+const OLDER = 'd'.repeat(40);
+const pinPull = (over: Partial<QueuePull> = {}): QueuePull => ({
+  number: 1040,
+  title: 'chore(pin): move zap to 2.17.0',
+  draft: false,
+  user: { id: APP_USER },
+  labels: [{ name: 'pin' }],
+  head: { ref: 'factory/pin/zap', sha: PIN_HEAD, repo: { full_name: REPO } },
+  base: { ref: 'main' },
+  ...over,
+});
+const labelled = (by: number | null, name = 'pin') => ({
+  event: 'labeled',
+  actor: by === null ? null : { id: by },
+  label: { name },
+});
+const pinVerdict = (
+  head: string,
+  judged: Partial<ReviewVerdict['judged'] & object> | null = {},
+  number = 1040,
+): ReviewVerdict => ({
+  number,
+  head,
+  check: null,
+  verdict: null,
+  judged: judged === null ? null : { number, head, rule: 'pin-move', tags: [], ...judged },
+  problem: judged === null ? 'the review App has posted no review check' : null,
+});
+
+/** A worker's pin queue watch against a repository with these open pull requests and each one's events. */
+function pinHarness(o: {
+  pulls?: () => QueuePull[];
+  events?: (number: number, page: number) => LabelEvents;
+  verdict?: (number: number) => ReviewVerdict;
+  runs?: () => CheckRun[];
+  actions?: DeployQueueDependencies['actions'];
+  queued?: (number: number) => MergeQueue['queued'];
+  only?: PinScope;
+  heads?: DeployQueueDependencies['heads'];
+  /** The closed pull requests GitHub lists from a branch, as the queue reads them for an earlier hold. */
+  closed?: (branch: string) => unknown[];
+}) {
+  const sent: Sent[] = [];
+  /** GitHub's requests and the merge queue's reads, in the order they were made. */
+  const read: string[] = [];
+  let seen = 0;
+  const pulls = o.pulls ?? (() => [pinPull()]);
+  const { github } = client(
+    [
+      {
+        method: 'GET',
+        path: /\/pulls\?state=open&per_page=100&sort=created&direction=asc&page=\d+$/,
+        answer: ({ path }) => {
+          const page = Number(/page=(\d+)$/.exec(path)?.[1]);
+          return { body: pulls().slice((page - 1) * 100, page * 100) };
+        },
+      },
+      {
+        method: 'GET',
+        path: /\/pulls\?state=closed&sort=created&direction=desc&per_page=100&page=1&head=/,
+        answer: ({ path }) => {
+          const branch = decodeURIComponent(path.split('&head=')[1]?.split(':').slice(1).join(':') ?? '');
+          return { body: o.closed?.(branch) ?? [] };
+        },
+      },
+      {
+        method: 'GET',
+        path: /\/issues\/\d+\/events\?per_page=100&page=\d+$/,
+        answer: ({ path }) => {
+          const [, number, page] = /issues\/(\d+)\/events\?per_page=100&page=(\d+)/.exec(path) ?? [];
+          const events = o.events ?? ((_n: number, p: number) => (p === 1 ? [labelled(APP_USER)] : []));
+          return { body: events(Number(number), Number(page)) };
+        },
+      },
+    ],
+    sent,
+  );
+  const enqueued: [number, string][] = [];
+  const actions = o.actions ?? {
+    enqueuePullRequest: async (_repo: string, number: number, head: string) => {
+      enqueued.push([number, head]);
+      return { position: 1, state: 'QUEUED' };
+    },
+  };
+  const headOf = (number: number) => pulls().find((p) => p.number === number)?.head.sha ?? PIN_HEAD;
+  const reads: DeployQueueDependencies['reads'] = {
+    reviewVerdict: async (_repo, number) => (o.verdict ?? ((n: number) => pinVerdict(headOf(n), {}, n)))(number),
+    checkRuns: async () => (o.runs ?? green)(),
+    requiredChecks: async () => REQUIRED,
+    mergeability: async (_repo, number) => ({ number, head: headOf(number), conflicts: false, state: 'clean' }),
+    mergeQueue: async (_repo, number) => {
+      read.push(`mergeQueue ${number}`, ...sent.slice(seen).map((x) => x.path));
+      seen = sent.length;
+      return queue({ number, head: headOf(number), queued: o.queued?.(number) ?? null });
+    },
+  };
+  const pass = pinQueueWatch(
+    { github, reads, actions, heads: o.heads ?? vouching(pulls), log: quiet },
+    REPO,
+    o.only ?? '*',
+  );
+  const order = () => [...read, ...sent.slice(seen).map((x) => x.path)];
+  return { pass, enqueued, sent, order };
+}
+
+describe('the pin queue watch', () => {
+  it('queues pin moves in this repository alone, never the app’s', () => {
+    const { github } = client([]);
+    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
+    expect(() => pinQueueWatch(deps, APP.repo)).toThrow(/does not queue/);
+  });
+
+  it('queues only a move the pin watch is told to take, as the watch opens only those, and reads nothing told none', async () => {
+    // `zap` folds to factory/pin/zap, the branch the pin watch opens for it.
+    const told = pinHarness({ only: ['zap'] });
+    await told.pass();
+    expect(told.enqueued).toEqual([[1040, PIN_HEAD]]);
+
+    // One left open from an earlier setting, or opened by hand on a pin branch: the watch is told another move.
+    const other = pinHarness({ only: ['argo-rollouts: quay.io/argoproj/argo-rollouts'] });
+    await other.pass();
+    expect(other.enqueued).toEqual([]);
+    expect(calls(other.sent).some((s) => s.path.includes('/events'))).toBe(false);
+
+    for (const none of [[], undefined]) {
+      const { github } = client([]);
+      const sent: string[] = [];
+      const reads = new Proxy({} as DeployQueueDependencies['reads'], {
+        get: (_t, name) => async () => void sent.push(String(name)),
+      });
+      const actions = { enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }) };
+      const deps = { github, reads, actions, heads: { get: () => undefined }, log: quiet };
+      await (none === undefined ? pinQueueWatch(deps, REPO) : pinQueueWatch(deps, REPO, none))();
+      expect(sent).toEqual([]);
+    }
+    const at = (ref: string, title = 'chore(pin): move zap to 2.17.0') => ({
+      title,
+      head: { ref, sha: PIN_HEAD, repo: null },
+    });
+    expect(toldWait(['zap'], at('factory/pin/zap'))).toBeUndefined();
+    expect(toldWait('*', at('factory/pin/anything'))).toBeUndefined();
+    expect(toldWait(['zap'], at('factory/pin/zap2'))?.waits).toBe('not-a-pin');
+  });
+
+  it('takes the setting by the exact move name, as the watch does: no name that only folds to the branch', async () => {
+    const at = (ref: string, title: string) => ({ title, head: { ref, sha: PIN_HEAD, repo: null } });
+    const dashboards = at('factory/pin/example-dashboards', 'chore(pin): move example-dashboards to 13.7.2');
+    // Each folds to the same branch, and the watch takes no move by any of them.
+    for (const name of ['Example-Dashboards', 'example_dashboards', 'example.dashboards*', 'example-dashboards ']) {
+      expect(toldWait([name], dashboards)?.waits, name).toBe('not-a-pin');
+    }
+    expect(toldWait(['example-dashboards'], dashboards)).toBeUndefined();
+    // A told name whose title prefixes another move's on the same branch (names cut at 80 characters fold to one).
+    const long = 'x'.repeat(80);
+    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to x to 1.0`))?.waits).toBe(
+      'not-a-pin',
+    );
+    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to 1.0`))).toBeUndefined();
+    // A told name whose title prefixes another move's is still on its own branch.
+    expect(toldWait(['zap'], at('factory/pin/zap-to-x', 'chore(pin): move zap to x to 1.0'))?.waits).toBe('not-a-pin');
+    const folded = pinHarness({ only: ['Zap'] });
+    await folded.pass();
+    expect(folded.enqueued).toEqual([]);
+  });
+
+  it('carries Martin’s hold to a pull request the watch opened again for the move, at any target, until a merge', async () => {
+    const closed = (over: Record<string, unknown> = {}) => ({
+      number: 1001,
+      title: 'chore(pin): move zap to 2.17.0',
+      user: { id: APP_USER },
+      head: { ref: 'factory/pin/zap', repo: { full_name: REPO } },
+      merged_at: null,
+      ...over,
+    });
+    const unlabelled = { event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' } };
+    const events = (n: number, p: number) =>
+      p > 1 ? [] : n === 1001 ? [labelled(APP_USER), unlabelled] : [labelled(APP_USER)];
+    const held = pinHarness({ closed: () => [closed()], events });
+    await held.pass();
+    expect(held.enqueued).toEqual([]);
+
+    // Held, saying why, when the earlier one's events run past what is read.
+    const long = pinHarness({
+      closed: () => [closed()],
+      events: (n, p) =>
+        n === 1001 ? Array.from({ length: 100 }, () => labelled(APP_USER)) : p > 1 ? [] : [labelled(APP_USER)],
+    });
+    await long.pass();
+    expect(long.enqueued).toEqual([]);
+
+    // Held at another target too: the hold is of the move, by its branch.
+    const other = pinHarness({ closed: () => [closed({ title: 'chore(pin): move zap to 2.16.0' })], events });
+    await other.pass();
+    expect(other.enqueued).toEqual([]);
+
+    // A merge from the branch since ends it: the closed pull requests are read newest first, back to the last merged.
+    const merged = closed({ number: 1003, merged_at: '2026-11-02T00:00:00Z' });
+    const ended = pinHarness({ closed: () => [merged, closed()], events });
+    await ended.pass();
+    expect(ended.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const before = pinHarness({ closed: () => [closed(), merged], events });
+    await before.pass();
+    expect(before.enqueued).toEqual([]);
+
+    // By GitHub's times when it gives them: a merge after the held one closed ends it, wherever it is listed; a merge
+    // before it does not, though the merged pull request is listed newer (Martin reopened an older one and merged it).
+    const at = (closedAt: string, mergedAt?: string) => ({ closed_at: closedAt, merged_at: mergedAt ?? null });
+    const heldOne = closed(at('2026-11-05T00:00:00Z'));
+    const mergedAfter = closed({ number: 999, ...at('2026-11-06T00:00:00Z', '2026-11-06T00:00:00Z') });
+    const mergedBefore = closed({ number: 1004, ...at('2026-11-04T00:00:00Z', '2026-11-04T00:00:00Z') });
+    const reopened = pinHarness({ closed: () => [heldOne, mergedAfter], events });
+    await reopened.pass();
+    expect(reopened.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const older = pinHarness({ closed: () => [mergedBefore, heldOne], events });
+    await older.pass();
+    expect(older.enqueued).toEqual([]);
+
+    // Dated by when Martin last took the label off, read each pass: put back and taken off again after a merge, it holds.
+    const off = (at: string) => ({ event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' }, created_at: at });
+    const on = (at: string) => ({ event: 'labeled', actor: { id: MARTIN }, label: { name: 'pin' }, created_at: at });
+    let history = [labelled(APP_USER), off('2026-11-05T01:00:00Z')];
+    const again = pinHarness({
+      closed: () => [heldOne, mergedAfter],
+      events: (n, p) => (p > 1 ? [] : n === 1001 ? history : [labelled(APP_USER)]),
+    });
+    await again.pass();
+    expect(again.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const later = pinHarness({
+      closed: () => [heldOne, mergedAfter],
+      events: (n, p) => (p > 1 ? [] : n === 1001 ? history : [labelled(APP_USER)]),
+    });
+    history = [...history, on('2026-11-06T02:00:00Z'), off('2026-11-06T03:00:00Z')];
+    await later.pass();
+    expect(later.enqueued).toEqual([]);
+
+    // A closed pull request's events are read again on each pass, as Martin may change its label at any time.
+    const twice = pinHarness({ closed: () => [heldOne], events });
+    await twice.pass();
+    const read = () => twice.sent.filter((x) => x.path.includes('/issues/1001/events')).length;
+    const first = read();
+    await twice.pass();
+    expect(first).toBeGreaterThan(0);
+    expect(read()).toBe(2 * first);
+
+    // Not held: one the App alone unlabelled, a merged one, or someone else's, or another branch's.
+    for (const earlier of [
+      closed({ number: 1002 }),
+      closed({ merged_at: '2026-11-01T00:00:00Z' }),
+      closed({ user: { id: MARTIN } }),
+      closed({ head: { ref: 'factory/pin/zap2', repo: { full_name: REPO } } }),
+    ]) {
+      const free = pinHarness({ closed: () => [earlier], events });
+      await free.pass();
+      expect(free.enqueued, JSON.stringify(earlier)).toEqual([[1040, PIN_HEAD]]);
+    }
+  });
+
+  it('adds no head but the commit the pin watch wrote, whoever moved its branch', async () => {
+    for (const written of [undefined, OLDER]) {
+      const { pass, enqueued } = pinHarness({ heads: { get: () => written } });
+      await pass();
+      expect(enqueued, String(written)).toEqual([]);
+    }
+  });
+
+  it('adds the pin watch’s pull request at its head once the gate passed it as a pin move and its checks are green', async () => {
+    const { pass, enqueued } = pinHarness({});
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+    await pass();
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it('queues each of several pin moves on its own, and leaves the one the gate held', async () => {
+    const pulls = [
+      pinPull(),
+      pinPull({ number: 1041, head: { ref: 'factory/pin/postgres', sha: NEWER, repo: { full_name: REPO } } }),
+    ];
+    const { pass, enqueued } = pinHarness({
+      pulls: () => pulls,
+      verdict: (n) => (n === 1041 ? pinVerdict(NEWER, { rule: 'held', tags: [] }, n) : pinVerdict(PIN_HEAD, {}, n)),
+    });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  // Each case changes one thing of a pull request that passes, and nothing else.
+  const notPins: [string, QueuePull][] = [
+    ['opened by someone else', pinPull({ user: { id: MARTIN } })],
+    ['opened by nobody GitHub knows', pinPull({ user: null })],
+    ['from a fork', pinPull({ head: { ref: 'factory/pin/zap', sha: PIN_HEAD, repo: { full_name: 'someone/fork' } } })],
+    ['from a fork GitHub no longer has', pinPull({ head: { ref: 'factory/pin/zap', sha: PIN_HEAD, repo: null } })],
+    [
+      'on another factory branch',
+      pinPull({ head: { ref: 'factory/other', sha: PIN_HEAD, repo: { full_name: REPO } } }),
+    ],
+    [
+      'on a pin move’s next branch',
+      pinPull({ head: { ref: 'factory/pin-next/zap', sha: PIN_HEAD, repo: { full_name: REPO } } }),
+    ],
+    [
+      'on a pin branch of two segments',
+      pinPull({ head: { ref: 'factory/pin/zap/x', sha: PIN_HEAD, repo: { full_name: REPO } } }),
+    ],
+    ['the deploy branch', pinPull({ head: { ref: 'deploy/local', sha: PIN_HEAD, repo: { full_name: REPO } } })],
+    ['into another base', pinPull({ base: { ref: 'feat/pin-watch' } })],
+    ['a draft', pinPull({ draft: true })],
+    ['without the label', pinPull({ labels: [] })],
+  ];
+  for (const [what, other] of notPins) {
+    it(`never queues a pull request ${what}, whatever the gate said`, async () => {
+      expect(pinPullWait(REPO, other)?.waits).toBe('not-a-pin');
+      const { pass, enqueued } = pinHarness({ pulls: () => [other] });
+      await pass();
+      expect(enqueued).toEqual([]);
+    });
+  }
+  it('passes the pull request every case above changes', () => {
+    expect(pinPullWait(REPO, pinPull())).toBeUndefined();
+  });
+
+  const labels: [string, (number: number, page: number) => LabelEvents][] = [
+    ['labelled pin by someone else', (_n, p) => (p === 1 ? [labelled(MARTIN)] : [])],
+    [
+      'labelled pin by the App and again by someone else',
+      (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'unlabeled', actor: { id: APP_USER }, label: { name: 'pin' } },
+              labelled(MARTIN),
+            ]
+          : [],
+    ],
+    ['labelled pin by an actor GitHub no longer has', (_n, p) => (p === 1 ? [labelled(null)] : [])],
+    [
+      'the App reopened, as a worker that asked could after Martin closed it',
+      (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'closed', actor: { id: MARTIN } },
+              { event: 'reopened', actor: { id: APP_USER } },
+            ]
+          : [],
+    ],
+    ['with no labelling event', (_n, p) => (p === 1 ? [labelled(APP_USER, 'deploy: local')] : [])],
+    [
+      'whose events run past what is read',
+      (_n, p) =>
+        Array.from({ length: 100 }, () =>
+          p === 1 ? labelled(APP_USER) : { event: 'commented', actor: { id: MARTIN } },
+        ),
+    ],
+  ];
+  for (const [what, events] of labels) {
+    it(`never queues a pull request ${what}`, async () => {
+      const { pass, enqueued } = pinHarness({ events });
+      await pass();
+      expect(enqueued).toEqual([]);
+    });
+  }
+  it('never queues a pull request whose pin label someone but the App took off, though the App put it back', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' } },
+              labelled(APP_USER),
+            ]
+          : [],
+    });
+    await pass();
+    expect(enqueued).toEqual([]);
+  });
+
+  it('queues a pull request Martin reopened himself', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) =>
+        p === 1
+          ? [
+              labelled(APP_USER),
+              { event: 'closed', actor: { id: MARTIN } },
+              { event: 'reopened', actor: { id: MARTIN } },
+            ]
+          : [],
+    });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  it('reads exactly as many events as it reads whole, when no page follows', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) => (p <= 5 ? Array.from({ length: 100 }, () => labelled(APP_USER)) : []),
+    });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  it('reads who labelled it last of all, just before the enqueue, and not at all for one already queued', async () => {
+    const { pass, order, enqueued } = pinHarness({});
+    await pass();
+    const paths = order();
+    expect(paths.findIndex((p) => p.includes('/events'))).toBeGreaterThan(paths.indexOf('mergeQueue 1040'));
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+
+    const already = pinHarness({
+      queued: () => ({ position: 1, state: 'QUEUED', enqueuedAt: '2026-11-12T10:00:00Z', commit: null }),
+    });
+    await already.pass();
+    expect(already.sent.some((s) => s.path.includes('/events'))).toBe(false);
+    expect(already.enqueued).toEqual([]);
+  });
+
+  it('reads the events last, never for a pull request the gate or its checks hold', async () => {
+    const { pass, sent } = pinHarness({ verdict: () => pinVerdict(PIN_HEAD, { rule: 'held', tags: [] }) });
+    await pass();
+    expect(calls(sent).some((s) => s.path.includes('/events'))).toBe(false);
+  });
+
+  it('finds the pin watch’s pull request past the first hundred open', async () => {
+    const others = Array.from({ length: 150 }, (_, i) =>
+      pinPull({ number: 2000 + i, labels: [], head: { ref: `feat/x${i}`, sha: OLDER, repo: { full_name: REPO } } }),
+    );
+    const { pass, enqueued } = pinHarness({ pulls: () => [...others, pinPull()] });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+  });
+
+  it('queues the next pin move when one before it cannot be read', async () => {
+    const second = pinPull({
+      number: 1041,
+      head: { ref: 'factory/pin/postgres', sha: NEWER, repo: { full_name: REPO } },
+    });
+    const { pass, enqueued } = pinHarness({
+      pulls: () => [pinPull(), second],
+      events: (n, p) => {
+        if (n === 1040) throw new Error('not this one');
+        return p === 1 ? [labelled(APP_USER)] : [];
+      },
+    });
+    await pass();
+    expect(enqueued).toEqual([[1041, NEWER]]);
+  });
+
+  it('reads the App’s label on a later page', async () => {
+    const { pass, enqueued } = pinHarness({
+      events: (_n, p) =>
+        p === 1 ? Array.from({ length: 100 }, () => ({ event: 'committed', actor: null })) : [labelled(APP_USER)],
+    });
+    await pass();
+    expect(enqueued).toEqual([[1040, PIN_HEAD]]);
+    expect(labelWait([labelled(APP_USER)], true)).toBeUndefined();
+  });
+
+  const verdicts: [string, ReviewVerdict][] = [
+    ['an exact pin', pinVerdict(PIN_HEAD, { rule: 'exact-pin' })],
+    ['low risk', pinVerdict(PIN_HEAD, { rule: 'low-risk' })],
+    [
+      'held',
+      pinVerdict(PIN_HEAD, { rule: 'held', tags: [{ tag: 'code-owned', because: ['policy/vulnerabilities.ts'] }] }),
+    ],
+    ['held, pending', pinVerdict(PIN_HEAD, { rule: 'held', pending: 'the pin move job has not run' })],
+    ['held, then approved by Martin at its head', pinVerdict(PIN_HEAD, { rule: 'martin-approved-head' })],
+    ['Martin’s own', pinVerdict(PIN_HEAD, { rule: 'martin-opened' })],
+    ['not judged', pinVerdict(PIN_HEAD, null)],
+    ['a pin move at an older head', pinVerdict(OLDER)],
+    [
+      'judged at an older head under the current one',
+      { ...pinVerdict(PIN_HEAD), judged: { number: 1040, head: OLDER, rule: 'pin-move', tags: [] } },
+    ],
+  ];
+  for (const [what, v] of verdicts) {
+    it(`never queues a pin move whose verdict at its head is ${what}`, async () => {
+      expect(verdictWait(v, PIN_HEAD, 'pin-move')?.waits).toBe('verdict');
+      const { pass, enqueued } = pinHarness({ verdict: () => v });
+      await pass();
+      expect(enqueued).toEqual([]);
+    });
+  }
+  it('never takes a pin move as a deploy pin, nor a deploy pin as a pin move', () => {
+    expect(verdictWait(pinVerdict(PIN_HEAD), PIN_HEAD, 'exact-pin')?.waits).toBe('verdict');
+    expect(verdictWait(verdict(HEAD), HEAD, 'pin-move')?.waits).toBe('verdict');
+  });
+
+  const checks: [string, CheckRun[]][] = [
+    ['pending', [...green().filter((r) => r.name !== 'image builds'), run('image builds', null)]],
+    ['failed', [...green(), run('lockfile scan', 'failure')]],
+    ['missing', green().filter((r) => r.name !== 'pull request title')],
+    [
+      'passed only by the factory’s App',
+      [
+        ...green().filter((r) => r.name !== 'lint, types, tests'),
+        run('lint, types, tests', 'success', 'mrogan-software-factory'),
+      ],
+    ],
+  ];
+  for (const [what, runs] of checks) {
+    it(`never queues a pin move with a required check ${what}`, async () => {
+      const { pass, enqueued } = pinHarness({ runs: () => runs });
+      await pass();
+      expect(enqueued).toEqual([]);
+    });
+  }
+  it('queues a pin move whose only other check was skipped, as GitHub passes it', async () => {
+    // green() skips browser tests: a skipped check is GitHub's pass, and the gate's own run proved what ran the pin.
+    expect(green().find((r) => r.name === 'browser tests')?.conclusion).toBe('skipped');
+    const { pass, enqueued } = pinHarness({});
+    await pass();
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it('queues a moved pin’s new head afresh, and forgets a pull request that closed', async () => {
+    let head = PIN_HEAD;
+    let open = true;
+    const { pass, enqueued } = pinHarness({
+      pulls: () => (open ? [pinPull({ head: { ...pinPull().head, sha: head } })] : []),
+    });
+    await pass();
+    head = NEWER;
+    await pass();
+    open = false;
+    await pass();
+    open = true;
+    await pass();
+    expect(enqueued.map(([, h]) => h)).toEqual([PIN_HEAD, NEWER, NEWER]);
+  });
+
+  it('reads no events of a pull request the pin watch did not open', async () => {
+    const { pass, sent } = pinHarness({ pulls: () => [pinPull({ user: { id: MARTIN } })] });
+    await pass();
+    expect(calls(sent).some((s) => s.path.includes('/events'))).toBe(false);
+  });
+
+  it('in a dry run, records the enqueue and sends GitHub nothing but reads', async () => {
+    const records: { action: string; args: unknown }[] = [];
+    const store = {
+      put: async (bytes: Uint8Array) => {
+        records.push(JSON.parse(new TextDecoder().decode(bytes)));
+        return String(records.length).padStart(64, 'f');
+      },
+    };
+    const guard = new IssueGuard({ openedBy: async () => ({ by: APP_USER, pullRequest: true }) });
+    const candidate = async () => ({
+      state: 'open',
+      draft: false,
+      head: { ref: 'factory/pin/zap', sha: PIN_HEAD, repo: REPO },
+    });
+    const actions = new DryRunActions(store as never, quiet, undefined, undefined, guard, candidate);
+    const { pass, sent } = pinHarness({ actions });
+    await pass();
+    await pass();
+    expect(records.map(({ action, args }) => ({ action, args }))).toEqual([
+      { action: 'enqueuePullRequest', args: { number: 1040, expectedHead: PIN_HEAD } },
+    ]);
+    expect(calls(sent).every((s) => s.method === 'GET')).toBe(true);
   });
 });

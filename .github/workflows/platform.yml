@@ -71,6 +71,30 @@ jobs:
           platform=$(scripts/check-kind.sh platform)
           echo "$platform"
           echo "platform=$platform" >> "$GITHUB_OUTPUT"
+      # PROOF ONLY, reverted before review: the queue's decision for #1066's and #1057's real entries, with this job's own
+      # token. Both are merged, so their pull requests are closed and their runs name none: those two checks alone are
+      # taken out of a copy.
+      - name: Proof (reverted) the queue's decisions for #1066 and #1057
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sed -e 's/\[ "\$state" = open \] && //' -e 's/ and any(.pull_requests\[\]?; .number == \$n and .base.ref == "main")//' \
+            scripts/check-kind.sh > "$RUNNER_TEMP/check-kind.sh"
+          chmod +x "$RUNNER_TEMP/check-kind.sh"
+          diff scripts/check-kind.sh "$RUNNER_TEMP/check-kind.sh" || true
+          decide() {
+            local n=$1 q=$2 dir="$RUNNER_TEMP/q$1"
+            git init --quiet "$dir"
+            git -C "$dir" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+            git -C "$dir" fetch --quiet --no-tags --depth=2 origin "$q"
+            git -C "$dir" checkout --quiet FETCH_HEAD
+            echo "--- #$n, queue commit ${q:0:7}, PLATFORM_SKIP=${3:-}"
+            (cd "$dir" && time PLATFORM_SKIP="${3:-}" GITHUB_EVENT_NAME=merge_group \
+              QUEUE_BRANCH="refs/heads/gh-readonly-queue/main/pr-$n-$(git rev-parse HEAD^1)" "$RUNNER_TEMP/check-kind.sh" platform)
+          }
+          decide 1066 d3e1d5ed3289a3b7f391674eae0e0d56e617dff4
+          decide 1066 d3e1d5ed3289a3b7f391674eae0e0d56e617dff4 off
+          decide 1057 7fda3f1d13e8e8546cfb0bcb59542410882fa95d
 
   platform:
     name: platform

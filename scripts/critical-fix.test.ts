@@ -187,8 +187,19 @@ const image = (packages: Scan['packages'], findings: Finding[] = [], node?: stri
 });
 const OS = [{ name: 'libc6', version: '2.41-12' }];
 
+/** The registry's published manifests: what each version requires, by name. */
+const MANIFESTS: Record<string, Record<string, string>> = {
+  'protobufjs@7.6.6': { '@protobufjs/base64': '^1.1.2', long: '^5.0.0' },
+  '@protobufjs/base64@1.1.2': {},
+  'pino@10.4.1': {},
+};
+/** The app's ruleset's required checks: its gates, and the review. */
+const REQUIRED = [...Object.keys(APP_GATES), 'review'];
+
 interface Fakes {
   advisories?: Record<string, Finding[]>;
+  manifests?: Record<string, Record<string, string>>;
+  required?: string[];
   images?: Record<string, Scan>;
   node?: Record<string, Finding[]>;
   tags?: Record<string, string[]>;
@@ -216,6 +227,11 @@ function io(change: Record<string, string>, fakes: Fakes = {}): CriticalFixIO {
       return scan;
     },
     node: async (version) => fakes.node?.[version] ?? [],
+    manifest: async (name, version) => {
+      const named = (fakes.manifests ?? MANIFESTS)[`${name}@${version}`];
+      if (!named) throw new Error(`the registry answered 404 for ${name}@${version}`);
+      return named;
+    },
     tags: async (repository) => fakes.tags?.[repository] ?? [],
     digest: async (reference) => {
       const digest = fakes.digests?.[reference];
@@ -223,6 +239,7 @@ function io(change: Record<string, string>, fakes: Fakes = {}): CriticalFixIO {
       return digest;
     },
     runs: async () => fakes.runs ?? passedGates(),
+    required: async () => fakes.required ?? REQUIRED,
   };
 }
 
@@ -467,6 +484,67 @@ describe('a Critical fix: the threat model, each held', () => {
     );
   });
 
+  it('anyone rewiring what installs: a snapshot of a package that stays, an alias, or what the fix requires', async () => {
+    const rewired = FIXED_LOCK.replace('  pino@10.4.0: {}', '  pino@10.4.0:\n    dependencies:\n      long: 5.3.2');
+    expect(await held({ 'pnpm-lock.yaml': rewired })).toMatch(/rewires pino@10\.4\.0's snapshot/);
+    const aliased = FIXED_LOCK.replace("'@protobufjs/base64': 1.1.2", "'@protobufjs/base64': evil@1.0.0");
+    expect(await held({ 'pnpm-lock.yaml': aliased })).toMatch(
+      /requires @protobufjs\/base64 at evil@1\.0\.0: no registry's version/,
+    );
+    const missing = FIXED_LOCK.replace('      long: 5.3.2\n', '      long: 5.3.9\n');
+    expect(await held({ 'pnpm-lock.yaml': missing })).toMatch(/requires long at 5\.3\.9: no registry's version it has/);
+    // A package the fix's new snapshot says it requires, which the registry's manifest of that version does not name.
+    const evil = FIXED_LOCK.replace(
+      '  long@5.3.2:\n    resolution',
+      '  evil@1.0.0:\n    resolution: {integrity: sha512-evil}\n\n  long@5.3.2:\n    resolution',
+    )
+      .replace('  long@5.3.2: {}', '  evil@1.0.0: {}\n\n  long@5.3.2: {}')
+      .replace("      '@protobufjs/base64': 1.1.2\n", "      '@protobufjs/base64': 1.1.2\n      evil: 1.0.0\n");
+    expect(await held({ 'pnpm-lock.yaml': evil }, { manifests: { ...MANIFESTS, 'evil@1.0.0': {} } })).toBe(
+      "pins only: protobufjs@7.6.6's snapshot requires evil, which its published manifest does not name",
+    );
+    // A snapshot of a package the lockfile does not list, and a snapshot the head drops.
+    expect(await held({ 'pnpm-lock.yaml': `${FIXED_LOCK}\n  ghost@1.0.0: {}\n` })).toMatch(
+      /snapshot of ghost@1\.0\.0, which is no package/,
+    );
+    expect(await held({ 'pnpm-lock.yaml': FIXED_LOCK.replace('  pino@10.4.0: {}\n', '') })).toMatch(
+      /drops pino@10\.4\.0's snapshot/,
+    );
+  });
+
+  it('the registry, not the head, says what a version requires: its range, a move it forces, the ruleset', async () => {
+    // A dependency moved within the range the fixed version asks for, which its old version already met.
+    const needless = FIXED_LOCK.replaceAll('long@5.3.2', 'long@5.3.3').replaceAll('long: 5.3.2', 'long: 5.3.3');
+    expect(
+      await held({ ...PACKAGE_FIX, 'pnpm-lock.yaml': needless }, { manifests: { ...MANIFESTS, 'long@5.3.3': {} } }),
+    ).toBe("only what the fix needs: it moves long from 5.3.2, which protobufjs's new version did not need moved");
+    // The same move, forced by a range the old version is outside, passes.
+    const forced = {
+      ...MANIFESTS,
+      'protobufjs@7.6.6': { '@protobufjs/base64': '^1.1.2', long: '^5.3.3' },
+      'long@5.3.3': {},
+    };
+    expect(
+      await criticalFix(io({ ...PACKAGE_FIX, 'pnpm-lock.yaml': needless }, { manifests: forced }), HEAD),
+    ).toHaveProperty('title');
+    // An edge outside the range the manifest asks for.
+    const outside = { ...MANIFESTS, 'protobufjs@7.6.6': { '@protobufjs/base64': '^2.0.0', long: '^5.0.0' } };
+    expect(await held(PACKAGE_FIX, { manifests: outside })).toMatch(
+      /requires @protobufjs\/base64 at 1\.1\.2, outside the \^2\.0\.0/,
+    );
+    // A range the gate cannot read is no range: an alias the manifest itself writes.
+    const alias = { ...MANIFESTS, 'protobufjs@7.6.6': { '@protobufjs/base64': 'npm:evil@1.1.2', long: '^5.0.0' } };
+    expect(await held(PACKAGE_FIX, { manifests: alias })).toMatch(/outside the npm:evil@1\.1\.2/);
+    // An edge whose peers' suffix names no snapshot the head has.
+    const peers = FIXED_LOCK.replace("'@protobufjs/base64': 1.1.2\n", "'@protobufjs/base64': 1.1.2(long@9.9.9)\n");
+    expect(await held({ 'pnpm-lock.yaml': peers })).toMatch(/no registry's version it has/);
+    // A check the app's ruleset requires that the gate does not know, or a ruleset that does not require the review.
+    expect(await held(PACKAGE_FIX, { required: [...REQUIRED, 'gates / something new'] })).toBe(
+      'every gate passes: the app requires gates / something new, which the gate does not know',
+    );
+    expect(await held(PACKAGE_FIX, { required: Object.keys(APP_GATES) })).toMatch(/does not require review/);
+  });
+
   it('anyone making Node vanish: an image that named its Node at the base and does not at the head', async () => {
     const fakes = nodeFakes();
     (fakes.images as Record<string, Scan>)[`node:24.22.2-alpine3.24@${D('3')}`] = image(OS);
@@ -487,12 +565,18 @@ describe('a Critical fix: the threat model, each held', () => {
       [{ ...one, status: 'in_progress', conclusion: null }, 'has not finished'],
     ] as const) {
       expect(await held(PACKAGE_FIX, { runs: [...without, run as Run] })).toContain(`every gate passes: ${name}`);
-      expect(gatesPass([...without, run as Run], HEAD)).toContain(why);
+      expect(gatesPass([...without, run as Run], HEAD, REQUIRED)).toContain(why);
     }
     // A newer attempt that succeeded counts; a second run that succeeded never hides one that failed.
-    expect(gatesPass([...without, { ...one, conclusion: 'failure' }, { ...one, id: 999 }], HEAD)).toBeUndefined();
     expect(
-      gatesPass([...without, { ...one, conclusion: 'failure' }, { ...one, id: 999, check_suite: { id: 77 } }], HEAD),
+      gatesPass([...without, { ...one, conclusion: 'failure' }, { ...one, id: 999 }], HEAD, REQUIRED),
+    ).toBeUndefined();
+    expect(
+      gatesPass(
+        [...without, { ...one, conclusion: 'failure' }, { ...one, id: 999, check_suite: { id: 77 } }],
+        HEAD,
+        REQUIRED,
+      ),
     ).toContain('failure');
   });
 
@@ -520,6 +604,16 @@ describe('a Critical fix: the threat model, each held', () => {
     expect(
       await held({ ...NODE_MOVE, 'mise.lock': NODE_MOVE['mise.lock'].replace('dist/v24.22.2/', 'dist/v24.22.3/') }),
     ).toMatch(/^pins only: mise\.lock/);
+    // A lock whose version moves while a platform's download stays on the old Node.
+    const stale = NODE_MOVE['mise.lock']
+      .replace(
+        'url = "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-arm64.tar.gz"',
+        'url = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-darwin-arm64.tar.gz"',
+      )
+      .replace('f'.repeat(64), 'd'.repeat(64));
+    expect(await held({ ...NODE_MOVE, 'mise.lock': stale }, nodeFakes())).toMatch(
+      /mise\.lock:\d+ is left on another Node than 24\.22\.2/,
+    );
     expect(
       await held({ ...NODE_MOVE, 'mise.lock': NODE_MOVE['mise.lock'].replace('nodejs.org', 'evil.example') }),
     ).toMatch(/^pins only: mise\.lock/);

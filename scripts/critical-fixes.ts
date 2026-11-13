@@ -82,6 +82,15 @@ export async function readCriticalFix(each: Run, pr: PullRequest, github: GitHub
           base,
           mergeBase,
           head: pr.head.sha,
+          // The checks the app's ruleset requires of main, as GitHub gives them: read, never assumed.
+          required: async () => {
+            const rules = await github.api<
+              { type: string; parameters?: { required_status_checks?: { context: string }[] } }[]
+            >('GET', `/repos/${each.repo}/rules/branches/main`, each.read);
+            return rules
+              .filter((rule) => rule.type === 'required_status_checks')
+              .flatMap((rule) => (rule.parameters?.required_status_checks ?? []).map((check) => check.context));
+          },
           runs: async () => {
             const [checks, workflows] = await Promise.all([
               github.paged<CheckRun>(

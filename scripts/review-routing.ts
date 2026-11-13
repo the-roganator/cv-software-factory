@@ -645,6 +645,10 @@ export interface Facts {
  */
 export const FIX_PINS: readonly string[] = ['Dockerfile', 'mise.toml', 'mise.lock'];
 
+/** Whether a pull request's tags may be a Critical fix's, so the gate asks for one: a dependency's change, or Martin's paths. */
+export const mayBeFix = (tags: readonly Found[]) =>
+  tags.some((t) => t.tag === 'dependency-change' || t.tag === 'code-owned');
+
 /**
  * Why a Critical fix's tags hold it, or nothing when they do not: `dependency-change`, and `code-owned` on its pins'
  * files alone. Any other tag (a test loosened, a header, a release, an improvement, a path of Martin's that is no pin, a
@@ -729,6 +733,8 @@ export function route(facts: Facts): Decision {
     const tagsHold = fixTagsHold(tags);
     if (facts.retargeted) notFix = 'its base was changed, and a critical fix is proved only into main from the start';
     else if (tagsHold) notFix = tagsHold;
+    // Test integrity's own reading of this pull request at its head, as low-risk needs: its run passing is not enough.
+    else if (!facts.testIntegrity.read) notFix = 'test integrity has no reading of it';
     else return { pass: true, title: fix.title, rule: 'critical-fix', tags };
   }
   const passed = levelPasses(tags, facts.autonomy);

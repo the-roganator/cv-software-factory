@@ -60,6 +60,7 @@ import {
   type FileChange,
   type IssueEvent,
   MARTIN,
+  mayBeFix,
   notJudged,
   type OwnerRule,
   type PullRequest,
@@ -622,9 +623,6 @@ async function ahead(repo: string, from: string, to: string, token: string): Pro
 /** Whether a run is the `pin move` or `critical fix` job, which works answers out and judges nothing. */
 const working = (each: Run) => each.moves?.kind === 'work' || each.fixes?.kind === 'work';
 
-/** The tags a Critical fix may carry: a dependency's change, and Martin's paths that hold its pins. */
-const FIX_TAGS: readonly string[] = ['dependency-change', 'code-owned'];
-
 /** Every fact a pull request is judged on, read through the API, and its verdict. */
 export async function judge(each: Run, pr: PullRequest, withoutMartin = false): Promise<Decision> {
   const { repo, read } = each;
@@ -709,8 +707,7 @@ export async function judge(each: Run, pr: PullRequest, withoutMartin = false): 
         ? await answerOf(each, judged, 'moves')
         : undefined;
     // In the app's repository, a dependency's change of the App's may be a Critical fix: proved from its two commits.
-    const fixing =
-      each.repo === APP_REPO && wanted && each.moves?.kind !== 'work' && tags.some((t) => FIX_TAGS.includes(t.tag));
+    const fixing = each.repo === APP_REPO && wanted && each.moves?.kind !== 'work' && mayBeFix(tags);
     const criticalFix = fixing ? await answerOf(each, judged, 'fixes') : undefined;
     return route({
       ...facts(),

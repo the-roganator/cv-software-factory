@@ -64,16 +64,26 @@ function trivyImage() {
 }
 
 /** The readers on two commits of `repo`, fetched into a directory of their own, as data. */
-export async function realCriticalFixIO(options: RealOptions): Promise<CriticalFixIO & { close(): void }> {
+export async function realCriticalFixIO(
+  options: RealOptions & { required: () => Promise<string[]> },
+): Promise<CriticalFixIO & { close(): void }> {
+  const trivy = trivyImage();
   const commits = await realPinMoveIO(options);
-  const work = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'critical-fix-'));
-  mkdirSync(join(work, 'cache'));
-  const tools = realTools(trivyImage(), join(work, 'cache'), work);
+  let work: string;
+  let tools: ReturnType<typeof realTools>;
+  try {
+    work = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'critical-fix-'));
+    mkdirSync(join(work, 'cache'));
+    tools = realTools(trivy, join(work, 'cache'), work);
+  } catch (error) {
+    commits.close();
+    throw error;
+  }
   let pulled: Promise<unknown> | undefined;
   let nodeDatabase: Promise<ReturnType<typeof entries>> | undefined;
   // As the daily scan refuses one: findings read from a stale or missing database prove nothing is fixed or new.
   const fresh = async () => {
-    pulled ??= databases(tools, trivyImage(), join(work, 'cache'));
+    pulled ??= databases(tools, trivy, join(work, 'cache'));
     const age = await pulled;
     if (typeof age !== 'number' || age > DB_MAX_AGE_MS)
       throw new Error(`the advisory database is refused: ${typeof age === 'string' ? age : 'it is too old'}`);
@@ -86,8 +96,25 @@ export async function realCriticalFixIO(options: RealOptions): Promise<CriticalF
     },
     diff: () => commits.diff(),
     tags: (repository) => commits.tags(repository),
+    // The registry's own manifest of a version, read anonymously: what it requires, by name.
+    async manifest(name, version) {
+      const path = `${name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name)}/${encodeURIComponent(version)}`;
+      const answer = await tools.retry(async () => {
+        const response = await fetch(`https://registry.npmjs.org/${path}`, { signal: AbortSignal.timeout(30_000) });
+        if (!response.ok) throw new Error(`the registry answered ${response.status} for ${name}@${version}`);
+        return (await response.json()) as Record<string, unknown>;
+      });
+      const ranges: Record<string, string> = {};
+      for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+        const named = answer[field];
+        if (!named || typeof named !== 'object' || Array.isArray(named)) continue;
+        for (const [dep, range] of Object.entries(named)) if (typeof range === 'string') ranges[dep] ??= range;
+      }
+      return ranges;
+    },
     digest: (reference) => commits.digest(reference),
     runs: options.runs,
+    required: options.required,
     async lockfile(text) {
       await fresh();
       const root = join(work, `lockfile-${++lockfiles}`);

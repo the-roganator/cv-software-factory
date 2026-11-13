@@ -850,7 +850,7 @@ function movePrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): st
     ...replanLines(input),
     ...(failure ? ['', ...failedAttemptLines(failure, 'plan')] : []),
     '',
-    'The line writes every pin of the move itself, before the coder starts: the manifest’s range where it must move, the lockfile, `mise.toml` and `mise.lock` for Node, and each `FROM` for an image. Neither you nor the coder writes a pin, a lockfile or an image’s digest. Read where the app uses what moves, and its tests, so the scope is what the coder may need to change if the move breaks the app’s code or its tests; most moves need nothing more from the coder.',
+    'The line writes every pin of the move itself, before the coder starts: the manifest’s range where it must move, the lockfile, `mise.toml` and `mise.lock` for Node, and each `FROM` for an image. Neither you nor the coder writes a pin, a lockfile or an image’s digest. Find where the app uses what moves, and its tests: they are the scope, which is never empty, since they are what the coder may change if the move breaks the app’s code or its tests (a dependency only the tooling uses is scoped to the tests). Most moves need nothing more from the coder.',
     'Do not try the move: start no server, send no requests, install nothing and run no tests. Change nothing: no change of yours leaves this checkout.',
     '',
     'The spec’s criteria are these, each quoting the lines above that ask for it:',

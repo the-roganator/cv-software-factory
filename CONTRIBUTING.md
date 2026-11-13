@@ -38,7 +38,7 @@ Or open the repository in its dev container.
 
 - Commits and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org): `fix(console): …`, `docs: …`. A commit hook checks them.
 - Pull requests are squash-merged; `main` accepts nothing else.
-- Keep the docs current in the same pull request as the change. Start with [`AGENTS.md`](AGENTS.md): it applies to people as well as agents.
+- Keep the docs current in the same pull request as the change. Start with [`AGENTS.md`](AGENTS.md): its rules apply to people as well as agents, and it points to [running the factory on the host](docs/ON-THE-HOST.md) and [the local cluster](docs/LOCAL-CLUSTER.md).
 
 ## Tests
 

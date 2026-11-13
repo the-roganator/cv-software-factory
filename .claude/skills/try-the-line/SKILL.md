@@ -5,7 +5,7 @@ description: Try the line or one agent on the Mac — the bench, the local clust
 
 # Trying the line on the Mac
 
-Three ways in, from smallest: one agent's step on the **bench**, with no cluster; the **smoke run**, a coder in the cluster on a seeded off-by-one; and **the line on the local cluster**, on images built from a branch. The commands for the host's workers, the smoke run and `soak-check` are in the root `AGENTS.md`; this skill adds how to run them safely and leave nothing behind.
+Three ways in, from smallest: one agent's step on the **bench**, with no cluster; the **smoke run**, a coder in the cluster on a seeded off-by-one; and **the line on the local cluster**, on images built from a branch. The commands for the host's workers, the smoke run and `soak-check` are in [`docs/ON-THE-HOST.md`](../../../docs/ON-THE-HOST.md); this skill adds how to run them safely and leave nothing behind.
 
 The local cluster is `k3d-software-factory`, and it is disposable. Unmerged code is tried there on images built locally, not merged first; merging stays Martin's call. Pushing, opening pull requests and filing issues still need his yes.
 
@@ -13,7 +13,7 @@ A try is the proof, and merging ratifies it: a change to what runs on the cluste
 
 The helpers are in `bin/` beside this file: `try` begins and ends a try on the local cluster ([below](#try-begin-and-try-end)), `k` is kubectl on the local cluster, `argocd-core` is Argo CD's CLI on it (`--core`, with no login), `q` is psql on its store, `poll` and `watch` follow a run, and `trace.js` prints a step's conversation.
 
-**Which model.** A try, to see that work runs as it should, runs on Claude: it is faster, and Martin has agreed to its spend for tries. Qwen is for what runs unattended, a night's soak, for a run that must spend nothing (`soak-check --no-spend`), and for working on an agent's prompt on the bench, which root `AGENTS.md` starts on Qwen and records on Claude after. Note what a try on Claude cost (`bin/poll`, or the bench's own `model_calls`), and say so.
+**Which model.** A try, to see that work runs as it should, runs on Claude: it is faster, and Martin has agreed to its spend for tries. Qwen is for what runs unattended, a night's soak, for a run that must spend nothing (`soak-check --no-spend`), and for working on an agent's prompt on the bench, which [the bench](../../../docs/ON-THE-HOST.md#the-bench) starts on Qwen and records on Claude after. Note what a try on Claude cost (`bin/poll`, or the bench's own `model_calls`), and say so.
 
 ## Before you change anything
 
@@ -123,7 +123,7 @@ What stays in your hands: whether the try is dry or live and what it takes (step
 
 Run one work item at a time: two steps on one LM Studio halve its speed. The dry-run GitHub worker keeps its pull requests in memory, so a restart forgets them and reuses their numbers, issues included. `make stop-the-line` and `make start-the-line` need `KUBECTL="kubectl --context k3d-software-factory"`, and a stopped line also stops triage.
 
-**The smoke run** posts to the line's step API (root `AGENTS.md`) with `"round"`: a job's name, and so its token, is used once, so each smoke run on the same commit needs a new round.
+**The smoke run** posts to the line's step API ([the smoke run](../../../docs/ON-THE-HOST.md#runners-and-the-smoke-run)) with `"round"`: a job's name, and so its token, is used once, so each smoke run on the same commit needs a new round.
 
 ## What a dry run cannot show
 
@@ -134,7 +134,7 @@ A dry run goes round, but some of what the line does live never happens in it (`
 - **No deploy pull request carries its fix:** its merges never reach the app's `main`, so what the line does with the deploy pull request after a fix it merged is not seen.
 - **Its merge comes on its own clock:** `GITHUB_DRY_RUN_MERGE_SECONDS` after the line adds the pull request to the queue, or after it is readied, whatever the autonomy level, so a hold for Martin's merge at Supervised lasts only that long.
 
-What stands in for each: the bench, for an agent's step; a read of GitHub as it is, through the GitHub worker on the host (`POST /v1/reads/<read>`, root `AGENTS.md`); the tests; and, for what none of these reaches, a live proof, named in the brief before review (the implement skill's "Before starting").
+What stands in for each: the bench, for an agent's step; a read of GitHub as it is, through the GitHub worker on the host ([on the host](../../../docs/ON-THE-HOST.md#the-github-worker); `POST /v1/reads/<read>`, [its reads](../../../docs/COMPONENTS/GITHUB-WORKER.md)); the tests; and, for what none of these reaches, a live proof, named in the brief before review (the implement skill's "Before starting").
 
 ## A live try
 
@@ -167,7 +167,7 @@ An agent's step after a hold (a replan, say) is tried on the bench first, on a f
 ## Following a run
 
 - `bin/watch <after-seq>` streams new events, Job changes and pod restarts, once a minute, for Claude Code's Monitor tool. `bin/poll <after-seq> [since]` is one look: events, `model_calls` by job (calls, minutes, prompt size, cache reuse, cost), the line table and runner Jobs.
-- **`factory line soak-check`** from the host, as root `AGENTS.md` shows, with `kubectl proxy` and Postgres forwarded. Never by `kubectl exec` in the line pod: a second Node process there passes its memory limit and restarts the line. `--no-spend` after a run on Qwen.
+- **`factory line soak-check`** from the host, as [the line](../../../docs/ON-THE-HOST.md#the-line) shows, with `kubectl proxy` and Postgres forwarded. Never by `kubectl exec` in the line pod: a second Node process there passes its memory limit and restarts the line. `--no-spend` after a run on Qwen.
 - **A step's conversation.** In `record` mode the gateway keeps every call as a cassette on the `cassettes` volume, and the last call's request holds the conversation so far; `model_calls.cassette` is its hash. The gateway's image has no shell: start a short-lived pod on the `factory` image with the volume read-only at `/c`, `args: [-e, "setTimeout(()=>{}, 3600e3)"]` (the entrypoint is node), as user 65532 with a read-only root and no capabilities, then `bin/k -n factory exec -i <pod> -- /nodejs/bin/node - <hash prefix> < bin/trace.js`. Delete the pod after.
 - **Runner Job names** are `<agent>-<work item>-<round>-<n>`, where `n` counts every step the work item has started, whichever agent.
 

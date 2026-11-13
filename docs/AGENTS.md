@@ -12,6 +12,8 @@ Agents keep these current, in the same PR as the change that affects them.
 | [`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) | Unsettled decisions. Don't assume an answer; ask. |
 | [`PLAN/`](PLAN/README.md) | Delivery milestones; only the current one is detailed. Follow-ups are [issues](https://github.com/the-roganator/cv-software-factory/issues), each on the GitHub milestone of the same number when it has one. |
 | [`COMPONENTS/`](COMPONENTS/README.md) | Which part does what, and what it is built with in v1: a page per component. |
+| [`LOCAL-CLUSTER.md`](LOCAL-CLUSTER.md) | The local cluster: its console's certificate, its state, moving it to a new k3s, signing in, alerts to the phone, the scoreboard's key. |
+| [`ON-THE-HOST.md`](ON-THE-HOST.md) | Running a part of the factory on the Mac against the local cluster: the workers, the gateway, the admin service, the GitHub worker, the red-team harness, the dependency sense, the smoke run, the line, the bench, the traffic generator, the flags. |
 | [`TYPESAFE.md`](TYPESAFE.md) | How the factory uses TypeSafe's Jev for typed judgements. |
 
 ## Reference

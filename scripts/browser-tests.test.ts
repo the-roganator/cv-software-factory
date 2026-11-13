@@ -274,6 +274,8 @@ describe('what the browser tests run', () => {
         'pnpm exec vitest run --project browser',
         'pnpm --filter @software-factory/console exec playwright install --only-shell chromium',
         'node apps/console/zap/scan.ts',
+        // The merge queue's watch (scripts/queue-branch-gone.sh), which reads the remote's refs and nothing in deploy/.
+        'scripts/queue-branch-gone.sh watch',
         '|',
       ]),
     );

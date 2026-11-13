@@ -139,21 +139,6 @@ describe("the scanners' signatures (check.yml)", () => {
     }
   });
 
-  it("checks a pin under .github/images/ too, where Trivy's was before it moved", () => {
-    const file = '.github/images/trivy/Dockerfile';
-    const ref = `${TRIVY}@${digest('c')}`;
-    const signed = [`${ref} ${release('0.76.2')} ${ISSUER}`];
-    const moved = check(
-      { [file]: trivyPin('0.74.0', digest('a')) },
-      { [file]: trivyPin('0.76.2', digest('c')) },
-      signed,
-    );
-    expect(moved.status, moved.err).toBe(0);
-    expect(moved.out).toContain(`${file}: ${ref}, signed by ${release('0.76.2')}`);
-    const unsigned = check({ [file]: trivyPin('0.74.0', digest('a')) }, { [file]: trivyPin('0.76.2', digest('c')) });
-    expect(unsigned.status).toBe(1);
-  });
-
   it('fails a pin that is a link, which could point it at a file the check does not watch', () => {
     const result = check({ 'elsewhere/Dockerfile': trivyPin('0.76.2', digest('c')) }, {}, [], () => [
       'sh',
@@ -186,12 +171,11 @@ describe("the scanners' signatures (check.yml)", () => {
     expect(result.out).toContain(`::notice file=${SYFT_FILE}::${SYFT}@${digest('d')}: Anchore signs no image of Syft`);
   });
 
-  it('fails a pin of an image it names no signer for, in either place a pin may live', () => {
-    for (const file of ['deploy/images/grype/Dockerfile', '.github/images/grype/Dockerfile']) {
-      const result = check(BASE, { [file]: `FROM ghcr.io/anchore/grype:v0.90.0@${digest('e')}\n` });
-      expect(result.status, file).toBe(1);
-      expect(result.out).toContain('ghcr.io/anchore/grype has no publisher');
-    }
+  it('fails a pin of an image it names no signer for', () => {
+    const file = 'deploy/images/grype/Dockerfile';
+    const result = check(BASE, { [file]: `FROM ghcr.io/anchore/grype:v0.90.0@${digest('e')}\n` });
+    expect(result.status).toBe(1);
+    expect(result.out).toContain('ghcr.io/anchore/grype has no publisher');
   });
 
   it('fails a pin that is not one FROM with a version and a digest', () => {

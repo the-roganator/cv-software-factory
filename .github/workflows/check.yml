@@ -153,7 +153,24 @@ jobs:
     timeout-minutes: 45
     permissions:
       actions: read
+      # The checkout of the watch's script, below.
+      contents: read
     steps:
+      # Only a release or a deploy in the merge queue waits here, on the run of the entry ahead; the rest end in seconds.
+      # The watch, as in the long jobs below, and the one script it needs.
+      - if: ${{ github.event_name == 'merge_group' && needs.kind.result == 'success' && contains(fromJSON('["release", "deploy"]'), needs.kind.outputs.kind) }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/queue-branch-gone.sh
+          sparse-checkout-cone-mode: false
+      - name: Stop if the merge queue lets this entry go
+        if: ${{ github.event_name == 'merge_group' && needs.kind.result == 'success' && contains(fromJSON('["release", "deploy"]'), needs.kind.outputs.kind) }}
+        env:
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: scripts/queue-branch-gone.sh watch
       - env:
           KIND: ${{ needs.kind.result == 'success' && needs.kind.outputs.kind || 'code' }}
           BASE: ${{ needs.kind.outputs.base }}
@@ -321,6 +338,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The merge queue deletes an entry's branch when it ejects or removes it, and nothing cancels the runs on it: this
+      # stops the job once that branch is gone and the entry did not merge (scripts/queue-branch-gone.sh).
+      - name: Stop if the merge queue lets this entry go
+        env:
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: scripts/queue-branch-gone.sh watch
       # Node and pnpm as mise.lock holds them, in place of the Node Playwright's image carries, as everywhere else.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
@@ -356,6 +381,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The merge queue deletes an entry's branch when it ejects or removes it, and nothing cancels the runs on it: this
+      # stops the job once that branch is gone and the entry did not merge (scripts/queue-branch-gone.sh).
+      - name: Stop if the merge queue lets this entry go
+        env:
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: scripts/queue-branch-gone.sh watch
       # Node and pnpm as mise.lock holds them, in place of the Node Playwright's image carries, as everywhere else.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
@@ -449,6 +482,14 @@ jobs:
           persist-credentials: false
           # The commit and its parent (a pull request's base), so the signature check can tell which pins it moves.
           fetch-depth: 2
+      # The merge queue deletes an entry's branch when it ejects or removes it, and nothing cancels the runs on it: this
+      # stops the job once that branch is gone and the entry did not merge (scripts/queue-branch-gone.sh).
+      - name: Stop if the merge queue lets this entry go
+        env:
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: scripts/queue-branch-gone.sh watch
       # build.yml pushes each image tagged and labelled with the commit it was built from, and only on main does it
       # run with the right to push. A digest from a run on another branch, or one that is not in GHCR, fails here.
       - name: Check the pinned images were built from main
@@ -544,8 +585,8 @@ jobs:
               echo "$ref: signed by $identity, with its SBOM attested"
             done
           done
-      # Each scanner CI runs from a pin of its own (a Dockerfile under deploy/images/, Trivy's and Syft's, or under
-      # .github/images/, where none is now; nothing builds them) is held to the signature its publisher's release workflow makes, named whole, as ours are to build.yml's:
+      # Each scanner CI runs from a pin of its own (a Dockerfile under deploy/images/, Trivy's and Syft's; nothing builds
+      # them) is held to the signature its publisher's release workflow makes, named whole, as ours are to build.yml's:
       # the workflow, its repository and the tag of the version pinned, so a digest from a canary, a fork or another
       # release fails. Only the pin files a change touches are checked, and every one when this file changes, so a change
       # to the check proves itself on its own pull request. Each identity is the one the publisher's release workflow
@@ -565,7 +606,7 @@ jobs:
             return 1
           }
           issuer=https://token.actions.githubusercontent.com
-          pins=('.github/images/*/Dockerfile' 'deploy/images/*/Dockerfile')
+          pins=('deploy/images/*/Dockerfile')
           # Each read is its own assignment, so one that fails fails the step rather than checking nothing; a diff
           # that cannot be read counts as a change to this file, and checks every pin.
           if git diff --quiet HEAD^1 HEAD -- .github/workflows/check.yml; then

@@ -654,11 +654,16 @@ describe('the queue’s cluster, made once already', () => {
     expect(decide(built, github(built.head), { event: 'pull_request' }).said).toBe('cluster');
   });
 
-  it('makes one when the repository variable turns it off', () => {
+  it.each(['off', 'OFF', 'false', '0'])('makes one when the repository variable says %s', (skip) => {
     const built = line({});
-    const { said, log } = decide(built, github(built.head), { skip: 'off' });
+    const { said, log } = decide(built, github(built.head), { skip });
     expect(said).toBe('cluster');
-    expect(log).toContain('PLATFORM_SKIP is off');
+    expect(log).toContain(`PLATFORM_SKIP is ${skip}`);
+  });
+
+  it('makes none when the repository variable says on', () => {
+    const built = line({});
+    expect(decide(built, github(built.head), { skip: 'on' }).said).toBe('matched');
   });
 
   it.each<[string, Line]>([

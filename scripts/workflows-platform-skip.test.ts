@@ -40,16 +40,13 @@ describe('the queue’s cluster, made once already', () => {
     }
   });
 
-  it('gives the deciding job reads alone, the switch from a repository variable, and no secret', () => {
-    expect(which?.permissions).toEqual({ actions: 'read', checks: 'read', contents: 'read', 'pull-requests': 'read' });
+  it('gives the deciding job the switch from a repository variable, and no secret', () => {
+    // Its permissions, all reads, and its checkout without a credential: scripts/workflows.test.ts.
     const decide = (which?.steps ?? []).find((step) => step.id === 'which');
     expect(decide?.run).toContain('platform=$(scripts/check-kind.sh platform)');
     expect(decide?.env?.PLATFORM_SKIP).toBe(expression('vars.PLATFORM_SKIP'));
     expect(decide?.env?.GH_TOKEN).toBe(expression('github.token'));
     expect(JSON.stringify(which)).not.toContain('secrets.');
-    // It checks out without keeping a credential: the head is fetched anonymously, as anyone can.
-    const checkout = (which?.steps ?? []).find((step) => step.name === undefined && step.with);
-    expect(checkout?.with?.['persist-credentials']).toBe(false);
   });
 
   it('names the step the pass must have run, as check-kind.sh reads it', () => {

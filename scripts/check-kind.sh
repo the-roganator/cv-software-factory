@@ -127,8 +127,9 @@ PASS_HOURS=24
 PLATFORM_WORKFLOW=.github/workflows/platform.yml
 CLUSTER_STEP='Make the cluster'
 
+INPUT="$PLATFORM|$INSTALLS"
 is_input() {
-  grep -qE "$PLATFORM|$INSTALLS" <<< "$1"
+  [[ $1 =~ $INPUT ]]
 }
 
 # The inputs at a commit, a line each, `<mode> <type> <object><tab><path>`: a pin file's object is its unpinned text's.
@@ -166,7 +167,7 @@ inputs_still() {
   last=$(tail -n 1 <<< "$commits")
   [ "$(git rev-parse "$last^1")" = "$(git rev-parse "$1^{commit}")" ] ||
     { why "${1:0:7} is not on the first-parent line of ${2:0:7}"; return 1; }
-  changes=$(mktemp) || return 1
+  changes=$(mktemp) || { why 'no room to read the commits in'; return 1; }
   for commit in $commits; do
     git diff --raw -z --no-renames --no-abbrev "$commit^1" "$commit" > "$changes" ||
       { rm -f "$changes"; why "git could not read ${commit:0:7}"; return 1; }
@@ -196,8 +197,12 @@ why() {
 matched=''
 passed_at_head() {
   local repo=${GITHUB_REPOSITORY:-} number pull state base head ref from created b0 at_queue at_head shallow=''
-  local events siblings sharing checks runs latest line id status conclusion completed run attempt ran fresh
-  [ "${PLATFORM_SKIP:-}" != off ] || { why 'the repository variable PLATFORM_SKIP is off'; return 1; }
+  local events siblings sharing checks runs latest id status conclusion completed run attempt ran fresh
+  # Off at any value but none or `on`, so a spelling of off never leaves it on.
+  case "${PLATFORM_SKIP:-}" in
+    '' | on) ;;
+    *) why "the repository variable PLATFORM_SKIP is ${PLATFORM_SKIP}"; return 1 ;;
+  esac
   [[ ${QUEUE_BRANCH:-} =~ $QUEUE ]] || { why "the queue's branch names no pull request"; return 1; }
   number=${BASH_REMATCH[2]}
   [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { why 'no repository is named'; return 1; }
@@ -216,7 +221,8 @@ passed_at_head() {
   git fetch --quiet --no-tags --filter=blob:none $shallow origin "+refs/pull/$number/head:refs/platform/head" ||
     { why "git could not fetch #$number's head"; return 1; }
   [ "$(git rev-parse refs/platform/head)" = "$head" ] || { why "#$number's head moved"; return 1; }
-  at_queue=$(inputs_hash HEAD) && at_head=$(inputs_hash "$head") || { why "git could not read the inputs"; return 1; }
+  at_queue=${hashed_head:-} && [ -n "$at_queue" ] && at_head=$(inputs_hash "$head") ||
+    { why "git could not read the inputs"; return 1; }
   [ "$at_queue" = "$at_head" ] ||
     { why "the inputs at the queue's commit ($at_queue) are not those at #$number's head ${head:0:7} ($at_head)"; return 1; }
   b0=$(git merge-base "$head" HEAD^1) || { why "#$number's head has no base on main"; return 1; }
@@ -239,7 +245,8 @@ passed_at_head() {
   [ -z "$sharing" ] || { why "#$(head -n 1 <<< "$sharing") has the same head"; return 1; }
 
   # As files, never arguments: the lists outgrow what one argument may hold on Linux (128 KiB).
-  checks=$(mktemp) && runs=$(mktemp) || { why 'no room to read the check runs in'; return 1; }
+  checks=$(mktemp) || { why 'no room to read the check runs in'; return 1; }
+  runs=$(mktemp) || { rm -f "$checks"; why 'no room to read the check runs in'; return 1; }
   gh api --paginate "repos/$repo/commits/$head/check-runs?check_name=platform&filter=all&per_page=100" |
     jq '.check_runs[]' > "$checks" || { rm -f "$checks" "$runs"; why "GitHub did not list the check runs at ${head:0:7}"; return 1; }
   gh api --paginate "repos/$repo/actions/runs?head_sha=$head&event=pull_request&per_page=100" |
@@ -268,6 +275,7 @@ passed_at_head() {
       { why "GitHub did not list run $run's jobs"; return 1; }
     [ "$ran" = 1 ] || { why "platform at ${head:0:7}, in run $run, did not make a cluster"; return 1; }
   done <<< "$latest"
+  # The newest pass, the first row.
   IFS=$'\t' read -r id status conclusion completed run attempt <<< "$latest"
   fresh=$(jq -rn --arg t "$completed" --argjson hours "$PASS_HOURS" '($t | fromdateiso8601) > (now - $hours * 3600)') ||
     { why "GitHub named no time platform ended at ${head:0:7}"; return 1; }
@@ -305,19 +313,22 @@ if [ "$mode" = kind ]; then
   echo "$kind"
   exit 0
 fi
-# The inputs' hash, for the log: at the commit checked out, and at the pull request's head, its second parent, if any.
-for commit in HEAD HEAD^2; do
-  sha=$(git rev-parse --verify --quiet "$commit^{commit}") || continue
-  echo "Inputs at ${sha:0:7}: $(inputs_hash "$sha" || echo 'not read')" >&2
-done
 if [ "$kind" = deploy ] || ! changes_platform; then
   echo none
-elif [ "${GITHUB_EVENT_NAME:-}" != merge_group ]; then
+  exit 0
+fi
+# The inputs' hash, for the log: at the commit checked out, and at the pull request's head, its second parent, if any.
+hashed_head=$(inputs_hash HEAD) || hashed_head=''
+echo "Inputs at $(git rev-parse --short HEAD): ${hashed_head:-not read}" >&2
+if sha=$(git rev-parse --verify --quiet 'HEAD^2^{commit}'); then
+  echo "Inputs at ${sha:0:7}: $(inputs_hash "$sha" || echo 'not read')" >&2
+fi
+if [ "${GITHUB_EVENT_NAME:-}" != merge_group ]; then
   echo cluster
 elif passed_at_head; then
   echo "No cluster in the queue: its inputs are those at $matched. To make one every time, set the repository variable PLATFORM_SKIP to off." >&2
   echo matched
 else
-  echo "A cluster in the queue: $reason. It makes none when platform passed on the same inputs at the pull request's head (scripts/check-kind.sh)." >&2
+  echo "A cluster in the queue: ${reason:-it could not tell why}. It makes none when platform passed on the same inputs at the pull request's head (scripts/check-kind.sh)." >&2
   echo cluster
 fi

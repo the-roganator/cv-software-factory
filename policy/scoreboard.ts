@@ -20,6 +20,16 @@ export interface KeyEntry {
   fingerprint: Fingerprint;
 }
 
+/**
+ * Whether a ticket counts on the scoreboard at all: a defect's does, by a route or a page. A dependency's ticket, which
+ * names a move (its name and ecosystem), does not, found or false positive (milestone 7, task 35): a scan finds a
+ * vulnerable pin by reading it, not by noticing a symptom, so it says nothing of how well the senses find defects.
+ * Patching has its own measure on its panel.
+ */
+export function counts(ticket: object): boolean {
+  return 'route' in ticket || 'page' in ticket;
+}
+
 /** A symptom found on every page the senses checked. */
 export const EVERY_ROUTE = '*';
 

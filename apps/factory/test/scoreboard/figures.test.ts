@@ -3,7 +3,7 @@
  */
 import type { PayloadOf } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { type Fingerprint, type KeyEntry, matches } from '../../../../policy/scoreboard.ts';
+import { counts, type Fingerprint, type KeyEntry, matches } from '../../../../policy/scoreboard.ts';
 import { figures, lastBoundary, median, type ScoreEvent, type Ticket, tickets } from '../../src/scoreboard/figures.ts';
 import { parseKey } from '../../src/scoreboard/key.ts';
 
@@ -124,6 +124,13 @@ describe('a ticket’s life', () => {
     ]);
   });
 
+  it('reads a move’s reopening as any other, by its type alone, and counts the move’s ticket for nothing', () => {
+    const move = { name: 'node', ecosystem: 'docker' } as const;
+    const events = life('9', 0, move, closed('9', 30), reopened('9', 60));
+    expect(tickets(events).map((t) => t.verifiedAt)).toEqual([null]);
+    expect(figures(tickets(events), KEY, T0 + 90 * 60_000)).toMatchObject({ found: 0, verified: 0, falsePositives: 0 });
+  });
+
   it('counts an improvement Martin asked for as nothing: it has no ticket, whichever way it closes', () => {
     // Of an improvement, the figures read only its closes: its opening, request and flag's events are no ticket's.
     const events: ScoreEvent[] = [closed('7', 30, 'turned-off'), closed('8', 30, 'verified')];
@@ -200,6 +207,23 @@ describe('the figures', () => {
       verified: 2,
       medianMs: 40 * 60_000, // the median of 20 and 60 minutes
       falsePositives: 2,
+    });
+  });
+
+  it('count a dependency’s ticket for nothing, found or false positive, open or verified', () => {
+    const move = (verified: number | null) => ({
+      ...ticket({ route: '/a', class: 'server-error' }, 0, verified),
+      fingerprint: { name: 'node', ecosystem: 'docker' } as Ticket['fingerprint'],
+    });
+    expect(counts({ name: 'node', ecosystem: 'docker' })).toBe(false);
+    expect(counts({ route: '/a', class: 'server-error' })).toBe(true);
+    expect(counts({ page: '/d', text: 'cheese' })).toBe(true);
+    expect(figures([move(null), move(20)], KEY, T0 + 1)).toEqual({
+      entries: 4,
+      found: 0,
+      verified: 0,
+      medianMs: null,
+      falsePositives: 0,
     });
   });
 

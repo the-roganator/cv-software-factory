@@ -110,10 +110,10 @@ queued() {
 # it could run; and the modules of the image sources that the scripts the job runs import (a test walks their imports).
 KEPT='^(deploy/|\.github/workflows/platform\.yml$|\.github/actions/|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
 EXCLUDED_CLASSES=(
-  # Words for people, and the browser code and tests: nothing the job runs reads them.
-  '^docs/' '\.md$' '^apps/console/web/' '(^|/)test/' '\.test\.ts$' '(^|/)e2e/'
+  # Words for people, and tests: nothing the job runs reads them.
+  '^docs/' '\.md$' '(^|/)test/' '\.test\.ts$' '(^|/)e2e/'
   # Source that reaches the cluster only as an image built on main and pinned by digest in deploy/overlays/local, which
-  # `make up` builds none of.
+  # `make up` builds none of: the console's browser code among it.
   '^apps/(factory|runner|console)/' '^packages/(events|store|triage)/' '^policy/'
   # Every other workflow: the job runs none of them.
   '^\.github/'
@@ -213,11 +213,11 @@ why() {
 # that head alone: the check run `platform` of the GitHub Actions app, the latest of its check suite, whose suite is a
 # run of this workflow, on that pull request into main, from its branch in this repository, made since it was opened,
 # and whose job ran the step that makes the cluster, every such run a success. Anything it cannot tell is a cluster.
-# Sets `matched` to what it found.
+# Takes the inputs' hash at the queue's commit, and sets `matched` to what it found.
 matched=''
 passed_at_head() {
-  local repo=${GITHUB_REPOSITORY:-} number pull state base head ref from created b0 at_queue at_head shallow=''
-  local events siblings sharing checks runs latest id status conclusion completed run attempt ran fresh
+  local repo=${GITHUB_REPOSITORY:-} at_queue=${1:-} number pull state base head ref from created b0 at_head shallow=''
+  local events siblings sharing checks runs latest read_ok id status conclusion completed run attempt ran fresh
   # Off at any value but none or `on`, so a spelling of off never leaves it on.
   case "${PLATFORM_SKIP:-}" in
     '' | on) ;;
@@ -227,9 +227,10 @@ passed_at_head() {
   number=${BASH_REMATCH[2]}
   [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { why 'no repository is named'; return 1; }
   pull=$(gh api "repos/$repo/pulls/$number" |
-    jq -r '[.state, .base.ref, .head.sha, .head.ref, (.head.repo.full_name // ""), .created_at] | @tsv') ||
+    jq -r '[.state, .base.ref, .head.sha, .head.ref, .head.repo.full_name, .created_at] | map(. // "") | join("\u001f")') ||
     { why "GitHub did not say what #$number is"; return 1; }
-  IFS=$'\t' read -r state base head ref from created <<< "$pull"
+  # Split on a separator that is not whitespace, so an empty field stays a field.
+  IFS=$'\x1f' read -r state base head ref from created <<< "$pull"
   [ "$state" = open ] && [ "$base" = main ] || { why "#$number is $state, into $base"; return 1; }
   [ "$from" = "$repo" ] || { why "#$number's head is in ${from:-no repository}, not $repo"; return 1; }
   [[ $head =~ ^[0-9a-f]{40}$ ]] && [[ $created =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] ||
@@ -241,7 +242,7 @@ passed_at_head() {
   git fetch --quiet --no-tags --filter=blob:none $shallow origin "+refs/pull/$number/head:refs/platform/head" ||
     { why "git could not fetch #$number's head"; return 1; }
   [ "$(git rev-parse refs/platform/head)" = "$head" ] || { why "#$number's head moved"; return 1; }
-  at_queue=${hashed_head:-} && [ -n "$at_queue" ] && at_head=$(inputs_hash "$head") ||
+  [ -n "$at_queue" ] && at_head=$(inputs_hash "$head") ||
     { why "git could not read the inputs"; return 1; }
   [ "$at_queue" = "$at_head" ] ||
     { why "the inputs at the queue's commit ($at_queue) are not those at #$number's head ${head:0:7} ($at_head)"; return 1; }
@@ -281,12 +282,12 @@ passed_at_head() {
         | select($run != null)
         | {id, status, conclusion, completed_at, suite: .check_suite.id, run: $run.id, attempt: $run.run_attempt}]
     | group_by(.suite) | map(max_by(.id)) | sort_by(-.id)[]
-    | [.id, .status, (.conclusion // "-"), (.completed_at // "-"), .run, .attempt] | @tsv')
-  status=$?
+    | [.id, .status, (.conclusion // "-"), (.completed_at // "-"), .run, .attempt] | map(tostring) | join("\u001f")')
+  read_ok=$?
   rm -f "$checks" "$runs"
-  [ "$status" = 0 ] || { why "the check runs at ${head:0:7} could not be read"; return 1; }
+  [ "$read_ok" = 0 ] || { why "the check runs at ${head:0:7} could not be read"; return 1; }
   [ -n "$latest" ] || { why "no run of $PLATFORM_WORKFLOW for #$number has a platform job at ${head:0:7}"; return 1; }
-  while IFS=$'\t' read -r id status conclusion completed run attempt; do
+  while IFS=$'\x1f' read -r id status conclusion completed run attempt; do
     [ "$status" = completed ] && [ "$conclusion" = success ] ||
       { why "platform at ${head:0:7}, in run $run, is $status, $conclusion"; return 1; }
     ran=$(gh api "repos/$repo/actions/runs/$run/attempts/$attempt/jobs?per_page=100" |
@@ -296,7 +297,7 @@ passed_at_head() {
     [ "$ran" = 1 ] || { why "platform at ${head:0:7}, in run $run, did not make a cluster"; return 1; }
   done <<< "$latest"
   # The newest pass, the first row.
-  IFS=$'\t' read -r id status conclusion completed run attempt <<< "$latest"
+  IFS=$'\x1f' read -r id status conclusion completed run attempt <<< "$latest"
   fresh=$(jq -rn --arg t "$completed" --argjson hours "$PASS_HOURS" '($t | fromdateiso8601) > (now - $hours * 3600)') ||
     { why "GitHub named no time platform ended at ${head:0:7}"; return 1; }
   [ "$fresh" = true ] || { why "platform passed at ${head:0:7} at $completed, more than $PASS_HOURS hours ago"; return 1; }
@@ -352,7 +353,7 @@ if sha=$(git rev-parse --verify --quiet 'HEAD^2^{commit}'); then
 fi
 if [ "${GITHUB_EVENT_NAME:-}" != merge_group ]; then
   echo cluster
-elif passed_at_head; then
+elif passed_at_head "$hashed_head"; then
   echo "No cluster in the queue: its inputs are those at $matched. To make one every time, set the repository variable PLATFORM_SKIP to off." >&2
   echo matched
 else

@@ -7,7 +7,7 @@ Sends risky changes to a human. Part of the [GitHub plane](README.md#github-plan
 
 ## The gate
 
-`scripts/review-gate.ts` reads only GitHub's API and GHCR, never checking out the pull request, and decides by `scripts/review-routing.ts`; what it needs of a pin move, which reads the pull request's commits, another job works out for it ([a pin move](#a-pin-move)). Both, the workflow that runs them, and the verdict's shape (`policy/review-verdict.ts`) are Martin's by CODEOWNERS.
+`scripts/review-gate.ts` reads only GitHub's API and GHCR, never checking out the pull request, and decides by `scripts/review-routing.ts`; what it needs of a pin move, or in the app of a Critical fix, each of which reads the pull request's commits, another job works out for it ([a pin move](#a-pin-move), [a Critical fix](#a-critical-fix)). Both, the workflow that runs them, and the verdict's shape (`policy/review-verdict.ts`) are Martin's by CODEOWNERS.
 
 | Tag | Given by |
 |---|---|
@@ -27,6 +27,7 @@ The rule, the first that holds:
 | `martin-approved-head` | one whose head Martin's latest verdict approves: a push after his approval needs it again |
 | `exact-pin` | the factory's App's, every changed line a `digest:` under `deploy/`, each image signed by its repository's `build.yml` on `main` (cosign), from a commit `ahead` of the pin it replaces |
 | `pin-move` | the factory's App's, in this repository, into `main`: one pin of the vulnerability scan's list moved forward on its line, proved from the pull request ([below](#a-pin-move)) |
+| `critical-fix` | the factory's App's, in the app's repository, into `main`: one dependency moved to fix a finding the gate's own scanner rates Critical, its pins alone changed, proved from the pull request, whatever `AUTONOMY` says ([below](#a-critical-fix)) |
 | `low-risk` | the factory's App's, in the app's repository, with no tags and a successful test-integrity run by GitHub Actions at its head |
 | `lights-out` | the same with tags, while the app's `AUTONOMY` variable is `lights-out`, but never with `release`, `improvement` or `code-owned` |
 | `held` | anything else, saying why |
@@ -45,7 +46,7 @@ A check the gate could not make is no judgement. When GitHub, GHCR or Sigstore d
 | Level | Rules the line merges by, with auto-merge on (`ENQUEUES`, `policy/line.ts`) |
 |---|---|
 | Supervised | none |
-| Guarded | `low-risk`, `exact-pin`, `martin-approved-head` |
+| Guarded | `low-risk`, `exact-pin`, `critical-fix`, `martin-approved-head` |
 | Lights-out | Guarded's, and `lights-out` |
 
 The line adds the app's deploy pull request, which the App opens and every fix waits for at Release, to the queue the same way, once its checks have passed: only when the gate passed its head as `exact-pin`, at Guarded or Lights-out with auto-merge on, once for each head. Otherwise it waits for Martin, and the line records why ([the line adds it to the queue](RELEASE-AND-VERIFY.md#the-line-adds-it-to-the-queue)). The factory's own local deploy pull request, and the pin watch's pull request for each move, the GitHub worker adds to the queue, whatever the level, once the gate passed its head as `exact-pin` or `pin-move` respectively and every required check is green ([below](#the-workers-part)).
@@ -72,6 +73,19 @@ A hold the gate marks `pending` ([the verdict](#the-verdict)) is a wait, not a r
 | Something ran it | every run at the head succeeded at its latest attempt, of the job in the workflow that has it (its check suite's run of this repository's file, on the pull request, from its own branch, made no earlier than it): `ZAP scan` for ZAP's image, `image builds` for a Dockerfile's stage outside `deploy/`, each `tests` shard for Postgres, and `platform` (`platform.yml`) for what a cluster runs from the change, a chart, a value or a third-party image in `deploy/`, Postgres too, when a Deployment, StatefulSet or DaemonSet of the head's rendering, read as YAML, runs the moved image as a container, not a hook, above nought replicas, and not one the check's own patches change; a `platform` skipped made no cluster, and holds. Argo CD's chart and values, and `deploy/argocd/`, are `make up`'s and held, and k3s waits for Martin whatever `platform` says |
 
 The head is data: its lines are read as text first, and only a change of versions and digests on the base's own lines is rendered or scanned. `review.yml`'s `pin move` job, with read-only permissions and no secret, works each answer out (`scripts/pin-moves.ts`) from `main`'s whole checkout and hands it to the gate by number and head (`PIN_MOVES`); the gate takes it only for that pull request at that head, and holds one with no answer, or answers it cannot read. A fact not read is a hold. The gate runs again when `check.yml` or `platform.yml` finishes, for a pin move held only because the job that runs its pin had not. `GH_TOKEN="$(gh auth token)" mise exec -- node scripts/pin-moves.ts --print --as-app <owner/name> <number>` replays a pull request as the App's, with no say of Martin's, and works the move out on the Mac with Docker.
+
+### A Critical fix
+
+`scripts/critical-fix.ts` ([ADR 0020](../architecture/adr/0020-the-gate-passes-a-critical-fix-it-proves.md)) passes the App's pull request in the app's repository into `main`, on the same terms of branch, head and base as a pin move, that carries `dependency-change` (or `code-owned` on its pins alone, as a Node move does) and is no exact pin, when it proves each of these on what the merge makes, in this order, and otherwise holds it with its tag, the first reason it could not prove named in the hold (`Held for its risk tags (dependency-change); not a critical fix: …`):
+
+1. **Pins only:** `pnpm-lock.yaml`; a dependency's version range in `package.json`, a registry's, and nothing else of it; a `FROM` line's tag and digest, in the same image repository; `mise.toml`'s Node with its `mise.lock` entry, together and forward on its major. The lockfile, read as YAML, changes only its importers' ranges and versions, each a registry's, and its packages and snapshots, each package from the registry by its integrity, none gone, none changed at the same version, and each version that goes replaced by one forward of it on its major.
+2. **Forward on its line:** each moved `FROM`, as a pin move's image (`imageForward`).
+3. **The scans show the fix:** the gate's pinned Trivy, on a fresh database, on the lockfile and each moved image (both platforms) at both sides, and Node's own database on mise's Node at both sides: a finding the scanner rates Critical, with a fix, gone, its package still listed at or above the fix, every package the base lists still listed, and Node still named where it was. The publisher's rating is never read. Criticals fixed in two packages are a group, and held.
+4. **Nothing new:** nothing at High or above in any scan of the head that the base's did not have.
+5. **Only what the fix needs moves:** for a package, the packages its new version requires and no other, no other range, and no image or Node; for Node, mise and every `FROM`, each image whose Node is read on mise's; for an image's own package, that image alone.
+6. **Every gate passes:** GitHub Actions' latest run at the head of each of the app's required checks but `review`, from the workflow that has its job, for this pull request. `image builds` runs the runtime image's `node --version` against mise's, which is how the distroless runtime's Node, which its tag does not name, is held to the Node scanned.
+
+The tags it passes are `dependency-change`, and `code-owned` on `Dockerfile`, `mise.toml` and `mise.lock` alone; any other holds it. It passes whatever `AUTONOMY` says, as `low-risk` does, and the line queues it at Guarded and Lights-out with auto-merge on, and tells Martin of each such merge. Nothing of the head is built, installed or run: the lockfile and the images are scanned as data. `review.yml`'s `critical fix` job, in the app's repository alone, with read-only permissions (`actions: read` among them) and no secret, works each answer out (`scripts/critical-fixes.ts`) and hands it to the gate by number and head (`CRITICAL_FIXES`); the gate takes it only for that pull request at that head, and holds one with no answer. `GH_TOKEN="$(gh auth token)" mise exec -- node scripts/critical-fixes.ts --print --as-app <owner/name> <number>` replays a pull request as the App's, with Docker for Trivy.
 
 ## The worker's part
 

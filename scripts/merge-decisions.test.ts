@@ -22,6 +22,8 @@ const DECIDES = [
   'scripts/review-gate.ts',
   // The review gate's pin moves, which review.yml's pin move job works out for it.
   'scripts/pin-moves.ts',
+  // And its Critical fixes, which review.yml's critical fix job works out for it in the app.
+  'scripts/critical-fixes.ts',
 ];
 
 /** What it must never reach, each with why. A path ending in `/` is everything under it. */

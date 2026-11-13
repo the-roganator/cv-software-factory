@@ -33,6 +33,15 @@
 # exact pin. A missing or unreadable answer holds it. The gate runs again when check.yml or platform.yml finishes, as a
 # pin move waits for the job that runs what it pins.
 #
+# A Critical fix (scripts/critical-fix.ts, ADR 0020) is the App's pull request in the app's repository that moves one
+# dependency to fix a finding the gate's own pinned Trivy rates Critical, proved from its two commits: its pins alone,
+# the image it moves forward on its line, the lockfile and each moved image scanned before and after, Node's own
+# database on the Node mise pins, and every one of the app's required checks passed at the head. The `critical fix` job
+# below works it out as the pin move job does, in the app alone, with no secret and read-only permissions (`actions:
+# read` among them, which a caller grants), and hands the gate one answer for each pull request it would judge, which
+# the gate takes only for a pull request of the App's there that carries a dependency's change and is no exact pin. It
+# never builds, installs or runs the change: it reads its lockfile and images as data.
+#
 # Only main's copy runs with the App's key. `workflow_run` runs the workflow as main has it, with GITHUB_REF main, and
 # the key is in the `review` environment, which only main may use: a run on any other ref, a pull request's merge ref
 # included, is refused it. It reads the pull request's metadata through the API and never checks out, builds or runs
@@ -151,9 +160,45 @@ jobs:
           AUTONOMY: ${{ vars.AUTONOMY }}
         run: node scripts/pin-moves.ts --pin-moves
 
+  # A Critical fix's answers, worked out with no secret, as the pin moves are: main's code on the pull request's two
+  # commits, in the app's repository alone, whose line moves its own dependencies.
+  critical-fix:
+    name: critical fix
+    if: ${{ github.repository == 'the-roganator/cv-worlds-worst-website' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      # To read which workflow made each check run at the head: a job of the same name elsewhere proves nothing.
+      actions: read
+    outputs:
+      answers: ${{ steps.fixes.outputs.answers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.17
+          # The ZAP job's set of tools, so its cache, which toolchain-cache.yml warms on main: never the gate's.
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
+          # pnpm for the yaml package the lockfile is read with; Trivy runs in its pinned image through Docker.
+          install_args: node pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: fixes
+        name: Work out the Critical fixes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTONOMY: ${{ vars.AUTONOMY }}
+        run: node scripts/critical-fixes.ts --critical-fixes
+
   review:
     name: review gate
-    needs: pin-move
+    needs: [pin-move, critical-fix]
     # Whatever the pin move job did: the gate always gives a verdict, and holds a pin move it has no answer for. A
     # platform run judges again only for the App, whose pin moves alone wait for it.
     if: >-
@@ -205,4 +250,5 @@ jobs:
           CHECKS_TOKEN: ${{ steps.app.outputs.token }}
           AUTONOMY: ${{ vars.AUTONOMY }}
           PIN_MOVES: ${{ needs.pin-move.outputs.answers }}
+          CRITICAL_FIXES: ${{ needs.critical-fix.outputs.answers }}
         run: node scripts/review-gate.ts

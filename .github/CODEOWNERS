@@ -9,6 +9,8 @@
 /scripts/review-routing.ts   @mrogan
 # The pin move's proof, in a file for each job, the job that runs it, and their tests: every file a split makes
 /scripts/pin-move*.ts        @mrogan
+# A Critical fix's proof, its readers, the job that runs it and its tests
+/scripts/critical-fix*.ts    @mrogan
 /scripts/copilot-held-runs.ts @mrogan
 /AGENTS.md                   @mrogan
 

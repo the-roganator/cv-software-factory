@@ -413,9 +413,9 @@ describe("the review gate's workflows", () => {
     // And test integrity's check run, which low-risk needs.
     expect(gate).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}pull-requests: read\n {6}checks: read\n {4}env:/m);
     // Each checkout is this workflow's own commit, main's, and never the pull request's: the gate's, and the pin move
-    // job's, which holds no secret (scripts/workflows.test.ts).
-    expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(2);
-    expect(gate.match(/ref: \$\{\{ job\.workflow_sha \}\}\n/g)).toHaveLength(2);
+    // and critical fix jobs', which hold no secret (scripts/workflows.test.ts).
+    expect(gate.match(/uses: actions\/checkout@/g)).toHaveLength(3);
+    expect(gate.match(/ref: \$\{\{ job\.workflow_sha \}\}\n/g)).toHaveLength(3);
     // Nothing the pull request's author writes reaches a step: its branch names only the concurrency group.
     const steps = gate.slice(gate.indexOf('\njobs:\n'));
     expect(steps).not.toMatch(/github\.event\.(pull_request|workflow_run)\.(head|title|body|user)|github\.head_ref/);
@@ -425,7 +425,7 @@ describe("the review gate's workflows", () => {
     // A called workflow's `vars` are its caller's; only an admin of that repository can set one.
     expect(gate).toContain(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, as the workflow holds it
-      '          AUTONOMY: ${{ vars.AUTONOMY }}\n          PIN_MOVES: ${{ needs.pin-move.outputs.answers }}\n        run: node scripts/review-gate.ts\n',
+      '          AUTONOMY: ${{ vars.AUTONOMY }}\n          PIN_MOVES: ${{ needs.pin-move.outputs.answers }}\n          CRITICAL_FIXES: ${{ needs.critical-fix.outputs.answers }}\n        run: node scripts/review-gate.ts\n',
     );
     expect(gate).not.toMatch(/inputs/);
     // The gate's modules, and nothing of the pull request's, from main's sparse checkout; cosign for an exact pin.
@@ -730,6 +730,50 @@ describe('judging a pull request through the API', () => {
         JSON.stringify({ [`9@${HEAD}`]: { title: 'x'.repeat(1001) } }),
       ])
         expect(readAnswers(bad), bad).toBeUndefined();
+    });
+  });
+
+  describe("a Critical fix, taken from the critical fix job's answers", () => {
+    const lock = [{ filename: 'pnpm-lock.yaml', status: 'modified', patch: '-a\n+b' }];
+    const title = "A Critical vulnerability's fix: protobufjs's CVE-2026-1 gone from pnpm-lock.yaml";
+    const taking = (answers: Map<string, PinMoveAnswer> | undefined) => ({
+      ...run,
+      fixes: { kind: 'take' as const, answers },
+    });
+
+    it('passes the App’s dependency change in the app on its answer at its head, and holds it on any other', async () => {
+      github({ '/pulls/9/files': lock });
+      expect(await judge(taking(new Map([[`9@${HEAD}`, { title }]])), theirs)).toMatchObject({
+        pass: true,
+        rule: 'critical-fix',
+        title,
+      });
+      const held = await judge(taking(new Map([[`9@${HEAD}`, { reason: 'a group' }]])), theirs);
+      expect(held).toMatchObject({ pass: false, rule: 'held', tags: [{ tag: 'dependency-change' }] });
+      expect(held.title).toContain('not a critical fix: a group');
+      // A head pushed after the answer, or none at all, is no answer.
+      const stale = await judge(taking(new Map([[`9@${EARLIER}`, { title }]])), theirs);
+      expect(stale.title).toContain(`the critical fix job gave no answer for #9 at ${HEAD.slice(0, 7)}`);
+      expect((await judge(run, theirs)).title).toContain('the critical fix job gave the gate no answers it could read');
+      const below = { ...theirs, base: { ...theirs.base, ref: 'feat/below' } };
+      expect((await judge(taking(new Map([[`9@${HEAD}`, { title }]])), below)).title).toContain(
+        'a critical fix is judged into main alone',
+      );
+    });
+
+    it('never asks for one for an untagged change, someone else’s pull request, or in this repository', async () => {
+      const answers = new Map([[`9@${HEAD}`, { title }]]);
+      github({ '/pulls/9/files': [{ filename: 'src/a.ts', status: 'modified', patch: '-a\n+b' }] });
+      expect(await judge(taking(answers), theirs)).toMatchObject({ rule: 'low-risk' });
+      github({ '/pulls/9/files': lock });
+      expect(await judge(taking(answers), { ...theirs, user: { id: 42 } })).toMatchObject({ pass: false });
+      const FACTORY = 'the-roganator/cv-software-factory';
+      const here = {
+        ...theirs,
+        head: { ...theirs.head, repo: { full_name: FACTORY } },
+        base: { ...theirs.base, repo: { full_name: FACTORY } },
+      };
+      expect((await judge({ ...taking(answers), repo: FACTORY }, here)).rule).not.toBe('critical-fix');
     });
   });
 

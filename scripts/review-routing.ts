@@ -15,7 +15,8 @@
  *   names a flag or asks one, so new behaviour behind a flag already on the list is caught too.
  *
  * The rule, the first that holds: `martin-opened`, `martin-approved-head`, `exact-pin`, here `pin-move` (a pin of the
- * scan's list moved forward and proved, scripts/pin-move.ts), in the app's repository `low-risk` and `lights-out`, or
+ * scan's list moved forward and proved, scripts/pin-move.ts), in the app's repository `critical-fix` (a dependency moved
+ * to fix a finding the gate's scanner rates Critical, proved, scripts/critical-fix.ts), `low-risk` and `lights-out`, or
  * `held` (`route`).
  */
 import {
@@ -631,6 +632,32 @@ export interface Facts {
    * verdict's title, or the first condition it could not prove, a fact not read among them.
    */
   pinMove?: { title: string } | { reason: string };
+  /**
+   * The Critical fix's result, for a pull request of the App's in the app's repository that carries a dependency's
+   * change and is no exact pin: the fix it proved, with its verdict's title, or the first condition it could not prove.
+   */
+  criticalFix?: { title: string } | { reason: string };
+}
+
+/**
+ * The paths a Critical fix's pins are in that CODEOWNERS gives Martin in the app: the `code-owned` tag passes on these
+ * alone, and the fix's proof read every line of each (scripts/critical-fix.ts's pins only).
+ */
+export const FIX_PINS: readonly string[] = ['Dockerfile', 'mise.toml', 'mise.lock'];
+
+/**
+ * Why a Critical fix's tags hold it, or nothing when they do not: `dependency-change`, and `code-owned` on its pins'
+ * files alone. Any other tag (a test loosened, a header, a release, an improvement, a path of Martin's that is no pin, a
+ * diff GitHub did not list whole) holds it.
+ */
+export function fixTagsHold(tags: readonly Found[]): string | undefined {
+  for (const { tag, because, more } of tags) {
+    if (tag === 'dependency-change') continue;
+    if (tag !== 'code-owned') return `it carries ${tag}`;
+    const path = because.find((b) => !FIX_PINS.some((pin) => b.startsWith(`${pin} (`)));
+    if (path !== undefined || more) return `it is code-owned beyond its pins: ${path ?? `${more} more`}`;
+  }
+  return undefined;
 }
 
 const tagNames = (tags: readonly Found[]) => tags.map((t) => t.tag).join(', ');
@@ -695,6 +722,15 @@ export function route(facts: Facts): Decision {
   // A change of digests alone passes only as an exact pin, in the app's repository too, and its hold says why not.
   if (pin && 'reason' in pin && pin.digests)
     return held(`Not an exact pin: ${pin.reason}, and a change of digests alone passes only as one`);
+  // A Critical fix passes whatever AUTONOMY says, as low-risk does: the line queues it only at Guarded or above.
+  const fix = facts.criticalFix;
+  let notFix = fix && 'reason' in fix ? fix.reason : undefined;
+  if (fix && 'title' in fix) {
+    const tagsHold = fixTagsHold(tags);
+    if (facts.retargeted) notFix = 'its base was changed, and a critical fix is proved only into main from the start';
+    else if (tagsHold) notFix = tagsHold;
+    else return { pass: true, title: fix.title, rule: 'critical-fix', tags };
+  }
   const passed = levelPasses(tags, facts.autonomy);
   // Tags the level does not pass hold it whatever test integrity says, so they decide first, and it is no wait.
   // Its title names test integrity's reading too when there is none, so Martin does not approve on the tags alone.
@@ -704,7 +740,8 @@ export function route(facts: Facts): Decision {
       : facts.testIntegrity.pending
         ? `; test integrity has not read it yet (${facts.testIntegrity.reason})`
         : `; no reading of test integrity (${facts.testIntegrity.reason})`;
-    return held(`Held for its risk tags (${tagNames(tags)})${integrity}`);
+    const why = notFix ? `; not a critical fix: ${notFix}` : '';
+    return held(`Held for its risk tags (${tagNames(tags)})${why}${integrity}`);
   }
   if (!facts.testIntegrity.read) {
     const { reason, pending } = facts.testIntegrity;

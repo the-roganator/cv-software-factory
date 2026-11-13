@@ -456,7 +456,7 @@ describe('the classes a cluster is not made from', () => {
             .join('\n')}`;
       texts.push(text);
       const called = next.recipe
-        ? [...text.matchAll(/\$\(MAKE\)(?:\s+--?[a-z-]+)*\s+([a-z][a-z0-9-]*)/g)].map((m) => m[1] ?? '')
+        ? [...text.matchAll(/\$\(MAKE\)(?:\s+--[a-z][a-z-]*)*\s+([a-z][a-z0-9-]*)/g)].map((m) => m[1] ?? '')
         : [...text.matchAll(/^\s*(?:setsid\s+)?make((?:\s+[a-z][a-z0-9-]*)+)/gm)].flatMap((m) =>
             (m[1] ?? '').trim().split(/\s+/),
           );
@@ -477,12 +477,12 @@ describe('the classes a cluster is not made from', () => {
    */
   const NEVER_ON_THE_RUNNER = ['scripts/answer-key.ts'];
 
+  /** A text as a regular expression matches it, every character that means something there escaped. */
+  const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
   /** The top-level entries of the repository, which a path the job names begins with. */
   const TOP = readdirSync('.').filter((entry) => !['.git', 'node_modules'].includes(entry));
-  const PATH = new RegExp(
-    `(?<![\\w.-])(?:\\.\\./)*((?:${TOP.map((t) => t.replace(/\./g, '\\.')).join('|')})(?:/[\\w.@-]*[\\w@-])+)`,
-    'g',
-  );
+  const PATH = new RegExp(`(?<![\\w.-])(?:\\.\\./)*((?:${TOP.map(escaped).join('|')})(?:/[\\w.@-]*[\\w@-])+)`, 'g');
 
   /**
    * Every path of the repository the job's code names, comments aside, and every file it reaches: the scripts and
@@ -521,7 +521,7 @@ describe('the classes a cluster is not made from', () => {
         const words = (args: string) => [...args.matchAll(/'([^']*)'/g)].map((w) => w[1] ?? '');
         for (const m of text.matchAll(/\bconst (\w+) = join\(import\.meta\.dirname((?:,\s*'[^']*')+)\);/g))
           bases.set(m[1] ?? '', join(dirname(next.file), ...words(m[2] ?? '')));
-        const names = [...bases.keys()].map((name) => name.replace(/\./g, '\\.')).join('|');
+        const names = [...bases.keys()].map(escaped).join('|');
         for (const m of text.matchAll(new RegExp(`\\bjoin\\((${names})((?:,\\s*'[^']*')+)`, 'g'))) {
           const path = join(bases.get(m[1] ?? '') ?? '', ...words(m[2] ?? ''));
           if (path === '.' || !existsSync(path)) continue;

@@ -9,7 +9,8 @@
  *    the head merged onto main's tip, against that tip. The list worked out on both (inventory.ts) has the same items at the same places, and differs in one move's pins alone: one image,
  *    one chart or one value of a chart, from one pin to one other. Every line it changes is one of those pins, and
  *    `--unlisted` finds nothing at the head.
- * 2. **Not what judges.** Trivy's and Syft's own pins are Martin's: a scanner cannot vouch for its replacement.
+ * 2. **Not what judges.** Trivy's, Syft's and Kyverno's own pins are Martin's: what judges a move cannot vouch for its
+ *    own replacement, and Kyverno is what says, on the platform check's cluster, that admission enforces.
  * 3. **Signed where its publisher signs.** An image of ours passes only as an exact pin, signed by build.yml on main. A
  *    third-party image is held to its digest alone, as admission admits it (ADR 0010): the next condition's.
  * 4. **Forward on its line.** The gate resolves the target itself, as the scan does (deadlines.ts's `newestOf`): the
@@ -18,14 +19,24 @@
  * 5. **No record goes stale.** Each refusal record's hash (scripts/policy-hash.ts), computed at the base and at the
  *    head, is the same.
  * 6. **Nothing else that runs changes.** For a chart, a value or an image the cluster runs, the manifests rendered at
- *    the base and at the head differ only in the moved image's references and the chart's own version labels.
+ *    the base and at the head, a chart rendered as Argo CD renders it on the cluster `main` describes, compared object by
+ *    object, have the same objects (kind, namespace, name: none added, none gone), and differ only in each moved image's
+ *    `from` for its `to`, the chart's own version labels moving as the chart's, the `data` of a ConfigMap that was there
+ *    at the base, and a pod template's `checksum/` annotations. And the text: every line outside those ConfigMaps'
+ *    `data` and those annotations, where the gate's parser places them, is the base's line, in order, with the moved
+ *    images' references and the version labels that moved as the chart's written alike. The configuration a chart's
+ *    ConfigMaps carry is the publisher's, as its image is; its objects, permissions, pod specs and network policies stay
+ *    Martin's.
  * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
  * 8. **Something ran it.** GitHub Actions' latest run at the head of the job that runs what the pin runs succeeded,
- *    not skipped: `ZAP scan` for ZAP's image, `image builds` for a Dockerfile's stage, each shard of `tests` for
- *    Postgres, whose pin CI's own database is. What only a cluster runs is held until the `platform` check (task 34),
- *    and k3s waits for Martin, whose cluster moves with it. Last, so such a hold says every other condition held.
+ *    not skipped, in this repository's own workflow that has that job, on the pull request: `ZAP scan` for ZAP's image,
+ *    `image builds` for a Dockerfile's stage, each shard of `tests` for Postgres, whose pin CI's own database is. What a
+ *    cluster runs (a chart, a value, a third-party image in deploy/, Postgres too) passes only once `platform` made a
+ *    cluster from the change and everything on it ran; a `platform` skipped made none. Argo CD's chart, which `make up`
+ *    installs, is held, and k3s waits for Martin, whose cluster moves with it. Last, so such a hold says every other
+ *    condition held.
  *
  * It trusts nothing the pull request says of itself (its title, label, description or branch): the move is worked out
  * from its two commits, and the code that works it out (the list, the policy hash, the Trivy pin) is the gate's own,
@@ -39,6 +50,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { isAlias, isMap, isNode, isPair, isScalar, parseAllDocuments, parse as parseYaml, visit } from 'yaml';
 import { compareVersions, newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import { readTarget, type Target, targetText } from '../apps/factory/src/vulnerabilities/fixes.ts';
 import {
@@ -50,7 +62,15 @@ import {
   unlisted,
 } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
-import { DB_MAX_AGE_MS, databases, realTools, repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
+import {
+  API_VERSIONS_RECORD,
+  apiVersionsOf,
+  DB_MAX_AGE_MS,
+  databases,
+  kubeVersionOf,
+  realTools,
+  repositoryOf,
+} from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
 import { PROFILE, RECORDS, type RecordName, render, taken } from './policy-hash.ts';
 
@@ -101,6 +121,39 @@ export interface Run {
   status: string;
   conclusion: string | null;
   app: { slug: string } | null;
+  check_suite?: { id: number } | null;
+  /**
+   * The workflow file whose run made it, as `workflowsOf` reads it from its check suite: only a run of this repository,
+   * on a pull request from this repository, at the run's own head. Anything else, or unread, is null.
+   */
+  workflow?: string | null;
+}
+
+/** A workflow run, as the Actions API lists them for a commit: the one fact that ties a check run to its file. */
+export interface WorkflowRun {
+  id: number;
+  path: string;
+  event: string;
+  head_sha: string;
+  /** The branch it ran from, and when it was made: a run older than the pull request was made for another. */
+  head_branch: string | null;
+  created_at: string;
+  check_suite_id: number;
+  repository: { full_name: string } | null;
+  head_repository: { full_name: string } | null;
+  /** The pull requests GitHub ran it for: this repository's open ones at the head, none once they closed. */
+  pull_requests?: { number: number; base: { ref: string } }[] | null;
+}
+
+/**
+ * The pull request a check must have run for: its number, its head branch, when it was opened, and whether it is open
+ * (a replay by hand is not).
+ */
+export interface For {
+  number: number;
+  ref: string;
+  created: string;
+  open: boolean;
 }
 
 /** What a Trivy report says, as far as the rule reads it. */
@@ -133,8 +186,10 @@ export interface PinMoveIO {
   hashes(side: Side): Promise<Record<string, string>>;
   /** Trivy's report of an image on one platform; one the index does not have is an error, and holds. */
   scan(reference: string, platform: string): Promise<Scan>;
-  /** The check runs at the head. */
+  /** The check runs at the head, each with the workflow that made it (`workflowsOf`). */
   runs(): Promise<Run[]>;
+  /** The workloads the platform check's cluster changes from what main runs (`patchedByTheCheck`), main's, or why not. */
+  patched(): Promise<Workload[] | string>;
 }
 
 export type Side = 'base' | 'head';
@@ -151,14 +206,32 @@ export const ACTIONS = 'github-actions';
 export const ZAP_CHECK = 'ZAP scan';
 export const IMAGE_CHECK = 'image builds';
 export const TEST_SHARDS = ['tests (1/3)', 'tests (2/3)', 'tests (3/3)'];
+/** platform.yml's job that makes a cluster from the change and passes once everything on it runs. */
+export const PLATFORM_CHECK = 'platform';
+
+export const CHECK_WORKFLOW = '.github/workflows/check.yml';
+export const PLATFORM_WORKFLOW = '.github/workflows/platform.yml';
+/** The workflow each check must come from: a job of the same name in any other workflow ran something else. */
+export const WORKFLOW_OF: Readonly<Record<string, string>> = {
+  [ZAP_CHECK]: CHECK_WORKFLOW,
+  [IMAGE_CHECK]: CHECK_WORKFLOW,
+  ...Object.fromEntries(TEST_SHARDS.map((name) => [name, CHECK_WORKFLOW])),
+  [PLATFORM_CHECK]: PLATFORM_WORKFLOW,
+};
 
 /** ZAP's image, which the browser tests' scan starts: `ZAP scan` runs it. */
 export const ZAP_FILE = 'apps/console/zap/scan.ts';
 /** The Postgres the cluster runs, whose pin CI's own database is (scripts/ci-images.sh postgres): `tests` run it. */
 export const POSTGRES_FILE = 'deploy/base/postgres/statefulset.yaml';
 
-/** The scanners' own pins, which are Martin's to move: a scanner cannot vouch for its replacement. */
+/** What judges a move, whose own pins are Martin's to move: none of them can vouch for its replacement. */
 const JUDGES: { name: string; test: (moved: Moved) => boolean }[] = [
+  // Kyverno is admission itself: on the platform check's cluster it is what says every image policy enforces and
+  // `make admission-ready` passes, so it cannot vouch for its own replacement either.
+  {
+    name: 'Kyverno',
+    test: (m) => m.item === 'kyverno' || /(^|\/)kyverno\//.test(m.from),
+  },
   {
     name: 'Trivy',
     test: (m) => m.place.file.startsWith('deploy/images/trivy/') || /(^|\/)aquasec(urity)?\/trivy([:@]|$)/.test(m.from),
@@ -435,6 +508,41 @@ export async function imageForward(
 
 const major = (version: string) => Number(/\d+/.exec(version)?.[0] ?? Number.NaN);
 
+/**
+ * Whether an image a chart's new version runs in place of one its old version ran is forward on its line: a version
+ * tag on both, the same or later, on the same major, and, where the chart pins a digest, the tag's index digest now.
+ * A chart pins its images as its publisher writes them, often by tag alone, so a bare version tag is whatever it names
+ * when the cluster pulls it: that much is the chart's publisher's, as the chart is. A tag that is no version
+ * (`nightly`, `latest`), a move back or across a major, or a digest the tag does not name, holds.
+ */
+export async function chartImageForward(
+  from: string,
+  to: string,
+  io: Pick<PinMoveIO, 'digest'>,
+): Promise<string | undefined> {
+  const repository = repositoryOf(to);
+  const was = tagAndDigest(from);
+  const now = tagAndDigest(to);
+  const version = (tag: string | undefined) => tag !== undefined && VERSION_WORD.test(tag);
+  if (!version(now.tag)) return `${short(to)} is not pinned to a version tag: no line to hold it to`;
+  if (!version(was.tag)) return `${short(from)} is not pinned to a version tag: no line to hold the move to`;
+  const [a, b] = [was.tag as string, now.tag as string];
+  // The line is the version's variant too: `1.4.0-alpine` moves to `1.4.1-alpine`, never to `-debian` or `-rc.1`.
+  const variant = (tag: string) => tag.replace(/^v?\d+(\.\d+)*/, '');
+  if (variant(a) !== variant(b)) return `${repository} moves off its line, from ${a} to ${b}`;
+  if (/^[-+.]?(rc|alpha|beta|pre|dev|snapshot|nightly|canary)/i.test(variant(b)))
+    return `${repository} ${b} is a prerelease, not a release`;
+  if (was.digest && !now.digest) return `${short(to)} drops the digest ${short(from)} was pinned to`;
+  if (compareVersions(b, a) < 0) return `a move backwards in ${repository}, from ${a} to ${b}`;
+  if (major(b) !== major(a)) return `a major in ${repository}, from ${a} to ${b}`;
+  if (now.digest) {
+    const current = await io.digest(`${repository}:${b}`);
+    if (current !== now.digest)
+      return `a digest that is not the tag's: ${repository}:${b} is ${current.slice(0, 19)} now, not ${now.digest.slice(0, 19)}`;
+  }
+  return undefined;
+}
+
 /** Whether a chart's move is to a later version on the same major, which its repository's index has. */
 export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersions'>): Promise<string | undefined> {
   const chart = move.pins[0]?.chart?.head;
@@ -458,34 +566,175 @@ export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersion
 }
 
 /**
- * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none of check.yml's jobs
- * runs it, so it is held.
+ * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none runs it, so it is
+ * held. A pin in deploy/ the cluster runs from the change itself (a chart, its value, a third-party image) needs
+ * `platform`, which makes a cluster from the change; Postgres needs it beside `tests`, which run the same pin as CI's
+ * database. An image of ours never gets here (condition 3), and a Dockerfile's stage in deploy/ builds an image the
+ * cluster runs only once build.yml has built it on main, which no check at the head does.
  */
 export function whatRunsIt(move: Move): { checks: string[] } | { reason: string } {
   const files = new Set(move.pins.map((m) => m.place.file));
   const only = (file: string) => files.size === 1 && files.has(file);
   if (move.kind === 'k3s' || move.kind === 'k3s-release' || move.kind === 'k3d')
-    return { reason: `${move.name} is the cluster's own: a k3s move waits for Martin, whose cluster moves with it` };
+    return {
+      reason: `${move.name} is the cluster's own: a k3s move waits for Martin, whose cluster moves with it, whatever the platform check says`,
+    };
   if (move.what === 'image' && move.kind === 'workflow' && only(ZAP_FILE)) return { checks: [ZAP_CHECK] };
   if (move.what === 'image' && move.kind === 'dockerfile' && [...files].every((f) => !f.startsWith('deploy/')))
     return { checks: [IMAGE_CHECK] };
-  if (move.what === 'image' && move.kind === 'third-party' && only(POSTGRES_FILE)) return { checks: TEST_SHARDS };
-  if (files.has('Makefile')) return { reason: `${move.name} is installed by make up: a merge does not apply it` };
-  return {
-    reason: `only a cluster runs ${move.name}: held until the platform check makes one from the change (task 34)`,
-  };
+  if (
+    files.has('Makefile') ||
+    move.pins.some(
+      (m) => m.item === 'argocd' || m.chart?.base.chart === 'argo-cd' || m.chart?.head.chart === 'argo-cd',
+    ) ||
+    [...files].some((f) => f.startsWith('deploy/argocd/'))
+  )
+    return { reason: `${move.name} is installed by make up: a merge does not apply it` };
+  const inDeploy = [...files].every((f) => f.startsWith('deploy/'));
+  if (move.what === 'image' && move.kind === 'third-party' && only(POSTGRES_FILE))
+    return { checks: [...TEST_SHARDS, PLATFORM_CHECK] };
+  if (inDeploy && (move.kind === 'chart' || (move.what === 'image' && move.kind === 'third-party')))
+    return { checks: [PLATFORM_CHECK] };
+  return { reason: `no check at the head runs ${move.name}: nothing shows it ran` };
 }
 
-/** Whether each check ran at the head and succeeded: GitHub Actions' latest run of each name, completed, a success. */
+/** The kinds whose pods the platform check holds to running and ready (scripts/platform-pods.sh). */
+const WORKLOADS = new Set(['Deployment', 'StatefulSet', 'DaemonSet']);
+
+/** A workload by its kind, name and namespace, as a kustomize patch's target names one. */
+export interface Workload {
+  kind: string;
+  name: string;
+  namespace?: string;
+}
+
+/** The workloads platform.yml's cluster changes from what `main` runs (deploy/argocd/platform-check.yaml), main's file. */
+export function patchedByTheCheck(
+  text = readFileSync(join(ROOT, 'deploy/argocd/platform-check.yaml'), 'utf-8'),
+): Workload[] | string {
+  const patches = parseYaml(text) as { target?: Record<string, unknown> }[] | null;
+  if (!Array.isArray(patches) || !patches.length) return 'the platform check names no patches the gate can read';
+  const targets: Workload[] = [];
+  for (const { target } of patches) {
+    // A target by kind and name alone: one by selector, or with no name, could reach a workload the gate cannot tell.
+    const { kind, name, namespace, ...rest } = target ?? {};
+    if (
+      typeof kind !== 'string' ||
+      typeof name !== 'string' ||
+      Object.keys(rest).some((key) => key !== 'group' && key !== 'version')
+    )
+      return `the platform check patches a target the gate cannot match by kind and name: ${short(JSON.stringify(target ?? null))}`;
+    targets.push({ kind, name, ...(typeof namespace === 'string' ? { namespace } : {}) });
+  }
+  return targets;
+}
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+/**
+ * Whether a cluster made from the change starts an image: some document of the rendering, read as YAML, is a
+ * Deployment, StatefulSet or DaemonSet whose pod template runs it as a container or an init container, by that exact
+ * reference, with no hook annotation (Helm's or Argo CD's), at a number of replicas that is a whole number above
+ * nought, and not one the platform check's own patches change (`patched`). An image only a hook, a Job or a CronJob
+ * runs, one named only in an argument, or one no such workload runs, is never pulled by the platform check's cluster as
+ * this pin, so the check proves nothing of it. A rendering that is not YAML holds.
+ */
+export function started(
+  rendered: string,
+  references: readonly string[],
+  patched: readonly Workload[] = [],
+): string | undefined {
+  const documents = parseAllDocuments(rendered);
+  if (documents.some((doc) => doc.errors.length))
+    return 'the rendering is not YAML the gate can read, so nothing shows what starts the image';
+  const workloads = documents.map((doc) => record(doc.toJS()));
+  for (const reference of references) {
+    const runs = workloads.some((doc) => {
+      const metadata = record(doc.metadata);
+      const spec = record(doc.spec);
+      if (typeof doc.kind !== 'string' || !WORKLOADS.has(doc.kind)) return false;
+      const annotations = Object.keys(record(metadata.annotations));
+      if (annotations.some((key) => key === 'helm.sh/hook' || key === 'argocd.argoproj.io/hook')) return false;
+      if ('replicas' in spec && !(Number.isInteger(spec.replicas) && (spec.replicas as number) > 0)) return false;
+      if (
+        patched.some(
+          (target) =>
+            target.kind === doc.kind &&
+            target.name === metadata.name &&
+            (!target.namespace || !metadata.namespace || target.namespace === metadata.namespace),
+        )
+      )
+        return false;
+      const pod = record(record(spec.template).spec);
+      const containers = [pod.containers, pod.initContainers].flatMap((list) => (Array.isArray(list) ? list : []));
+      return containers.some((container) => record(container).image === reference);
+    });
+    if (!runs)
+      return `no workload the platform check runs starts ${short(reference)}: a hook, a Job or nothing at all runs it, so its cluster never pulled it`;
+  }
+  return undefined;
+}
+
+/**
+ * The check runs at the head, each with the workflow file that made it, read from the workflow run of its check suite:
+ * a run of this repository (`repo`), on `pull_request`, from a branch of this repository, at the check run's own head,
+ * from this pull request's branch, made no earlier than the pull request, which GitHub lists among its pull requests into
+ * main. A check run whose suite is not such a run (another app's, a fork's, another event's, another head's, another
+ * branch's, or one made before this pull request) has none. A run's `pull_requests` are the open pull requests whose head
+ * it matches now, with their bases now, not the one it ran for: the branch and the time bind it, and `readPinMove` holds
+ * a pull request with a sibling from the same branch. GitHub empties that list once they close, so a replay of a closed
+ * one by hand takes a run that names none.
+ */
+export function workflowsOf(checks: readonly Run[], workflows: readonly WorkflowRun[], repo: string, pr: For): Run[] {
+  return checks.map((run) => {
+    const suite = run.check_suite?.id;
+    const made = workflows.find((w) => suite !== undefined && w.check_suite_id === suite);
+    const ours =
+      made &&
+      made.repository?.full_name === repo &&
+      made.head_repository?.full_name === repo &&
+      made.event === 'pull_request' &&
+      made.head_sha === run.head_sha &&
+      made.head_branch === pr.ref &&
+      Date.parse(made.created_at) >= Date.parse(pr.created) &&
+      ((made.pull_requests ?? []).some((p) => p.number === pr.number && p.base.ref === 'main') ||
+        (!pr.open && !made.pull_requests?.length));
+    return { ...run, workflow: ours ? made.path : null };
+  });
+}
+
+/**
+ * Whether each check ran at the head and succeeded: every run of each name at the head, from the workflow that has that
+ * job (`WORKFLOW_OF`), at its latest attempt, completed, a success. Attempts of one workflow run share its check suite,
+ * so a re-run that succeeds counts; a second run that succeeds never hides another that failed. A run of the same name
+ * from anywhere else counts for nothing; skipped, cancelled or failed is no success.
+ */
 export function ranIt(runs: readonly Run[], head: string, checks: readonly string[]): string | undefined {
   for (const name of checks) {
-    const latest = runs
-      .filter((run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS)
-      .sort((a, b) => b.id - a.id)[0];
-    if (!latest) return `${name} has not run at ${head.slice(0, 7)}`;
-    if (latest.status !== 'completed') return `${name} has not finished at ${head.slice(0, 7)}`;
-    if (latest.conclusion !== 'success')
-      return `${name} at ${head.slice(0, 7)} is ${latest.conclusion ?? 'unfinished'}, not a success: something must run it`;
+    const workflow = WORKFLOW_OF[name];
+    if (!workflow) return `the gate knows no workflow that runs ${name}`;
+    const named = runs.filter((run) => run.name === name && run.head_sha === head && run.app?.slug === ACTIONS);
+    const bySuite = new Map<number | string, Run>();
+    for (const run of named.filter((each) => each.workflow === workflow)) {
+      const suite = run.check_suite?.id ?? `run ${run.id}`;
+      const seen = bySuite.get(suite);
+      if (!seen || run.id > seen.id) bySuite.set(suite, run);
+    }
+    const latest = [...bySuite.values()].sort((a, b) => b.id - a.id);
+    if (!latest.length)
+      return named.length
+        ? `${name} at ${head.slice(0, 7)} ran in no run of ${workflow} for this pull request that the gate could read`
+        : `${name} has not run at ${head.slice(0, 7)}`;
+    const unfinished = latest.find((run) => run.status !== 'completed');
+    if (unfinished) return `${name} has not finished at ${head.slice(0, 7)}`;
+    const failed = latest.find((run) => run.conclusion !== 'success');
+    if (failed)
+      return `${name} at ${head.slice(0, 7)} is ${failed.conclusion ?? 'unfinished'}, not a success: ${
+        name === PLATFORM_CHECK && failed.conclusion === 'skipped'
+          ? 'it made no cluster from the change'
+          : 'something must run it'
+      }`;
   }
   return undefined;
 }
@@ -502,30 +751,502 @@ export function staleRecords(base: Record<string, string>, head: Record<string, 
   return undefined;
 }
 
-/**
- * Two renderings with the moved image's references and the chart's own version labels written the same, so that what
- * is left of a difference is something else that runs. Another image's line stays as it is: a change to it is a change.
- */
-export function normalised(rendered: string, references: readonly string[]): string[] {
-  const refs = [...new Set(references.filter(Boolean))].sort((a, b) => b.length - a.length);
-  return rendered.split('\n').map((line) => {
-    let text = line;
-    for (const ref of refs) text = text.split(ref).join('<image>');
-    // The chart's own version labels, by their exact keys: any other key, a `chart:` an Application installs among
-    // them, is compared.
-    return text.replace(/^(\s*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>');
-  });
+/** The labels whose values are the chart's own versions, by their exact keys, in an object's or a template's metadata. */
+const VERSION_LABELS = new Set(['helm.sh/chart', 'app.kubernetes.io/version']);
+
+/** Where each workload of the core API writes its pod template; a kind of another group is no pod template. */
+const POD_TEMPLATES: Readonly<Record<string, readonly string[]>> = {
+  'apps/v1 Deployment': ['spec', 'template'],
+  'apps/v1 StatefulSet': ['spec', 'template'],
+  'apps/v1 DaemonSet': ['spec', 'template'],
+  'apps/v1 ReplicaSet': ['spec', 'template'],
+  'batch/v1 Job': ['spec', 'template'],
+  'batch/v1 CronJob': ['spec', 'jobTemplate', 'spec', 'template'],
+};
+
+/** Whether an object is a core ConfigMap, whose `data` condition 6 sets aside, in its objects and in its text alike. */
+const isCoreConfigMap = (object: Record<string, unknown>) => object.apiVersion === 'v1' && object.kind === 'ConfigMap';
+
+/** Where a core workload writes its pod template, whose `checksum/` annotations condition 6 sets aside, or undefined. */
+const podTemplatePath = (object: Record<string, unknown>) => POD_TEMPLATES[`${object.apiVersion} ${object.kind}`];
+
+/** An annotation a chart writes from its configuration so that a change to it restarts the pods. */
+const isChecksum = (key: string) => key.startsWith('checksum/');
+
+/** An object of a rendering: how it is named in a hold, and what it is once the move's own differences are written the same. */
+interface Rendered {
+  label: string;
+  body: unknown;
 }
 
-/** Whether two renderings differ in anything but the moved image and the chart's version labels. */
-export function manifestsDiffer(base: string, head: string, references: readonly string[]): string | undefined {
-  const [a, b] = [normalised(base, references), normalised(head, references)];
-  if (!a.join('').trim() || !b.join('').trim()) return 'a rendering came out empty: nothing to compare';
-  if (a.length !== b.length)
-    return `the manifests rendered at the head have ${b.length} lines, at the base ${a.length}`;
-  const at = a.findIndex((line, i) => line !== b[i]);
-  if (at >= 0) return `the manifests change beyond the image: ${short((b[at] as string).trim())}`;
+/**
+ * Whether a code point is one the gate's reader and the cluster's read alike: the gate reads with the `yaml` package,
+ * Argo CD with apimachinery's decoder and sigs.k8s.io/yaml, and they agree on a text's lines only where it holds tab, LF
+ * and printable characters: U+0020 to U+007E, U+00A0 to U+D7FF, U+E000 to U+FFFD and above U+FFFF, YAML's printable set,
+ * but for anything a reader may take as a line break other than LF (CR, U+0085, U+2028, U+2029) and the byte order mark.
+ * Everything else is refused by what it is not, not by name.
+ */
+const readAlike = (code: number) =>
+  code === 0x09 ||
+  code === 0x0a ||
+  (code >= 0x20 && code <= 0x7e) ||
+  (code >= 0xa0 && code <= 0xd7ff && code !== 0x2028 && code !== 0x2029) ||
+  (code >= 0xe000 && code <= 0xfffd && code !== 0xfeff) ||
+  code >= 0x10000;
+
+/** The first character of a rendering the readers may not read alike, with its line, or undefined. */
+export function strangeCharacter(rendered: string): string | undefined {
+  let line = 1;
+  for (const character of rendered) {
+    const code = character.codePointAt(0) as number;
+    if (!readAlike(code)) return `U+${code.toString(16).toUpperCase().padStart(4, '0')} at line ${line}`;
+    if (code === 0x0a) line++;
+  }
   return undefined;
+}
+
+/** The YAML versions a rendering is read as: what Helm, kustomize, Argo CD and the API server read is 1.1 in places. */
+const YAML_VERSIONS = ['1.2', '1.1'] as const;
+
+/**
+ * A rendering as its objects, keyed by kind, namespace and name, or why it cannot be read so. Anything that a second
+ * reader could read another way holds: a document with an error (a duplicate key among them), a directive, an explicit
+ * tag, an anchor, an alias or a merge key; and anything the cluster would not take as one object: a document that is not
+ * a mapping, one with no kind or name, a List that wraps objects, or two documents with one key. A document with nothing
+ * in it (a comment, an empty `---`) is no object.
+ */
+export function objectsOf(
+  rendered: string,
+  version: (typeof YAML_VERSIONS)[number] = '1.2',
+): Map<string, Rendered> | string {
+  const read = readRendering(rendered, version);
+  return typeof read === 'string' ? read : read.objects;
+}
+
+/** Where a place the text rule sets aside lies in a rendering: its start and its end, by the parser's own offsets. */
+type Span = [number, number];
+
+/** The source span of a node the parser read, from its first character to the end of its value, or none. */
+const spanOf = (node: unknown, offset: number): Span | undefined => {
+  const range = isNode(node) ? node.range : undefined;
+  return range ? [offset + range[0], offset + range[1]] : undefined;
+};
+
+/**
+ * A rendering's objects, as `objectsOf` reads them, and the spans the text rule sets aside, as this parser places them
+ * and never by a search of the text: the value of a core ConfigMap's `data`, and each `checksum/` annotation of a core
+ * workload's pod template, from its key to the end of its value.
+ */
+export function readRendering(
+  rendered: string,
+  version: (typeof YAML_VERSIONS)[number],
+): { objects: Map<string, Rendered>; exempt: Span[] } | string {
+  const objects = new Map<string, Rendered>();
+  const exempt: Span[] = [];
+  const strange = strangeCharacter(rendered);
+  if (strange) return `the rendering writes ${strange}, which readers may read apart`;
+  // The stream split as Kubernetes' YAML reader splits it (kubectl, kustomize, Argo CD and Helm alike): on a line that is
+  // `---`, with a comment or nothing after it, and on nothing else. Each part is one document: a part this parser reads
+  // as more (after a `...`) is one whose later objects the cluster never gets.
+  // A directive before a `---` would be a part of its own, with no document to hold it to: any line that begins one holds.
+  if (/^%/m.test(rendered)) return 'the rendering writes a YAML directive, which readers may read apart';
+  // Each document with where its part begins in the rendering, so the parser's offsets are the rendering's.
+  const docs = [];
+  const separator = /^---[ \t]*(?:#[^\n]*)?\r?$/gm;
+  let start = 0;
+  for (const end of [...[...rendered.matchAll(separator)].map((m) => m.index), rendered.length]) {
+    const read = parseAllDocuments(rendered.slice(start, end), { version, intAsBigInt: true });
+    if (read.length > 1)
+      return 'the rendering has a document that does not begin with `---`, which readers split apart';
+    docs.push(...read.map((doc) => ({ doc, offset: start })));
+    start = rendered.indexOf('\n', end) + 1 || rendered.length;
+  }
+  for (const { doc, offset } of docs) {
+    if (doc.errors.length)
+      return `the rendering is not YAML the gate can read (${doc.errors[0]?.code}), so nothing shows what changes`;
+    if (doc.directives?.yaml.explicit || Object.keys(doc.directives?.tags ?? {}).some((handle) => handle !== '!!'))
+      return 'the rendering writes a YAML directive, which readers may read apart';
+    let unsure: string | undefined;
+    visit(doc, (_, node) => {
+      if (isAlias(node)) unsure = 'an alias';
+      else if (isPair(node)) {
+        if (!isScalar(node.key)) unsure = 'a key that is not a scalar';
+        // A key that is no string would be one once read as JSON, and could stand for another key of the same text.
+        else if (typeof node.key.value !== 'string' && typeof node.key.value !== 'symbol')
+          unsure = `a key that is not a string (${short(String(node.key.source ?? node.key.value))})`;
+        // YAML 1.1's schema reads `<<` as a symbol of its own, and merges it.
+        else if (node.key.value === '<<' || typeof node.key.value === 'symbol' || node.key.source === '<<')
+          unsure = 'a merge key';
+      } else if (isNode(node)) {
+        if (node.tag) unsure = `a tag (${short(node.tag)})`;
+        else if (node.anchor) unsure = 'an anchor';
+      }
+      return unsure ? visit.BREAK : undefined;
+    });
+    if (unsure) return `the rendering writes ${unsure}, which readers may read apart`;
+    const value = doc.toJS({ maxAliasCount: 0 }) as unknown;
+    if (value === null || value === undefined) continue;
+    const object = record(value);
+    if (object !== value) return 'the rendering has a document that is not an object';
+    const metadata = record(object.metadata);
+    const { kind } = object;
+    const { name, namespace } = metadata;
+    if (typeof kind !== 'string' || !kind || typeof name !== 'string' || !name)
+      return 'the rendering has an object with no kind or no name';
+    if (namespace !== undefined && typeof namespace !== 'string')
+      return `${kind} ${name} has a namespace that is not a name`;
+    if (kind.endsWith('List') || Object.hasOwn(object, 'items'))
+      return `the rendering has a ${kind} that wraps objects the gate does not key`;
+    const label = `${kind} ${namespace ? `${namespace}/` : namespace === '' ? '""/' : ''}${name}`;
+    const key = JSON.stringify([kind, namespace ?? null, name]);
+    if (objects.has(key)) return `the rendering has ${label} twice`;
+    objects.set(key, { label, body: object });
+    // A duplicate key holds above, so each path names one node.
+    if (isCoreConfigMap(object)) {
+      const data = spanOf(doc.get('data', true), offset);
+      if (data) exempt.push(data);
+    }
+    const path = podTemplatePath(object);
+    const annotations = path && doc.getIn([...path, 'metadata', 'annotations'], true);
+    if (isMap(annotations))
+      for (const pair of annotations.items) {
+        if (!isScalar(pair.key) || typeof pair.key.value !== 'string' || !isChecksum(pair.key.value)) continue;
+        const [from, to] = [spanOf(pair.key, offset), spanOf(pair.value, offset) ?? spanOf(pair.key, offset)];
+        if (from && to) exempt.push([from[0], to[1]]);
+      }
+  }
+  return { objects, exempt };
+}
+
+/** A version label's line, its key plain, its value alone after it, in no quotes or in one kind. */
+const VERSION_LINE = /^([ \t]*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):[ \t]+)(["']?)([^"'#\s]+)\2([ \t]*)$/;
+
+/**
+ * The lines of a rendering the text rule compares: every line but one that lies wholly in an exempt span, from its
+ * first character after its indentation to its end. The line that opens a span (`data:`, `config.yaml: |`, a flow
+ * mapping's `{`) and the one that closes it beyond its end are compared, as is a blank line at a span's edge. Each line
+ * is written with the moved images' references as their pairs' placeholders; a version label's line has its value is written `<version>` only where it is one the object rule saw move as the chart's (`moved`), in the same
+ * quotes, with nothing after it, so a label's text the gate reads alike and another reader may not (`1e400` for
+ * `9e999`) is compared. Each comes with its number in the rendering, for the hold to name.
+ */
+export function comparedLines(
+  rendered: string,
+  exempt: readonly Span[],
+  written: readonly [string, string][],
+  moved: ReadonlySet<string> = new Set(),
+): { line: number; text: string }[] {
+  const lines: { line: number; text: string }[] = [];
+  let start = 0;
+  for (const [i, line] of rendered.split('\n').entries()) {
+    const end = start + line.length;
+    const first = start + (/^[ \t]*/.exec(line)?.[0].length ?? 0);
+    const inside = exempt.some(([from, to]) => from <= first && end <= to && first < to);
+    if (!inside) {
+      const label = VERSION_LINE.exec(line);
+      const text =
+        label && moved.has(label[3] as string) ? `${label[1]}${label[2]}<version>${label[2]}${label[4]}` : line;
+      lines.push({ line: i + 1, text: writtenAlike(text, written) });
+    }
+    start = end + 1;
+  }
+  return lines;
+}
+
+/**
+ * Whether the head's rendering writes any line outside its exempt spans (`readRendering`'s) otherwise than the base, in
+ * order: whatever any reader makes of a text the gate's reader takes for no change, it is the same text. Undefined when
+ * every line is.
+ */
+export function linesDiffer(
+  base: string,
+  head: string,
+  exempt: { base: readonly Span[]; head: readonly Span[] },
+  pairs: readonly ImagePair[],
+  moved: ReadonlySet<string>,
+): string | undefined {
+  const a = comparedLines(base, exempt.base, placeholders(pairs, 'base'), moved);
+  const b = comparedLines(head, exempt.head, placeholders(pairs, 'head'), moved);
+  // Each named as the rendering writes it.
+  const [baseLines, headLines] = [base.split('\n'), head.split('\n')];
+  const at = (lines: string[], n: number) => short((lines[n - 1] ?? '').trim());
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const [x, y] = [a[i], b[i]];
+    if (x?.text === y?.text) continue;
+    const outside = "outside a ConfigMap's data and the checksums, the head's";
+    if (!y) return `${outside} rendering ends where the base's writes line ${x?.line}: ${at(baseLines, x?.line ?? 0)}`;
+    if (!x) return `${outside} rendering writes line ${y.line} past the base's end: ${at(headLines, y.line)}`;
+    return `${outside} line ${y.line} is not the base's line ${x.line}: ${at(headLines, y.line)}`;
+  }
+  return undefined;
+}
+
+/** A mapping as YAML reads one: an object of no class. A Date (YAML 1.1's timestamp) is a value, kept as it is. */
+const isPlain = (value: unknown): value is Record<string, unknown> =>
+  value !== null &&
+  typeof value === 'object' &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value) as object | null);
+
+/** One moved image: its reference at the base, and the one at the head that replaces it. */
+export interface ImagePair {
+  from: string;
+  to: string;
+}
+
+/** The chart a rendering is of, at the base's version and at the head's: the same for a value's move. */
+export interface ChartVersions {
+  chart: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * What one side's moved references are written as: each pair's reference, and its digest alone, by a placeholder of
+ * that pair's, the base's `from` and the head's `to` alone. The old reference left at the head, or one pair's image in
+ * another's place, is no placeholder, and differs.
+ */
+export function placeholders(pairs: readonly ImagePair[], side: Side): [string, string][] {
+  const entries = pairs.flatMap((pair, i): [string, string][] => {
+    const ref = side === 'base' ? pair.from : pair.to;
+    const digest = ref.split('@')[1];
+    return [[ref, `<image ${i}>`], ...(digest ? [[digest, `<digest ${i}>`] as [string, string]] : [])];
+  });
+  return entries.filter(([text]) => text).sort(([a], [b]) => b.length - a.length);
+}
+
+/** Any character an image reference may hold: a registry, a path, a tag, a digest. */
+const REFERENCE_CHARACTER = 'A-Za-z0-9_./:@+-';
+
+/** Each placeholder list's patterns, compiled once: a rendering's every line and string is written with them. */
+const PATTERNS = new WeakMap<readonly [string, string][], [RegExp, string][]>();
+
+/**
+ * A text with each moved reference written as its placeholder where it stands whole: nothing a reference may hold on
+ * either side of it, so `app:1.1` never covers `app:1.10`, `app:1.1_debug`, `app:1.1-alpine` or `mirror.io/app:1.1`.
+ * A digest alone (`sha256:…`, or another algorithm's) may follow `@`, as an image written by its digest does, under
+ * any repository: a digest names one content, which the runtime checks as it pulls. Nothing may follow it.
+ */
+export function writtenAlike(text: string, written: readonly [string, string][]): string {
+  let patterns = PATTERNS.get(written);
+  if (!patterns) {
+    patterns = written.map(([ref, as]) => {
+      const before = /^[a-z0-9]+:[0-9a-f]+$/.test(ref) ? REFERENCE_CHARACTER.replace('@', '') : REFERENCE_CHARACTER;
+      return [new RegExp(`(?<![${before}])${literal(ref)}(?![${REFERENCE_CHARACTER}])`, 'g'), as];
+    });
+    PATTERNS.set(written, patterns);
+  }
+  return patterns.reduce((at, [whole, as]) => at.replace(whole, () => as), text);
+}
+
+/** A value with every string's moved references written as their placeholders. */
+function withoutImage(value: unknown, written: readonly [string, string][]): unknown {
+  if (typeof value === 'string') return writtenAlike(value, written);
+  if (Array.isArray(value)) return value.map((each) => withoutImage(each, written));
+  if (isPlain(value))
+    return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, withoutImage(each, written)]));
+  return value;
+}
+
+/**
+ * The `metadata.labels` the chart's version labels may change in, by their path: the object's own, its pod template's
+ * (and a CronJob's job template's), and a StatefulSet's claim templates'. Nowhere else: a resource's spec may carry
+ * metadata a controller reads as input.
+ */
+function labelPlaces(object: Record<string, unknown>): Map<string, Record<string, unknown>> {
+  const places = new Map<string, Record<string, unknown>>();
+  const add = (path: string, metadata: unknown) => {
+    const labels = record(metadata).labels;
+    if (isPlain(labels)) places.set(`${path}metadata.labels`, labels);
+  };
+  add('', object.metadata);
+  const kind = `${object.apiVersion} ${object.kind}`;
+  const path = POD_TEMPLATES[kind];
+  if (path) add(`${path.join('.')}.`, record(path.reduce<unknown>((at, each) => record(at)[each], object)).metadata);
+  if (kind === 'batch/v1 CronJob') add('spec.jobTemplate.', record(record(object.spec).jobTemplate).metadata);
+  const claims = kind === 'apps/v1 StatefulSet' ? record(object.spec).volumeClaimTemplates : undefined;
+  if (Array.isArray(claims))
+    for (const [i, claim] of claims.entries()) add(`spec.volumeClaimTemplates[${i}].`, record(claim).metadata);
+  return places;
+}
+
+/** A chart's label (`tempo-3.2.1`, a subchart's `alertmanager-2.5.1`): its name and its version. */
+const CHART_LABEL = /^(.+?)-(v?\d+(?:\.\d+)*(?:[-+][A-Za-z0-9.+-]*)?)$/;
+
+/**
+ * Why a version label's change is not the chart's, or undefined when it is: `helm.sh/chart` the chart's own label at
+ * the base (`<chart>-<from>`) and at the head (`<chart>-<to>`), or a subchart's of the same name at both, each at a
+ * version; `app.kubernetes.io/version` a version at both. A value's move or an image's changes neither.
+ */
+function versionLabelWrong(label: string, was: string, now: string, chart?: ChartVersions): string | undefined {
+  if (!chart || chart.from === chart.to) return 'a version label changes in a move that moves no chart';
+  if (label === 'app.kubernetes.io/version')
+    return VERSION_WORD.test(was) && VERSION_WORD.test(now) ? undefined : `${short(now)} is no version`;
+  const [own, next] = [`${chart.chart}-${chart.from}`, `${chart.chart}-${chart.to}`];
+  if (was === own || now === next) return was === own && now === next ? undefined : `${short(now)} is not ${next}`;
+  // A label written as the chart's own name and a version is the chart's, which moves from its version to its version
+  // alone: a subchart of its parent's name, or of its name and a version's (`x-v2`), is held with it.
+  const owns = (value: string) =>
+    value.startsWith(`${chart.chart}-`) && VERSION_WORD.test(value.slice(chart.chart.length + 1));
+  if (owns(was) || owns(now)) return `${short(now)} is not ${next}`;
+  // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward.
+  const [a, b] = [CHART_LABEL.exec(was), CHART_LABEL.exec(now)];
+  const major = (version: string) => version.replace(/^v/, '').split('.')[0];
+  if (!a || !b || a[1] !== b[1]) return `${short(now)} is not ${short(was)}'s chart at another version`;
+  if (compareVersions(b[2] as string, a[2] as string) < 0 || major(a[2] as string) !== major(b[2] as string))
+    return `${short(now)} is not ${short(was)} forward on its major`;
+  return undefined;
+}
+
+/** Where an object names a version label anywhere but a place it may change (a selector, a policy), or undefined. */
+function namesVersionLabel(value: unknown, places: ReadonlySet<unknown>, path = ''): string | undefined {
+  if (places.has(value)) return undefined;
+  if (typeof value === 'string') return VERSION_LABELS.has(value) ? path : undefined;
+  if (Array.isArray(value)) {
+    for (const [i, each] of value.entries()) {
+      const at = namesVersionLabel(each, places, `${path}[${i}]`);
+      if (at !== undefined) return at;
+    }
+    return undefined;
+  }
+  if (!isPlain(value)) return undefined;
+  for (const [key, each] of Object.entries(value)) {
+    if (VERSION_LABELS.has(key)) return `${path}${step(key)}`;
+    const at = namesVersionLabel(each, places, `${path}${step(key)}`);
+    if (at !== undefined) return at;
+  }
+  return undefined;
+}
+
+/**
+ * The first object of a rendering (main's overlay, say) that names a version label anywhere but its own labels, as a
+ * selector would: a chart's version labels moving would select other pods for it. Undefined when none does, or when the
+ * rendering cannot be read, which condition 6 holds on its own.
+ */
+export function versionLabelNamed(rendered: string): string | undefined {
+  const objects = objectsOf(rendered);
+  if (typeof objects === 'string') return undefined;
+  for (const { label, body } of objects.values()) {
+    const object = record(body);
+    if (isCoreConfigMap(object)) continue;
+    const at = namesVersionLabel(object, new Set(labelPlaces(object).values()));
+    if (at !== undefined) return `${label} names a version label at ${at.replace(/^\./, '')}`;
+  }
+  return undefined;
+}
+
+/**
+ * An object as condition 6 compares it: the moved image's references written as their pair's placeholders, a core
+ * ConfigMap's `data` set aside (its `binaryData`, metadata, labels and annotations are not `data`), and a core
+ * workload's pod template's annotations by the `checksum/` prefix taken out, which a chart writes from the
+ * configuration so a change to it restarts the pods. The version labels are set aside pairwise, in `manifestsDiffer`.
+ */
+export function comparable(body: unknown, written: readonly [string, string][]): Record<string, unknown> {
+  const object = record(withoutImage(body, written));
+  // Its data whole, keys added or gone among it, and the data itself added or gone.
+  if (isCoreConfigMap(object)) object.data = '<configuration>';
+  const path = podTemplatePath(object);
+  const template = path?.reduce<unknown>((at, each) => record(at)[each], object);
+  const metadata = template === undefined ? undefined : record(record(template).metadata);
+  const annotations = metadata?.annotations;
+  if (metadata && isPlain(annotations)) {
+    const kept = Object.entries(annotations).filter(([key]) => !isChecksum(key));
+    if (kept.length) metadata.annotations = Object.fromEntries(kept);
+    else delete metadata.annotations;
+  }
+  return object;
+}
+
+const step = (key: string) => (/^[A-Za-z_][\w-]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
+
+/** The first place two values differ, by its path from the object, or undefined when they are the same. */
+function firstDifference(a: unknown, b: unknown, path = ''): string | undefined {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if (i >= a.length || i >= b.length) return `${path}[${i}]`;
+      const at = firstDifference(a[i], b[i], `${path}[${i}]`);
+      if (at !== undefined) return at;
+    }
+    return undefined;
+  }
+  // YAML 1.1 reads a timestamp as a Date, which has no keys to compare: compared by its time. Any other object that is
+  // not a plain mapping is never the same as anything.
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime() ? undefined : path;
+  if (!isPlain(a) || !isPlain(b)) return a === b ? undefined : path;
+  for (const key of new Set([...Object.keys(b), ...Object.keys(a)])) {
+    if (!Object.hasOwn(a, key) || !Object.hasOwn(b, key)) return `${path}${step(key)}`;
+    const at = firstDifference(a[key], b[key], `${path}${step(key)}`);
+    if (at !== undefined) return at;
+  }
+  return undefined;
+}
+
+const beyond = (label: string, at: string, as: string) =>
+  `the manifests change beyond the image: ${label} at ${at.replace(/^\./, '') || 'the object'}${as}`;
+
+/**
+ * Whether two renderings differ in anything but the moved images (each pair's `from` at the base for its `to` at the
+ * head), the chart's own version labels, a ConfigMap's data and a pod template's checksums, compared object by object:
+ * the same objects at the base and at the head, none added or gone, each the same once those are set aside. A version
+ * label may change only as the chart's (`versionLabelWrong`), and not at all where any object names one elsewhere, as a
+ * selector would. Each is read as YAML 1.2 and as YAML 1.1, and a difference in either holds, so a scalar two readers
+ * read apart (`yes`, `0777`) is read both ways. The first difference is named, with its object and field. Then the
+ * text (`linesDiffer`): outside the exempt spans, every line the base's, so a change one reader takes for none (`0X10`
+ * for `"0X10"`, `9e999` for `1e400`) holds whatever another reader makes of it.
+ */
+export function manifestsDiffer(
+  base: string,
+  head: string,
+  pairs: readonly ImagePair[],
+  chart?: ChartVersions,
+): string | undefined {
+  const [fromBase, fromHead] = [placeholders(pairs, 'base'), placeholders(pairs, 'head')];
+  // The version labels' values the object rule saw move as the chart's: only these are written alike in the text.
+  const moved = new Set<string>();
+  // The spans the text rule sets aside, from the YAML 1.2 reading: where a place lies does not depend on the schema.
+  const exempt: { base: Span[]; head: Span[] } = { base: [], head: [] };
+  for (const version of YAML_VERSIONS) {
+    const [readBase, readHead] = [readRendering(base, version), readRendering(head, version)];
+    if (typeof readBase === 'string') return `at the base, ${readBase}`;
+    if (typeof readHead === 'string') return `at the head, ${readHead}`;
+    if (version === '1.2') Object.assign(exempt, { base: readBase.exempt, head: readHead.exempt });
+    const [was, now] = [readBase.objects, readHead.objects];
+    if (!was.size || !now.size) return 'a rendering came out empty: nothing to compare';
+    const as = version === '1.2' ? '' : ` (as YAML ${version} reads it)`;
+    for (const [key, object] of now)
+      if (!was.has(key)) return `the head renders ${object.label}, which the base does not`;
+    for (const [key, object] of was) if (!now.has(key)) return `the head no longer renders ${object.label}`;
+    let relabelled = false;
+    const compared: [Rendered, Record<string, unknown>, Record<string, unknown>][] = [];
+    for (const [key, object] of now) {
+      const [a, b] = [comparable((was.get(key) as Rendered).body, fromBase), comparable(object.body, fromHead)];
+      const [placesA, placesB] = [labelPlaces(a), labelPlaces(b)];
+      for (const [path, labels] of placesB) {
+        const before = placesA.get(path);
+        if (!before) continue;
+        for (const label of VERSION_LABELS) {
+          const [x, y] = [before[label], labels[label]];
+          if (typeof x !== 'string' || typeof y !== 'string' || x === y) continue;
+          const wrong = versionLabelWrong(label, x, y, chart);
+          if (wrong) return `${beyond(object.label, `${path}${step(label)}`, as)}: ${wrong}`;
+          before[label] = labels[label] = '<version>';
+          moved.add(x).add(y);
+          relabelled = true;
+        }
+      }
+      compared.push([object, a, b]);
+    }
+    for (const [object, a, b] of compared) {
+      const at = firstDifference(a, b);
+      if (at !== undefined) return beyond(object.label, at, as);
+    }
+    // A version label that moved must select nothing: an object naming one elsewhere would select other pods now.
+    if (relabelled)
+      for (const [object, , b] of compared) {
+        const at = namesVersionLabel(b, new Set(labelPlaces(b).values()));
+        if (at !== undefined)
+          return `${object.label} names a version label at ${at.replace(/^\./, '')}, and the chart's version labels change${as}`;
+      }
+  }
+  return linesDiffer(base, head, exempt, pairs, moved);
 }
 
 const HIGH = new Set(['HIGH', 'CRITICAL']);
@@ -555,7 +1276,10 @@ export function scansShow(
 }
 
 /** The image references before and after each moved image, for the scans and the renderings. */
-async function imagePairs(move: Move, io: PinMoveIO): Promise<{ from: string; to: string }[] | string> {
+export async function imagePairs(
+  move: Move,
+  io: Pick<PinMoveIO, 'render'>,
+): Promise<{ from: string; to: string }[] | string> {
   if (move.what === 'image') return [{ from: move.from, to: move.to }];
   const chart = move.pins[0]?.chart;
   if (!chart) return `${move.name} names no chart`;
@@ -634,7 +1358,7 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   // 2. Not what judges.
   const judge = JUDGES.find((j) => move.pins.some(j.test));
   if (judge)
-    return { reason: `${judge.name}'s own pin: a scanner cannot vouch for its replacement, so it is Martin's` };
+    return { reason: `${judge.name}'s own pin: what judges cannot vouch for its replacement, so it is Martin's` };
   // 3. Signed where its publisher signs: an image of ours passes as an exact pin, or not at all.
   if (move.what === 'image' && /^ghcr\.io\/the-roganator\//.test(move.from))
     return {
@@ -647,25 +1371,28 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   }
   const pairs = await imagePairs(move, io);
   if (typeof pairs === 'string') return { reason: pairs };
-  if (move.what !== 'chart') {
-    for (const { from, to } of pairs) {
-      const backward = await imageForward(from, to, io);
-      if (backward) return { reason: backward };
-    }
+  for (const { from, to } of pairs) {
+    const backward = move.what === 'chart' ? await chartImageForward(from, to, io) : await imageForward(from, to, io);
+    if (backward) return { reason: backward };
   }
   // 5. No record goes stale.
   const [hashBase, hashHead] = await Promise.all([io.hashes('base'), io.hashes('head')]);
   const stale = staleRecords(hashBase, hashHead);
   if (stale) return { reason: stale };
   // 6. Nothing else that runs changes: a chart's or a value's chart rendered, or the overlay for an image in deploy/.
-  const references = pairs.flatMap(({ from, to }) => [from, to, from.split('@')[1] ?? '', to.split('@')[1] ?? '']);
   const chart = move.pins[0]?.chart;
   if (chart || move.pins.some((m) => m.place.file.startsWith('deploy/'))) {
     const [was, after] = chart
       ? await Promise.all([io.render('base', chart.base), io.render('head', chart.head)])
       : await Promise.all([io.overlay('base'), io.overlay('head')]);
-    const differ = manifestsDiffer(was, after, references);
+    const versions = chart && { chart: chart.base.chart, from: chart.base.version, to: chart.head.version };
+    const differ = manifestsDiffer(was, after, pairs, versions);
     if (differ) return { reason: differ };
+    // What main's own manifests select by: a chart's version labels moving would move its pods out from under them.
+    if (versions && versions.from !== versions.to) {
+      const named = versionLabelNamed(await io.overlay('base'));
+      if (named) return { reason: `${named} in deploy/, and the chart's version labels change` };
+    }
   }
   // 7. The scans show it.
   // Each platform we run apart, so a High new on one is never hidden by the other's findings.
@@ -681,10 +1408,21 @@ export async function pinMove(reader: PinMoveIO, head: string): Promise<PinMoveR
   );
   const shown = scansShow(scanned);
   if ('reason' in shown) return shown;
-  // 8. Something ran it, last: a pin only a cluster runs is held so with every other condition proved, and its hold
-  // then says that the platform check (task 34) is all it waits for.
+  // 8. Something ran it, last: a pin a cluster runs waiting on `platform` is held so with every other condition
+  // proved, and its hold then says that the check is all it waits for.
   const runs = whatRunsIt(move);
   if ('reason' in runs) return runs;
+  if (runs.checks.includes(PLATFORM_CHECK)) {
+    const rendered = chart ? await io.render('head', chart.head) : await io.overlay('head');
+    const patched = await io.patched();
+    if (typeof patched === 'string') return { reason: patched };
+    const unstarted = started(
+      rendered,
+      pairs.map(({ to }) => to),
+      patched,
+    );
+    if (unstarted) return { reason: unstarted };
+  }
   const notRun = ranIt(await io.runs(), head, runs.checks);
   if (notRun) return { reason: notRun };
   return { move, ran: runs.checks, fixed: shown.fixed };
@@ -699,7 +1437,7 @@ export function moveTitle(result: { move: Move; ran: string[]; fixed: number }) 
       : move.what === 'value'
         ? move.to.slice(0, 19)
         : move.to;
-  const by = ran.length > 1 && ran.every((r) => r.startsWith('tests (')) ? 'tests' : ran.join(', ');
+  const by = [...new Set(ran.map((r) => (r.startsWith('tests (') ? 'tests' : r)))].join(' and ');
   return `A pin move of ${move.name} to ${to}, forward on its line: ${fixed} finding${fixed === 1 ? '' : 's'} with a fix gone, none new at High, ${by} ran it`;
 }
 
@@ -769,8 +1507,24 @@ export interface RealOptions {
   head: string;
   /** Where the commits are fetched from: the repository on GitHub, unless a test names a local one. */
   remote?: string;
-  /** The check runs at the head, read through the API by the gate. */
+  /** The check runs at the head, each with the workflow that made it, read through the API by the gate. */
   runs: () => Promise<Run[]>;
+}
+
+/**
+ * Removes a reader's directory, as far as it can, and never throws: Trivy runs as root in its container and writes its
+ * cache there, which a runner's own user cannot then remove (`EACCES` on the directory, as Node names it). What it
+ * leaves is in the runner's temp, which goes with the job; a failure to tidy is never a failure to judge. It says
+ * what it could not remove, on stderr, so the answers on stdout stay the job's own.
+ */
+export function removeWork(dir: string): boolean {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.error(`left ${dir}: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`);
+    return false;
+  }
 }
 
 /** The readers on two commits of `repo`, fetched into a directory of their own, as data. */
@@ -821,8 +1575,10 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
   const tools = realTools(trivyImage(), join(work, 'cache'), work);
   mkdirSync(join(work, 'cache'));
   let pulled: Promise<unknown> | undefined;
+  // The cluster main describes, read once from the gate's own checkout.
+  let cluster: { kubeVersion: string | undefined; apiVersions: string[] } | undefined;
   return {
-    close: () => rmSync(work, { recursive: true, force: true }),
+    close: () => removeWork(work),
     async diff() {
       const raw = (await git('diff', '--raw', '--no-renames', '--no-abbrev', sides.base, sides.head)).stdout;
       // Each modified file's blob at both commits, as bytes git stores: no patch to parse, no filter or driver run.
@@ -880,7 +1636,17 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
       if (!Array.isArray(versions)) throw new Error(`${repo} lists no versions of ${chart}`);
       return versions.filter((v): v is string => typeof v === 'string');
     },
-    render: (side, chart) => tools.render(chart, dirs[side]),
+    // As Argo CD renders it, on the cluster main describes: the k3s main pins and the API versions main's record keeps,
+    // never the head's, so a head that changes either renders as main's cluster would run it.
+    render: async (side, chart) => {
+      cluster ??= (() => {
+        const apiVersions = apiVersionsOf(ROOT);
+        if (!apiVersions)
+          throw new Error(`the gate's checkout keeps no ${API_VERSIONS_RECORD} to render charts as Argo CD does`);
+        return { kubeVersion: kubeVersionOf(inventory(ROOT).items), apiVersions };
+      })();
+      return tools.render(chart, dirs[side], cluster.kubeVersion, cluster.apiVersions);
+    },
     async overlay(side) {
       const { stdout } = await exec('kustomize', ['build', join(dirs[side], 'deploy/overlays/local')], {
         maxBuffer: 64 * 1024 * 1024,
@@ -915,6 +1681,7 @@ export async function realPinMoveIO(options: RealOptions): Promise<PinMoveIO & {
       };
     },
     runs: options.runs,
+    patched: async () => patchedByTheCheck(),
   };
 }
 

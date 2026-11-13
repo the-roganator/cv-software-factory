@@ -9,6 +9,9 @@
 # request, or another workflow given its name, can only make the honest gate look again, or leave the check missing,
 # which holds the pull request as a failing check does.
 name: review requested
+# A run on the merge queue's commit is named by the queue's branch, which names its pull request; on a pull request,
+# an empty name leaves GitHub's own, the pull request's title.
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || '' }}
 
 on:
   pull_request:

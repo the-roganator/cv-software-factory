@@ -77,6 +77,8 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
     GITHUB_DRY_RUN=true ARTIFACTS_DIR=/tmp/artifacts PORT=8091 node apps/factory/src/cli.ts github run
   ```
 
+  Never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs: each worker writes its own commit to the deploy and pin watches' branches whenever they are at any other (ADR 0017), so two that write never settle, and neither queues anything.
+
   The GitHub worker signs each refusal it answers (its guard's, and GitHub's 403s) so the line can record it: `make refusal-key` (and so `make up`) makes its Ed25519 key once, through stdin, the Secret `refusal-signing-key` in `factory`, which only the worker reads, and its public half, the ConfigMap `refusal-key`, which the line reads, and the console, to check each relayed refusal Guardrails shows. On the host, `REFUSAL_SIGNING_KEY` and `REFUSAL_PUBLIC_KEY` take them as PEM; without them the worker answers unsigned and the line records none. On a cluster made before it, run it once.
 
   The red-team harness (`factory red-team`) makes each of spec 5.3's attacks Martin launches (`docs/COMPONENTS/RED-TEAM-HARNESS.md`). It connects as its own role, `factory_redteam` (`make up` makes `postgres-redteam`), and acts only on an `attack.launched` of Martin's. It makes the egress and image attacks' pods in `red-team`, a namespace of their own, so it needs the Kubernetes API (`kubectl proxy`, as the line's `soak-check` uses it); attack 1 posts a report through the app's front door (`APP_URL`, `INGRESS_URL`); attacks 2 and 3 ask the GitHub worker's attack door (`GITHUB_ATTACK_URL`, the worker's `ATTACK_PORT` above). Scale the cluster's copy to nothing first (`kubectl -n factory scale deployment/red-team --replicas=0`), and back to one after, so two do not take the same launch:
@@ -87,6 +89,16 @@ kubectl --context k3d-software-factory -n factory port-forward svc/postgres 5432
   (store_role redteam && KUBE_API_URL=http://127.0.0.1:8001 ARTIFACTS_DIR=/tmp/artifacts \
     APP_URL=http://website.localhost:8080 RUNNER_IMAGE="$(kubectl --context k3d-software-factory -n factory get deploy red-team -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUNNER_IMAGE")].value}')" \
     GITHUB_ATTACK_URL=http://localhost:8082 node apps/factory/src/cli.ts red-team)
+  ```
+
+  The dependency sense (`factory patching`, [`docs/COMPONENTS/PATCHING.md`](docs/COMPONENTS/PATCHING.md)) connects as its own role, `factory_patching` (`make up` makes `postgres-patching`), lists the cluster's pods through the Kubernetes API, and asks the GitHub worker's door for its two reads (`GITHUB_URL`, the worker's `PATCHING_PORT`). `--once` makes one pass and says what it appended, or why not. Give it the Deployment's `PATCHING_NAMESPACES`: unset, it lists every namespace, `runners` and its job tokens included. Scale the cluster's copy to nothing first (`kubectl -n factory scale deployment/patching --replicas=0`), and back to one after. On a cluster made before the sense, run `make up` first, so `postgres-patching` is there when the migrate Job and the sense read it:
+
+  ```sh
+  kubectl proxy --port=8001 &
+  kubectl --context k3d-software-factory -n factory port-forward svc/github 8083:8083 &
+  (store_role patching && KUBE_API_URL=http://127.0.0.1:8001 GITHUB_URL=http://localhost:8083 \
+    PATCHING_NAMESPACES="$(kubectl --context k3d-software-factory -n factory get deploy patching -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PATCHING_NAMESPACES")].value}')" \
+    node apps/factory/src/cli.ts patching --once)
   ```
 
   Runners need the cluster, with the line started: their agent pods reach the cluster's gateway and the line's handback, and nothing else. The smoke run asks the line, through a port-forward to its step API, to have a coder fix an off-by-one seeded in a scratch copy of the app; the GitHub worker records the commit it would have made, and nothing reaches GitHub. The coder works on Claude, through the cluster's gateway, and the run costs money; with `ALL_LOCAL=true` on that gateway and LM Studio running, it works on Qwen, for nothing:

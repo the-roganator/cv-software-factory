@@ -1,16 +1,28 @@
+import { createServer } from 'node:http';
 import { MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
-import { DiskArtifacts, EventWriter } from '@software-factory/store';
+import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
+import { listenLocal } from '@software-factory/testing';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../../packages/store/test/database.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
-import { GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
+import { GitHubWorker, GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
 import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
-import { exitCode, MOST_AGAIN, nextAfter, type Pass, PatchingSense, type Senses } from '../../src/patching/sense.ts';
+import { waitAfter } from '../../src/patching/schedule.ts';
+import {
+  exitCode,
+  MOST_AGAIN,
+  MOST_REFUSED,
+  nextAfter,
+  type Pass,
+  PatchingSense,
+  refused,
+  type Senses,
+} from '../../src/patching/sense.ts';
 import type { Kube } from '../../src/runners/kube.ts';
 import { LANES } from '../../src/vulnerabilities/moves.ts';
 import {
@@ -251,6 +263,7 @@ describe('the dependency sense', () => {
     const day = (finished: string) =>
       ({ pass: 'appended', day: { repositories: [{ run: { finished } }] } }) as unknown as Pass;
     expect(nextAfter({ pass: 'again', why: [] }, now)).toEqual({ next: 'soon', why: 'again' });
+    expect(nextAfter({ pass: 'refused', why: [] }, now)).toEqual({ next: 'shortly', why: 'refused' });
     expect(nextAfter({ pass: 'failed', failed: [] }, now)).toEqual({ next: 'hour', why: 'failed' });
     expect(nextAfter({ pass: 'not-real' }, now)).toEqual({ next: 'daily' });
     expect(nextAfter(day('2026-11-11T04:58:00Z'), now)).toEqual({ next: 'daily' });
@@ -260,7 +273,8 @@ describe('the dependency sense', () => {
       exitCode({ pass: 'not-real' }),
       exitCode({ pass: 'failed', failed: [] }),
       exitCode({ pass: 'again', why: [] }),
-    ]).toEqual([0, 0, 1, 75]);
+      exitCode({ pass: 'refused', why: [] }),
+    ]).toEqual([0, 0, 1, 75, 75]);
   });
 
   it('is a failed pass when a 409 comes beside a read that failed', async () => {
@@ -314,6 +328,112 @@ describe('the dependency sense', () => {
           log,
         }),
     ).toThrow('one or two repositories');
+  });
+
+  it("reads again shortly when the worker's door refused every read that failed, a few times in a row", async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED 10.43.117.70:8083'), { code: 'ECONNREFUSED' });
+    // As `fetch` gives it: its own error, the refusal its cause.
+    const fetched = new TypeError('fetch failed', { cause: door });
+    const s = sense(
+      senses({ moves: async () => Promise.reject(door), dependencyPulls: async () => Promise.reject(fetched) }),
+    );
+    const passes: Pass[] = [];
+    for (let i = 0; i < MOST_REFUSED; i++) passes.push(await s.pass());
+    expect(passes.map((p) => p.pass)).toEqual([...Array(MOST_REFUSED - 1).fill('refused'), 'failed']);
+    expect(passes[0]).toEqual({
+      pass: 'refused',
+      why: [
+        `the moves of ${FACTORY}: connect ECONNREFUSED 10.43.117.70:8083`,
+        `the Dependabot pull requests of ${FACTORY}: fetch failed`,
+        `the moves of ${APP}: connect ECONNREFUSED 10.43.117.70:8083`,
+        `the Dependabot pull requests of ${APP}: fetch failed`,
+      ],
+    });
+    expect(await days()).toEqual([]);
+    expect(logged.filter((l) => l.level === 50).map((l) => l.msg)).toEqual([
+      `patching: 4 of the reads failed, refused by the GitHub worker's door ${MOST_REFUSED} times in a row, so the day is not appended`,
+    ]);
+  });
+
+  it("is a failed pass when a refusal comes beside another failure, or from the cluster's read", async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6443'), { code: 'ECONNREFUSED' });
+    for (const change of [
+      {
+        moves: async () => Promise.reject(door),
+        dependencyPulls: async () => Promise.reject(new Error('GitHub failed')),
+      },
+      { running: async () => Promise.reject(door) },
+    ] satisfies Partial<Senses>[])
+      expect((await sense(senses(change)).pass()).pass).toBe('failed');
+    expect([refused(new Error('reset')), refused(Object.assign(new Error('x'), { code: 'ECONNRESET' }))]).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  it('reads again shortly when the store refused the connection, and fails once the refusals reach the bound', async () => {
+    const reserved = createServer();
+    const { port } = await listenLocal(reserved);
+    await new Promise((resolve) => reserved.close(resolve));
+    const nowhere = connect(`postgres://factory_patching:x@127.0.0.1:${port}/factory`, { max: 1, connect_timeout: 1 });
+    try {
+      const s = sense(senses(), nowhere);
+      const first = await s.pass();
+      expect(first.pass).toBe('refused');
+      expect((first as { why: string[] }).why[0]).toMatch(/^the store: .*ECONNREFUSED/);
+      for (let i = 1; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
+      await expect(s.pass()).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+    } finally {
+      await nowhere.end({ timeout: 0 });
+    }
+  });
+
+  it('starts the count of refused passes anew after any other pass, on the same sense', async () => {
+    const door = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    let listening = false;
+    const s = sense(senses({ dependencyPulls: async () => (listening ? [] : Promise.reject(door)) }));
+    for (let i = 0; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
+    listening = true;
+    expect((await s.pass()).pass).toBe('appended');
+    listening = false;
+    for (let i = 0; i < MOST_REFUSED - 1; i++) expect((await s.pass()).pass).toBe('refused');
+  });
+
+  it('reads the day from a worker whose door listens after the sense first reads', async () => {
+    // The worker as a deploy restarts it: its door refuses until it listens. The refusal is a port the OS gave and took
+    // back a moment before, which nothing here listens on again; the door listens on a port the OS gives then.
+    const reserved = createServer();
+    let { url } = await listenLocal(reserved);
+    await new Promise((resolve) => reserved.close(resolve));
+    const worker = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const { repo } = JSON.parse(body) as { repo: string };
+        const result = req.url?.endsWith('/moves') ? (repo === FACTORY ? factoryMoves() : appMoves()) : [];
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ result }));
+      });
+    });
+    const s = sense(
+      senses({
+        moves: (repo) => new GitHubWorker(url).read('moves', repo, {}),
+        dependencyPulls: (repo) => new GitHubWorker(url).read('dependencyPulls', repo, {}),
+      }),
+    );
+    const started = Date.now();
+    try {
+      // Listening only once the first pass is over, however long it took, so that pass is always refused.
+      const first = await s.pass();
+      expect(first.pass).toBe('refused');
+      const { next } = nextAfter(first, started);
+      // Taken again within the minute, not the hour a failed pass waits.
+      expect(waitAfter(started, (5 * 60 + 30) * 60_000, next)).toBeLessThanOrEqual(60_000);
+      ({ url } = await listenLocal(worker));
+      expect((await s.pass()).pass).toBe('appended');
+      expect(await days()).toHaveLength(1);
+    } finally {
+      if (worker.listening) await new Promise((resolve) => worker.close(resolve));
+    }
   });
 
   it('acts on no sample store', async () => {

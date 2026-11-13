@@ -146,6 +146,8 @@ describe('the list of a fixture repository', () => {
         version: '1.2.3',
         release: 'telemetry',
         values: ['deploy/base/values/chart.yaml'],
+        // Its Application's destination, the namespace Argo CD renders it in.
+        namespace: 'telemetry',
       },
       // The image its values file pins by digest: a pin of the chart's, where that image's alerts are located.
       pins: [{ file: 'deploy/base/values/chart.yaml', line: 2, digest: `sha256:${'3'.repeat(64)}` }],

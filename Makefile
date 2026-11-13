@@ -340,7 +340,8 @@ check-tests: ## The unit and database tests; SHARD=1/3 runs the first of three p
 # Dockerfile.browser's `playwright` stage, built from that file alone, as the probes' image is built on it.
 # The live tests' Postgres is the store tests' throwaway kind (packages/store/test/postgres.ts): its data goes with it,
 # so it writes without waiting for the disk. UPDATE=1 runs no live test, so starts none. CPUS=1.5 gives the browsers
-# as little CPU as CI's runner, and ARGS goes to Playwright, which then runs only the console's tests: ARGS='-g "<name>"'.
+# as little CPU as CI's runner, and ARGS goes to Playwright, which then runs only the console's tests: a file, a name or
+# both, ARGS='e2e/doors.spec.ts -g "<name>" --repeat-each=50'.
 e2e: ## Run every browser test CI runs, in the pinned Playwright image beside a throwaway Postgres; UPDATE=1 rewrites the snapshots
 	@set -e; net=software-factory-e2e-$$$$; db=$$net-postgres; url=; \
 	trap 'docker rm -f -v $$db >/dev/null 2>&1 || true; docker network rm $$net >/dev/null 2>&1 || true' EXIT; \

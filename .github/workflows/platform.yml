@@ -9,10 +9,18 @@
 # It runs the change's own scripts and manifests, so it holds nothing worth taking: its token reads the contents and
 # nothing else, no job names a secret, and the cluster gets none of the keys `make up` takes from the Keychain, so it
 # opens nothing and attempts nothing outside. It runs on a pull request and on the merge queue's commit, as check.yml's jobs do, and
-# refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): one that changes
-# deploy/, the Makefile, mise's pins or what it runs, but never the factory's App's deploy pin of our own images, which
-# were built from commits already merged (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
+# refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): any change to an input,
+# which is every path but a few classes no cluster is made from (docs, tests, the sources of images built on main and
+# pinned by digest, other workflows, .claude/, .devcontainer/, the lockfile and manifests), so a file no one listed
+# makes one; but never the factory's App's deploy pin of our own images, which were built from commits already merged
+# (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
+# In the merge queue it is skipped too when this workflow's `platform` made a cluster from the same inputs at the pull
+# request's head and passed there, within a day: check-kind.sh says how it tells, from git and GitHub's check runs alone.
+# The repository variable PLATFORM_SKIP set to `off` makes a cluster in the queue every time.
 name: platform
+# A run on the merge queue's commit is named by the queue's branch, which names its pull request; on a pull request,
+# an empty name leaves GitHub's own, the pull request's title.
+run-name: ${{ github.event_name == 'merge_group' && format('queue · {0}', github.event.merge_group.head_ref) || '' }}
 
 on:
   pull_request:
@@ -27,13 +35,17 @@ concurrency:
 
 jobs:
   # Whether the change is one a cluster alone can prove (scripts/check-kind.sh platform). In the merge queue, whose
-  # event names no pull request, it reads the author and base of the one the queue's branch names, to tell the App's
-  # deploy pin apart: that read, of a public pull request, is all its token can do.
+  # event names no pull request, it reads the one the queue's branch names, to tell the App's deploy pin apart, and,
+  # for a change a cluster proves, that pull request's head, its events, and the check runs, workflow runs and jobs
+  # there, to tell whether a cluster made there stands for the queue's: those reads, of a public repository, are all its
+  # token can do. Its log says the inputs' hash, and in the queue why a cluster is made or not.
   which:
     name: whether a cluster runs
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 5
     permissions:
+      actions: read
+      checks: read
       contents: read
       pull-requests: read
     outputs:
@@ -53,6 +65,7 @@ jobs:
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          PLATFORM_SKIP: ${{ vars.PLATFORM_SKIP }}
           GH_TOKEN: ${{ github.token }}
         run: |
           platform=$(scripts/check-kind.sh platform)
@@ -62,9 +75,10 @@ jobs:
   platform:
     name: platform
     needs: which
-    # Skipped only when the job above said `none`: a skipped job passes the required check, so one that failed, or said
-    # nothing, makes the cluster, as check.yml's `kind` failing runs everything.
-    if: ${{ !cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none') }}
+    # Skipped only when the job above said `none`, or `matched` (a cluster made at the head stands for the queue's): a
+    # skipped job passes the required check, so one that failed, or said anything else, makes the cluster, as check.yml's
+    # `kind` failing runs everything.
+    if: ${{ !cancelled() && (needs.which.result != 'success' || (needs.which.outputs.platform != 'none' && needs.which.outputs.platform != 'matched')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -79,6 +93,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The merge queue deletes an entry's branch when it ejects or removes it, and nothing cancels the runs on it: this
+      # stops the job, `make up` and the watch below included, once that branch is gone and the entry did not merge
+      # (scripts/queue-branch-gone.sh). A watcher of the whole job rather than a question in the watch's loop, so the
+      # steps after `make up` stop too.
+      - name: Stop if the merge queue lets this entry go
+        env:
+          QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: scripts/queue-branch-gone.sh watch
       # What the cluster costs the runner: its memory in use every five seconds, for the peak, and its disk at the end
       # (the last step). The whole of `make up` used 7.8 GiB of the runner's 16 at its peak, and 15 GB of disk.
       - name: Measure
@@ -94,8 +118,11 @@ jobs:
         with:
           version: 2026.10.17
           cache_save: ${{ github.ref == 'refs/heads/main' }}
-          install_args: node pnpm kubectl k3d helm kustomize cosign step yq
-      - run: pnpm install --frozen-lockfile
+          install_args: node pnpm kubectl k3d helm kustomize cosign step yq argocd
+      # As the lockfile has them, and running none of their scripts: a manifest's lifecycle script, which the lockfile
+      # does not record, or a .pnpmfile.cjs, would run here, before the cluster, with $GITHUB_PATH in reach. The job needs
+      # no install script (lefthook's prepare included), and allows no dependency's build.
+      - run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
       # `make up`, at the change's commit, with none of the keys it would take from the Keychain, which the runner has
       # not: every Secret they make is optional, so the cluster comes up whole without them, and opens nothing. A key of
       # any kind would have it try: the GitHub worker, given one, acts as the App and polls GitHub each pass, and
@@ -114,7 +141,9 @@ jobs:
           if ! WATCHED=$make scripts/platform-watch.sh; then
             kill -- "-$make" 2>/dev/null || true
             wait "$make" || true
-            echo "::error::The cluster did not come up: the line above says why."
+            # Stopped because the merge queue let the entry go (its notice is above): no fault of the cluster's.
+            [ ! -e "$RUNNER_TEMP/queue-gone" ] || exit 1
+            echo "::error::The cluster did not come up: the watch's first line above says why, and the lines after it what it waited on."
             exit 1
           fi
           wait "$make"
@@ -147,6 +176,12 @@ jobs:
           done
           REFUSALS_OUT="$RUNNER_TEMP/records/flag-stages-refusals.json" node scripts/flag-stages-refusals.ts || { echo "::error::flag-stages-refusals failed"; failed=1; }
           exit "$failed"
+      # The API versions Argo CD renders charts with on this cluster, its own list (scripts/api-versions.ts): the review
+      # gate and the scan render each chart with deploy/k3d/api-versions.json, so a chart that branches on an API
+      # renders for them as Argo CD renders it. Taken beside the records, and checked against the change's after they
+      # are uploaded, so a record that differs is retaken from the artifact.
+      - name: Take the API versions
+        run: node scripts/api-versions.ts take "$RUNNER_TEMP/records/api-versions.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: refusal-records
@@ -159,10 +194,15 @@ jobs:
         env:
           OUT: ${{ runner.temp }}/measure/pods
         run: scripts/platform-pods.sh
+      # Last of what the check requires, so a record to retake never hides a pod that did not run.
+      - name: The API versions are the record's
+        run: node scripts/api-versions.ts check "$RUNNER_TEMP/records/api-versions.json"
       # Kept as the run's artifact too, `cluster`, so a failure can be read when the job's log cannot be fetched.
       - name: What the cluster shows
         if: ${{ always() }}
         run: |
+          # A run the merge queue let go shows nothing worth reading.
+          if [ -e "$RUNNER_TEMP/queue-gone" ]; then echo "The merge queue let this entry go: nothing to show."; exit 0; fi
           exec > >(tee "$RUNNER_TEMP/measure/cluster.txt") 2>&1
           echo "Peak memory in use: $(sort -n "$RUNNER_TEMP/measure/memory" | tail -1) MiB"
           df -h / | tail -1
@@ -184,6 +224,21 @@ jobs:
             echo "--- $worker's log"
             kubectl --context k3d-software-factory -n factory logs "deploy/$worker" --tail=40 || true
           done
+          # Every pod that failed (a Job's failed attempts, which the end passes over once the Job completes), with when
+          # it started and ended and its log, and Postgres's, so a refused connection can be set against when Postgres
+          # listened.
+          kubectl --context k3d-software-factory get pods -A --field-selector=status.phase=Failed -o json |
+            jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name) started \(.status.startTime // "-"), \([.status.initContainerStatuses[]?, .status.containerStatuses[]? | .state.terminated // empty |
+              "ended \(.finishedAt // "-") exit \(.exitCode // "-")"] | join(", "))"' |
+            while read -r ns pod times; do
+              echo "--- $ns/$pod: $times"
+              kubectl --context k3d-software-factory -n "$ns" logs "$pod" --all-containers --timestamps --tail=60 || true
+            done || true
+          echo "--- The migrate Job's last attempt (it waits for the store, saying each refusal's code once)"
+          kubectl --context k3d-software-factory -n factory logs job/migrate --timestamps --tail=40 || true
+          echo "--- Postgres: started $(kubectl --context k3d-software-factory -n factory get pod postgres-0 \
+            -o jsonpath='{.status.startTime}, ready {.status.conditions[?(@.type=="Ready")].lastTransitionTime}' || true)"
+          kubectl --context k3d-software-factory -n factory logs statefulset/postgres --all-containers --timestamps --tail=200 || true
           echo "--- Alertmanager's notifications, by integration"
           kubectl --context k3d-software-factory get --raw \
             '/api/v1/namespaces/telemetry/services/http:prometheus-alertmanager:9093/proxy/metrics' |
@@ -191,7 +246,7 @@ jobs:
           echo "--- Alertmanager's log"
           kubectl --context k3d-software-factory -n telemetry logs statefulset/prometheus-alertmanager -c alertmanager --tail=40 || true
       # On every outcome but success, cancellation included. It holds Argo CD's, the pods' and the events' states, the
-      # runner's figures, and each pod the end found not running: its description, which shows an env value a manifest
+      # runner's figures, every failed pod's log and Postgres's, and each pod the end found not running: its description, which shows an env value a manifest
       # writes and only the name of a Secret another is read from, and its logs. No Secret is read, and the cluster
       # holds no key: its passwords and keys are made on the runner, and go with it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

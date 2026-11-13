@@ -84,7 +84,8 @@ esac
   );
   await chmod(kubectl, 0o755);
   const result = await promisify(execFile)(SCRIPT, [], {
-    env: { ...process.env, KUBECTL: kubectl, WAIT: '1', STABLE_TRIES: '2' },
+    // No pause between looks: a fixed second each was most of this file's time, and on a slow runner beyond a test's.
+    env: { ...process.env, KUBECTL: kubectl, WAIT: '1', STABLE_TRIES: '2', STABLE_INTERVAL: '0' },
   }).then(
     ({ stdout, stderr }) => ({ code: 0, out: stdout + stderr }),
     (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, out: e.stdout + e.stderr }),
@@ -168,15 +169,18 @@ describe('aborting a canary in flight (make stop-the-line)', () => {
     expect(calls.some((c) => c.includes('endpointslices'))).toBe(false);
   });
 
-  it('refuses a number of looks that is not one', async () => {
+  it.each([
+    [{ STABLE_TRIES: '0' }, "STABLE_TRIES must be a whole number of looks, 1 or more, not '0'.\n"],
+    [{ STABLE_INTERVAL: '1s' }, "STABLE_INTERVAL must be a number of seconds, not '1s'.\n"],
+  ])('refuses a number of looks that is not one, or a pause that is not a number (%o)', async (env, refusal) => {
     const dir = await mkdtemp(join(tmpdir(), 'abort-canaries-'));
     const result = await promisify(execFile)(SCRIPT, [], {
-      env: { ...process.env, KUBECTL: join(dir, 'none'), STABLE_TRIES: '0' },
+      env: { ...process.env, KUBECTL: join(dir, 'none'), ...env },
     }).then(
       () => ({ code: 0, out: '' }),
       (e: { code: number; stderr: string }) => ({ code: e.code, out: e.stderr }),
     );
-    expect(result).toEqual({ code: 1, out: "STABLE_TRIES must be a whole number of looks, 1 or more, not '0'.\n" });
+    expect(result).toEqual({ code: 1, out: refusal });
   });
 
   it('aborts no canary whose stable version it cannot read, and fails, still aborting the rest', async () => {

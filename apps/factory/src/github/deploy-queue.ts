@@ -12,12 +12,15 @@
  * Each pass reads the open pull requests it watches, and adds each to the queue at its head only when every one of
  * these holds; otherwise it waits, and says why once for each head:
  *
+ * - **the positive check, first**: its head is the very commit its watch last wrote to its branch (`WatchedHeads`), so
+ *   a branch moved by anyone, by any route, is not the watch's work and is not added; the watch writes its own again;
  * - **the deploy pin**: it is the App's (`APP_USER`), from this repository's deploy branch into main, not a draft, with
  *   the profile's label (`deploy: local`) and a title the deploy watch writes (`chore(deploy): run … on the local
  *   cluster`), and the gate's rule is `exact-pin`;
  * - **a pin move**: it is the App's, from this repository's `factory/pin/<move>` (the pin watch's branch, one segment,
  *   as `guardPinBranch` has it) into main, not a draft, labelled `pin` by the App and by nobody else, every time it was
- *   labelled, and the gate's rule is `pin-move`. The gate trusts no branch, label or title (ADR 0019); the queue reads
+ *   labelled, its move one `PIN_WATCH_ONLY` names, by its exact name, and none Martin holds on its branch, and the gate's
+ *   rule is `pin-move`. The gate trusts no branch, label or title (ADR 0019); the queue reads
  *   them so that nothing but the pin watch's own pull request rides the rule, and the verdict is what passes it;
  * - the review App's own `review` check on that head concluded with a verdict that passes it by that rule at that head
  *   (`merging.ts`): no other rule, and never a hold, a pending one, Martin's approval, or one for another head;
@@ -36,22 +39,21 @@
  * the pull request, and the worker does not add that head again; a worker that restarts may, once, and the queue tests
  * it again as before.
  *
- * In a dry run the watches read GitHub as it is, and the actions record the enqueue they would make of the App's pull
- * requests there in the artifact store, changing nothing (`DryRunActions`). A dry run's own deploy and pin pull
- * requests, which GitHub never had, are not seen here: the dry run's reads merge its deploy on their own clock
- * (`dry-run-reads.ts`).
+ * In a dry run the watches write nothing to GitHub and record no commit, so no head in GitHub is one a watch wrote: the
+ * queues add nothing and record no enqueue. A dry run's own deploy and pin pull requests, which GitHub never had, are
+ * not seen here: the dry run's reads merge its deploy on their own clock (`dry-run-reads.ts`).
  */
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { Actions } from './actions.ts';
 import { APP_LOGIN } from './actions.ts';
-import { BranchRefused, pinBranch } from './branches.ts';
+import { BranchRefused, pinBranch, type WatchedHeads } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { DEPLOYS, type DeployTarget, deployLabel, isDeployTitle } from './deploys.ts';
 import { APP_USER, IssueRefused } from './issues.ts';
 import { REVIEW_CHECK, type ReviewVerdict } from './merging.ts';
-import { guardPinBranch } from './pin-guard.ts';
-import { PIN_LABEL, PIN_REPOS } from './pins.ts';
+import { guardPinBranch, pinBranchFor } from './pin-guard.ts';
+import { PIN_LABEL, PIN_REPOS, type PinScope, pinTitle, titleIsExact } from './pins.ts';
 import type { Watch } from './poller.ts';
 import { type CheckRun, outcomeOf, type Reads } from './reads.ts';
 import type { RefusalRecorder } from './refusals.ts';
@@ -131,6 +133,7 @@ const LABEL_EVENTS = z.array(
     event: z.string(),
     actor: z.object({ id: z.number().int() }).nullable(),
     label: z.object({ name: z.string() }).optional(),
+    created_at: z.string().optional(),
   }),
 );
 export type LabelEvents = z.infer<typeof LABEL_EVENTS>;
@@ -150,10 +153,7 @@ export function labelWait(events: LabelEvents, whole: boolean): QueueWait | unde
   const labelled = events.filter((e) => e.event === 'labeled' && e.label?.name === PIN_LABEL);
   if (!labelled.length) return not(`nobody labelled it ${PIN_LABEL}`);
   if (labelled.some((e) => e.actor?.id !== APP_USER)) return not(`someone but the App labelled it ${PIN_LABEL}`);
-  const unlabelled = events.filter((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL);
-  if (unlabelled.some((e) => e.actor?.id !== APP_USER)) {
-    return not(`someone but the App took its ${PIN_LABEL} label off`);
-  }
+  if (heldByLabel(events)) return not(`someone but the App took its ${PIN_LABEL} label off`);
   // The pin watch never reopens a pull request: one the App reopened was closed, by Martin or the watch, and opened
   // again by a worker that asked, so it is not the watch's to queue.
   if (events.some((e) => e.event === 'reopened' && e.actor?.id === APP_USER)) return not('the App reopened it');
@@ -210,7 +210,26 @@ export interface DeployQueueDependencies {
   actions: Pick<Actions, 'enqueuePullRequest'>;
   /** What keeps, logs and signs a refusal; without it, a refusal is only logged. */
   recorder?: RefusalRecorder | undefined;
+  /**
+   * The commit each watch last wrote to its branch (`WatchedHeads`): a pull request is added only at that commit, the
+   * watch's own work for its move or build, however its branch got anywhere else.
+   */
+  heads: Pick<WatchedHeads, 'get'>;
   log: Logger;
+}
+
+/**
+ * Whether a pull request's head is the commit its watch wrote to its branch: the positive check every queue makes
+ * before it reads anything more. A head at any other commit, whoever put it there, is not the watch's.
+ */
+export function headWait(
+  heads: Pick<WatchedHeads, 'get'>,
+  repo: string,
+  pull: QueuePull,
+  waits: 'not-a-deploy' | 'not-a-pin',
+): QueueWait | undefined {
+  if (heads.get(repo, pull.head.ref) === pull.head.sha) return undefined;
+  return { waits, why: `its head is not the commit the watch wrote to ${pull.head.ref}` };
 }
 
 /** A head the queue last tried to add, and how often a failure that may pass was met there. */
@@ -292,7 +311,8 @@ async function queueOne(
     return;
   }
   // Read the last thing before the enqueue, so what it confirms (who labelled a pin move) is as fresh as it can be:
-  // GitHub's enqueue takes no condition on a label, so a change in the one request between is seen next pass.
+  // GitHub's enqueue takes no condition on a label: a label taken off in the one request between is not seen, and
+  // nothing takes a pull request out of the queue once it is in. Martin takes it out by hand.
   const confirmed = await confirm?.();
   if (confirmed) return state.wait(number, head, confirmed);
 
@@ -345,7 +365,7 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
     if (!pull) return;
     const attempt = state.attempt(pull.number, pull.head.sha);
     if (attempt.done) return;
-    const notOne = deployPullWait(target, pull);
+    const notOne = deployPullWait(target, pull) ?? headWait(deps.heads, repo, pull, 'not-a-deploy');
     if (notOne) return state.wait(pull.number, pull.head.sha, notOne);
     await queueOne(deps, state, repo, 'deploy', pull, 'exact-pin', attempt);
   };
@@ -354,12 +374,79 @@ export function deployQueueWatch(deps: DeployQueueDependencies, target: DeployTa
 /** How many pages of a hundred open pull requests a pass reads: the pin watch opens one for each move. */
 const OPEN_PAGES = 5;
 
+const MATCHING_REFS = z.array(z.object({ ref: z.string(), object: z.object({ sha: z.string() }) }));
+
+/** The commits the pin watch's branches (`factory/pin/…`, `factory/pin-next/…`) point at in a repository. */
+export const pinHeadsOf =
+  (github: GitHub) =>
+  async (repo: string): Promise<string[]> => {
+    const refs: z.infer<typeof MATCHING_REFS> = [];
+    for (let page = 1; ; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/git/matching-refs/heads/factory/pin?per_page=100&page=${page}`,
+        MATCHING_REFS,
+      );
+      refs.push(...body);
+      if (body.length < 100) break;
+      // Past what is read, a head may be missed: no branch is set until the pin branches are fewer.
+      if (page === OPEN_PAGES) throw new Error(`More pin branches are in ${repo} than the door reads.`);
+    }
+    return refs.filter((ref) => pinBranch(ref.ref.replace(/^refs\/heads\//, ''))).map((ref) => ref.object.sha);
+  };
+
+/** Whether a title is the one the pin watch gives a move of this name: the name, then one version, and nothing else. */
+const titleNames = (title: string, name: string): boolean => {
+  const prefix = `chore(pin): move ${name} to `;
+  if (!title.startsWith(prefix)) return false;
+  const to = title.slice(prefix.length);
+  // The name and version whole, as the watch writes them: one it would alter or cut gets an issue, so none is it.
+  return /^\S+$/.test(to) && titleIsExact(name, to) && pinTitle(name, to) === title;
+};
+
+/** Whether a pin branch is that of a move the pin watch is told to take (`PIN_WATCH_ONLY`), by the branch it opens. */
+export function toldWait(only: PinScope, pull: Pick<QueuePull, 'title' | 'head'>): QueueWait | undefined {
+  if (only === '*') return undefined;
+  // The move by its exact name, as the watch reads the setting: the branch the watch opens for that name, and the
+  // title it gives it, which no worker that asks can change (the door refuses any action on a pin pull request).
+  const told = only.some((name) => pinBranchFor(name) === pull.head.ref && titleNames(pull.title, name));
+  if (told) return undefined;
+  return { waits: 'not-a-pin', why: 'its move is not one the pin watch is told to take (PIN_WATCH_ONLY)' };
+}
+
+/** Whether anyone but the App ever took the `pin` label off a pull request, by its events: Martin's hold of it. */
+export function heldByLabel(events: LabelEvents): boolean {
+  return events.some((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER);
+}
+
+/** When anyone but the App last took the `pin` label off, by GitHub's times, or undefined when it gives none. */
+const heldSince = (events: LabelEvents): string | undefined =>
+  events
+    .filter((e) => e.event === 'unlabeled' && e.label?.name === PIN_LABEL && e.actor?.id !== APP_USER)
+    .map((e) => e.created_at)
+    .filter((t) => t !== undefined)
+    .sort()
+    .at(-1);
+
+const CLOSED = z.array(
+  z.object({
+    number: z.number().int().positive(),
+    title: z.string(),
+    user: z.object({ id: z.number().int() }).nullable(),
+    head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
+    merged_at: z.string().nullable().optional(),
+    closed_at: z.string().nullable().optional(),
+  }),
+);
+
 /**
  * Watches the pin watch's open pull requests in a repository, and adds each to the merge queue once the gate passed
- * its head as a pin move and its checks are green. A pull request on a pin branch or labelled `pin` that is not the pin
- * watch's own waits, and says why; every other open pull request is not read further.
+ * its head as a pin move and its checks are green. Only a move the watch is told to take (`only`, `PIN_WATCH_ONLY`) is
+ * queued, as the watch opens only those: one left open from an earlier setting, or opened by hand on a pin branch,
+ * waits; told none, it reads nothing. A pull request on a pin branch or labelled `pin` that is not the pin watch's own
+ * waits, and says why; every other open pull request is not read further.
  */
-export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watch {
+export function pinQueueWatch(deps: DeployQueueDependencies, repo: string, only: PinScope = []): Watch {
   const { github } = deps;
   if (!PIN_REPOS.includes(repo)) throw new Error(`The worker does not queue ${repo}'s pin moves.`);
   const state = queueState(deps, repo, 'pin');
@@ -377,6 +464,57 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
       events.push(...body);
       if (body.length < 100) return { events, whole: true };
     }
+  };
+
+  /**
+   * Martin's hold of a move carried across the pin watch closing its pull request and opening another (a day the scan
+   * left it out, or Dependabot took it), at any target: an earlier closed, unmerged pull request of the App's from the
+   * same branch whose `pin` label anyone but the App took off holds this one, unless a pull request from the branch
+   * merged after it closed: a merge ends every hold before it. Without GitHub's times, a merge listed newer (they are
+   * read newest first) ends it. One that cannot be read whole holds too, saying so, as do more than `OPEN_PAGES` pages.
+   */
+  const heldBefore = async (pull: QueuePull): Promise<QueueWait | undefined> => {
+    const [owner] = repo.split('/');
+    const head = `${owner}:${encodeURIComponent(pull.head.ref)}`;
+    const closed: z.infer<typeof CLOSED> = [];
+    for (let page = 1; ; page++) {
+      const { body } = await github.poll(
+        repo,
+        `/repos/${repo}/pulls?state=closed&sort=created&direction=desc&per_page=100&page=${page}&head=${head}`,
+        CLOSED,
+      );
+      closed.push(...body.filter((c) => c.head.repo?.full_name === repo && c.head.ref === pull.head.ref));
+      if (body.length < 100) break;
+      if (page === OPEN_PAGES) {
+        return { waits: 'not-a-pin', why: 'more of its branch’s pull requests are closed than the queue reads' };
+      }
+    }
+    const merges = closed.filter((c) => c.merged_at);
+    const lastMerged = merges
+      .map((c) => c.merged_at as string)
+      .sort()
+      .at(-1);
+    for (const [i, c] of closed.entries()) {
+      if (c.merged_at || c.user?.id !== APP_USER) continue;
+      // Read each pass (a conditional request): Martin may take the label off a closed pull request, or put it back
+      // and take it off again, at any time. One that cannot be read whole holds, saying so: it fails closed.
+      const { events, whole } = await eventsOf(c.number);
+      const held = !whole ? 'unread' : heldByLabel(events) ? { since: heldSince(events) } : false;
+      if (held === 'unread') return { waits: 'not-a-pin', why: `#${c.number}, of this move, runs past what is read` };
+      if (!held) continue;
+      // A merge from the branch after Martin took the label off ends the hold: by when he took it off, which may be
+      // after the pull request closed; without GitHub's time for it, by when it closed, or else by the list's order.
+      const since = held.since ?? c.closed_at ?? undefined;
+      const ended =
+        lastMerged !== undefined &&
+        (since !== undefined ? since < lastMerged : closed.slice(0, i).some((newer) => newer.merged_at));
+      if (ended) continue;
+      return {
+        waits: 'not-a-pin',
+        why: `Martin held this move on #${c.number} by taking its ${PIN_LABEL} label off, and nothing has merged since`,
+      };
+    }
+    return undefined;
   };
 
   /** The open pull requests, oldest first, up to `OPEN_PAGES` pages; any past them are left for the next pass. */
@@ -399,6 +537,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
   };
 
   return async () => {
+    if (only !== '*' && only.length === 0) return;
     const pulls = await openPulls();
     const candidates = pulls.filter((p) => pinBranch(p.head.ref) || p.labels.some((l) => l.name === PIN_LABEL));
     state.keep(new Set(candidates.map((p) => p.number)));
@@ -407,7 +546,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
       const head = pull.head.sha;
       const attempt = state.attempt(number, head);
       if (attempt.done) continue;
-      const notOne = pinPullWait(repo, pull);
+      const notOne = pinPullWait(repo, pull) ?? toldWait(only, pull) ?? headWait(deps.heads, repo, pull, 'not-a-pin');
       if (notOne) {
         state.wait(number, head, notOne);
         continue;
@@ -415,7 +554,7 @@ export function pinQueueWatch(deps: DeployQueueDependencies, repo: string): Watc
       // Who labelled it is read last, once the gate and the checks pass it: its events are the dearest read.
       const labelled = async () => {
         const { events, whole } = await eventsOf(number);
-        return labelWait(events, whole);
+        return labelWait(events, whole) ?? (await heldBefore(pull));
       };
       // One pull request that cannot be read (closed since the list, an answer that does not parse) holds only itself.
       await queueOne(deps, state, repo, 'pin', pull, 'pin-move', attempt, labelled).catch((error: unknown) => {

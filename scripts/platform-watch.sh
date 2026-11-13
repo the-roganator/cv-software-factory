@@ -2,8 +2,9 @@
 # Watches the cluster platform.yml makes while `make up` waits for it, and says when to stop waiting: the platform
 # check's ceiling, and the two faults that waiting longer will not mend. It prints one line and exits 1 on the first of:
 #
-#   ceiling      DEADLINE seconds (default 1200) have passed since it started: the cluster did not come up in time. It
-#                names each Application not yet Synced and Healthy, and each of its resources that is not.
+#   ceiling      DEADLINE seconds (default 1200) have passed since it started: the cluster did not come up in time. Its
+#                line names what root's sync was doing (Argo CD names the hook it waits on); then each Application not
+#                yet Synced and Healthy, and each of its resources that is not.
 #   comparison   an Application has a ComparisonError (Argo CD could not render it: a chart or its values that do not
 #                render, a revision it cannot fetch) that outlasts a hard refresh. Argo CD keeps the condition, and the
 #                repo server the failed render, until its next resync, minutes later; so on first seeing one it asks
@@ -15,6 +16,9 @@
 #                Restarts are not counted: a pod that cannot pull its image has none.
 #                The website's health is its release's, and root's rolls it up (scripts/wait-deployed.sh): neither is
 #                judged so.
+#
+# After the line it stops on, it names root's sync and each Job not complete or with failed attempts: how many failed,
+# and the last log line of the last that did (scripts/platform-pods.sh passes over a completed Job's failed attempts).
 #
 # On first seeing a ComparisonError it says so, and that it asked for a refresh, on stderr, with when Argo CD compared.
 # It exits 0 once WATCHED, the process it watches, has ended. KUBECTL is the kubectl command with its context.
@@ -32,9 +36,54 @@ degraded_for=${DEGRADED:-300}
 seen=$(mktemp -d)
 trap 'rm -rf "$seen"' EXIT
 
+# What root's sync is doing, as Argo CD's operation says: its phase and message, which name the hook it waits on.
+root_sync() {
+  "${kubectl[@]}" -n argocd get application root -o json 2>/dev/null |
+    jq -r '.status.operationState // empty | "\(.phase // "Unknown"): \(.message // "no message" | gsub("\n"; " "))"' ||
+    true
+}
+
+# Each Job not complete or with failed attempts, a line each: its failed count, and the last log line of the last
+# attempt that failed.
+jobs_waited() {
+  local jobs ns job failed state pod line last
+  jobs=$("${kubectl[@]}" get jobs -A -o json 2>/dev/null) || return 0
+  # From a file: a cluster's pods are more than one argument may hold.
+  "${kubectl[@]}" get pods -A -o json >"$seen/pods.json" 2>/dev/null || echo '{"items":[]}' >"$seen/pods.json"
+  jq -r --slurpfile pods "$seen/pods.json" '$pods[0] as $pods | .items[] |
+    (any(.status.conditions[]?; .type == "Complete" and .status == "True")) as $complete |
+    select((.status.failed // 0) > 0 or ($complete | not)) | .metadata as $job |
+    ([$pods.items[] | select(.metadata.namespace == $job.namespace and .status.phase == "Failed" and
+        any(.metadata.ownerReferences[]?; .kind == "Job" and .name == $job.name))] |
+      sort_by(.status.containerStatuses[0].state.terminated.finishedAt // .metadata.creationTimestamp) |
+      last | .metadata.name // "-") as $last |
+    "\($job.namespace) \($job.name) \(.status.failed // 0) \(if $complete then "complete" else "not-complete" end) \($last)"' \
+    <<<"$jobs" 2>/dev/null |
+    while read -r ns job failed state pod; do
+      line="  Job $ns/$job: $failed failed $([ "$failed" = 1 ] && echo attempt || echo attempts)"
+      [ "$state" = complete ] && line+=", then completed" || line+=", not complete"
+      if [ "$pod" != - ]; then
+        last=$("${kubectl[@]}" -n "$ns" logs "$pod" --all-containers --tail=20 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
+        line+="; the last failed, $pod, ended: ${last:-no log}"
+      fi
+      echo "$line"
+    done
+}
+
+# What it waited on, after the line it stops on.
+waited_on() {
+  local root
+  root=$(root_sync)
+  [ -z "$root" ] || echo "  root's sync: $root"
+  jobs_waited
+}
+
 while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
   if ((SECONDS >= deadline)); then
-    echo "ceiling: the cluster did not come up within ${DEADLINE:-1200} seconds. Not yet Synced and Healthy:"
+    root=$(root_sync)
+    echo "ceiling: the cluster did not come up within ${DEADLINE:-1200} seconds; root's sync: ${root:-not started}"
+    jobs_waited
+    echo "Not yet Synced and Healthy:"
     "${kubectl[@]}" -n argocd get applications -o json 2>/dev/null | jq -r '.items[] |
       select(.status.sync.status != "Synced" or .status.health.status != "Healthy") | .metadata.name as $app |
       "  \($app) \(.status.sync.status // "Unknown") \(.status.health.status // "Unknown")",
@@ -53,6 +102,7 @@ while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
       if [ -e "$seen/$app.compared" ] && [ "$(<"$seen/$app.compared")" != "$compared" ]; then
         echo "comparison: Argo CD cannot render $app:"
         echo "  $message"
+        waited_on
         exit 1
       fi
       if [ ! -e "$seen/$app.compared" ]; then
@@ -68,6 +118,7 @@ while [ -z "${WATCHED:-}" ] || kill -0 "$WATCHED" 2>/dev/null; do
       since=$(<"$seen/$app.degraded")
       if ((SECONDS - since >= degraded_for)); then
         echo "degraded: $app has been Degraded for $((SECONDS - since)) seconds"
+        waited_on
         exit 1
       fi
     else

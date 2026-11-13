@@ -20,7 +20,7 @@ import {
   type RefusalMechanism,
   VERSIONS,
 } from '@software-factory/events';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ENROLMENT_CODE, PASSKEYS, SESSION } from '../../../policy/access.ts';
 import { mayAppend, REFUSAL_READS, REFUSAL_ROWS, REFUSALS } from '../../../policy/refusals.ts';
@@ -38,7 +38,7 @@ import { EventWriter } from '../src/events.ts';
 import { sendSignal } from '../src/inbox.ts';
 import { migrate } from '../src/migrate.ts';
 import { type Database, freshDatabase } from './database.ts';
-import { PASSWORDS, WORKERS } from './postgres.ts';
+import { PASSWORDS, startPostgres, WORKERS } from './postgres.ts';
 
 let db: Database;
 
@@ -795,17 +795,25 @@ describe("the day's moves", () => {
     await expect(signal(db.patching, 'dependency')).rejects.toThrow('permission denied');
   });
 
-  it('comes from a role 0050 makes with no password until the migrate Job is given one, which then lets it in', async () => {
-    // Between the sense's code and its manifests, `main`'s migrate Job runs 0050 with no PATCHING_PASSWORD.
-    const real = await freshDatabase('patching_password');
+  it('comes from a role 0050 makes with no password until the migrate Job is given one, which then lets it in', {
+    timeout: 90_000,
+  }, async () => {
+    // Between the sense's code and its manifests, `main`'s migrate Job runs 0050 with no PATCHING_PASSWORD. A role
+    // belongs to the whole server, and other files connect as this one while this runs, so it has a server of its own.
+    const server = await startPostgres();
+    const url = new URL(server.url);
+    const as = (username: string, password: string) =>
+      postgres({ host: url.hostname, port: Number(url.port), database: 'postgres', username, password, max: 1 });
+    const owner = as('factory', 'test');
+    const patching = as('factory_patching', PASSWORDS.patching);
     try {
-      await real.owner`alter role factory_patching password null`;
-      expect(await migrate(real.owner, {})).toEqual([]);
-      await expect(real.patching`select 1`).rejects.toThrow(/password authentication failed/);
-      await migrate(real.owner, { patching: PASSWORDS.patching });
-      expect(await real.patching`select 1 as ok`).toEqual([{ ok: 1 }]);
+      expect(await migrate(owner, {})).toContain('50_patching');
+      await expect(patching`select 1`).rejects.toThrow(/password authentication failed/);
+      expect(await migrate(owner, { patching: PASSWORDS.patching })).toEqual([]);
+      expect(await patching`select 1 as ok`).toEqual([{ ok: 1 }]);
     } finally {
-      await real.end();
+      await Promise.all([owner.end(), patching.end()]);
+      server.stop();
     }
   });
 

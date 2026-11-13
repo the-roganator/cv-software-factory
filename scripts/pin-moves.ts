@@ -12,8 +12,9 @@
  * said of the same change. A reader that fails, or runs past its time, is a hold that says what it could not read.
  */
 
-import { type Run as CheckRun, moveTitle, pinMove, realPinMoveIO } from './pin-move.ts';
+import { type Run as CheckRun, moveTitle, pinMove, realPinMoveIO, type WorkflowRun, workflowsOf } from './pin-move.ts';
 import { type GitHub, main, type PinMoveAnswer, type PullRequest, type Run } from './review-gate.ts';
+import { RETARGETED } from './review-routing.ts';
 
 /**
  * When every pin move's reads have ended, from the job's start: one window for the run, inside the job's 20 minutes with
@@ -43,10 +44,31 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
       timer.unref?.();
     });
     try {
-      // Never retargeted: a check that ran for another base, before the pull request moved to main, ran something else.
+      // Never retargeted, by anyone or by GitHub itself when the base branch went: a check that ran for another base,
+      // before the pull request moved to main, ran something else, and a base change starts no new run.
       const events = await github.paged<{ event: string }>(`/repos/${each.repo}/issues/${pr.number}/events`, each.read);
-      if (events.some((e) => e.event === 'base_ref_changed'))
+      if (events.some((e) => RETARGETED.has(e.event)))
         return { reason: 'its base was changed: a pin move is proved only into main from the start' };
+      if (!pr.created_at || Number.isNaN(Date.parse(pr.created_at)))
+        return { reason: 'GitHub named no time the pull request was opened, to read its runs from' };
+      // Nor any other pull request from its branch, open, or closed since this one was opened: a run of platform.yml at
+      // the head names the open pull requests that match it now, never the one it ran for, so a sibling into another
+      // base could have made it. GitHub's list of a commit's pull requests leaves closed unmerged ones out; this does not.
+      const owner = pr.head.repo?.full_name.split('/')[0];
+      if (!owner) return { reason: 'its head names no repository' };
+      const siblings = await github.paged<PullRequest & { closed_at?: string | null }>(
+        `/repos/${each.repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${pr.head.ref}`)}`,
+        each.read,
+      );
+      const sibling = siblings.find(
+        (one) =>
+          one.number !== pr.number &&
+          (one.state === 'open' || !one.closed_at || Date.parse(one.closed_at) >= Date.parse(pr.created_at as string)),
+      );
+      if (sibling)
+        return {
+          reason: `#${sibling.number} comes from the same branch, so a run at its head may have been made for it`,
+        };
       // Nor ever the head of another pull request: a check run is the head's, whichever base it ran for.
       const sharing = await github.paged<PullRequest>(`/repos/${each.repo}/commits/${pr.head.sha}/pulls`, each.read);
       const other = sharing.find((one) => one.number !== pr.number && one.head.sha === pr.head.sha);
@@ -69,12 +91,28 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
           base,
           mergeBase,
           head: pr.head.sha,
-          runs: () =>
-            github.paged<CheckRun>(
-              `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
-              each.read,
-              'check_runs',
-            ),
+          // Each check run with the workflow file its suite's run is of, so a job of the same name in another
+          // workflow, or a run for another head or event, proves nothing.
+          runs: async () => {
+            const [checks, workflows] = await Promise.all([
+              github.paged<CheckRun>(
+                `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
+                each.read,
+                'check_runs',
+              ),
+              github.paged<WorkflowRun>(
+                `/repos/${each.repo}/actions/runs?head_sha=${pr.head.sha}&event=pull_request`,
+                each.read,
+                'workflow_runs',
+              ),
+            ]);
+            return workflowsOf(checks, workflows, each.repo, {
+              number: pr.number,
+              ref: pr.head.ref,
+              created: pr.created_at as string,
+              open: pr.state === 'open',
+            });
+          },
         }),
         expired,
       ]);
@@ -89,6 +127,7 @@ export async function readPinMove(each: Run, pr: PullRequest, github: GitHub): P
     console.log(`::warning::${cause(error).replace(/::/g, ': :')}`);
     return { reason: `the gate could not read what it proves a pin move by (${cause(error)})` };
   } finally {
+    // Tidying never replaces the answer: a reader's close does not throw (pin-move.ts's removeWork).
     for (const each of closing) each.close();
   }
 }

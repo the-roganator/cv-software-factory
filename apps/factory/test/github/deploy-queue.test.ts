@@ -19,11 +19,13 @@ import {
   pinQueueWatch,
   QUEUED_DEPLOYS,
   type QueuePull,
+  toldWait,
   verdictWait,
 } from '../../src/github/deploy-queue.ts';
 import { DEPLOYS, type DeployTarget } from '../../src/github/deploys.ts';
 import { APP_USER, IssueGuard } from '../../src/github/issues.ts';
 import type { MergeQueue, ReviewVerdict } from '../../src/github/merging.ts';
+import type { PinScope } from '../../src/github/pins.ts';
 import type { CheckRun } from '../../src/github/reads.ts';
 import { RefusalRecorder } from '../../src/github/refusals.ts';
 import { calls, client, quiet, type Sent } from './fake.ts';
@@ -90,8 +92,17 @@ const queue = (over: Partial<MergeQueue> = {}): MergeQueue => ({
   ...over,
 });
 
+/**
+ * The watch's record of its commits, as if it wrote each pull request's head as it is now: what a test about anything
+ * but that record gives the queue.
+ */
+const vouching = (pulls: () => QueuePull[]) => ({
+  get: (_repo: string, branch: string) => pulls().find((p) => p.head.ref === branch)?.head.sha,
+});
+
 /** A worker's deploy queue watch against a deploy branch with these open pull requests, as each pass reads them. */
 function harness(o: {
+  heads?: DeployQueueDependencies['heads'];
   pulls?: () => QueuePull[];
   verdict?: () => ReviewVerdict;
   runs?: () => CheckRun[];
@@ -130,7 +141,17 @@ function harness(o: {
     },
     mergeQueue: async () => (o.queued ?? (() => queue()))(),
   };
-  const pass = deployQueueWatch({ github, reads, actions, recorder: o.recorder, log: quiet }, FACTORY);
+  const pass = deployQueueWatch(
+    {
+      github,
+      reads,
+      actions,
+      recorder: o.recorder,
+      heads: o.heads ?? vouching(o.pulls ?? (() => [pull()])),
+      log: quiet,
+    },
+    FACTORY,
+  );
   return { pass, enqueued, sent };
 }
 
@@ -138,7 +159,7 @@ describe('the deploy queue watch', () => {
   it('queues only this repository’s local deploy, never the app’s', () => {
     expect(QUEUED_DEPLOYS).toEqual([FACTORY]);
     const { github } = client([]);
-    const deps = { github, reads: {} as never, actions: {} as never, log: quiet };
+    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
     expect(() => deployQueueWatch(deps, APP)).toThrow(/does not queue/);
   });
 
@@ -149,6 +170,19 @@ describe('the deploy queue watch', () => {
     // Once for each head: the next pass does not ask again.
     await pass();
     expect(enqueued).toHaveLength(1);
+  });
+
+  it('adds no head but the commit the deploy watch wrote, whoever moved its branch, and reads nothing for it', async () => {
+    for (const written of [undefined, OLDER]) {
+      const { pass, enqueued, sent } = harness({ heads: { get: () => written } });
+      await pass();
+      expect(enqueued, String(written)).toEqual([]);
+      // The positive check comes first: no verdict, check or event is read for a head that is not the watch's.
+      expect(
+        sent.filter((x) => !/\/pulls\?|\/installation|access_tokens/.test(x.path)),
+        String(written),
+      ).toEqual([]);
+    }
   });
 
   it('queues a newer build’s head afresh once the gate and its checks pass it', async () => {
@@ -393,7 +427,7 @@ const PIN_HEAD = 'c'.repeat(40);
 const OLDER = 'd'.repeat(40);
 const pinPull = (over: Partial<QueuePull> = {}): QueuePull => ({
   number: 1040,
-  title: 'fix(deps): move zap to 2.17.0 on its line',
+  title: 'chore(pin): move zap to 2.17.0',
   draft: false,
   user: { id: APP_USER },
   labels: [{ name: 'pin' }],
@@ -427,6 +461,10 @@ function pinHarness(o: {
   runs?: () => CheckRun[];
   actions?: DeployQueueDependencies['actions'];
   queued?: (number: number) => MergeQueue['queued'];
+  only?: PinScope;
+  heads?: DeployQueueDependencies['heads'];
+  /** The closed pull requests GitHub lists from a branch, as the queue reads them for an earlier hold. */
+  closed?: (branch: string) => unknown[];
 }) {
   const sent: Sent[] = [];
   /** GitHub's requests and the merge queue's reads, in the order they were made. */
@@ -441,6 +479,14 @@ function pinHarness(o: {
         answer: ({ path }) => {
           const page = Number(/page=(\d+)$/.exec(path)?.[1]);
           return { body: pulls().slice((page - 1) * 100, page * 100) };
+        },
+      },
+      {
+        method: 'GET',
+        path: /\/pulls\?state=closed&sort=created&direction=desc&per_page=100&page=1&head=/,
+        answer: ({ path }) => {
+          const branch = decodeURIComponent(path.split('&head=')[1]?.split(':').slice(1).join(':') ?? '');
+          return { body: o.closed?.(branch) ?? [] };
         },
       },
       {
@@ -474,7 +520,11 @@ function pinHarness(o: {
       return queue({ number, head: headOf(number), queued: o.queued?.(number) ?? null });
     },
   };
-  const pass = pinQueueWatch({ github, reads, actions, log: quiet }, REPO);
+  const pass = pinQueueWatch(
+    { github, reads, actions, heads: o.heads ?? vouching(pulls), log: quiet },
+    REPO,
+    o.only ?? '*',
+  );
   const order = () => [...read, ...sent.slice(seen).map((x) => x.path)];
   return { pass, enqueued, sent, order };
 }
@@ -482,8 +532,161 @@ function pinHarness(o: {
 describe('the pin queue watch', () => {
   it('queues pin moves in this repository alone, never the app’s', () => {
     const { github } = client([]);
-    const deps = { github, reads: {} as never, actions: {} as never, log: quiet };
+    const deps = { github, reads: {} as never, actions: {} as never, heads: { get: () => undefined }, log: quiet };
     expect(() => pinQueueWatch(deps, APP.repo)).toThrow(/does not queue/);
+  });
+
+  it('queues only a move the pin watch is told to take, as the watch opens only those, and reads nothing told none', async () => {
+    // `zap` folds to factory/pin/zap, the branch the pin watch opens for it.
+    const told = pinHarness({ only: ['zap'] });
+    await told.pass();
+    expect(told.enqueued).toEqual([[1040, PIN_HEAD]]);
+
+    // One left open from an earlier setting, or opened by hand on a pin branch: the watch is told another move.
+    const other = pinHarness({ only: ['argo-rollouts: quay.io/argoproj/argo-rollouts'] });
+    await other.pass();
+    expect(other.enqueued).toEqual([]);
+    expect(calls(other.sent).some((s) => s.path.includes('/events'))).toBe(false);
+
+    for (const none of [[], undefined]) {
+      const { github } = client([]);
+      const sent: string[] = [];
+      const reads = new Proxy({} as DeployQueueDependencies['reads'], {
+        get: (_t, name) => async () => void sent.push(String(name)),
+      });
+      const actions = { enqueuePullRequest: async () => ({ position: 1, state: 'QUEUED' }) };
+      const deps = { github, reads, actions, heads: { get: () => undefined }, log: quiet };
+      await (none === undefined ? pinQueueWatch(deps, REPO) : pinQueueWatch(deps, REPO, none))();
+      expect(sent).toEqual([]);
+    }
+    const at = (ref: string, title = 'chore(pin): move zap to 2.17.0') => ({
+      title,
+      head: { ref, sha: PIN_HEAD, repo: null },
+    });
+    expect(toldWait(['zap'], at('factory/pin/zap'))).toBeUndefined();
+    expect(toldWait('*', at('factory/pin/anything'))).toBeUndefined();
+    expect(toldWait(['zap'], at('factory/pin/zap2'))?.waits).toBe('not-a-pin');
+  });
+
+  it('takes the setting by the exact move name, as the watch does: no name that only folds to the branch', async () => {
+    const at = (ref: string, title: string) => ({ title, head: { ref, sha: PIN_HEAD, repo: null } });
+    const dashboards = at('factory/pin/example-dashboards', 'chore(pin): move example-dashboards to 13.7.2');
+    // Each folds to the same branch, and the watch takes no move by any of them.
+    for (const name of ['Example-Dashboards', 'example_dashboards', 'example.dashboards*', 'example-dashboards ']) {
+      expect(toldWait([name], dashboards)?.waits, name).toBe('not-a-pin');
+    }
+    expect(toldWait(['example-dashboards'], dashboards)).toBeUndefined();
+    // A told name whose title prefixes another move's on the same branch (names cut at 80 characters fold to one).
+    const long = 'x'.repeat(80);
+    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to x to 1.0`))?.waits).toBe(
+      'not-a-pin',
+    );
+    expect(toldWait([long], at(`factory/pin/${long}`, `chore(pin): move ${long} to 1.0`))).toBeUndefined();
+    // A told name whose title prefixes another move's is still on its own branch.
+    expect(toldWait(['zap'], at('factory/pin/zap-to-x', 'chore(pin): move zap to x to 1.0'))?.waits).toBe('not-a-pin');
+    const folded = pinHarness({ only: ['Zap'] });
+    await folded.pass();
+    expect(folded.enqueued).toEqual([]);
+  });
+
+  it('carries Martin’s hold to a pull request the watch opened again for the move, at any target, until a merge', async () => {
+    const closed = (over: Record<string, unknown> = {}) => ({
+      number: 1001,
+      title: 'chore(pin): move zap to 2.17.0',
+      user: { id: APP_USER },
+      head: { ref: 'factory/pin/zap', repo: { full_name: REPO } },
+      merged_at: null,
+      ...over,
+    });
+    const unlabelled = { event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' } };
+    const events = (n: number, p: number) =>
+      p > 1 ? [] : n === 1001 ? [labelled(APP_USER), unlabelled] : [labelled(APP_USER)];
+    const held = pinHarness({ closed: () => [closed()], events });
+    await held.pass();
+    expect(held.enqueued).toEqual([]);
+
+    // Held, saying why, when the earlier one's events run past what is read.
+    const long = pinHarness({
+      closed: () => [closed()],
+      events: (n, p) =>
+        n === 1001 ? Array.from({ length: 100 }, () => labelled(APP_USER)) : p > 1 ? [] : [labelled(APP_USER)],
+    });
+    await long.pass();
+    expect(long.enqueued).toEqual([]);
+
+    // Held at another target too: the hold is of the move, by its branch.
+    const other = pinHarness({ closed: () => [closed({ title: 'chore(pin): move zap to 2.16.0' })], events });
+    await other.pass();
+    expect(other.enqueued).toEqual([]);
+
+    // A merge from the branch since ends it: the closed pull requests are read newest first, back to the last merged.
+    const merged = closed({ number: 1003, merged_at: '2026-11-02T00:00:00Z' });
+    const ended = pinHarness({ closed: () => [merged, closed()], events });
+    await ended.pass();
+    expect(ended.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const before = pinHarness({ closed: () => [closed(), merged], events });
+    await before.pass();
+    expect(before.enqueued).toEqual([]);
+
+    // By GitHub's times when it gives them: a merge after the held one closed ends it, wherever it is listed; a merge
+    // before it does not, though the merged pull request is listed newer (Martin reopened an older one and merged it).
+    const at = (closedAt: string, mergedAt?: string) => ({ closed_at: closedAt, merged_at: mergedAt ?? null });
+    const heldOne = closed(at('2026-11-05T00:00:00Z'));
+    const mergedAfter = closed({ number: 999, ...at('2026-11-06T00:00:00Z', '2026-11-06T00:00:00Z') });
+    const mergedBefore = closed({ number: 1004, ...at('2026-11-04T00:00:00Z', '2026-11-04T00:00:00Z') });
+    const reopened = pinHarness({ closed: () => [heldOne, mergedAfter], events });
+    await reopened.pass();
+    expect(reopened.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const older = pinHarness({ closed: () => [mergedBefore, heldOne], events });
+    await older.pass();
+    expect(older.enqueued).toEqual([]);
+
+    // Dated by when Martin last took the label off, read each pass: put back and taken off again after a merge, it holds.
+    const off = (at: string) => ({ event: 'unlabeled', actor: { id: MARTIN }, label: { name: 'pin' }, created_at: at });
+    const on = (at: string) => ({ event: 'labeled', actor: { id: MARTIN }, label: { name: 'pin' }, created_at: at });
+    let history = [labelled(APP_USER), off('2026-11-05T01:00:00Z')];
+    const again = pinHarness({
+      closed: () => [heldOne, mergedAfter],
+      events: (n, p) => (p > 1 ? [] : n === 1001 ? history : [labelled(APP_USER)]),
+    });
+    await again.pass();
+    expect(again.enqueued).toEqual([[1040, PIN_HEAD]]);
+    const later = pinHarness({
+      closed: () => [heldOne, mergedAfter],
+      events: (n, p) => (p > 1 ? [] : n === 1001 ? history : [labelled(APP_USER)]),
+    });
+    history = [...history, on('2026-11-06T02:00:00Z'), off('2026-11-06T03:00:00Z')];
+    await later.pass();
+    expect(later.enqueued).toEqual([]);
+
+    // A closed pull request's events are read again on each pass, as Martin may change its label at any time.
+    const twice = pinHarness({ closed: () => [heldOne], events });
+    await twice.pass();
+    const read = () => twice.sent.filter((x) => x.path.includes('/issues/1001/events')).length;
+    const first = read();
+    await twice.pass();
+    expect(first).toBeGreaterThan(0);
+    expect(read()).toBe(2 * first);
+
+    // Not held: one the App alone unlabelled, a merged one, or someone else's, or another branch's.
+    for (const earlier of [
+      closed({ number: 1002 }),
+      closed({ merged_at: '2026-11-01T00:00:00Z' }),
+      closed({ user: { id: MARTIN } }),
+      closed({ head: { ref: 'factory/pin/zap2', repo: { full_name: REPO } } }),
+    ]) {
+      const free = pinHarness({ closed: () => [earlier], events });
+      await free.pass();
+      expect(free.enqueued, JSON.stringify(earlier)).toEqual([[1040, PIN_HEAD]]);
+    }
+  });
+
+  it('adds no head but the commit the pin watch wrote, whoever moved its branch', async () => {
+    for (const written of [undefined, OLDER]) {
+      const { pass, enqueued } = pinHarness({ heads: { get: () => written } });
+      await pass();
+      expect(enqueued, String(written)).toEqual([]);
+    }
   });
 
   it('adds the pin watch’s pull request at its head once the gate passed it as a pin move and its checks are green', async () => {

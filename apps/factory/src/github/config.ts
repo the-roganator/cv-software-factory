@@ -13,6 +13,7 @@
  *     GITHUB_DRY_RUN_CHECKS_SECONDS   how long after a dry run's commit its checks pass (default 120)
  *     GITHUB_DRY_RUN_MERGE_SECONDS    how long after a dry run's pull request is readied it is merged (default 1200)
  *     GITHUB_REPOSITORIES             the repositories it acts on, separated by commas (default: both public ones)
+ *                                     written as GitHub names them: one of those two in another case is refused
  *     GITHUB_POLL_SECONDS             how often it polls (default 60)
  *     GITHUB_API_URL, GHCR_URL        GitHub's API and GHCR, for a stand-in
  *     TUF_CACHE_DIR                   where Sigstore's trust root is kept, to check images' signatures (default: the
@@ -21,6 +22,8 @@
  *                                     unset, it is not served
  *     PATCHING_PORT                   the dependency sense's door, on a port of its own: its two reads, and no
  *                                     action (server.ts's PATCHING_READS); unset, it is not served
+ *     PIN_WATCH_ONLY                  the moves the pin watch takes, by name, separated by commas, or * for every
+ *                                     one; unset or blank, it takes none, and opens, updates and closes nothing
  *     PORT                            default 8080
  *     HOST                            the address to listen on (default 127.0.0.1; the cluster's Deployment says
  *                                     0.0.0.0)
@@ -30,6 +33,7 @@ import { signingKey } from '../signed-refusals.ts';
 import type { AppCredentials } from './app.ts';
 import { API } from './client.ts';
 import type { DryRunTimes } from './dry-run-reads.ts';
+import { type PinScope, readPinScope } from './pins.ts';
 import { GHCR } from './registry.ts';
 
 /** The two public repositories: the factory's own, and the app it looks after. */
@@ -52,6 +56,8 @@ export interface GitHubConfig {
   attackPort: number | undefined;
   /** The dependency sense's door, which serves its two reads and nothing else; unset, the door is not served. */
   patchingPort: number | undefined;
+  /** The moves the pin watch takes (`PIN_WATCH_ONLY`): every one (`*`), those named, or, unset, none. */
+  pinWatchOnly: PinScope;
   port: number;
   host: string;
 }
@@ -86,6 +92,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
     tufCacheDir: env.TUF_CACHE_DIR || undefined,
     attackPort: env.ATTACK_PORT?.trim() ? Number(env.ATTACK_PORT) : undefined,
     patchingPort: env.PATCHING_PORT?.trim() ? Number(env.PATCHING_PORT) : undefined,
+    pinWatchOnly: readPinScope(env.PIN_WATCH_ONLY),
     port: Number(env.PORT ?? 8080),
     host: env.HOST || '127.0.0.1',
   };
@@ -115,6 +122,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GitHubConfig {
   for (const repo of config.repositories) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo))
       throw new Error(`GITHUB_REPOSITORIES has ${JSON.stringify(repo)}, not owner/name.`);
+    // The worker's guards name these two exactly: another case is the same repository to GitHub and none to them.
+    const known = REPOSITORIES.find((r) => r.toLowerCase() === repo.toLowerCase());
+    if (known && known !== repo) {
+      throw new Error(
+        `GITHUB_REPOSITORIES has ${JSON.stringify(repo)}: write it ${known}, as the worker's guards name it.`,
+      );
+    }
   }
   if (!(config.pollMs >= 10_000)) throw new Error('GITHUB_POLL_SECONDS must be at least 10.');
   return config;

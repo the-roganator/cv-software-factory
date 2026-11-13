@@ -244,25 +244,40 @@ export class PatchingSense {
     // so a sense restarted sends nothing twice, and a send that failed goes again at the next pass.
     const unsent = await this.#send(reads.map((read) => read.moves));
     if (unsent.length) {
-      this.#log.error({ failed: unsent }, `patching: ${unsent.length} of the moves were not sent to triage`);
-      return { pass: 'failed', failed: unsent };
+      const appended = unchanged ? 'the day unchanged' : 'the day appended';
+      // The store refused the connection, as a new pod's are until the network policy admits it: sent again shortly.
+      if (unsent.every((u) => u.refused) && this.#refused + 1 < MOST_REFUSED) {
+        this.#refused++;
+        const why = unsent.map((u) => u.why);
+        this.#log.info({ why }, `patching: the store refused the moves' sends, ${appended}, so they go again shortly`);
+        return { pass: 'refused', why };
+      }
+      const failed = unsent.map((u) => u.why);
+      this.#log.error({ failed }, `patching: ${failed.length} of the moves were not sent to triage, ${appended}`);
+      return { pass: 'failed', failed };
     }
     return unchanged ? { pass: 'unchanged', day } : { pass: 'appended', day };
   }
 
-  /** Sends each repository's moves for the line to triage (`sends.ts`), and says which could not be sent. */
-  async #send(all: Moves[]): Promise<string[]> {
+  /**
+   * Sends each repository's moves for the line to triage (`sends.ts`), says each it could not make a signal of, and
+   * returns each send that failed, and whether the store refused the connection.
+   */
+  async #send(all: Moves[]): Promise<{ why: string; refused: boolean }[]> {
     const outbox = this.#outbox;
     if (!outbox) return [];
-    const failed: string[] = [];
+    const failed: { why: string; refused: boolean }[] = [];
     let sent = 0;
     for (const moves of all) {
-      for (const { id, signal } of sendsOf(moves, moves.file?.judged ?? moves.run.updatedAt)) {
+      const { sends, skipped } = sendsOf(moves, moves.file?.judged ?? moves.run.updatedAt);
+      if (skipped.length)
+        this.#log.warn({ repository: moves.repository, skipped }, 'patching: moves for the line not sent whole');
+      for (const { id, signal } of sends) {
         try {
           await outbox.send(signal, id);
           sent++;
         } catch (error) {
-          failed.push(`a move of ${moves.repository} to triage: ${message(error)}`);
+          failed.push({ why: `a move of ${moves.repository} to triage: ${message(error)}`, refused: refused(error) });
         }
       }
     }

@@ -68,7 +68,8 @@ const read = (moves: ReadMove[]): Moves => ({ ...appMoves(), moves });
 
 describe("the sense's sends", () => {
   it('sends each of the app’s moves for the line with a target: a lockfile’s by its package, an image, Node', () => {
-    const sends = sendsOf(read([lockfile, image, node]), '2026-11-11T04:59:00Z');
+    const { sends, skipped } = sendsOf(read([lockfile, image, node]), '2026-11-11T04:59:00Z');
+    expect(skipped).toEqual([]);
     expect(sends.map((s) => s.signal.move)).toEqual([
       {
         repository: APP,
@@ -125,24 +126,67 @@ describe("the sense's sends", () => {
       { ...lockfile, withheld: undefined },
       { ...lockfile, withheld: { ...lockfile.withheld, to: '' } as ReadMove['withheld'] },
     ];
-    expect(sendsOf(read(none), '2026-11-11T04:59:00Z')).toEqual([]);
+    const { sends, skipped } = sendsOf(read(none), '2026-11-11T04:59:00Z');
+    expect(sends).toEqual([]);
+    // Each one said, but the other lane's, which is not the line's to send.
+    expect(skipped).toHaveLength(4);
   });
 
   it('gives the same send the same id: one move of one repository from one run of the scan', () => {
-    const [first] = sendsOf(read([lockfile]), '2026-11-11T04:59:00Z');
-    const [again] = sendsOf(read([lockfile]), '2026-11-11T04:59:00Z');
+    const [first] = sendsOf(read([lockfile]), '2026-11-11T04:59:00Z').sends;
+    const [again] = sendsOf(read([lockfile]), '2026-11-11T04:59:00Z').sends;
     expect(again?.id).toBe(first?.id);
     const nextRun = { ...read([lockfile]), run: { ...appMoves().run, id: appMoves().run.id + 1 } };
-    expect(sendsOf(nextRun, '2026-11-12T04:59:00Z')[0]?.id).not.toBe(first?.id);
+    expect(sendsOf(nextRun, '2026-11-12T04:59:00Z').sends[0]?.id).not.toBe(first?.id);
     expect(first?.id).toBe(sendId(APP, appMoves().run.id, { name: 'left-pad', ecosystem: 'npm' }));
   });
 
   it('keeps at most eight findings, and counts a finding that does not fit the signal’s shape with the rest', () => {
     const many = Array.from({ length: 10 }, (_, i) => found(i + 1, 'HIGH'));
     const odd = { ...found(20, 'CRITICAL'), advisory: 'not an advisory id' };
-    const [send] = sendsOf(read([{ ...lockfile, findings: [odd, ...many] }]), '2026-11-11T04:59:00Z');
+    const { sends, skipped } = sendsOf(read([{ ...lockfile, findings: [odd, ...many] }]), '2026-11-11T04:59:00Z');
+    const [send] = sends;
+    expect(skipped).toEqual(['move 1: 1 findings that do not fit a signal, counted with the rest']);
     const scan = send?.signal.evidence?.[0];
     expect(scan).toMatchObject({ rest: { critical: 1, high: 2 } });
     expect(scan?.kind === 'scan' ? scan.findings.map((f) => f.advisory) : []).not.toContain('not an advisory id');
+  });
+
+  it('sends one signal for a name the scan moves from two versions, as triage keeps one ticket for it', () => {
+    const second: ReadMove = {
+      ...lockfile,
+      index: 2,
+      withheld: {
+        package: 'left-pad',
+        from: '2.0.0',
+        to: 'version 2.0.1',
+        pins: [{ file: 'pnpm-lock.yaml', line: 900 }],
+      },
+      findings: [found(9, 'CRITICAL', 'version 2.0.1')],
+    };
+    const { sends, skipped } = sendsOf(read([lockfile, second]), '2026-11-11T04:59:00Z');
+    expect(skipped).toEqual([]);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.signal.move).toMatchObject({
+      name: 'left-pad',
+      from: '1.2.3,2.0.0',
+      to: '1.2.4,2.0.1',
+      pins: [
+        { file: 'pnpm-lock.yaml', line: 812 },
+        { file: 'pnpm-lock.yaml', line: 900 },
+      ],
+    });
+    const scan = sends[0]?.signal.evidence?.[0];
+    expect(scan?.kind === 'scan' ? scan.findings[0]?.severity.scanner : undefined).toBe('critical');
+    expect(validateSignal(sends[0]?.signal)).toEqual({ ok: true });
+  });
+
+  it('says what it could not send: a pin with no line, and a move that fits no signal', () => {
+    const lineless = { ...image, pins: [...image.pins, { file: 'Dockerfile', line: 0 }] };
+    const spaced = { ...image, index: 4, name: 'an image', to: `image 1@${digest(8)}` };
+    const { sends, skipped } = sendsOf(read([lineless, spaced]), '2026-11-11T04:59:00Z');
+    expect(sends.map((s) => s.signal.move?.pins)).toEqual([[{ file: 'Dockerfile', line: 1 }]]);
+    expect(skipped[0]).toBe('move 2: 1 pins with no line, not sent');
+    expect(skipped[1]).toMatch(/^move 4: does not fit a signal \(move.name: /);
   });
 });

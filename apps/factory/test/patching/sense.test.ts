@@ -714,6 +714,21 @@ describe("the sense's sends to triage", () => {
     await expect(database.patching`select 1 from inbox`).rejects.toThrow(/permission denied/);
   });
 
+  it('takes a send the store refused the connection to again shortly, the day appended', async () => {
+    const refusing = new PatchingSense({
+      sql: database.patching,
+      events: new EventWriter(database.patching, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }),
+      outbox: {
+        send: async () => Promise.reject(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })),
+      },
+      senses: withLine,
+      repositories: [FACTORY, APP],
+      log,
+    });
+    expect(await refusing.pass()).toMatchObject({ pass: 'refused' });
+    expect(await days()).toHaveLength(1);
+  });
+
   it('fails the pass, the day appended, when a send is refused, and sends again at the next', async () => {
     const refusing = new PatchingSense({
       sql: database.patching,

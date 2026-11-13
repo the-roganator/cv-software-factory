@@ -764,6 +764,15 @@ const POD_TEMPLATES: Readonly<Record<string, readonly string[]>> = {
   'batch/v1 CronJob': ['spec', 'jobTemplate', 'spec', 'template'],
 };
 
+/** Whether an object is a core ConfigMap, whose `data` condition 6 sets aside, in its objects and in its text alike. */
+const isCoreConfigMap = (object: Record<string, unknown>) => object.apiVersion === 'v1' && object.kind === 'ConfigMap';
+
+/** Where a core workload writes its pod template, whose `checksum/` annotations condition 6 sets aside, or undefined. */
+const podTemplatePath = (object: Record<string, unknown>) => POD_TEMPLATES[`${object.apiVersion} ${object.kind}`];
+
+/** An annotation a chart writes from its configuration so that a change to it restarts the pods. */
+const isChecksum = (key: string) => key.startsWith('checksum/');
+
 /** An object of a rendering: how it is named in a hold, and what it is once the move's own differences are written the same. */
 interface Rendered {
   label: string;
@@ -893,16 +902,15 @@ export function readRendering(
     if (objects.has(key)) return `the rendering has ${label} twice`;
     objects.set(key, { label, body: object });
     // A duplicate key holds above, so each path names one node.
-    if (object.apiVersion === 'v1' && kind === 'ConfigMap') {
+    if (isCoreConfigMap(object)) {
       const data = spanOf(doc.get('data', true), offset);
       if (data) exempt.push(data);
     }
-    const path = POD_TEMPLATES[`${object.apiVersion} ${kind}`];
+    const path = podTemplatePath(object);
     const annotations = path && doc.getIn([...path, 'metadata', 'annotations'], true);
     if (isMap(annotations))
       for (const pair of annotations.items) {
-        if (!isScalar(pair.key) || typeof pair.key.value !== 'string' || !pair.key.value.startsWith('checksum/'))
-          continue;
+        if (!isScalar(pair.key) || typeof pair.key.value !== 'string' || !isChecksum(pair.key.value)) continue;
         const [from, to] = [spanOf(pair.key, offset), spanOf(pair.value, offset) ?? spanOf(pair.key, offset)];
         if (from && to) exempt.push([from[0], to[1]]);
       }
@@ -917,8 +925,7 @@ const VERSION_LINE = /^([ \t]*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):[
  * The lines of a rendering the text rule compares: every line but one that lies wholly in an exempt span, from its
  * first character after its indentation to its end. The line that opens a span (`data:`, `config.yaml: |`, a flow
  * mapping's `{`) and the one that closes it beyond its end are compared, as is a blank line at a span's edge. Each line
- * is written as main's line rule wrote it, the moved images' references as their placeholders, but for a version label:
- * its value is written `<version>` only where it is one the object rule saw move as the chart's (`moved`), in the same
+ * is written with the moved images' references as their pairs' placeholders; a version label's line has its value is written `<version>` only where it is one the object rule saw move as the chart's (`moved`), in the same
  * quotes, with nothing after it, so a label's text the gate reads alike and another reader may not (`1e400` for
  * `9e999`) is compared. Each comes with its number in the rendering, for the hold to name.
  */
@@ -946,20 +953,19 @@ export function comparedLines(
 }
 
 /**
- * Whether the head's rendering writes any line outside the exempt spans otherwise than the base, in order: whatever any
- * reader makes of a text the gate's reader takes for no change, it is the same text. Undefined when every line is.
+ * Whether the head's rendering writes any line outside its exempt spans (`readRendering`'s) otherwise than the base, in
+ * order: whatever any reader makes of a text the gate's reader takes for no change, it is the same text. Undefined when
+ * every line is.
  */
 export function linesDiffer(
   base: string,
   head: string,
+  exempt: { base: readonly Span[]; head: readonly Span[] },
   pairs: readonly ImagePair[],
-  moved: ReadonlySet<string> = new Set(),
+  moved: ReadonlySet<string>,
 ): string | undefined {
-  const [was, now] = [readRendering(base, '1.2'), readRendering(head, '1.2')];
-  if (typeof was === 'string') return `at the base, ${was}`;
-  if (typeof now === 'string') return `at the head, ${now}`;
-  const a = comparedLines(base, was.exempt, placeholders(pairs, 'base'), moved);
-  const b = comparedLines(head, now.exempt, placeholders(pairs, 'head'), moved);
+  const a = comparedLines(base, exempt.base, placeholders(pairs, 'base'), moved);
+  const b = comparedLines(head, exempt.head, placeholders(pairs, 'head'), moved);
   // Each named as the rendering writes it.
   const [baseLines, headLines] = [base.split('\n'), head.split('\n')];
   const at = (lines: string[], n: number) => short((lines[n - 1] ?? '').trim());
@@ -1091,7 +1097,7 @@ export function versionLabelNamed(rendered: string): string | undefined {
   if (typeof objects === 'string') return undefined;
   for (const { label, body } of objects.values()) {
     const object = record(body);
-    if (object.apiVersion === 'v1' && object.kind === 'ConfigMap') continue;
+    if (isCoreConfigMap(object)) continue;
     const at = namesVersionLabel(object, new Set(labelPlaces(object).values()));
     if (at !== undefined) return `${label} names a version label at ${at.replace(/^\./, '')}`;
   }
@@ -1107,13 +1113,13 @@ export function versionLabelNamed(rendered: string): string | undefined {
 export function comparable(body: unknown, written: readonly [string, string][]): Record<string, unknown> {
   const object = record(withoutImage(body, written));
   // Its data whole, keys added or gone among it, and the data itself added or gone.
-  if (object.apiVersion === 'v1' && object.kind === 'ConfigMap') object.data = '<configuration>';
-  const path = POD_TEMPLATES[`${object.apiVersion} ${object.kind}`];
+  if (isCoreConfigMap(object)) object.data = '<configuration>';
+  const path = podTemplatePath(object);
   const template = path?.reduce<unknown>((at, each) => record(at)[each], object);
   const metadata = template === undefined ? undefined : record(record(template).metadata);
   const annotations = metadata?.annotations;
   if (metadata && isPlain(annotations)) {
-    const kept = Object.entries(annotations).filter(([key]) => !key.startsWith('checksum/'));
+    const kept = Object.entries(annotations).filter(([key]) => !isChecksum(key));
     if (kept.length) metadata.annotations = Object.fromEntries(kept);
     else delete metadata.annotations;
   }
@@ -1166,10 +1172,14 @@ export function manifestsDiffer(
   const [fromBase, fromHead] = [placeholders(pairs, 'base'), placeholders(pairs, 'head')];
   // The version labels' values the object rule saw move as the chart's: only these are written alike in the text.
   const moved = new Set<string>();
+  // The spans the text rule sets aside, from the YAML 1.2 reading: where a place lies does not depend on the schema.
+  const exempt: { base: Span[]; head: Span[] } = { base: [], head: [] };
   for (const version of YAML_VERSIONS) {
-    const [was, now] = [objectsOf(base, version), objectsOf(head, version)];
-    if (typeof was === 'string') return `at the base, ${was}`;
-    if (typeof now === 'string') return `at the head, ${now}`;
+    const [readBase, readHead] = [readRendering(base, version), readRendering(head, version)];
+    if (typeof readBase === 'string') return `at the base, ${readBase}`;
+    if (typeof readHead === 'string') return `at the head, ${readHead}`;
+    if (version === '1.2') Object.assign(exempt, { base: readBase.exempt, head: readHead.exempt });
+    const [was, now] = [readBase.objects, readHead.objects];
     if (!was.size || !now.size) return 'a rendering came out empty: nothing to compare';
     const as = version === '1.2' ? '' : ` (as YAML ${version} reads it)`;
     for (const [key, object] of now)
@@ -1207,7 +1217,7 @@ export function manifestsDiffer(
           return `${object.label} names a version label at ${at.replace(/^\./, '')}, and the chart's version labels change${as}`;
       }
   }
-  return linesDiffer(base, head, pairs, moved);
+  return linesDiffer(base, head, exempt, pairs, moved);
 }
 
 const HIGH = new Set(['HIGH', 'CRITICAL']);

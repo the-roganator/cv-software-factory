@@ -1647,7 +1647,7 @@ describe('the manifests, object by object', () => {
   it("holds a chart's version label key added, or one written outside metadata's labels", () => {
     const labelled = (labels: string, selector = '{}') =>
       `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  labels: { ${labels} }\nspec:\n  selector: ${selector}\n`;
-    // Written in a flow mapping, the label passes the object rule and holds on its line, as main's line rule held it.
+    // Written in a flow mapping, the label passes the object rule and holds on its line: only a label's line with its value alone is written alike.
     expect(manifestsDiffer(labelled('helm.sh/chart: x-1.0.0'), labelled('helm.sh/chart: x-1.0.1'), [], X)).toBe(
       "outside a ConfigMap's data and the checksums, the head's line 5 is not the base's line 5: labels: { helm.sh/chart: x-1.0.1 }",
     );
@@ -1909,9 +1909,9 @@ describe('a rendering the gate and the cluster read alike, character by characte
   });
 });
 
-// The third independent read of #1065: the gate's reader and the cluster's resolve some plain scalars apart (`0X10` a
-// string to one and 16 to the other, `1e400` and `9e999` Infinity to one and two strings to the other), so two texts
-// the object rule reads alike can run apart. Outside the exempt places, every line must be the base's.
+// The gate's reader and the cluster's resolve some plain scalars apart (`0X10` a string to one and 16 to the other,
+// `1e400` and `9e999` Infinity to one and two strings to the other), so two texts the object rule reads alike can run
+// apart. Outside the exempt places, every line must be the base's.
 describe('the text outside the exempt places', () => {
   const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
   const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
@@ -2063,6 +2063,24 @@ spec:
     );
     expect(manifestsDiffer(labelled('1.0.0'), labelled('1.1.0 # x', NEW), MOVE, CHART)).toBe(
       line(15, 'app.kubernetes.io/version: 1.1.0 # x'),
+    );
+  });
+
+  it("compares a version label's line that writes anything after its value, or names a label outside the chart's move", () => {
+    // A flow mapping that goes on after the label: the rest of the line is compared.
+    const flow = (x: string, image = OLD) =>
+      deployment(image).replace(
+        '        app: web\n',
+        `        app: web\n        other: {\n          app.kubernetes.io/version: "1.0", x: ${x}}\n`,
+      );
+    expect(manifestsDiffer(flow('"0X10"'), flow('0X10', NEW), MOVE)).toBe(
+      line(16, 'app.kubernetes.io/version: "1.0", x: 0X10}'),
+    );
+    // A nodeSelector keyed by a version label, in a move of the image alone: nothing moved, so nothing is written alike.
+    const selected = (value: string, image = OLD) =>
+      `${deployment(image)}      nodeSelector:\n        app.kubernetes.io/version: ${value}\n`;
+    expect(manifestsDiffer(selected('1e400'), selected('9e999', NEW), MOVE)).toBe(
+      line(22, 'app.kubernetes.io/version: 9e999'),
     );
   });
 });

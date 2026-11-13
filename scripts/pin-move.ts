@@ -1014,19 +1014,27 @@ export function placeholders(pairs: readonly ImagePair[], side: Side): [string, 
 }
 
 /** Any character an image reference may hold: a registry, a path, a tag, a digest. */
-const REFERENCE_CHARACTER = 'A-Za-z0-9._/:@+-';
+const REFERENCE_CHARACTER = 'A-Za-z0-9_./:@+-';
+
+/** Each placeholder list's patterns, compiled once: a rendering's every line and string is written with them. */
+const PATTERNS = new WeakMap<readonly [string, string][], [RegExp, string][]>();
 
 /**
  * A text with each moved reference written as its placeholder where it stands whole: nothing a reference may hold on
- * either side of it, so `app:1.1` never covers `app:1.10`, `app:1.1-alpine` or `mirror.io/app:1.1`. A digest alone may
- * follow `@`, as an image a chart writes by its digest alone does, but nothing may follow it.
+ * either side of it, so `app:1.1` never covers `app:1.10`, `app:1.1_debug`, `app:1.1-alpine` or `mirror.io/app:1.1`.
+ * A digest alone (`sha256:…`, or another algorithm's) may follow `@`, as an image written by its digest does, under
+ * any repository: a digest names one content, which the runtime checks as it pulls. Nothing may follow it.
  */
 export function writtenAlike(text: string, written: readonly [string, string][]): string {
-  return written.reduce((at, [ref, as]) => {
-    const before = ref.startsWith('sha256:') ? REFERENCE_CHARACTER.replace('@', '') : REFERENCE_CHARACTER;
-    const whole = new RegExp(`(?<![${before}])${literal(ref)}(?![${REFERENCE_CHARACTER}])`, 'g');
-    return at.replace(whole, () => as);
-  }, text);
+  let patterns = PATTERNS.get(written);
+  if (!patterns) {
+    patterns = written.map(([ref, as]) => {
+      const before = /^[a-z0-9]+:[0-9a-f]+$/.test(ref) ? REFERENCE_CHARACTER.replace('@', '') : REFERENCE_CHARACTER;
+      return [new RegExp(`(?<![${before}])${literal(ref)}(?![${REFERENCE_CHARACTER}])`, 'g'), as];
+    });
+    PATTERNS.set(written, patterns);
+  }
+  return patterns.reduce((at, [whole, as]) => at.replace(whole, () => as), text);
 }
 
 /** A value with every string's moved references written as their placeholders. */
@@ -1074,12 +1082,15 @@ function versionLabelWrong(label: string, was: string, now: string, chart?: Char
     return VERSION_WORD.test(was) && VERSION_WORD.test(now) ? undefined : `${short(now)} is no version`;
   const [own, next] = [`${chart.chart}-${chart.from}`, `${chart.chart}-${chart.to}`];
   if (was === own || now === next) return was === own && now === next ? undefined : `${short(now)} is not ${next}`;
-  // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward. A label
-  // of the chart's own name is the chart's, which moves from its version to its version alone.
+  // A label written as the chart's own name and a version is the chart's, which moves from its version to its version
+  // alone: a subchart of its parent's name, or of its name and a version's (`x-v2`), is held with it.
+  const owns = (value: string) =>
+    value.startsWith(`${chart.chart}-`) && VERSION_WORD.test(value.slice(chart.chart.length + 1));
+  if (owns(was) || owns(now)) return `${short(now)} is not ${next}`;
+  // A subchart's: the same name, at its version or a later one on the same major, as its parent moves forward.
   const [a, b] = [CHART_LABEL.exec(was), CHART_LABEL.exec(now)];
   const major = (version: string) => version.replace(/^v/, '').split('.')[0];
   if (!a || !b || a[1] !== b[1]) return `${short(now)} is not ${short(was)}'s chart at another version`;
-  if (a[1] === chart.chart) return `${short(now)} is not ${next}`;
   if (compareVersions(b[2] as string, a[2] as string) < 0 || major(a[2] as string) !== major(b[2] as string))
     return `${short(now)} is not ${short(was)} forward on its major`;
   return undefined;

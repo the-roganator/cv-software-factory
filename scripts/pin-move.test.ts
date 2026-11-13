@@ -2097,7 +2097,9 @@ spec:
     expect(judge(operator(FROM, args(`${FROM}0`)), operator(TO, args(`${TO}0`)))).toMatch(
       /containers\[0\]\.args\[0\]$/,
     );
-    // A tag with a suffix (`-alpine`), and the same reference under another registry's path.
+    // A tag with a suffix (`-alpine`, `_debug`), and the same reference under another registry's path or name.
+    expect(judge(operator(FROM, env(`${FROM}_debug`)), operator(TO, env(`${TO}_debug`)))).toMatch(/env\[0\]\.value$/);
+    expect(judge(operator(FROM, env(`my_${FROM}`)), operator(TO, env(`my_${TO}`)))).toMatch(/env\[0\]\.value$/);
     expect(judge(operator(FROM, env(`${FROM}-alpine`)), operator(TO, env(`${TO}-alpine`)))).toMatch(/env\[0\]\.value$/);
     expect(judge(operator(FROM, env(`mirror.io/${FROM}`)), operator(TO, env(`mirror.io/${TO}`)))).toMatch(
       /env\[0\]\.value$/,
@@ -2117,6 +2119,12 @@ spec:
     expect(manifestsDiffer(digest(`${FROM}@${A}`, `${A}0`), digest(`${TO}@${B}`, `${B}0`), pinned, CHART)).toMatch(
       /env\[0\]\.value$/,
     );
+    // Another algorithm's digest after `@` is a digest alone too.
+    const [C, D] = [`sha512:${'c'.repeat(128)}`, `sha512:${'d'.repeat(128)}`];
+    const other = [{ from: `${FROM}@${C}`, to: `${TO}@${D}` }];
+    expect(
+      manifestsDiffer(digest(`${FROM}@${C}`, `x@${C}`), digest(`${TO}@${D}`, `x@${D}`), other, CHART),
+    ).toBeUndefined();
   });
 
   it("moves a chart's version label only whole: `x-1.1` to `x-1.2` never covers `x-1.10` to `x-1.20`", () => {
@@ -2126,7 +2134,12 @@ spec:
     expect(manifestsDiffer(labelled('x-1.1', 'x-1.10'), labelled('x-1.2', 'x-1.20'), [], X)).toBe(
       'the manifests change beyond the image: Service s at metadata.annotations.note',
     );
-    // A subchart's label that only begins with the chart's own is a subchart's, judged as one.
+    // A chart whose name ends like a version (`foo-v2`): its own label at another version is still its own.
+    const FOO = { chart: 'foo-v2', from: '1.1', to: '1.2' };
+    expect(manifestsDiffer(labelled('foo-v2-1.10', 'a'), labelled('foo-v2-1.20', 'a'), [], FOO)).toBe(
+      'the manifests change beyond the image: Service s at metadata.labels["helm.sh/chart"]: foo-v2-1.20 is not foo-v2-1.2',
+    );
+    // A label of the chart's own name at another version is the chart's, never a subchart's.
     expect(manifestsDiffer(labelled('x-1.10', 'a'), labelled('x-1.20', 'a'), [], X)).toMatch(
       /x-1\.20 is not x-1\.2|forward on its major|chart at another version/,
     );

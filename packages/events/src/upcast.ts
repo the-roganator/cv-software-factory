@@ -268,7 +268,7 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
         : payload,
   },
   // Version 2 adds each repository's open findings by severity to its totals, which a scan made before it counted them
-  // never wrote: a version 1 day reads as it was, with none, and the page draws a dash where the figure would be.
+  // never wrote: a version 1 day reads as it was, with none.
   'patching.read': { 1: (payload) => payload },
 };
 

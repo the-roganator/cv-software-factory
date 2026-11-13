@@ -52,6 +52,9 @@ describe("the day's moves", () => {
   it('carries every open finding by severity when the scan counted them, public, and reads a day without', () => {
     const [factory, app] = DAY.repositories;
     expect(factory.totals.open).toBeDefined();
+    // Every open finding has a fix or none, so the sample's figures agree with each other.
+    const sum = Object.values(factory.totals.open as Record<string, number>).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(factory.totals.fixed + factory.totals.noFix);
     expect(app.totals.open).toBeUndefined();
     const day = schema.parse(DAY);
     expect(day.repositories[0]?.totals?.open).toEqual(factory.totals.open);

@@ -5,6 +5,7 @@
  */
 import type { Chart, Item, Kind } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
+import { short, VERSION_WORD } from './pin-move-shared.ts';
 
 /** A place in a file: where a pin is written. */
 export interface Place {
@@ -35,13 +36,9 @@ export interface Moved {
 }
 
 const MISE_FILES = new Set(['mise.toml', 'mise.lock']);
-
-/** A version as a tag or a chart writes one (`2.17.0`, `v1.37.2-k3s1`, `18.6-alpine3.24`), or a digest's hex. */
-export const VERSION_WORD = /^v?\d+(\.\d+)*([-+][A-Za-z0-9.+-]*)?$/;
+/** A digest's hex, and the words a line is read as. */
 const HEX_WORD = /^[0-9a-f]{64}$/;
 const WORDS = /[A-Za-z0-9._+-]+/g;
-
-export const short = (text: string) => (text.length > 120 ? `${text.slice(0, 117)}…` : text);
 
 /** An image reference's tag and digest, each if it has one. */
 export function tagAndDigest(reference: string) {
@@ -201,8 +198,3 @@ export function listMoves(base: readonly Item[], head: readonly Item[]): { moved
   if (!moved.length) return { reason: 'the list moves no pin between the base and the head' };
   return { moved };
 }
-
-export const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-export const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};

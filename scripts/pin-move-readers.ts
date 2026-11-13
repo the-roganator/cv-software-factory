@@ -25,7 +25,8 @@ import {
   repositoryOf,
 } from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
-import { patchedByTheCheck, ROOT, type Run, type Workload } from './pin-move-ran.ts';
+import { patchedByTheCheck, type Run, type Workload } from './pin-move-ran.ts';
+import { ROOT } from './pin-move-shared.ts';
 import { type Rewritten, tagAndDigest } from './pin-move-sides.ts';
 import { PROFILE, RECORDS, type RecordName, render, taken } from './policy-hash.ts';
 

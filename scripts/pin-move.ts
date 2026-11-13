@@ -50,7 +50,8 @@ import { type Move, oneMove, onlyItsPins, valueTag } from './pin-move-one.ts';
 import { PLATFORM_CHECK, ranIt, started, whatRunsIt } from './pin-move-ran.ts';
 import type { PinMoveIO, Scan } from './pin-move-readers.ts';
 import { manifestsDiffer, versionLabelNamed } from './pin-move-rendering.ts';
-import { lineChanges, listMoves, type Moved, placeKey, short, tagAndDigest } from './pin-move-sides.ts';
+import { short } from './pin-move-shared.ts';
+import { lineChanges, listMoves, type Moved, placeKey, tagAndDigest } from './pin-move-sides.ts';
 
 // Each job's code is in a file of its own; this one proves the move in the conditions' order, and names them all.
 export { chartForward, chartImageForward, imageForward, imagePairs } from './pin-move-forward.ts';
@@ -159,7 +160,6 @@ export function scansShow(
     if (!now.read) return { reason: `the scan of ${short(to)} read nothing` };
     // A finding is its advisory and its package, never its path: one still there at another path is not gone.
     const key = (f: Scan['findings'][number]) => `${f.id}\0${f.pkg.split(' ')[0]}`;
-    const _before = new Set(was.findings.map(key));
     // New is strict: the same advisory in the same package at a path it was not at before is new.
     const where = (f: Scan['findings'][number]) => `${key(f)}\0${f.path ?? ''}`;
     const beforeAt = new Set(was.findings.map(where));

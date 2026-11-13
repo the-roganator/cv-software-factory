@@ -5,7 +5,7 @@
 import { isAlias, isMap, isNode, isPair, isScalar, parseAllDocuments, visit } from 'yaml';
 import { compareVersions } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import type { Side } from './pin-move-readers.ts';
-import { literal, record, short, VERSION_WORD } from './pin-move-sides.ts';
+import { literal, record, short, VERSION_WORD } from './pin-move-shared.ts';
 
 /** The labels whose values are the chart's own versions, by their exact keys, in an object's or a template's metadata. */
 const VERSION_LABELS = new Set(['helm.sh/chart', 'app.kubernetes.io/version']);

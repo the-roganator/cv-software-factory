@@ -1,7 +1,8 @@
 /** The one move a pull request makes (ADR 0019, condition 1): one pin's name, from one value to one other, on its own lines. */
 import type { Kind } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
-import { type LineChange, literal, type Moved, placeKey, short, type What } from './pin-move-sides.ts';
+import { literal, short } from './pin-move-shared.ts';
+import { type LineChange, type Moved, placeKey, type What } from './pin-move-sides.ts';
 
 /** The move a pull request makes, once the list shows it is one. */
 export interface Move {

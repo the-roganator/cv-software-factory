@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseAllDocuments, parse as parseYaml } from 'yaml';
 import type { Move } from './pin-move-one.ts';
-import { record, short } from './pin-move-sides.ts';
+import { ROOT, record, short } from './pin-move-shared.ts';
 
 /** A check run, as the checks API lists them for a commit. */
 export interface Run {
@@ -75,8 +75,6 @@ export const WORKFLOW_OF: Readonly<Record<string, string>> = {
 export const ZAP_FILE = 'apps/console/zap/scan.ts';
 /** The Postgres the cluster runs, whose pin CI's own database is (scripts/ci-images.sh postgres): `tests` run it. */
 export const POSTGRES_FILE = 'deploy/base/postgres/statefulset.yaml';
-
-export const ROOT = join(import.meta.dirname, '..');
 
 /**
  * What runs a pin, by its place: the check runs at the head that must have succeeded, or why none runs it, so it is

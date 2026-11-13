@@ -8,7 +8,8 @@ import { isMajor } from '../apps/factory/src/vulnerabilities/moves.ts';
 import { repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import type { Move } from './pin-move-one.ts';
 import type { PinMoveIO } from './pin-move-readers.ts';
-import { short, tagAndDigest, VERSION_WORD } from './pin-move-sides.ts';
+import { short, VERSION_WORD } from './pin-move-shared.ts';
+import { tagAndDigest } from './pin-move-sides.ts';
 
 /** The image a chart's rendering runs at a digest: the one reference there that carries it. */
 function imageAt(rendered: string, digest: string): string | undefined {

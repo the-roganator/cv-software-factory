@@ -7,14 +7,8 @@
 /scripts/github-settings.ts  @mrogan
 /scripts/review-gate.ts      @mrogan
 /scripts/review-routing.ts   @mrogan
-/scripts/pin-move.ts         @mrogan
-/scripts/pin-move-forward.ts @mrogan
-/scripts/pin-move-one.ts     @mrogan
-/scripts/pin-move-ran.ts     @mrogan
-/scripts/pin-move-readers.ts @mrogan
-/scripts/pin-move-rendering.ts @mrogan
-/scripts/pin-move-sides.ts   @mrogan
-/scripts/pin-moves.ts        @mrogan
+# The pin move's proof, in a file for each job, the job that runs it, and their tests: every file a split makes
+/scripts/pin-move*.ts        @mrogan
 /scripts/copilot-held-runs.ts @mrogan
 /AGENTS.md                   @mrogan
 
@@ -44,8 +38,6 @@
 /scripts/merge-decisions.test.ts         @mrogan
 /scripts/review-gate.test.ts             @mrogan
 /scripts/review-routing.test.ts          @mrogan
-/scripts/pin-move.test.ts                @mrogan
-/scripts/pin-move.adversarial.test.ts    @mrogan
 /scripts/workflows*.test.ts              @mrogan
 # and the helpers they import from the test folders, which could make a proof hold of itself
 /apps/factory/test/deploy.ts                    @mrogan

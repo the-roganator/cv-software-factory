@@ -264,19 +264,118 @@ describe('the platform rule, where the reads of #1057 aimed', () => {
     }
   });
 
-  it('holds when any reader answers with nothing', async () => {
-    for (const empty of [
-      { diff: async () => ({ raw: '', files: [] }) },
-      { list: async () => [] },
+  it.each([
+    ['diff', { diff: async () => ({ raw: '', files: [] }) }, 'it changes no file'],
+    ['list', { list: async () => [] }, `${VALUES}:3 is a line that is not a pin: tag: 2.14.3@sha256:${hex('5')}`],
+    [
+      'render',
       { render: async () => '' },
-      { hashes: async () => ({}) },
+      `grafana's value at ${VALUES}:3's rendering runs no one image at its digest`,
+    ],
+    ['hashes', { hashes: async () => ({}) }, 'the gate read no refusal record to hold the change to'],
+    [
+      'scan, read nothing',
       { scan: async () => ({ read: false, findings: [] }) },
+      `the scan of ${OLD} (linux/amd64) read nothing`,
+    ],
+    [
+      'scan, found nothing',
       { scan: async () => ({ read: true, findings: [] }) },
-      { runs: async () => [] },
+      'the scans show no finding with a fix gone: the move fixes nothing',
+    ],
+    ['runs', { runs: async () => [] }, 'platform has not run at ccccccc'],
+    [
+      'digest',
       { digest: async () => '' },
-    ] as Partial<PinMoveIO>[]) {
-      expect(await pinMove(sidecarIO({ runs: async () => GOOD(), ...empty }), HEAD)).toHaveProperty('reason');
-    }
+      `a digest that is not the tag's: kiwigrid/k8s-sidecar:2.14.3 is  now, not sha256:555555555555`,
+    ],
+  ] as [string, Partial<PinMoveIO>, string][])(
+    'holds when %s answers with nothing, saying so',
+    async (_, empty, reason) => {
+      expect(await pinMove(sidecarIO({ runs: async () => GOOD(), ...empty }), HEAD)).toEqual({ reason });
+    },
+  );
+});
+
+// A chart's move and an image's reach the readers a value's move never asks: the chart's versions, the overlay, the tags.
+describe("the readers only a chart's or an image's move asks, where #1057's read aimed", () => {
+  const chartItem = (version: string): Item => ({
+    kind: 'chart',
+    name: 'grafana',
+    file: 'deploy/base/telemetry/grafana.yaml',
+    line: 12,
+    chart: { ...GRAFANA, version },
+  });
+  const chartWorkload = (version: string, image: string) =>
+    workload(OLD).replace('grafana-13.5.0', `grafana-${version}`).replace('grafana/grafana:12.0.0', image);
+  const chartIO = (more: Partial<PinMoveIO> = {}): PinMoveIO =>
+    sidecarIO({
+      diff: async () => ({
+        raw: `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\tdeploy/base/telemetry/grafana.yaml`,
+        files: [
+          {
+            path: 'deploy/base/telemetry/grafana.yaml',
+            before: `${'\n'.repeat(11)}      targetRevision: 13.5.0\n`,
+            after: `${'\n'.repeat(11)}      targetRevision: 13.7.0\n`,
+          },
+        ],
+      }),
+      list: async (side) => [chartItem(side === 'base' ? '13.5.0' : '13.7.0')],
+      render: async (side) =>
+        side === 'base'
+          ? chartWorkload('13.5.0', 'grafana/grafana:12.0.0')
+          : chartWorkload('13.7.0', 'grafana/grafana:12.0.1'),
+      scan: async (reference) => (reference.endsWith('12.0.0') ? FIXED : CLEAN),
+      runs: async () => GOOD(),
+      ...more,
+    });
+  const IMAGE = 'deploy/base/thing/deployment.yaml';
+  const thing = (tag: string, d: string) => `docker.io/acme/thing:${tag}@sha256:${hex(d)}`;
+  const imageIO = (more: Partial<PinMoveIO> = {}): PinMoveIO =>
+    sidecarIO({
+      diff: async () => ({
+        raw: `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\t${IMAGE}`,
+        files: [
+          {
+            path: IMAGE,
+            before: `\n\n          image: ${thing('1.0.0', 'a')}\n`,
+            after: `\n\n          image: ${thing('1.0.1', 'b')}\n`,
+          },
+        ],
+      }),
+      list: async (side) => [
+        {
+          kind: 'third-party',
+          name: 'thing',
+          file: IMAGE,
+          line: 3,
+          image: side === 'base' ? thing('1.0.0', 'a') : thing('1.0.1', 'b'),
+        },
+      ],
+      tags: async () => ['1.0.0', '1.0.1'],
+      digest: async () => `sha256:${hex('b')}`,
+      overlay: async (side) => workload(side === 'base' ? thing('1.0.0', 'a') : thing('1.0.1', 'b')),
+      scan: async (reference) => (reference.includes(hex('a')) ? FIXED : CLEAN),
+      runs: async () => GOOD(),
+      ...more,
+    });
+
+  it('passes the honest chart move and image move each case changes one reader of', async () => {
+    expect(await pinMove(chartIO(), HEAD)).toMatchObject({
+      move: { what: 'chart', to: '13.7.0' },
+      ran: [PLATFORM_CHECK],
+    });
+    expect(await pinMove(imageIO(), HEAD)).toMatchObject({ move: { what: 'image' }, ran: [PLATFORM_CHECK] });
+  });
+
+  it.each([
+    ['chartVersions', chartIO],
+    ['overlay', chartIO],
+    ['tags', imageIO],
+    ['overlay', imageIO],
+  ] as const)('throws when %s throws, which the pin move job makes a hold', async (name, io) => {
+    const thrower = { [name]: async () => Promise.reject(new Error(`EACCES: ${name}`)) } as Partial<PinMoveIO>;
+    await expect(pinMove(io(thrower), HEAD)).rejects.toThrow(`EACCES: ${name}`);
   });
 });
 

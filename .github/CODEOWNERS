@@ -39,6 +39,7 @@
 /scripts/review-gate.test.ts             @mrogan
 /scripts/review-routing.test.ts          @mrogan
 /scripts/pin-move.test.ts                @mrogan
+/scripts/pin-move.adversarial.test.ts    @mrogan
 /scripts/workflows*.test.ts              @mrogan
 # and the helpers they import from the test folders, which could make a proof hold of itself
 /apps/factory/test/deploy.ts                    @mrogan

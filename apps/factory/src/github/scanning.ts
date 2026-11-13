@@ -21,7 +21,8 @@
  * last changed (the one that changed last, of any state: a dismissal or reopening, by hand or by a run, and a run's
  * fixes, all change one; a run seeing an alert again does not, so no read is served from what was kept while a run is
  * going). A new run, a run going, a later change, or the run's artifact past its expiry is a whole read at once. A read
- * whose last change is under a minute old is not kept, so a change in that same second is never missed. Callers at
+ * whose last change is under a minute older than the call that asked is not kept, so no later change shares its second
+ * (GitHub times a change to the second). Callers at
  * once share one read in flight. A read that fails, or is asked for again (`READ_AGAIN`), is never kept.
  */
 import { z } from 'zod';
@@ -327,6 +328,8 @@ interface ReadAt {
   /** The last change's time as GitHub gives it, `none` with no alert at all, undefined when GitHub does not say. */
   changed: string | undefined;
   going: boolean;
+  /** When the worker asked, by its own clock: before GitHub answered any of the three. */
+  asked: number;
 }
 
 /** How old the alerts' last change must be for a read to be kept: GitHub gives its time to the second, at best. */
@@ -336,9 +339,20 @@ const same = (a: ReadAt, b: ReadAt) => a.run === b.run && a.changed === b.change
 const changedAt = (at: ReadAt) => (at.changed === 'none' ? '' : (at.changed ?? ''));
 /** Whether `a` is a later point than `b`: a later run, or the same one with a later change. */
 const later = (a: ReadAt, b: ReadAt) => a.run > b.run || (a.run === b.run && changedAt(a) > changedAt(b));
-/** Whether a read at `at` may be kept, and so served again: see the module's comment. */
-const keepable = (at: ReadAt, now: number) =>
-  !at.going && at.changed !== undefined && (at.changed === 'none' || now - Date.parse(at.changed) >= SETTLED_MS);
+/**
+ * Whether a read at `at` may be kept, and so served again: no run going, and the last change a minute older than the
+ * asking, so no change after it can share its second (see the module's comment).
+ */
+const keepable = (at: ReadAt) =>
+  !at.going && at.changed !== undefined && (at.changed === 'none' || at.asked - Date.parse(at.changed) >= SETTLED_MS);
+/**
+ * Whether a caller at `at` may wait for the read in flight from `reading` instead of starting its own: one from the
+ * same point, or from a later one, asked when a run was going if `at` saw one, and with a time if `at` had one.
+ * Anything else is a read of its own.
+ */
+const joins = (at: ReadAt, reading: ReadAt) =>
+  same(at, reading) ||
+  (later(reading, at) && at.changed !== undefined && reading.changed !== undefined && (!at.going || reading.going));
 
 /** The scan's moves: see the module's comment. */
 export class ScanReads {
@@ -380,12 +394,12 @@ export class ScanReads {
         );
     }
     const branch = await defaultBranch(this.#github, repo);
-    // Both reads first, so a read the App may not make names every permission it lacks, not only the first.
-    const [runs, latest, going] = await Promise.allSettled([
-      this.#run(repo, branch),
-      this.#latest(repo),
-      this.#going(repo, branch),
-    ]);
+    // Whether a run is going is asked before which run is the last finished, so a run that finishes between the two
+    // answers is seen by the second. Both permissions' reads first, so a read the App may not make names every
+    // permission it lacks, not only the first.
+    const asked = this.#now();
+    const [going, latest] = await Promise.allSettled([this.#going(repo, branch), this.#latest(repo)]);
+    const [runs] = going.status === 'fulfilled' ? await Promise.allSettled([this.#run(repo, branch)]) : [going];
     const missing = [
       runs.status === 'rejected' ? lacking(runs.reason, '`actions: read`') : undefined,
       latest.status === 'rejected' ? lacking(latest.reason, '`security_events: read`') : undefined,
@@ -395,12 +409,11 @@ export class ScanReads {
     if (latest.status === 'rejected') throw latest.reason;
     if (going.status === 'rejected') throw going.reason;
     const run = runs.value;
-    const at: ReadAt = { run: run.id, changed: latest.value, going: going.value };
+    const at: ReadAt = { run: run.id, changed: latest.value, going: going.value, asked };
     const kept = this.#kept.get(repo);
-    if (kept && same(kept.at, at) && keepable(at, this.#now()) && this.#now() < kept.until)
-      return structuredClone(kept.moves);
+    if (kept && same(kept.at, at) && keepable(at) && this.#now() < kept.until) return structuredClone(kept.moves);
     let reading = this.#reading.get(repo);
-    if (!reading || later(at, reading.at)) {
+    if (!reading || !joins(at, reading.at)) {
       const own = { at, read: this.#read(repo, run) };
       reading = own;
       this.#reading.set(repo, own);
@@ -409,7 +422,7 @@ export class ScanReads {
         ({ until, moves }) => {
           if (this.#reading.get(repo) !== own) return;
           this.#reading.delete(repo);
-          if (keepable(at, this.#now())) this.#kept.set(repo, { at, until, moves });
+          if (keepable(at)) this.#kept.set(repo, { at, until, moves });
           else this.#kept.delete(repo);
         },
         () => {
@@ -422,11 +435,15 @@ export class ScanReads {
 
   /** One whole read: every open alert, the run's `moves.json`, each held to the other, and when its artifact expires. */
   async #read(repo: string, run: ScanRun): Promise<{ until: number; moves: Moves }> {
-    const alerts = await this.#alerts(repo).catch((error: unknown) => {
-      const lacks = lacking(error, '`security_events: read`');
-      throw lacks ? lacksError(repo, [lacks]) : error;
-    });
-    const found = await this.#file(repo, run);
+    // The alerts and the artifact at once: neither waits on the other. The alerts' failure is the one named first.
+    const [paged, file] = await Promise.allSettled([this.#alerts(repo), this.#file(repo, run)]);
+    if (paged.status === 'rejected') {
+      const lacks = lacking(paged.reason, '`security_events: read`');
+      throw lacks ? lacksError(repo, [lacks]) : paged.reason;
+    }
+    if (file.status === 'rejected') throw file.reason;
+    const alerts = paged.value;
+    const found = file.value;
     if (!found) {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
       return { until: Number.POSITIVE_INFINITY, moves: { repository: repo, run, file: null, moves: [] } };

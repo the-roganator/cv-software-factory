@@ -894,7 +894,7 @@ describe('the scan’s moves, kept for each run', () => {
   });
 
   /** A reader whose pages of alerts wait for `open()`, as a read of a hundred pages is still going. */
-  function held(day: Day, sent: Sent[]) {
+  function held(day: Day, sent: Sent[], now: () => number = Date.now) {
     let open = () => {};
     const gate = new Promise<void>((resolve) => (open = resolve));
     const fake = fakeGitHub(routes(day), sent);
@@ -908,7 +908,7 @@ describe('the scan’s moves, kept for each run', () => {
       }) as typeof fetch,
       sleep: async () => {},
     });
-    return { reads: new ScanReads(github), open };
+    return { reads: new ScanReads(github, { now }), open };
   }
 
   it('share one read in flight between callers at once', async () => {
@@ -934,6 +934,45 @@ describe('the scan’s moves, kept for each run', () => {
     expect(pageReads(sent)).toBe(1);
     day.pages = [alerts()];
     await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('ask whether a run is going before which run is the last finished, so a run that finishes between is seen', async () => {
+    const sent: Sent[] = [];
+    await new ScanReads(client(routes(), sent).github).moves(REPO);
+    const paths = sent.map((each) => each.path);
+    expect(paths.indexOf(GOING_PATH)).toBeGreaterThanOrEqual(0);
+    expect(paths.indexOf(GOING_PATH)).toBeLessThan(paths.indexOf(RUNS_PATH));
+  });
+
+  it('keep no read whose last change was under a minute old when it was asked, however long its pages took', async () => {
+    const sent: Sent[] = [];
+    const changed = Date.parse(LATEST[0]?.updated_at ?? '');
+    let now = changed + 10_000;
+    const day: Day = {};
+    const { reads, open } = held(day, sent, () => now);
+    const first = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    // The pages take minutes: the change is old by the time they are read, and was not when it was asked.
+    now = changed + 200_000;
+    open();
+    await first;
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('start a read of its own when a run is going that the read in flight did not see', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const { reads, open } = held(day, sent);
+    const first = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    day.going = [fixture('runs.json').workflow_runs[1]];
+    const second = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    await Promise.all([first, second]);
     expect(pageReads(sent)).toBe(2);
   });
 

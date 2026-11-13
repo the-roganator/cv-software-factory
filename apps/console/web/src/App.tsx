@@ -43,9 +43,9 @@ const Settings = lazy(() => import('./components/Settings.tsx').then((module) =>
 const AuditLog = lazy(() => import('./components/AuditLog.tsx').then((module) => ({ default: module.AuditLog })));
 
 /*
- * Everything under the reel arrives once the first view has shown, each panel's code in a chunk of its own: the bottom
- * row (Needs you, and Controls, Flags and Spend beside it), Patching, with its stylesheet and its projection, and
- * Guardrails. The first view is the header, the intro, the line, the canary and the reel, and its entry chunk carries
+ * Everything under the reel arrives once the first view has shown, each panel's module in a chunk of its own: the
+ * bottom row (Needs you, and Controls, Flags and Spend beside it, Controls and Spend from one module and so one chunk,
+ * which the settings page shares), Patching, with its stylesheet and its projection, and Guardrails. The first view is the header, the intro, the line, the canary and the reel, and its entry chunk carries
  * none of theirs. The bottom row draws first and the two panels under it after, so none moves another as it arrives
  * (`Later`, which says so if a chunk never comes).
  */

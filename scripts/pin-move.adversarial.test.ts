@@ -803,9 +803,11 @@ describe('one reading of a major, where a move could pass a major as a minor', (
       ['1.9.0', '01.10.0'],
       ['v1.9.0', 'v01.10.0'],
     ] as const) {
-      const [chart, chartImage] = await forward(from, to);
-      expect(chart).toBe(`a major, from ${from} to ${to}`);
-      expect(chartImage).toBe(`a major in docker.io/acme/app, from ${from} to ${to}`);
+      expect(await forward(from, to)).toEqual([
+        `a major, from ${from} to ${to}`,
+        `a major in docker.io/acme/app, from ${from} to ${to}`,
+        `a major, from ${from} to ${to}`,
+      ]);
       expect(label(`sub-${from}`, `sub-${to}`)).toContain('forward on its major');
     }
     // A v alone is the same major in both: a move on it passes each.

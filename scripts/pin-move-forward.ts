@@ -103,7 +103,7 @@ export async function chartForward(move: Move, io: Pick<PinMoveIO, 'chartVersion
     version: move.to,
     major: !sameMajor(move.to, move.from),
   };
-  // The scan's rule for a chart's major is the flag its fix carries, set here from the gate's own reading (`majorOf`).
+  // The scan's rule for a chart's major is the flag its fix carries, set here by the gate's own reading (`sameMajor`).
   if (isMajor(target, move.from)) return `a major, from ${move.from} to ${move.to}`;
   const read = readTarget(targetText(target));
   if (read?.kind !== 'chart' || read.version !== move.to)

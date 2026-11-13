@@ -113,7 +113,7 @@ A finding is evidence; a move is the unit of work. `apps/factory/src/vulnerabili
 | `line` | the app's line | the app's moves |
 | `cluster` | the cluster's own command | k3s, and what its release brings |
 | `issue` | Martin, from an issue | anything mise or the Makefile pins, a major or not (k3d, Argo CD's chart with its CLI, a tool's release), a workflow, an indirect package of the lockfile, a direct one Dependabot has not moved within a day of its fix, an image whose other half is in the lockfile |
-| `approval` | Martin | a major, of any kind (a chart's later major, or a version past every copy's major): more than its pins' lines. Whether a chart within its major changes more than its images is the review gate's to prove from the pull request ([a pin move](APPROVAL-ROUTING.md)), not the scan's to assume |
+| `approval` | Martin | a major, of any kind (a chart's later major, or a version past every copy's major): more than its pins' lines. Whether a chart within its major changes more than its images is the review gate's to prove from the pull request ([a pin move](APPROVAL-ROUTING.md#a-pin-move)), not the scan's to assume |
 | `dependabot` | Dependabot | a pin its docker entries read, with no High or Critical on a deadline, and a direct package of the lockfile within a day of its fix |
 | `worker` | the GitHub worker | every other pin: an image's digest, a value's pin, a chart within its major, a stage of a Dockerfile Dependabot does not read |
 

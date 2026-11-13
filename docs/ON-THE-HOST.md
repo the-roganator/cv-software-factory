@@ -2,7 +2,7 @@
 
 How to run each part of the factory on the Mac, against the local cluster, for working on it. The inner loop runs on the host, not through GitOps. The cluster itself, its console and its state are [the local cluster](LOCAL-CLUSTER.md)'s.
 
-A copy run on the host takes the place of the cluster's: scale the cluster's to nothing first (`kubectl --context k3d-software-factory -n factory scale deployment/<name> --replicas=0`), and back to one after, so two do not take the same work. The GitHub worker is the exception: never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs ([below](#the-github-worker)).
+A worker that takes work (triage, the red-team harness, the dependency sense, the traffic generator), run on the host, takes the place of the cluster's: each section below says how to scale the cluster's to nothing first, and back to one after, so two do not take the same work. The gateway, the admin service and the probes run beside the cluster's, on ports of their own. The GitHub worker is the exception: never run one on the host without `GITHUB_DRY_RUN=true` while the cluster's runs ([below](#the-github-worker)).
 
 ## The store and the collector
 

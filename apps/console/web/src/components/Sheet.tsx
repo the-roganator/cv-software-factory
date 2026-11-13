@@ -499,8 +499,7 @@ function Raised({ sheet, index, count, motion, onStep, onClose, app, admin, onMo
                       : card.reopened.route === '*'
                         ? 'every page'
                         : card.reopened.route}{' '}
-                    from{' '}
-                    {shortVersion(card.reopened.version)}
+                    from {shortVersion(card.reopened.version)}
                   </Fact>
                 )}
                 {card.pullRequest && (

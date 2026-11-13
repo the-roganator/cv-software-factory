@@ -4,7 +4,7 @@
  * items grouped into runs of at most 5,000 results, each run a category of its own.
  *
  *     node apps/factory/src/vulnerabilities/scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir>
- *       [--repository <owner/name>] [--upload]
+ *       [--repository <owner/name>] [--upload] [--cache <dir>]
  *
  * - A lockfile, every one git tracks, is scanned a YAML document at a time, each from a directory holding only it,
  *   development dependencies included, as the lockfile gate scans it (gates/lockfile-scan.ts).
@@ -36,11 +36,17 @@
  * the targets read, the excepted results' keys and the repository's `minimumReleaseAge`, for deadlines.ts to give each
  * open finding its deadline once code scanning has the upload.
  *
+ * Trivy's cache is a new directory each run, or `--cache`'s, which the workflow keeps between runs for Trivy's analysis of
+ * each layer, keyed by the layer's digest and Trivy's own analysers: a layer read once is not pulled and read again. The
+ * advisory databases are never kept: each run deletes any in the cache and pulls them, so a kept cache cannot change
+ * what a package is found vulnerable to. A pull or a download is tried again on a fault, never on an answer: a registry
+ * that has no such image, or a 404, fails at once.
+ *
  * The checkout is data: nothing in it runs. Trivy runs in its pinned image, which reads the registries' credentials
  * from DOCKER_CONFIG (GHCR's, the job's token); cosign, helm, kustomize and yq come from this repository's mise.lock.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
@@ -80,6 +86,8 @@ const DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-db:2';
 const JAVA_DB_REPOSITORY = 'ghcr.io/aquasecurity/trivy-java-db:1';
 /** The oldest the advisory database may be when the scan starts. */
 export const DB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Where Trivy keeps its advisory databases in its cache: never kept from a run before. */
+export const DATABASE_DIRS = ['db', 'java-db'];
 /** The platform an image of ours is scanned on when its SBOM gives no Node: its Node is the same release on both. */
 const FALLBACK_PLATFORM = 'linux/amd64';
 const OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
@@ -787,26 +795,62 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
       if (!response.ok) throw new Error(`${url}: ${response.status}`);
       return response.text();
     },
-    async retry(what) {
-      let last: unknown;
-      for (const wait of [0, 15_000, 45_000, 90_000]) {
-        if (wait) await new Promise((done) => setTimeout(done, wait));
-        try {
-          return await what();
-        } catch (error) {
-          last = error;
-        }
-      }
-      throw last;
-    },
+    retry: (what) => retried(what),
   };
 }
 
-/** The advisory databases, pulled from GHCR with retries, and how old the main one is. */
+/**
+ * Whether an error is a registry's or a server's answer that trying again cannot change: no such image or tag
+ * (`MANIFEST_UNKNOWN`, `NAME_UNKNOWN`, as Trivy and skopeo print them), or a 404. A fault (a dropped connection, a
+ * timeout, a 429, a 5xx, a denial a sign-in may still clear) is not one.
+ */
+export function isAnswer(error: unknown) {
+  if (error instanceof Fault) return false;
+  // The failure's own line, the last the tool printed: a 404 logged on the way to a timeout is not the answer.
+  const stderr = String((error as { stderr?: unknown })?.stderr ?? '').trim();
+  const text = stderr || String((error as Error)?.message ?? error).trim();
+  const last = text.split('\n').at(-1) ?? '';
+  return /\bMANIFEST_UNKNOWN\b|\bNAME_UNKNOWN\b|\bmanifest unknown\b|\b404 Not Found\b|: 404$/i.test(last);
+}
+
+/** A failure that is always tried again, whatever it says. */
+export class Fault extends Error {}
+
+/** Tries again after 15, 45 and 90 seconds on a fault; an answer (`isAnswer`) at once. */
+export async function retried<T>(
+  what: () => Promise<T>,
+  waits = [0, 15_000, 45_000, 90_000],
+  wait = (ms: number) => new Promise((done) => setTimeout(done, ms)),
+): Promise<T> {
+  let last: unknown;
+  for (const ms of waits) {
+    if (ms) await wait(ms);
+    try {
+      return await what();
+    } catch (error) {
+      if (isAnswer(error)) throw error;
+      last = error;
+    }
+  }
+  throw last;
+}
+
+/**
+ * The advisory databases, pulled from GHCR with retries, and how old the main one is. Any already in the cache are
+ * deleted first: Trivy keeps a database until the day its builder said the next would come (a day after it was built,
+ * though one is built every six hours), so one kept would be read in place of the newest.
+ */
 export async function databases(tools: Tools, trivyImage: string, cache: string) {
+  for (const dir of DATABASE_DIRS) rmSync(join(cache, dir), { recursive: true, force: true });
+  // Tried again whatever the registry says: a database's tag is pushed again every few hours, and a pull at that moment
+  // may find no manifest for a few seconds.
   const pull = (args: string[]) =>
     tools.retry(() =>
-      run('docker', [...dockerRun(cache), trivyImage, 'image', '--cache-dir', '/cache', '--quiet', ...args]),
+      run('docker', [...dockerRun(cache), trivyImage, 'image', '--cache-dir', '/cache', '--quiet', ...args]).catch(
+        (error: unknown) => {
+          throw new Fault(`the database could not be pulled: ${firstLine(error)}`);
+        },
+      ),
     );
   await pull(['--download-db-only', '--db-repository', DB_REPOSITORY]);
   await pull(['--download-java-db-only', '--java-db-repository', JAVA_DB_REPOSITORY]);
@@ -819,15 +863,16 @@ export async function main(args: string[]): Promise<number> {
     return at >= 0 ? args[at + 1] : undefined;
   };
   const [root] = args.filter(
-    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(trivy-pin|out|repository)$/),
+    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(trivy-pin|out|repository|cache)$/),
   );
   const pinFile = option('--trivy-pin');
   const out = option('--out');
   const repository = option('--repository') ?? process.env.GITHUB_REPOSITORY;
   const upload = args.includes('--upload');
-  if (!root || !pinFile || !out || (upload && !repository)) {
+  const kept = option('--cache');
+  if (!root || !pinFile || !out || (upload && !repository) || (args.includes('--cache') && !kept)) {
     console.error(
-      'Usage: scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir> [--repository <owner/name>] [--upload]',
+      'Usage: scan.ts <checkout> --trivy-pin <Dockerfile> --out <dir> [--repository <owner/name>] [--upload] [--cache <dir>]',
     );
     console.error('An upload needs the repository: the alerts it dismisses and reopens are its own.');
     return 2;
@@ -839,7 +884,8 @@ export async function main(args: string[]): Promise<number> {
   }
   const started = new Date().toISOString();
   mkdirSync(out, { recursive: true });
-  const cache = mkdtempSync(join(resolve(out), 'cache-'));
+  if (kept) mkdirSync(kept, { recursive: true });
+  const cache = kept ? resolve(kept) : mkdtempSync(join(resolve(out), 'cache-'));
   const work = mkdtempSync(join(resolve(out), 'work-'));
   const tools = realTools(pin[1], cache, work);
 

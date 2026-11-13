@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -27,9 +27,13 @@ import {
   sarif,
 } from '../../src/vulnerabilities/sarif.ts';
 import {
+  DATABASE_DIRS,
   DB_MAX_AGE_MS,
   databaseAge,
+  databases,
+  Fault,
   imagesIn,
+  isAnswer,
   itemKey,
   links,
   lockfileLine,
@@ -37,6 +41,7 @@ import {
   readLockfile,
   readOurs,
   report,
+  retried,
   sbomPaths,
   scan,
   type Tools,
@@ -812,6 +817,106 @@ describe('the advisory database', () => {
     expect(databaseAge('{"UpdatedAt":"2026-11-07T06:00:00Z"}', now)).toBeGreaterThan(DB_MAX_AGE_MS);
     expect(databaseAge('{}', now)).toBe('its metadata gives no build time');
     expect(databaseAge('not json', now)).toBe('its metadata does not parse');
+  });
+});
+
+describe('a kept cache', () => {
+  it('never keeps an advisory database: each run deletes any in the cache and pulls them afresh', async () => {
+    const cache = mkdtempSync(join(tmpdir(), 'trivy-cache-'));
+    made.push(cache);
+    for (const dir of [...DATABASE_DIRS, 'fanal']) {
+      mkdirSync(join(cache, dir));
+      writeFileSync(join(cache, dir, 'kept'), 'from a run before');
+    }
+    writeFileSync(join(cache, 'db', 'metadata.json'), '{"UpdatedAt":"2026-11-08T06:00:00Z"}');
+    let pulls = 0;
+    const tools = {
+      // The pull, as Trivy would make it, into a cache with no database left in it.
+      retry: async () => {
+        expect(DATABASE_DIRS.some((dir) => existsSync(join(cache, dir)))).toBe(pulls > 0);
+        pulls++;
+        mkdirSync(join(cache, 'db'), { recursive: true });
+        writeFileSync(join(cache, 'db', 'metadata.json'), `{"UpdatedAt":"${new Date().toISOString()}"}`);
+      },
+    } as unknown as Tools;
+    const age = await databases(tools, 'trivy', cache);
+    expect(pulls).toBe(2);
+    expect(typeof age === 'number' && age < 60_000).toBe(true);
+    expect(existsSync(join(cache, 'db', 'kept'))).toBe(false);
+    expect(existsSync(join(cache, 'java-db', 'kept'))).toBe(false);
+    // Trivy's analysis of each layer is kept.
+    expect(readFileSync(join(cache, 'fanal', 'kept'), 'utf-8')).toBe('from a run before');
+  });
+});
+
+describe('trying again', () => {
+  const waited: number[] = [];
+  const wait = async (ms: number) => {
+    waited.push(ms);
+  };
+  const failing = (error: unknown) => {
+    let tries = 0;
+    return {
+      what: async () => {
+        tries++;
+        throw error;
+      },
+      tries: () => tries,
+    };
+  };
+  const stderr = (text: string) => Object.assign(new Error('Command failed: docker run'), { stderr: text });
+
+  it('tries a fault again, and fails at once on an answer: no such image or tag, or a 404', async () => {
+    const answers = [
+      stderr(
+        'FATAL\tFatal error\trun error: image scan error: unable to find the specified image "ghcr.io/x/y:1" in ["remote"]: 1 error occurred:\n\t* remote error: GET https://ghcr.io/v2/x/y/manifests/1: MANIFEST_UNKNOWN: manifest unknown',
+      ),
+      stderr(
+        'time="…" level=fatal msg="Error parsing image name \\"docker://x\\": reading manifest 1 in docker.io/x: manifest unknown"',
+      ),
+      stderr('GET https://index.docker.io/v2/x/manifests/1: NAME_UNKNOWN: repository name not known to registry'),
+      new Error('https://github.com/k3s-io/k3s/releases/download/v9/k3s-images.txt: 404'),
+      stderr('unexpected status code 404 Not Found'),
+    ];
+    for (const error of answers) {
+      waited.length = 0;
+      const one = failing(error);
+      await expect(retried(one.what, undefined, wait)).rejects.toBe(error);
+      expect(one.tries()).toBe(1);
+      expect(waited).toEqual([]);
+    }
+    const faults = [
+      stderr('remote error: GET https://ghcr.io/token?scope=x: DENIED: requested access to the resource is denied'),
+      new Error('https://nodejs.org/dist/index.json: 503'),
+      new Error('https://example.com/v1.404/list.txt: 500'),
+      stderr('dial tcp: lookup ghcr.io: i/o timeout'),
+      new Error('fetch failed'),
+      // A 404 logged on the way to another failure is not the answer: the failure's own line is.
+      stderr('GET https://ghcr.io/v2/x/y/referrers/sha256:ab: 404 Not Found\nFATAL\tdial tcp: i/o timeout'),
+      // A database's pull is tried again whatever it says: its tag may be mid-push.
+      new Fault('the database could not be pulled: MANIFEST_UNKNOWN: manifest unknown'),
+    ];
+    for (const error of faults) {
+      waited.length = 0;
+      expect(isAnswer(error)).toBe(false);
+      const one = failing(error);
+      await expect(retried(one.what, undefined, wait)).rejects.toBe(error);
+      expect(one.tries()).toBe(4);
+      expect(waited).toEqual([15_000, 45_000, 90_000]);
+    }
+  });
+
+  it('gives the first answer it gets', async () => {
+    let tries = 0;
+    const answer = await retried(
+      async () => {
+        if (++tries < 3) throw new Error('fetch failed');
+        return 'read';
+      },
+      undefined,
+      wait,
+    );
+    expect([answer, tries]).toEqual(['read', 3]);
   });
 });
 

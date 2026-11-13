@@ -1,9 +1,11 @@
 /**
  * Each open finding's deadline, worked out afresh on every run from what the scan read, the registries and code
- * scanning, with no state of its own; and the run's verdict on them.
+ * scanning, with no state of its own; and the run's verdict on them. With `--memo`, the registries' and the releases'
+ * answers are asked once a day and kept in that file for the day's other runs (memo.ts); code scanning, and Trivy on
+ * the scan's database, are read every run.
  *
  *     node apps/factory/src/vulnerabilities/deadlines.ts <scan's out dir> --checkout <dir> --trivy-pin <Dockerfile>
- *       [--prove]
+ *       (--write | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]
  *
  * - **Severity** is the higher of Trivy's and the publisher's (`Finding.publisher`: Trivy's `VendorSeverity` for the
  *   advisory's own source, or Node's own rating for Node's).
@@ -45,6 +47,7 @@ import { promisify } from 'node:util';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
 import { type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
+import { dayOf, type MemoCount, memoised, readMemo, writeMemo } from './memo.ts';
 import {
   APP,
   type Context,
@@ -1541,7 +1544,7 @@ interface Saved {
 }
 
 const USAGE =
-  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write | --prove)\n' +
+  'Usage: GH_TOKEN=<token> deadlines.ts <scan out dir> --checkout <dir> --trivy-pin <Dockerfile> (--write | --prove) [--memo <file> [--memo-day <YYYY-MM-DD>]]\n' +
   '       deadlines.ts --verdict <scan out dir>';
 
 export async function main(args: string[]): Promise<number> {
@@ -1557,12 +1560,24 @@ export async function main(args: string[]): Promise<number> {
     if (!saved.passes) console.log(`::error::${saved.lines.find((line) => line.startsWith('The run fails')) ?? ''}`);
     return saved.passes ? 0 : 1;
   }
-  const [dir] = args.filter((arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin)$/));
+  const [dir] = args.filter(
+    (arg, i) => !arg.startsWith('--') && !args[i - 1]?.match(/^--(checkout|trivy-pin|memo|memo-day)$/),
+  );
   const checkout = option('--checkout');
   const pinFile = option('--trivy-pin');
   const prove = args.includes('--prove');
   const write = args.includes('--write');
-  if (!dir || !checkout || !pinFile || prove === write) {
+  const memoFile = option('--memo');
+  // The day the workflow keyed the file by, so a run that crosses midnight keeps the answers under the key it read.
+  const memoDay = option('--memo-day');
+  if (
+    !dir ||
+    !checkout ||
+    !pinFile ||
+    prove === write ||
+    (args.includes('--memo') && !memoFile) ||
+    (memoDay !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(memoDay))
+  ) {
     console.error(USAGE);
     return 2;
   }
@@ -1574,8 +1589,13 @@ export async function main(args: string[]): Promise<number> {
   const handoff = JSON.parse(readFileSync(join(dir, 'deadlines.json'), 'utf-8')) as Handoff;
   const work = join(resolve(dir), 'deadlines');
   mkdirSync(work, { recursive: true });
-  const sources = realSources(handoff, checkout, pin[1], mkdtempSync(join(work, 'work-')), process.env.GH_TOKEN);
   const now = Date.now();
+  const real = realSources(handoff, checkout, pin[1], mkdtempSync(join(work, 'work-')), process.env.GH_TOKEN);
+  const memo = memoFile ? readMemo(memoFile, memoDay ?? dayOf(now)) : undefined;
+  const asked: MemoCount = { kept: 0, asked: 0 };
+  // The Helm that renders a chart, from this repository's mise.lock, in the key of each rendering kept.
+  const helm = memo ? (await promisify(execFile)('helm', ['version', '--short'])).stdout.trim() : '';
+  const sources = memo ? memoised(real, memo, asked, helm) : real;
   let judged: Awaited<ReturnType<typeof assess>>;
   try {
     judged = await assess(handoff, sources, now, (line) => console.log(line));
@@ -1614,6 +1634,12 @@ export async function main(args: string[]): Promise<number> {
   if (run)
     for (const [index, move] of list.entries())
       for (const each of move.results) tags.set(each, { index: index + 1, run });
+  if (memo && memoFile) {
+    writeMemo(memoFile, memo);
+    console.log(
+      `Lookups of registries and releases: ${asked.kept} answered from the day's (${memo.day}), ${asked.asked} asked.`,
+    );
+  }
   const looked = `Read the publish times of ${judged.looked.npm} npm versions, ${judged.looked.images} newer images, ${judged.looked.charts} charts' renderings and ${judged.looked.tools} tools' releases. Images k3s's release brings: ${judged.looked.k3s.fixed} results fixed by a later k3s release, ${judged.looked.k3s.none} not yet. Lines no longer built: ${judged.looked.unbuilt} results.`;
   const table = movesTable(file);
   const images = `Images scanned, each in moves.json with its digests and pin: ${file.scanned.length} (${new Set(file.scanned.map((each) => each.image)).size} references).`;

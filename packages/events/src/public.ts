@@ -116,13 +116,13 @@ const ANSWERED = {
 } as const;
 
 export const PUBLIC_VIEWS = {
-  // A lockfile move's package and versions are withheld (`WITHHELD_PACKAGE`); its title, which triage writes, never
-  // names them.
+  // A vulnerable lockfile move's package and versions are withheld (`WITHHELD_PACKAGE`); its title, which triage
+  // writes, never names them. A routine update's names no finding, and Dependabot's pull request names it anyway.
   'work-item.opened': ({ payload: { visitor: _key, ...payload }, ...event }) =>
     redacted({
       ...event,
       payload:
-        payload.dependency && lockfileMove(payload.dependency)
+        payload.dependency?.security && lockfileMove(payload.dependency)
           ? { ...payload, dependency: { ...payload.dependency, name: WITHHELD_PACKAGE, from: '', to: '' } }
           : payload,
     }),
@@ -165,10 +165,13 @@ export const PUBLIC_VIEWS = {
       payload: { ...event.payload, state: { ...state, ...(report && { report: { page: pathOf(report.page) } }) } },
     });
   },
-  // A lockfile move's ticket names its package in its fingerprint and its title: withheld (`WITHHELD_PACKAGE`).
+  // A vulnerable lockfile move's ticket names its package in its fingerprint and its title: withheld
+  // (`WITHHELD_PACKAGE`).
   'ticket.opened': ({ payload, ...event }) => {
     const { fingerprint } = payload;
-    if (!('ecosystem' in fingerprint) || !lockfileMove(fingerprint)) return redacted({ ...event, payload });
+    // A routine update's ticket (category `dependency`) names no finding.
+    if (!('ecosystem' in fingerprint) || !lockfileMove(fingerprint) || payload.category !== 'security')
+      return redacted({ ...event, payload });
     return redacted({
       ...event,
       payload: {

@@ -100,6 +100,8 @@ describe("a move's public views", () => {
     });
     // A title in any other words names nothing.
     expect(view('ticket.opened', { ...ticket, title: 'left-pad is vulnerable' }).title).toBe('Move a package, in npm');
+    const routine = { ...ticket, category: 'dependency' };
+    expect(view('ticket.opened', routine)).toEqual(routine);
     const node = { ...ticket, title: 'Move node, in docker', fingerprint: { name: 'node', ecosystem: 'docker' } };
     expect(view('ticket.opened', node)).toEqual(node);
   });
@@ -119,6 +121,9 @@ describe("a move's public views", () => {
       to: '',
       security: true,
     });
+    // A routine update's names no finding, and Dependabot's pull request names its package anyway.
+    const routine = { ...opened, category: 'dependency', dependency: { ...opened.dependency, security: false } };
+    expect(view('work-item.opened', routine).dependency).toEqual(routine.dependency);
     const reopened = {
       sense: 'dependency',
       check: 'the vulnerability scan',

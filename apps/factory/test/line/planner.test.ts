@@ -784,6 +784,20 @@ describe('the planner’s prompt', () => {
     );
   });
 
+  it('tells the planner of a move that came back, as of a defect, with no route', () => {
+    const reopened = {
+      sense: 'dependency' as const,
+      check: 'the vulnerability scan',
+      move: { name: 'node', ecosystem: 'docker' as const },
+      version: 'c'.repeat(40),
+      reason: 'The day’s scan found the move again',
+      dryRun: false,
+    };
+    expect(planner.prompt({ ...INPUT, reopened: [reopened] })).toContain(
+      `- The dependency saw “the vulnerability scan” again on ${'c'.repeat(40)}.`,
+    );
+  });
+
   it('describes each kind of evidence in a line or two', () => {
     expect(
       evidenceLines({

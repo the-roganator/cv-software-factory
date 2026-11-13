@@ -443,6 +443,34 @@ describe('a reopened work item', () => {
       artifacts: [],
     } as NewEvent);
 
+  it('comes back into Plan when a move reopened it, by its move and no route', async () => {
+    const reopened = await ticket('degraded', '/search');
+    const queue = new Queue(database.as.line, 'test');
+    expect(await queue.admit()).toBe(reopened);
+    await database.as.line`update line set stage = 'ended' where work_item = ${reopened}`;
+    await closeOrReopen(reopened, 'work-item.closed');
+    await writer().append({
+      id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      work_item: reopened,
+      type: 'work-item.reopened',
+      version: VERSIONS['work-item.reopened'],
+      actor: 'triage',
+      summary: 'Reopened: the dependency sense saw the move again',
+      payload: {
+        sense: 'dependency',
+        check: 'the vulnerability scan',
+        move: { name: 'node', ecosystem: 'docker' },
+        version: 'a'.repeat(40),
+        reason: 'It came back',
+        dryRun: false,
+      },
+      artifacts: [],
+    } as NewEvent);
+    await database.as.line`update line set moved_at = moved_at - interval '2 minutes' where work_item = ${reopened}`;
+    expect((await queue.reopened()).map((item) => item.workItem)).toEqual([reopened]);
+  });
+
   it('comes back into Plan from its end, afresh, whatever else is on the line and whatever the limit', async () => {
     const reopened = await ticket('degraded', '/search');
     const queue = new Queue(database.as.line, 'test', { take: few(1) });

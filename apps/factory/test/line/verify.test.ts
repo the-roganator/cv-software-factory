@@ -792,6 +792,22 @@ describe('what cleared a work item, on its issue', () => {
     expect(reopeningComment({ ...reopened, sense: 'crawler' }, '1001')).toMatch(/again on every page, in version/);
   });
 
+  it('says a move came back by its move, never as a route', () => {
+    const reopened = {
+      sense: 'dependency' as const,
+      check: 'the vulnerability scan',
+      move: { name: 'node', ecosystem: 'docker' as const },
+      version: VERSION,
+      reason: 'The day’s scan found the move again',
+      dryRun: false,
+    };
+    const first = reopeningComment(reopened, '1001').split('\n')[0];
+    expect(first).toBe(
+      'It came back after its fix was verified: the dependency saw “the vulnerability scan” again on the move of `node`, in docker, in version bbbbbbb.',
+    );
+    expect(first).not.toContain('undefined');
+  });
+
   it('says a dry run’s fix never shipped, when the line reopens a ticket the dry run verified', () => {
     const reopened = { sense: 'report' as const, check: 'a report', route: '/', version: VERSION, reason: 'Back' };
     expect(reopeningComment({ ...reopened, dryRun: true }, '1001')).toBe(

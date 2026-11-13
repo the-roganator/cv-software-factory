@@ -142,6 +142,14 @@ export const ECOSYSTEMS = ['npm', 'docker', 'node'] as const;
 export type Ecosystem = (typeof ECOSYSTEMS)[number];
 
 /**
+ * What a public view says in place of a lockfile's package: a package of the app's lockfile is in the `npm` ecosystem,
+ * and only it. The plan keeps a finding's package and advisory out of what is public until an issue or a pull request
+ * moving it is open, which `patching.read`'s public view does by its file alone; a move's ticket and its events
+ * (public.ts) withhold it always, and the issue the line opens from their private payloads is where they become public.
+ */
+export const WITHHELD_PACKAGE = 'a package';
+
+/**
  * A move's fingerprint: its name and its ecosystem, and nothing that changes as it is chased. With no version and no
  * advisory in it, every finding the move clears, and every later target of the same move, is the one ticket's.
  */

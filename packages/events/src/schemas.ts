@@ -764,17 +764,31 @@ export const PAYLOADS = {
    * back, as the defect never left. Then it names the ticket's first signal, whatever its source, and the version the
    * dry run's fix would have replaced.
    */
+  /**
+   * A ticket closed as verified, open again: a sense saw its problem again, or the fix a dry run verified never shipped.
+   * A route's sense names its route; the dependency sense names its move's name and ecosystem in its place (the ticket's
+   * fingerprint), with no version or advisory. A version 3 reopening always named a route.
+   */
   'work-item.reopened': z
     .strictObject({
-      sense: z.enum(V.ROUTE_SOURCES),
+      sense: z.enum(V.SIGNAL_SOURCES),
       check: text(80),
-      route: routeOrEvery,
+      route: routeOrEvery.optional(),
+      move: z.strictObject({ name: dependencyName, ecosystem: z.enum(V.ECOSYSTEMS) }).optional(),
       version: appVersion,
       reason: text(200),
       dryRun: z.boolean(),
     })
     .refine((r) => r.dryRun || (r.sense !== 'report' && r.sense !== 'planner'), {
       message: 'only a sense’s signal reopens a ticket, unless the reopening undoes a dry run’s verification',
+      path: ['sense'],
+    })
+    .refine((r) => (r.route === undefined) !== (r.move === undefined), {
+      message: 'a reopening names a route or a move, and not both',
+      path: ['move'],
+    })
+    .refine((r) => (r.sense === 'dependency') === (r.move !== undefined), {
+      message: 'the dependency sense, and only it, reopens on a move',
       path: ['sense'],
     }),
 

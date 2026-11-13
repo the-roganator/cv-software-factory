@@ -10,10 +10,12 @@ import {
   cutTo,
   type DefectSymptom,
   type Dependency,
+  type DependencySymptom,
   type Environment,
   type EventType,
   type Evidence,
   type InboxSignal,
+  moveFingerprint,
   type NewEvent,
   type PayloadOf,
   type Points,
@@ -22,12 +24,15 @@ import {
   type RouteSense,
   SECURITY_HEADERS,
   type Sense,
+  type Severity,
   type SignalSource,
   type SymptomClass,
   VERSIONS,
+  WITHHELD_PACKAGE,
+  worseSeverity,
 } from '@software-factory/events';
 import { guardrailsFor } from '../../../policy/refusals.ts';
-import { BURST, REPORT_TEXT, SYMPTOMS } from '../../../policy/triage.ts';
+import { BURST, REPORT_TEXT, SYMPTOMS, vulnerableSeverity } from '../../../policy/triage.ts';
 import type { Fingerprint, Judgement, ReportDecision } from './reports.ts';
 import { privatePath, shortPath } from './scrub.ts';
 
@@ -224,13 +229,16 @@ function tracesOf(signal: InboxSignal): string[] {
 function signalEvent(writer: Writer, signal: Seen): Writer {
   const { observedAt: _at, summary, artifacts, ...payload } = signal;
   const actor = signal.sense === 'report' ? 'widget' : signal.sense;
-  const page = shortPath(payload.report?.page ?? routeOf(signal));
+  const page = () => shortPath(payload.report?.page ?? routeOf(signal));
   const line =
     signal.sense === 'report'
-      ? `A visitor reported a problem on ${page}`
+      ? `A visitor reported a problem on ${page()}`
       : signal.sense === 'planner'
-        ? `The planner noted something on ${page}`
-        : (summary ?? `${signal.check}: ${TITLES[signal.symptom as SymptomClass].toLowerCase()}`);
+        ? `The planner noted something on ${page()}`
+        : signal.sense === 'dependency'
+          ? // The factory's own words, never the sense's: a public summary names no package and no advisory.
+            moveLine(signal)
+          : (summary ?? `${signal.check}: ${TITLES[signal.symptom as SymptomClass].toLowerCase()}`);
   return writer.add('signal.received', actor, line, payload, artifacts);
 }
 
@@ -805,3 +813,128 @@ export function judgementLine(judgement: Judgement): string {
 }
 
 const p = (value: number | undefined) => (value ?? 0).toFixed(2);
+
+/** A move's signal in a line, with no package and no advisory: its findings by severity, and whether it has a target. */
+function moveLine(signal: Seen): string {
+  const scan = scanOf(signal);
+  const findings = scan ? scan.findings.length + Object.values(scan.rest).reduce((a, b) => a + b, 0) : 0;
+  const what =
+    signal.symptom === 'outdated-dependency'
+      ? 'a newer release'
+      : `${findings} ${findings === 1 ? 'finding' : 'findings'}`;
+  return `The day’s scan: ${what} on a move of the app’s, ${moveSeverity(signal)} by its worst with a fix`;
+}
+
+/** A move's scan evidence: a dependency's signal carries one, and nothing else. */
+const scanOf = (signal: InboxSignal) => signal.evidence?.find((e) => e.kind === 'scan');
+
+/**
+ * A move's ticket's severity: a vulnerable dependency's by its worst finding with a fix (`vulnerableSeverity`), from the
+ * scan's fixed fields alone; a routine update's by the policy's table.
+ */
+export function moveSeverity(signal: Pick<InboxSignal, 'symptom' | 'evidence'>): Severity {
+  if (signal.symptom !== 'vulnerable-dependency') return SYMPTOMS['outdated-dependency'].severity;
+  return vulnerableSeverity(scanOf(signal as InboxSignal)?.findings ?? []);
+}
+
+/**
+ * What makes two of a move's signals the same: its target, what it moves from, and its findings by their fixed fields
+ * (advisory, package, each rating, the fixed versions) with the counts of the rest. Never the deadline, which a day can
+ * move without the finding changing, nor any word of an advisory, which a signal never carries.
+ */
+export function moveSays(signal: Pick<InboxSignal, 'move' | 'symptom' | 'evidence'>): string {
+  const scan = scanOf(signal as InboxSignal);
+  const findings = (scan?.findings ?? [])
+    .map((f) => [f.advisory, f.package, f.severity.scanner, f.severity.publisher ?? '', f.fixed ?? ''].join(' '))
+    .sort();
+  return JSON.stringify([signal.move?.from, signal.move?.to, signal.symptom, findings, scan?.rest ?? null]);
+}
+
+/** The move a dependency's signal names. */
+const moveOf = (signal: InboxSignal) => {
+  if (!signal.move) throw new Error(`A signal from the ${signal.sense} names no move`);
+  return signal.move;
+};
+
+/**
+ * A move's ticket's title: a lockfile's package by its name and its lockfile, which its public view reads as "Move a
+ * package in `<file>`", as `patching.read`'s row does; an image or Node by its name and ecosystem.
+ */
+export function moveTitle(move: NonNullable<InboxSignal['move']>, named = true): string {
+  if (move.ecosystem !== 'npm') return ticketTitle(moveFingerprint(move));
+  const files = [...new Set(move.pins.map((pin) => pin.file))].map((file) => `\`${file}\``).join(' and ');
+  return cutTo(`Move ${named ? move.name : WITHHELD_PACKAGE} in ${files}`, LONGEST_TITLE);
+}
+
+/**
+ * A move's signal with no ticket open for it: a work item of kind `dependency-update`, with its pin, and its ticket.
+ * The package is in the ticket's title and fingerprint and in the pin, each of which a public view withholds; the work
+ * item's own title, its summary and the events' summaries never name it.
+ */
+export function moveTicket(signal: Seen, signalId: string, workItem: string, now: Date): NewEvent[] {
+  const move = moveOf(signal);
+  const symptom = signal.symptom as DependencySymptom;
+  const { category } = SYMPTOMS[symptom];
+  const severity = moveSeverity(signal);
+  const security = symptom === 'vulnerable-dependency';
+  const shown = moveTitle(move, false);
+  const writer = new Writer(signalId, workItem, now);
+  writer.add('work-item.opened', 'triage', 'The dependency sense opened a work item', {
+    kind: 'dependency-update',
+    title: shown,
+    sample: false,
+    category,
+    dependency: { name: move.name, ecosystem: move.ecosystem, from: move.from, to: move.to, security },
+  });
+  signalEvent(writer, signal);
+  writer.add('ticket.opened', 'triage', `Ticket #${workItem}: ${category}, ${severity}`, {
+    title: moveTitle(move),
+    category,
+    severity,
+    fingerprint: moveFingerprint(move),
+    traces: [],
+  });
+  const why = security
+    ? `its worst finding with a fix sets its severity, ${severity}, by the policy’s table, read from the scan’s ratings and never from an advisory’s words`
+    : `a routine update fixes no defect, so it is ${severity}`;
+  return summarise(writer, {
+    title: shown,
+    description: `The day’s scan found a move of the app’s to make. Triage opened a ticket, ${category} and ${severity}.`,
+    story: `The vulnerability scan groups what it finds into moves: one pin going from what it is to what fixes it. The dependency sense sent this one of the app’s, and triage opened ticket #${workItem} for it with the scan’s findings as evidence: ${why}. No model judged it. The same move seen again counts on this ticket; a new target or new findings join it, and a worse finding raises its severity.`,
+  });
+}
+
+/**
+ * A move's signal on its open ticket that says something new (`moveSays`): it joins as evidence, and raises the
+ * ticket's severity when its worst finding with a fix is worse than the ticket's (`ticket.rated`), never lowering it.
+ */
+export function moveEvidence(signal: Seen, signalId: string, workItem: string, was: Severity, now: Date): NewEvent[] {
+  return joined(new Writer(signalId, workItem, now), signal, was).events;
+}
+
+/** The signal, and a rating when its worst finding with a fix is worse than the ticket's severity. */
+function joined(writer: Writer, signal: Seen, was: Severity): Writer {
+  signalEvent(writer, signal);
+  const severity = worseSeverity(was, moveSeverity(signal));
+  if (severity !== was)
+    writer.add('ticket.rated', 'triage', `Severity raised: ${was} to ${severity}`, { severity, was });
+  return writer;
+}
+
+/**
+ * A move's signal on its ticket closed as verified, seen after the close: the move is back. The work item reopens, the
+ * signal joins it, and its severity rises if the move's worst finding is worse than it was.
+ */
+export function moveReopened(signal: Seen, signalId: string, workItem: string, was: Severity, now: Date): NewEvent[] {
+  const move = moveOf(signal);
+  const writer = new Writer(signalId, workItem, now);
+  writer.add('work-item.reopened', 'triage', 'Reopened: the dependency sense saw the move again', {
+    sense: 'dependency',
+    check: signal.check,
+    move: moveFingerprint(move),
+    version: signal.version,
+    reason: `The day’s scan found the move again after its fix was verified: ${moveSeverity(signal)} by its worst finding with a fix`,
+    dryRun: false,
+  });
+  return joined(writer, signal, was).events;
+}

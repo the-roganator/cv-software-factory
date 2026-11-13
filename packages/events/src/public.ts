@@ -8,6 +8,7 @@
  */
 import type { View } from './types.ts';
 import type { EventType } from './versions.ts';
+import { WITHHELD_PACKAGE } from './vocabulary.ts';
 
 type Rule = [pattern: RegExp, replacement: string];
 
@@ -51,6 +52,61 @@ const pathOf = (page: string) => page.split(/[?#]/)[0] || '/';
 /** The view of an event with nothing to leave out but secrets. */
 const redacted = <K extends EventType>(event: View<K>): View<K> => redactDeep(event);
 
+/** Whether a move is a lockfile's, whose name is its package's and withheld. */
+const lockfileMove = (move: { ecosystem: string } | undefined) => move?.ecosystem === 'npm';
+
+type SignalPayload = View<'signal.received'>['payload'];
+type ScanFinding = Extract<NonNullable<SignalPayload['evidence']>[number], { kind: 'scan' }>['findings'][number];
+
+/**
+ * A dependency's signal as anyone may see it: a lockfile move with its package, its versions and its lines withheld,
+ * named by its files as `patching.read`'s row is; and every finding without its advisory or its package, and a lockfile
+ * move's without the version that fixes it, which would name the package beside the public lockfile.
+ */
+function withheldSignal(payload: SignalPayload): SignalPayload {
+  const { move } = payload;
+  if (!move) return payload;
+  const lockfile = lockfileMove(move);
+  const files = [...new Set(move.pins.map((pin) => pin.file))];
+  return {
+    ...payload,
+    move: lockfile
+      ? {
+          ...move,
+          name: `${WITHHELD_PACKAGE} in ${files.map((file) => `\`${file}\``).join(' and ')}`,
+          from: '',
+          to: '',
+          pins: files.map((file) => ({ file, line: 0 })),
+        }
+      : move,
+    ...(payload.evidence && {
+      evidence: payload.evidence.map((evidence) =>
+        evidence.kind === 'scan'
+          ? {
+              ...evidence,
+              findings: evidence.findings.map(
+                ({ advisory: _advisory, package: _package, fixed, ...finding }) =>
+                  ({ ...finding, ...(fixed && !lockfile && { fixed }) }) as ScanFinding,
+              ),
+            }
+          : evidence,
+      ),
+    }),
+  };
+}
+
+/**
+ * A move's ticket's title without its package: triage writes a lockfile move's as `Move <package> in \`<file>\``, which
+ * reads `Move a package in \`<file>\``, as `patching.read`'s row does; any other title of a lockfile move's ticket reads
+ * as one that names nothing.
+ */
+function withheldTitle(title: string, name: string): string {
+  const named = `Move ${name} in `;
+  return title.startsWith(named)
+    ? `Move ${WITHHELD_PACKAGE} in ${title.slice(named.length)}`
+    : 'Move a package, in npm';
+}
+
 /** How Martin answered a hold, in words of the factory's own. */
 const ANSWERED = {
   approved: 'Martin approved the hold',
@@ -60,16 +116,35 @@ const ANSWERED = {
 } as const;
 
 export const PUBLIC_VIEWS = {
-  'work-item.opened': ({ payload: { visitor: _key, ...payload }, ...event }) => redacted({ ...event, payload }),
+  // A lockfile move's package and versions are withheld (`WITHHELD_PACKAGE`); its title, which triage writes, never
+  // names them.
+  'work-item.opened': ({ payload: { visitor: _key, ...payload }, ...event }) =>
+    redacted({
+      ...event,
+      payload:
+        payload.dependency && lockfileMove(payload.dependency)
+          ? { ...payload, dependency: { ...payload.dependency, name: WITHHELD_PACKAGE, from: '', to: '' } }
+          : payload,
+    }),
   'work-item.summarised': redacted,
   'work-item.closed': redacted,
-  'work-item.reopened': redacted,
+  // A lockfile move's reopening names its package in its move: withheld (`WITHHELD_PACKAGE`).
+  'work-item.reopened': ({ payload, ...event }) =>
+    redacted({
+      ...event,
+      payload:
+        payload.move && lockfileMove(payload.move)
+          ? { ...payload, move: { ...payload.move, name: WITHHELD_PACKAGE } }
+          : payload,
+    }),
   'defect.injected': redacted,
   'attack.launched': redacted,
   // An attack's own record of what it tried, and what came back, through the redactor, as a refusal's output is.
   'attack.finished': redacted,
   'signal.received': (event) => {
     const { report, ...payload } = event.payload;
+    // A dependency's: its findings' advisories and packages, and a lockfile move's package, withheld.
+    if (payload.move) return redacted({ ...event, payload: withheldSignal(event.payload) });
     if (!report) return redacted(event);
     // A report's summary is replaced as well as its text, so a careless summary cannot quote the report. A planner's
     // finding is kept as close: its words are untrusted too.
@@ -90,7 +165,19 @@ export const PUBLIC_VIEWS = {
       payload: { ...event.payload, state: { ...state, ...(report && { report: { page: pathOf(report.page) } }) } },
     });
   },
-  'ticket.opened': redacted,
+  // A lockfile move's ticket names its package in its fingerprint and its title: withheld (`WITHHELD_PACKAGE`).
+  'ticket.opened': ({ payload, ...event }) => {
+    const { fingerprint } = payload;
+    if (!('ecosystem' in fingerprint) || !lockfileMove(fingerprint)) return redacted({ ...event, payload });
+    return redacted({
+      ...event,
+      payload: {
+        ...payload,
+        title: withheldTitle(payload.title, fingerprint.name),
+        fingerprint: { ...fingerprint, name: WITHHELD_PACKAGE },
+      },
+    });
+  },
   // A ticket's severity raised: two severities, and nothing else.
   'ticket.rated': redacted,
   'spec.written': redacted,

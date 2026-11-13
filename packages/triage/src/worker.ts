@@ -42,13 +42,15 @@ import { setTimeout as pause } from 'node:timers/promises';
 import type {
   DefectCategory,
   DefectSymptom,
+  DependencySymptom,
   Environment,
   InboxSignal,
   NewEvent,
   PayloadOf,
+  Severity,
   SignalSource,
 } from '@software-factory/events';
-import { samePoints, ticketPoints } from '@software-factory/events';
+import { moveFingerprint, samePoints, ticketPoints, ticketSeverity } from '@software-factory/events';
 import {
   type EventWriter,
   fingerprintOf,
@@ -73,6 +75,11 @@ import {
   healthy,
   heldAgain,
   idsFor,
+  moveEvidence,
+  moveReopened,
+  moveSays,
+  moveTicket,
+  moveTitle,
   type ParkedDefect,
   reportEvents,
   routeOf,
@@ -551,7 +558,7 @@ export class Triage {
    */
   async #seen(signal: InboxSignal): Promise<Seen> {
     const { look } = this.#o;
-    if (!look || judged(signal)) return signal;
+    if (!look || judged(signal) || signal.sense === 'dependency') return signal;
     const reads: readonly string[] = ENVIRONMENT.reads[signal.sense as keyof typeof ENVIRONMENT.reads] ?? [];
     const environment = await look(new Date(signal.observedAt));
     const dependencies = environment.dependencies.filter((dependency) => reads.includes(dependency.name));
@@ -733,6 +740,7 @@ export class Triage {
    * it through, may not.
    */
   async #sense(signal: Seen, seed: string, tickets: Ticket[], taken?: Taken): Promise<Made> {
+    if (signal.sense === 'dependency') return this.#move(signal, seed, tickets);
     const { sql } = this.#o;
     const now = this.#o.now();
     const fingerprint = { route: routeOf(signal), class: signal.symptom as DefectSymptom };
@@ -788,6 +796,58 @@ export class Triage {
       outcome: 'evidence',
       workItem: ticket.workItem,
       events: senseEvidence(signal, seed, ticket.workItem, now),
+    };
+  }
+
+  /**
+   * What a move's signal makes. One move, one open ticket: with none open, it opens one, unless a ticket closed as
+   * verified has the move, which reopens if the signal was seen after the close (one seen before is of the pin the fix
+   * replaced, and only counted). On its open ticket, a signal that says what the ticket's last said (`moveSays`: the
+   * same target and findings, as the next day's scan or a restarted sense sends) is counted; one that says something new
+   * joins as evidence, and raises the ticket's severity when its worst finding with a fix is worse. A day's moves arrive
+   * together by design, so a move is never held in a burst, and the sense reads nothing triage looks at. No model
+   * judges a move: its severity is the policy's reading of the scan's ratings.
+   */
+  async #move(signal: Seen, seed: string, tickets: Ticket[]): Promise<Made> {
+    const { sql } = this.#o;
+    const now = this.#o.now();
+    if (!signal.move) throw new Error('A signal from the dependency sense names no move');
+    const fingerprint = moveFingerprint(signal.move);
+    const open = tickets.find((ticket) => sameFingerprint(ticket.fingerprint, fingerprint));
+    if (open) {
+      const last = await lastMoveSignal(sql, open.workItem);
+      if (last && moveSays(last) === moveSays(signal))
+        return { outcome: 'counted', workItem: open.workItem, events: [] };
+      const was = await severityOf(sql, open.workItem);
+      return {
+        outcome: 'evidence',
+        workItem: open.workItem,
+        events: moveEvidence(signal, seed, open.workItem, was, now),
+      };
+    }
+    const verified = await verifiedMove(sql, fingerprint);
+    if (verified) {
+      if (verified.dryRun || Date.parse(signal.observedAt) <= verified.closedAt.getTime())
+        return { outcome: 'counted', workItem: verified.workItem, events: [] };
+      const was = await severityOf(sql, verified.workItem);
+      return {
+        outcome: 'reopened',
+        workItem: verified.workItem,
+        events: moveReopened(signal, seed, verified.workItem, was, now),
+      };
+    }
+    const workItem = await nextWorkItem(sql);
+    return {
+      outcome: 'opened',
+      workItem,
+      events: moveTicket(signal, seed, workItem, now),
+      ticket: {
+        workItem,
+        title: moveTitle(signal.move),
+        category: SYMPTOMS[signal.symptom as DependencySymptom].category,
+        fingerprint,
+        sense: 'dependency',
+      },
     };
   }
 
@@ -884,6 +944,54 @@ export class Triage {
     const workItem = await nextWorkItem(sql);
     return { outcome: 'held', workItem, events: burstEvents(signal, taken.id, workItem, found, now) };
   }
+}
+
+/** The latest signal the dependency sense left on a move's ticket, as it was recorded. */
+async function lastMoveSignal(sql: Sql, workItem: string): Promise<InboxSignal | undefined> {
+  const [row] = await sql<{ payload: InboxSignal }[]>`
+    select payload from events where work_item = ${workItem} and type = 'signal.received'
+      and payload->>'sense' = 'dependency'
+    order by seq desc limit 1`;
+  return row?.payload;
+}
+
+/** A ticket's severity: the worst of its opening's and its ratings' (`ticketSeverity`). */
+async function severityOf(sql: Sql, workItem: string): Promise<Severity> {
+  const rows = await sql<{ type: string; severity: Severity }[]>`
+    select type, payload->>'severity' as severity from events
+    where work_item = ${workItem} and type in ('ticket.opened', 'ticket.rated') order by seq`;
+  const [opened, ...rated] = rows;
+  if (opened?.type !== 'ticket.opened') throw new Error(`Work item #${workItem} has no ticket to rate`);
+  return ticketSeverity(
+    opened.severity,
+    rated.map((r) => r.severity),
+  );
+}
+
+/**
+ * The latest move's ticket whose last close or reopening is a close as verified, with this move's name and ecosystem,
+ * when it closed, and whether its last verification was a dry run's (`verifiedTicket`, for a move).
+ */
+async function verifiedMove(sql: Sql, fingerprint: { name: string; ecosystem: string }) {
+  const [row] = await sql<{ work_item: string; closed_at: Date; dry_run: boolean }[]>`
+    select t.work_item, last_end.ts as closed_at, coalesce(last_check.dry_run, false) as dry_run from events t
+    cross join lateral (
+      select c.type, c.ts, c.payload->>'outcome' as outcome from events c
+      where c.work_item = t.work_item and c.type in ('work-item.closed', 'work-item.reopened')
+      order by c.seq desc limit 1
+    ) last_end
+    left join lateral (
+      select (v.payload->>'dryRun')::boolean as dry_run from events v
+      where v.work_item = t.work_item
+        and (v.type = 'verification.finished' or (v.type = 'signal.rechecked' and v.payload->>'outcome' = 'cleared'))
+      order by v.seq desc limit 1
+    ) last_check on true
+    where t.type = 'ticket.opened'
+      and t.payload->'fingerprint'->>'name' = ${fingerprint.name}
+      and t.payload->'fingerprint'->>'ecosystem' = ${fingerprint.ecosystem}
+      and last_end.type = 'work-item.closed' and last_end.outcome = 'verified'
+    order by t.seq desc limit 1`;
+  return row && { workItem: row.work_item, closedAt: new Date(row.closed_at), dryRun: row.dry_run };
 }
 
 /** Whether a sense has seen what an open ticket has in a version of the app: the ticket has its signal there. */

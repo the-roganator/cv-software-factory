@@ -9,7 +9,7 @@ export const VERSIONS = {
   'work-item.opened': 3,
   'work-item.summarised': 1,
   'work-item.closed': 3,
-  'work-item.reopened': 3,
+  'work-item.reopened': 4,
   // Before the line: what a visitor started
   'defect.injected': 1,
   // A red-team attack: Martin's launch of it (the admin service), and how it ended (the red-team harness)

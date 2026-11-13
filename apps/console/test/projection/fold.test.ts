@@ -120,3 +120,29 @@ describe("a ticket's severity, raised by triage", () => {
     expect(projectSheet(view, '1500')?.facts.ticket?.severity).toBe('broken');
   });
 });
+
+describe('a move reopened', () => {
+  it('reads as a reopening with its move, and names no route', () => {
+    const { events } = work('1501')
+      .open('dependency-update')
+      .add(1, 'ticket.opened', 'triage', {
+        title: 'Move node, in docker',
+        category: 'security',
+        severity: 'broken',
+        fingerprint: { name: 'node', ecosystem: 'docker' },
+        traces: [],
+      })
+      .add(2, 'work-item.closed', 'factory', { outcome: 'verified', reason: 'Gone from the scan' })
+      .add(3, 'work-item.reopened', 'triage', {
+        sense: 'dependency',
+        check: 'the vulnerability scan',
+        move: { name: 'node', ecosystem: 'docker' },
+        version: 'a'.repeat(40),
+        reason: 'The day’s scan found the move again',
+        dryRun: false,
+      });
+    const item = foldItem(events);
+    expect(item?.reopened).toMatchObject({ sense: 'dependency', move: { name: 'node' } });
+    expect(item?.reopened).not.toHaveProperty('route');
+  });
+});

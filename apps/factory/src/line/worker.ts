@@ -108,7 +108,9 @@ import {
   pointWords,
   ROUTE_SENSES,
   returnWords,
+  type Severity,
   scopesOverlap,
+  ticketSeverity,
   upcast,
   WORDS_LEAVE_HELD,
   workItemsWords,
@@ -2283,11 +2285,25 @@ export class Line {
     }
   }
 
-  /** The ticket as its public view has it: what anyone may read, and so what may reach GitHub or an agent. */
+  /**
+   * The ticket as its public view has it: what anyone may read, and so what may reach GitHub or an agent. Its severity
+   * is the worst of its opening's and every rating's since (`ticket.rated`, public whole).
+   */
   async #publicTicket(workItem: string, state: WorkItemState): Promise<PayloadOf<'ticket.opened'>> {
     const [row] = await this.#o.sql<{ public: { payload: PayloadOf<'ticket.opened'> } }[]>`
       select public from events where work_item = ${workItem} and type = 'ticket.opened' order by seq limit 1`;
-    return row?.public.payload ?? need(state.ticket, 'a ticket');
+    if (!row) return need(state.ticket, 'a ticket');
+    const rated = await this.#o.sql<{ severity: Severity }[]>`
+      select public->'payload'->>'severity' as severity from events
+      where work_item = ${workItem} and type = 'ticket.rated' order by seq`;
+    const ticket = row.public.payload;
+    return {
+      ...ticket,
+      severity: ticketSeverity(
+        ticket.severity,
+        rated.map((r) => r.severity),
+      ),
+    };
   }
 
   /**

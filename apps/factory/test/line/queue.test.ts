@@ -295,6 +295,18 @@ async function improvement({ by = 'admin' }: { by?: 'admin' | 'triage' | 'no-req
   return workItem;
 }
 
+describe("a ticket's severity", () => {
+  it('is the worst of its opening and its ratings: a degraded ticket rated broken goes before an older degraded one', async () => {
+    const older = await ticket('degraded', '/');
+    const rated = await ticket('degraded', '/search');
+    await writer().append([event(rated, 'triage', 'ticket.rated', { severity: 'broken', was: 'degraded' })]);
+    const queue = new Queue(database.as.line, 'test');
+    expect(await queue.admit()).toBe(rated);
+    await end(rated);
+    expect(await queue.admit()).toBe(older);
+  });
+});
+
 describe('an improvement Martin asked for', () => {
   it('waits behind every open ticket not yet taken, whatever their ages, and goes oldest first', async () => {
     const older = await improvement();

@@ -158,6 +158,17 @@ export type AdvisorySeverity = (typeof ADVISORY_SEVERITIES)[number];
 export const SEVERITIES = ['cosmetic', 'degraded', 'broken'] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
+/** The worse of two severities: `SEVERITIES` runs from the least to the worst. */
+export const worseSeverity = (a: Severity, b: Severity): Severity =>
+  SEVERITIES.indexOf(a) >= SEVERITIES.indexOf(b) ? a : b;
+
+/**
+ * A ticket's severity: the worst of its opening's (`ticket.opened`) and every rating since (`ticket.rated`), which only
+ * ever raises it. Every reader of a ticket's severity reads it so.
+ */
+export const ticketSeverity = (opened: Severity, rated: readonly Severity[] = []): Severity =>
+  rated.reduce(worseSeverity, opened);
+
 /** What triage's category question may answer for a report: a defect's category, or one of the two that are not. */
 export const REPORT_CATEGORIES = [...DEFECT_CATEGORIES, 'suggestion', 'not-a-defect'] as const;
 export type ReportCategory = (typeof REPORT_CATEGORIES)[number];

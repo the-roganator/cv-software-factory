@@ -919,6 +919,17 @@ export const PAYLOADS = {
           : t.category !== 'dependency',
       { message: 'a move’s ticket is security or dependency, and only a move’s is dependency', path: ['category'] },
     ),
+  /**
+   * A ticket's severity raised, by triage, on the ticket's work item: a move's worst finding with a fix is worse than
+   * it was. Never lowered: `was` is the severity it had, from its opening or its last rating, and `severity` is worse.
+   * Every reader of a ticket's severity takes the worst of its opening and its ratings (`ticketSeverity`).
+   */
+  'ticket.rated': z
+    .strictObject({ severity: z.enum(V.SEVERITIES), was: z.enum(V.SEVERITIES) })
+    .refine((r) => V.SEVERITIES.indexOf(r.severity) > V.SEVERITIES.indexOf(r.was), {
+      message: 'a rating raises a ticket’s severity, never lowers it',
+      path: ['severity'],
+    }),
 
   /**
    * The planner's spec. An improvement's names its title, which replaces the one made from Martin's words, the flag its

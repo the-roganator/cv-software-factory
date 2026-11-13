@@ -19,6 +19,7 @@ export const VERSIONS = {
   'signal.received': 6,
   'judgement.made': 2,
   'ticket.opened': 3,
+  'ticket.rated': 1,
   // Plan and build
   'spec.written': 5,
   'pull-request.pushed': 3,

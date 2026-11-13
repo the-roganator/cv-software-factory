@@ -91,6 +91,8 @@ export const PUBLIC_VIEWS = {
     });
   },
   'ticket.opened': redacted,
+  // A ticket's severity raised: two severities, and nothing else.
+  'ticket.rated': redacted,
   'spec.written': redacted,
   'pull-request.pushed': redacted,
   'suggestions.answered': redacted,

@@ -1,10 +1,10 @@
 import type { PublicEvent } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
 import { foldAt, foldOf, project, upTo } from '../../web/src/projection/index.ts';
-import { stopsRelease } from '../../web/src/projection/items.ts';
+import { foldItem, stopsRelease } from '../../web/src/projection/items.ts';
 import { appVersion, appVersions } from '../../web/src/projection/reel.ts';
 import { projectSheet } from '../../web/src/projection/sheet.ts';
-import { END, FIXTURE, SAMPLES } from './support.ts';
+import { END, FIXTURE, SAMPLES, work } from './support.ts';
 
 // The live console's clock moves t every ten seconds with no new event: the fold of the events is made once for them,
 // and only what depends on the time is drawn again.
@@ -97,5 +97,26 @@ describe('the version the app was on', () => {
     const events = [ts(a, 1000), ts(b, 3000), ts(c, 2000)];
     const versions = appVersions(events);
     for (const at of [999, 1000, 2000, 2500, 3000]) expect(appVersion(versions, at)).toBe(walked(events, at));
+  });
+});
+
+describe("a ticket's severity, raised by triage", () => {
+  it('shows the worst of its opening and its ratings, and never a lower one', () => {
+    const { events } = work('1500')
+      .open('dependency-update')
+      .add(1, 'ticket.opened', 'triage', {
+        title: 'Move node, in docker',
+        category: 'security',
+        severity: 'degraded',
+        fingerprint: { name: 'node', ecosystem: 'docker' },
+        traces: [],
+      })
+      .add(2, 'ticket.rated', 'triage', { severity: 'broken', was: 'degraded' });
+    const item = foldItem(events);
+    expect(item?.ticket?.severity).toBe('broken');
+    // It moves the work item nowhere: still at Plan, queued.
+    expect(item?.stage).toBe('plan');
+    const view = project(events, Date.parse(events.at(-1)?.ts ?? '') + 60_000);
+    expect(projectSheet(view, '1500')?.facts.ticket?.severity).toBe('broken');
   });
 });

@@ -769,7 +769,12 @@ describe('platform.yml', () => {
     expect(workflow.permissions).toEqual({});
     expect(Object.keys(jobs).sort()).toEqual(['platform', 'which']);
     expect(jobs.platform?.permissions).toEqual({ contents: 'read' });
-    expect(jobs.which?.permissions).toEqual({ contents: 'read', 'pull-requests': 'read' });
+    expect(jobs.which?.permissions).toEqual({
+      actions: 'read',
+      checks: 'read',
+      contents: 'read',
+      'pull-requests': 'read',
+    });
     for (const [id, job] of Object.entries(jobs)) {
       for (const step of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/checkout@')))
         expect(step.with?.['persist-credentials'], id).toBe(false);
@@ -782,9 +787,11 @@ describe('platform.yml', () => {
     const decide = (jobs.which?.steps ?? []).map((step) => step.run ?? '').join('\n');
     expect(decide).toContain('scripts/check-kind.sh platform');
     expect(jobs.platform?.name).toBe('platform');
-    // Skipped on `none` alone: the job deciding failing, or saying anything else, makes the cluster.
+    // Skipped on `none` and `matched` alone: the job deciding failing, or saying anything else, makes the cluster.
     expect(jobs.platform?.if).toBe(
-      expression("!cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none')"),
+      expression(
+        "!cancelled() && (needs.which.result != 'success' || (needs.which.outputs.platform != 'none' && needs.which.outputs.platform != 'matched'))",
+      ),
     );
     const steps = jobs.platform?.steps ?? [];
     const make = steps.find((step) => /\bmake up REVISION=/.test(step.run ?? ''));

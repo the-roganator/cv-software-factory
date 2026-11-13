@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,7 +13,8 @@ let dir: string;
 type Answer = string | { out: string; status: number };
 
 /**
- * A gh on PATH that answers each command (`pr view`, `pr checks`, `api graphql`, `run view`) with its answers in turn,
+ * A gh on PATH that answers each command (`pr view`, `pr checks`, `api graphql`, `run view`, and `api rules` for any
+ * branch's rules) with its answers in turn,
  * the last again once they run out, running a -q filter as gh does; anything else fails. Each call is logged.
  */
 function github(answers: Record<string, Answer[]>): void {
@@ -22,7 +23,7 @@ function github(answers: Record<string, Answer[]>): void {
   writeFileSync(
     gh,
     `#!/usr/bin/env bash
-key="$1 $2"; echo "$*" >> "${join(dir, 'calls')}"
+key="$1 $2"; [[ $1 == api && $2 == */rules/branches/* ]] && key="api rules"; echo "$*" >> "${join(dir, 'calls')}"
 answers="${join(dir, 'answers.json')}"; count="${dir}/count-\${key// /-}"
 jq -e --arg k "$key" 'has($k)' "$answers" >/dev/null || { echo "gh: not answered: $*" >&2; exit 1; }
 n=$(cat "$count" 2>/dev/null || echo 0); echo $((n + 1)) > "$count"
@@ -44,6 +45,7 @@ function run(script: string, ...args: string[]): { out: string; status: number |
       ...process.env,
       PATH: `${dir}:${process.env.PATH}`,
       WAIT_CI_INTERVAL: '0',
+      WAIT_CI_SETTLE: '0',
       WAIT_CI_MINUTES: '25',
       WAIT_CI_LOG_LINES: '2',
     },
@@ -131,6 +133,65 @@ describe('wait-ci.sh', () => {
     const r = run('wait-ci.sh', '7');
     expect(r.status).toBe(0);
     expect(r.out).toMatch(/not CI: review FAILURE/);
+  });
+
+  const rules = (...contexts: string[]) =>
+    JSON.stringify([
+      { type: 'pull_request' },
+      {
+        type: 'required_status_checks',
+        parameters: { required_status_checks: contexts.map((context) => ({ context })) },
+      },
+    ]);
+  const polls = () =>
+    readFileSync(join(dir, 'calls'), 'utf8')
+      .split('\n')
+      .filter((l) => l.startsWith('pr checks')).length;
+
+  it('does not call one fast check green while the checks the rules require are not registered yet', () => {
+    github({
+      'pr view': [view()],
+      'api rules': [rules('lint', 'tests', 'review')],
+      'pr checks': [
+        checks(check('lint', 'pass')),
+        checks(check('lint', 'pass')),
+        checks(check('lint', 'pass'), check('tests', 'pending')),
+        checks(check('lint', 'pass'), check('tests', 'pass')),
+      ],
+    });
+    const r = run('wait-ci.sh', '7');
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/green \(2\), the 2 required among them/);
+    expect(polls()).toBe(4);
+  });
+
+  it('exits 4 at its limit naming a required check never registered', () => {
+    github({
+      'pr view': [view()],
+      'api rules': [rules('lint', 'tests')],
+      'pr checks': [checks(check('lint', 'pass'))],
+    });
+    const r = spawnSync(join(BIN, 'wait-ci.sh'), ['7'], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, WAIT_CI_INTERVAL: '0', WAIT_CI_MINUTES: '0' },
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(4);
+    expect(r.stdout).toMatch(/required but not registered: tests/);
+  });
+
+  it('without rules to read, takes two green readings of the same checks', () => {
+    github({
+      'pr view': [view()],
+      'pr checks': [
+        checks(check('lint', 'pass')),
+        checks(check('lint', 'pass'), check('tests', 'pending')),
+        checks(check('lint', 'pass'), check('tests', 'pass')),
+      ],
+    });
+    const r = run('wait-ci.sh', '7');
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/green \(2\), twice \d+s apart/);
+    expect(polls()).toBe(4);
   });
 
   it('exits 4 at its limit, naming what was still running', () => {

@@ -4,7 +4,8 @@
 # checkout. A push starts every check again, so whatever else needs a push goes in the same one:
 #   - a conflict with the base, which needs a merge of the base;
 #   - review threads not resolved, each with its path and the first line of its first comment;
-#   - a check failed on the current head (the review gate's `review` aside, as wait-ci.sh sets it aside), each with its link.
+#   - a check failed on the current head, each with its link. The review gate's `review` is set aside, as wait-ci.sh
+#     sets it aside: it fails while it waits for Martin's approval, which no push mends.
 # It informs and never blocks: exit 0 whatever it finds, 2 on a usage error or a read of GitHub that failed. The last
 # line says how many things it found, or that there is nothing.
 set -euo pipefail

@@ -16,9 +16,9 @@
 #              and the gate passes it once `platform`, which every change to deploy/ runs, succeeded at its head.
 #
 # `scripts/check-kind.sh platform` says instead whether platform.yml's cluster runs, `cluster` or `none`: `cluster` when
-# HEAD changes from HEAD^1 anything a cluster made from the change runs or makes it with (deploy/, the Makefile, mise's
-# pins, k3d's among them, the workflow, the scripts it runs and the modules they import), unless the kind is `deploy`, whose images were built
-# from commits already merged and whose merge decides nothing (ADR 0017). Anything it cannot tell is `cluster`. In the
+# HEAD changes from HEAD^1 any input, which is any path outside the classes a cluster is not made from (is_input, below:
+# a path no one listed is an input), unless the kind is `deploy`, whose images were built from commits already merged
+# and whose merge decides nothing (ADR 0017). Anything it cannot tell is `cluster`. In the
 # merge queue, a `cluster` is `matched` instead when platform.yml's own job made one from the same inputs at the queued
 # pull request's head and passed there (passed_at_head, below), and the job is skipped. Its log says the inputs' hash.
 #
@@ -101,40 +101,56 @@ queued() {
   gh api "repos/$GITHUB_REPOSITORY/pulls/${BASH_REMATCH[2]}" --jq '"\(.user.login) \(.base.ref)"'
 }
 
-# Whether HEAD changes from HEAD^1 anything the platform check's cluster is made from or runs: both sides of a rename.
-# The modules the scripts import are named file by file, as scripts/check-kind.test.ts finds them: a directory would
-# give a cluster to every change beside one of them. scripts/answer-key.ts is not among them: `make up` runs it only
-# with the private checkout, which the check's runner never has.
-# Mise's pins are every file mise-action reads as config at the root (mise.local.toml overrides mise.toml; an
-# environment's mise.<env>.toml; .config/mise.toml, mise/ and .mise/; .tool-versions; the idiomatic version files),
-# and how the files are checked out is .gitattributes, at any depth, and .gitmodules, whose submodules Argo CD inits.
-# A diff it cannot read counts as a change.
-PLATFORM='^(deploy/|Makefile$|(\.config/)?\.?mise(\.[A-Za-z0-9_-]+)*\.(toml|lock)$|\.?mise/|\.config/mise/|\.tool-versions$|\.node-version$|\.nvmrc$|(.+/)?\.gitattributes$|\.gitmodules$|\.github/workflows/platform\.yml$|scripts/(check-kind\.sh|wait-deployed\.sh|platform-watch\.sh|platform-pods\.sh|admission-ready\.sh|[a-z-]+-refusals\.(sh|ts)|local-ca\.ts|share-key\.ts|signed-by\.ts|policy-hash\.ts)$|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
-# Each path whole, however git would quote it: a path a line of its own, or more for one with a newline in it, any of
-# which may match.
+# What a cluster is made from, its inputs: every path in the repository but those in a class below, each a class with
+# a reason, and a test that the reason still holds (scripts/check-kind.test.ts, "the classes a cluster is not made
+# from"). It fails closed: a file no one thought of, a new tool's config or a new directory, is an input, and costs a
+# cluster, never a skip. This one rule decides both whether a change makes a cluster and the hash the queue compares.
+#
+# Kept whatever the classes say: deploy/, which Argo CD renders, every file in it; the workflow and any action of ours
+# it could run; and the modules of the image sources that the scripts the job runs import (a test walks their imports).
+KEPT='^(deploy/|\.github/workflows/platform\.yml$|\.github/actions/|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$)'
+EXCLUDED_CLASSES=(
+  # Words for people, and the browser code and tests: nothing the job runs reads them.
+  '^docs/' '\.md$' '^apps/console/web/' '(^|/)test/' '\.test\.ts$' '(^|/)e2e/'
+  # Source that reaches the cluster only as an image built on main and pinned by digest in deploy/overlays/local, which
+  # `make up` builds none of.
+  '^apps/(factory|runner|console)/' '^packages/(events|store|triage)/' '^policy/'
+  # Every other workflow: the job runs none of them.
+  '^\.github/'
+  # Claude Code's own files and the dev container's: nothing the job runs reads them.
+  '^\.claude/' '^\.devcontainer/'
+  # What installs the modules (an accepted limit): a change here can break `pnpm install` in the job, which fails the
+  # check, but is no change to what the cluster runs.
+  '^pnpm-lock\.yaml$' '^pnpm-workspace\.yaml$' '(^|/)package\.json$'
+)
+EXCLUDED=$(IFS='|'; echo "${EXCLUDED_CLASSES[*]}")
+is_input() {
+  [[ $1 =~ $KEPT ]] || ! [[ $1 =~ $EXCLUDED ]]
+}
+
+# Whether HEAD changes an input from HEAD^1: both sides of a rename, each path whole however git would quote it. A
+# diff it cannot read counts as a change.
 changes_platform() {
-  local files
-  files=$(git diff --name-only -z --no-renames HEAD^1 HEAD | tr '\0' '\n') || return 0
-  grep -qE "$PLATFORM" <<< "$files"
+  local changes path
+  changes=$(mktemp) || return 0
+  git diff --name-only -z --no-renames HEAD^1 HEAD > "$changes" || { rm -f "$changes"; return 0; }
+  while IFS= read -r -d '' path; do
+    is_input "$path" && { rm -f "$changes"; return 0; }
+  done < "$changes"
+  rm -f "$changes"
+  return 1
 }
 
 # In the merge queue, a cluster made at the pull request's head stands for the queue's commit when the cluster would be
-# made from the same inputs: what PLATFORM names, and what installs the modules the scripts it names import (the
-# lockfile and the workspace's manifests). An input is read as git holds it, its mode, type and object, so a mode, a
-# symlink or a deletion differs; the App's deploy pins of our own images are read with their digests written the same,
-# as ADR 0017 reads them, where their move alone makes no cluster either.
-INSTALLS='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc|\.pnpmfile\.cjs|(.+/)?package\.json)$'
+# made from the same inputs. An input is read as git holds it, its mode, type and object, so a mode, a symlink or a
+# deletion differs; the App's deploy pins of our own images are read with their digests written the same, as ADR 0017
+# reads them, where their move alone makes no cluster either.
 # How long a pass at the head stands: what the cluster pulls that no input pins by digest (the app's main, which the
 # website follows, each chart at its version, k3s at its tag, the runner's image) moves by itself.
 PASS_HOURS=24
 # The workflow, its job and the step that make the cluster, which the pass must have run.
 PLATFORM_WORKFLOW=.github/workflows/platform.yml
 CLUSTER_STEP='Make the cluster'
-
-INPUT="$PLATFORM|$INSTALLS"
-is_input() {
-  [[ $1 =~ $INPUT ]]
-}
 
 # The inputs at a commit, a line each, `<mode> <type> <object><tab><path>`: a pin file's object is its unpinned text's.
 inputs_at() {
@@ -290,7 +306,14 @@ passed_at_head() {
 mode=${1:-kind}
 case "$mode" in
   kind | platform) ;;
-  *) echo "usage: $0 [platform]" >&2; exit 2 ;;
+  # The rule alone, for its tests: of the paths on stdin, a line each, it prints those that are inputs.
+  inputs)
+    while IFS= read -r path; do
+      if is_input "$path"; then printf '%s\n' "$path"; fi
+    done
+    exit 0
+    ;;
+  *) echo "usage: $0 [platform | inputs]" >&2; exit 2 ;;
 esac
 
 kind=code

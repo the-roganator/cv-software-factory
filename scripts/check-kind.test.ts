@@ -1,8 +1,18 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { APP_LOGIN } from '../apps/factory/src/github/actions.ts';
 import { DEPLOYS } from '../apps/factory/src/github/deploys.ts';
 import { QUEUE_BRANCH } from './review-gate.ts';
@@ -319,14 +329,16 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
     );
   });
 
-  it('runs none for a change a cluster cannot see, a module beside one the scripts import among them', () => {
-    expect(platform({ 'apps/console/src/main.ts': 'export const x = 1;\n' }, anyone)).toBe('none');
-    expect(platform({ 'policy/triage.ts': 'export {};\n' }, anyone)).toBe('none');
-    expect(platform({ 'apps/factory/src/scoreboard/figures.ts': 'export {};\n' }, anyone)).toBe('none');
-    // The answer key's script runs only with the private checkout, which the check's runner never has.
-    expect(platform({ 'apps/factory/src/scoreboard/key.ts': 'export {};\n' }, anyone)).toBe('none');
-    expect(platform({ 'scripts/review-gate.ts': 'x\n' }, anyone)).toBe('none');
-    expect(platform({ 'CHANGELOG.md': '# Changelog\n\n## 1.0.1\n' }, anyone)).toBe('none');
+  it.each([
+    ['the image sources', { 'apps/console/src/main.ts': 'export const x = 1;\n', 'policy/triage.ts': 'export {};\n' }],
+    ['a module beside one the scripts import', { 'apps/factory/src/scoreboard/figures.ts': 'export {};\n' }],
+    ['the docs and the changelog', { 'docs/x.md': '# x\n', 'CHANGELOG.md': '# Changelog\n\n## 1.0.1\n' }],
+    ['a test of the scripts', { 'scripts/review-gate.test.ts': 'x\n' }],
+    ['another workflow', { '.github/workflows/check.yml': 'name: check\n', '.github/CODEOWNERS': '* @x\n' }],
+    ['Claude Code’s files and the dev container’s', { '.claude/x.md': 'x\n', '.devcontainer/Dockerfile': 'FROM x\n' }],
+    ['the lockfile and the manifests', { 'pnpm-lock.yaml': 'lockfileVersion: 9.1\n', 'package.json': '{}\n' }],
+  ])('runs none for a change of %s alone', (_, change) => {
+    expect(platform(change, anyone)).toBe('none');
   });
 
   it.each(both)('runs none for the App’s deploy pin of our own images, on a %s (ADR 0017)', (_, run) => {
@@ -349,57 +361,298 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
   });
 });
 
-describe('what the platform check runs', () => {
-  /** The scripts the cluster's job runs on the host, each a file the rule names. */
-  const RUNS = [
-    'scripts/admission-ready.sh',
-    'scripts/wait-deployed.sh',
-    'scripts/platform-watch.sh',
-    'scripts/platform-pods.sh',
-    'scripts/local-ca.ts',
-    'scripts/share-key.ts',
-    ...readdirSync('scripts')
-      .filter((f) => /-refusals\.(sh|ts)$/.test(f))
-      .map((f) => `scripts/${f}`),
-  ];
-  const rule = new RegExp(/^PLATFORM='(.+)'$/m.exec(readFileSync(SCRIPT, 'utf-8'))?.[1] ?? '^$');
+/*
+ * The rule fails closed: every path is an input but those in a class a cluster is not made from (scripts/check-kind.sh,
+ * EXCLUDED_CLASSES), and each class stands only while its reason does. The reasons, each held here: nothing the
+ * cluster's job runs reads a file in one (the job's steps, the Makefile's targets they run, the scripts those run and
+ * the modules they import, followed file by file); the image sources reach the cluster only as images built on main and
+ * pinned by digest, which `make up` builds none of; and the job runs no workflow but its own.
+ */
+describe('the classes a cluster is not made from', () => {
+  const WORKFLOW = '.github/workflows/platform.yml';
+  /** Of these paths, those the rule takes as inputs, as the script itself decides. */
+  const inputsOf = (paths: string[]) =>
+    new Set(
+      execFileSync(SCRIPT, ['inputs'], { input: paths.map((p) => `${p}\n`).join(''), encoding: 'utf-8' })
+        .split('\n')
+        .filter(Boolean),
+    );
 
-  /**
-   * Every file of this repository each script reaches: the scripts a shell script runs, and a module's imports. With
-   * them, each workspace package (`@software-factory/…`) a module imports, which the walk does not follow into.
-   */
-  function reached(files: string[]) {
-    const seen = new Set<string>();
-    const packages = new Set<string>();
-    const queue = [...files];
-    for (let file = queue.shift(); file; file = queue.shift()) {
-      if (seen.has(file)) continue;
-      seen.add(file);
-      const text = readFileSync(file, 'utf-8');
-      if (file.endsWith('.sh')) {
-        // A script beside it, however it is named: `$here/x.ts`, `$(dirname "$0")/x.ts` or `scripts/x.ts`.
-        for (const m of text.matchAll(/(?:\$here|\$\(dirname "\$0"\)|\bscripts)\/([\w-]+\.(?:ts|sh))\b/g))
-          queue.push(`scripts/${m[1]}`);
+  type Job = { steps?: { name?: string; run?: string; uses?: string }[] };
+  const workflow = parse(readFileSync(WORKFLOW, 'utf-8')) as { jobs: Record<string, Job> };
+  const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+
+  /** Text with its comments taken out: a shell's or make's `#` lines, and a module's `//` and block comments. */
+  const code = (file: string, text: string) =>
+    /\.(ts|js|mjs|cjs)$/.test(file)
+      ? text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1')
+      : text.replace(/^\s*@?#.*$/gm, '');
+
+  /** The Makefile's variables (with `define` blocks) and its rules, each target's prerequisites and recipe. */
+  function makefile() {
+    const lines = readFileSync('Makefile', 'utf-8').split('\n');
+    const variables = new Map<string, string>();
+    const rules = new Map<string, { needs: string[]; recipe: string }>();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? '';
+      const define = /^define (\S+)$/.exec(line);
+      if (define) {
+        const body: string[] = [];
+        for (i++; i < lines.length && lines[i] !== 'endef'; i++) body.push(lines[i] ?? '');
+        variables.set(define[1] ?? '', body.join('\n'));
         continue;
       }
-      // Each module it imports or re-exports, or imports for its effect alone.
-      for (const m of text.matchAll(/^(?:import|export) (?:[^;]*? from )?'([^']+)';$/gms)) {
-        const from = m[1] ?? '';
-        if (from.startsWith('.')) queue.push(join(dirname(file), from));
-        else if (from.startsWith('@software-factory/')) packages.add(`${file} imports ${from}`);
+      const variable = /^([A-Za-z_-]+) *(?::=|\?=|=)(.*)$/.exec(line);
+      if (variable) {
+        const body = [variable[2] ?? ''];
+        while (body.at(-1)?.endsWith('\\') && i + 1 < lines.length) body.push(lines[++i] ?? '');
+        variables.set(variable[1] ?? '', body.join('\n'));
+        continue;
+      }
+      const rule = /^([a-z0-9_-]+):(?!=)([^#]*?)(?:##.*)?$/.exec(line);
+      if (rule && !/\boverride\b|:=/.test(rule[2] ?? '')) {
+        const recipe: string[] = [];
+        while (i + 1 < lines.length && (lines[i + 1] ?? '').startsWith('\t')) recipe.push(lines[++i] ?? '');
+        const held = rules.get(rule[1] ?? '');
+        rules.set(rule[1] ?? '', {
+          needs: [...(held?.needs ?? []), ...(rule[2] ?? '').trim().split(/\s+/).filter(Boolean)],
+          recipe: [held?.recipe ?? '', ...recipe].join('\n'),
+        });
       }
     }
-    return { files: [...seen], packages: [...packages] };
+    return { variables, rules };
   }
 
-  it('names every file the scripts it runs reach, file by file', () => {
-    const { files, packages } = reached(RUNS);
-    // A workspace package's sources are not named: none is reached today, and one that is fails here, to be named.
-    expect(packages).toEqual([]);
-    expect(files).toEqual(
-      expect.arrayContaining(['scripts/signed-by.ts', 'scripts/policy-hash.ts', 'policy/flags.ts']),
+  /**
+   * What the cluster's job runs: each step's command, and what `make` runs of the Makefile for the targets they name:
+   * each target's recipe, the targets it needs and those its recipe makes (`$(MAKE) <target>`), and the variables and
+   * functions it uses.
+   */
+  function runs() {
+    const { variables, rules } = makefile();
+    const texts: string[] = [];
+    const seenRules = new Set<string>();
+    const seenVariables = new Set<string>();
+    const queue: { text: string; recipe: boolean }[] = steps
+      .map((step) => ({ text: step.run ?? '', recipe: false }))
+      .filter((each) => each.text);
+    const make = (target: string) => {
+      const rule = rules.get(target);
+      if (!rule || seenRules.has(target)) return;
+      seenRules.add(target);
+      queue.push({ text: rule.recipe, recipe: true });
+      for (const need of rule.needs) make(need);
+    };
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      let text = code('Makefile', next.text);
+      // A loop's names spelled out: `for script in a b; do scripts/$script-refusals.sh` runs scripts/a-refusals.sh too.
+      for (const [, name, words] of text.matchAll(/\bfor (\w+) in ([\w -]+); do\b/g))
+        for (const m of text.matchAll(new RegExp(`scripts/\\$\\{?${name}\\}?([\\w.-]+)`, 'g')))
+          text += `\n${(words ?? '')
+            .trim()
+            .split(/\s+/)
+            .map((word) => `scripts/${word}${m[1]}`)
+            .join('\n')}`;
+      texts.push(text);
+      const called = next.recipe
+        ? [...text.matchAll(/\$\(MAKE\)(?:\s+--?[a-z-]+)*\s+([a-z][a-z0-9-]*)/g)].map((m) => m[1] ?? '')
+        : [...text.matchAll(/^\s*(?:setsid\s+)?make((?:\s+[a-z][a-z0-9-]*)+)/gm)].flatMap((m) =>
+            (m[1] ?? '').trim().split(/\s+/),
+          );
+      for (const target of called) make(target);
+      for (const m of text.matchAll(/\$\((?:call )?([A-Za-z_-]+)[,)]/g)) {
+        const name = m[1] ?? '';
+        if (!variables.has(name) || seenVariables.has(name)) continue;
+        seenVariables.add(name);
+        queue.push({ text: variables.get(name) ?? '', recipe: true });
+      }
+    }
+    return { texts, targets: [...seenRules] };
+  }
+
+  /**
+   * What `make up` names but the job never runs: the answer key's script runs only with the private checkout
+   * (PRIVATE_DIR), which the check's runner never has.
+   */
+  const NEVER_ON_THE_RUNNER = ['scripts/answer-key.ts'];
+
+  /** The top-level entries of the repository, which a path the job names begins with. */
+  const TOP = readdirSync('.').filter((entry) => !['.git', 'node_modules'].includes(entry));
+  const PATH = new RegExp(
+    `(?<![\\w.-])(?:\\.\\./)*((?:${TOP.map((t) => t.replace(/\./g, '\\.')).join('|')})(?:/[\\w.@-]*[\\w@-])+)`,
+    'g',
+  );
+
+  /**
+   * Every path of the repository the job's code names, comments aside, and every file it reaches: the scripts and
+   * modules it runs, a shell script's neighbours however it names them, and each module's imports.
+   */
+  function reached() {
+    const { texts } = runs();
+    const named = new Set<string>();
+    const files = new Set<string>();
+    const packages: string[] = [];
+    const queue: { file: string; text: string }[] = texts.map((text) => ({ file: 'Makefile', text }));
+    const follow = (path: string) => {
+      if (NEVER_ON_THE_RUNNER.includes(path)) return;
+      if (/\.(sh|ts|js|mjs|cjs)$/.test(path) && !files.has(path) && existsSync(path)) {
+        files.add(path);
+        queue.push({ file: path, text: readFileSync(path, 'utf-8') });
+      }
+    };
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      // The rule itself names the classes it reads past, and reads every file through git, never one by its name.
+      if (next.file === 'scripts/check-kind.sh') continue;
+      const text = code(next.file, next.text);
+      for (const m of text.matchAll(PATH)) {
+        // A name that is no file or directory here, a workflow's identity in a signature among them, reads nothing.
+        if (!existsSync(m[1] ?? '')) continue;
+        named.add(m[1] ?? '');
+        follow(m[1] ?? '');
+      }
+      if (next.file.endsWith('.sh'))
+        for (const m of text.matchAll(/(?:\$here|\$\(dirname "\$0"\))\/([\w-]+\.(?:ts|sh))\b/g))
+          follow(join(dirname(next.file), m[1] ?? ''));
+      if (/\.(ts|js|mjs|cjs)$/.test(next.file))
+        for (const m of text.matchAll(/^(?:import|export) (?:[^;]*? from )?'([^']+)';$/gms)) {
+          const from = m[1] ?? '';
+          if (from.startsWith('.')) follow(join(dirname(next.file), from));
+          else if (from.startsWith('@software-factory/')) packages.push(`${next.file} imports ${from}`);
+        }
+    }
+    return { named: [...named], files: [...files], packages };
+  }
+
+  it('excludes each class, and keeps deploy/ whatever it holds', () => {
+    const excluded = [
+      'docs/COMPONENTS/CI-PIPELINE.md',
+      'README.md',
+      'apps/console/web/src/main.ts',
+      'scripts/test/fixture.sh',
+      'scripts/check-kind.test.ts',
+      'apps/console/e2e/console.spec.ts',
+      'apps/factory/src/line/serve.ts',
+      'apps/runner/src/step.ts',
+      'packages/store/src/migrate.ts',
+      'packages/events/src/index.ts',
+      'packages/triage/src/index.ts',
+      'policy/triage.ts',
+      '.github/workflows/check.yml',
+      '.github/CODEOWNERS',
+      '.claude/skills/implement/SKILL.md',
+      '.devcontainer/devcontainer.json',
+      'pnpm-lock.yaml',
+      'pnpm-workspace.yaml',
+      'package.json',
+      'apps/factory/package.json',
+    ];
+    const kept = [
+      'deploy/README.md',
+      'deploy/test/admission-refusals.json',
+      'deploy/base/e2e/x.yaml',
+      'deploy/package.json',
+      WORKFLOW,
+      '.github/actions/x/action.yml',
+      'policy/flags.ts',
+      'apps/factory/src/github/registry.ts',
+      'apps/factory/src/github/signatures.ts',
+      'Makefile',
+      'scripts/check-kind.sh',
+      '.miserc.toml',
+      'lefthook.yml',
+      'packages/samples/src/index.ts',
+      'anything/new',
+    ];
+    const inputs = inputsOf([...excluded, ...kept]);
+    for (const path of excluded) expect(inputs.has(path), path).toBe(false);
+    for (const path of kept) expect(inputs.has(path), path).toBe(true);
+  });
+
+  it('follows the job into the Makefile’s targets it runs', () => {
+    const { targets } = runs();
+    expect(targets).toEqual(
+      expect.arrayContaining(['up', 'admission-ready', 'share-key', 'refusal-key', 'node_modules']),
     );
-    for (const file of files) expect(file, file).toMatch(rule);
+    expect(targets).not.toContain('check');
+    expect(targets).not.toContain('upgrade-cluster');
+    // The answer key's script, which `make up` names, runs only with the private checkout: the runner has none.
+    const recipe = readFileSync('Makefile', 'utf-8');
+    expect(recipe).toMatch(
+      /if \[ -d "\$\(PRIVATE_DIR\)\/defects" \]; then \\\n\t+key="\$\$\(node scripts\/answer-key\.ts /,
+    );
+    expect(JSON.stringify(workflow)).not.toContain('PRIVATE_DIR');
+  });
+
+  it('has the job read no file in an excluded class: each file it reaches, and each path its code names, is an input', () => {
+    const { named, files, packages } = reached();
+    // A workspace package's sources would be read from the image sources' class: none is imported today.
+    expect(packages).toEqual([]);
+    // The walk reaches what the job runs, the modules the record scripts import among them.
+    expect(files).toEqual(
+      expect.arrayContaining([
+        'scripts/platform-watch.sh',
+        'scripts/admission-ready.sh',
+        'scripts/flag-stages-refusals.ts',
+        'scripts/signed-by.ts',
+        'policy/flags.ts',
+        'apps/factory/src/github/registry.ts',
+        'apps/factory/src/github/signatures.ts',
+      ]),
+    );
+    // `make` reads the Makefile, and the job runs `make`.
+    const read = [...named, ...files, 'Makefile'];
+    const inputs = inputsOf(read);
+    for (const path of read) expect(inputs.has(path), path).toBe(true);
+  });
+
+  it('has nothing the job runs name Claude Code’s files or the dev container’s', () => {
+    const { named } = reached();
+    expect(named.filter((path) => /^\.(claude|devcontainer)(\/|$)/.test(path))).toEqual([]);
+  });
+
+  it('runs no workflow or action of ours but its own: every local action it uses is an input', () => {
+    const local = steps.map((step) => step.uses ?? '').filter((uses) => uses.startsWith('./'));
+    const named = steps.flatMap((step) => [...(step.run ?? '').matchAll(/\.github\/[\w./-]+/g)].map((m) => m[0]));
+    const inputs = inputsOf([...local.map((uses) => uses.slice(2)), ...named]);
+    for (const path of [...local.map((uses) => uses.slice(2)), ...named]) expect(inputs.has(path), path).toBe(true);
+    // Every action it uses is pinned from outside, or one of ours the rule keeps.
+    for (const step of steps.filter((each) => each.uses))
+      expect(step.uses, step.uses).toMatch(/^(\.\/\.github\/actions\/|[\w-]+\/[\w-]+@[0-9a-f]{40}$)/);
+  });
+
+  it('takes the images built from the image sources by digest, built on main, and makes none in `make up`', () => {
+    // Each image built from those sources is pinned by digest in the local profile's pin files.
+    const pinned = [CONSOLE, FACTORY].flatMap((file) =>
+      [
+        ...readFileSync(file, 'utf-8').matchAll(
+          /^- digest: sha256:[0-9a-f]{64}\n {2}name: ([\w-]+)\n {2}newName: (\S+)$/gm,
+        ),
+      ].map((m) => ({ name: m[1], at: m[2] })),
+    );
+    expect(pinned.map((pin) => pin.name).sort()).toEqual(['console', 'factory', 'factory-browser', 'factory-runner']);
+    for (const pin of pinned) expect(pin.at).toBe(`ghcr.io/the-roganator/cv-software-factory/${pin.name}`);
+    // No manifest runs one of them any other way: every image of this repository's registry a manifest names is by digest.
+    const manifests = execFileSync('git', ['ls-files', '-z', 'deploy/'], { encoding: 'utf-8' })
+      .split('\0')
+      .filter((file) => /\.ya?ml$/.test(file) && !file.startsWith('deploy/test/'));
+    for (const file of manifests)
+      for (const line of readFileSync(file, 'utf-8')
+        .split('\n')
+        .filter((l) => /^\s*-?\s*image:/.test(l)))
+        if (line.includes('ghcr.io/the-roganator/cv-software-factory/'))
+          expect(line, file).toMatch(/@sha256:[0-9a-f]{64}/);
+    // `make up` and what the job runs build no image and import none: the cluster pulls each by its digest.
+    const { texts } = runs();
+    for (const text of texts)
+      expect(code('Makefile', text)).not.toMatch(/\b(docker (build|buildx|load|import)|k3d image)\b/);
+  });
+
+  it('installs the modules as the lockfile has them, so a lockfile the manifests do not match fails the job', () => {
+    const platform = workflow.jobs.platform?.steps ?? [];
+    const install = platform.findIndex((step) => step.run === 'pnpm install --frozen-lockfile');
+    const make = platform.findIndex((step) => step.name === 'Make the cluster');
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(make);
   });
 });
 
@@ -686,12 +939,50 @@ describe('the queue’s cluster, made once already', () => {
     ['an input deleted', { queue: { 'scripts/admission-ready.sh': null } }],
     ['an input made a symlink to the same text', { queueLinks: { 'scripts/admission-ready.sh': '../BASE' } }],
     ['the workflow itself, which the head’s run ran its own copy of', { queue: { [WORKFLOW]: 'name: other\n' } }],
-    ['the lockfile, which installs what the scripts import', { queue: { 'pnpm-lock.yaml': 'lockfileVersion: 9.1\n' } }],
-    ['a package’s manifest', { queue: { 'apps/factory/package.json': '{}\n' } }],
   ])('makes one when the queue’s commit differs from the head in %s', (_, change) => {
     const { said, log } = answered(line(change));
     expect(said).toBe('cluster');
     expect(log).toMatch(/the inputs at the queue's commit \([0-9a-f]{40}\) are not those at #7's head/);
+  });
+
+  // Each class a cluster is not made from: a difference there alone, at the queue's commit or on main since the head's
+  // base, leaves the head's cluster standing for the queue's.
+  const EXCLUDED: [string, Files][] = [
+    ['the docs', { 'docs/COMPONENTS/CI-PIPELINE.md': '# CI\n', 'README.md': '# x\n' }],
+    ['the console’s browser code', { 'apps/console/web/src/main.ts': 'export {};\n' }],
+    [
+      'a test',
+      { 'scripts/check-kind.test.ts': 'x\n', 'apps/factory/test/x.ts': 'x\n', 'apps/console/e2e/x.ts': 'x\n' },
+    ],
+    [
+      'the image sources',
+      { 'apps/factory/src/line/serve.ts': 'x\n', 'packages/store/src/x.ts': 'x\n', 'policy/triage.ts': 'x\n' },
+    ],
+    ['another workflow', { '.github/workflows/check.yml': 'name: check\n' }],
+    ['Claude Code’s files', { '.claude/skills/x/SKILL.md': 'x\n', '.claude/settings.json': '{}\n' }],
+    ['the dev container', { '.devcontainer/devcontainer.json': '{}\n' }],
+    ['the lockfile (an accepted limit)', { 'pnpm-lock.yaml': 'lockfileVersion: 9.1\n' }],
+    ['a package’s manifest (an accepted limit)', { 'package.json': '{}\n', 'apps/factory/package.json': '{}\n' }],
+  ];
+
+  it.each(EXCLUDED)('makes none when the queue’s commit differs from the head only in %s', (_, files) => {
+    expect(answered(line({ queue: files })).said).toBe('matched');
+  });
+
+  it.each(EXCLUDED)('makes none when main moved only %s since the head’s base', (_, files) => {
+    expect(answered(line({ main: [files] })).said).toBe('matched');
+  });
+
+  it.each<[string, Files]>([
+    ['a file at the root no rule names', { 'something.conf': 'x\n' }],
+    ['a file in a new directory', { 'tools/new/thing.sh': '#!/bin/sh\n' }],
+    ['a script the job does not run', { 'scripts/review-gate.ts': 'x\n' }],
+    ['a module the record scripts import from the image sources', { 'policy/flags.ts': 'export const x = 1;\n' }],
+    ['a docs file under deploy/', { 'deploy/README.md': '# x\n' }],
+  ])('makes one when the queue’s commit differs from the head in %s', (_, files) => {
+    const { said, log } = answered(line({ queue: files }));
+    expect(said).toBe('cluster');
+    expect(log).toMatch(/are not those at #7's head/);
   });
 
   it('makes one when main moved an input since the head’s base, and the head’s run saw main without it', () => {

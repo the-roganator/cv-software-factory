@@ -9,9 +9,11 @@
 # It runs the change's own scripts and manifests, so it holds nothing worth taking: its token reads the contents and
 # nothing else, no job names a secret, and the cluster gets none of the keys `make up` takes from the Keychain, so it
 # opens nothing and attempts nothing outside. It runs on a pull request and on the merge queue's commit, as check.yml's jobs do, and
-# refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): one that changes
-# deploy/, the Makefile, mise's pins or what it runs, but never the factory's App's deploy pin of our own images, which
-# were built from commits already merged (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
+# refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): any change to an input,
+# which is every path but a few classes no cluster is made from (docs, tests, the sources of images built on main and
+# pinned by digest, other workflows, .claude/, .devcontainer/, the lockfile and manifests), so a file no one listed
+# makes one; but never the factory's App's deploy pin of our own images, which were built from commits already merged
+# (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
 # In the merge queue it is skipped too when this workflow's `platform` made a cluster from the same inputs at the pull
 # request's head and passed there, within a day: check-kind.sh says how it tells, from git and GitHub's check runs alone.
 # The repository variable PLATFORM_SKIP set to `off` makes a cluster in the queue every time.

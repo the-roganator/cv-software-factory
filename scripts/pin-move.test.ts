@@ -3,6 +3,8 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeF
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { verdictWait } from '../apps/factory/src/github/deploy-queue.ts';
+import { verdictOf } from '../apps/factory/src/github/merging.ts';
 import { type Chart, type Item, inventory } from '../apps/factory/src/vulnerabilities/inventory.ts';
 import { apiVersionsOf, helmTemplateArgs, kubeVersionOf } from '../apps/factory/src/vulnerabilities/scan.ts';
 import {
@@ -11,6 +13,7 @@ import {
   comparable,
   hashesOf,
   IMAGE_CHECK,
+  imageForward,
   imagePairs,
   lineChanges,
   listMoves,
@@ -18,6 +21,8 @@ import {
   manifestsDiffer,
   moveTitle,
   objectsOf,
+  oneMove,
+  onlyItsPins,
   onlyPinsChange,
   type PinMoveIO,
   PLATFORM_CHECK,
@@ -46,6 +51,8 @@ import {
   ZAP_FILE,
 } from './pin-move.ts';
 import { readPinMove } from './pin-moves.ts';
+import { readAnswers, summaryOf } from './review-gate.ts';
+import { FACTORY_APP, FACTORY_REPO, type PullRequest, route } from './review-routing.ts';
 
 // The past pin changes of this repository, replayed as the App's: the same moves, as the pin watch would write them.
 
@@ -2143,5 +2150,172 @@ spec:
     expect(manifestsDiffer(labelled('x-1.10', 'a'), labelled('x-1.20', 'a'), [], X)).toMatch(
       /x-1\.20 is not x-1\.2|forward on its major|chart at another version/,
     );
+  });
+});
+
+describe('one move, its own pins, and forward on its line, each alone', () => {
+  const ref = (tag: string, d: string) => `docker.io/acme/app:${tag}@sha256:${hex(d)}`;
+  const moved = (
+    from: string,
+    to: string,
+    line = 3,
+    what: Move['what'] = 'image',
+    item = 'app',
+  ): Move['pins'][number] => ({
+    what,
+    kind: 'third-party',
+    item,
+    place: { file: 'deploy/base/app.yaml', line },
+    from,
+    to,
+  });
+
+  it('makes one move of every pin of one name from one value to one other, and names a second', () => {
+    expect(oneMove([])).toEqual({ reason: 'the list moves no pin' });
+    const [a, b] = [ref('1.0.0', 'a'), ref('1.0.1', 'b')];
+    expect(oneMove([moved(a, b), moved(a, b, 9)])).toEqual({
+      move: {
+        what: 'image',
+        name: 'docker.io/acme/app',
+        kind: 'third-party',
+        from: a,
+        to: b,
+        pins: [moved(a, b), moved(a, b, 9)],
+      },
+    });
+    expect(oneMove([moved(a, b), moved(a, ref('1.0.2', 'c'), 9)])).toEqual({
+      reason: 'a second pin in the same change: docker.io/acme/app beside docker.io/acme/app',
+    });
+    expect(oneMove([moved(a, b), moved(ref('1.0.0', 'a').replace('app', 'other'), b, 9)])).toEqual({
+      reason: 'a second pin in the same change: docker.io/acme/other beside docker.io/acme/app',
+    });
+    // A chart's version is named by its item; each value by its place, so two values are two moves.
+    const chart = moved('1.0.0', '1.1.0', 3, 'chart', 'grafana');
+    expect(oneMove([chart])).toMatchObject({ move: { what: 'chart', name: 'grafana' } });
+    expect(oneMove([chart, moved(a, b, 9)])).toEqual({
+      reason: 'a second pin in the same change: docker.io/acme/app beside grafana',
+    });
+    const value = (line: number) => moved(`sha256:${hex('4')}`, `sha256:${hex('5')}`, line, 'value', 'grafana');
+    expect(oneMove([value(3), value(9)])).toEqual({
+      reason:
+        "a second pin in the same change: grafana's value at deploy/base/app.yaml:9 beside grafana's value at deploy/base/app.yaml:3",
+    });
+  });
+
+  it('holds a line that is not a pin, a pin no line rewrites, and a pin line that changes more than its span', () => {
+    const [a, b] = [ref('1.0.0', 'a'), ref('1.0.1', 'b')];
+    const move = (oneMove([moved(a, b)]) as { move: Move }).move;
+    const line = (before: string, after: string, at = 3) => ({ file: 'deploy/base/app.yaml', line: at, before, after });
+    expect(onlyItsPins([line(`  image: ${a}`, `  image: ${b}`)], move)).toBeUndefined();
+    expect(onlyItsPins([line(`  image: ${a}`, `  image: ${b}`), line('  v: 1.0', '  v: 1.1', 4)], move)).toBe(
+      'deploy/base/app.yaml:4 is a line that is not a pin of docker.io/acme/app: v: 1.1',
+    );
+    expect(onlyItsPins([], move)).toBe(
+      'deploy/base/app.yaml:3, a pin of docker.io/acme/app, is not a line it rewrites',
+    );
+    expect(onlyItsPins([line(`  image: ${a} # 1.0`, `  image: ${b} # 1.1`)], move)).toBe(
+      `deploy/base/app.yaml:3 changes more than docker.io/acme/app's pin: image: ${b} # 1.1`,
+    );
+    // The pin written twice on its line: its span is not one place, so it holds.
+    expect(onlyItsPins([line(`  image: ${a} ${a}`, `  image: ${b} ${b}`)], move)).toMatch(/changes more than/);
+    // A value's span is its digest with the tag written beside it.
+    const [d4, d5] = [`sha256:${hex('4')}`, `sha256:${hex('5')}`];
+    const value = (oneMove([moved(d4, d5, 3, 'value', 'grafana')]) as { move: Move }).move;
+    expect(onlyItsPins([line(`    tag: 2.11.2@${d4}`, `    tag: 2.14.3@${d5}`)], value)).toBeUndefined();
+    expect(onlyItsPins([line(`    tag: 2.11.2@${d4} # 2.11`, `    tag: 2.14.3@${d5} # 2.14`)], value)).toMatch(
+      /changes more than/,
+    );
+  });
+
+  it("resolves an image's move itself: the newest tag on its line at the tag's digest now, never back or a major", async () => {
+    const io = (tags: string[], digests: Record<string, string>) => ({
+      tags: async () => tags,
+      digest: async (reference: string) => digests[reference] ?? `sha256:${hex('0')}`,
+    });
+    const tags = ['1.0.0', '1.0.1', '1.0.2', '0.9.0', '2.0.0', 'latest'];
+    const now = io(tags, {
+      'docker.io/acme/app:1.0.2': `sha256:${hex('c')}`,
+      'docker.io/acme/app:1.0.0': `sha256:${hex('b')}`,
+    });
+    expect(await imageForward(ref('1.0.0', 'a'), ref('1.0.2', 'c'), now)).toBeUndefined();
+    expect(await imageForward(ref('1.0.0', 'a'), ref('1.0.0', 'b'), now)).toBeUndefined();
+    expect(await imageForward(ref('1.0.0', 'a'), ref('1.0.0', 'e'), now)).toBe(
+      `a digest that is not the tag's: docker.io/acme/app:1.0.0 is sha256:bbbbbbbbbbbb now, not sha256:eeeeeeeeeeee`,
+    );
+    expect(await imageForward(ref('1.0.0', 'a'), ref('1.0.1', 'c'), now)).toBe(
+      "1.0.1 is not the newest tag on 1.0.0's line, 1.0.2",
+    );
+    expect(await imageForward(ref('1.0.0', 'a'), ref('0.9.0', 'c'), now)).toBe('a move backwards, from 1.0.0 to 0.9.0');
+    expect(await imageForward(ref('1.0.0', 'a'), ref('2.0.0', 'c'), now)).toBe('a major, from 1.0.0 to 2.0.0');
+    expect(await imageForward(ref('1.0.0', 'a'), ref('latest', 'c'), now)).toBe(
+      'latest is another tag than 1.0.0, which is not a version',
+    );
+    expect(await imageForward(`docker.io/acme/app@sha256:${hex('a')}`, ref('1.0.2', 'c'), now)).toBe(
+      'docker.io/acme/app is pinned by digest alone: no tag to resolve the move by',
+    );
+    expect(await imageForward(ref('1.0.0', 'a'), 'docker.io/acme/app:1.0.2', now)).toBe(
+      'docker.io/acme/app:1.0.2 is not pinned by digest',
+    );
+    // A reader that fails is no proof: it throws, which the pin move job makes a hold.
+    await expect(
+      imageForward(ref('1.0.0', 'a'), ref('1.0.2', 'c'), {
+        tags: async () => Promise.reject(new Error('429')),
+        digest: now.digest,
+      }),
+    ).rejects.toThrow('429');
+  });
+});
+
+describe("a pin move's verdict, carried from the gate to the worker's queue", () => {
+  const PR = 1056;
+  const pull: PullRequest = {
+    number: PR,
+    state: 'open',
+    user: { id: FACTORY_APP },
+    head: { sha: HEAD, ref: 'factory/pin/zap', repo: { full_name: FACTORY_REPO } },
+    base: { ref: 'main', repo: { full_name: FACTORY_REPO } },
+  };
+  /** What the pin move job hands the gate, read as the gate reads it, routed, and posted as its check would be. */
+  const carried = async (c: Case) => {
+    const result = await judged(c);
+    const answer = 'move' in result ? { title: moveTitle(result) } : result;
+    const answers = readAnswers(JSON.stringify({ [`${PR}@${HEAD}`]: answer }));
+    const pinMove = answers?.get(`${PR}@${HEAD}`);
+    const said = route({
+      repo: FACTORY_REPO,
+      pr: pull,
+      reviews: [],
+      autonomy: '',
+      tags: [],
+      testIntegrity: { read: true },
+      labelsRemoved: [],
+      pin: { reason: 'apps/console/zap/scan.ts is not a pin file under deploy/' },
+      ...(pinMove ? { pinMove } : {}),
+    });
+    const check = {
+      status: 'completed',
+      conclusion: said.pass ? 'success' : 'failure',
+      title: said.title,
+      summary: summaryOf(HEAD, [{ pr: pull, said }]),
+      completedAt: null,
+      url: null,
+      id: 1,
+    };
+    const verdict = verdictOf(PR, HEAD, check);
+    return { said, verdict, wait: verdictWait({ ...verdict, head: HEAD }, HEAD, 'pin-move') };
+  };
+
+  it('queues a move the gate proved, as pin-move at that head', async () => {
+    const { said, verdict, wait } = await carried(ZAP_CASE);
+    expect(said).toMatchObject({ pass: true, rule: 'pin-move' });
+    expect(verdict.problem).toBeNull();
+    expect(verdict.judged).toMatchObject({ number: PR, head: HEAD, rule: 'pin-move' });
+    expect(wait).toBeUndefined();
+  });
+
+  it('leaves a move the gate held for Martin, naming the first condition it could not prove', async () => {
+    const { said, wait } = await carried(zapTo(zap('2.16.0', '9')));
+    expect(said.title).toContain('nor a pin move: a move backwards, from 2.17.0 to 2.16.0');
+    expect(wait).toEqual({ waits: 'verdict', why: "the gate's rule is held, not pin-move" });
   });
 });

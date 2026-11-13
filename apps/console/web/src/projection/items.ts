@@ -128,7 +128,8 @@ export interface ItemState {
   /** A release still on its canary, at this share of traffic. */
   canary: { version: string; weight: number } | undefined;
   captures: Capture[];
-  evidence: { signal: Evidence | undefined; verified: Evidence | undefined };
+  /** The first signal's evidence, and the verification's: a sense's, or a move's scan of the release (its counts). */
+  evidence: { signal: Evidence | undefined; verified: PayloadOf<'verification.finished'>['evidence'] };
   spend: number;
   /**
    * Agents' steps that called a model, and Jev's judgements, so that none at all can be said as such. A step is one

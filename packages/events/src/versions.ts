@@ -44,7 +44,7 @@ export const VERSIONS = {
   'release.rolled-back': 4,
   'release.aborted': 1,
   'release.errored': 1,
-  'verification.finished': 5,
+  'verification.finished': 6,
   'signal.rechecked': 3,
   // Anywhere on the line
   'work.returned': 3,

@@ -704,6 +704,18 @@ function routeOrMove(found: z.infer<typeof signal>, context: z.core.$RefinementC
   }
 }
 
+/**
+ * What a verification keeps: any sense's evidence, or, for a dependency's move, the app's scan of the released commit:
+ * the commit it scanned, and the move's findings by severity before (the signal's: those it listed and the rest it
+ * counted) and after (every finding that scan still has open on the move's pins). Counts alone, never a package or an
+ * advisory, so its public form is the event's. verification.finished version 6 adds it; no verification before was a
+ * scan's.
+ */
+export const verifiedEvidence = z.discriminatedUnion('kind', [
+  ...evidence.options,
+  z.strictObject({ kind: z.literal('scan'), commit, before: severities, after: severities }),
+]);
+
 /** The payload of each event type, at its current version. */
 export const PAYLOADS = {
   'work-item.opened': z.strictObject({
@@ -1429,7 +1441,7 @@ export const PAYLOADS = {
     version: appVersion.optional(),
     /** The version it was compared with: the one before the fix. */
     against: appVersion,
-    evidence: evidence.optional(),
+    evidence: verifiedEvidence.optional(),
     /** The pages compared, if any were: a sense that does not look at pages compares none. */
     pages: z
       .array(

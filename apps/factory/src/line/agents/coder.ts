@@ -74,6 +74,7 @@ import { GitHubWorkerError } from '../../github/worker-client.ts';
 import { type Fenced, fence } from '../../runners/scope.ts';
 import type { Draft } from '../gates.ts';
 import { type GateFailure, needsHold, type Rebuild, unchangedHold, type WorkItemState } from '../machine.ts';
+import { replacedFor, replacesLine } from '../moves.ts';
 import { answerThreads, cites, type Finding, lineage, threadAnswers } from '../review.ts';
 import {
   answerOf,
@@ -798,7 +799,13 @@ export const coder = defineAgent<CoderInput, CoderResult>({
               head: branch,
               base: 'main',
               title,
-              body: pullRequestBody(workItem, issue, spec, state.request !== undefined),
+              body: pullRequestBody(
+                workItem,
+                issue,
+                spec,
+                state.request !== undefined,
+                await replacedFor(context, state.ticket),
+              ),
               contradicts,
               draft: true,
             })
@@ -932,6 +939,7 @@ function pullRequestBody(
   issue: number | null,
   spec: PayloadOf<'spec.written'>,
   improvement: boolean,
+  replaces?: number,
 ): string {
   return [
     improvement
@@ -950,6 +958,7 @@ function pullRequestBody(
     `**Risks.** ${spec.risks.length ? spec.risks.join(', ') : 'none tagged'}`,
     '',
     `**Rollout.** ${spec.rollout}`,
+    ...(replaces ? ['', replacesLine(replaces)] : []),
     '',
     '_A draft until its gates and review have passed and the factory has written its description._',
   ].join('\n');

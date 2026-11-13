@@ -420,10 +420,17 @@ function contradictsProblems(spec: PayloadOf<'spec.written'>, protectedPaths: re
  * A spec with the tag that says it changes an existing test's assertions, if it names a test it contradicts and the
  * planner did not tag it so. The line adds it: the tag follows from the list, whatever the planner wrote.
  */
-export function tagged(spec: PayloadOf<'spec.written'>): PayloadOf<'spec.written'> {
-  if (!spec.contradicts?.length || spec.risks.includes('test-loosening')) return spec;
-  return { ...spec, risks: ['test-loosening', ...spec.risks] };
+export function tagged(spec: PayloadOf<'spec.written'>, move = false): PayloadOf<'spec.written'> {
+  const risks = [
+    ...(spec.contradicts?.length && !spec.risks.includes('test-loosening') ? (['test-loosening'] as const) : []),
+    ...spec.risks,
+    ...(move && !spec.risks.includes('dependency-change') ? (['dependency-change'] as const) : []),
+  ];
+  return risks.length === spec.risks.length ? spec : { ...spec, risks };
 }
+
+/** Whether a ticket is a dependency's move, which triage fingerprints by its name and ecosystem. */
+export const isMove = (ticket: PayloadOf<'ticket.opened'>) => 'ecosystem' in ticket.fingerprint;
 
 /**
  * The tests a spec names that are not in their files at the commit, as test integrity will read the base: each file
@@ -810,6 +817,66 @@ function reportQuotes(ticket: PayloadOf<'ticket.opened'>): string[] {
   ];
 }
 
+/**
+ * A move's plan: the ticket, the dependency sense's newest signal (the move, its pins and the scan's findings, each
+ * line one a criterion can quote) and what came of moves before. The pin step writes every pin before the coder
+ * starts, so the plan is what the move must show and what the coder may need to change if the move breaks the app:
+ * the scans no longer show its findings, and every gate passes, each quoting the lines that ask for it.
+ */
+function movePrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): string {
+  const { workItem, signals, protectedPaths, answers, persisted = [], reopened = [], failure } = input;
+  const asks = asksMartin(input);
+  const findings = signals.some((signal) => signal.evidence?.some((each) => each.kind === 'scan'));
+  return [
+    `Plan the move for ticket #${workItem}: ${ticket.title}.`,
+    ...ticketLines(ticket, signals),
+    ...(signals.length ? ['', 'What the dependency sense saw, by number:', ...numbered(signals)] : []),
+    ...answerLines(answers),
+    ...(persisted.length
+      ? [
+          '',
+          'A move for this ticket was merged and released before, and the scan of the release still showed a finding:',
+          ...persisted.map((v) => `- “${v.check}” on ${v.version ?? 'the new version'}.`),
+          'Find out why that move did not clear it before you plan another.',
+        ]
+      : []),
+    ...(reopened.length
+      ? [
+          '',
+          'A move for this ticket was verified in production before, and the scan saw the move again:',
+          ...reopened.map((r) => `- “${r.check}” again on ${r.version}.`),
+        ]
+      : []),
+    ...replanLines(input),
+    ...(failure ? ['', ...failedAttemptLines(failure, 'plan')] : []),
+    '',
+    'The line writes every pin of the move itself, before the coder starts: the manifest’s range where it must move, the lockfile, `mise.toml` and `mise.lock` for Node, and each `FROM` for an image. Neither you nor the coder writes a pin, a lockfile or an image’s digest. Read where the app uses what moves, and its tests, so the scope is what the coder may need to change if the move breaks the app’s code or its tests; most moves need nothing more from the coder.',
+    'Do not try the move: start no server, send no requests, install nothing and run no tests. Change nothing: no change of yours leaves this checkout.',
+    '',
+    'The spec’s criteria are these, each quoting the lines above that ask for it:',
+    ...(findings
+      ? [
+          '- “the scans no longer show them”: given the change’s lockfile and images, when the scan gates scan them, then none of the findings the move fixes is found; `from` the signal, `quote` a finding’s line, from the advisory’s id on, word for word (one criterion for each finding the move fixes, or one for all of them quoting the move’s line).',
+        ]
+      : []),
+    '- “every gate passes”: given the change, when every required check runs on it, then each passes; `from` the signal, `quote` the move’s words in its first line, such as its name and the versions it moves between.',
+    '- Only if the move breaks something the app’s tests must show (an API it uses that the new version changed): a criterion for that, which a test the coder writes shows, quoting the same move’s words.',
+    'The scan gates and the required checks show the first two, not a test of the coder’s.',
+    '',
+    `Then write the result, one of ${asks ? 'three' : 'two'}, each with its \`findings\`:`,
+    '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to:',
+    ...SPEC_TEMPLATE.map((line) => `   ${line}`),
+    '   Tag `dependency-change` among the risks: the move updates a dependency.',
+    `2. {"verdict":"reject","reason"} when the move cannot be made: the target needs a change only Martin can make, such as ${protectedWords(protectedPaths).join(', ')}, or a major the app cannot take without a decision of his. The reason is one or two short sentences for Martin, at most 300 characters.`,
+    ...(asks
+      ? [
+          '3. {"verdict":"question","question"} when the move turns on what the app should do, which only Martin can say: one question he can answer in a line, at most 300 characters.',
+        ]
+      : [UNANSWERED]),
+    `\`findings\`: at most ${MAX_PLANNER_FINDINGS}, as for any plan, each with \`page\`, \`route\` and \`text\`; usually none for a move.`,
+  ].join('\n');
+}
+
 /** A fix's plan: the ticket, what the senses saw and what came of fixes before, to a diagnosis and a spec. */
 function ticketPrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): string {
   const { workItem, signals, protectedPaths, answers, persisted = [], reopened = [], failure } = input;
@@ -969,8 +1036,12 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       input.shipped ? input.lastSpec : undefined,
     ),
   prompt: (input) =>
-    input.asked.kind === 'ticket' ? ticketPrompt(input, input.asked.ticket) : requestPrompt(input, input.asked.request),
-  apply: async (planned, _handback, _input, context) => {
+    input.asked.kind === 'request'
+      ? requestPrompt(input, input.asked.request)
+      : isMove(input.asked.ticket)
+        ? movePrompt(input, input.asked.ticket)
+        : ticketPrompt(input, input.asked.ticket),
+  apply: async (planned, _handback, input, context) => {
     // A spec that names a test its file does not have is refused before it leaves anything, as one the schema refuses.
     if (planned.verdict === 'spec') await checkContradicted(planned.spec, context);
     // A finding is known by where it is and what it says, so the same one handed back by a later plan, after a
@@ -994,7 +1065,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       .join('');
     switch (planned.verdict) {
       case 'spec': {
-        const spec = tagged(planned.spec);
+        const spec = tagged(planned.spec, input.asked.kind === 'ticket' && isMove(input.asked.ticket));
         const summary = `Spec written: ${count(spec.criteria.length, 'criterion', 'criteria')}, ${count(spec.scope.length, 'path')} in scope${left}`;
         return [{ type: 'spec.written', actor: 'planner', summary, payload: spec }];
       }

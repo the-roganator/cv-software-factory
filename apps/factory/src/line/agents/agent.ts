@@ -25,6 +25,7 @@ import type { ActionArgs, ActionName, ActionResult, ReadArgs, ReadName, ReadResu
 import type { Handback, Step } from '../../runners/steps.ts';
 import type { Draft } from '../gates.ts';
 import type { Answer, LineAgent, WorkItemState } from '../machine.ts';
+import type { GateCounts } from '../moves.ts';
 import { outsideCode } from './code.ts';
 import type { Asked, Request, Signal } from './evidence.ts';
 
@@ -69,12 +70,23 @@ export interface StepContext {
    * since its branch left main, which are this work item's own work so far and not in the step's checkout.
    */
   change?: { pullRequest: number; files: string[] } | undefined;
-  /** The work item's ticket, as its public view has it. Throws `StepFailed` when there is none. */
+  /**
+   * The work item's ticket, as its public view has it, but a move's title and fingerprint, from its own payload. Throws
+   * `StepFailed` when there is none.
+   */
   ticket(): Promise<PayloadOf<'ticket.opened'>>;
   /** Martin's request for the improvement, as its public views have it. Throws `StepFailed` when there is none. */
   request(): Promise<Request>;
-  /** What each sense saw of the work item, from their public views, without a report's signal (`evidence.ts`). */
+  /**
+   * What each sense saw of the work item, from their public views, without a report's signal (`evidence.ts`); a
+   * dependency's newest signal alone, from its payload.
+   */
   signals(): Promise<Signal[]>;
+  /**
+   * What the scan gates counted on a commit of the work item's pull request, before and after, as `gate.finished`
+   * recorded them from the gates' own notices: one for each check that gave counts.
+   */
+  scanCounts(commit: string): Promise<GateCounts[]>;
   /** The flags other improvements Martin asked for have named, open or closed: never this work item's own. */
   flagsTaken(): Promise<string[]>;
   /** Reads GitHub through the worker. Reading is harmless, so a step may read as it starts. */

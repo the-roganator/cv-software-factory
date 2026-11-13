@@ -104,10 +104,13 @@ describe('check.ts', () => {
     expect(shown(fold('', 'A', fold(' open', 'B', 'hidden')))).toBe('## A'.length);
   });
 
-  it('counts a link by its words, and neither a picture, a comment nor a tag in code', () => {
+  it('counts a link by its words, not a picture or comment, and code as written', () => {
     expect(shown('[the map](https://github.com/x/y/pull/1) <!-- note -->')).toBe('the map'.length);
     expect(shown('[![alt](https://x/a.svg)](https://x/compare) after')).toBe('after'.length);
-    expect(shown('`<details>` stays shown')).toBe('`` stays shown'.length);
+    expect(shown('`<details>` stays shown')).toBe('`<details>` stays shown'.length);
+    expect(shown('a\n\n```\n[x](https://example.com/long)\n```\n')).toBe(
+      'a ``` [x](https://example.com/long) ```'.length,
+    );
   });
 
   it('leaves out an open section whose summary names a threat model, and an attribute that only holds the word open', () => {
@@ -127,6 +130,11 @@ describe('check.ts', () => {
     expect(shown(`Why.\n\n<details>\n<summary>\n\n## Proof\n\n</summary>\n\nran\n\n</details>\n\n${folded}`)).toBe(
       'Why. ## Proof'.length,
     );
+  });
+
+  it('says a description is empty, as GitHub gives none for a pull request without one', () => {
+    expect(oversize(null, 10)).toEqual(['the description is empty']);
+    expect(oversize(' \n', 10)).toEqual(['the description is empty']);
   });
 
   it('allows four characters a changed line, never under 800 nor over 3,000', () => {

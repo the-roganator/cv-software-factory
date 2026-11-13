@@ -74,25 +74,34 @@ function attribution(body: string, prose: string): number {
 const isOpen = (attributes: string) =>
   /(?:^|\s)open(?=\s|\/|$)/i.test(attributes.replace(/=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/g, ''));
 
+/** What stands for a character of code while the rest is read: no pattern below matches it. */
+const CODE = '\u0001';
+
 /**
  * How many characters a description shows before anything is unfolded: what lies outside each closed `<details>`, and
  * each one's summary; an open one shows whole, except one whose summary names a threat model, which must stay open
  * whatever its length and is not counted. The attribution the caller adds is not counted either. It approximates what
  * shows, by patterns rather than a renderer: comments, tags and where links and pictures point are not counted, a
- * link's words are, code is counted as written, and each run of white space counts as one.
+ * link's words are, and each run of white space counts as one. Code is set aside first, each of its characters but
+ * white space held by a placeholder no pattern matches, so it counts as written, delimiters included.
  */
 export function shown(body: string): number {
   const all = outsideCode(body);
   const end = attribution(body, all);
   const prose = all.slice(0, end);
   const text = body.slice(0, end);
+  let masked = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] ?? '';
+    masked += prose[i] === c || /\s/.test(c) ? c : CODE;
+  }
   const tag = /<!--[\s\S]*?-->|<(\/?)(details|summary)\b([^>]*)>/gi;
   const folds: { open: boolean; summary: boolean; from: number; at: number; skip: boolean }[] = [];
   const visible = () => folds.every((f, i) => !f.skip && (f.open || (i === folds.length - 1 && f.summary)));
   let kept = '';
   let at = 0;
   for (const m of prose.matchAll(tag)) {
-    if (visible()) kept += text.slice(at, m.index);
+    if (visible()) kept += masked.slice(at, m.index);
     at = m.index + m[0].length;
     if (!m[2]) continue;
     const closing = m[1] === '/';
@@ -108,7 +117,7 @@ export function shown(body: string): number {
       }
     }
   }
-  if (visible()) kept += text.slice(at);
+  if (visible()) kept += masked.slice(at);
   return kept
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
@@ -118,8 +127,12 @@ export function shown(body: string): number {
     .trim().length;
 }
 
-/** A line when the description shows more than a change of this many changed lines allows, or none. */
-export function oversize(body: string, changed: number): string[] {
+/**
+ * A line when the description is empty (GitHub gives none for a pull request without one), or shows more than a change
+ * of this many changed lines allows; none otherwise.
+ */
+export function oversize(body: string | null, changed: number): string[] {
+  if (!body?.trim()) return ['the description is empty'];
   const size = shown(body);
   const most = limit(changed);
   if (size <= most) return [];
@@ -144,7 +157,7 @@ if (import.meta.main) {
   let changed = 0;
   if (pr) {
     const view = JSON.parse(gh('pr', 'view', pr, '--json', 'body,additions,deletions'));
-    body = view.body;
+    body = view.body ?? '';
     changed = view.additions + view.deletions;
   } else {
     body = readFileSync(args[0], 'utf8');

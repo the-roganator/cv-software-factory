@@ -21,7 +21,7 @@ const VERSION = 1;
 /** The day a lookup is good for: its UTC date. */
 export const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
-export interface Memo {
+interface Memo {
   version: number;
   day: string;
   /** Each answer, by its lookup and arguments (`tags docker.io/library/postgres`): an answer of none as `none`. */

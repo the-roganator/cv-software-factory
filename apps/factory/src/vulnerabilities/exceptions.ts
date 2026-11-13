@@ -14,7 +14,7 @@ import { alertKey, type Finding, fingerprint, merge } from './sarif.ts';
 export type Policy = typeof POLICY;
 
 /** An entry as the log names it: never its reason, which is Martin's to read in the file. */
-export const entryName = (entry: Exception) => `${entry.item}: ${entry.package} ${entry.advisory}`;
+const entryName = (entry: Exception) => `${entry.item}: ${entry.package} ${entry.advisory}`;
 
 /**
  * Each of a repository's entries that excepts nothing, and why: one that has expired or is further off than the policy

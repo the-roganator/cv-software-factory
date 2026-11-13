@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { LINK } from '../../src/gates/lockfile-scan.ts';
+import { retried } from '../../src/gates/retry.ts';
 import { INSTALL, inSbom, LIST, listed, missing, pnpmVersion } from '../../src/vulnerabilities/coverage.ts';
 import type { Item } from '../../src/vulnerabilities/inventory.ts';
 import {
@@ -38,10 +39,10 @@ import {
   links,
   lockfileLine,
   nodeFindingsOf,
+  PULL,
   readLockfile,
   readOurs,
   report,
-  retried,
   sbomPaths,
   scan,
   type Tools,
@@ -881,7 +882,7 @@ describe('trying again', () => {
     for (const error of answers) {
       waited.length = 0;
       const one = failing(error);
-      await expect(retried(one.what, undefined, wait)).rejects.toBe(error);
+      await expect(retried(one.what, { ...PULL, wait })).rejects.toBe(error);
       expect(one.tries()).toBe(1);
       expect(waited).toEqual([]);
     }
@@ -900,7 +901,7 @@ describe('trying again', () => {
       waited.length = 0;
       expect(isAnswer(error)).toBe(false);
       const one = failing(error);
-      await expect(retried(one.what, undefined, wait)).rejects.toBe(error);
+      await expect(retried(one.what, { ...PULL, wait })).rejects.toBe(error);
       expect(one.tries()).toBe(4);
       expect(waited).toEqual([15_000, 45_000, 90_000]);
     }
@@ -913,8 +914,7 @@ describe('trying again', () => {
         if (++tries < 3) throw new Error('fetch failed');
         return 'read';
       },
-      undefined,
-      wait,
+      { ...PULL, wait },
     );
     expect([answer, tries]).toEqual(['read', 3]);
   });

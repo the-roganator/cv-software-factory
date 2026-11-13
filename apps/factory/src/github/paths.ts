@@ -8,6 +8,7 @@
  */
 
 import { inScope, PATH_CHARS, pattern } from '@software-factory/events';
+import { DIGEST_PATTERN } from '../vulnerabilities/reference.ts';
 
 /** Never in a patch: the rules of the line, in the app's repository. */
 export const NEVER = ['.github/', 'deploy/'];
@@ -109,7 +110,7 @@ export const pathsIn = (patch: string): string[] =>
 export const changesManifest = (patch: string): boolean => pathsIn(patch).some(isManifest);
 
 /** A version (`24.22.2`, `5.1.0`, a tag's `3.24`) or a SHA-256 digest, as a pin's line names them. */
-const PIN_VALUE = /sha256:[0-9a-f]{64}|\d+(?:\.\d+){1,3}/g;
+const PIN_VALUE = new RegExp(String.raw`${DIGEST_PATTERN}|\d+(?:\.\d+){1,3}`, 'g');
 
 /** A line with its versions and digests taken out: two lines of a pin that moved read the same, and name one. */
 const masked = (line: string) => line.replace(PIN_VALUE, '\0');

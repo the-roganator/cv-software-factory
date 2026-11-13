@@ -38,6 +38,7 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import { compareVersions } from '../vulnerabilities/deadlines.ts';
 import { readTarget, type Target } from '../vulnerabilities/fixes.ts';
+import { DIGEST_PATTERN, repositoryOf, splitReference } from '../vulnerabilities/reference.ts';
 import { SEVERITIES } from '../vulnerabilities/sarif.ts';
 import { type Actions, APP_LOGIN } from './actions.ts';
 import { BranchRefused, PIN_PREFIX, type WatchedHeads } from './branches.ts';
@@ -178,13 +179,12 @@ function versionOf(target: Target): string | undefined {
   }
 }
 
+/** A digest written after a pin's tag, as `@sha256:…`. */
+const DIGEST_AFTER = new RegExp(`^@${DIGEST_PATTERN}`);
+
 /** A name as Docker would compare it: no registry for Docker Hub, no `library/`. */
 const bare = (name: string) =>
-  name
-    .replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, '')
-    .replace(/^library\//, '')
-    .split('@')[0]
-    ?.replace(/:[^/]*$/, '') ?? name;
+  repositoryOf(name.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, '').replace(/^library\//, ''));
 
 const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') || '/';
 
@@ -233,7 +233,7 @@ export function editAt(
 ): PinEdit | { reason: string } {
   const at = `${pin.file}:${pin.line}`;
   const tries: { from: string; to: (digested: boolean) => string | undefined }[] = [];
-  const tag = from.split('@')[0] ?? from;
+  const tag = splitReference(from).name;
   switch (target.kind) {
     case 'image':
       tries.push({ from: tag, to: (digested) => (digested ? `${target.tag}@${target.digest}` : target.tag) });
@@ -260,7 +260,7 @@ export function editAt(
     const found = spans(line, each.from, { digestAfter: true });
     if (found.length !== 1) continue;
     const start = found[0] as number;
-    const digest = /^@sha256:[0-9a-f]{64}/.exec(line.slice(start + each.from.length))?.[0];
+    const digest = DIGEST_AFTER.exec(line.slice(start + each.from.length))?.[0];
     const written = `${each.from}${digest ?? ''}`;
     // What the guard reads as a word of its own, the same rule: the span with its digest, once on the line.
     if (spans(line, written).length !== 1) continue;

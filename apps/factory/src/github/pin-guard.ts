@@ -23,6 +23,7 @@
  */
 import { z } from 'zod';
 import { readTarget } from '../vulnerabilities/fixes.ts';
+import { DIGEST, splitReference } from '../vulnerabilities/reference.ts';
 import { BranchRefused, PIN_NEXT_PREFIX, PIN_PREFIX } from './branches.ts';
 import { type GitHub, GitHubError } from './client.ts';
 import { PatchRefused } from './patches.ts';
@@ -114,8 +115,6 @@ export function ownedPinPlace(file: string): boolean {
   return file.startsWith('deploy/') || /(^|\/)Dockerfile$/.test(file);
 }
 
-const DIGEST = /^sha256:[0-9a-f]{64}$/;
-
 /** Whether a tag or version starts as a version does (`2.14.3`, `v1.54.0`), not as a word (`bookworm`, `main`). */
 const VERSIONED = /^v?\d/;
 
@@ -124,8 +123,8 @@ const VERSIONED = /^v?\d/;
  * tag that is not a version (`bookworm`) is read with its digest, which is all of it that moves.
  */
 function shapeOf(text: string): { kind: 'image'; tag: string } | { kind: 'version' } | undefined {
-  const [tag = '', digest, ...rest] = text.split('@');
-  if (rest.length) return undefined;
+  // A second `@` is left in the digest, which DIGEST then refuses.
+  const { name: tag, digest } = splitReference(text);
   if (digest !== undefined) {
     const read = readTarget(`image ${tag}@${digest}`);
     return read?.kind === 'image' && read.tag === tag && DIGEST.test(digest) ? { kind: 'image', tag } : undefined;

@@ -30,7 +30,7 @@ export const MOST_CONTRADICTED = 10;
 export const PATH_CHARS = 200;
 export const TEST_CHARS = 300;
 
-export const HEADING = '## Tests the spec contradicts';
+const HEADING = '## Tests the spec contradicts';
 export const START = '<!-- factory:contradicts -->';
 export const END = '<!-- /factory:contradicts -->';
 const INTRO = [

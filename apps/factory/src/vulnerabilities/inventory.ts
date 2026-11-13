@@ -38,6 +38,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { PROOF } from './proof.ts';
+import { DIGEST_PATTERN, splitReference } from './reference.ts';
 
 export type Kind =
   | 'lockfile'
@@ -92,16 +93,18 @@ export interface Item {
 }
 
 /** An image a chart's values file pins by digest. */
-export interface ValuePin {
+interface ValuePin {
   file: string;
   line: number;
   digest: string;
 }
 
+const VALUE_PIN = new RegExp(String.raw`^\s*(?:tag|digest):\s*['"]?(?:[\w.-]+@)?(${DIGEST_PATTERN})['"]?\s*(?:#.*)?$`);
+
 /** A values file's pins of an image by digest: a `tag:` or `digest:` key whose value carries one. */
-export function valuePins(file: string, lines: string[]): ValuePin[] {
+function valuePins(file: string, lines: string[]): ValuePin[] {
   return lines.flatMap((text, index) => {
-    const digest = /^\s*(?:tag|digest):\s*['"]?(?:[\w.-]+@)?(sha256:[0-9a-f]{64})['"]?\s*(?:#.*)?$/.exec(text)?.[1];
+    const digest = VALUE_PIN.exec(text)?.[1];
     return digest ? [{ file, line: index + 1, digest }] : [];
   });
 }
@@ -131,33 +134,29 @@ const CI_SCRIPTS = ['apps/console/zap/scan.ts'];
 const MIRROR = 'ghcr.io/the-roganator/cv-software-factory/mirror/';
 
 /** A reference by digest, as any file writes it, and kustomize's `digest:` beside a name. */
-const BY_DIGEST = /([A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64})|^\s*-?\s*digest:\s*['"]?(sha256:[0-9a-f]{64})/g;
+const BY_DIGEST = new RegExp(
+  String.raw`([A-Za-z0-9._/:-]*@${DIGEST_PATTERN})|^\s*-?\s*digest:\s*['"]?(${DIGEST_PATTERN})`,
+  'g',
+);
 const IMAGE_LINE = /^\s*(?:-\s+)?image:\s*['"]?([^\s'"#]+)['"]?\s*(?:#.*)?$/;
 const FROM = /^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$/i;
 
 /** An image's reference without its tag when it has a digest, so two pins of one image are one item. */
 export function identity(reference: string) {
-  const at = reference.indexOf('@');
-  if (at < 0) return reference;
-  const name = reference.slice(0, at);
-  const slash = name.lastIndexOf('/');
-  const colon = name.lastIndexOf(':');
-  return `${colon > slash ? name.slice(0, colon) : name}${reference.slice(at)}`;
+  const { repository, digest } = splitReference(reference);
+  return digest === undefined ? reference : `${repository}@${digest}`;
 }
 
 /** An image's tag, whatever its registry, port or digest, or undefined. */
 export function tagOf(reference: string) {
-  const name = reference.split('@')[0] ?? '';
-  const last = name.slice(name.lastIndexOf('/') + 1);
-  return last.includes(':') ? last.slice(last.indexOf(':') + 1) : undefined;
+  return splitReference(reference).tag;
 }
 
 /** CI's copy of an image, where ci-images.sh keeps one: Docker's official images, and Playwright's. */
 export function ciCopy(reference: string) {
-  const at = reference.indexOf('@');
-  if (at < 0) return undefined;
-  const name = reference.slice(0, at).replace(/:[^/:]+$/, '');
-  const digest = reference.slice(at);
+  const { repository: name, digest: pinned } = splitReference(reference);
+  if (pinned === undefined) return undefined;
+  const digest = `@${pinned}`;
   if (/^[a-z0-9._-]+$/.test(name)) return `${MIRROR}docker/library/${name}${digest}`;
   if (name === 'mcr.microsoft.com/playwright') return `${MIRROR}mcr/playwright${digest}`;
   return undefined;
@@ -586,7 +585,7 @@ export function unlisted(root: string): Unlisted[] {
   // The digests each listed line pins, so a second reference on that line is still compared on its own.
   const pinned = new Map<string, Set<string>>();
   for (const item of items) {
-    const digest = item.image?.split('@')[1];
+    const digest = item.image && splitReference(item.image).digest;
     if (!digest) continue;
     const at = `${item.file}:${item.line}`;
     pinned.set(at, new Set([...(pinned.get(at) ?? []), digest]));

@@ -51,6 +51,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as POLICY from '../../../../policy/vulnerabilities.ts';
 import { documents, forTrivy, LINK, trackedLockfiles, unreadDocument } from '../gates/lockfile-scan.ts';
+import { type Retry, retried } from '../gates/retry.ts';
 import { apiVersionsOf } from './api-versions.ts';
 import { judge } from './exceptions.ts';
 import { type Chart, type Item, inventory, unlisted } from './inventory.ts';
@@ -65,6 +66,7 @@ import {
   readable,
 } from './node.ts';
 import { PROOF } from './proof.ts';
+import { repositoryOf, splitReference } from './reference.ts';
 import {
   categoryOf,
   type Finding,
@@ -144,7 +146,7 @@ export interface TrivyVulnerability {
   PrimaryURL?: string;
   CVSS?: Record<string, { V2Score?: number; V3Score?: number; V40Score?: number }>;
 }
-export interface TrivyResult {
+interface TrivyResult {
   Target?: string;
   Class?: string;
   Type?: string;
@@ -208,13 +210,7 @@ export interface Read {
   unreadable?: string;
 }
 
-/** An image's repository: its name without the tag or the digest, what stays the same when its pin moves. */
-export function repositoryOf(reference: string) {
-  const name = reference.split('@')[0] ?? '';
-  const slash = name.lastIndexOf('/');
-  const colon = name.lastIndexOf(':');
-  return colon > slash ? name.slice(0, colon) : name;
-}
+export { repositoryOf };
 
 /**
  * An item's key for its alerts, from what does not change when its pin moves: a lockfile's path; an image's file and
@@ -229,7 +225,7 @@ export function itemKey(item: Item, image?: string) {
 }
 
 /** How many packages Trivy read, across the reports. */
-export function packagesRead(reports: TrivyReport[]) {
+function packagesRead(reports: TrivyReport[]) {
   return reports.reduce(
     (sum, report) => sum + (report.Results ?? []).reduce((n, result) => n + (result.Packages ?? []).length, 0),
     0,
@@ -276,7 +272,7 @@ export function findingsOf(read: Read, lockfile?: string[]): Finding[] {
   const digest = read.reports.flatMap((report) => report.Metadata?.RepoDigests ?? [])[0];
   const label =
     read.target.image && !read.target.image.includes('@') && digest
-      ? `${read.target.image} (${digest.slice(digest.indexOf('@') + 1)})`
+      ? `${read.target.image} (${splitReference(digest).digest ?? digest})`
       : read.target.label;
   return read.reports.flatMap((report) =>
     (report.Results ?? []).flatMap((result) =>
@@ -458,7 +454,7 @@ async function analysed(tools: Tools, args: string[]) {
 const nodeOf = (report: TrivyReport) => nodeInConfig(report.Metadata?.ImageConfig) ?? nodeInPackages(report.Results);
 
 /** Any other image: CI's copy where there is one, then its own registry, with retries. */
-export async function readImage(tools: Tools, target: Target): Promise<Read> {
+async function readImage(tools: Tools, target: Target): Promise<Read> {
   const image = target.image ?? '';
   const scan = (reference: string) => analysed(tools, ['--', reference]);
   try {
@@ -521,7 +517,7 @@ async function targetsOf(
     // An image one of the chart's values files pins is moved at that pin, its own line.
     return {
       targets: images.map((reference) => {
-        const digest = reference.split('@')[1];
+        const { digest } = splitReference(reference);
         const pin = digest ? item.pins?.find((each) => each.digest === digest) : undefined;
         return { ...image(reference), pin: pin && { file: pin.file, line: pin.line } };
       }),
@@ -731,7 +727,7 @@ export function report(outcome: Outcome, upload: boolean, limits = LIMITS, trivy
 }
 
 /** A run as the log names it: its category, how many results, and its items, by their keys. */
-export function runLine(run: Run) {
+function runLine(run: Run) {
   const items = run.properties.items;
   return `${categoryOf(run)}: ${run.results.length} results, ${items.length} ${items.length === 1 ? 'item' : 'items'}: ${items.join('; ')}`;
 }
@@ -826,7 +822,7 @@ export function realTools(trivyImage: string, cache: string, work: string): Tool
       if (!response.ok) throw new Error(`${url}: ${response.status}`);
       return response.text();
     },
-    retry: (what) => retried(what),
+    retry: (what) => retried(what, PULL),
   };
 }
 
@@ -847,24 +843,11 @@ export function isAnswer(error: unknown) {
 /** A failure that is always tried again, whatever it says. */
 export class Fault extends Error {}
 
-/** Tries again after 15, 45 and 90 seconds on a fault; an answer (`isAnswer`) at once. */
-export async function retried<T>(
-  what: () => Promise<T>,
-  waits = [0, 15_000, 45_000, 90_000],
-  wait = (ms: number) => new Promise((done) => setTimeout(done, ms)),
-): Promise<T> {
-  let last: unknown;
-  for (const ms of waits) {
-    if (ms) await wait(ms);
-    try {
-      return await what();
-    } catch (error) {
-      if (isAnswer(error)) throw error;
-      last = error;
-    }
-  }
-  throw last;
-}
+/** The waits before each pull tried again: 15, 45 and 90 seconds. */
+export const PULL_WAITS: readonly number[] = [15_000, 45_000, 90_000];
+
+/** A pull, tried again on a fault and given up at once on an answer (`isAnswer`). */
+export const PULL: Retry = { waits: PULL_WAITS, permanent: isAnswer };
 
 /**
  * The advisory databases, pulled from GHCR with retries, and how old the main one is. Any already in the cache are

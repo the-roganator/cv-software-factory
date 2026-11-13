@@ -15,6 +15,7 @@
  */
 import { parse } from 'yaml';
 import { z } from 'zod';
+import { DIGEST_PATTERN } from '../vulnerabilities/reference.ts';
 import { type GitHub, GitHubError } from './client.ts';
 
 export interface DependencyPull {
@@ -237,7 +238,7 @@ export function rewrittenLines(file: string, patch: string): ChangedLine[] {
 const WORDS = /[A-Za-z0-9._+-]+/g;
 const VERSION_WORD = /^v?\d+(\.\d+)*([-+][A-Za-z0-9.+-]*)?$/;
 
-const DIGESTS = /sha256:[0-9a-f]{64}/g;
+const DIGESTS = new RegExp(DIGEST_PATTERN, 'g');
 
 /**
  * Where a group's pull request moves a pin, from the line it rewrites at the pin's place: the first word that changes

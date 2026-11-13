@@ -44,6 +44,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { retried } from '../gates/retry.ts';
 import { type Alert, alertsIn, isOurs, realApi } from './alerts.ts';
 import { type Fix, type MoveTag, readFix, type Target, writable } from './fixes.ts';
 import { type Chart, identity, type Kind } from './inventory.ts';
@@ -63,6 +64,7 @@ import {
   type ScannedImage,
 } from './moves.ts';
 import { satisfies } from './node.ts';
+import { DIGEST, hasRegistry, repositoryOf, splitReference } from './reference.ts';
 import {
   alertKey,
   type Finding,
@@ -77,9 +79,9 @@ import {
   apiVersionsOf,
   type Handoff,
   imagesIn,
+  PULL_WAITS,
   type ReadTarget,
   realTools,
-  repositoryOf,
   type TrivyReport,
   trivyPin,
 } from './scan.ts';
@@ -91,7 +93,7 @@ const DAY = 86_400_000;
 export const DAYS: Record<Severity, number> = { CRITICAL: 2, HIGH: 7, MEDIUM: 30, LOW: 90, UNKNOWN: 90 };
 
 /** pnpm's own `minimumReleaseAge`, in minutes, where the repository sets none. */
-export const PNPM_DEFAULT_MINUTES = 24 * 60;
+const PNPM_DEFAULT_MINUTES = 24 * 60;
 
 const NODE_INDEX = 'https://nodejs.org/dist/index.json';
 
@@ -206,7 +208,7 @@ export function firstFixed(installed: string, fixed: string | undefined) {
 type Route = 'npm' | 'node' | 'image' | 'tool' | 'none';
 
 /** How a finding's fix reaches us: through npm, Node's releases, a newer image on its pin's line, or a tool's release. */
-export function routeOf(
+function routeOf(
   finding: Pick<Finding, 'type'>,
   kind: ReadTarget['kind'],
   fromBase = false,
@@ -225,10 +227,9 @@ export function routeOf(
 }
 
 /** A reference's name and tag, its digest left off. */
-export function nameAndTag(reference: string) {
-  const repository = repositoryOf(reference);
-  const name = reference.split('@')[0] ?? '';
-  return { repository, tag: name.length > repository.length ? name.slice(repository.length + 1) : undefined };
+function nameAndTag(reference: string) {
+  const { repository, tag } = splitReference(reference);
+  return { repository, tag };
 }
 
 /**
@@ -316,7 +317,9 @@ interface Place {
   repository: string;
 }
 
-const itemOf = (label: string) => repositoryOf(label.replace(/ \(sha256:[0-9a-f]+\)$/, ''));
+/** The digest `findingsOf` writes after an image's reference in its label, of any length, as it always was read. */
+const LABEL_DIGEST = / \(sha256:[0-9a-f]+\)$/;
+const itemOf = (label: string) => repositoryOf(label.replace(LABEL_DIGEST, ''));
 const placeOf = (finding: Finding): Place => ({
   advisory: finding.advisory,
   file: finding.file,
@@ -325,7 +328,7 @@ const placeOf = (finding: Finding): Place => ({
 });
 
 /** An alert's place, read from its rule and its latest message (sarif.ts's `messageOf`), or undefined. */
-export function alertPlace(alert: Alert): Place | undefined {
+function alertPlace(alert: Alert): Place | undefined {
   const advisory = alert.rule?.id ?? '';
   const text = alert.most_recent_instance?.message?.text ?? '';
   const file = alert.most_recent_instance?.location?.path ?? '';
@@ -355,7 +358,7 @@ const placeKey = (place: Place) => JSON.stringify([place.advisory, place.file, p
 const itemKey = (place: Pick<Place, 'file' | 'repository'>) => JSON.stringify([place.file, place.repository]);
 const time = (text: string | null | undefined) => (text ? Date.parse(text) : Number.NaN);
 
-export type Bucket = 'overdue' | 'day' | 'week' | 'later' | 'none';
+type Bucket = 'overdue' | 'day' | 'week' | 'later' | 'none';
 
 /** One result's deadline, as the run judges it. */
 export interface Row {
@@ -435,8 +438,7 @@ const fromLine = (dockerfile: string, image: string) =>
 
 /** What an image pins, as a move's `from`: its tag, or its digest when it has none. */
 const pinned = (reference: string) => {
-  const { tag } = nameAndTag(reference);
-  const digest = reference.split('@')[1];
+  const { tag, digest } = splitReference(reference);
   return tag ?? digest ?? reference;
 };
 
@@ -946,7 +948,7 @@ export function seen(findings: Finding[], targets: ReadTarget[], alerts: Alert[]
  * The fix each result's own alert states (fixes.ts), from its open or dismissed alert's message, which code scanning
  * keeps as the last upload wrote it, a dismissed alert's too. A message that does not parse states none, and is counted.
  */
-export function stated(findings: Finding[], alerts: Alert[], log: (line: string) => void = () => {}) {
+function stated(findings: Finding[], alerts: Alert[], log: (line: string) => void = () => {}) {
   const byPlace = new Map<string, Fix>();
   let unread = 0;
   for (const alert of alerts) {
@@ -975,7 +977,7 @@ export function stated(findings: Finding[], alerts: Alert[], log: (line: string)
  * (inside pnpm's wait) with none stated is none yet. A line no longer built is first seen on the first run that found
  * it so. A fix the grammar cannot write (fixes.ts) is none.
  */
-export function fixesOf(
+function fixesOf(
   at: (number | undefined)[],
   targets: (Target | undefined)[],
   states: (Fix | undefined)[],
@@ -1160,20 +1162,12 @@ export const npmUrl = (name: string) => `https://registry.npmjs.org/${encodeURIC
 
 /** A repository as skopeo names it: Docker Hub's official images under docker.io/library/. */
 export function skopeoName(repository: string) {
-  const first = repository.split('/')[0] ?? '';
-  if (repository.includes('/') && (first.includes('.') || first.includes(':') || first === 'localhost'))
-    return `docker://${repository}`;
+  if (hasRegistry(repository)) return `docker://${repository}`;
   return `docker://docker.io/${repository.includes('/') ? '' : 'library/'}${repository}`;
 }
 
 /** The sources as the workflow has them: npm, Node's index, skopeo, Trivy on the scan's database, the API. */
-export function realSources(
-  handoff: Handoff,
-  checkout: string,
-  trivyImage: string,
-  work: string,
-  token?: string,
-): Sources {
+function realSources(handoff: Handoff, checkout: string, trivyImage: string, work: string, token?: string): Sources {
   const tools = realTools(trivyImage, handoff.cache, work);
   // Read once, outside any retry: a record that cannot be read fails the run with its own cause.
   const apiVersions = apiVersionsOf(checkout);
@@ -1400,8 +1394,8 @@ export function realSources(
 
 /** A reference skopeo reads: one pinned by tag and digest is read by its digest alone, which skopeo requires. */
 export function byDigest(reference: string) {
-  const [name = '', digest] = reference.split('@');
-  return digest ? `${repositoryOf(name)}@${digest}` : reference;
+  const { repository, digest } = splitReference(reference);
+  return digest ? `${repository}@${digest}` : reference;
 }
 
 /** A raw manifest's digest, and the digests of the platform manifests it lists when it is an index. */
@@ -1416,7 +1410,7 @@ export function manifestDigests(raw: Buffer) {
   const listed = (body as { manifests?: unknown }).manifests;
   const platforms = (Array.isArray(listed) ? listed : [])
     .map((each) => (each as { digest?: unknown }).digest)
-    .filter((each): each is string => typeof each === 'string' && /^sha256:[0-9a-f]{64}$/.test(each));
+    .filter((each): each is string => typeof each === 'string' && DIGEST.test(each));
   return { digest, platforms: [...new Set(platforms)].sort() };
 }
 
@@ -1438,7 +1432,7 @@ export async function scannedImages(
           read.set(image, once);
         }
         const { digest, platforms } = await once;
-        const pinned = image.split('@')[1];
+        const pinned = splitReference(image).digest;
         out.push({
           kind: target.kind,
           item: target.name ?? target.label,
@@ -1488,25 +1482,14 @@ export function toolUrl(lock: string, tool: string, version: string) {
 /** An answer trying again cannot change: a 4xx but 429. */
 class Permanent extends Error {}
 
+/** Tries again on a dropped connection, a timeout, a 429 or a 5xx, as a pull is tried; a permanent answer at once. */
+const transient = <T>(what: () => Promise<T>) =>
+  retried(what, { waits: PULL_WAITS, permanent: (error) => error instanceof Permanent });
+
 const answered = (source: string, status: number) =>
   status === 429 || status >= 500
     ? new Error(`${source} answered ${status}`)
     : new Permanent(`${source} answered ${status}`);
-
-/** Tries again on a dropped connection, a timeout, a 429 or a 5xx, as a pull is tried; a permanent answer at once. */
-async function transient<T>(what: () => Promise<T>, waits = [0, 15_000, 45_000, 90_000]): Promise<T> {
-  let last: unknown;
-  for (const wait of waits) {
-    if (wait) await new Promise((done) => setTimeout(done, wait));
-    try {
-      return await what();
-    } catch (error) {
-      if (error instanceof Permanent) throw error;
-      last = error;
-    }
-  }
-  throw last;
-}
 
 /** Why a fetch failed: its message, and the cause undici keeps beneath "fetch failed" (ECONNRESET, a TLS error). */
 const reason = (error: unknown) => {

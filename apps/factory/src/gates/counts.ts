@@ -23,7 +23,7 @@ export type Counts = Record<Severity, number>;
 export const ACTIONS_APP = 'github-actions';
 
 /** The scans that count, by the name of their job, and the word their notice starts with. */
-export const SCANS = { 'lockfile scan': 'Lockfile scan', 'image scan': 'Image scan' } as const;
+const SCANS = { 'lockfile scan': 'Lockfile scan', 'image scan': 'Image scan' } as const;
 export type Scan = keyof typeof SCANS;
 
 export interface ScanCounts {

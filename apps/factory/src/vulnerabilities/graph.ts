@@ -25,15 +25,18 @@ import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type Listed, listed, missing, pnpmIn } from './coverage.ts';
 import { lockfiles as listedLockfiles } from './inventory.ts';
+import { DIGEST_PATTERN } from './reference.ts';
 
 const run = promisify(execFile);
 
 /** The snapshot's correlator: the workflow's, so each submission replaces the one before it. */
 export const CORRELATOR = 'dependency-graph.yml';
 
+const SYFT = new RegExp(String.raw`^FROM (ghcr\.io/anchore/syft:v(\d+\.\d+\.\d+)@${DIGEST_PATTERN})$`, 'm');
+
 /** The Syft image a Dockerfile pins by version and digest, and its version. */
 export function syftPin(dockerfile: string) {
-  return /^FROM (ghcr\.io\/anchore\/syft:v(\d+\.\d+\.\d+)@sha256:[0-9a-f]{64})$/m.exec(dockerfile);
+  return SYFT.exec(dockerfile);
 }
 
 type Deps = Record<string, string | { version?: string }>;
@@ -229,7 +232,7 @@ export function snapshot(
 }
 
 /** pnpm's top-level packages of each project, as `name@version`: what it lists as direct. */
-export function listedDirect(projects: (Listed & { name?: string })[]) {
+function listedDirect(projects: (Listed & { name?: string })[]) {
   const own = new Set(projects.map((project) => project.name));
   const found = new Set<string>();
   for (const project of projects)

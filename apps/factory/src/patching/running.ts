@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import type { Kube } from '../runners/kube.ts';
+import { DIGEST_PATTERN } from '../vulnerabilities/reference.ts';
 
 /** One container the cluster runs. */
 export interface RunningContainer {
@@ -54,7 +55,7 @@ const PODS = z.object({
 const PAGE = 500;
 const MAX_PAGES = 40;
 
-const DIGEST = /sha256:[0-9a-f]{64}$/;
+const DIGEST = new RegExp(`${DIGEST_PATTERN}$`);
 
 /** The digest an `imageID` carries: `docker.io/library/postgres@sha256:…`, or a bare `sha256:…`. */
 export function digestOf(imageID: string | undefined): string | undefined {

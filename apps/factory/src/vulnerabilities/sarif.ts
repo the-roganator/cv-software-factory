@@ -174,7 +174,7 @@ export interface Part {
 }
 
 /** A part as the run's properties and the log name it: the item's key, and its cut where it has one. */
-export const partName = (part: Part) =>
+const partName = (part: Part) =>
   `${part.findings[0]?.item ?? ''}${part.cut ? ` (cut ${part.cut.at} of ${part.cut.of})` : ''}`;
 
 /**
@@ -229,7 +229,7 @@ export const messageOf = (finding: Finding) =>
   `${finding.package} ${finding.installed} in ${finding.label}: ${finding.advisory} (${finding.severity.toLowerCase()}), ${finding.fixed ? `fixed in ${finding.fixed}` : 'no fix yet'}.${finding.fix ? ` ${fixText(finding.fix)}` : ''}${finding.fix && finding.move ? ` ${moveText(finding.move)}` : ''}`;
 
 /** A result's message as `readMessage` reads it back: what `messageOf` wrote, no more. */
-export interface Message {
+interface Message {
   package: string;
   /** Each version found, as the message lists them: `1.0.0`, or `1.0.0, 2.0.0`. */
   installed: string;

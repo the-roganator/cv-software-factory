@@ -108,7 +108,7 @@ queued() {
 #
 # Kept whatever the classes say: deploy/, which Argo CD renders, every file in it; the workflow and any action of ours
 # it could run; and the modules of the image sources that the scripts the job runs import (a test walks their imports).
-KEPT='^(deploy/|\.github/workflows/platform\.yml$|\.github/actions/|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$|apps/factory/src/vulnerabilities/api-versions\.ts$)'
+KEPT='^(deploy/|\.github/workflows/platform\.yml$|\.github/actions/|policy/flags\.ts$|apps/factory/src/github/(registry|signatures)\.ts$|apps/factory/src/vulnerabilities/(api-versions|reference)\.ts$)'
 EXCLUDED_CLASSES=(
   # Words for people, and tests: nothing the job runs reads them.
   '^docs(/|$)' '\.md$' '(^|/)test(/|$)' '\.test\.ts$' '(^|/)e2e(/|$)'

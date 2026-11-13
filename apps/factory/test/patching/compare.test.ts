@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { compare, type Listed, parseReference } from '../../src/patching/compare.ts';
+import { compare, type Listed } from '../../src/patching/compare.ts';
 import { namespacesFrom, type RunningContainer, runningContainers } from '../../src/patching/running.ts';
 import type { Kube } from '../../src/runners/kube.ts';
+import { parseReference } from '../../src/vulnerabilities/reference.ts';
 import { APP, APP_SCANNED, agreeing, digest, FACTORY, FACTORY_SCANNED, pod } from './fixtures.ts';
 
 const LISTS: Listed[] = [

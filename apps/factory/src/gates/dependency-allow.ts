@@ -18,13 +18,21 @@ import { appendFileSync } from 'node:fs';
 import { ADVISORY, EXCEPTIONS, type Exception } from '../../../../policy/vulnerabilities.ts';
 import { lockfileEntries } from './exceptions.ts';
 import { annotate, summarise } from './report.ts';
+import { retried } from './retry.ts';
+
+/** An answer from the advisory database that is not a list, and how long it asked to wait, if it did. */
+class Unread extends Error {
+  readonly after: number | undefined;
+  constructor(message: string, after: number | undefined) {
+    super(message);
+    this.after = after;
+  }
+}
 
 /** The GHSA ids of the advisories with an id (a CVE or GHSA id) that affect a package in npm. */
 export type Lookup = (advisory: string, pkg: string) => Promise<string[]>;
 
 const GHSA = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
-
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * GitHub's global advisory database, asked once for each entry, three times before it gives up: a second, then four,
@@ -33,7 +41,7 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export function githubLookup(
   token: string | undefined,
   fetcher: typeof fetch = fetch,
-  wait: (ms: number) => Promise<unknown> = pause,
+  wait?: (ms: number) => Promise<unknown>,
 ): Lookup {
   return async (advisory, pkg) => {
     const query = new URLSearchParams({
@@ -42,30 +50,32 @@ export function githubLookup(
       affects: pkg,
       per_page: '100',
     });
-    let last = '';
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let after = 1000 * 4 ** attempt;
-      try {
-        const response = await fetcher(`https://api.github.com/advisories?${query}`, {
-          headers: {
-            accept: 'application/vnd.github+json',
-            'x-github-api-version': '2022-11-28',
-            ...(token ? { authorization: `Bearer ${token}` } : {}),
-          },
-        });
-        if (response.ok) {
-          const body: unknown = await response.json();
-          return Array.isArray(body) ? body.map((a) => (a as { ghsa_id?: unknown })?.ghsa_id).map(String) : [];
-        }
-        last = `${response.status} ${response.statusText}`;
+    const read = async () => {
+      const response = await fetcher(`https://api.github.com/advisories?${query}`, {
+        headers: {
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!response.ok) {
         const asked = Number(response.headers.get('retry-after'));
-        if (Number.isFinite(asked) && asked > 0) after = Math.min(asked, 60) * 1000;
-      } catch (error) {
-        last = error instanceof Error ? error.message : String(error);
+        const after = Number.isFinite(asked) && asked > 0 ? Math.min(asked, 60) * 1000 : undefined;
+        throw new Unread(`${response.status} ${response.statusText}`, after);
       }
-      if (attempt < 2) await wait(after);
+      const body: unknown = await response.json();
+      return Array.isArray(body) ? body.map((a) => (a as { ghsa_id?: unknown })?.ghsa_id).map(String) : [];
+    };
+    try {
+      return await retried(read, {
+        waits: [1000, 4000],
+        after: (error, planned) => (error instanceof Unread ? (error.after ?? planned) : planned),
+        wait,
+      });
+    } catch (error) {
+      const last = error instanceof Error ? error.message : String(error);
+      throw new Error(`GitHub's advisory database could not be read for ${advisory} in ${pkg}: ${last}`);
     }
-    throw new Error(`GitHub's advisory database could not be read for ${advisory} in ${pkg}: ${last}`);
   };
 }
 

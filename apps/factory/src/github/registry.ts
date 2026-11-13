@@ -11,10 +11,11 @@
  *                            annotations, such as what the bundle holds
  */
 import { z } from 'zod';
+import { DIGEST } from '../vulnerabilities/reference.ts';
 
 export const GHCR = 'https://ghcr.io';
 
-export const DIGEST = /^sha256:[0-9a-f]{64}$/;
+export { DIGEST };
 
 const TOKEN = z.object({ token: z.string().min(1) });
 const TAGS = z.object({ tags: z.array(z.string()).nullable().optional() });

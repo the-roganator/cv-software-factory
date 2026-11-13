@@ -21,6 +21,7 @@
  *
  * Node runs this with no dependencies, from a sparse checkout of this repository.
  */
+import { DIGEST, DIGEST_PATTERN } from './reference.ts';
 
 export type Target =
   | { kind: 'version'; versions: string[] }
@@ -42,7 +43,6 @@ export const dayText = (day: number) => new Date(Math.floor(day / 1000) * 1000).
 const DAY = String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`;
 /** A version, a tag, a chart's or a tool's name: no spaces, commas or parentheses, which the grammar uses. */
 const WORD = '[A-Za-z0-9][A-Za-z0-9._+~-]*';
-const DIGEST = 'sha256:[0-9a-f]{64}';
 
 const readDay = (text: string) => {
   const day = Date.parse(text);
@@ -95,7 +95,7 @@ export function writable(fix: Fix) {
   const target = fix.target;
   if (!Number.isFinite(fix.day)) return false;
   if (target.kind === 'version' && !target.versions.length) return false;
-  if (target.kind === 'image' && !new RegExp(`^${DIGEST}$`).test(target.digest)) return false;
+  if (target.kind === 'image' && !DIGEST.test(target.digest)) return false;
   if (target.kind === 'unbuilt' && !Number.isFinite(target.built)) return false;
   return words(target).every(fits);
 }
@@ -139,7 +139,7 @@ export function readTarget(text: string): Target | undefined {
   if (m?.[1]) return { kind: 'version', versions: [m[1]] };
   m = new RegExp(`^versions (${WORD}(?: and ${WORD})+)$`).exec(text);
   if (m?.[1]) return { kind: 'version', versions: m[1].split(' and ') };
-  m = new RegExp(`^image (${WORD})@(${DIGEST})$`).exec(text);
+  m = new RegExp(`^image (${WORD})@(${DIGEST_PATTERN})$`).exec(text);
   if (m?.[1] && m[2]) return { kind: 'image', tag: m[1], digest: m[2] };
   m = new RegExp(`^chart (${WORD}) (${WORD})( \\(a major\\))?$`).exec(text);
   if (m?.[1] && m[2]) return { kind: 'chart', chart: m[1], version: m[2], major: m[3] !== undefined };

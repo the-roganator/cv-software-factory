@@ -833,6 +833,21 @@ describe('the queue’s cluster, made once already', () => {
     expect(log).toContain(why);
   });
 
+  it('reads lists longer than one argument may be on Linux (128 KiB), as every workflow’s runs at a head are', () => {
+    const built = line({});
+    const { said } = answered(built, (a) => {
+      const others = Array.from({ length: 200 }, (_, i) => ({
+        ...run(a),
+        id: 1000 + i,
+        check_suite_id: 2000 + i,
+        path: '.github/workflows/check.yml',
+        display_title: 'x'.repeat(1000),
+      }));
+      runsOf(a).push(...others);
+    });
+    expect(said).toBe('matched');
+  });
+
   it('makes none beside another pull request from the same branch closed before this one opened', () => {
     const built = line({});
     const { said } = answered(built, (a) =>

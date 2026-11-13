@@ -238,11 +238,13 @@ passed_at_head() {
     { why "GitHub did not list the pull requests at ${head:0:7}"; return 1; }
   [ -z "$sharing" ] || { why "#$(head -n 1 <<< "$sharing") has the same head"; return 1; }
 
-  checks=$(gh api --paginate "repos/$repo/commits/$head/check-runs?check_name=platform&filter=all&per_page=100" |
-    jq -s '[.[].check_runs[]]') || { why "GitHub did not list the check runs at ${head:0:7}"; return 1; }
-  runs=$(gh api --paginate "repos/$repo/actions/runs?head_sha=$head&event=pull_request&per_page=100" |
-    jq -s '[.[].workflow_runs[]]') || { why "GitHub did not list the workflow runs at ${head:0:7}"; return 1; }
-  latest=$(jq -rn --argjson checks "$checks" --argjson runs "$runs" --arg head "$head" --arg repo "$repo" \
+  # As files, never arguments: the lists outgrow what one argument may hold on Linux (128 KiB).
+  checks=$(mktemp) && runs=$(mktemp) || { why 'no room to read the check runs in'; return 1; }
+  gh api --paginate "repos/$repo/commits/$head/check-runs?check_name=platform&filter=all&per_page=100" |
+    jq '.check_runs[]' > "$checks" || { rm -f "$checks" "$runs"; why "GitHub did not list the check runs at ${head:0:7}"; return 1; }
+  gh api --paginate "repos/$repo/actions/runs?head_sha=$head&event=pull_request&per_page=100" |
+    jq '.workflow_runs[]' > "$runs" || { rm -f "$checks" "$runs"; why "GitHub did not list the workflow runs at ${head:0:7}"; return 1; }
+  latest=$(jq -rn --slurpfile checks "$checks" --slurpfile runs "$runs" --arg head "$head" --arg repo "$repo" \
     --arg ref "$ref" --arg created "$created" --argjson n "$number" --arg workflow "$PLATFORM_WORKFLOW" '
     [$runs[] | select(.path == $workflow and .event == "pull_request" and .head_sha == $head
       and .repository.full_name == $repo and .head_repository.full_name == $repo and .head_branch == $ref
@@ -252,8 +254,10 @@ passed_at_head() {
         | select($run != null)
         | {id, status, conclusion, completed_at, suite: .check_suite.id, run: $run.id, attempt: $run.run_attempt}]
     | group_by(.suite) | map(max_by(.id)) | sort_by(-.id)[]
-    | [.id, .status, (.conclusion // "-"), (.completed_at // "-"), .run, .attempt] | @tsv') ||
-    { why "the check runs at ${head:0:7} could not be read"; return 1; }
+    | [.id, .status, (.conclusion // "-"), (.completed_at // "-"), .run, .attempt] | @tsv')
+  status=$?
+  rm -f "$checks" "$runs"
+  [ "$status" = 0 ] || { why "the check runs at ${head:0:7} could not be read"; return 1; }
   [ -n "$latest" ] || { why "no run of $PLATFORM_WORKFLOW for #$number has a platform job at ${head:0:7}"; return 1; }
   while IFS=$'\t' read -r id status conclusion completed run attempt; do
     [ "$status" = completed ] && [ "$conclusion" = success ] ||

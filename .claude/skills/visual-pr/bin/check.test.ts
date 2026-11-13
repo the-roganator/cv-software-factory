@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { problems } from './check.ts';
+import { limit, oversize, problems, shown } from './check.ts';
 
 // GitHub's renderings of these bodies, as `gh api markdown` returned them, cut to what the checks read.
 const FOLDED =
@@ -91,5 +91,32 @@ describe('check.ts', () => {
 
   it('leaves local paths alone before the body is published', () => {
     expect(problems('[snapshot](scratch/pr/foo.svg)', '', false)).toEqual([]);
+  });
+
+  it('counts what shows unfolded: a closed section by its summary alone, an open one whole', () => {
+    const fold = (open: string, title: string, inner: string) =>
+      `<details${open}>\n<summary>\n\n## ${title}\n\n</summary>\n\n${inner}\n\n</details>`;
+    expect(shown('Why it exists.')).toBe(14);
+    expect(shown(`Why it exists.\n\n${fold('', 'Proof', 'x'.repeat(5000))}`)).toBe('Why it exists. ## Proof'.length);
+    expect(shown(fold(' open', 'Threat model', 'who and how'))).toBe('## Threat model who and how'.length);
+    // A closed section inside an open one shows its summary; one inside a closed one, nothing.
+    expect(shown(fold(' open', 'A', fold('', 'B', 'hidden')))).toBe('## A ## B'.length);
+    expect(shown(fold('', 'A', fold(' open', 'B', 'hidden')))).toBe('## A'.length);
+  });
+
+  it('counts a link by its words, and neither a picture, a comment nor a tag in code', () => {
+    expect(shown('[the map](https://github.com/x/y/pull/1) <!-- note -->')).toBe('the map'.length);
+    expect(shown('[![alt](https://x/a.svg)](https://x/compare) after')).toBe('after'.length);
+    expect(shown('`<details>` stays shown')).toBe('`` stays shown'.length);
+  });
+
+  it('holds a change under 200 changed lines to 800 characters, and any other to 3,000', () => {
+    expect([limit(0), limit(199), limit(200)]).toEqual([800, 800, 3000]);
+    expect(oversize('x'.repeat(800), 199)).toEqual([]);
+    expect(oversize('x'.repeat(801), 199)).toEqual([
+      'it shows 801 characters unfolded, and a change of 199 changed lines gets 800 at most: fold the proofs, tests and rollout, or cut',
+    ]);
+    expect(oversize('x'.repeat(3000), 1500)).toEqual([]);
+    expect(oversize('x'.repeat(3001), 1500)).toHaveLength(1);
   });
 });

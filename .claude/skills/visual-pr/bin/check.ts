@@ -1,4 +1,5 @@
-// Renders a pull request's description as GitHub does and says what did not render: node check.ts <file> | --pr <n>
+// Renders a pull request's description as GitHub does and says what did not render, and whether it is sized to the
+// change: node check.ts <file> <base> | --pr <n>
 // A <details> section is easy to break by a blank line: Markdown inside an HTML block stays literal until one ends
 // it. The describer's rule for that, read line by line (folds.ts), goes first and names the line; GitHub's renderer
 // then catches the rest. With --pr it checks the published body, where no local path may be left either: gh rewrites
@@ -52,15 +53,82 @@ export function problems(body: string, rendered: string, published: boolean, fol
   return found;
 }
 
+/** The most a description may show unfolded: 800 characters for a change under 200 changed lines, 3,000 otherwise. */
+export function limit(changed: number): number {
+  return changed < 200 ? 800 : 3000;
+}
+
+/**
+ * How many characters a description shows before anything is unfolded: what lies outside each closed `<details>`, and
+ * each one's summary; an open one shows whole. Comments, tags and where links and pictures point are not counted, a
+ * link's words are, and each run of white space counts as one.
+ */
+export function shown(body: string): number {
+  const prose = outsideCode(body);
+  const tag = /<!--[\s\S]*?-->|<(\/?)(details|summary)\b([^>]*)>/gi;
+  const folds: { open: boolean; summary: boolean }[] = [];
+  const visible = () => folds.every((f, i) => f.open || (i === folds.length - 1 && f.summary));
+  let kept = '';
+  let at = 0;
+  for (const m of prose.matchAll(tag)) {
+    if (visible()) kept += body.slice(at, m.index);
+    at = m.index + m[0].length;
+    if (!m[2]) continue;
+    const closing = m[1] === '/';
+    const top = folds.at(-1);
+    if (m[2].toLowerCase() === 'details') {
+      if (closing) folds.pop();
+      else folds.push({ open: /\bopen\b/i.test(m[3] ?? ''), summary: false });
+    } else if (top) {
+      top.summary = !closing;
+    }
+  }
+  if (visible()) kept += body.slice(at);
+  return kept
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<\/?[a-z][^>]*>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim().length;
+}
+
+/** A line when the description shows more than a change of this many changed lines allows, or none. */
+export function oversize(body: string, changed: number): string[] {
+  const size = shown(body);
+  const most = limit(changed);
+  if (size <= most) return [];
+  const n = (x: number) => x.toLocaleString('en-GB');
+  return [
+    `it shows ${n(size)} characters unfolded, and a change of ${n(changed)} changed lines gets ${n(most)} at most: fold the proofs, tests and rollout, or cut`,
+  ];
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const pr = args[0] === '--pr' ? args[1] : undefined;
-  if (!args[0] || (args[0] === '--pr' && !pr)) {
-    console.error('usage: node check.ts <file> | --pr <n>');
+  const base = pr ? undefined : args[1];
+  if (!args[0] || !(pr ?? base)) {
+    console.error('usage: node check.ts <file> <base> | --pr <n>');
     process.exit(2);
   }
   const gh = (...a: string[]) => execFileSync('gh', a, { encoding: 'utf8', input: '' });
-  const body = pr ? gh('pr', 'view', pr, '--json', 'body', '-q', '.body') : readFileSync(args[0], 'utf8');
+  // The change's size as GitHub counts it, added and deleted lines with binary files at none: the pull request's own,
+  // or the branch's against its base, in the checkout this runs in.
+  let body: string;
+  let changed = 0;
+  if (pr) {
+    const view = JSON.parse(gh('pr', 'view', pr, '--json', 'body,additions,deletions'));
+    body = view.body;
+    changed = view.additions + view.deletions;
+  } else {
+    body = readFileSync(args[0], 'utf8');
+    const numstat = execFileSync('git', ['diff', '--numstat', `${base}...HEAD`], { encoding: 'utf8' });
+    for (const line of numstat.split('\n')) {
+      const [added, deleted] = line.split('\t');
+      changed += (Number(added) || 0) + (Number(deleted) || 0);
+    }
+  }
   const repo = gh('repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner').trim();
   // GitHub's own renderer: it reads the text and publishes nothing. Not needed for folds the rule already named, whose
   // Markdown left as text it would name again.
@@ -71,7 +139,7 @@ if (import.meta.main) {
         encoding: 'utf8',
         input: body,
       });
-  const found = problems(body, html, pr !== undefined, folds);
+  const found = [...problems(body, html, pr !== undefined, folds), ...oversize(body, changed)];
   for (const p of found) console.log(p);
   process.exit(found.length ? 1 : 0);
 }

@@ -329,6 +329,11 @@ describe('the platform check (scripts/check-kind.sh platform)', () => {
     expect(platform({ [CONSOLE]: moved(CONSOLE), [FACTORY]: moved(FACTORY) }, run)).toBe('none');
   });
 
+  it('runs a cluster for the App’s move that also takes a pin file’s last newline, which is no digest', () => {
+    const run = { event: 'pull_request', author: APP, base: 'main' } as const;
+    expect(platform({ [CONSOLE]: moved(CONSOLE).replace(/\n$/, '') }, run)).toBe('cluster');
+  });
+
   it('runs a cluster for the same move by anyone else, or that the queue cannot tell is the App’s', () => {
     expect(platform({ [CONSOLE]: moved(CONSOLE) }, anyone)).toBe('cluster');
     expect(platform({ [CONSOLE]: moved(CONSOLE) }, { ...queued, pull: 'fail' })).toBe('cluster');
@@ -724,6 +729,11 @@ describe('the queue’s cluster, made once already', () => {
 
   it('makes one when main moved a pin file in more than its digests', () => {
     const built = line({ main: [{ [CONSOLE]: `${moved(CONSOLE)}# and more\n` }, { [CONSOLE]: moved(CONSOLE) }] });
+    expect(answered(built).said).toBe('cluster');
+  });
+
+  it('makes one when main moved a pin file’s digests and took its last newline', () => {
+    const built = line({ main: [{ [CONSOLE]: moved(CONSOLE).replace(/\n$/, '') }] });
     expect(answered(built).said).toBe('cluster');
   });
 

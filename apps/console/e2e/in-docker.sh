@@ -19,7 +19,7 @@ export SF_PINNED_BROWSER=1
 status=0
 if [ -n "${UPDATE:-}" ] || [ $# -gt 0 ]; then
   everything=
-  pnpm exec playwright test --project console ${UPDATE:+--update-snapshots} "$@" || status=$?
+  pnpm exec playwright test --project=console ${UPDATE:+--update-snapshots} "$@" || status=$?
 else
   everything=1
   [ -n "${TEST_DATABASE_URL:-}" ] || { echo "The live tests need TEST_DATABASE_URL: run them with 'make e2e'" >&2; exit 1; }

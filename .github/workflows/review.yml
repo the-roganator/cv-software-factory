@@ -81,6 +81,9 @@
 # - A pull request with a merge conflict: GitHub runs no `pull_request` workflow on it until the conflict is resolved,
 #   which is a push, and that run asks the gate.
 name: review
+# Named by the run that asked: its title (a pull request's, or the queue's branch) and its workflow. A caller's run is
+# named by the caller.
+run-name: ${{ format('review · {0} · after {1}', github.event.workflow_run.display_title, github.event.workflow_run.name) }}
 
 on:
   workflow_run:

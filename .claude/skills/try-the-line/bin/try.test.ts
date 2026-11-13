@@ -259,8 +259,9 @@ function heldBy(holder: string, pid: number): Lock {
 const lockOf = (): unknown => JSON.parse(readFileSync(lockFile, 'utf8'));
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const begin = (c: Cluster, ...args: string[]) => main(['begin', 'feat/x', '--holder', 'try-script', ...args], c, path);
-const end = (c: Cluster) => main(['end', '--timeout', '60'], c, path);
+const begin = (c: Cluster, ...args: string[]) =>
+  main(['begin', 'feat/x', '--holder', 'try-script', ...args], c, path, lockFile);
+const end = (c: Cluster) => main(['end', '--timeout', '60'], c, path, lockFile);
 const said = (c: Cluster) => c.said.join('\n');
 /** The state a begin on another cluster writes, read back and removed, to stand for someone else's try. */
 async function openState(c: Cluster): Promise<State> {
@@ -357,7 +358,30 @@ describe("the cluster's lock", () => {
     heldBy('someone-else', 200);
     d.running.add(200);
     expect(await end(d)).toBe(0);
-    expect(said(d)).toMatch(/held by someone-else .* No try is open, so it is left to them/);
+    expect(said(d)).toMatch(
+      /held by someone-else .* No try is open: it is theirs to give back, by `try end` from that session/,
+    );
+    expect(existsSync(lockFile)).toBe(true);
+  });
+
+  it("is given back by end or status with no try open when it is this session's, as a begin killed early leaves it", async () => {
+    const c = new Cluster();
+    heldBy('try-script', 100);
+    // Written under the same start time the Cluster gives as its own process.
+    writeLock(lockFile, { ...(lockOf() as Lock), started: c.me.started }, false);
+    expect(await main(['status'], c, path, lockFile)).toBe(0);
+    expect(said(c)).toMatch(/given back: no try is open, and the lock of try-script .* was this session's/);
+    expect(existsSync(lockFile)).toBe(false);
+    heldBy('try-script', 100);
+    writeLock(lockFile, { ...(lockOf() as Lock), started: c.me.started }, false);
+    expect(await end(c)).toBe(0);
+    expect(existsSync(lockFile)).toBe(false);
+  });
+
+  it('is left by status when stale, for end or --take-stale to clear', async () => {
+    const c = new Cluster();
+    heldBy('someone-else', 300);
+    await main(['status'], c, path, lockFile);
     expect(existsSync(lockFile)).toBe(true);
   });
 
@@ -371,15 +395,15 @@ describe("the cluster's lock", () => {
 
   it('is printed by status: free, held, stale or unreadable', async () => {
     const c = new Cluster();
-    await main(['status'], c, path);
+    await main(['status'], c, path, lockFile);
     heldBy('someone-else', 200);
     c.running.add(200);
-    await main(['status'], c, path);
+    await main(['status'], c, path, lockFile);
     c.running.delete(200);
-    await main(['status'], c, path);
+    await main(['status'], c, path, lockFile);
     writeFileSync(lockFile, 'x');
-    await main(['status'], c, path);
-    const lines = c.said.filter((l) => /lock|held/.test(l));
+    await main(['status'], c, path, lockFile);
+    const lines = c.said.filter((l) => /lock|held/.test(l) && !/No try is open:/.test(l));
     expect(lines[0]).toBe('The cluster is held by no one.');
     expect(lines[1]).toMatch(
       /^The cluster is held by someone-else \(pid 200 on .*, since 2026-11-09T08:00:00.000Z\)\.$/,
@@ -638,7 +662,7 @@ describe('try begin', () => {
 
     it('without a holder', async () => {
       const c = new Cluster();
-      expect(await main(['begin', 'feat/x'], c, path)).toBe(2);
+      expect(await main(['begin', 'feat/x'], c, path, lockFile)).toBe(2);
       expect(said(c)).toMatch(/--holder/);
     });
   });
@@ -901,7 +925,7 @@ describe('try status', () => {
     const c = new Cluster();
     expect(await begin(c, '--only', 'github', '--env', 'github:GITHUB_DRY_RUN=true')).toBe(0);
     const other = fresh(c);
-    expect(await main(['status'], other, path)).toBe(0);
+    expect(await main(['status'], other, path, lockFile)).toBe(0);
     const out = said(other);
     expect(out).toMatch(/feat\/x \(12345678, local-12345678\) is open/);
     expect(out).toMatch(/Begun 2026-11-10T23:00:00.000Z by try-script/);
@@ -914,7 +938,7 @@ describe('try status', () => {
   it('names a try by hand when none is open by the script', async () => {
     const c = new Cluster();
     c.syncPolicy = {};
-    await main(['status'], c, path);
+    await main(['status'], c, path, lockFile);
     expect(said(c)).toMatch(/root is paused/);
   });
 });
@@ -991,7 +1015,7 @@ describe("objects from the branch's render", () => {
     const c = branchWithWorker();
     expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
     const other = fresh(c);
-    await main(['status'], other, path);
+    await main(['status'], other, path, lockFile);
     const out = said(other);
     for (const line of [
       'added: Deployment factory/patching',
@@ -1148,7 +1172,7 @@ describe("objects from the branch's render", () => {
       expect(await begin(c, '--only', 'patching', ...ALL)).toBe(0);
       const other = fresh(c);
       other.objects.set('RoleBinding/flagd/patching-lists-pods', object('RoleBinding', 'patching-lists-pods', 'flagd'));
-      await main(['status'], other, path);
+      await main(['status'], other, path, lockFile);
       expect(said(other)).toMatch(
         /RoleBinding flagd\/patching-lists-pods \(there now\)\n {4}apply: [^\n]+\n {4}undo: {2}[^\n]+delete rolebinding/,
       );
@@ -1300,7 +1324,7 @@ describe('a migration the branch adds', () => {
     expect(await begin(c, '--only', 'github', '--by-hand')).toBe(0);
     expect(said(c)).toMatch(/Warning: migration 0050_patching is not in the store/);
     const other = fresh(c);
-    await main(['status'], other, path);
+    await main(['status'], other, path, lockFile);
     expect(said(other)).toMatch(/Warning: migration 0050_patching is not in the store/);
     expect(other.storeMigrations).toEqual(new Map([[49, 'admin-step-up-ended']]));
   });

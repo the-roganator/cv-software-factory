@@ -26,7 +26,10 @@ const check = (env: Record<string, string> = {}, ...args: string[]) => {
 const heldLive = (holder: string) =>
   writeLock(lock, { holder, pid: process.pid, started: started(process.pid), since: 'now', host: hostname() }, true);
 const started = (pid: number) =>
-  spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+  spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' },
+  }).stdout.trim();
 
 describe('check', () => {
   it('passes, saying nothing, when the cluster is free', () => {
@@ -69,6 +72,18 @@ describe('check', () => {
 });
 
 describe('the holding process', () => {
+  it('is read in the C locale, whatever the caller runs under', () => {
+    const r = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `import('${join(import.meta.dirname, 'cluster-lock.ts')}').then((m) => console.log(m.processAlive({ pid: ${process.pid}, started: ${JSON.stringify(started(process.pid))} })))`,
+      ],
+      { env: { ...process.env, LC_ALL: 'en_GB.UTF-8', LANG: 'en_GB.UTF-8' }, encoding: 'utf8' },
+    );
+    expect(r.stdout.trim()).toBe('true');
+  });
+
   it('is a process that runs, and is known by its start time as well as its pid', () => {
     const me = holderProcess();
     expect(processAlive(me)).toBe(true);

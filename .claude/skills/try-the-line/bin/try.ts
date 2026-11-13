@@ -11,8 +11,8 @@ import { homedir, hostname, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Lock, LockState, Process } from '../../../../scripts/cluster-lock.ts';
 import {
+  defaultLockPath,
   describeLock,
-  lockPathFor,
   readLock,
   removeLock,
   sayLock,
@@ -655,7 +655,7 @@ function takeLock(ops: Ops, lockPath: string, options: BeginOptions): boolean {
   return state.kind !== 'held' || state.lock.holder !== holder;
 }
 
-export function begin(ops: Ops, path: string, options: BeginOptions, lockPath = lockPathFor(path)): void {
+export function begin(ops: Ops, path: string, options: BeginOptions, lockPath: string): void {
   const open = readState(path);
   if (open)
     throw new Refused(`a try is open: ${open.branch} since ${open.began}, by ${open.holder}. \`try end\` first`);
@@ -937,15 +937,28 @@ export interface EndOptions {
   timeoutSeconds: number;
 }
 
-/** Puts back everything the state recorded; whether all of it is back (and the state file gone). */
-/** After a try is put back, or when none is open: gives the lock back, or clears a stale one, and says so. */
-function giveBack(ops: Ops, lockPath: string, ended: State | undefined): void {
+/**
+ * After a try is put back, or when none is open: gives the lock back, and says so. With no try open, a lock is given
+ * back when it is this session's (a begin stopped between taking it and recording the state), and a stale one is
+ * cleared when `clearStale`; another session's live lock is left to it.
+ */
+function giveBack(ops: Ops, lockPath: string, ended: State | undefined, clearStale = true): void {
   const lock: LockState = readLock(lockPath, (p) => ops.processAlive(p));
   if (lock.kind === 'free') return;
   if (lock.kind === 'unreadable') {
     ops.say(`${sayLock(lock, lockPath)} Left as it is: remove it by hand once you know no one holds the cluster.`);
     return;
   }
+  const me = ops.holderProcess();
+  const mine = lock.lock.host === hostname() && lock.lock.pid === me.pid && lock.lock.started === me.started;
+  if (!ended && mine) {
+    removeLock(lockPath);
+    ops.say(
+      `The cluster is given back: no try is open, and the lock of ${describeLock(lock.lock)} was this session's.`,
+    );
+    return;
+  }
+  if (!ended && !lock.live && !clearStale) return;
   if (ended || !lock.live) {
     removeLock(lockPath);
     ops.say(
@@ -953,10 +966,13 @@ function giveBack(ops: Ops, lockPath: string, ended: State | undefined): void {
     );
     return;
   }
-  ops.say(`${sayLock(lock, lockPath)} No try is open, so it is left to them.`);
+  ops.say(
+    `${sayLock(lock, lockPath)} No try is open: it is theirs to give back, by \`try end\` from that session, and it is stale once that session ends.`,
+  );
 }
 
-export function end(ops: Ops, path: string, options: EndOptions, lockPath = lockPathFor(path)): boolean {
+/** Puts back everything the state recorded; whether all of it is back (and the state file gone). */
+export function end(ops: Ops, path: string, options: EndOptions, lockPath: string): boolean {
   const state = readState(path);
   if (!state) {
     ops.say('No try is open.');
@@ -1118,7 +1134,7 @@ function report(ops: Ops, state: State, line: Line): void {
   );
 }
 
-export function status(ops: Ops, path: string, lockPath = lockPathFor(path)): void {
+export function status(ops: Ops, path: string, lockPath: string): void {
   ops.say(
     sayLock(
       readLock(lockPath, (p) => ops.processAlive(p)),
@@ -1133,6 +1149,8 @@ export function status(ops: Ops, path: string, lockPath = lockPathFor(path)): vo
         ? `No try is open by this script, but:\n  ${open.join('\n  ')}`
         : 'No try is open; the cluster is as main sets it.',
     );
+    // A live lock with no try: this session's is given back; another's is said whose to give back. A stale one stays.
+    if (readLock(lockPath, (p) => ops.processAlive(p)).kind === 'held') giveBack(ops, lockPath, undefined, false);
     return;
   }
   ops.say(
@@ -1222,7 +1240,8 @@ export async function main(
   argv: string[],
   ops: Ops,
   path = statePath(),
-  lockPath = lockPathFor(path),
+  // The lock `make up` checks, wherever TRY_STATE puts the state: one cluster, one lock.
+  lockPath = process.env.CLUSTER_LOCK ?? defaultLockPath(),
 ): Promise<number> {
   try {
     const command = parse(argv);

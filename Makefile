@@ -145,7 +145,8 @@ up: ## Create the local cluster; Argo CD then deploys everything from main (or R
 		$(KUBECTL) apply -f -
 	$(deployed)
 
-down: ## Delete the local cluster, and everything in it
+down: ## Delete the local cluster, and everything in it; refused while another session holds it (FORCE=1)
+	$(cluster-held)
 	k3d cluster delete $(CLUSTER)
 	@# Its state, and any copy a move kept: k3d deletes neither.
 	@volumes="$$(docker volume ls -q --filter label=software-factory.cluster=$(CLUSTER))"; \
@@ -400,7 +401,8 @@ samples: node_modules ## Load the sample work items into the cluster's store, wi
 bench-down: ## Take the bench down: stop its host gateway (:8180) and remove its throwaway Postgres containers (sf-bench-*), saying what each cost
 	@.claude/skills/try-the-line/bin/bench-down.sh
 
-real-store: node_modules ## Replace the cluster's store with an empty one for real events (FORCE=1 if it holds some)
+real-store: node_modules ## Replace the cluster's store with an empty one for real events (FORCE=1 if it holds some, or another session holds the cluster)
+	$(cluster-held)
 	@# As the database's owner, through a port-forward: only the owner may drop the schema.
 	@$(KUBECTL) -n factory port-forward svc/postgres 15432:5432 >/dev/null 2>&1 & forward=$$!; \
 		trap 'kill $$forward' EXIT; sleep 2; \

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The local cluster's one holder: a lock file, ~/.config/software-factory/cluster.lock, naming who holds the cluster
 // (the key a session goes by), the process that holds it, since when, and on which machine. The try-the-line skill's
-// `try begin --holder <key>` takes it and its `try end` gives it back; `try status` prints it; `make up` and
-// `make upgrade-cluster` refuse while another holds it (`check`, below), unless FORCE=1.
+// `try begin --holder <key>` takes it and its `try end` gives it back; `try status` prints it; `make up`, `make down`,
+// `make upgrade-cluster` and `make real-store` refuse while another holds it (`check`, below), unless FORCE=1. It is
+// at this one path (CLUSTER_LOCK for the tests) wherever TRY_STATE puts a try's state: one cluster, one lock.
 //
 // The process is the Claude Code session the command ran under (its nearest `claude` ancestor), or, from a terminal,
 // the shell that ran it: a command's own process ends at once, a session's lasts as long as its hold should. It is
@@ -36,8 +37,6 @@ export type LockState =
   | { kind: 'held'; lock: Lock; live: boolean }
   | { kind: 'unreadable'; why: string };
 
-/** The lock beside the try's state directory: ~/.config/software-factory/cluster.lock for the default state. */
-export const lockPathFor = (statePath: string): string => join(dirname(dirname(statePath)), 'cluster.lock');
 export const defaultLockPath = (): string => join(homedir(), '.config', 'software-factory', 'cluster.lock');
 
 /** What the lock file says. `alive` says whether the process still runs; one on another machine is taken as live. */
@@ -101,8 +100,12 @@ export function sayLock(state: LockState, path: string): string {
   }
 }
 
+// In the C locale, so a start time written under one locale reads the same under another.
 const ps = (pid: number, field: string): string | undefined => {
-  const r = spawnSync('ps', ['-p', String(pid), '-o', `${field}=`], { encoding: 'utf8' });
+  const r = spawnSync('ps', ['-p', String(pid), '-o', `${field}=`], {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' },
+  });
   return r.status === 0 ? r.stdout.trim() : undefined;
 };
 

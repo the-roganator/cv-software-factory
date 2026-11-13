@@ -253,14 +253,10 @@ export const STORE_GRANTS = {
   factory_patching: {
     for:
       'The dependency sense: appends the day’s moves (`patching.read`), which no other role may append, and nothing ' +
-      'else; reads only its own events, the last of which it compares the day with (0050_patching.sql); and sends the ' +
-      'app’s moves to triage as its own signals, reading none (0051_patching-sends.sql). No other table. Its password ' +
-      'is in `postgres-patching`.',
-    on: { events: ['select', 'insert'], store: ['select', 'insert'], inbox: [SIGNAL] },
-    rows: {
-      events: { select: "appended_by = 'factory_patching'", insert: "type = 'patching.read'" },
-      inbox: { insert: "sense = 'dependency'" },
-    },
+      'else; and reads only its own events, the last of which it compares the day with (0050_patching.sql). No other ' +
+      'table. Its password is in `postgres-patching`.',
+    on: { events: ['select', 'insert'], store: ['select', 'insert'] },
+    rows: { events: { select: "appended_by = 'factory_patching'", insert: "type = 'patching.read'" } },
   },
   console_reader: {
     for:

@@ -787,15 +787,12 @@ describe("the day's moves", () => {
     }
   });
 
-  it('comes from a sense the inbox knows by name, which only the sense may send a signal as, reading none', async () => {
+  it('comes from a sense the inbox knows by name, which nobody may yet send a signal as', async () => {
     const signal = (sql: Sql, sense: string) =>
       sql`insert into inbox (id, sense, fingerprint, signal) values (${crypto.randomUUID()}, ${sense}, 'f', '{}')`;
     await signal(db.owner, 'dependency');
     await expect(signal(db.owner, 'not-a-sense')).rejects.toThrow('inbox_sense_check');
-    await signal(db.patching, 'dependency');
-    await expect(signal(db.patching, 'probe')).rejects.toThrow('row-level security');
-    await expect(signal(db.as.probes, 'dependency')).rejects.toThrow('row-level security');
-    await expect(db.patching`select 1 from inbox`).rejects.toThrow('permission denied');
+    await expect(signal(db.patching, 'dependency')).rejects.toThrow('permission denied');
   });
 
   it('comes from a role 0050 makes with no password until the migrate Job is given one, which then lets it in', {

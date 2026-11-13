@@ -148,6 +148,23 @@ describe('the dependency sense', () => {
     expect(await days()).toHaveLength(2);
   });
 
+  it('copies every open finding by severity where the scan counted it, and leaves it out where it did not', async () => {
+    const moves = factoryMoves();
+    const open = { CRITICAL: 2, HIGH: 1363, MEDIUM: 3321, LOW: 2727, UNKNOWN: 0 };
+    const counted = { ...moves, file: moves.file && { ...moves.file, totals: { ...moves.file.totals, open } } };
+    await sense(senses({ moves: async (repo) => (repo === FACTORY ? counted : appMoves()) })).pass();
+    const [day] = await days();
+    const payload = PAYLOADS['patching.read'].parse(day?.payload);
+    expect(payload.repositories[0]?.totals?.open).toEqual({
+      critical: 2,
+      high: 1363,
+      medium: 3321,
+      low: 2727,
+      unknown: 0,
+    });
+    expect(payload.repositories[1]?.totals).not.toHaveProperty('open');
+  });
+
   it('appends nothing when nothing changed, a pod made again and a scale included', async () => {
     expect((await sense(senses()).pass()).pass).toBe('appended');
     const remade = [

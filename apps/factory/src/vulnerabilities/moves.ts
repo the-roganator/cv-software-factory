@@ -358,9 +358,11 @@ export interface MovesFile {
   run?: string | undefined;
   /**
    * How many results have a fix and are not excepted, how many moves, and the moves in each lane; and the day's counts
-   * the scan's log prints (`DayCounts`), plain numbers, by no package or advisory.
+   * the scan's log prints (`DayCounts`), plain numbers, by no package or advisory; and every open result (not excepted)
+   * by severity, as the log's line of deadlines gives them, fix or none. A file a scan wrote before it counted them has
+   * no `open`, and a reader reads it still: `MOVES_VERSION` did not move for it.
    */
-  totals: { fixed: number; moves: number; lanes: Record<Lane, number> } & DayCounts;
+  totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts } & DayCounts;
   moves: PublicMove[];
   /** Every image the scan read, in order of pin and reference. */
   scanned: ScannedImage[];
@@ -392,6 +394,7 @@ export function movesFile(
   run?: string,
   scanned: ScannedImage[] = [],
   day: DayCounts = NO_COUNTS,
+  open?: Counts,
 ): MovesFile {
   const lanes = Object.fromEntries(LANES.map((lane) => [lane, list.filter((m) => m.lane === lane).length])) as Record<
     Lane,
@@ -403,7 +406,7 @@ export function movesFile(
     repository: context.repository,
     judged: dayText(context.now),
     ...(run ? { run } : {}),
-    totals: { fixed, moves: list.length, lanes, ...day },
+    totals: { fixed, moves: list.length, lanes, ...(open ? { open: { ...open } } : {}), ...day },
     moves: list.map(publicMove),
     scanned: [...scanned].sort(
       (a, b) => order(a.pin.file, b.pin.file) || a.pin.line - b.pin.line || order(a.image, b.image),

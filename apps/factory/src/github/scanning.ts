@@ -262,6 +262,8 @@ const MOVES_FILE_SCHEMA = z.strictObject({
     moves: z.number().int().nonnegative(),
     // The day's other figures, as the Patching panel shows them.
     ...DAY_COUNTS,
+    // Every open result by severity: a scan made before it counted them writes none, and its file reads as it did.
+    open: COUNTS.optional(),
     lanes: z.strictObject(
       Object.fromEntries(LANES.map((lane) => [lane, z.number().int().nonnegative()])) as Record<
         (typeof LANES)[number],

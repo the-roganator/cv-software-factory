@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { publicView } from '../src/public.ts';
 import { PAYLOADS } from '../src/schemas.ts';
+import { upcast } from '../src/upcast.ts';
 import { LINE_TYPES, PATCHING_ONLY_TYPES, VERSIONS } from '../src/versions.ts';
 import { RUNNING_ROWS } from '../src/vocabulary.ts';
 
@@ -16,8 +17,8 @@ const view = (payload: unknown) =>
   publicView('patching.read', { summary: 'The day', payload: schema.parse(payload), artifacts: [] }).payload;
 
 describe("the day's moves", () => {
-  it('is a line event at version 1, appended by the sense alone', () => {
-    expect(VERSIONS['patching.read']).toBe(1);
+  it('is a line event at version 2, appended by the sense alone', () => {
+    expect(VERSIONS['patching.read']).toBe(2);
     expect(LINE_TYPES).toContain('patching.read');
     expect(PATCHING_ONLY_TYPES).toEqual(['patching.read']);
   });
@@ -46,6 +47,29 @@ describe("the day's moves", () => {
     expect(
       schema.safeParse({ ...DAY, repositories: [{ ...factory, totals: { ...factory.totals, overdue: -1 } }] }).success,
     ).toBe(false);
+  });
+
+  it('carries every open finding by severity when the scan counted them, public, and reads a day without', () => {
+    const [factory, app] = DAY.repositories;
+    expect(factory.totals.open).toBeDefined();
+    expect(app.totals.open).toBeUndefined();
+    const day = schema.parse(DAY);
+    expect(day.repositories[0]?.totals?.open).toEqual(factory.totals.open);
+    expect(day.repositories[1]?.totals).not.toHaveProperty('open');
+    expect((view(DAY) as typeof DAY).repositories[0].totals.open).toEqual(factory.totals.open);
+    const negative = { ...factory.totals, open: { ...factory.totals.open, high: -1 } };
+    expect(schema.safeParse({ ...DAY, repositories: [{ ...factory, totals: negative }] }).success).toBe(false);
+    const { unknown: _, ...partial } = factory.totals.open;
+    const short = { ...factory.totals, open: partial };
+    expect(schema.safeParse({ ...DAY, repositories: [{ ...factory, totals: short }] }).success).toBe(false);
+  });
+
+  it('reads a version 1 day as it was, with no open count by severity', () => {
+    const { open: _, ...before } = DAY.repositories[0].totals;
+    const v1 = { ...DAY, repositories: [{ ...DAY.repositories[0], totals: before }, DAY.repositories[1]] };
+    const read = upcast({ type: 'patching.read', version: 1, payload: v1 });
+    expect(read.ok && read.event.payload).toEqual(v1);
+    expect(schema.safeParse(v1).success).toBe(true);
   });
 
   it('refuses a repository twice, a package on a move that is not a lockfile’s, and rows with no comparison', () => {

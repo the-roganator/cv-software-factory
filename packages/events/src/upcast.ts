@@ -267,6 +267,9 @@ export const UPCASTERS: Partial<Record<EventType, Record<number, Upcaster>>> = {
         ? { ...payload, pages: payload.pages.map((page: Record<string, unknown>) => ({ ...page, scheme: 'light' })) }
         : payload,
   },
+  // Version 2 adds each repository's open findings by severity to its totals, which a scan made before it counted them
+  // never wrote: a version 1 day reads as it was, with none, and the page draws a dash where the figure would be.
+  'patching.read': { 1: (payload) => payload },
 };
 
 export const CATALOGUE: Catalogue = { versions: VERSIONS, upcasters: UPCASTERS };

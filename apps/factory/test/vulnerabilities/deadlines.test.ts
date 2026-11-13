@@ -1476,7 +1476,7 @@ describe('the day’s counts, in moves.json’s totals', () => {
       images: { 'node:24.23.0-trixie-slim': imageReport('2026-07-01T00:00:00Z') },
     });
     const list = moves(judged, { repository: REPOSITORY, app: false, dependabot: [], direct: new Set(), now: NOW });
-    const { lines, counts } = verdict(rows, false, list);
+    const { lines, counts, bySeverity } = verdict(rows, false, list);
     const number = (pattern: RegExp) => Number(lines.join('\n').match(pattern)?.[1]);
     expect(counts).toEqual({
       noFix: number(/no fix (\d+)\./),
@@ -1495,5 +1495,22 @@ describe('the day’s counts, in moves.json’s totals', () => {
       newHighWithoutFix: 1,
     });
     expect(movesFile(list, { repository: REPOSITORY, now: NOW }, undefined, [], counts).totals).toMatchObject(counts);
+    // Every open result by severity, fix or none, as the log's line of deadlines gives it; the excepted one is not open.
+    const severity = (name: string) => number(new RegExp(`By severity: .*\\b${name} (\\d+)`));
+    expect(bySeverity).toEqual({
+      CRITICAL: severity('critical'),
+      HIGH: severity('high'),
+      MEDIUM: severity('medium'),
+      LOW: severity('low'),
+      UNKNOWN: severity('unknown'),
+    });
+    expect(bySeverity).toEqual({ CRITICAL: 2, HIGH: 1, MEDIUM: 1, LOW: 0, UNKNOWN: 0 });
+    const file = movesFile(list, { repository: REPOSITORY, now: NOW }, undefined, [], counts, bySeverity);
+    expect(file.totals.open).toEqual(bySeverity);
+    expect(Object.values(bySeverity).reduce((a, b) => a + b, 0)).toBe(file.totals.fixed + counts.noFix);
+  });
+
+  it('writes no open count by severity when it is not given one', () => {
+    expect(movesFile([], { repository: REPOSITORY, now: NOW }).totals).not.toHaveProperty('open');
   });
 });

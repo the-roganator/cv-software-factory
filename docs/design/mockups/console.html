@@ -667,11 +667,11 @@ table.steps { width: 100%; border-collapse: collapse; font: 12px/1.35 var(--font
 .sum-lines li.tone-faint .glyph { color: var(--text-faint); }
 .sum-lines b { font-weight: 500; }
 /* Guardrails' eleven as a strip: each its glyph over its number, in its row's tone; one that did not hold, ruled in attn. */
-.gr-strip { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); gap: 4px; }
-.gr-strip li { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border-top: var(--stroke-rule) solid var(--line); font: 10.5px/1 var(--font-mono); color: var(--text-muted); }
-.gr-strip li .glyph { width: 14px; height: 14px; color: var(--tone, var(--text-muted)); }
-.gr-strip li.tone-faint .glyph { color: var(--text-faint); }
-.gr-strip li.is-attn { border-top-color: var(--attn); color: var(--attn); }
+.gr-strip { display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); gap: 4px; }
+.gr-strip > span { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border-top: var(--stroke-rule) solid var(--line); font: 10.5px/1 var(--font-mono); color: var(--text-muted); }
+.gr-strip > span .glyph { width: 14px; height: 14px; color: var(--tone, var(--text-muted)); }
+.gr-strip > span.tone-faint .glyph { color: var(--text-faint); }
+.gr-strip > span.is-attn { border-top-color: var(--attn); color: var(--attn); }
 .bar { position: relative; height: 6px; border-radius: 3px; background: var(--line); }
 .bar i { position: absolute; left: 0; top: 0; height: 6px; border-radius: 3px; background: var(--ok); }
 .bar.ink i { background: var(--signal); }
@@ -2556,7 +2556,7 @@ function openSheet(i, focus = true) {
 // opened, scrolled to and focused.
 function openPanelAt(panel, row) {
   openSheet(panel, false);
-  const scroller = $('sheet').querySelector('.sheet-scroll'), b = $('sheet-body').querySelector(row);
+  const scroller = $('sheet').querySelector('.sheet-scroll'), b = $('sheet-body').querySelector(`[${row[0]}="${CSS.escape(row[1])}"]`);
   if (!b) return $('sheet-title').focus({ preventScroll: true });
   scroller.scrollTop += b.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24;
   b.focus({ preventScroll: true });
@@ -2730,7 +2730,7 @@ function roundsSection() {
 // A panel's sheet: headed as the panel was, its count in the kicker, and the panel whole in one column.
 const PANEL_SHEET = {
   patching: { title: 'Patching', head: (v) => patchHeadWords(patchCounts(), v), body: () => patchingBody() },
-  guardrails: { title: 'Guardrails', head: () => { const c = guardCounts(); return c.failed ? `<span class="tone-attn">${c.words}</span>` : c.words; }, body: () => guardrailsBody() },
+  guardrails: { title: 'Guardrails', head: () => guardHeadWords(), body: () => guardrailsBody() },
 };
 function renderPanelSheet() {
   const p = PANEL_SHEET[S.sheet], v = S.visitor;
@@ -3207,10 +3207,14 @@ function guardCounts(list = guardrails()) {
   const held = list.filter((g) => g[3][0] === true).length, failed = list.filter((g) => g[3][0] === false).length, unproved = list.length - held - failed;
   return { held, failed, unproved, words: [`${held} held`, failed && `${failed} did not`, unproved && `${unproved} not proved yet`].filter(Boolean).join(' · ') };
 }
+// The head's words, in attn while any did not hold: the summary's and the sheet's.
+const guardHeadWords = (c = guardCounts()) => c.failed ? `<span class="tone-attn">${c.words}</span>` : c.words;
+// The proofs' and attacks' ages, newest first: the mockup's ages are words.
+const AGE_ORDER = ['now', '2h ago', '3h ago', 'yesterday', 'Fri 10:46'];
 
 // Which attack proves which guardrail: each sits in its guardrail's row.
 const ATTACK_OF = { 8: 'report', 1: 'workflow', 2: 'test', 5: 'egress', 3: 'image' };
-// Guardrails' sheet: the checklist, whole. Its head (sheetPanelHead) says how many hold.
+// Guardrails' sheet: the checklist, whole. Its head (renderPanelSheet, from PANEL_SHEET) says how many hold.
 function guardrailsBody() {
   const v = S.visitor, list = guardrails(), menu = attacks(), busy = menu.find((a) => a[5][0] === 'running');
   const refLink = (id) => id && indexOf(id) >= 0 ? `<button type="button" class="linkish go" data-open="${id}">#${id}</button>` : id ? `<span class="go mono">#${id}</span>` : `<a class="go" href="?view=audit">Audit log</a>`;
@@ -3241,19 +3245,18 @@ function guardrailsBody() {
 // and the last attack. It needs Martin only when a guardrail did not hold: then its rule, and which, in attn.
 function renderGuardrails() {
   const list = guardrails(), c = guardCounts(list), menu = attacks(), v = S.visitor;
-  const proved = list.filter((g) => g[3][0] !== null);
-  // The newest proof: the rows' ages are words, so the mockup takes the youngest by hand.
-  const newest = ['now', '2h ago', '3h ago', 'yesterday'].find((a) => proved.some((g) => g[3][2] === a));
+  // The newest proof that held: one that did not is on its own line, in attn.
+  const held = list.filter((g) => g[3][0] === true);
+  const newest = AGE_ORDER.find((a) => held.some((g) => g[3][2] === a));
   const ran = menu.filter(([, , , , , [out]]) => out !== 'never');
-  const order = ['now', '2h ago', '3h ago', 'yesterday', 'Fri 10:46'];
-  const lastAtk = ran.sort((a, b) => order.indexOf(a[5][1]) - order.indexOf(b[5][1]))[0];
+  const lastAtk = ran.sort((a, b) => AGE_ORDER.indexOf(a[5][1]) - AGE_ORDER.indexOf(b[5][1]))[0];
   const strip = list.map(([n, name, , [held]]) => { const [word, tone, gl] = GUARD_READS[held];
-    return `<li class="tone-${tone} ${held === false ? 'is-attn' : ''}" title="${n} · ${esc(name)}: ${word}">${glyph(gl)}<span>${n}</span></li>`; }).join('');
+    return `<span class="tone-${tone} ${held === false ? 'is-attn' : ''}" title="${n} · ${esc(name)}: ${word}">${glyph(gl)}<span>${n}</span></span>`; }).join('');
   const notHeld = list.filter((g) => g[3][0] === false);
   const el = $('guardrails-sum');
   el.classList.toggle('attn', c.failed > 0);
-  el.innerHTML = `<div class="panel-head"><h2 id="guardrails-sum-title">Guardrails</h2><span class="label ${c.failed ? 'tone-attn' : ''}">${c.words}</span></div>
-    <ol class="gr-strip" aria-label="The eleven, in order: ${list.map(([n, , , [held]]) => `${n} ${GUARD_READS[held][0].toLowerCase()}`).join(', ')}">${strip}</ol>
+  el.innerHTML = `<div class="panel-head"><h2 id="guardrails-sum-title">Guardrails</h2><span class="label">${guardHeadWords(c)}</span></div>
+    <div class="gr-strip" role="img" aria-label="The eleven, in order: ${list.map(([n, , , [held]]) => `${n} ${GUARD_READS[held][0].toLowerCase()}`).join(', ')}">${strip}</div>
     <ul class="sum-lines">
       ${notHeld.map(([n, name, , [, , age]]) => `<li class="tone-attn">${glyph('cross')}<span>${n} did not hold, ${age}: ${esc(name)}. ${v ? 'Martin was' : 'You were'} paged.</span></li>`).join('')}
       <li>${glyph(newest ? 'check' : 'dash')}<span>${newest ? `Last proved ${newest}` : 'Not proved yet'}${c.unproved ? ` · <b>make guardrails</b> proves ${c.unproved === 11 ? 'all eleven' : 'the rest'}` : ''}</span></li>
@@ -3340,15 +3343,20 @@ function patchCounts() {
   const none = q.get('patching') === 'none', rows = none ? [] : MOVES;
   const moves = rows.filter((m) => m.from !== 'pinned nowhere').length, unscanned = rows.length - moves;
   const waiting = rows.filter((m) => m.st === 'wait').length;
-  // What the moves clear, by severity: the sum of the rows' counts.
-  const sev = [0, 1, 2, 3].map((i) => rows.reduce((a, m) => a + (m.c ? m.c[i] : 0), 0));
+  // What the moves still to make clear, by severity: the sum of the rows' counts, but for a move merged and running,
+  // whose findings are gone.
+  const sev = [0, 1, 2, 3].map((i) => rows.reduce((a, m) => a + (m.c && m.st !== 'merged' ? m.c[i] : 0), 0));
   // The next deadline still to meet: the earliest of the rows not yet cleared.
   const next = rows.filter((m) => m.h !== undefined && m.st !== 'merged').sort((a, b) => a.h - b.h)[0];
   return { none, moves, unscanned, waiting, sev, next, failed: !none };
 }
-const patchHeadWords = (c, v) => c.none ? '0 moves' : `${c.moves} moves · ${c.unscanned} unscanned image${c.unscanned === 1 ? '' : 's'} running · <span class="tone-attn">${c.waiting} wait on ${v ? 'Martin' : 'you'}</span>`;
+// How many moves and how many wait on Martin, as the sheet's head says it; the summary's leaves out the unscanned
+// images, which it says on a line of their own.
+const patchHeadWords = (c, v, { unscanned = true } = {}) => c.none ? '0 moves'
+  : [`${c.moves} moves`, unscanned && c.unscanned && `${c.unscanned} unscanned image${c.unscanned === 1 ? '' : 's'} running`,
+    c.waiting && `<span class="tone-attn">${c.waiting} wait on ${v ? 'Martin' : 'you'}</span>`].filter(Boolean).join(' · ');
 
-// Patching's sheet: the panel whole. Its head (sheetPanelHead) says how many moves, and how many wait on Martin.
+// Patching's sheet: the panel whole. Its head (renderPanelSheet, from PANEL_SHEET) says how many moves, and how many wait on Martin.
 function patchingBody() {
   const v = S.visitor, c = patchCounts();
   if (c.none) {
@@ -3396,7 +3404,7 @@ function renderPatching() {
   const soon = !!c.next?.soon, attn = c.waiting > 0 || soon || c.failed;
   el.classList.toggle('attn', attn);
   const figs = ['Critical', 'High', 'Medium', 'Low'].map((name, i) => `<div><b class="${c.sev[i] ? '' : 'zero'}">${c.sev[i].toLocaleString('en-GB')}</b><span class="label">${name}</span></div>`).join('');
-  el.innerHTML = `<div class="panel-head"><h2 id="patching-sum-title">Patching</h2><span class="label">${c.none ? '0 moves' : `${c.moves} moves${c.waiting ? ` · <span class="tone-attn">${c.waiting} wait on ${v ? 'Martin' : 'you'}</span>` : ''}`}</span></div>
+  el.innerHTML = `<div class="panel-head"><h2 id="patching-sum-title">Patching</h2><span class="label">${patchHeadWords(c, v, { unscanned: false })}</span></div>
     <div><span class="label sum-label">${c.none ? 'Nothing left to clear' : 'What the moves clear'}</span><div class="sum-figs">${figs}</div></div>
     <ul class="sum-lines">
       ${c.unscanned ? `<li class="tone-attn">${glyph('ring')}<span>${c.unscanned} unscanned image${c.unscanned === 1 ? '' : 's'} running</span></li>` : ''}
@@ -3783,7 +3791,7 @@ document.addEventListener('click', (e) => {
   // sheet at its row.
   if (d.move) {
     if (S.sheet === 'patching' && !t.closest('.need')) { S.openMove = S.openMove === d.move ? null : d.move; renderSheet(); keepMode(); return document.querySelector(`#patching [data-move="${d.move}"]`)?.focus(); }
-    S.openMove = d.move; if (S.stage !== null) openStage(S.stage); return openPanelAt('patching', `[data-move="${d.move}"]`);
+    S.openMove = d.move; if (S.stage !== null) openStage(S.stage); return openPanelAt('patching', ['data-move', d.move]);
   }
   if (d.guard) { S.openGuard = S.openGuard === d.guard ? null : d.guard; renderSheet(); return document.querySelector(`[data-guard="${d.guard}"]`)?.focus(); }
   if (d.share) { FLAGSET[S.dialog.flag].share = +d.share; return openDialog('flag', { flag: S.dialog.flag, to: 'share' }); }
@@ -3932,12 +3940,12 @@ else if (q.get('dialog')) { if (q.get('dialog') === 'start') { S.stopped = true;
 reel.innerHTML = ITEMS.map(card).join('');
 buildRail(); layout(); renderRail(); fitHeight();
 document.fonts?.ready.then(fitHeight);
-// ?sheet=patching and ?sheet=guardrails open those sheets; ?move= and ?open= open them at that row; ?sheet alone (with
-// ?item=) opens the work item's.
-if (PANEL_SHEET[q.get('sheet')]) openSheet(q.get('sheet'));
+// ?move= and ?open= open Patching's and Guardrails' sheets at that row, ?sheet=patching and ?sheet=guardrails open
+// them at the top, and ?sheet alone (with ?item=) opens the work item's.
+if (q.has('move') && q.get('sheet') !== 'guardrails') openPanelAt('patching', ['data-move', q.get('move')]);
+else if (q.has('open') && q.get('sheet') !== 'patching') openPanelAt('guardrails', ['data-guard', q.get('open')]);
+else if (PANEL_SHEET[q.get('sheet')]) openSheet(q.get('sheet'));
 else if (q.has('sheet')) openSheet(cur());
-else if (q.has('move')) openPanelAt('patching', `[data-move="${q.get('move')}"]`);
-else if (q.has('open')) openPanelAt('guardrails', `[data-guard="${q.get('open')}"]`);
 })();
 </script>
 </body>

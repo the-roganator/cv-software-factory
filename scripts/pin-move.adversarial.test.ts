@@ -26,7 +26,7 @@ import {
   whatRunsIt,
   workflowsOf,
 } from './pin-move.ts';
-import { majorOf, sameMajor } from './pin-move-shared.ts';
+import { exactOrder, majorOf, sameMajor } from './pin-move-shared.ts';
 
 const REPO = 'o/r';
 const HEAD = 'c'.repeat(40);
@@ -835,5 +835,68 @@ describe('one reading of a major, where a move could pass a major as a minor', (
     expect(label('sub-1-a.1', 'sub-1-b.1')).toContain("sub-1-b.1 is not sub-1-a.1's chart at another version");
     expect(label('sub-9007199254740992-1.0.0', 'sub-9007199254740992.1-1.0.0')).toContain('chart at another version');
     expect(label('sub-1.0.0-a.1', 'sub-1.0.0-b.1')).toContain('forward on its major');
+  });
+});
+
+describe('one exact order, where a move back past 2^53 read as a tie', () => {
+  const ref = (tag: string, d: string) => `docker.io/acme/app:${tag}@sha256:${hex(d)}`;
+  const io = (from: string, to: string) => ({
+    chartVersions: async () => [to],
+    tags: async () => [from, to],
+    digest: async () => `sha256:${hex('c')}`,
+  });
+  const chartMove = (from: string, to: string) =>
+    ({
+      what: 'chart',
+      name: 'x',
+      kind: 'chart',
+      from,
+      to,
+      pins: [{ chart: { head: { chart: 'x', repo: 'https://r', version: to } } }],
+    }) as unknown as Move;
+  const forward = async (from: string, to: string) => [
+    await chartForward(chartMove(from, to), io(from, to)),
+    await chartImageForward(ref(from, 'a'), ref(to, 'c'), io(from, to)),
+    await imageForward(ref(from, 'a'), ref(to, 'c'), io(from, to)),
+  ];
+  const ACME: ChartVersions = { chart: 'acme', from: '1.0.0', to: '1.1.0' };
+  const labelled = (label: string) =>
+    `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  namespace: ns\n  labels:\n    helm.sh/chart: ${label}\n`;
+  const label = (was: string, now: string) => manifestsDiffer(labelled(was), labelled(now), [], ACME);
+
+  it('orders numbers exactly at any length, a prerelease before its release, and a build not at all', () => {
+    expect(exactOrder('1.9007199254740993.5', '1.9007199254740992.6')).toBe(1);
+    expect(exactOrder('1.0.9007199254740992', '1.0.9007199254740993')).toBe(-1);
+    expect(exactOrder('1.10.0', '1.9.0')).toBe(1);
+    expect(exactOrder('1.0', '1.0.0')).toBe(0);
+    expect(exactOrder('1.0.0-rc.1', '1.0.0')).toBe(-1);
+    expect(exactOrder('1.0.0-rc.10', '1.0.0-rc.9')).toBe(1);
+    expect(exactOrder('18.6-alpine3.24', '18.6-alpine3.9')).toBe(1);
+    expect(exactOrder('1.0.0+b', '1.0.0+a')).toBe(0);
+    expect(exactOrder('1.0.0_1', '1.0.0')).toBeUndefined();
+    expect(exactOrder('nonroot', '1.0.0')).toBeUndefined();
+  });
+
+  it('holds a move back past 2^53 in a chart, its image and an image', async () => {
+    const [from, to] = ['1.9007199254740993.5', '1.9007199254740992.6'];
+    for (const reason of await forward(from, to)) expect(reason).toContain('backwards');
+  });
+
+  it('holds a subchart moving back past 2^53, under a plain name or a dotted one', () => {
+    expect(label('sub-1.0.9007199254740993', 'sub-1.0.9007199254740992')).toContain('forward on its major');
+    expect(label('foo-1.5-1.0.9007199254740993', 'foo-1.5-1.0.9007199254740992')).toContain('forward on its major');
+    expect(label('foo-2-1.9007199254740993.0', 'foo-2-1.9007199254740992.0')).toContain('forward on its major');
+  });
+
+  it('holds a tie, or a v gained or lost, and passes a forward minor under a name ending in digits', async () => {
+    expect(await forward('1.0', '1.0.0')).toEqual([
+      'no move forward, from 1.0 to 1.0.0',
+      'no move forward in docker.io/acme/app, from 1.0 to 1.0.0',
+      'no move forward, from 1.0 to 1.0.0',
+    ]);
+    expect(label('foo-2-v1.0.0', 'foo-2-1.1.0')).toContain('forward on its major');
+    expect(label('sub-1.0.0', 'sub-v1.1.0')).toContain('forward on its major');
+    expect(label('foo-1.5-1.9.0', 'foo-1.5-1.10.0')).toBeUndefined();
+    expect(label('foo-2-1.9.0', 'foo-2-1.10.0')).toBeUndefined();
   });
 });

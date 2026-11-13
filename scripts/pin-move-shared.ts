@@ -1,5 +1,6 @@
 /** What the pin move's files share: its checkout's root, and the helpers each condition's code uses. */
 import { join } from 'node:path';
+import { compareVersions } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 
 /** The gate's own checkout, main's: what it reads its pins of Trivy, its API versions and the platform check from. */
 export const ROOT = join(import.meta.dirname, '..');
@@ -33,3 +34,6 @@ export function sameMajor(a: string, b: string): boolean {
 
 /** A version's variant, what follows its numbers (`-alpine` of `1.4.0-alpine`): its line, which a move keeps. */
 export const variantOf = (version: string) => version.replace(/^v?\d+(\.\d+)*/, '');
+
+/** The order of two versions: positive when `a` is after `b`. */
+export const exactOrder = (a: string, b: string): number | undefined => Math.sign(compareVersions(a, b));

@@ -12,7 +12,7 @@
 //   - `blocked` for three minutes: it waits on a person (a permission, a question), which no peer session can answer;
 //   - `working` with nothing added to its transcript for ten minutes: a wait that will not end, or a loop.
 // For either it appends a line to watch.log beside the lock (time, session name, id, what), and raises a notification
-// on the Mac; the same session is not reported again for 15 minutes (seen.json). It stops itself, giving the lock up,
+// on the Mac; the same session is not reported again for the same thing for 15 minutes while it lasts (seen.json). It stops itself, giving the lock up,
 // once no background session has been live for 30 minutes. A lock whose pid is not a detector is stale, and taken over.
 //
 // --follow is for a director run in the background: it starts the detector if none runs, then waits for a line about a
@@ -23,9 +23,11 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -81,17 +83,24 @@ export function assess(
     const id = a.id as string;
     const name = a.name ?? '';
     let what: string | undefined;
+    let kind: 'blocked' | 'quiet' | undefined;
     if (a.state === 'blocked') {
       blockedSince[id] = memory.blockedSince[id] ?? now;
-      if (now - blockedSince[id] >= BLOCKED_MS)
+      if (now - blockedSince[id] >= BLOCKED_MS) {
+        kind = 'blocked';
         what = `blocked for ${minutes(now - blockedSince[id])} minutes, waiting on a person: claude attach ${id}`;
+      }
     } else if (a.state === 'working') {
       const wrote = lastWrite(a.sessionId);
-      if (wrote !== undefined && now - wrote >= QUIET_MS)
+      if (wrote !== undefined && now - wrote >= QUIET_MS) {
+        kind = 'quiet';
         what = `has written nothing for ${minutes(now - wrote)} minutes: claude logs ${id}`;
+      }
     }
-    if (what && now - (seen[id] ?? 0) >= AGAIN_MS) {
-      seen[id] = now;
+    // A report stands for the spell it was made in: once the session is out of it, the next one is reported afresh.
+    for (const k of ['blocked', 'quiet'] as const) if (k !== kind) delete seen[`${id}:${k}`];
+    if (kind && what && now - (seen[`${id}:${kind}`] ?? 0) >= AGAIN_MS) {
+      seen[`${id}:${kind}`] = now;
       findings.push({ id, name, what });
     }
   }
@@ -136,23 +145,70 @@ function holder(): { pid: number; since: string } | undefined {
   return lock && isDetector(lock.pid) ? lock : undefined;
 }
 
-/** Takes the lock, or says who holds it. A stale lock (its pid no detector) is taken over. */
+/**
+ * Takes the lock file for `me`, or returns who holds it. The lock is written whole to a file of its own and linked into
+ * place, which fails if one is there, so two starts never both take it and no reader sees half a lock. A lock whose pid
+ * is no detector is stale: moved aside by a rename, which one start alone can make, and put back if what was moved is
+ * not the stale lock that was read. Last, the lock is read again to confirm it is `me`'s.
+ */
+export function acquire(
+  file: string,
+  me: { pid: number; since: string },
+  isLive: (pid: number) => boolean,
+): { taken: true } | { taken: false; holder: { pid: number; since: string } | undefined } {
+  const temporary = `${file}.${me.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(me), { mode: 0o600 });
+  const read = (path: string): string | undefined => {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      return undefined;
+    }
+  };
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        linkSync(temporary, file);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        const text = read(file);
+        if (text === undefined) continue;
+        const held = readLock(text);
+        if (held && isLive(held.pid)) return { taken: false, holder: held };
+        const aside = `${file}.${me.pid}.stale`;
+        try {
+          renameSync(file, aside);
+        } catch {
+          continue;
+        }
+        const moved = read(aside);
+        if (moved !== text) {
+          // Another start's fresh lock, taken in the meantime: back it goes.
+          try {
+            linkSync(aside, file);
+          } catch {}
+          unlinkSync(aside);
+          return { taken: false, holder: moved === undefined ? undefined : readLock(moved) };
+        }
+        unlinkSync(aside);
+        continue;
+      }
+      const now = readLock(read(file) ?? '');
+      return now?.pid === me.pid ? { taken: true } : { taken: false, holder: now };
+    }
+    return { taken: false, holder: readLock(read(file) ?? '') };
+  } finally {
+    unlinkSync(temporary);
+  }
+}
+
+/** Takes the lock, or says who holds it, and gives it back when the detector exits. */
 function takeLock(): boolean {
   mkdirSync(dir(), { recursive: true, mode: 0o700 });
-  const held = holder();
-  if (held) {
-    console.log(`the watch runs already: pid ${held.pid}, since ${held.since}; its log is ${logFile()}`);
-    return false;
-  }
-  if (existsSync(lockFile())) unlinkSync(lockFile());
-  try {
-    writeFileSync(lockFile(), JSON.stringify({ pid: process.pid, since: new Date().toISOString() }), {
-      flag: 'wx',
-      mode: 0o600,
-    });
-  } catch {
-    // Another start took it between the read and the write.
-    console.log(`the watch was started by another just now; its log is ${logFile()}`);
+  const result = acquire(lockFile(), { pid: process.pid, since: new Date().toISOString() }, isDetector);
+  if (!result.taken) {
+    const h = result.holder;
+    console.log(`the watch runs already${h ? `: pid ${h.pid}, since ${h.since}` : ''}; its log is ${logFile()}`);
     return false;
   }
   const release = () => {
@@ -167,13 +223,17 @@ function takeLock(): boolean {
 
 const agents = (): Agent[] => JSON.parse(execFileSync('claude', ['agents', '--json', '--all'], { encoding: 'utf8' }));
 
-/** When the session's transcript was last written, wherever its working directory has put it. */
-function lastWrite(sessionId: string): number | undefined {
-  const projects = join(homedir(), '.claude', 'projects');
+/** When the session's transcript, or a sub-agent's of it, was last written, wherever its working directory put it. */
+export function lastWrite(sessionId: string, projects = join(homedir(), '.claude', 'projects')): number | undefined {
   let newest: number | undefined;
   for (const project of existsSync(projects) ? readdirSync(projects) : []) {
     const file = join(projects, project, `${sessionId}.jsonl`);
     if (existsSync(file)) newest = Math.max(newest ?? 0, statSync(file).mtimeMs);
+    // A session busy with sub-agents writes their transcripts instead.
+    const subagents = join(projects, project, sessionId, 'subagents');
+    for (const name of existsSync(subagents) ? readdirSync(subagents) : []) {
+      if (name.endsWith('.jsonl')) newest = Math.max(newest ?? 0, statSync(join(subagents, name)).mtimeMs);
+    }
   }
   return newest;
 }
@@ -197,7 +257,7 @@ async function detect(): Promise<void> {
       console.error(`could not list the sessions: ${String(error).split('\n')[0]}`);
     }
     if (live(listed).length) lastLive = now;
-    const result = assess(listed, lastWrite, memory, now);
+    const result = assess(listed, (id) => lastWrite(id), memory, now);
     memory = result.memory;
     for (const f of result.findings) {
       const line = logLine(new Date(now), f);

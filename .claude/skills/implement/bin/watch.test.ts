@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Agent, Memory } from './watch.ts';
-import { AGAIN_MS, assess, BLOCKED_MS, followed, logLine, QUIET_MS, readLock } from './watch.ts';
+import { AGAIN_MS, acquire, assess, BLOCKED_MS, followed, lastWrite, logLine, QUIET_MS, readLock } from './watch.ts';
 
 const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 13, 12);
@@ -90,6 +90,78 @@ describe('assess', () => {
       { at: T0 + QUIET_MS + AGAIN_MS, agents: working, wrote },
     ]);
     expect(said.map((s) => s.length)).toEqual([1, 0, 1]);
+  });
+});
+
+describe('assess, a session out of its spell and back', () => {
+  it('reports a second block, though the first was reported less than fifteen minutes before', () => {
+    const said = reads([
+      { at: T0, agents: [agent('a', 'blocked')] },
+      { at: T0 + BLOCKED_MS, agents: [agent('a', 'blocked')] },
+      { at: T0 + BLOCKED_MS + MIN, agents: [agent('a', 'working')], wrote: { 'session-a': T0 + BLOCKED_MS + MIN } },
+      { at: T0 + BLOCKED_MS + 2 * MIN, agents: [agent('a', 'blocked')] },
+      { at: T0 + 2 * BLOCKED_MS + 2 * MIN, agents: [agent('a', 'blocked')] },
+    ]);
+    expect(said.map((s) => s.length)).toEqual([0, 1, 0, 0, 1]);
+  });
+
+  it('reports a quiet spell after a block, each by its kind', () => {
+    const said = reads([
+      { at: T0, agents: [agent('a', 'blocked')] },
+      { at: T0 + BLOCKED_MS, agents: [agent('a', 'blocked')] },
+      { at: T0 + BLOCKED_MS + QUIET_MS, agents: [agent('a', 'working')], wrote: { 'session-a': T0 } },
+    ]);
+    expect(said.map((s) => s.length)).toEqual([0, 1, 1]);
+  });
+});
+
+describe('lastWrite', () => {
+  it("counts the session's sub-agents' transcripts, the newest of all", () => {
+    const projects = mkdtempSync(join(tmpdir(), 'projects-'));
+    try {
+      mkdirSync(join(projects, 'p', 's', 'subagents'), { recursive: true });
+      writeFileSync(join(projects, 'p', 's.jsonl'), '');
+      writeFileSync(join(projects, 'p', 's', 'subagents', 'agent-1.jsonl'), '');
+      utimesSync(join(projects, 'p', 's.jsonl'), new Date(T0), new Date(T0));
+      utimesSync(join(projects, 'p', 's', 'subagents', 'agent-1.jsonl'), new Date(T0), new Date(T0 + 9 * MIN));
+      expect(lastWrite('s', projects)).toBe(T0 + 9 * MIN);
+      expect(lastWrite('none', projects)).toBeUndefined();
+    } finally {
+      rmSync(projects, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('acquire', () => {
+  let lockDir: string;
+  beforeEach(() => {
+    lockDir = mkdtempSync(join(tmpdir(), 'watch-lock-'));
+  });
+  afterEach(() => rmSync(lockDir, { recursive: true, force: true }));
+  const file = () => join(lockDir, 'watch.pid');
+
+  it('takes a free lock whole, and leaves no file of its own beside it', () => {
+    expect(acquire(file(), { pid: 1, since: 'a' }, () => true)).toEqual({ taken: true });
+    expect(readLock(readFileSync(file(), 'utf8'))).toEqual({ pid: 1, since: 'a' });
+    expect(readdirSync(lockDir)).toEqual(['watch.pid']);
+  });
+
+  it('lets a second start take nothing while the first lives, and says who holds it', () => {
+    acquire(file(), { pid: 1, since: 'a' }, () => true);
+    expect(acquire(file(), { pid: 2, since: 'b' }, () => true)).toEqual({
+      taken: false,
+      holder: { pid: 1, since: 'a' },
+    });
+    expect(readLock(readFileSync(file(), 'utf8'))?.pid).toBe(1);
+  });
+
+  it('takes over a stale lock, or one it cannot read', () => {
+    acquire(file(), { pid: 1, since: 'a' }, () => true);
+    expect(acquire(file(), { pid: 2, since: 'b' }, (pid) => pid !== 1)).toEqual({ taken: true });
+    writeFileSync(file(), 'nonsense');
+    expect(acquire(file(), { pid: 3, since: 'c' }, () => true)).toEqual({ taken: true });
+    expect(readLock(readFileSync(file(), 'utf8'))?.pid).toBe(3);
+    expect(readdirSync(lockDir)).toEqual(['watch.pid']);
   });
 });
 

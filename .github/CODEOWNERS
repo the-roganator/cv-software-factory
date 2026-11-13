@@ -8,6 +8,12 @@
 /scripts/review-gate.ts      @mrogan
 /scripts/review-routing.ts   @mrogan
 /scripts/pin-move.ts         @mrogan
+/scripts/pin-move-forward.ts @mrogan
+/scripts/pin-move-one.ts     @mrogan
+/scripts/pin-move-ran.ts     @mrogan
+/scripts/pin-move-readers.ts @mrogan
+/scripts/pin-move-rendering.ts @mrogan
+/scripts/pin-move-sides.ts   @mrogan
 /scripts/pin-moves.ts        @mrogan
 /scripts/copilot-held-runs.ts @mrogan
 /AGENTS.md                   @mrogan

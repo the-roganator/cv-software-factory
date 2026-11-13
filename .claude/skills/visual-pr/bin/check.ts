@@ -53,37 +53,62 @@ export function problems(body: string, rendered: string, published: boolean, fol
   return found;
 }
 
-/** The most a description may show unfolded: 800 characters for a change under 200 changed lines, 3,000 otherwise. */
+/**
+ * The most a description may show unfolded: four characters a changed line, never under 800 nor over 3,000, so 200
+ * changed lines get 800 and 750 or more get 3,000, and a fix that trims the diff moves the limit a little, not a step.
+ */
 export function limit(changed: number): number {
-  return changed < 200 ? 800 : 3000;
+  return Math.min(3000, Math.max(800, 4 * changed));
 }
+
+/** Where the attribution the caller adds after the check begins, folded or not: its <details>, or its own line. */
+function attribution(body: string, prose: string): number {
+  const line = [...prose.matchAll(/^.*Generated with \[Claude Code\]/gm)].at(-1);
+  if (line === undefined) return body.length;
+  const before = prose.slice(0, line.index);
+  const opened = before.search(/<details[^>]*>(?![\s\S]*<\/?details\b)[\s\S]*$/i);
+  return opened >= 0 ? opened : line.index;
+}
+
+/** Whether a <details> tag's attributes include `open` itself, not a value that holds the word. */
+const isOpen = (attributes: string) =>
+  /(?:^|\s)open(?=\s|\/|$)/i.test(attributes.replace(/=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/g, ''));
 
 /**
  * How many characters a description shows before anything is unfolded: what lies outside each closed `<details>`, and
- * each one's summary; an open one shows whole. Comments, tags and where links and pictures point are not counted, a
- * link's words are, and each run of white space counts as one.
+ * each one's summary; an open one shows whole, except one whose summary names a threat model, which must stay open
+ * whatever its length and is not counted. The attribution the caller adds is not counted either. It approximates what
+ * shows, by patterns rather than a renderer: comments, tags and where links and pictures point are not counted, a
+ * link's words are, code is counted as written, and each run of white space counts as one.
  */
 export function shown(body: string): number {
-  const prose = outsideCode(body);
+  const all = outsideCode(body);
+  const end = attribution(body, all);
+  const prose = all.slice(0, end);
+  const text = body.slice(0, end);
   const tag = /<!--[\s\S]*?-->|<(\/?)(details|summary)\b([^>]*)>/gi;
-  const folds: { open: boolean; summary: boolean }[] = [];
-  const visible = () => folds.every((f, i) => f.open || (i === folds.length - 1 && f.summary));
+  const folds: { open: boolean; summary: boolean; from: number; at: number; skip: boolean }[] = [];
+  const visible = () => folds.every((f, i) => !f.skip && (f.open || (i === folds.length - 1 && f.summary)));
   let kept = '';
   let at = 0;
   for (const m of prose.matchAll(tag)) {
-    if (visible()) kept += body.slice(at, m.index);
+    if (visible()) kept += text.slice(at, m.index);
     at = m.index + m[0].length;
     if (!m[2]) continue;
     const closing = m[1] === '/';
     const top = folds.at(-1);
     if (m[2].toLowerCase() === 'details') {
       if (closing) folds.pop();
-      else folds.push({ open: /\bopen\b/i.test(m[3] ?? ''), summary: false });
+      else folds.push({ open: isOpen(m[3] ?? ''), summary: false, from: kept.length, at, skip: false });
     } else if (top) {
       top.summary = !closing;
+      if (closing && top.open && /threat model/i.test(text.slice(top.at, m.index))) {
+        kept = kept.slice(0, top.from);
+        top.skip = true;
+      }
     }
   }
-  if (visible()) kept += body.slice(at);
+  if (visible()) kept += text.slice(at);
   return kept
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')

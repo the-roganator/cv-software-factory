@@ -15,8 +15,8 @@ export const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
 /**
- * A version's major, the one reading both conditions hold a major by (ADR 0019, 4 and 6): the digits after an optional
- * `v`, as text, so it is exact at any length, where a number past 2^53 would round to its neighbour. Undefined where
+ * A version's major, the one reading condition 4 holds a major by (ADR 0019): the digits after an optional `v`, as
+ * text, so it is exact at any length, where a number past 2^53 would round to its neighbour. Undefined where
  * the version opens with no digit, or with a zero before another digit (`01.10.0`), which names no one major: each
  * holds, as no major is proved unchanged.
  */

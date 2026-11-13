@@ -6,6 +6,7 @@ import {
   countdown,
   duration,
   figure,
+  glance,
   isCommit,
   listed,
   lower,
@@ -124,5 +125,30 @@ describe('words in a sentence', () => {
   it('puts a sentence in the middle of another', () => {
     expect(lower('Waiting for Martin')).toBe('waiting for Martin');
     expect(lower('')).toBe('');
+  });
+});
+
+describe('a count at a glance', () => {
+  it.each([
+    [0, '0'],
+    [7, '7'],
+    [999, '999'],
+    [1000, '1K'],
+    [1363, '1.4K'],
+    [2727, '2.7K'],
+    [9949, '9.9K'],
+    [9960, '10K'],
+    [11021, '11K'],
+    [15056, '15K'],
+    [999_499, '999K'],
+    [999_600, '1M'],
+    [1_234_567, '1.2M'],
+    [3_000_000, '3M'],
+  ])('writes %i as %s', (n, words) => {
+    expect(glance(n)).toBe(words);
+  });
+
+  it('is never wider than four characters below a hundred million', () => {
+    for (let n = 0; n < 100_000_000; n = Math.ceil(n * 1.07) + 1) expect(glance(n).length).toBeLessThanOrEqual(4);
   });
 });

@@ -61,8 +61,9 @@ test('Martin launches an attack from its guardrail’s row, and every other Laun
   await attacksAvailable(page);
   await virtualPasskey(page);
   await enrolThroughTheDoor(page, await harness.code());
+  // Guardrails' sheet, from its summary.
   await page.goto('/?motion=off');
-  await page.locator('#guardrails').scrollIntoViewIfNeeded();
+  await page.locator('#guardrails-summary').getByRole('button', { name: 'All eleven guardrails' }).click();
 
   await rowButton(page, 5).click();
   await page.locator('#guardrails .more').getByRole('button', { name: 'Launch' }).click();

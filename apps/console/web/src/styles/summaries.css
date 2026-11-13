@@ -1,0 +1,151 @@
+/*
+ * Patching's and Guardrails' summaries, in the bottom row's right column: a panel's figures, small, and the way to its
+ * sheet. Needing Martin, one takes Needs you's `attn` rule down its left edge, and each reason reads in `attn` in words.
+ * It arrives with the summaries' chunk, so the first view's stylesheet carries none of it.
+ */
+.summary {
+  gap: 16px;
+  /* Its counts go by its own width, not the page's: the right column is narrowest beside Needs you. */
+  container-type: inline-size;
+}
+.summary.attn {
+  border-left: var(--stroke-rule) solid var(--attn);
+  border-radius: var(--radius-rule) var(--radius-panel) var(--radius-panel) var(--radius-rule);
+}
+.summary .tone-attn,
+.summary .label.tone-attn {
+  color: var(--attn);
+}
+.summary .links .linkish {
+  font-size: 13px;
+}
+
+/* Guardrails' eleven as a strip: each its glyph over its number, in its row's tone; one that did not hold, ruled in attn. */
+.gr-strip {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+  gap: 4px;
+}
+.gr-strip > span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 0 5px;
+  border-top: var(--stroke-rule) solid var(--line);
+  font: 10.5px / 1 var(--font-mono);
+  color: var(--text-muted);
+}
+.gr-strip > span .glyph {
+  width: 14px;
+  height: 14px;
+  color: var(--tone, var(--text-muted));
+}
+.gr-strip > span.tone-faint .glyph {
+  color: var(--text-faint);
+}
+.gr-strip > span.is-attn {
+  border-top-color: var(--attn);
+  color: var(--attn);
+}
+
+/* Patching's two rows of counts under C, H, M and L, on the panel's right, each label on the left. */
+.sum-clr {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sum-clr > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.sum-clr .clr {
+  display: grid;
+  grid-template-columns: repeat(4, 6ch);
+  gap: 10px;
+  font: 17px / 1.2 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.sum-clr .clr span {
+  text-align: right;
+  white-space: nowrap;
+}
+.sum-clr .clr i {
+  display: none;
+}
+.sum-clr .clr-head span {
+  font: 500 10px / 1.2 var(--font-mono);
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+.sum-clr .clr .zero {
+  color: var(--text-muted);
+}
+.sum-clr .clr .crit {
+  color: var(--attn);
+}
+.sum-clr .clr .cleared {
+  color: var(--ok);
+}
+@container (max-width: 440px) {
+  .sum-clr .clr {
+    grid-template-columns: repeat(4, 5ch);
+    gap: 6px;
+    font-size: 15px;
+  }
+}
+/* Narrower still, each label goes on a line of its own above its counts, which stay under the headers. */
+@container (max-width: 340px) {
+  .sum-clr > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .sum-clr > div > .clr {
+    justify-self: end;
+  }
+  .sum-clr > div:first-child > span:first-child {
+    display: none;
+  }
+}
+
+/* Lines: a glyph and a few words each, in 12px mono. */
+.sum-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sum-lines li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font: 12px / 1.45 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+.summary .sum-lines li .glyph {
+  width: 13px;
+  height: 13px;
+  margin-top: 2px;
+  color: var(--tone, var(--text-muted));
+}
+.sum-lines li.tone-attn {
+  color: var(--attn);
+}
+.sum-lines li.tone-faint {
+  color: var(--text-muted);
+}
+.summary .sum-lines li.tone-faint .glyph {
+  color: var(--text-faint);
+}
+.sum-lines b {
+  font-weight: 500;
+}

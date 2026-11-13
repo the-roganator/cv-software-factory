@@ -1,14 +1,14 @@
 /*
- * Guardrails: a checklist of spec 6's eleven, full width under the bottom row, in two columns from 1180 up and one
- * below. A row is one line and a button that opens its details in place, one at a time: what holds it, its last proof,
+ * Guardrails' sheet: a checklist of spec 6's eleven, the sheet's width, in two columns from 1180 up and one below. It
+ * arrives with the sheet's chunk, so the first view's stylesheet carries none of it. A row is one line and a button that opens its details in place, one at a time: what holds it, its last proof,
  * its refusals in the last seven days, a line each, and its attack, a `raised` card with Launch. A guardrail that did not hold takes the `attn` rule down its row's left
  * edge, as an attack that was not refused does down its card's.
  */
 .guardrails {
-  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
-.guardrails .panel-head .label.tone-attn,
 .gr .more .tone-attn {
   color: var(--attn);
 }

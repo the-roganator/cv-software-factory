@@ -25,13 +25,24 @@ import { factoryOf } from './profile.ts';
 import { foldOf, project, settingsAt } from './projection/index.ts';
 import { useRefusalChecks } from './refusals.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
+import { askedSheet, type SheetAsk } from './sheets.ts';
 import { type Origin, origin, useEvents } from './source.ts';
 import { useHeld } from './use-held.ts';
 
 const params = new URLSearchParams(location.search);
 
-/** The sheet's code, its stylesheet and its projection arrive when the first sheet opens: the first view needs none. */
+/**
+ * The sheet's code, its stylesheet and its projection arrive when the first sheet opens: the first view needs none. A
+ * panel's sheet, Patching's or Guardrails', arrives in a chunk of its own when it first opens, with none of a work
+ * item's, and the frame they share in one of its own.
+ */
 const Sheet = lazy(() => import('./components/Sheet.tsx').then((module) => ({ default: module.Sheet })));
+const PatchingSheet = lazy(() =>
+  import('./components/Patching.tsx').then((module) => ({ default: module.PatchingSheet })),
+);
+const GuardrailsSheet = lazy(() =>
+  import('./components/Guardrails.tsx').then((module) => ({ default: module.GuardrailsSheet })),
+);
 
 /** The doors' code, and the passkey ceremonies', arrive only on a door. */
 const Doors = lazy(() => import('./components/Doors.tsx').then((module) => ({ default: module.Doors })));
@@ -44,26 +55,39 @@ const AuditLog = lazy(() => import('./components/AuditLog.tsx').then((module) =>
 
 /*
  * Everything under the reel arrives once the first view has shown, each panel's module in a chunk of its own: the
- * bottom row (Needs you, and Controls, Flags and Spend beside it, Controls and Spend from one module and so one chunk,
- * which the settings page shares), Patching, with its stylesheet and its projection, and Guardrails. The first view is the header, the intro, the line, the canary and the reel, and its entry chunk carries
- * none of theirs. The bottom row draws first and the two panels under it after, so none moves another as it arrives
- * (`Later`, which says so if a chunk never comes).
+ * bottom row, Needs you, and Controls, Flags, the summaries of Patching and Guardrails, and Spend beside it (Controls
+ * and Spend from one module and so one chunk, which the settings page shares; the two summaries from another, with
+ * Patching's projection). The first view is the header, the intro, the line, the canary and the reel, and its entry
+ * chunk carries none of theirs. The bottom row draws once all of its chunks have come, so nothing in it moves as one
+ * arrives (`Later`, which says so if a chunk never comes).
  */
 const NeedsYou = lazy(() => import('./components/NeedsYou.tsx').then((module) => ({ default: module.NeedsYou })));
 const Controls = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.Controls })));
 const FlagsPanel = lazy(() => import('./components/Flags.tsx').then((module) => ({ default: module.FlagsPanel })));
 const SpendPanel = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.SpendPanel })));
-const Patching = lazy(() => import('./components/Patching.tsx').then((module) => ({ default: module.Patching })));
-const Guardrails = lazy(() => import('./components/Guardrails.tsx').then((module) => ({ default: module.Guardrails })));
+const PatchingSummary = lazy(() =>
+  import('./components/Summaries.tsx').then((module) => ({ default: module.PatchingSummary })),
+);
+const GuardrailsSummary = lazy(() =>
+  import('./components/Summaries.tsx').then((module) => ({ default: module.GuardrailsSummary })),
+);
 
 /** The privacy page's too. */
 const Privacy = lazy(() => import('./components/Privacy.tsx').then((module) => ({ default: module.Privacy })));
 
 const asked = params.get('view');
+/** What a sheet is, in a notice that says it couldn't be shown. */
+const SHEET_NAME: Record<SheetAsk['kind'], string> = {
+  item: 'The work item’s sheet',
+  patching: 'Patching’s sheet',
+  guardrails: 'Guardrails’ sheet',
+};
 const door: Door | undefined = asked === 'sign-in' || asked === 'enrol' ? asked : undefined;
 const settingsPage = asked === 'settings';
 const auditPage = asked === 'audit';
 const privacyPage = asked === 'privacy';
+/** The sheet the address asks for: a work item's, or Patching's or Guardrails', at a row or at its top. */
+const askedFor = askedSheet(params);
 /** The profile whose policy bounds the settings, and whether every agent goes to the local model, as the server says. */
 const factory = factoryOf();
 
@@ -147,7 +171,21 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   // The reel rests on the latest work item unless the viewer moves it, or asked for one in the address.
   const item = params.get('item');
   const [centre, setCentre] = useState<number | undefined>(undefined);
-  const [open, setOpen] = useState<string | undefined>(undefined);
+  // What the sheet holds, if it is open: a work item, or a panel whole.
+  const [sheet, setSheet] = useState<SheetAsk | undefined>(undefined);
+  const setOpen = useCallback(
+    (number: string | undefined) => setSheet(number ? { kind: 'item', item: number } : undefined),
+    [],
+  );
+  // Each held steady, so a summary drawn with one renders only when what it shows changes.
+  const openPatching = useCallback(() => setSheet({ kind: 'patching' }), []);
+  const openGuardrails = useCallback(() => setSheet({ kind: 'guardrails' }), []);
+  const openRow = useCallback((row: string) => setSheet({ kind: 'patching', row }), []);
+  // Whether a sheet was open as the page last drew: one that takes its place is there at once, rather than rising.
+  const sheetShown = useRef(false);
+  useEffect(() => {
+    sheetShown.current = sheet !== undefined;
+  });
   const atNow = useRef(true);
   const resting = Math.max(0, Math.min(n - 1, centre ?? n - 1));
 
@@ -157,9 +195,17 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
     if (index >= 0) {
       atNow.current = index >= n - 1;
       setCentre(index);
-      if (params.has('sheet')) setOpen(item ?? undefined);
+      if (askedFor?.kind === 'item') setOpen(askedFor.item);
     }
-  }, [n, centre, item, view.cards]);
+  }, [n, centre, item, view.cards, setOpen]);
+
+  // A panel's sheet the address asks for opens once the store has answered, so it opens on what it shows.
+  const panelAsked = useRef(askedFor?.kind === 'patching' || askedFor?.kind === 'guardrails');
+  useEffect(() => {
+    if (!settled || !panelAsked.current) return;
+    panelAsked.current = false;
+    setSheet(askedFor);
+  }, [settled]);
 
   // Following the line: a viewer watching now stays at now as new work items arrive.
   useEffect(() => {
@@ -297,16 +343,16 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
             />
           )}
           {/* Under the reel, once the store has answered and the first view has shown: the bottom row once its chunks
-              have arrived, then Patching and Guardrails under it once theirs have, never before it, so nothing above
-              them moves as they arrive; only the footer under them does. Until then nothing holds their place. */}
+              have arrived, so nothing above it moves as it does; only the footer under it does. Until then nothing
+              holds its place. */}
           {settled && (
-            <Later what="Needs you, Controls, Flags and Spend">
+            <Later what="Needs you, Controls, Flags, Patching, Guardrails and Spend">
               <section
                 className="bottom"
                 aria-label={
                   admin.kind === 'martin'
-                    ? 'Needs you, controls, flags and spend'
-                    : 'Waiting on Martin, controls, flags and spend'
+                    ? 'Needs you, controls, flags, patching, guardrails and spend'
+                    : 'Waiting on Martin, controls, flags, patching, guardrails and spend'
                 }
               >
                 <NeedsYou
@@ -316,10 +362,16 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                   app={factory.app}
                   now={view.t}
                   onOpen={setOpen}
+                  onRow={openRow}
                   onMoved={held.refresh}
                 />
                 <div className="bottom-side">
-                  <Controls profile={factory.profile} controls={view.controls} admin={admin} />
+                  <Controls
+                    profile={factory.profile}
+                    controls={view.controls}
+                    admin={admin}
+                    onGuardrails={openGuardrails}
+                  />
                   <FlagsPanel
                     flags={view.flags}
                     admin={admin}
@@ -329,36 +381,66 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
                     onOpen={setOpen}
                     onMoved={held.refresh}
                   />
+                  {/* Each a summary of its panel, opening it whole in a sheet: they arrive with the rest of the
+                      bottom row, and only a failure of their own chunk is theirs. */}
+                  <Later what="Patching and Guardrails" along>
+                    <PatchingSummary view={view} martin={admin.kind === 'martin'} onSheet={openPatching} />
+                    <GuardrailsSummary
+                      view={view.guardrails}
+                      now={view.t}
+                      martin={admin.kind === 'martin'}
+                      onSheet={openGuardrails}
+                    />
+                  </Later>
                   <SpendPanel spend={settings.spend} admin={admin} />
                 </div>
               </section>
-              <Later what="Patching and Guardrails">
-                {/* What must move, and who moves it: one row for each move, full width under the bottom row. */}
-                <Patching view={view} admin={admin} onOpen={setOpen} />
-                {/* Every guardrail, its last proof, and the attacks that prove five of them, full width under Patching. */}
-                <Guardrails view={view.guardrails} now={view.t} admin={admin} onOpen={setOpen} />
-              </Later>
             </Later>
           )}
         </div>
       </main>
       <Footer signIn={signedIn.kind === 'visitor'} />
-      {open && (
-        <Suspense fallback={null}>
-          <Sheet
-            view={view}
-            item={open}
-            motion={motion}
-            onStep={(index) => {
-              onCentre(index);
-              setOpen(view.cards[index]?.number);
-            }}
-            onClose={() => setOpen(undefined)}
-            app={factory.app}
-            admin={admin}
-            onMoved={held.refresh}
-          />
-        </Suspense>
+      {sheet && (
+        // A sheet's chunk that never comes says so over the page, with Close; the next sheet opened tries again.
+        <Later key={sheet.kind} what={SHEET_NAME[sheet.kind]} one onDismiss={() => setSheet(undefined)}>
+          {sheet.kind === 'item' ? (
+            <Sheet
+              view={view}
+              item={sheet.item}
+              motion={motion}
+              rise={!sheetShown.current}
+              onStep={(index) => {
+                onCentre(index);
+                setOpen(view.cards[index]?.number);
+              }}
+              onClose={() => setSheet(undefined)}
+              app={factory.app}
+              admin={admin}
+              onMoved={held.refresh}
+            />
+          ) : sheet.kind === 'patching' ? (
+            <PatchingSheet
+              view={view}
+              admin={admin}
+              row={sheet.row}
+              onOpen={setOpen}
+              motion={motion}
+              rise={!sheetShown.current}
+              onClose={() => setSheet(undefined)}
+            />
+          ) : (
+            <GuardrailsSheet
+              view={view.guardrails}
+              now={view.t}
+              admin={admin}
+              row={sheet.row}
+              onOpen={setOpen}
+              motion={motion}
+              rise={!sheetShown.current}
+              onClose={() => setSheet(undefined)}
+            />
+          )}
+        </Later>
       )}
     </OriginContext.Provider>
   );

@@ -166,13 +166,13 @@ test('a panel’s chunk that never arrives leaves the page as it is, with a noti
   // As a page older than the console's last deploy would ask for a chunk no longer served.
   await page.route('**/assets/NeedsYou-*.js', (route) => route.fulfill({ status: 404 }));
   await page.goto(consoleUrl());
-  await expect(page.getByText('Needs you, Controls, Flags and Spend couldn’t be shown.')).toContainText(
-    'Reloading the page may bring them back.',
-  );
-  // The first view is whole, and nothing under the bottom row draws in its place.
+  await expect(
+    page.getByText('Needs you, Controls, Flags, Patching, Guardrails and Spend couldn’t be shown.'),
+  ).toContainText('Reloading the page may bring them back.');
+  // The first view is whole, and nothing of the bottom row draws in its place.
   await expect(page.locator('sf-station')).toHaveCount(8);
   await expect(page.locator('section.canary')).toBeVisible();
-  await expect(page.locator('#guardrails')).toHaveCount(0);
+  await expect(page.locator('#guardrails-summary')).toHaveCount(0);
   const notice = await new AxeBuilder({ page })
     .include('main .notice')
     .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
@@ -180,10 +180,34 @@ test('a panel’s chunk that never arrives leaves the page as it is, with a noti
   expect(notice.violations).toEqual([]);
 });
 
-test('the bottom row draws when the panels under it can’t, and says what is missing', async ({ page }) => {
-  await page.route('**/assets/Guardrails-*.js', (route) => route.fulfill({ status: 404 }));
+test('the bottom row draws when the summaries can’t, and says what is missing in their place', async ({ page }) => {
+  await page.route('**/assets/Summaries-*.js', (route) => route.fulfill({ status: 404 }));
   await page.goto(consoleUrl());
-  await expect(page.getByText('Patching and Guardrails couldn’t be shown.')).toBeVisible();
-  await expect(page.locator('section.bottom')).toBeVisible();
-  await expect(page.locator('#guardrails')).toHaveCount(0);
+  const notice = page.locator('.bottom-side .notice');
+  await expect(notice).toHaveText(
+    'Not loadedPatching and Guardrails couldn’t be shown. Reloading the page may bring them back.',
+  );
+  // In their place, between Flags and Spend, and the rest of the row is whole.
+  await expect(page.locator('.bottom-side > *')).toHaveCount(4);
+  await expect(page.locator('.bottom-side > :nth-child(3)')).toHaveClass(/notice/);
+  await expect(page.locator('article.needs')).toBeVisible();
+  await expect(page.locator('#guardrails-summary')).toHaveCount(0);
+});
+
+test('a panel’s sheet whose chunk never arrives says so over the page, and Close takes it away', async ({ page }) => {
+  await page.route('**/assets/Patching-*.js', (route) => route.fulfill({ status: 404 }));
+  await page.goto(consoleUrl());
+  await page
+    .locator('#patching-summary')
+    .getByRole('button', { name: /^All \d+ moves$/ })
+    .click();
+  const notice = page.locator('.notice.over');
+  await expect(notice).toContainText('Patching’s sheet couldn’t be shown. Reloading the page may bring it back.');
+  await expect(notice).toBeInViewport();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await notice.getByRole('button', { name: 'Close' }).click();
+  await expect(notice).toHaveCount(0);
+  // Guardrails' sheet has its own chunk, and opens.
+  await page.locator('#guardrails-summary').getByRole('button', { name: 'All eleven guardrails' }).click();
+  await expect(page.getByRole('dialog', { name: 'Guardrails' })).toBeVisible();
 });

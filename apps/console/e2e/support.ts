@@ -189,8 +189,8 @@ export async function scored(page: Page): Promise<void> {
 
 export async function ready(page: Page): Promise<void> {
   await page.locator('.card[data-place="centre"]').waitFor();
-  // The panels under the reel arrive in chunks of their own after the first view, Guardrails last.
-  await page.locator('#guardrails').waitFor();
+  // The bottom row arrives in chunks of their own after the first view, and draws once the last is in.
+  await page.locator('#guardrails-summary').waitFor();
   await page.evaluate(() => document.fonts.ready);
 }
 

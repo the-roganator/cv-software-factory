@@ -1,6 +1,6 @@
 /**
- * Guardrails: spec 6's eleven as a checklist, full width under the bottom row, for everyone. Its head says how many
- * hold; each row is one line and a button, Held or Did not hold, the guardrail's number and name, and how old its last
+ * Guardrails' sheet: spec 6's eleven as a checklist, whole, for everyone, opened from its summary in the bottom row
+ * (`Summaries.tsx`), from Controls, or at a row by the address (`?open=`). Its kicker says how many hold; each row is one line and a button, Held or Did not hold, the guardrail's number and name, and how old its last
  * proof is, in two columns from 1180 up and one below. One row opens at a time, in place under it, with
  * `aria-expanded`: what holds it, its last proof, what it refused in the last seven days, and, for the five a red-team
  * attack proves, that attack with its last run and Launch (`projection/guardrails.ts` and `projection/refusals.ts` read
@@ -18,7 +18,7 @@
  * it, with only Close. An attack not available yet has no Launch at all, for anyone: its card says so, with what it
  * tries.
  */
-import { lazy, Suspense, useId, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
 import { ago, clock, count, shortVersion, shortWhen, startOfDay } from '../format.ts';
 import {
@@ -30,31 +30,14 @@ import {
   type ProofSource,
   type RefusalLine,
   type Standing,
-  type Verdict,
 } from '../projection/index.ts';
 import { Glyph, type GlyphName } from './Glyph.tsx';
+import { heldWords, LAST_RUN, READS } from './panel-words.ts';
+import { bringIntoSheet, SheetFrame } from './SheetFrame.tsx';
+import '../styles/guardrails.css';
 
 /** The attack's dialog, which a press of Launch opens: its code arrives then. */
 const AttackDialog = lazy(() => import('./AttackDialog.tsx').then((module) => ({ default: module.AttackDialog })));
-
-/** The row a link opened (`?open=3`), as the mockup's: which guardrail to show opened. */
-const asked = Number(new URLSearchParams(location.search).get('open')) || undefined;
-
-/** How a row reads, by its state: its word, tone and glyph. */
-const READS: Record<GuardrailRow['state'], [word: string, tone: string, glyph: GlyphName]> = {
-  held: ['Held', 'ok', 'check'],
-  'not-held': ['Did not hold', 'attn', 'cross'],
-  unproved: ['Not proved', 'faint', 'dash'],
-};
-
-/** An attack's last run, in the words its card shows: refused, the failures that page Martin, or running. */
-const LAST_RUN: Record<Verdict, [word: string, tone: string, glyph: GlyphName]> = {
-  refused: ['Refused', 'ok', 'check'],
-  'not-refused': ['Not refused · Martin paged', 'attn', 'cross'],
-  unconfirmed: ['Not confirmed · Martin paged', 'attn', 'cross'],
-  unfinished: ['Unfinished · Martin paged', 'attn', 'ring'],
-  running: ['Running', 'signal', 'ring'],
-};
 
 /** A proof of `make guardrails` that is more than its command, in a few words. */
 const PROOF_WORDS: Record<string, string> = {
@@ -323,28 +306,38 @@ function Row({
   );
 }
 
-/** How many hold, as the head says it: "11 held", or "10 held · 1 did not", and any not proved yet. */
-function heldWords({ held, notHeld, unproved }: GuardrailsView): string {
-  return [`${held} held`, notHeld > 0 && `${notHeld} did not`, unproved > 0 && `${unproved} not proved yet`]
-    .filter(Boolean)
-    .join(' · ');
-}
-
-export function Guardrails({
+export function GuardrailsSheet({
   view,
   now,
   admin,
+  row: asked,
   onOpen,
+  motion,
+  rise,
+  onClose,
 }: {
   view: GuardrailsView;
   /** The page's time, which each proof's age counts from. */
   now: number;
   admin: Admin;
+  /** The guardrail it opens at, opened, scrolled to and focused; none opens it at its top. */
+  row: number | undefined;
+  /** Opens a work item's sheet, in this one's place. */
   onOpen: (item: string) => void;
+  motion: boolean;
+  rise: boolean;
+  onClose: () => void;
 }) {
   const [open, setOpen] = useState<number | undefined>(asked);
   const [launching, setLaunching] = useState<GuardrailRow | undefined>(undefined);
+  const list = useRef<HTMLDivElement>(null);
   const martin = admin.kind === 'martin';
+  // The row it was opened at comes into view, focused, as the sheet opens.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs as the sheet opens
+  useEffect(() => {
+    if (asked !== undefined)
+      bringIntoSheet(list.current?.querySelector<HTMLElement>('.gr > button[aria-expanded="true"]'));
+  }, []);
   const row = (each: GuardrailRow) => (
     <Row
       key={each.n}
@@ -359,31 +352,42 @@ export function Guardrails({
     />
   );
   return (
-    <section className="panel guardrails" id="guardrails" aria-labelledby="guardrails-title">
-      <div className="panel-head">
-        <h2 id="guardrails-title">Guardrails</h2>
-        <span className={view.notHeld ? 'label tone-attn' : 'label'}>{heldWords(view)}</span>
+    <SheetFrame
+      kicker={
+        <span className={view.notHeld ? 'label panel-count tone-attn' : 'label panel-count'}>
+          {heldWords(view)}
+          {!martin && ' · Read only'}
+        </span>
+      }
+      title="Guardrails"
+      motion={motion}
+      rise={rise}
+      onClose={onClose}
+    >
+      <div className="wrap sheet-whole">
+        <section className="guardrails" id="guardrails" aria-labelledby="sheet-title">
+          <p className="help">
+            Each is held by a mechanism, not an instruction, and proved. Open one for what holds it, its last proof, its
+            refusals and its attack.
+          </p>
+          <div className="gr-list" ref={list}>
+            <div className="gr-col">{view.rows.slice(0, 6).map(row)}</div>
+            <div className="gr-col">{view.rows.slice(6).map(row)}</div>
+          </div>
+          <p className="help">Only auto-rollback can be switched off, in Controls. Stop the line always works.</p>
+          {launching?.attack?.available && (
+            <Suspense fallback={null}>
+              <AttackDialog
+                guardrail={launching.n}
+                attack={launching.attack.attack}
+                running={view.running}
+                admin={admin}
+                onClose={() => setLaunching(undefined)}
+              />
+            </Suspense>
+          )}
+        </section>
       </div>
-      <p className="help">
-        Each is held by a mechanism, not an instruction, and proved. Open one for what holds it, its last proof, its
-        refusals and its attack.
-      </p>
-      <div className="gr-list">
-        <div className="gr-col">{view.rows.slice(0, 6).map(row)}</div>
-        <div className="gr-col">{view.rows.slice(6).map(row)}</div>
-      </div>
-      <p className="help">Only auto-rollback can be switched off, in Controls. Stop the line always works.</p>
-      {launching?.attack?.available && (
-        <Suspense fallback={null}>
-          <AttackDialog
-            guardrail={launching.n}
-            attack={launching.attack.attack}
-            running={view.running}
-            admin={admin}
-            onClose={() => setLaunching(undefined)}
-          />
-        </Suspense>
-      )}
-    </section>
+    </SheetFrame>
   );
 }

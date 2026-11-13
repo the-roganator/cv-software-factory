@@ -811,7 +811,14 @@ export class Triage {
   async #move(signal: Seen, seed: string, tickets: Ticket[]): Promise<Made> {
     const { sql } = this.#o;
     const now = this.#o.now();
+    // The inbox's own check lets a sense's signal leave out its symptom and its evidence: a move's needs both, or it
+    // would crash here, or open a security ticket at the least severity with nothing to show for it. It fails instead,
+    // and stays in the inbox with why.
     if (!signal.move) throw new Error('A signal from the dependency sense names no move');
+    if (signal.symptom !== 'vulnerable-dependency' && signal.symptom !== 'outdated-dependency')
+      throw new Error('A signal from the dependency sense names no dependency’s symptom');
+    if (signal.symptom === 'vulnerable-dependency' && !signal.evidence?.some((e) => e.kind === 'scan'))
+      throw new Error('A vulnerable dependency’s signal carries no scan');
     const fingerprint = moveFingerprint(signal.move);
     const open = tickets.find((ticket) => sameFingerprint(ticket.fingerprint, fingerprint));
     if (open) {

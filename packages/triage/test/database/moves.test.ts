@@ -243,4 +243,27 @@ describe("a move's signal", () => {
       publicView('ticket.opened', { summary: '', payload: ticket.payload, artifacts: [] } as never).payload,
     );
   });
+
+  it('fails, never opening a ticket, when it names no symptom, or no scan for a vulnerability', async () => {
+    const { symptom: _, ...nameless } = move([finding('CVE-2026-1', 'high')]);
+    const bare = { ...move([finding('CVE-2026-1', 'high')]), evidence: [] };
+    const tickets = () => writer`select 1 from events where type = 'ticket.opened'`.then((rows) => rows.length);
+    const before = await tickets();
+    for (const [signal, why] of [
+      [nameless, 'names no dependency’s symptom'],
+      [bare, 'carries no scan'],
+    ] as const) {
+      const id = crypto.randomUUID();
+      // As a signal could reach the inbox past `sendSignal`'s own check.
+      await database.owner`insert into inbox (id, sense, fingerprint, signal)
+                           values (${id}, 'dependency', 'move npm left-pad', ${database.owner.json(signal as never)})`;
+      expect(await triage().takeOne()).toBe('failed');
+      const [row] = await database.owner<{ failure: string; triaged_at: Date | null }[]>`
+        select failure, triaged_at from inbox where id = ${id}`;
+      expect(row).toMatchObject({ triaged_at: null });
+      expect(row?.failure).toContain(why);
+      await database.owner`update inbox set triaged_at = now(), outcome = 'counted' where id = ${id}`;
+    }
+    expect(await tickets()).toBe(before);
+  });
 });

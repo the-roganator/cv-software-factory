@@ -4,10 +4,20 @@
 // It never starts or stops the line, never writes the store, and never touches website-images, scoreboard-images or
 // flagd-images: the one image policy it changes is factory-images. The judgement (what to try, what to watch, a live
 // try's terms) is the try-the-line skill's; this is its mechanical half. The cluster is reached through Ops
-// (try-ops.ts), which the tests replace with a cluster of their own.
-import { mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+// (try-ops.ts), which the tests replace with a cluster of their own. The cluster's one holder is a lock beside the
+// state (scripts/cluster-lock.ts): `begin` takes it for --holder, and `end` gives it back.
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { Lock, LockState, Process } from '../../../../scripts/cluster-lock.ts';
+import {
+  describeLock,
+  lockPathFor,
+  readLock,
+  removeLock,
+  sayLock,
+  writeLock,
+} from '../../../../scripts/cluster-lock.ts';
 
 /** This repository's images, each with the Dockerfile that builds it. */
 export const REGISTRY = 'ghcr.io/the-roganator/cv-software-factory';
@@ -87,8 +97,10 @@ export interface Line {
 
 /** Everything the script reads and changes, and nothing else. */
 export interface Ops {
-  /** The board's `cluster.holder`, or undefined when there is no board to read. */
-  holder(): string | undefined;
+  /** The process a hold of the cluster belongs to: the session's, or the terminal's shell. */
+  holderProcess(): Process;
+  /** Whether that process runs still. */
+  processAlive(process: Process): boolean;
   root(): Root;
   pauseRoot(): void;
   setRootPolicy(policy: Record<string, unknown>): void;
@@ -313,6 +325,8 @@ export interface BeginOptions {
   env: string[];
   holder: string | undefined;
   byHand: boolean;
+  /** Whether a stale lock (its holder's process ended) may be cleared and taken. */
+  takeStale: boolean;
   /** Objects of the branch's render to apply, each `Kind/name` (every namespace it is in). */
   apply: string[];
 }
@@ -610,21 +624,52 @@ function openTry(ops: Ops): string[] {
   return reasons;
 }
 
-export function begin(ops: Ops, path: string, options: BeginOptions): void {
+/** Takes the cluster's lock for the holder, or refuses; whether this call took it (it was not theirs already). */
+function takeLock(ops: Ops, lockPath: string, options: BeginOptions): boolean {
+  const holder = options.holder;
+  if (!holder) throw new Refused('name yourself: --holder <your key> (TRY_HOLDER), the key your session goes by');
+  const state = readLock(lockPath, (p) => ops.processAlive(p));
+  if (state.kind === 'unreadable') throw new Refused(sayLock(state, lockPath));
+  if (state.kind === 'held' && state.lock.holder !== holder) {
+    if (state.live) {
+      throw new Refused(
+        `the cluster is held by ${describeLock(state.lock)}: theirs until they give it back (\`try end\`)`,
+      );
+    }
+    if (!options.takeStale) {
+      throw new Refused(
+        `the cluster's lock names ${describeLock(state.lock)}, whose process has ended: \`try end\` clears it, or begin with --take-stale`,
+      );
+    }
+    ops.say(`Clearing the stale lock of ${describeLock(state.lock)}.`);
+  }
+  const me = ops.holderProcess();
+  const lock: Lock = { holder, ...me, since: ops.now().toISOString(), host: hostname() };
+  const fresh = state.kind === 'free';
+  try {
+    writeLock(lockPath, lock, fresh);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new Refused('another begin took the cluster just now');
+    throw e;
+  }
+  return state.kind !== 'held' || state.lock.holder !== holder;
+}
+
+export function begin(ops: Ops, path: string, options: BeginOptions, lockPath = lockPathFor(path)): void {
   const open = readState(path);
   if (open)
     throw new Refused(`a try is open: ${open.branch} since ${open.began}, by ${open.holder}. \`try end\` first`);
-  const holder = ops.holder();
-  if (holder !== undefined) {
-    if (!options.holder) throw new Refused('name yourself: --holder <your key> (TRY_HOLDER), as the board names you');
-    if (holder !== options.holder) {
-      throw new Refused(
-        holder === 'none'
-          ? `the board's cluster.holder is none: write yourself on it (holder: ${options.holder}) before the first change`
-          : `the board's cluster.holder is ${holder}: the cluster is theirs until they give it back`,
-      );
-    }
+  const took = takeLock(ops, lockPath, options);
+  try {
+    opened(ops, path, options);
+  } catch (e) {
+    // Refused before the first change: the cluster is free again. Once the state is written, `try end` gives it back.
+    if (took && !existsSync(path)) removeLock(lockPath);
+    throw e;
   }
+}
+
+function opened(ops: Ops, path: string, options: BeginOptions): void {
   const already = openTry(ops);
   if (already.length) throw new Refused(`the cluster is not as main sets it:\n  ${already.join('\n  ')}`);
   const root = ops.root();
@@ -893,10 +938,29 @@ export interface EndOptions {
 }
 
 /** Puts back everything the state recorded; whether all of it is back (and the state file gone). */
-export function end(ops: Ops, path: string, options: EndOptions): boolean {
+/** After a try is put back, or when none is open: gives the lock back, or clears a stale one, and says so. */
+function giveBack(ops: Ops, lockPath: string, ended: State | undefined): void {
+  const lock: LockState = readLock(lockPath, (p) => ops.processAlive(p));
+  if (lock.kind === 'free') return;
+  if (lock.kind === 'unreadable') {
+    ops.say(`${sayLock(lock, lockPath)} Left as it is: remove it by hand once you know no one holds the cluster.`);
+    return;
+  }
+  if (ended || !lock.live) {
+    removeLock(lockPath);
+    ops.say(
+      `The cluster is given back: the lock of ${describeLock(lock.lock)} is removed${lock.live ? '' : ' (it was stale)'}.`,
+    );
+    return;
+  }
+  ops.say(`${sayLock(lock, lockPath)} No try is open, so it is left to them.`);
+}
+
+export function end(ops: Ops, path: string, options: EndOptions, lockPath = lockPathFor(path)): boolean {
   const state = readState(path);
   if (!state) {
     ops.say('No try is open.');
+    giveBack(ops, lockPath, undefined);
     return true;
   }
   if (state.phase === 'beginning' && state.host === hostname() && state.pid !== process.pid && ops.alive(state.pid)) {
@@ -1033,6 +1097,7 @@ export function end(ops: Ops, path: string, options: EndOptions): boolean {
   ops.say(
     "Back as it was: root Synced and Healthy on its own policy, every image policy as recorded, no pod or Job on the try's images, its images off the node and the Mac.",
   );
+  giveBack(ops, lockPath, state);
   if (line) report(ops, state, line);
   return true;
 }
@@ -1053,7 +1118,13 @@ function report(ops: Ops, state: State, line: Line): void {
   );
 }
 
-export function status(ops: Ops, path: string): void {
+export function status(ops: Ops, path: string, lockPath = lockPathFor(path)): void {
+  ops.say(
+    sayLock(
+      readLock(lockPath, (p) => ops.processAlive(p)),
+      lockPath,
+    ),
+  );
   const state = readState(path);
   if (!state) {
     const open = openTry(ops);
@@ -1118,6 +1189,7 @@ export function parse(
       env: [],
       holder: process.env.TRY_HOLDER,
       byHand: false,
+      takeStale: false,
       apply: [],
     };
     const args = [...rest];
@@ -1132,6 +1204,7 @@ export function parse(
       } else if (a === '--env') options.env.push(value(a));
       else if (a === '--holder') options.holder = value(a);
       else if (a === '--by-hand') options.byHand = true;
+      else if (a === '--take-stale') options.takeStale = true;
       else if (a === '--apply') options.apply.push(...value(a).split(',').filter(Boolean));
       else if (!a.startsWith('--') && !options.branch) options.branch = a;
       else throw new Refused(`try begin: unknown ${a}`);
@@ -1140,25 +1213,30 @@ export function parse(
     return { command, options };
   }
   throw new Refused(
-    'usage: try begin <branch> [--only <deployment>[,…]]… [--env <deployment>:<NAME>=<value>]… [--apply <Kind>/<name>[,…]]… [--holder <key>] [--by-hand]\n' +
+    'usage: try begin <branch> [--only <deployment>[,…]]… [--env <deployment>:<NAME>=<value>]… [--apply <Kind>/<name>[,…]]… --holder <key> [--by-hand] [--take-stale]\n' +
       '       try status\n       try end [--timeout <seconds>]',
   );
 }
 
-export async function main(argv: string[], ops: Ops, path = statePath()): Promise<number> {
+export async function main(
+  argv: string[],
+  ops: Ops,
+  path = statePath(),
+  lockPath = lockPathFor(path),
+): Promise<number> {
   try {
     const command = parse(argv);
     if (command.command === 'begin') {
       try {
-        begin(ops, path, command.options);
+        begin(ops, path, command.options, lockPath);
       } catch (e) {
         const left = readState(path);
         if (left?.phase === 'beginning' && left.pid === process.pid && left.host === hostname())
           ops.say('The begin stopped part way: `try end` puts back what it changed.');
         throw e;
       }
-    } else if (command.command === 'status') status(ops, path);
-    else return end(ops, path, command.options) ? 0 : 1;
+    } else if (command.command === 'status') status(ops, path, lockPath);
+    else return end(ops, path, command.options, lockPath) ? 0 : 1;
     return 0;
   } catch (e) {
     if (e instanceof Refused) {

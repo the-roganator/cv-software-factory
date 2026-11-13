@@ -8,9 +8,11 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Lock } from '../../../../scripts/cluster-lock.ts';
+import { readLock, writeLock } from '../../../../scripts/cluster-lock.ts';
 import type { Deployment, K8sObject, Line, ObjectRef, Ops, State, Workload } from './try.ts';
 import {
   asDeployment,
@@ -62,7 +64,9 @@ const rendered = (name: string, image: string) =>
 
 /** A cluster, a store, a node and a Mac, in memory, with every call written down. */
 class Cluster implements Ops {
-  board: string | undefined = 'try-script';
+  /** The process this shell's hold belongs to, and every process that runs. */
+  me = { pid: 100, started: 'Tue 10 Nov 22:00:00 2026' };
+  running = new Set<number>([100]);
   syncPolicy: Record<string, unknown> | undefined = structuredClone(AUTOMATED);
   sync = 'Synced';
   health = 'Healthy';
@@ -118,7 +122,8 @@ class Cluster implements Ops {
     return this.deps.find((d) => d.name === name) as Deployment;
   }
 
-  holder = () => this.board;
+  holderProcess = () => this.me;
+  processAlive = (p: { pid: number }) => this.running.has(p.pid);
   root = () => ({ syncPolicy: structuredClone(this.syncPolicy), sync: this.sync, health: this.health });
   pauseRoot() {
     this.call('pauseRoot');
@@ -239,10 +244,19 @@ class Cluster implements Ops {
 
 let dir: string;
 let path: string;
+let lockFile: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'try-'));
   path = join(dir, 'try', 'state.json');
+  lockFile = join(dir, 'cluster.lock');
 });
+/** A lock another session wrote: live while its pid runs on the cluster `c`. */
+function heldBy(holder: string, pid: number): Lock {
+  const lock = { holder, pid, started: 'Mon 9 Nov 08:00:00 2026', since: '2026-11-09T08:00:00.000Z', host: hostname() };
+  writeLock(lockFile, lock, true);
+  return lock;
+}
+const lockOf = (): unknown => JSON.parse(readFileSync(lockFile, 'utf8'));
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const begin = (c: Cluster, ...args: string[]) => main(['begin', 'feat/x', '--holder', 'try-script', ...args], c, path);
@@ -260,7 +274,7 @@ async function openState(c: Cluster): Promise<State> {
 function fresh(c: Cluster): Cluster {
   const d = new Cluster();
   const shared = [
-    'board',
+    'running',
     'syncPolicy',
     'sync',
     'health',
@@ -281,6 +295,104 @@ function fresh(c: Cluster): Cluster {
   d.node = new Map(c.node);
   return d;
 }
+
+describe("the cluster's lock", () => {
+  it('is taken by begin for the holder, with the process it belongs to, and given back by end', async () => {
+    const c = new Cluster();
+    expect(await begin(c)).toBe(0);
+    expect(lockOf()).toEqual({
+      holder: 'try-script',
+      pid: 100,
+      started: 'Tue 10 Nov 22:00:00 2026',
+      since: '2026-11-10T23:00:00.000Z',
+      host: hostname(),
+    });
+    expect(statSync(lockFile).mode & 0o777).toBe(0o600);
+    expect(await end(fresh(c))).toBe(0);
+    expect(existsSync(lockFile)).toBe(false);
+    expect(said(c) + said(fresh(c))).not.toMatch(/stale/);
+  });
+
+  it('is kept while a try is not back, so the cluster stays held', async () => {
+    const c = new Cluster();
+    expect(await begin(c)).toBe(0);
+    const d = fresh(c);
+    d.selfHeals = false;
+    d.syncPolicy = {};
+    d.setRootPolicy = () => {};
+    expect(await end(d)).toBe(1);
+    expect(existsSync(lockFile)).toBe(true);
+  });
+
+  it('lets its holder begin again over its own lock', async () => {
+    const c = new Cluster();
+    heldBy('try-script', 100);
+    expect(await begin(c)).toBe(0);
+    expect((lockOf() as Lock).holder).toBe('try-script');
+  });
+
+  it('keeps a lock its holder had before a refused begin', async () => {
+    const c = new Cluster();
+    heldBy('try-script', 100);
+    c.sync = 'OutOfSync';
+    expect(await begin(c)).toBe(2);
+    expect((lockOf() as Lock).pid).toBe(100);
+  });
+
+  it('is taken over a stale lock only with --take-stale, which says so', async () => {
+    const c = new Cluster();
+    heldBy('someone-else', 300);
+    expect(await begin(c, '--take-stale')).toBe(0);
+    expect(said(c)).toMatch(/Clearing the stale lock of someone-else \(pid 300/);
+    expect((lockOf() as Lock).holder).toBe('try-script');
+  });
+
+  it('is cleared by end with no try open when stale, and left to its holder when live', async () => {
+    const c = new Cluster();
+    heldBy('someone-else', 300);
+    expect(await end(c)).toBe(0);
+    expect(said(c)).toMatch(/given back: the lock of someone-else .* is removed \(it was stale\)/);
+    expect(existsSync(lockFile)).toBe(false);
+    const d = new Cluster();
+    heldBy('someone-else', 200);
+    d.running.add(200);
+    expect(await end(d)).toBe(0);
+    expect(said(d)).toMatch(/held by someone-else .* No try is open, so it is left to them/);
+    expect(existsSync(lockFile)).toBe(true);
+  });
+
+  it('is left as it is by end when it cannot be read', async () => {
+    const c = new Cluster();
+    writeFileSync(lockFile, '{');
+    expect(await end(c)).toBe(0);
+    expect(said(c)).toMatch(/cannot be read .* remove it by hand/);
+    expect(readFileSync(lockFile, 'utf8')).toBe('{');
+  });
+
+  it('is printed by status: free, held, stale or unreadable', async () => {
+    const c = new Cluster();
+    await main(['status'], c, path);
+    heldBy('someone-else', 200);
+    c.running.add(200);
+    await main(['status'], c, path);
+    c.running.delete(200);
+    await main(['status'], c, path);
+    writeFileSync(lockFile, 'x');
+    await main(['status'], c, path);
+    const lines = c.said.filter((l) => /lock|held/.test(l));
+    expect(lines[0]).toBe('The cluster is held by no one.');
+    expect(lines[1]).toMatch(
+      /^The cluster is held by someone-else \(pid 200 on .*, since 2026-11-09T08:00:00.000Z\)\.$/,
+    );
+    expect(lines[2]).toMatch(/whose process has ended: stale/);
+    expect(lines[3]).toMatch(/cannot be read \(it is not JSON\): taken as held/);
+  });
+
+  it('takes a lock from another machine as live, its process not being one this machine can see', () => {
+    writeLock(lockFile, { holder: 'x', pid: 1, started: 's', since: 't', host: 'another-mac' }, true);
+    expect(readLock(lockFile, () => false)).toMatchObject({ kind: 'held', live: true });
+  });
+});
 
 describe('the state file', () => {
   const state: State = {
@@ -448,8 +560,20 @@ describe('try begin', () => {
 
   describe('refuses, changing nothing', () => {
     const refusals: [string, (c: Cluster) => void, RegExp, string[]?][] = [
-      ['when the board names another holder', (c) => (c.board = 'someone-else'), /holder is someone-else/],
-      ['when the board names no holder', (c) => (c.board = 'none'), /write yourself on it/],
+      [
+        'when another session holds the cluster',
+        (c) => {
+          heldBy('someone-else', 200);
+          c.running.add(200);
+        },
+        /the cluster is held by someone-else \(pid 200 .*\): theirs until they give it back/,
+      ],
+      [
+        'when a stale lock names another, whose process has ended',
+        () => heldBy('someone-else', 300),
+        /someone-else .* whose process has ended: `try end` clears it, or begin with --take-stale/,
+      ],
+      ['when the lock cannot be read', () => writeFileSync(lockFile, 'held'), /cannot be read \(it is not JSON\)/],
       ['when Argo CD root is paused', (c) => (c.syncPolicy = {}), /root is paused/],
       [
         'when an image policy is not on Deny',
@@ -493,10 +617,13 @@ describe('try begin', () => {
       it(what, async () => {
         const c = new Cluster();
         set(c);
+        const lockBefore = existsSync(lockFile) ? readFileSync(lockFile, 'utf8') : undefined;
         expect(await begin(c, ...(args ?? []))).toBe(2);
         expect(said(c)).toMatch(message);
         expect(c.calls).toEqual([]);
         expect(existsSync(path)).toBe(false);
+        // The lock as it was: a refused begin holds nothing.
+        expect(existsSync(lockFile) ? readFileSync(lockFile, 'utf8') : undefined).toBe(lockBefore);
       });
     }
 
@@ -509,7 +636,7 @@ describe('try begin', () => {
       expect(c.calls.length).toBe(calls);
     });
 
-    it('without a holder, when there is a board', async () => {
+    it('without a holder', async () => {
       const c = new Cluster();
       expect(await main(['begin', 'feat/x'], c, path)).toBe(2);
       expect(said(c)).toMatch(/--holder/);
@@ -1183,7 +1310,15 @@ describe('the command line', () => {
   it('takes --only one value at a time, comma-separated, so a branch after it stays the branch', () => {
     expect(parse(['begin', '--only', 'line,github', '--only', 'red-team', 'b', '--holder', 'k'])).toEqual({
       command: 'begin',
-      options: { branch: 'b', only: ['line', 'github', 'red-team'], env: [], holder: 'k', byHand: false, apply: [] },
+      options: {
+        branch: 'b',
+        only: ['line', 'github', 'red-team'],
+        env: [],
+        holder: 'k',
+        byHand: false,
+        takeStale: false,
+        apply: [],
+      },
     });
   });
   it("bounds end's wait at twenty minutes", () => {

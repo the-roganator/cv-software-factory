@@ -79,14 +79,21 @@ define deployed
 @$(MAKE) --no-print-directory status
 endef
 
+# $(cluster-held): refuse while another session holds the cluster (`try begin` takes it, `try end` gives it back: the
+# try-the-line skill), naming the holder; the holder itself (TRY_HOLDER) goes ahead, and FORCE=1 goes ahead anyway.
+define cluster-held
+@node scripts/cluster-lock.ts check $(if $(FORCE),--force)
+endef
+
 .DEFAULT_GOAL := help
-.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
+.PHONY: help up down upgrade-cluster gateway-key github-key pushover-key scoreboard-secrets worker-secrets share-key refusal-key judgements-token check check-static check-tests status e2e zap egress admission-ready eval samples real-store bench-down stop-the-line start-the-line take-the-line close-work-item enrol guardrails drill-vulnerability
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-up: ## Create the local cluster; Argo CD then deploys everything from main (or REVISION=<branch>)
+up: ## Create the local cluster; Argo CD then deploys everything from main (or REVISION=<branch>); refused while another session holds it (FORCE=1)
 	@docker info >/dev/null 2>&1 || { echo "Docker isn't running. Start OrbStack (or another runtime) and try again."; exit 1; }
+	$(cluster-held)
 	@# The cluster's state lives off its node, on a volume made first, which k3d leaves when it deletes the cluster:
 	@# `make upgrade-cluster` moves the cluster to a new k3s on it. One left without a cluster is a move's that stopped.
 	@k3d cluster list $(CLUSTER) >/dev/null 2>&1 || { \
@@ -145,8 +152,9 @@ down: ## Delete the local cluster, and everything in it
 		[ -z "$$volumes" ] || docker volume rm $$volumes >/dev/null
 	@echo "  The local certificate authority stays, trusted, for the next 'make up'. 'make untrust-ca' removes it."
 
-upgrade-cluster: ## Move the local cluster to the k3s deploy/k3d/cluster.yaml pins, keeping everything in it (KEEP=1 keeps the copy taken first; BACK=1 goes back to it)
+upgrade-cluster: ## Move the local cluster to the k3s deploy/k3d/cluster.yaml pins, keeping everything in it (KEEP=1 keeps the copy taken first; BACK=1 goes back to it); refused while another session holds it (FORCE=1)
 	@docker info >/dev/null 2>&1 || { echo "Docker isn't running. Start OrbStack (or another runtime) and try again."; exit 1; }
+	$(cluster-held)
 	@scripts/upgrade-cluster.sh $(CLUSTER) deploy/k3d/cluster.yaml $(if $(BACK),back,upgrade)
 	@# Everything `make up` makes once (the keys, the passwords, the console's certificate, Argo CD and root) is in
 	@# the state the move kept, so it waits for Argo CD alone.
@@ -388,6 +396,9 @@ samples: node_modules ## Load the sample work items into the cluster's store, wi
 	@# Then the events, as Martin, through a port-forward to Postgres: the samples hold his commands too.
 	@$(call as-operator,ARTIFACTS_DIR=packages/samples/log/artifacts node apps/factory/src/cli.ts events load packages/samples/log)
 	@echo "  Console  https://console.localhost:8443"
+
+bench-down: ## Take the bench down: stop its host gateway (:8180) and remove its throwaway Postgres containers (sf-bench-*), saying what each cost
+	@.claude/skills/try-the-line/bin/bench-down.sh
 
 real-store: node_modules ## Replace the cluster's store with an empty one for real events (FORCE=1 if it holds some)
 	@# As the database's owner, through a port-forward: only the owner may drop the schema.

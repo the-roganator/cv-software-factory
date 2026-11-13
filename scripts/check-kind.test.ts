@@ -880,6 +880,18 @@ describe('the queue’s cluster, made once already', () => {
     const bad = { ...built, on: 'not-a-sha' };
     expect(decide(bad, answers).said).toBe('cluster');
   });
+
+  // Review (read1): files outside PLATFORM|INSTALLS that change what platform.yml's job runs. mise-action reads every
+  // mise config file in the checkout, not only mise.toml and mise.lock; checkout applies .gitattributes.
+  it.each<[string, Files]>([
+    ['mise.local.toml, which overrides mise.toml’s tool pins', { 'mise.local.toml': '[tools]\nk3d = "5.0.0"\n' }],
+    ['.config/mise.toml, whose [env] mise-action exports', { '.config/mise.toml': '[env]\n_.source = "x.sh"\n' }],
+    ['.tool-versions, which mise reads as a config', { '.tool-versions': 'kubectl 1.20.0\n' }],
+    ['.gitattributes, which changes the bytes checked out', { '.gitattributes': '*.sh text eol=crlf\n' }],
+  ])('makes one when main, or an entry ahead in the queue, changed %s since the head’s run', (_, files) => {
+    const { said } = answered(line({ main: [files] }));
+    expect(said).toBe('cluster');
+  });
 });
 
 describe('the platform check’s paths, however git would quote them', () => {

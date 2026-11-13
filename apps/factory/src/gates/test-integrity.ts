@@ -77,10 +77,10 @@ export function pullRequestNumber(env: Env): number | { error: string } {
   return { error: `Test integrity reads a pull request's description on pull_request or merge_group, not ${event}` };
 }
 
-/** The pull request's description as it is now, through the API, or why it could not be read. */
 /** GitHub's answer to a read that asking again will not change. */
 class Refused extends Error {}
 
+/** The pull request's description as it is now, through the API, or why it could not be read. */
 export async function description(
   env: Env,
   fetcher: typeof fetch = fetch,

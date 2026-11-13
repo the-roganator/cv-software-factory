@@ -1434,11 +1434,20 @@ describe('the manifests, object by object', () => {
   const SAME = [{ from: IMAGE, to: IMAGE }];
   const judge = (head: string, was = base) => manifestsDiffer(was, head, SAME);
 
-  it("passes a ConfigMap's data beside its pod template's checksum, written in any whitespace", () => {
+  it("passes a ConfigMap's data beside its pod template's checksum, written in any whitespace inside them", () => {
     expect(judge(`${configMap('b')}---\n${deployment({ template: 'checksum/config: bbb' })}`)).toBeUndefined();
-    // A key added to the data, the checksum gone, a trailing tab and other quotes: none is a difference.
-    const head = `${configMap('"a"\n  more: x').replace('name: app', 'name: app\t')}---\n${deployment({ template: 'x: "z"' })}`;
-    expect(judge(head, `${configMap('a')}---\n${deployment({ template: 'x: z' })}`)).toBeUndefined();
+    // A key added to the data, other quotes and a trailing tab in it: none is a difference.
+    const head = `${configMap('"a"\n  more: x\t')}---\n${deployment({ template: 'checksum/config:   "aaa"' })}`;
+    expect(judge(head)).toBeUndefined();
+    // Outside them, other quotes or a trailing tab is another line, which the text rule holds: what one reader takes
+    // for the same value, another may not.
+    expect(judge(`${configMap('a').replace('name: app', 'name: app\t')}---\n${deployment()}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 4 is not the base's line 4: name: app",
+    );
+    const quoted = `${configMap('a')}---\n${deployment({ template: 'x: "z"' })}`;
+    expect(judge(quoted, `${configMap('a')}---\n${deployment({ template: 'x: z' })}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 19 is not the base's line 19: x: \"z\"",
+    );
     // A checksum renamed, as a chart's template may: neither is compared.
     expect(judge(`${configMap('a')}---\n${deployment({ template: 'checksum/secret: q' })}`)).toBeUndefined();
   });
@@ -1569,8 +1578,11 @@ describe('the manifests, object by object', () => {
     expect(judge(`${configMap('b')}...\n${policy}---\n${deployment()}`, was)).toBe(
       'at the head, the rendering has a document that does not begin with `---`, which readers split apart',
     );
-    // A separator with a comment after it, and a document that ends with `...` and nothing more, are as the cluster reads.
-    expect(judge(`${configMap('a')}--- # x\n${deployment()}\n...\n---\n${policy}`, was)).toBeUndefined();
+    // A separator with a comment after it, and a document that ends with `...` and nothing more, are as the cluster
+    // reads; the text rule then holds the lines that are not the base's.
+    const split = `${configMap('a')}--- # x\n${deployment()}\n...\n---\n${policy}`;
+    expect([...(objectsOf(split) as Map<string, unknown>).keys()]).toHaveLength(3);
+    expect(judge(split, was)).toMatch(/^outside a ConfigMap's data and the checksums, the head's line 8 .*: --- # x$/);
   });
 
   it('holds what an adversarial review found the first reading let through', () => {
@@ -1606,10 +1618,18 @@ describe('the manifests, object by object', () => {
     );
   });
 
-  it("passes a ConfigMap's data added or gone whole", () => {
+  it("holds a ConfigMap's data added or gone whole on its `data:` line, which opens the place and is compared", () => {
     const bare = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n  namespace: t\n`;
-    expect(judge(`${bare}---\n${deployment()}`)).toBeUndefined();
-    expect(judge(base, `${bare}---\n${deployment()}`)).toBeUndefined();
+    expect(judge(`${bare}---\n${deployment()}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 6 is not the base's line 6: ---",
+    );
+    expect(judge(base, `${bare}---\n${deployment()}`)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 6 is not the base's line 6: data:",
+    );
+    // An empty map that gains data: its opening line is another.
+    expect(judge(base.replace('data:\n  config.yaml: a', 'data: {}'))).toMatch(
+      /line 6 is not the base's line 6: data: \{\}$/,
+    );
   });
 
   it('holds a List that wraps objects, two documents with one key, and an object with no kind or name', () => {
@@ -1619,16 +1639,18 @@ describe('the manifests, object by object', () => {
     expect(judge(`${base}\n---\n${configMap('b')}`)).toBe('at the head, the rendering has ConfigMap t/app twice');
     expect(judge(`${base}\n---\nkind: Pod\n`)).toMatch(/no kind or no name/);
     expect(judge(`${base}\n---\n- a\n`)).toMatch(/not an object/);
-    // A document with nothing in it is no object.
-    expect(judge(`---\n# nothing\n---\n${base}\n---\n`)).toBeUndefined();
+    // A document with nothing in it is no object, and its lines are lines the text rule compares.
+    expect(objectsOf(`---\n# nothing\n---\n${base}\n---\n`)).toEqual(objectsOf(base));
+    expect(judge(`---\n# nothing\n---\n${base}\n---\n`)).toMatch(/the head's line 1 is not the base's line 1: ---$/);
   });
 
   it("holds a chart's version label key added, or one written outside metadata's labels", () => {
     const labelled = (labels: string, selector = '{}') =>
       `apiVersion: v1\nkind: Service\nmetadata:\n  name: s\n  labels: { ${labels} }\nspec:\n  selector: ${selector}\n`;
-    expect(
-      manifestsDiffer(labelled('helm.sh/chart: x-1.0.0'), labelled('helm.sh/chart: x-1.0.1'), [], X),
-    ).toBeUndefined();
+    // Written in a flow mapping, the label passes the object rule and holds on its line, as main's line rule held it.
+    expect(manifestsDiffer(labelled('helm.sh/chart: x-1.0.0'), labelled('helm.sh/chart: x-1.0.1'), [], X)).toBe(
+      "outside a ConfigMap's data and the checksums, the head's line 5 is not the base's line 5: labels: { helm.sh/chart: x-1.0.1 }",
+    );
     expect(manifestsDiffer(labelled('a: b'), labelled('a: b, helm.sh/chart: x-1.0.1'), [], X)).toBe(
       'the manifests change beyond the image: Service s at metadata.labels["helm.sh/chart"]',
     );
@@ -1884,5 +1906,137 @@ describe('a rendering the gate and the cluster read alike, character by characte
     const head = cm('data:\n  note: "tab\there, café, 日本, 🙂,  "\n');
     expect(strangeCharacter(head)).toBeUndefined();
     expect(manifestsDiffer(base, head, MOVE)).toBeUndefined();
+  });
+});
+
+// The third independent read of #1065: the gate's reader and the cluster's resolve some plain scalars apart (`0X10` a
+// string to one and 16 to the other, `1e400` and `9e999` Infinity to one and two strings to the other), so two texts
+// the object rule reads alike can run apart. Outside the exempt places, every line must be the base's.
+describe('the text outside the exempt places', () => {
+  const OLD = `docker.io/acme/app:1.0.0@sha256:${hex('a')}`;
+  const NEW = `docker.io/acme/app:1.1.0@sha256:${hex('b')}`;
+  const MOVE = [{ from: OLD, to: NEW }];
+  const deployment = (image: string, labels = '', env = '') => `---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: ns
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web${labels}
+      annotations:
+        checksum/config: ${image === OLD ? 'aaa' : 'bbb'}
+    spec:
+      containers:
+        - name: web
+          image: ${image}${env}
+`;
+  const service = (selector: string) =>
+    `---\napiVersion: v1\nkind: Service\nmetadata:\n  name: web\n  namespace: ns\nspec:\n  selector:\n    ${selector}\n  ports:\n    - port: 80\n`;
+  const policy = (key: string) =>
+    `---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: fence\n  namespace: ns\nspec:\n  podSelector:\n    matchLabels:\n      ${key}: locked\n  policyTypes: [Ingress, Egress]\n`;
+  const configMap = (data: string, after = '') =>
+    `---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: ns\ndata:\n${data}${after}`;
+  const line = (n: number, text: string) =>
+    `outside a ConfigMap's data and the checksums, the head's line ${n} is not the base's line ${n}: ${text}`;
+
+  it('holds each scalar the readers resolve apart, which the object rule reads alike', () => {
+    const cases: [string, string, string, string][] = [
+      // [what, base, head, the head's line]
+      [
+        'a Service selector key',
+        deployment(OLD) + service('"0X10": web'),
+        deployment(NEW) + service('0X10: web'),
+        '0X10: web',
+      ],
+      ['a NetworkPolicy key', deployment(OLD) + policy("'0O17'"), deployment(NEW) + policy('0O17'), '0O17: locked'],
+      [
+        'a selector value',
+        deployment(OLD) + service('tier: 1e400'),
+        deployment(NEW) + service('tier: 9e999'),
+        'tier: 9e999',
+      ],
+      [
+        'an env value',
+        deployment(OLD, '', '\n          env:\n            - name: MODE\n              value: 1.0e+400'),
+        deployment(NEW, '', '\n          env:\n            - name: MODE\n              value: 7e400'),
+        'value: 7e400',
+      ],
+      ['a pod label key', deployment(OLD, '\n        "0B11": x'), deployment(NEW, '\n        0B11: x'), '0B11: x'],
+    ];
+    for (const [what, base, head, text] of cases) {
+      // The object rule alone, as YAML 1.2 and 1.1, reads no difference: the text rule is what holds it.
+      for (const version of ['1.2', '1.1'] as const) {
+        const [a, b] = [objectsOf(base, version), objectsOf(head, version)];
+        if (typeof a === 'string' || typeof b === 'string') throw new Error(`${what}: ${a} ${b}`);
+        expect([...a.keys()], what).toEqual([...b.keys()]);
+      }
+      expect(manifestsDiffer(base, head, MOVE), what).toMatch(new RegExp(`: ${text.replace(/[.+]/g, '\\$&')}$`));
+    }
+    // A numeric key the object rule already holds, and one it reads as a string, which the text rule holds.
+    expect(manifestsDiffer(deployment(OLD) + service('"1": web'), deployment(NEW) + service('1: web'), MOVE)).toMatch(
+      /a key that is not a string/,
+    );
+    expect(
+      manifestsDiffer(deployment(OLD) + service('"1e_3": web'), deployment(NEW) + service('1e_3: web'), MOVE),
+    ).toBe(line(29, '1e_3: web'));
+  });
+
+  it("sets aside a ConfigMap's data and a pod template's checksum lines by the parser's offsets, and compares the rest", () => {
+    const base = deployment(OLD) + configMap('  a: |\n    one\n\n    two\n', 'binaryData: {}\n');
+    // The data's every line, a blank one inside its block scalar too, and the checksum's value: none is compared.
+    expect(
+      manifestsDiffer(
+        base,
+        deployment(NEW) + configMap('  a: |\n    one\n    two\n\n    three\n  b: x\n', 'binaryData: {}\n'),
+        MOVE,
+      ),
+    ).toBeUndefined();
+    // The line after the place, a blank one at its edge, and a comment past its end are compared.
+    expect(
+      manifestsDiffer(base, deployment(NEW) + configMap('  a: |\n    one\n\n    two\n', '\nbinaryData: {}\n'), MOVE),
+    ).toBe(line(32, ''));
+    expect(
+      manifestsDiffer(base, deployment(NEW) + configMap('  a: |\n    one\n\n    two\n', '# x\nbinaryData: {}\n'), MOVE),
+    ).toBe(line(32, '# x'));
+    // The line that opens it, `data:`, is compared; a key's own header inside it is data.
+    const opened = deployment(NEW) + configMap('  a: |-\n    one\n\n    two\n', 'binaryData: {}\n');
+    expect(manifestsDiffer(base, opened, MOVE)).toBeUndefined();
+    expect(manifestsDiffer(base, opened.replace('\ndata:\n', '\ndata: # c\n'), MOVE)).toBe(line(27, 'data: # c'));
+    // Data in a flow mapping on the `data:` line: that line opens and closes it, and is compared.
+    const flow = (value: string) => deployment(OLD) + configMap('', '').replace('\ndata:\n', `\ndata: {a: ${value}}\n`);
+    expect(manifestsDiffer(flow('1'), flow('2').replace(OLD, NEW).replace('aaa', 'bbb'), MOVE)).toBe(
+      line(27, 'data: {a: 2}'),
+    );
+    // A checksum among other annotations on one line, and one on the object's own metadata, are lines like any other.
+    const inline = (sum: string) =>
+      deployment(OLD).replace(
+        '      annotations:\n        checksum/config: aaa',
+        `      annotations: {checksum/config: ${sum}, x: y}`,
+      );
+    expect(manifestsDiffer(inline('aaa'), inline('bbb').replace(OLD, NEW), MOVE)).toBe(
+      line(15, 'annotations: {checksum/config: bbb, x: y}'),
+    );
+    const own = (sum: string) =>
+      deployment(OLD).replace('  namespace: ns\n', `  namespace: ns\n  annotations:\n    checksum/config: ${sum}\n`);
+    expect(manifestsDiffer(own('aaa'), own('bbb').replace(OLD, NEW), MOVE)).toMatch(
+      /at metadata\.annotations\["checksum\/config"\]$/,
+    );
+  });
+
+  it("finds a place by the parser, never by the text: `data:` written in another object's value is compared", () => {
+    const secretish = (value: string) =>
+      `${deployment(OLD)}---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n  namespace: ns\nstringData:\n  data: |\n    ${value}\n`;
+    expect(manifestsDiffer(secretish('a'), secretish('b').replace(OLD, NEW), MOVE)).toMatch(/at stringData\.data$/);
+    // A ConfigMap's `data` read by the parser where a search of the text would not: after a comment, in quotes.
+    const quoted = (value: string) =>
+      `${deployment(OLD)}---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c, namespace: ns}\n"data": # here\n  k: ${value}\n`;
+    expect(manifestsDiffer(quoted('a'), quoted('b').replace(OLD, NEW).replace('aaa', 'bbb'), MOVE)).toBeUndefined();
   });
 });

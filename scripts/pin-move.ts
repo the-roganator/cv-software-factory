@@ -22,9 +22,10 @@
  *    the base and at the head, a chart rendered as Argo CD renders it on the cluster `main` describes, compared object by
  *    object, have the same objects (kind, namespace, name: none added, none gone), and differ only in each moved image's
  *    `from` for its `to`, the chart's own version labels moving as the chart's, the `data` of a ConfigMap that was there
- *    at the base, and a pod template's `checksum/` annotations. The configuration a chart's
- *    ConfigMaps carry is the publisher's, as its image is; its objects, permissions, pod specs and network policies
- *    stay Martin's.
+ *    at the base, and a pod template's `checksum/` annotations. And the text: every line outside those ConfigMaps'
+ *    `data` and those annotations, where the gate's parser places them, is the base's line, in order, with the moved
+ *    images' references and the version labels' values written alike. The configuration a chart's ConfigMaps carry is
+ *    the publisher's, as its image is; its objects, permissions, pod specs and network policies stay Martin's.
  * 7. **The scans show it.** The pinned Trivy, on a fresh database, on the image as it was and as it would be, on
  *    linux/amd64 and linux/arm64 each apart: a finding (its advisory and package, never its path) with a fix is gone,
  *    and nothing is new at High or above. An index without a platform, or a scan that read nothing, proves nothing.
@@ -48,7 +49,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { isAlias, isNode, isPair, isScalar, parseAllDocuments, parse as parseYaml, visit } from 'yaml';
+import { isAlias, isMap, isNode, isPair, isScalar, parseAllDocuments, parse as parseYaml, visit } from 'yaml';
 import { compareVersions, newestOf } from '../apps/factory/src/vulnerabilities/deadlines.ts';
 import { readTarget, type Target, targetText } from '../apps/factory/src/vulnerabilities/fixes.ts';
 import {
@@ -808,7 +809,30 @@ export function objectsOf(
   rendered: string,
   version: (typeof YAML_VERSIONS)[number] = '1.2',
 ): Map<string, Rendered> | string {
+  const read = readRendering(rendered, version);
+  return typeof read === 'string' ? read : read.objects;
+}
+
+/** Where a place the text rule sets aside lies in a rendering: its start and its end, by the parser's own offsets. */
+type Span = [number, number];
+
+/** The source span of a node the parser read, from its first character to the end of its value, or none. */
+const spanOf = (node: unknown, offset: number): Span | undefined => {
+  const range = isNode(node) ? node.range : undefined;
+  return range ? [offset + range[0], offset + range[1]] : undefined;
+};
+
+/**
+ * A rendering's objects, as `objectsOf` reads them, and the spans the text rule sets aside, as this parser places them
+ * and never by a search of the text: the value of a core ConfigMap's `data`, and each `checksum/` annotation of a core
+ * workload's pod template, from its key to the end of its value.
+ */
+export function readRendering(
+  rendered: string,
+  version: (typeof YAML_VERSIONS)[number],
+): { objects: Map<string, Rendered>; exempt: Span[] } | string {
   const objects = new Map<string, Rendered>();
+  const exempt: Span[] = [];
   const strange = strangeCharacter(rendered);
   if (strange) return `the rendering writes ${strange}, which readers may read apart`;
   // The stream split as Kubernetes' YAML reader splits it (kubectl, kustomize, Argo CD and Helm alike): on a line that is
@@ -816,14 +840,18 @@ export function objectsOf(
   // as more (after a `...`) is one whose later objects the cluster never gets.
   // A directive before a `---` would be a part of its own, with no document to hold it to: any line that begins one holds.
   if (/^%/m.test(rendered)) return 'the rendering writes a YAML directive, which readers may read apart';
+  // Each document with where its part begins in the rendering, so the parser's offsets are the rendering's.
   const docs = [];
-  for (const part of rendered.split(/^---[ \t]*(?:#[^\n]*)?\r?$/m)) {
-    const read = parseAllDocuments(part, { version, intAsBigInt: true });
+  const separator = /^---[ \t]*(?:#[^\n]*)?\r?$/gm;
+  let start = 0;
+  for (const end of [...[...rendered.matchAll(separator)].map((m) => m.index), rendered.length]) {
+    const read = parseAllDocuments(rendered.slice(start, end), { version, intAsBigInt: true });
     if (read.length > 1)
       return 'the rendering has a document that does not begin with `---`, which readers split apart';
-    docs.push(...read);
+    docs.push(...read.map((doc) => ({ doc, offset: start })));
+    start = rendered.indexOf('\n', end) + 1 || rendered.length;
   }
-  for (const doc of docs) {
+  for (const { doc, offset } of docs) {
     if (doc.errors.length)
       return `the rendering is not YAML the gate can read (${doc.errors[0]?.code}), so nothing shows what changes`;
     if (doc.directives?.yaml.explicit || Object.keys(doc.directives?.tags ?? {}).some((handle) => handle !== '!!'))
@@ -863,8 +891,74 @@ export function objectsOf(
     const key = JSON.stringify([kind, namespace ?? null, name]);
     if (objects.has(key)) return `the rendering has ${label} twice`;
     objects.set(key, { label, body: object });
+    // A duplicate key holds above, so each path names one node.
+    if (object.apiVersion === 'v1' && kind === 'ConfigMap') {
+      const data = spanOf(doc.get('data', true), offset);
+      if (data) exempt.push(data);
+    }
+    const path = POD_TEMPLATES[`${object.apiVersion} ${kind}`];
+    const annotations = path && doc.getIn([...path, 'metadata', 'annotations'], true);
+    if (isMap(annotations))
+      for (const pair of annotations.items) {
+        if (!isScalar(pair.key) || typeof pair.key.value !== 'string' || !pair.key.value.startsWith('checksum/'))
+          continue;
+        const [from, to] = [spanOf(pair.key, offset), spanOf(pair.value, offset) ?? spanOf(pair.key, offset)];
+        if (from && to) exempt.push([from[0], to[1]]);
+      }
   }
-  return objects;
+  return { objects, exempt };
+}
+
+/**
+ * The lines of a rendering the text rule compares: every line but one that lies wholly in an exempt span, from its
+ * first character after its indentation to its end. The line that opens a span (`data:`, `config.yaml: |`, a flow
+ * mapping's `{`) and the one that closes it beyond its end are compared, as is a blank line at a span's edge. Each line
+ * is written as main's line rule wrote it: the moved images' references as their placeholders, and a version label's
+ * value as `<version>`. Each comes with its number in the rendering, for the hold to name.
+ */
+export function comparedLines(
+  rendered: string,
+  exempt: readonly Span[],
+  written: readonly [string, string][],
+): { line: number; text: string }[] {
+  const lines: { line: number; text: string }[] = [];
+  let start = 0;
+  for (const [i, line] of rendered.split('\n').entries()) {
+    const end = start + line.length;
+    const first = start + (/^[ \t]*/.exec(line)?.[0].length ?? 0);
+    const inside = exempt.some(([from, to]) => from <= first && end <= to && first < to);
+    if (!inside) {
+      const text = written.reduce((at, [ref, as]) => at.split(ref).join(as), line);
+      lines.push({
+        line: i + 1,
+        text: text.replace(/^(\s*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>'),
+      });
+    }
+    start = end + 1;
+  }
+  return lines;
+}
+
+/**
+ * Whether the head's rendering writes any line outside the exempt spans otherwise than the base, in order: whatever any
+ * reader makes of a text the gate's reader takes for no change, it is the same text. Undefined when every line is.
+ */
+export function linesDiffer(base: string, head: string, pairs: readonly ImagePair[]): string | undefined {
+  const [was, now] = [readRendering(base, '1.2'), readRendering(head, '1.2')];
+  if (typeof was === 'string') return `at the base, ${was}`;
+  if (typeof now === 'string') return `at the head, ${now}`;
+  const a = comparedLines(base, was.exempt, placeholders(pairs, 'base'));
+  const b = comparedLines(head, now.exempt, placeholders(pairs, 'head'));
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const [x, y] = [a[i], b[i]];
+    if (x?.text === y?.text) continue;
+    if (!y)
+      return `outside a ConfigMap's data and the checksums, the head's rendering ends where the base's writes line ${x?.line}: ${short((x?.text ?? '').trim())}`;
+    if (!x)
+      return `outside a ConfigMap's data and the checksums, the head's rendering writes line ${y.line} past the base's end: ${short(y.text.trim())}`;
+    return `outside a ConfigMap's data and the checksums, the head's line ${y.line} is not the base's line ${x.line}: ${short(y.text.trim())}`;
+  }
+  return undefined;
 }
 
 /** A mapping as YAML reads one: an object of no class. A Date (YAML 1.1's timestamp) is a value, kept as it is. */
@@ -1046,8 +1140,9 @@ const beyond = (label: string, at: string, as: string) =>
  * the same objects at the base and at the head, none added or gone, each the same once those are set aside. A version
  * label may change only as the chart's (`versionLabelWrong`), and not at all where any object names one elsewhere, as a
  * selector would. Each is read as YAML 1.2 and as YAML 1.1, and a difference in either holds, so a scalar two readers
- * read apart (`yes`, `0777`) is read both ways. Whitespace YAML does not read is no difference. The first difference is
- * named, with its object and field.
+ * read apart (`yes`, `0777`) is read both ways. The first difference is named, with its object and field. Then the
+ * text (`linesDiffer`): outside the exempt spans, every line the base's, so a change one reader takes for none (`0X10`
+ * for `"0X10"`, `9e999` for `1e400`) holds whatever another reader makes of it.
  */
 export function manifestsDiffer(
   base: string,
@@ -1096,7 +1191,7 @@ export function manifestsDiffer(
           return `${object.label} names a version label at ${at.replace(/^\./, '')}, and the chart's version labels change${as}`;
       }
   }
-  return undefined;
+  return linesDiffer(base, head, pairs);
 }
 
 const HIGH = new Set(['HIGH', 'CRITICAL']);

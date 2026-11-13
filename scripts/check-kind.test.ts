@@ -667,6 +667,36 @@ describe('the classes a cluster is not made from', () => {
     expect(install).toBeGreaterThan(-1);
     expect(install).toBeLessThan(make);
   });
+
+  // read3: a workspace project's package.json (excluded) gains a postinstall. The lockfile records no scripts, so the
+  // job's install runs it under --frozen-lockfile, before `make up`, with $GITHUB_PATH in reach of every later step.
+  it('runs no lifecycle script an excluded package.json adds, which the lockfile does not record', () => {
+    const platform = workflow.jobs.platform?.steps ?? [];
+    const command = platform.find((step) => /^pnpm install\b/.test(step.run ?? ''))?.run ?? '';
+    const dir = mkdtempSync(join(tmpdir(), 'read3-ws-'));
+    try {
+      mkdirSync(join(dir, 'apps/factory'), { recursive: true });
+      writeFileSync(join(dir, 'package.json'), '{"name":"root","private":true}\n');
+      writeFileSync(join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
+      writeFileSync(join(dir, 'apps/factory/package.json'), '{"name":"factory","version":"1.0.0"}\n');
+      execFileSync('pnpm', ['install'], { cwd: dir, stdio: 'ignore' });
+      writeFileSync(
+        join(dir, 'apps/factory/package.json'),
+        '{"name":"factory","version":"1.0.0","scripts":{"postinstall":"echo ran > ran"}}\n',
+      );
+      execFileSync('sh', ['-c', command], { cwd: dir, stdio: 'ignore' });
+      expect(existsSync(join(dir, 'apps/factory/ran'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // read3: the symlink test reads a link's target as a path, but a target that is an excluded directory itself
+  // (deploy/base/rules -> ../../policy) is no path under it, so it reads as an input, and kustomize follows it.
+  it('takes a link to an excluded directory as a link out of the inputs', () => {
+    const inputs = inputsOf(['policy', 'docs', 'apps/factory', 'packages/store', '.github', '.claude']);
+    expect([...inputs]).toEqual([]);
+  });
 });
 
 // A pin move of the App's (scripts/pin-move.ts) passes only once the job that runs its pin succeeded at its head, never

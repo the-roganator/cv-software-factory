@@ -47,9 +47,10 @@ unpinned() {
     { print }'
 }
 
-# A pin file at a commit, unpinned, with a line after it, so that a change to the newlines at its end still differs.
+# A pin file at a commit, unpinned, and its size: awk ends every line it prints with a newline, so a file that lost its
+# last one would read the same unpinned, and a digest is written the same length either side.
 unpinned_at() {
-  git show "$1:$2" | unpinned && echo .
+  git show "$1:$2" | unpinned && git cat-file -s "$1:$2"
 }
 
 # Whether a line of `git diff --raw` from $1 to $2 is a pin file changed only in its digests: there before and after,

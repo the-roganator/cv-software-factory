@@ -659,6 +659,25 @@ table.steps { width: 100%; border-collapse: collapse; font: 12px/1.35 var(--font
 .sum-figs b { display: block; font: 400 17px/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
 .sum-figs b.zero { color: var(--text-muted); }
 .sum-figs .label { font-size: 10px; letter-spacing: 1px; }
+.sum-clr { display: flex; flex-direction: column; gap: 4px; }
+.sum-clr > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12.5px; color: var(--text-2); }
+/* The total under Patching's rows: its counts in the Clears column, the label in the column before. */
+.pm-total { display: grid; grid-template-columns: 150px minmax(0, 1fr) 190px 216px 104px 172px 16px; gap: 12px; align-items: baseline; padding: 10px 0 18px; }
+.pm-total .label { grid-column: 3; justify-self: end; }
+.pm-total .clr-wrap { grid-column: 4; }
+.pm-total .pm, .sum-clr .pm, .pm-head .pm { border: 0; }
+.sum-clr > div { font-size: 13px; }
+.sum-clr .pm .clr { font-size: 17px; color: var(--text); grid-template-columns: repeat(4, 6ch); gap: 10px; }
+.sum-clr .pm .clr-head span { font-size: 10px; }
+.clr .cleared { color: var(--ok); }
+.sum-clr .pm .clr-head span, .sum-clr .pm .clr span { text-align: right; }
+.sum-figs + .sum-label { margin-top: 12px; }
+.clr .crit { color: var(--attn); }
+/* Above the rows, the Clears column's headers: C, H, M, L, and the counts under them carry no letter. */
+.pm-head { display: grid; grid-template-columns: 150px minmax(0, 1fr) 190px 216px 104px 172px 16px; gap: 12px; padding-bottom: 6px; }
+.pm-head .pm { grid-column: 4; }
+.pm .clr-head span { font: 500 10px/1.2 var(--font-mono); letter-spacing: 1px; color: var(--text-muted); }
+.pm .clr i, .sum-clr .pm .clr i { display: none; }
 .sum-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sum-lines li { display: flex; gap: 8px; align-items: flex-start; font: 12px/1.45 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
 .sum-lines li .glyph { width: 13px; height: 13px; margin-top: 2px; color: var(--tone, var(--text-muted)); }
@@ -935,8 +954,8 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
 /* ---- Patching (milestone 7, Part D) ---------------------------------------------------- */
 /* Its sheet, for everyone: one row for each move, what waits on Martin first, then by deadline. A
    row is Guardrails' row with more columns: state, what and its pin, from and to, what it clears, due, who moves it.
-   Severity has no colour: attn marks only two things, each on its own: a row that waits on Martin (its left rule, whatever its
-   deadline) and a deadline within a day or past (its due). */
+   Critical is the one severity with a colour: a Critical count above zero is in attn. Otherwise attn marks a row that waits on
+   Martin (its left rule, whatever its deadline) and a deadline within a day or past (its due). */
 .patching { display: flex; flex-direction: column; gap: 14px; }
 .sheet-head .panel-count .tone-attn, .patch-day .tone-attn, .pm .due.tone-attn { color: var(--attn); }
 .patching .zero { color: var(--text-muted); }
@@ -993,6 +1012,10 @@ footer.foot .seg button { font: 11px/1 var(--font-mono); letter-spacing: .6px; }
 
 /* ---- Laptop and tablet -------------------------------------------------------------- */
 @media (max-width: 1179.98px) {
+  .pm-total { display: flex; justify-content: flex-start; gap: 12px; padding-left: 162px; }
+  .pm-head { display: none; }
+  .pm .clr i { display: inline; margin-right: 0.4ch; }
+  .pm .clr { gap: 1.2ch; }
   .canary-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 0 28px; }
   .stage .name { font-size: 20px; }
   .stage .fig { display: none; }
@@ -3328,10 +3351,20 @@ const MOVES = [
     pins: [['mise.lock:141', 'k3d 5.9.0']] },
 ];
 const sevWords = (c) => ['Critical', 'High', 'Medium', 'Low'].map((s, i) => `${c[i].toLocaleString('en-GB')} ${s}`).join(', ');
-function moveClears(c, note) {
-  if (!c) return `<span class="clr none">${note || 'not scanned'}</span>`;
-  return `<span class="clr" aria-label="clears ${sevWords(c)}">${c.map((x, i) => `<span${x === 0 ? ' class="zero"' : ''}>${x.toLocaleString('en-GB')}<i>${'CHML'[i]}</i></span>`).join('')}</span>`;
+// A count as a person reads it at a glance: 845, 1.4K, 11K, 1.2M. The exact figure is its title, and in the label.
+function human(n) {
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`;
+  if (n < 1e6) return `${Math.round(n / 1000)}K`;
+  return `${(n / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
 }
+// The four counts, Critical to Low, under the C H M L headers (clrHead); where there are none (a row in two lines),
+// each count follows its letter: C 2 H 1.4K M 3.3K L 12.
+function moveClears(c, note, cleared = false) {
+  if (!c) return `<span class="clr none">${note || 'not scanned'}</span>`;
+  return `<span class="clr" aria-label="clears ${sevWords(c)}">${c.map((x, i) => `<span${x === 0 ? ' class="zero"' : cleared ? ' class="cleared"' : i === 0 ? ' class="crit"' : ''} title="${x.toLocaleString('en-GB')}"><i>${'CHML'[i]}</i>${x && cleared ? '−' : ''}${human(x)}</span>`).join('')}</span>`;
+}
+const clrHead = () => `<span class="clr clr-head" aria-hidden="true">${['Critical', 'High', 'Medium', 'Low'].map((n) => `<span title="${n}">${n[0]}</span>`).join('')}</span>`;
 // The way to a move's pull request or issue, drawn as Needs you draws a merge's: the verb and GitHub's mark.
 const moveWay = (m) => `<a class="btn way" href="${m.act[1]}" target="_blank" rel="noopener"><span class="way-words" aria-hidden="true">${m.act[0]}<svg viewBox="0 0 16 16"><use href="#logo-github"/></svg></span><span class="sr">${m.act[0]} #${m.pr} on GitHub (opens GitHub in a new tab)</span></a>`;
 const whose = (s) => s.replace('{whom}', S.visitor ? 'Martin' : 'you').replace('{whose}', S.visitor ? 'Martin’s' : 'yours');
@@ -3339,6 +3372,8 @@ const whose = (s) => s.replace('{whom}', S.visitor ? 'Martin' : 'you').replace('
 const moveName = (m) => m.lockfile && !m.prOpen && S.visitor ? ['A package in the app’s lockfile', 'pnpm-lock.yaml', null] : [m.name, m.pin, m];
 
 // What the panel's head, the sheet's, and the summary count.
+// The findings with no fix yet, by severity: 14,844 in all. Nothing can move them; each day's scan looks again.
+const NO_FIX = [6, 1212, 7930, 5696];
 function patchCounts() {
   const none = q.get('patching') === 'none', rows = none ? [] : MOVES;
   const moves = rows.filter((m) => m.from !== 'pinned nowhere').length, unscanned = rows.length - moves;
@@ -3348,7 +3383,9 @@ function patchCounts() {
   const sev = [0, 1, 2, 3].map((i) => rows.reduce((a, m) => a + (m.c && m.st !== 'merged' ? m.c[i] : 0), 0));
   // The next deadline still to meet: the earliest of the rows not yet cleared.
   const next = rows.filter((m) => m.h !== undefined && m.st !== 'merged').sort((a, b) => a.h - b.h)[0];
-  return { none, moves, unscanned, waiting, sev, next, failed: !none };
+  // Every open finding, by severity: those the moves clear and those with no fix yet. Excepted ones are not open.
+  const open = sev.map((n, i) => n + NO_FIX[i]);
+  return { none, moves, unscanned, waiting, sev, open, next, failed: !none };
 }
 // How many moves and how many wait on Martin, as the sheet's head says it; the summary's leaves out the unscanned
 // images, which it says on a line of their own.
@@ -3385,7 +3422,9 @@ function patchingBody() {
   return `<section class="patching" id="patching" aria-labelledby="sheet-title">
     <p class="help">Everything the factory and the app build or run is scanned every day. A finding with a fix has a deadline by its severity. One row here is one pin to move, and what moving it clears.</p>
     <p class="patch-day"><span class="v tone-attn">${glyph('cross')}Scan failed today</span><span>· 04:17 UTC · 41 new High or Critical: 6 have a fix (in 2 moves below), 35 have none yet · <span class="zero">0</span> overdue · <span class="tone-attn">6 due within a day (in 3 moves below)</span></span></p>
+    <div class="pm-head"><span class="pm">${clrHead()}</span></div>
     <div class="pm-list">${order.map(row).join('')}</div>
+    <div class="pm-total"><span class="label">All open</span><span class="pm clr-wrap">${moveClears(c.open)}</span></div>
     <div class="patch-counts">
       <div><b>14,844</b><span class="label">No fix yet</span><p class="help">looked at again each day; a fix starts its deadline</p></div>
       <div><b>${cleared}</b><span class="label">Cleared by the moves above</span><p class="help">${MOVES.filter((m) => m.c).length} moves, not ${cleared} rows</p></div>
@@ -3396,16 +3435,19 @@ function patchingBody() {
     <div class="links"><a href="?view=audit">Audit log</a>${v ? '' : `<a href="${GH}/security/code-scanning" target="_blank" rel="noopener">Code scanning ↗</a>`}<a href="${GH}/blob/main/docs/COMPONENTS/SECURITY-SCANNING.md" target="_blank" rel="noopener">How patching works</a></div></section>`;
 }
 
-// Patching's summary in the bottom row: how many moves and how many wait on Martin, what the moves clear by severity,
+// Patching's summary in the bottom row: how many moves and how many wait on Martin, every open finding and what the moves clear by severity,
 // the next deadline and the day's scan. It needs Martin when a move waits on him, a deadline is within a day or past,
-// or the scan failed: then its rule, and each reason in attn. Severity alone is not a reason: it has no colour.
+// or the scan failed: then its rule, and each reason in attn. A Critical count alone is not a reason.
 function renderPatching() {
   const v = S.visitor, c = patchCounts(), el = $('patching-sum');
   const soon = !!c.next?.soon, attn = c.waiting > 0 || soon || c.failed;
   el.classList.toggle('attn', attn);
-  const figs = ['Critical', 'High', 'Medium', 'Low'].map((name, i) => `<div><b class="${c.sev[i] ? '' : 'zero'}">${c.sev[i].toLocaleString('en-GB')}</b><span class="label">${name}</span></div>`).join('');
   el.innerHTML = `<div class="panel-head"><h2 id="patching-sum-title">Patching</h2><span class="label">${patchHeadWords(c, v, { unscanned: false })}</span></div>
-    <div><span class="label sum-label">${c.none ? 'Nothing left to clear' : 'What the moves clear'}</span><div class="sum-figs">${figs}</div></div>
+    <div class="sum-clr">
+      <div><span></span><span class="pm">${clrHead()}</span></div>
+      <div><span>All open</span><span class="pm">${moveClears(c.open)}</span></div>
+      <div><span>${c.none ? 'Nothing to clear' : 'The moves clear'}</span><span class="pm">${moveClears(c.sev, null, true)}</span></div>
+    </div>
     <ul class="sum-lines">
       ${c.unscanned ? `<li class="tone-attn">${glyph('ring')}<span>${c.unscanned} unscanned image${c.unscanned === 1 ? '' : 's'} running</span></li>` : ''}
       <li class="${soon ? 'tone-attn' : ''}">${glyph(c.next ? 'ring' : 'dash')}<span>${c.next ? `Next due ${c.next.due}${soon ? `: ${c.next.name}` : ''}` : 'No deadline to meet'}</span></li>

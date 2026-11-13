@@ -656,6 +656,26 @@ describe('the pieces', () => {
     });
   });
 
+  it('holds a Critical gone from one platform’s image and still in the other’s', () => {
+    const critical: Finding = {
+      id: 'CVE-2026-60',
+      pkg: 'libssl3',
+      version: '3.0.1',
+      fixed: '3.0.2',
+      severity: 'CRITICAL',
+    };
+    const was = image([{ name: 'libssl3', version: '3.0.1' }], [critical]);
+    const now = image([{ name: 'libssl3', version: '3.0.2' }]);
+    expect(
+      scansShow([
+        { label: 'x (linux/amd64)', was, now: was },
+        { label: 'x (linux/arm64)', was, now },
+      ]),
+    ).toMatchObject({
+      reason: "the scans show no fix: libssl3's CVE-2026-60 is gone from x (linux/arm64) and still in x (linux/amd64)",
+    });
+  });
+
   it('reads the lockfile’s moves, each version forward, and what each new version requires', () => {
     const moves = lockMoves(LOCK, FIXED_LOCK);
     expect(moves).toMatchObject({

@@ -594,9 +594,11 @@ export interface Fixed {
 /** Whether the scans show one package's Critical fixed, and nothing new at High or above: the fix, or why not. */
 export function scansShow(targets: readonly Target[]): Fixed | Reason {
   const fixed = new Map<string, Fixed>();
+  // Each Critical a head scan still has, wherever: one fixed on one platform and not the other is not fixed.
+  const remains = new Map<string, string>();
+  const key = (f: Finding) => `${f.id}\0${f.pkg}`;
   let best = '';
   for (const { label, was, now } of targets) {
-    const key = (f: Finding) => `${f.id}\0${f.pkg}`;
     const after = new Set(now.findings.map(key));
     const names = new Set(now.packages.map((p) => p.name));
     // A finding that disappears with its package is not a fix: everything the base lists is still listed.
@@ -605,6 +607,7 @@ export function scansShow(targets: readonly Target[]): Fixed | Reason {
     if (was.node && !now.node)
       return no(`the scans show no fix: ${label} names no Node at the head, and did at the base`);
     for (const f of was.findings) {
+      if (after.has(key(f))) remains.set(key(f), label);
       if (!f.fixed || after.has(key(f))) continue;
       if (!HIGH.has(sev(f.severity))) continue;
       if (sev(f.severity) !== 'CRITICAL') {
@@ -631,6 +634,14 @@ export function scansShow(targets: readonly Target[]): Fixed | Reason {
     if (brought)
       return no(`it brings something new: ${brought.pkg}'s ${brought.id}, ${sev(brought.severity)}, in ${label}`);
   }
+  for (const one of fixed.values())
+    for (const id of one.ids) {
+      const still = remains.get(`${id}\0${one.pkg}`);
+      if (still)
+        return no(
+          `the scans show no fix: ${one.pkg}'s ${id} is gone from ${one.where.join(', ')} and still in ${still}`,
+        );
+    }
   if (fixed.size === 0)
     return no(
       best

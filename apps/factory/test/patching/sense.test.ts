@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { MOVE_LANES } from '@software-factory/events';
+import { type InboxSignal, MOVE_LANES } from '@software-factory/events';
 import { publicView } from '@software-factory/events/public';
 import { MOST_MOVES, MOST_PINS, MOST_ROWS, PAYLOADS } from '@software-factory/events/schemas';
 import { connect, DiskArtifacts, EventWriter } from '@software-factory/store';
@@ -10,6 +10,7 @@ import { type Database, freshDatabase } from '../../../../packages/store/test/da
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import type { Moves, ReadMove } from '../../src/github/scanning.ts';
 import { GitHubWorker, GitHubWorkerError, READ_AGAIN } from '../../src/github/worker-client.ts';
+import { inbox } from '../../src/outbox.ts';
 import { dayOf, sameDay } from '../../src/patching/day.ts';
 import { runningContainers } from '../../src/patching/running.ts';
 import { waitAfter } from '../../src/patching/schedule.ts';
@@ -639,5 +640,93 @@ describe('the day, made from the reads', () => {
     const b = dayOf(read(), 0, rows('z'));
     expect(sameDay(b, a)).toBe(true);
     expect(a.rows).toHaveLength(MOST_ROWS);
+  });
+});
+
+describe("the sense's sends to triage", () => {
+  const line: ReadMove = {
+    index: 1,
+    repository: APP,
+    name: 'a package in `pnpm-lock.yaml`',
+    pins: [{ file: 'pnpm-lock.yaml', line: 0 }],
+    from: '',
+    to: '',
+    major: false,
+    clears: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+    leaves: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 },
+    newToday: 1,
+    lane: 'line',
+    lockfile: true,
+    withheld: {
+      package: 'left-pad',
+      from: '1.2.3',
+      to: 'version 1.2.4',
+      pins: [{ file: 'pnpm-lock.yaml', line: 812 }],
+    },
+    findings: [
+      {
+        alert: 7,
+        advisory: 'CVE-2026-1001',
+        severity: 'HIGH',
+        package: 'left-pad',
+        installed: '1.2.3',
+        file: 'pnpm-lock.yaml',
+        line: 812,
+        fix: 'version 1.2.4',
+        firstSeen: '2026-11-10T04:59:00Z',
+      },
+    ],
+  };
+  const withLine = senses({
+    moves: async (repo) => (repo === FACTORY ? factoryMoves() : { ...appMoves(), moves: [line] }),
+  });
+  const sending = (sql = database.patching) =>
+    new PatchingSense({
+      sql,
+      events: new EventWriter(sql, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }),
+      outbox: inbox(sql, 'dependency'),
+      senses: withLine,
+      repositories: [FACTORY, APP],
+      log,
+    });
+  const signals = () =>
+    database.owner<{ sense: string; fingerprint: string }[]>`select sense, fingerprint from inbox order by received_at`;
+
+  it('sends the app’s move for the line as its own role, and a restart sends it again under the same id, kept once', async () => {
+    expect((await sending().pass()).pass).toBe('appended');
+    expect(await signals()).toEqual([{ sense: 'dependency', fingerprint: 'move npm left-pad' }]);
+    // Restarted, as every deploy restarts it: the day is unchanged and the send the same.
+    expect((await sending().pass()).pass).toBe('unchanged');
+    expect(await signals()).toHaveLength(1);
+  });
+
+  it('may send only its own sense’s signals, and read none', async () => {
+    const probe: InboxSignal = {
+      sense: 'probe',
+      check: 'pages load',
+      route: '/',
+      version: 'v0.9.4',
+      symptom: 'server-error',
+      observedAt: '2026-11-11T05:30:00Z',
+      artifacts: [],
+    };
+    await expect(inbox(database.patching, 'probe').send(probe)).rejects.toThrow(/row-level security/);
+    await expect(database.patching`select 1 from inbox`).rejects.toThrow(/permission denied/);
+  });
+
+  it('fails the pass, the day appended, when a send is refused, and sends again at the next', async () => {
+    const refusing = new PatchingSense({
+      sql: database.patching,
+      events: new EventWriter(database.patching, { kind: 'real', artifacts: new DiskArtifacts('/nonexistent') }),
+      outbox: { send: async () => Promise.reject(new Error('the inbox is closed')) },
+      senses: withLine,
+      repositories: [FACTORY, APP],
+      log,
+    });
+    const result = await refusing.pass();
+    expect(result).toEqual({ pass: 'failed', failed: [`a move of ${APP} to triage: the inbox is closed`] });
+    expect(await days()).toHaveLength(1);
+    expect((await sending().pass()).pass).toBe('unchanged');
+    expect(await signals()).toHaveLength(1);
   });
 });

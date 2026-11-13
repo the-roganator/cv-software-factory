@@ -12,6 +12,7 @@
     "scripts",
     "docs/design/system/build.ts",
     ".claude/skills/*/bin/*.ts",
+    ".claude/hooks/*.ts",
     "*.ts"
   ]
 }

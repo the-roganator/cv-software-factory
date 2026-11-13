@@ -18,6 +18,7 @@ export default defineConfig({
             'packages/*/test/**/*.test.ts',
             'scripts/**/*.test.ts',
             '.claude/skills/*/bin/*.test.ts',
+            '.claude/hooks/*.test.ts',
           ],
           exclude: ['packages/store/test/**', 'packages/*/test/database/**', 'apps/factory/test/**'],
         },

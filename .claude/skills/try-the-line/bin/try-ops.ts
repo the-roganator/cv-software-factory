@@ -1,10 +1,11 @@
 // The local cluster, Docker, k3d, git and the store as `try` (try.ts) reads and changes them. The store is only read,
 // with selects, as its owner, the way bin/q reads it.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse, parseAllDocuments } from 'yaml';
+import { parseAllDocuments } from 'yaml';
+import { holderProcess, processAlive } from '../../../../scripts/cluster-lock.ts';
 import type { Deployment, K8sObject, Line, ObjectRef, Ops, Root, Workload } from './try.ts';
 import { asDeployment, CONTEXT, kubectlResource, NAMESPACES, POLICY } from './try.ts';
 
@@ -85,7 +86,7 @@ const sql = (query: string): string =>
     query,
   ).trim();
 
-/** The checkout this script is in, so the board and the branches are found from any worktree. */
+/** The checkout this script is in, so the branches are found from any worktree. */
 function checkout(): string {
   const common = run('git', [
     '-C',
@@ -126,12 +127,8 @@ function deployment(d: Item): Deployment {
 }
 
 export const ops: Ops = {
-  holder() {
-    const board = join(checkout(), 'scratch', 'workflow', 'board.yaml');
-    if (!existsSync(board)) return undefined;
-    const holder = (parse(readFileSync(board, 'utf8')) as { cluster?: { holder?: unknown } } | null)?.cluster?.holder;
-    return typeof holder === 'string' && holder ? holder : 'none';
-  },
+  holderProcess,
+  processAlive,
   root(): Root {
     const app = get('-n', 'argocd', 'get', 'application', 'root');
     return {

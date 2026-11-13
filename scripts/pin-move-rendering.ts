@@ -324,8 +324,9 @@ function labelPlaces(object: Record<string, unknown>): Map<string, Record<string
   return places;
 }
 
-/** A chart's version, as Helm requires one: SemVer's three numbers, then a prerelease or build if any. */
-const CHART_VERSION = /^v?\d+\.\d+\.\d+([-+][A-Za-z0-9.+-]*)?$/;
+/** A chart's version, as Helm requires one: SemVer 2's grammar (no leading zero, no empty part), after an optional `v`. */
+const CHART_VERSION =
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 
 /**
  * Each way a chart's label (`tempo-3.2.1`, a subchart's `alertmanager-2.5.1`) reads as a name and a version: split at

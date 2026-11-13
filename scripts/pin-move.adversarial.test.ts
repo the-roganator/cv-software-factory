@@ -798,7 +798,7 @@ describe('one reading of a major, where a move could pass a major as a minor', (
     );
   });
 
-  it('holds a leading zero, with or without a v, which names no one major, in both conditions alike', async () => {
+  it('holds a leading zero, with or without a v, which names no one major, in both conditions', async () => {
     for (const [from, to] of [
       ['1.9.0', '01.10.0'],
       ['v1.9.0', 'v01.10.0'],
@@ -808,8 +808,12 @@ describe('one reading of a major, where a move could pass a major as a minor', (
         `a major in docker.io/acme/app, from ${from} to ${to}`,
         `a major, from ${from} to ${to}`,
       ]);
-      expect(label(`sub-${from}`, `sub-${to}`)).toContain('forward on its major');
+      // No chart's version has one: a label at it is no reading, so no chart at another version.
+      expect(label(`sub-${from}`, `sub-${to}`)).toContain('chart at another version');
     }
+    // Nor anywhere in its numbers, or with a part left empty, as SemVer has it.
+    expect(label('sub-1.0.0', 'sub-1.02.0')).toContain('chart at another version');
+    expect(label('foo-1.0.0-', 'foo-1.1.0-')).toContain('chart at another version');
     // A v alone is the same major in both: a move on it passes each.
     expect(await forward('v1.9.0', 'v1.10.0')).toEqual([undefined, undefined, undefined]);
     expect(label('sub-v1.9.0', 'sub-v1.10.0')).toBeUndefined();

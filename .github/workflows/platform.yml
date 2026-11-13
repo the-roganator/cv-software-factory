@@ -83,7 +83,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/check-kind.sh"
           diff scripts/check-kind.sh "$RUNNER_TEMP/check-kind.sh" || true
           decide() {
-            local n=$1 q=$2 dir="$RUNNER_TEMP/q$1"
+            local n=$1 q=$2 dir="$RUNNER_TEMP/q$1${3:-}"
             git init --quiet "$dir"
             git -C "$dir" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
             git -C "$dir" fetch --quiet --no-tags --depth=2 origin "$q"

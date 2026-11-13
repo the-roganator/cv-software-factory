@@ -2039,4 +2039,30 @@ spec:
       `${deployment(OLD)}---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c, namespace: ns}\n"data": # here\n  k: ${value}\n`;
     expect(manifestsDiffer(quoted('a'), quoted('b').replace(OLD, NEW).replace('aaa', 'bbb'), MOVE)).toBeUndefined();
   });
+
+  it("writes a version label's line alike only for a value the object rule saw move as the chart's, in its own quotes", () => {
+    const CHART = { chart: 'c', from: '1.0.0', to: '1.1.0' };
+    const labelled = (value: string, image = OLD) =>
+      deployment(image).replace(
+        '        app: web\n',
+        `        app: web\n        app.kubernetes.io/version: ${value}\n`,
+      );
+    expect(manifestsDiffer(labelled('1.0.0'), labelled('1.1.0', NEW), MOVE, CHART)).toBeUndefined();
+    expect(manifestsDiffer(labelled('"1.0.0"'), labelled('"1.1.0"', NEW), MOVE, CHART)).toBeUndefined();
+    // Infinity to the gate at both, two strings to the cluster: the label moves nowhere the object rule sees.
+    expect(manifestsDiffer(labelled('1e400'), labelled('9e999', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 9e999'),
+    );
+    // The same string to the gate, 16 to sigs.k8s.io/yaml.
+    expect(manifestsDiffer(labelled('"0X10"'), labelled('0X10', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 0X10'),
+    );
+    // A moved value in other quotes, or with a comment after it, is another line.
+    expect(manifestsDiffer(labelled('"1.0.0"'), labelled('1.1.0', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 1.1.0'),
+    );
+    expect(manifestsDiffer(labelled('1.0.0'), labelled('1.1.0 # x', NEW), MOVE, CHART)).toBe(
+      line(15, 'app.kubernetes.io/version: 1.1.0 # x'),
+    );
+  });
 });

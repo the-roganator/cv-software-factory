@@ -909,17 +909,23 @@ export function readRendering(
   return { objects, exempt };
 }
 
+/** A version label's line, its key plain, its value alone after it, in no quotes or in one kind. */
+const VERSION_LINE = /^([ \t]*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):[ \t]+)(["']?)([^"'#\s]+)\2([ \t]*)$/;
+
 /**
  * The lines of a rendering the text rule compares: every line but one that lies wholly in an exempt span, from its
  * first character after its indentation to its end. The line that opens a span (`data:`, `config.yaml: |`, a flow
  * mapping's `{`) and the one that closes it beyond its end are compared, as is a blank line at a span's edge. Each line
- * is written as main's line rule wrote it: the moved images' references as their placeholders, and a version label's
- * value as `<version>`. Each comes with its number in the rendering, for the hold to name.
+ * is written as main's line rule wrote it, the moved images' references as their placeholders, but for a version label:
+ * its value is written `<version>` only where it is one the object rule saw move as the chart's (`moved`), in the same
+ * quotes, with nothing after it, so a label's text the gate reads alike and another reader may not (`1e400` for
+ * `9e999`) is compared. Each comes with its number in the rendering, for the hold to name.
  */
 export function comparedLines(
   rendered: string,
   exempt: readonly Span[],
   written: readonly [string, string][],
+  moved: ReadonlySet<string> = new Set(),
 ): { line: number; text: string }[] {
   const lines: { line: number; text: string }[] = [];
   let start = 0;
@@ -928,11 +934,10 @@ export function comparedLines(
     const first = start + (/^[ \t]*/.exec(line)?.[0].length ?? 0);
     const inside = exempt.some(([from, to]) => from <= first && end <= to && first < to);
     if (!inside) {
-      const text = written.reduce((at, [ref, as]) => at.split(ref).join(as), line);
-      lines.push({
-        line: i + 1,
-        text: text.replace(/^(\s*(?:helm\.sh\/chart|app\.kubernetes\.io\/version):\s*).*$/, '$1<version>'),
-      });
+      const label = VERSION_LINE.exec(line);
+      const text =
+        label && moved.has(label[3] as string) ? `${label[1]}${label[2]}<version>${label[2]}${label[4]}` : line;
+      lines.push({ line: i + 1, text: written.reduce((at, [ref, as]) => at.split(ref).join(as), text) });
     }
     start = end + 1;
   }
@@ -943,20 +948,27 @@ export function comparedLines(
  * Whether the head's rendering writes any line outside the exempt spans otherwise than the base, in order: whatever any
  * reader makes of a text the gate's reader takes for no change, it is the same text. Undefined when every line is.
  */
-export function linesDiffer(base: string, head: string, pairs: readonly ImagePair[]): string | undefined {
+export function linesDiffer(
+  base: string,
+  head: string,
+  pairs: readonly ImagePair[],
+  moved: ReadonlySet<string> = new Set(),
+): string | undefined {
   const [was, now] = [readRendering(base, '1.2'), readRendering(head, '1.2')];
   if (typeof was === 'string') return `at the base, ${was}`;
   if (typeof now === 'string') return `at the head, ${now}`;
-  const a = comparedLines(base, was.exempt, placeholders(pairs, 'base'));
-  const b = comparedLines(head, now.exempt, placeholders(pairs, 'head'));
+  const a = comparedLines(base, was.exempt, placeholders(pairs, 'base'), moved);
+  const b = comparedLines(head, now.exempt, placeholders(pairs, 'head'), moved);
+  // Each named as the rendering writes it.
+  const [baseLines, headLines] = [base.split('\n'), head.split('\n')];
+  const at = (lines: string[], n: number) => short((lines[n - 1] ?? '').trim());
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     const [x, y] = [a[i], b[i]];
     if (x?.text === y?.text) continue;
-    if (!y)
-      return `outside a ConfigMap's data and the checksums, the head's rendering ends where the base's writes line ${x?.line}: ${short((x?.text ?? '').trim())}`;
-    if (!x)
-      return `outside a ConfigMap's data and the checksums, the head's rendering writes line ${y.line} past the base's end: ${short(y.text.trim())}`;
-    return `outside a ConfigMap's data and the checksums, the head's line ${y.line} is not the base's line ${x.line}: ${short(y.text.trim())}`;
+    const outside = "outside a ConfigMap's data and the checksums, the head's";
+    if (!y) return `${outside} rendering ends where the base's writes line ${x?.line}: ${at(baseLines, x?.line ?? 0)}`;
+    if (!x) return `${outside} rendering writes line ${y.line} past the base's end: ${at(headLines, y.line)}`;
+    return `${outside} line ${y.line} is not the base's line ${x.line}: ${at(headLines, y.line)}`;
   }
   return undefined;
 }
@@ -1151,6 +1163,8 @@ export function manifestsDiffer(
   chart?: ChartVersions,
 ): string | undefined {
   const [fromBase, fromHead] = [placeholders(pairs, 'base'), placeholders(pairs, 'head')];
+  // The version labels' values the object rule saw move as the chart's: only these are written alike in the text.
+  const moved = new Set<string>();
   for (const version of YAML_VERSIONS) {
     const [was, now] = [objectsOf(base, version), objectsOf(head, version)];
     if (typeof was === 'string') return `at the base, ${was}`;
@@ -1174,6 +1188,7 @@ export function manifestsDiffer(
           const wrong = versionLabelWrong(label, x, y, chart);
           if (wrong) return `${beyond(object.label, `${path}${step(label)}`, as)}: ${wrong}`;
           before[label] = labels[label] = '<version>';
+          moved.add(x).add(y);
           relabelled = true;
         }
       }
@@ -1191,7 +1206,7 @@ export function manifestsDiffer(
           return `${object.label} names a version label at ${at.replace(/^\./, '')}, and the chart's version labels change${as}`;
       }
   }
-  return linesDiffer(base, head, pairs);
+  return linesDiffer(base, head, pairs, moved);
 }
 
 const HIGH = new Set(['HIGH', 'CRITICAL']);

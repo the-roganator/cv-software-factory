@@ -15,10 +15,10 @@
  */
 import { stageWords } from '@software-factory/policy/flag-moves';
 import { FLAGS_HELD } from '@software-factory/policy/flags';
-import { type CSSProperties, lazy, type PointerEvent, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { type CSSProperties, lazy, type PointerEvent, Suspense, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
 import { clock, duration } from '../format.ts';
-import { type HeldAnswer, heldFlags } from '../held.ts';
+import type { HeldAnswer } from '../held.ts';
 import { previewHref } from '../profile.ts';
 import { type FlagRow, type FlagStage, type FlagsView, STAGE_NAME, type Stop } from '../projection/index.ts';
 import { renders } from '../renders.ts';
@@ -27,45 +27,8 @@ import { Glyph } from './Glyph.tsx';
 /** The slider's confirmation, which only Martin opens: its code arrives when he first does. */
 export const FlagDialog = lazy(() => import('./FlagDialog.tsx').then((module) => ({ default: module.FlagDialog })));
 
-/** How often the page asks again whether the app holds the flags, while it is shown. */
-const HELD_EVERY_MS = 15_000;
-
 /** A stage in the console's words, as the admin service says it: "Share 50%". */
 export { stageWords };
-
-/**
- * Whether the app holds the flags as set, asked of the admin service now and every 15 seconds while the page is shown,
- * and soon after Martin moves one (`refresh`). Only where there is an admin service to ask.
- */
-export function useHeld(enabled: boolean): { answer: HeldAnswer; refresh: () => void } {
-  const [answer, setAnswer] = useState<HeldAnswer>({ kind: 'unknown' });
-  const again = useRef<() => void>(() => {});
-  useEffect(() => {
-    if (!enabled) return;
-    let live = true;
-    const ask = () => {
-      if (document.visibilityState !== 'visible') return;
-      void heldFlags().then((got) => {
-        if (live) setAnswer(got);
-      });
-    };
-    ask();
-    again.current = ask;
-    const timer = setInterval(ask, HELD_EVERY_MS);
-    document.addEventListener('visibilitychange', ask);
-    return () => {
-      live = false;
-      again.current = () => {};
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', ask);
-    };
-  }, [enabled]);
-  // A move is checked within seconds of its write: asked again a little after it, as well as on the minute.
-  const refresh = useCallback(() => {
-    setTimeout(() => again.current(), 3000);
-  }, []);
-  return { answer, refresh };
-}
 
 /** What a stop's button says to a screen reader: the move, and that it can't be taken now. */
 function stopName(stop: Stop, row: FlagRow): string {

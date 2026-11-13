@@ -4,9 +4,9 @@
  * one for each row the sense made of what the cluster runs, which nothing scanned. A pure function of the events, which
  * needs no time: a card's deadline is said at t by the card.
  *
- * It is in the first view, as Needs you is, so it is kept small: the sense's day, its role, a row's key and a deadline's
- * words, which the Patching panel's chunk imports from here rather than carrying a second copy. Everything else of the
- * day stays in that chunk (`patching.ts`).
+ * It is in the first view, as the rest of `project()` is, so it is kept small: the sense's day, its role, a row's key
+ * and a deadline's words, which the Patching panel's chunk imports from here rather than carrying a second copy.
+ * Everything else of the day stays in that chunk (`patching.ts`).
  *
  * A card says only what the event gives. The sense's day names each move's lane, its pins, from and to, what it clears
  * and its deadline; the pull request the factory's App opens for a held pin, and the review gate's verdict on it, are on

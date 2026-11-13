@@ -7,9 +7,9 @@
  * line; under them, four figures for the findings no row can clear.
  *
  * It is a chunk of its own, with its stylesheet and its projection (`projection/patching.ts`), which the console loads
- * once the first view has shown: it sits under the bottom row, and the first view carries none of it. The view is
- * worked out here, from the events, and kept while what it reads is the same, so an event that changes nothing here
- * renders nothing here.
+ * once the first view has shown, as it does the bottom row's and Guardrails', and draws under the bottom row once that
+ * has drawn: the first view carries none of it. The view is worked out here, from the events, and kept while what it
+ * reads is the same, so an event that changes nothing here renders nothing here.
  *
  * A visitor reads all of it, read-only, with "Martin" for "you", no link into code scanning, and a lockfile's package
  * withheld until its pull request is open, as the public view withholds it.
@@ -433,8 +433,8 @@ const Panel = memo(function Panel({
   const [open, setOpen] = useState<string | undefined>(asked);
   const panel = useRef<HTMLElement>(null);
   const asking = useRef(false);
-  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has. A card is
-  // in the first view and this panel is not, so a row asked for before it listened is taken as it mounts.
+  // A card in Needs you asks for its row: it opens, as a click on it would, and comes into view once it has. Needs you
+  // draws before this panel's chunk has arrived, so a row asked for before it listened is taken as it mounts.
   useEffect(() => {
     const ask = () => {
       const key = takeAskedRow();

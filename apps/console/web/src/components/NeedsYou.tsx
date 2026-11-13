@@ -531,7 +531,7 @@ function CanaryCard({ need, admin, onOpen }: { need: CanaryNeed; admin: Admin } 
 
 /**
  * What a move's card says, by what waits: whose it is, its title from what moves, and why it waits, each in Martin's
- * words or a visitor's (`his`: "your" or "Martin’s"). Kept short: Needs you is in the first view, and its words are.
+ * words or a visitor's (`his`: "your" or "Martin’s"). Kept short: every page that has the bottom row loads them.
  */
 const PATCH_WORDS: Record<PatchNeed['kind'], [whose: string, title: (name: string) => string, why: string]> = {
   approval: [

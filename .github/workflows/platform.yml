@@ -12,6 +12,9 @@
 # refuses any other event. Which changes run it is scripts/check-kind.sh's to say (`platform`): one that changes
 # deploy/, the Makefile, mise's pins or what it runs, but never the factory's App's deploy pin of our own images, which
 # were built from commits already merged (ADR 0017). Otherwise the job is skipped, which the ruleset counts as passed.
+# In the merge queue it is skipped too when this workflow's `platform` made a cluster from the same inputs at the pull
+# request's head and passed there, within a day: check-kind.sh says how it tells, from git and GitHub's check runs alone.
+# The repository variable PLATFORM_SKIP set to `off` makes a cluster in the queue every time.
 name: platform
 # A run on the merge queue's commit is named by the queue's branch, which names its pull request; on a pull request,
 # an empty name leaves GitHub's own, the pull request's title.
@@ -30,13 +33,17 @@ concurrency:
 
 jobs:
   # Whether the change is one a cluster alone can prove (scripts/check-kind.sh platform). In the merge queue, whose
-  # event names no pull request, it reads the author and base of the one the queue's branch names, to tell the App's
-  # deploy pin apart: that read, of a public pull request, is all its token can do.
+  # event names no pull request, it reads the one the queue's branch names, to tell the App's deploy pin apart, and,
+  # for a change a cluster proves, that pull request's head, its events, and the check runs, workflow runs and jobs
+  # there, to tell whether a cluster made there stands for the queue's: those reads, of a public repository, are all its
+  # token can do. Its log says the inputs' hash, and in the queue why a cluster is made or not.
   which:
     name: whether a cluster runs
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 5
     permissions:
+      actions: read
+      checks: read
       contents: read
       pull-requests: read
     outputs:
@@ -56,6 +63,7 @@ jobs:
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           QUEUE_BRANCH: ${{ github.event.merge_group.head_ref }}
+          PLATFORM_SKIP: ${{ vars.PLATFORM_SKIP }}
           GH_TOKEN: ${{ github.token }}
         run: |
           platform=$(scripts/check-kind.sh platform)
@@ -65,9 +73,10 @@ jobs:
   platform:
     name: platform
     needs: which
-    # Skipped only when the job above said `none`: a skipped job passes the required check, so one that failed, or said
-    # nothing, makes the cluster, as check.yml's `kind` failing runs everything.
-    if: ${{ !cancelled() && (needs.which.result != 'success' || needs.which.outputs.platform != 'none') }}
+    # Skipped only when the job above said `none`, or `matched` (a cluster made at the head stands for the queue's): a
+    # skipped job passes the required check, so one that failed, or said anything else, makes the cluster, as check.yml's
+    # `kind` failing runs everything.
+    if: ${{ !cancelled() && (needs.which.result != 'success' || (needs.which.outputs.platform != 'none' && needs.which.outputs.platform != 'matched')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:

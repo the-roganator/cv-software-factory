@@ -297,8 +297,8 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
             />
           )}
           {/* Under the reel, once the store has answered and the first view has shown: the bottom row once its chunks
-              have arrived, then Patching and Guardrails under it once theirs have, never before it, so nothing that has
-              drawn moves. Until then nothing holds their place. */}
+              have arrived, then Patching and Guardrails under it once theirs have, never before it, so nothing above
+              them moves as they arrive; only the footer under them does. Until then nothing holds their place. */}
           {settled && (
             <Later what="Needs you, Controls, Flags and Spend">
               <section

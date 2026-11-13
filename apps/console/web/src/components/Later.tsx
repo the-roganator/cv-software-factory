@@ -1,7 +1,8 @@
 /**
- * What arrives after the first view, in a chunk of its own, and what shows if its chunk never does: a fetch that failed
- * on a poor connection, or a page older than the console's last deploy asking for a chunk that is no longer served.
- * The rest of the page stays as it is, and a notice says what is missing and that reloading fetches it.
+ * What arrives after the first view, in a chunk of its own, and what shows if it can't be drawn: its chunk never came
+ * (a fetch that failed on a poor connection, or a page older than the console's last deploy asking for a chunk no
+ * longer served), or it threw as it drew. The rest of the page stays as it is, a notice says what is missing, and the
+ * error goes to the browser's console, where a thrown one can be told from a chunk that never came.
  */
 import { Component, type ReactNode, Suspense } from 'react';
 
@@ -18,12 +19,16 @@ export class Later extends Component<LaterProps, { failed: boolean }> {
     return { failed: true };
   }
 
+  override componentDidCatch(error: unknown) {
+    console.error(`${this.props.what}:`, error);
+  }
+
   override render() {
     if (this.state.failed)
       return (
         <p className="notice" role="status">
           <span className="label">Not loaded</span>
-          {this.props.what} didn’t load. Reloading the page fetches them again.
+          {this.props.what} couldn’t be shown. Reloading the page may bring them back.
         </p>
       );
     // Nothing holds their place while their chunks arrive: they draw under everything above them, so nothing moves.

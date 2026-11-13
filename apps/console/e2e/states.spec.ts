@@ -166,8 +166,8 @@ test('a panel’s chunk that never arrives leaves the page as it is, with a noti
   // As a page older than the console's last deploy would ask for a chunk no longer served.
   await page.route('**/assets/NeedsYou-*.js', (route) => route.fulfill({ status: 404 }));
   await page.goto(consoleUrl());
-  await expect(page.getByText('Needs you, Controls, Flags and Spend didn’t load.')).toContainText(
-    'Reloading the page fetches them again.',
+  await expect(page.getByText('Needs you, Controls, Flags and Spend couldn’t be shown.')).toContainText(
+    'Reloading the page may bring them back.',
   );
   // The first view is whole, and nothing under the bottom row draws in its place.
   await expect(page.locator('sf-station')).toHaveCount(8);
@@ -183,7 +183,7 @@ test('a panel’s chunk that never arrives leaves the page as it is, with a noti
 test('the bottom row draws when the panels under it can’t, and says what is missing', async ({ page }) => {
   await page.route('**/assets/Guardrails-*.js', (route) => route.fulfill({ status: 404 }));
   await page.goto(consoleUrl());
-  await expect(page.getByText('Patching and Guardrails didn’t load.')).toBeVisible();
+  await expect(page.getByText('Patching and Guardrails couldn’t be shown.')).toBeVisible();
   await expect(page.locator('section.bottom')).toBeVisible();
   await expect(page.locator('#guardrails')).toHaveCount(0);
 });

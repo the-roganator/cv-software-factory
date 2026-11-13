@@ -11,12 +11,12 @@ import { homedir, hostname, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Lock, LockState, Process } from '../../../../scripts/cluster-lock.ts';
 import {
+  claimLock,
   defaultLockPath,
   describeLock,
   readLock,
   removeLock,
   sayLock,
-  writeLock,
 } from '../../../../scripts/cluster-lock.ts';
 
 /** This repository's images, each with the Dockerfile that builds it. */
@@ -645,12 +645,11 @@ function takeLock(ops: Ops, lockPath: string, options: BeginOptions): boolean {
   }
   const me = ops.holderProcess();
   const lock: Lock = { holder, ...me, since: ops.now().toISOString(), host: hostname() };
-  const fresh = state.kind === 'free';
-  try {
-    writeLock(lockPath, lock, fresh);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new Refused('another begin took the cluster just now');
-    throw e;
+  const claim = claimLock(lockPath, lock, state.kind === 'held' ? state.lock : undefined);
+  if (!claim.claimed) {
+    throw new Refused(
+      `another begin took the cluster just now${claim.holder ? `: ${describeLock(claim.holder)}` : ''}`,
+    );
   }
   return state.kind !== 'held' || state.lock.holder !== holder;
 }

@@ -14,8 +14,11 @@
 // first may be relative, as the others would be read from a directory the hook cannot know. From elsewhere, a target
 // must not be the main checkout. From the main checkout, every target must exist and be a worktree or another
 // repository, and either the text starts `cd <target> &&` or every `git` in it is `git -C <target>` and no gh command
-// is refused. Anything else is refused, with what to do instead: false refusals from the main checkout are accepted,
-// false passes are not.
+// is refused. A lone `&` with such words is refused too: what follows a backgrounded list runs where it started.
+// A --work-tree or GIT_WORK_TREE target is a checkout directory, judged as a cd target is. Anything else is refused,
+// with what to do instead: false refusals are accepted, false passes are not. Known false refusals: from the main
+// checkout, any text naming a refused word (`git log --grep revert`, a message saying " & "); from anywhere, a text
+// with a refused word and a move word whose target is a variable, or a second relative target, or a lone `&`.
 // Should the hook throw, it refuses if step 2 matched; should node be missing, Claude Code takes the failed hook as no
 // decision, and the call runs: the hook needs mise's Node on PATH.
 import { spawnSync } from 'node:child_process';
@@ -80,6 +83,8 @@ export function judge(command: string, cwd: string, mainGitDir: string): string 
     const pull = /^\s*git pull --ff-only( origin main)?\s*$/.test(command) && branch(cwd) === 'main';
     return pull ? undefined : `this would change the main checkout, which sessions share. ${ADVICE}`;
   }
+  // `&` alone, not `&&`, `>&`, `&>`, `2>&1` or `|&`: the list before it runs in the background, the rest where it began.
+  if (/(?<![&>|<])&(?![&>])/.test(command)) return `a lone \`&\` leaves what follows where it started. ${ADVICE}`;
   const targets: { word: string; at: number; path: string | undefined; dir: string | undefined; after: string }[] = [];
   for (const [i, m] of moves.entries()) {
     const word = m[1] as string;

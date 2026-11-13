@@ -81,6 +81,8 @@ endef
 
 # $(cluster-held): refuse while another session holds the cluster (`try begin` takes it, `try end` gives it back: the
 # try-the-line skill), naming the holder; the holder itself (TRY_HOLDER) goes ahead, and FORCE=1 goes ahead anyway.
+# It looks at the lock as the target starts and does not hold it: it stops a session that did not know, and does not
+# serialise two that race.
 define cluster-held
 @node scripts/cluster-lock.ts check $(if $(FORCE),--force)
 endef

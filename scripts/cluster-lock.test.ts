@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { holderProcess, processAlive, writeLock } from './cluster-lock.ts';
+import { claimLock, holderProcess, processAlive, writeLock } from './cluster-lock.ts';
 
 const CLI = join(import.meta.dirname, 'cluster-lock.ts');
 let dir: string;
@@ -71,15 +71,46 @@ describe('check', () => {
   });
 });
 
+describe('claimLock', () => {
+  const stale = { holder: 'gone', pid: 1, started: 'then', since: 'then', host: hostname() };
+  const taker = (holder: string) => ({ holder, pid: 2, started: 'now', since: 'now', host: hostname() });
+
+  it('lets one of two takers of the same stale lock have it, and tells the other who won', () => {
+    writeLock(lock, stale, true);
+    // Both read the stale lock before either claims it.
+    expect(claimLock(lock, taker('a'), stale)).toEqual({ claimed: true });
+    expect(claimLock(lock, taker('b'), stale)).toEqual({ claimed: false, holder: taker('a') });
+    expect(JSON.parse(readFileSync(lock, 'utf8')).holder).toBe('a');
+    expect(readdirSync(dir)).toEqual(['cluster.lock']);
+  });
+
+  it('lets one of two takers of a free lock have it', () => {
+    expect(claimLock(lock, taker('a'), undefined)).toEqual({ claimed: true });
+    expect(claimLock(lock, taker('b'), undefined)).toEqual({ claimed: false, holder: taker('a') });
+  });
+
+  it('claims nothing when the lock to replace has gone', () => {
+    expect(claimLock(lock, taker('a'), stale)).toEqual({ claimed: false, holder: undefined });
+    expect(readdirSync(dir)).toEqual([]);
+  });
+});
+
 describe('the holding process', () => {
   it('is read in the C locale, whatever the caller runs under', () => {
+    // The script is fixed text; the module and the process to check reach it through the environment.
     const r = spawnSync(
       process.execPath,
-      [
-        '-e',
-        `import('${join(import.meta.dirname, 'cluster-lock.ts')}').then((m) => console.log(m.processAlive({ pid: ${process.pid}, started: ${JSON.stringify(started(process.pid))} })))`,
-      ],
-      { env: { ...process.env, LC_ALL: 'en_GB.UTF-8', LANG: 'en_GB.UTF-8' }, encoding: 'utf8' },
+      ['-e', 'import(process.env.MODULE).then((m) => console.log(m.processAlive(JSON.parse(process.env.PROCESS))))'],
+      {
+        env: {
+          ...process.env,
+          LC_ALL: 'en_GB.UTF-8',
+          LANG: 'en_GB.UTF-8',
+          MODULE: join(import.meta.dirname, 'cluster-lock.ts'),
+          PROCESS: JSON.stringify({ pid: process.pid, started: started(process.pid) }),
+        },
+        encoding: 'utf8',
+      },
     );
     expect(r.stdout.trim()).toBe('true');
   });

@@ -4,6 +4,8 @@
 // `try begin --holder <key>` takes it and its `try end` gives it back; `try status` prints it; `make up`, `make down`,
 // `make upgrade-cluster` and `make real-store` refuse while another holds it (`check`, below), unless FORCE=1. It is
 // at this one path (CLUSTER_LOCK for the tests) wherever TRY_STATE puts a try's state: one cluster, one lock.
+// Those targets look at the lock and do not hold it: the check is a look at the moment the target starts, meant to stop
+// a session that did not know the cluster was held, not to serialise two that race.
 //
 // The process is the Claude Code session the command ran under (its nearest `claude` ancestor), or, from a terminal,
 // the shell that ran it: a command's own process ends at once, a session's lasts as long as its hold should. It is
@@ -16,7 +18,7 @@
 // Exit 0 when the cluster is free, held by TRY_HOLDER, or held stale (said); 1 when another holds it or the lock cannot
 // be read, saying who and how to go ahead; --force says the same and exits 0.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -73,6 +75,55 @@ export function writeLock(path: string, lock: Lock, create: boolean): void {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, text, { mode: 0o600 });
   renameSync(temporary, path);
+}
+
+/**
+ * Claims the lock for `lock`, atomically: a lock written whole to a file of its own is linked into place, which fails
+ * if one is there. To replace `replacing` (a stale lock, or the holder's own), that lock is first moved aside by a
+ * rename, which one taker alone can make; if what was moved is not it (another taker's claim, made in the meantime),
+ * it goes back. Last, the lock is read again to confirm. The loser is told the winner.
+ */
+export function claimLock(
+  path: string,
+  lock: Lock,
+  replacing: Lock | undefined,
+): { claimed: true } | { claimed: false; holder: Lock | undefined } {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const parse = (file: string): Lock | undefined => {
+    const state = readLock(file, () => true);
+    return state.kind === 'held' ? state.lock : undefined;
+  };
+  const unique = `${path}.${process.pid}.${Date.now()}`;
+  writeFileSync(`${unique}.tmp`, `${JSON.stringify(lock, null, 2)}\n`, { mode: 0o600 });
+  try {
+    if (replacing) {
+      try {
+        renameSync(path, `${unique}.aside`);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        return { claimed: false, holder: parse(path) };
+      }
+      const moved = parse(`${unique}.aside`);
+      if (JSON.stringify(moved) !== JSON.stringify(replacing)) {
+        try {
+          linkSync(`${unique}.aside`, path);
+        } catch {}
+        removeLock(`${unique}.aside`);
+        return { claimed: false, holder: moved };
+      }
+      removeLock(`${unique}.aside`);
+    }
+    try {
+      linkSync(`${unique}.tmp`, path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      return { claimed: false, holder: parse(path) };
+    }
+    const now = parse(path);
+    return JSON.stringify(now) === JSON.stringify(lock) ? { claimed: true } : { claimed: false, holder: now };
+  } finally {
+    removeLock(`${unique}.tmp`);
+  }
 }
 
 export function removeLock(path: string): void {

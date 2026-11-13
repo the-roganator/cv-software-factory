@@ -114,6 +114,19 @@ const TABLE: [string, string, boolean][] = [
   ['cd "$SOMEWHERE" && git commit -m x', 'wt', true],
   ['cd /tmp && cd main && git commit -m x', 'wt', true],
   ['cd {other} && git commit -m x', 'wt', false],
+  // A work tree named by --work-tree or GIT_WORK_TREE is a checkout directory, judged as a cd target is.
+  ['GIT_WORK_TREE={main} git reset --hard', 'wt', true],
+  ['git --work-tree={main} reset --hard', 'wt', true],
+  ['git --work-tree {sub} checkout .', 'wt', true],
+  ['GIT_WORK_TREE={main} git reset --hard', 'main', true],
+  ['git --work-tree={main} reset --hard', 'main', true],
+  ['GIT_WORK_TREE={other} git reset --hard', 'main', true],
+  ['GIT_WORK_TREE={other} git status', 'wt', false],
+  // A backgrounded list leaves what follows where it began; redirections with & are not that.
+  ['cd {wt} && git commit -m x & git reset --hard', 'main', true],
+  ['cd {wt} && git commit -m x 2>&1 && git log', 'main', false],
+  ['cd {wt} && git commit -m x &> out.txt', 'main', false],
+  ['(cd {wt} && git add x); git commit -m x', 'main', true],
   // The project's path through a symlink is still the main checkout.
   ['git reset --hard', 'link', true],
 ];

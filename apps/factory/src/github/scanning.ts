@@ -16,11 +16,13 @@
  *
  * What the App lacks is named: a read refused for want of `actions: read` or `security_events: read` says which.
  *
- * A whole read is kept, one for each repository, and served again while it is still the day GitHub holds: each call
- * still asks which run is the last finished and which of the scan's alerts changed last (one alert, sorted by when it
- * changed: whatever state it is in now, a dismissal or a reopening by hand, a run's upload or the run's own dismissals),
- * and pages the alerts again only when either differs from the kept read's. Callers at once share one read in flight.
- * A read that fails, or is asked for again (`READ_AGAIN`), is never kept.
+ * A whole read is kept, one for each repository, and served again only while nothing it was read from has changed:
+ * each call still asks which run is the last finished, whether a run of the scan is going, and when the scan's alerts
+ * last changed (the one that changed last, of any state: a dismissal or reopening, by hand or by a run, and a run's
+ * fixes, all change one; a run seeing an alert again does not, so no read is served from what was kept while a run is
+ * going). A new run, a run going, a later change, or the run's artifact past its expiry is a whole read at once. A read
+ * whose last change is under a minute old is not kept, so a change in that same second is never missed. Callers at
+ * once share one read in flight. A read that fails, or is asked for again (`READ_AGAIN`), is never kept.
  */
 import { z } from 'zod';
 import { isOurs } from '../vulnerabilities/alerts.ts';
@@ -142,6 +144,7 @@ const ARTIFACTS = z.object({
       id: z.number().int().positive(),
       name: z.string(),
       expired: z.boolean(),
+      expires_at: z.string().nullable().optional(),
       size_in_bytes: z.number().int().nonnegative(),
     }),
   ),
@@ -318,23 +321,47 @@ const lacksError = (repo: string, lacks: string[]) =>
 const lacking = (error: unknown, permission: string) =>
   error instanceof GitHubError && error.kind === 'refused' && error.status === 403 ? permission : undefined;
 
+/** What a whole read was read at: the last finished run, when the alerts last changed, and whether a run was going. */
+interface ReadAt {
+  run: number;
+  /** The last change's time as GitHub gives it, `none` with no alert at all, undefined when GitHub does not say. */
+  changed: string | undefined;
+  going: boolean;
+}
+
+/** How old the alerts' last change must be for a read to be kept: GitHub gives its time to the second, at best. */
+export const SETTLED_MS = 60_000;
+
+const same = (a: ReadAt, b: ReadAt) => a.run === b.run && a.changed === b.changed && a.going === b.going;
+const changedAt = (at: ReadAt) => (at.changed === 'none' ? '' : (at.changed ?? ''));
+/** Whether `a` is a later point than `b`: a later run, or the same one with a later change. */
+const later = (a: ReadAt, b: ReadAt) => a.run > b.run || (a.run === b.run && changedAt(a) > changedAt(b));
+/** Whether a read at `at` may be kept, and so served again: see the module's comment. */
+const keepable = (at: ReadAt, now: number) =>
+  !at.going && at.changed !== undefined && (at.changed === 'none' || now - Date.parse(at.changed) >= SETTLED_MS);
+
 /** The scan's moves: see the module's comment. */
 export class ScanReads {
   readonly #github: GitHub;
   /** Each artifact's `moves.json`, by its id: an artifact never changes, so it is downloaded once. */
   readonly #files = new Map<number, unknown>();
 
-  /** Each repository's last whole read, and what it was read at: the run's id and the alert that changed last. */
-  readonly #kept = new Map<string, { key: string; moves: Moves }>();
-  /** Each repository's read in flight, which a caller asking at the same key waits for instead of reading again. */
-  readonly #reading = new Map<string, { key: string; read: Promise<Moves> }>();
+  /** Each repository's last whole read, what it was read at, and until when its artifact is there to read again. */
+  readonly #kept = new Map<string, { at: ReadAt; until: number; moves: Moves }>();
+  /** Each repository's read in flight, which a caller asking at the same or an earlier point waits for. */
+  readonly #reading = new Map<string, { at: ReadAt; read: Promise<{ until: number; moves: Moves }> }>();
+  readonly #now: () => number;
 
   readonly #maxAlerts: number;
 
-  /** `maxAlerts` for a test of the cap; the scan's own is `MAX_ALERTS`. */
-  constructor(github: GitHub, { maxAlerts = MAX_ALERTS }: { maxAlerts?: number } = {}) {
+  /** `maxAlerts` for a test of the cap, the scan's own is `MAX_ALERTS`; `now` for a test of the clock. */
+  constructor(
+    github: GitHub,
+    { maxAlerts = MAX_ALERTS, now = Date.now }: { maxAlerts?: number; now?: () => number } = {},
+  ) {
     this.#github = github;
     this.#maxAlerts = maxAlerts;
+    this.#now = now;
   }
 
   async moves(repo: string): Promise<Moves> {
@@ -354,7 +381,11 @@ export class ScanReads {
     }
     const branch = await defaultBranch(this.#github, repo);
     // Both reads first, so a read the App may not make names every permission it lacks, not only the first.
-    const [runs, latest] = await Promise.allSettled([this.#run(repo, branch), this.#latest(repo)]);
+    const [runs, latest, going] = await Promise.allSettled([
+      this.#run(repo, branch),
+      this.#latest(repo),
+      this.#going(repo, branch),
+    ]);
     const missing = [
       runs.status === 'rejected' ? lacking(runs.reason, '`actions: read`') : undefined,
       latest.status === 'rejected' ? lacking(latest.reason, '`security_events: read`') : undefined,
@@ -362,55 +393,71 @@ export class ScanReads {
     if (missing.length) throw lacksError(repo, missing as string[]);
     if (runs.status === 'rejected') throw runs.reason;
     if (latest.status === 'rejected') throw latest.reason;
+    if (going.status === 'rejected') throw going.reason;
     const run = runs.value;
-    const key = `${run.id} ${latest.value}`;
+    const at: ReadAt = { run: run.id, changed: latest.value, going: going.value };
     const kept = this.#kept.get(repo);
-    if (kept?.key === key) return structuredClone(kept.moves);
+    if (kept && same(kept.at, at) && keepable(at, this.#now()) && this.#now() < kept.until)
+      return structuredClone(kept.moves);
     let reading = this.#reading.get(repo);
-    if (reading?.key !== key) {
-      const own = { key, read: this.#read(repo, run) };
+    if (!reading || later(at, reading.at)) {
+      const own = { at, read: this.#read(repo, run) };
       reading = own;
       this.#reading.set(repo, own);
-      // Kept once whole, unless a later key was asked for meanwhile; a read that fails is never kept.
+      // Kept once whole if it may be, unless a later read was asked for meanwhile; a read that fails is never kept.
       own.read.then(
-        (moves) => {
+        ({ until, moves }) => {
           if (this.#reading.get(repo) !== own) return;
           this.#reading.delete(repo);
-          this.#kept.set(repo, { key, moves });
+          if (keepable(at, this.#now())) this.#kept.set(repo, { at, until, moves });
+          else this.#kept.delete(repo);
         },
         () => {
           if (this.#reading.get(repo) === own) this.#reading.delete(repo);
         },
       );
     }
-    return structuredClone(await reading.read);
+    return structuredClone((await reading.read).moves);
   }
 
-  /** One whole read: every open alert, the run's `moves.json`, each held to the other. */
-  async #read(repo: string, run: ScanRun): Promise<Moves> {
+  /** One whole read: every open alert, the run's `moves.json`, each held to the other, and when its artifact expires. */
+  async #read(repo: string, run: ScanRun): Promise<{ until: number; moves: Moves }> {
     const alerts = await this.#alerts(repo).catch((error: unknown) => {
       const lacks = lacking(error, '`security_events: read`');
       throw lacks ? lacksError(repo, [lacks]) : error;
     });
-    const file = await this.#file(repo, run);
-    if (!file) {
+    const found = await this.#file(repo, run);
+    if (!found) {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
-      return { repository: repo, run, file: null, moves: [] };
+      return { until: Number.POSITIVE_INFINITY, moves: { repository: repo, run, file: null, moves: [] } };
     }
     await this.#settled(repo, run, alerts);
-    return { repository: repo, run, ...joined(repo, run, file, alerts) };
+    return { until: found.until, moves: { repository: repo, run, ...joined(repo, run, found.file, alerts) } };
   }
 
   /**
-   * Which of the scan's alerts changed last, and to what: one alert, of any state, by when GitHub last changed it. A
-   * dismissal, a reopening, a run's upload or its dismissals all change one, so a kept read whose answer this still is
-   * holds what the alerts hold. An unchanged answer is GitHub's 304, which costs nothing against the rate limit.
+   * When the scan's alerts last changed: the one GitHub changed last, of any state. A dismissal, a reopening and a fix
+   * each change one; an unchanged answer is GitHub's 304, which costs nothing against the rate limit. Undefined when
+   * GitHub does not say, which no kept read is served for.
    */
-  async #latest(repo: string): Promise<string> {
+  async #latest(repo: string): Promise<string | undefined> {
     const path = `/repos/${repo}/code-scanning/alerts?tool_name=Trivy&sort=updated&direction=desc&per_page=1`;
     const { body } = await this.#github.poll(repo, path, LATEST);
     const [last] = body;
-    return last ? `${last.number} ${last.state} ${last.updated_at ?? ''}` : 'none';
+    return last ? (last.updated_at ?? undefined) : 'none';
+  }
+
+  /** Whether a run of the scan on the default branch, by schedule, push or hand, is going: it may have uploaded. */
+  async #going(repo: string, branch: string): Promise<boolean> {
+    const path = `/repos/${repo}/actions/workflows/${SCAN_WORKFLOW}/runs?branch=${encodeURIComponent(branch)}&status=in_progress&exclude_pull_requests=true&per_page=${RUNS_PER_PAGE}`;
+    const { body } = await this.#github.poll(repo, path, RUNS);
+    return body.workflow_runs.some(
+      (run) =>
+        run.status !== 'completed' &&
+        SCAN_EVENTS.includes(run.event) &&
+        run.head_branch === branch &&
+        run.head_repository?.full_name === repo,
+    );
   }
 
   /**
@@ -467,8 +514,8 @@ export class ScanReads {
     throw new GitHubError('not-found', `${repo} has no finished run of ${SCAN_WORKFLOW} on ${branch} to read.`, 404);
   }
 
-  /** The run's `moves.json`, or undefined when it uploaded none. */
-  async #file(repo: string, run: ScanRun): Promise<MovesFile | undefined> {
+  /** The run's `moves.json`, and when its artifact expires, or undefined when it uploaded none. */
+  async #file(repo: string, run: ScanRun): Promise<{ file: MovesFile; until: number } | undefined> {
     const path = `/repos/${repo}/actions/runs/${run.id}/artifacts?name=${MOVES_ARTIFACT}&per_page=10`;
     const { body } = await this.#github.poll(repo, path, ARTIFACTS);
     const artifact = body.artifacts.find((each) => each.name === MOVES_ARTIFACT);
@@ -507,7 +554,9 @@ export class ScanReads {
         .join(', ');
       throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is not the shape this worker reads (${where})`);
     }
-    return parsed.data as MovesFile;
+    // An artifact whose expiry GitHub does not give, or gives as no date, is read again on each call.
+    const until = Date.parse(artifact.expires_at ?? '');
+    return { file: parsed.data as MovesFile, until: Number.isNaN(until) ? 0 : until };
   }
 
   /** Every open alert of the repository's on the default branch, Trivy's, every page; more than `MAX_ALERTS` fails. */

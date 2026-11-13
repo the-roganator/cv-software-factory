@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { GitHub, GitHubError } from '../../src/github/client.ts';
 import { branchPin, ecosystemsOf, groupMovesTo, rewrittenLines } from '../../src/github/dependabot.ts';
 import { LiveReads } from '../../src/github/reads.ts';
-import { ScanReads } from '../../src/github/scanning.ts';
+import { ScanReads, SETTLED_MS } from '../../src/github/scanning.ts';
 import { zipEntry } from '../../src/github/zip.ts';
 import { CLIENT_ID, client, fakeGitHub, PRIVATE_KEY, quiet, REPO, type Route, type Sent } from './fake.ts';
 
@@ -59,6 +59,7 @@ const ALERTS_PATH = (page: number) =>
   `/repos/${REPO}/code-scanning/alerts?state=open&tool_name=Trivy&per_page=100&page=${page}`;
 
 const LATEST_PATH = `/repos/${REPO}/code-scanning/alerts?tool_name=Trivy&sort=updated&direction=desc&per_page=1`;
+const GOING_PATH = `/repos/${REPO}/actions/workflows/vulnerabilities.yml/runs?branch=main&status=in_progress&exclude_pull_requests=true&per_page=20`;
 const LATEST = [{ number: 104, state: 'open', updated_at: '2026-11-10T06:19:30Z' }];
 
 interface Day {
@@ -67,6 +68,8 @@ interface Day {
   moves?: unknown;
   /** Each page of alerts, in order. */
   pages?: unknown[][];
+  /** The scan's runs going on main, as GitHub lists them: none unless a test says. */
+  going?: unknown[];
   /** The scan's alert that changed last, as GitHub answers the one-alert read sorted by change. */
   latest?: unknown[];
   /** What GitHub answers each permission's read with, when the App lacks it. */
@@ -98,6 +101,11 @@ function routes(day: Day = {}): Route[] {
       method: 'GET',
       path: '/artifact/77/moves.zip?sig=x',
       answer: () => ({ body: zipOf({ 'moves.json': JSON.stringify(day.moves ?? fixture('moves.json')) }) }),
+    },
+    {
+      method: 'GET',
+      path: GOING_PATH,
+      answer: () => (day.refuse?.actions ? refused : { body: { total_count: 0, workflow_runs: day.going ?? [] } }),
     },
     {
       method: 'GET',
@@ -801,7 +809,7 @@ describe('the scan’s moves, kept for each run', () => {
     expect((await reads.moves(REPO)).moves[0]?.findings.map((f) => f.alert)).toEqual([101, 102]);
   });
 
-  it('ask again, not serve the kept read, while a later run has uploaded its results and not finished', async () => {
+  it('serve nothing kept while a run of the scan is going, which may have uploaded without changing an alert', async () => {
     const sent: Sent[] = [];
     const day: Day = {};
     const going: Route = {
@@ -811,12 +819,68 @@ describe('the scan’s moves, kept for each run', () => {
     };
     const reads = new ScanReads(client([going, ...routes(day)], sent).github);
     await reads.moves(REPO);
-    // Run 3's upload changes the alerts while run 1 is still the last finished.
+    // Run 3 is going, and its upload names it in each alert it saw again: GitHub changes no alert's time for that.
+    day.going = [fixture('runs.json').workflow_runs[1]];
     day.pages = [withText(101, (t) => t.replace('run 42000000001', 'run 42000000003'))];
-    day.latest = [{ number: 101, state: 'open', updated_at: '2026-11-10T07:50:00Z' }];
     for (let i = 0; i < 2; i++)
       expect(await reads.moves(REPO).catch((e) => e)).toMatchObject({ kind: 'read-again', status: 409 });
     expect(pageReads(sent)).toBe(3);
+    // Going and not yet uploaded: read whole, as the day it is, and not kept while the run goes.
+    day.pages = [alerts()];
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(5);
+    // A pull request's run, or a fork's, going is not the scan's.
+    day.going = [fixture('runs.json').workflow_runs[0], fixture('runs.json').workflow_runs[2]].map((run) => ({
+      ...run,
+      status: 'in_progress',
+    }));
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(6);
+  });
+
+  it('keep a read under the last change’s time alone, whichever of the alerts changed then GitHub names', async () => {
+    const sent: Sent[] = [];
+    const day: Day = {};
+    const reads = new ScanReads(client(routes(day), sent).github);
+    await reads.moves(REPO);
+    // Forty dismissed in one second: GitHub may name any of them.
+    day.latest = [{ ...LATEST[0], number: 117, state: 'fixed' }];
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(1);
+  });
+
+  it('keep no read whose last change is under a minute old, or whose time GitHub does not give', async () => {
+    const sent: Sent[] = [];
+    const changed = Date.parse(LATEST[0]?.updated_at ?? '');
+    let now = changed + 10_000;
+    const reads = new ScanReads(client(routes(), sent).github, { now: () => now });
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+    now = changed + SETTLED_MS;
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(3);
+    const untimed: Sent[] = [];
+    const without = new ScanReads(client(routes({ latest: [{ number: 104, state: 'open' }] }), untimed).github);
+    await without.moves(REPO);
+    await without.moves(REPO);
+    expect(pageReads(untimed)).toBe(2);
+  });
+
+  it('serve no kept read past its artifact’s expiry', async () => {
+    const sent: Sent[] = [];
+    const expires = Date.parse(fixture('artifacts.json').artifacts[0].expires_at);
+    let now = expires - 1;
+    const reads = new ScanReads(client(routes(), sent).github, { now: () => now });
+    await reads.moves(REPO);
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(1);
+    now = expires;
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
   });
 
   it('keep no read that failed part way, and read whole the next time', async () => {
@@ -869,6 +933,29 @@ describe('the scan’s moves, kept for each run', () => {
     expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
     expect(pageReads(sent)).toBe(1);
     day.pages = [alerts()];
+    await reads.moves(REPO);
+    expect(pageReads(sent)).toBe(2);
+  });
+
+  it('join a later read in flight from an earlier point, and start a new one from a later point', async () => {
+    const sent: Sent[] = [];
+    const day: Day = { latest: [{ number: 104, state: 'open', updated_at: '2026-11-10T07:00:00Z' }] };
+    const { reads, open } = held(day, sent);
+    const first = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    // A slower answer from before that change: it waits for the read already going.
+    day.latest = [{ number: 104, state: 'open', updated_at: '2026-11-10T06:00:00Z' }];
+    const earlier = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pageReads(sent)).toBe(0);
+    // A change after it: a read of its own.
+    day.latest = [{ number: 104, state: 'open', updated_at: '2026-11-10T08:00:00Z' }];
+    const later = reads.moves(REPO);
+    await new Promise((resolve) => setImmediate(resolve));
+    open();
+    await Promise.all([first, earlier, later]);
+    expect(pageReads(sent)).toBe(2);
+    // The later read is the one kept.
     await reads.moves(REPO);
     expect(pageReads(sent)).toBe(2);
   });

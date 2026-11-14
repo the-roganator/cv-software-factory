@@ -14,6 +14,9 @@
  * fails the whole read, and nothing of it is returned: no word of an advisory is shown or acted on unless the scan's
  * own artifact agrees with it. Only the parts the grammar reads are returned: an advisory's id, never its title or its text.
  *
+ * Each page of alerts is folded as it is read into what the answer takes of it (`fold`), and read plainly, never
+ * polled: a read holds its findings and one page, however many alerts GitHub has, and the client keeps no page.
+ *
  * What the App lacks is named: a read refused for want of `actions: read` or `security_events: read` says which.
  *
  * A whole read is kept, one for each repository, and served again only while nothing it was read from has changed:
@@ -299,6 +302,69 @@ const MOVES_FILE_SCHEMA = z.strictObject({
 
 type Alerts = z.infer<typeof ALERTS>;
 
+/**
+ * What an alert leaves once its page is read: only an alert of the scan's own with a fix in a move, with what its
+ * finding holds, or one whose message does not parse, by its number alone, for `joinedPaged` to fail on in its turn.
+ */
+type Folded =
+  | { alert: number; parsed: false }
+  | { alert: number; parsed: true; run: string; index: number; finding: MoveFinding; fix: Fix };
+
+/** Every page of a repository's alerts, folded: how many were read, the later runs their tags name, and each kept. */
+interface Paged {
+  count: number;
+  later: Set<string>;
+  folded: Folded[];
+}
+
+/**
+ * One page of alerts folded into what the read keeps: the alerts, the page's text and each message go once it is
+ * read, so a read holds what it keeps and one page, however many alerts GitHub has. `runId` is the artifact's run, a
+ * later one than which an alert's tag names makes the read one to try again (`#settled`).
+ */
+function fold(paged: Paged, alerts: Alerts, runId: number) {
+  paged.count += alerts.length;
+  for (const alert of alerts) {
+    if (!ours(alert)) continue;
+    const text = alert.most_recent_instance?.message?.text ?? '';
+    const advisory = alert.rule?.id ?? '';
+    const message = readMessage(text, advisory);
+    // Only a later run than the artifact's can be a read to try again; any other fails the read in `joinedPaged`. The
+    // tag is the message's own when it parses; a copy is kept, never a slice that would keep the message alive.
+    const tag = message ? message.move : readMove(text);
+    if (tag && BigInt(tag.run) > BigInt(runId)) paged.later.add(structuredClone(tag.run));
+    if (!advisory || !message) {
+      paged.folded.push({ alert: alert.number, parsed: false });
+      continue;
+    }
+    if (!message.fix) continue;
+    const move = message.move;
+    // A result with a fix and no move is excepted (moves.ts leaves those out), its alert open until the run's next step
+    // dismisses it: it is in no move. One the artifact counts and lacks fails the counts in `joinedPaged`.
+    if (!move) continue;
+    paged.folded.push({
+      alert: alert.number,
+      parsed: true,
+      run: move.run,
+      index: move.index,
+      // A copy, so no string the read keeps is a slice of its message, which would keep the whole message alive.
+      finding: structuredClone({
+        alert: alert.number,
+        advisory,
+        severity: message.severity,
+        package: message.package,
+        installed: message.installed,
+        file: alert.most_recent_instance?.location?.path ?? '',
+        line: alert.most_recent_instance?.location?.start_line ?? 0,
+        ...(message.fixed && { fixed: message.fixed }),
+        fix: targetText(message.fix.target),
+        firstSeen: dayText(message.fix.day),
+      }),
+      fix: structuredClone(message.fix),
+    });
+  }
+}
+
 /** Whether an alert is open and the scan's own (alerts.ts's `isOurs`): Trivy's, in its categories. */
 const ours = (alert: Alerts[number]) =>
   alert.state === 'open' &&
@@ -443,7 +509,7 @@ export class ScanReads {
   /** One whole read: every open alert, the run's `moves.json`, each held to the other, and when its artifact expires. */
   async #read(repo: string, run: ScanRun): Promise<{ until: number; moves: Moves }> {
     // The alerts and the artifact at once: neither waits on the other. The alerts' failure is the one named first.
-    const [paged, file] = await Promise.allSettled([this.#alerts(repo), this.#file(repo, run)]);
+    const [paged, file] = await Promise.allSettled([this.#alerts(repo, run), this.#file(repo, run)]);
     if (paged.status === 'rejected') {
       const lacks = lacking(paged.reason, '`security_events: read`');
       throw lacks ? lacksError(repo, [lacks]) : paged.reason;
@@ -455,8 +521,8 @@ export class ScanReads {
       if (run.conclusion === 'success') throw disagrees(repo, `run ${run.id} succeeded and left no ${MOVES_FILE}`);
       return { until: Number.POSITIVE_INFINITY, moves: { repository: repo, run, file: null, moves: [] } };
     }
-    await this.#settled(repo, run, alerts);
-    return { until: found.until, moves: { repository: repo, run, ...joined(repo, run, found.file, alerts) } };
+    await this.#settled(repo, alerts.later);
+    return { until: found.until, moves: { repository: repo, run, ...joinedPaged(repo, run, found.file, alerts) } };
   }
 
   /**
@@ -488,17 +554,10 @@ export class ScanReads {
    * A run uploads its artifact and then its results, and is still going while code scanning processes them and the
    * alerts are held to the policy: alerts that name a run still going, or a later run that finished while this read
    * paged through the alerts, are a read to try again, not a disagreement. Any other run than the artifact's fails the
-   * read in `joined`.
+   * read in `joinedPaged`.
    */
-  async #settled(repo: string, run: ScanRun, alerts: z.infer<typeof ALERTS>) {
-    // Only a later run than the artifact's can be a read to try again; any other fails the read in `joined`. The tags
-    // are the alerts' words, so at most one later run is asked about: two are a disagreement.
-    const later = new Set<string>();
-    for (const alert of alerts) {
-      if (!ours(alert)) continue;
-      const tag = readMove(alert.most_recent_instance?.message?.text ?? '');
-      if (tag && BigInt(tag.run) > BigInt(run.id)) later.add(tag.run);
-    }
+  async #settled(repo: string, later: Set<string>) {
+    // The tags are the alerts' words, so at most one later run is asked about: two are a disagreement.
     if (later.size > 1) throw disagrees(repo, `its alerts name ${later.size} runs later than the artifact's`);
     const [other] = later;
     if (other === undefined) return;
@@ -583,15 +642,19 @@ export class ScanReads {
     return { file: parsed.data as MovesFile, until: Number.isNaN(until) ? 0 : until };
   }
 
-  /** Every open alert of the repository's on the default branch, Trivy's, every page; more than `MAX_ALERTS` fails. */
-  async #alerts(repo: string): Promise<z.infer<typeof ALERTS>> {
-    const all: z.infer<typeof ALERTS> = [];
+  /**
+   * Every open alert of the repository's on the default branch, Trivy's, every page, each folded as it is read
+   * (`fold`); more than `MAX_ALERTS` fails. A page is read plainly, not polled: the client would keep every page's
+   * text for its ETag, which is the whole of the alerts, and the kept read already spares reading them again.
+   */
+  async #alerts(repo: string, run: ScanRun): Promise<Paged> {
+    const paged: Paged = { count: 0, later: new Set(), folded: [] };
     for (let page = 1; ; page++) {
       const path = `/repos/${repo}/code-scanning/alerts?state=open&tool_name=Trivy&per_page=${ALERTS_PER_PAGE}&page=${page}`;
-      const { body } = await this.#github.poll(repo, path, ALERTS);
-      all.push(...body);
-      if (all.length > this.#maxAlerts) throw disagrees(repo, `more than ${this.#maxAlerts} open alerts`);
-      if (body.length < ALERTS_PER_PAGE) return all;
+      const body = await this.#github.read(repo, path, ALERTS);
+      fold(paged, body, run.id);
+      if (paged.count > this.#maxAlerts) throw disagrees(repo, `more than ${this.#maxAlerts} open alerts`);
+      if (body.length < ALERTS_PER_PAGE) return paged;
     }
   }
 }
@@ -604,7 +667,19 @@ export function joined(
   repo: string,
   run: ScanRun,
   file: MovesFile,
-  alerts: z.infer<typeof ALERTS>,
+  alerts: Alerts,
+): { file: Omit<MovesFile, 'moves'>; moves: ReadMove[] } {
+  const paged: Paged = { count: 0, later: new Set(), folded: [] };
+  fold(paged, alerts, run.id);
+  return joinedPaged(repo, run, file, paged);
+}
+
+/** `joined`, of alerts already folded a page at a time. */
+function joinedPaged(
+  repo: string,
+  run: ScanRun,
+  file: MovesFile,
+  paged: Paged,
 ): { file: Omit<MovesFile, 'moves'>; moves: ReadMove[] } {
   if (file.repository !== repo) throw disagrees(repo, `run ${run.id}'s ${MOVES_FILE} is another repository's`);
   if (file.run !== String(run.id))
@@ -620,33 +695,15 @@ export function joined(
 
   const findings: MoveFinding[][] = file.moves.map(() => []);
   const fixes: Fix[][] = file.moves.map(() => []);
-  for (const alert of alerts) {
-    if (!ours(alert)) continue;
-    const advisory = alert.rule?.id ?? '';
-    const message = readMessage(alert.most_recent_instance?.message?.text ?? '', advisory);
-    if (!advisory || !message) throw disagrees(repo, `alert ${alert.number}'s message does not parse`);
-    if (!message.fix) continue;
-    const move = message.move;
-    // A result with a fix and no move is excepted (moves.ts leaves those out), its alert open until the run's next step
-    // dismisses it: it is in no move. One the artifact counts and lacks fails the counts below.
-    if (!move) continue;
-    if (move.run !== String(run.id))
-      throw disagrees(repo, `alert ${alert.number} is from run ${move.run}, and the artifact from run ${run.id}`);
-    const list = findings[move.index - 1];
-    if (!list) throw disagrees(repo, `alert ${alert.number} names move ${move.index} of ${file.moves.length}`);
-    list.push({
-      alert: alert.number,
-      advisory,
-      severity: message.severity,
-      package: message.package,
-      installed: message.installed,
-      file: alert.most_recent_instance?.location?.path ?? '',
-      line: alert.most_recent_instance?.location?.start_line ?? 0,
-      ...(message.fixed && { fixed: message.fixed }),
-      fix: targetText(message.fix.target),
-      firstSeen: dayText(message.fix.day),
-    });
-    fixes[move.index - 1]?.push(message.fix);
+  // In the alerts' order, as GitHub paged them: the first that fails is the one named.
+  for (const each of paged.folded) {
+    if (!each.parsed) throw disagrees(repo, `alert ${each.alert}'s message does not parse`);
+    if (each.run !== String(run.id))
+      throw disagrees(repo, `alert ${each.alert} is from run ${each.run}, and the artifact from run ${run.id}`);
+    const list = findings[each.index - 1];
+    if (!list) throw disagrees(repo, `alert ${each.alert} names move ${each.index} of ${file.moves.length}`);
+    list.push(each.finding);
+    fixes[each.index - 1]?.push(each.fix);
   }
 
   const moves = file.moves.map((move, i): ReadMove => {

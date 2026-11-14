@@ -106,13 +106,16 @@ spec:
               port: http
             periodSeconds: 10
           # More than the other workers: on top of its steady use, release-please runs each time main moves, and
-          # checking a new build's signatures takes tens of megabytes more for a minute or so.
+          # checking a new build's signatures takes tens of megabytes more for a minute or so. Measured on the host, dry
+          # run, with both repositories' moves read at once as the sense asks them (10,178 and 8,703 open alerts): 248
+          # MiB at rest, 294 MiB at the read's peak and after it. The limit leaves about a hundred more, for
+          # release-please and a signature check landing on a read. Node sizes its heap from the limit, about two thirds.
           resources:
             requests:
               cpu: 20m
               memory: 224Mi
             limits:
-              memory: 384Mi
+              memory: 448Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

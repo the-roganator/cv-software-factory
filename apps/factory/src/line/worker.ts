@@ -347,13 +347,14 @@ const VERIFY_LEASE_SECONDS = 2700;
 /** How long the line waits before trying a handback's effects again: doubling from 30 seconds, to 10 minutes. */
 const retryAfterMs = (tries: number) => Math.min(30_000 * 2 ** (tries - 1), 600_000);
 
+/** A move's ticket, not an improvement's: one whose issue is written from its dependency signal. */
+const movedBy = (state: WorkItemState) =>
+  !state.request && state.ticket !== undefined && 'ecosystem' in state.ticket.fingerprint;
+
 /**
  * The app's own words as plain text in an issue's Markdown: a page's passage or a link's words may hold anything the
  * app shows, and an `@name` there would notify that account, or a bracket make a link.
  */
-/** A move's ticket, not an improvement's: one whose issue is written from its dependency signal. */
-const movedBy = (state: WorkItemState) =>
-  !state.request && state.ticket !== undefined && 'ecosystem' in state.ticket.fingerprint;
 const asText = (words: string) => words.replace(/[\\`*_[\]<>#|~@]/g, '\\$&');
 
 export class Line {
@@ -966,16 +967,18 @@ export class Line {
         // The row names the issue first, with the signal it was written from, so a pass after a failure here goes on
         // with it and never opens a second public issue; one whose record failed records it on the next pass, before
         // the planner (`record-issue`), from that same signal.
-        await this.#queue.setIssue(workItem, issue, dependency?.seq ?? null);
+        await this.#queue.setIssue(workItem, issue, movedBy(state) ? (dependency?.seq ?? 0) : null);
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
         if (issue < DRY_RUN_NUMBERS_FROM) await this.#recordIssue(workItem, state, issue, dependency?.signal);
         return;
       }
       case 'record-issue': {
+        // The signal its issue was written from; 0 when it had none; unknown on a row named before the line kept it,
+        // whose issue was written from the newest then.
         const dependency =
-          movedBy(state) && item.issueSignal !== null
-            ? await this.#dependencySignal(workItem, item.issueSignal)
-            : undefined;
+          !movedBy(state) || item.issueSignal === 0
+            ? undefined
+            : await this.#dependencySignal(workItem, item.issueSignal ?? undefined);
         await this.#recordIssue(workItem, state, next.issue, dependency?.signal);
         return;
       }
@@ -2416,20 +2419,15 @@ export class Line {
   }
 
   /**
-   * What each sense saw, from their public views. A visitor's report is left out whole, not only its text. A
-   * dependency's signal is told from its payload, which names the package and the advisories its public view may
-   * withhold: by the time an agent runs, the work item's issue has named them (`#openIssue`), and every word of it is
-   * a fixed field the schema bounds, never an advisory's text. Of a dependency's signals only the newest is told: triage
-   * joins a changed target or changed findings as a later signal, and the move is to that one (`#moveOf`).
-   */
-  /**
    * A move's dependency signal, as its own payload: the newest, or the one at `seq`, which the row names as the one its
-   * issue was written from. None when there is none.
+   * issue was written from. None when there is none. A signal carrying a visitor's report is passed over, as `#signals`
+   * passes it over.
    */
   async #dependencySignal(workItem: string, seq?: number): Promise<{ seq: number; signal: Signal } | undefined> {
     const [row] = await this.#o.sql<{ seq: string; payload: PayloadOf<'signal.received'> }[]>`
       select seq, payload from events
       where work_item = ${workItem} and type = 'signal.received' and payload->>'sense' = 'dependency'
+        and not payload ? 'report'
         ${seq === undefined ? this.#o.sql`` : this.#o.sql`and seq = ${seq}`}
       order by seq desc limit 1`;
     if (!row) return undefined;
@@ -2437,6 +2435,13 @@ export class Line {
     return { seq: Number(row.seq), signal };
   }
 
+  /**
+   * What each sense saw, from their public views. A visitor's report is left out whole, not only its text. A
+   * dependency's signal is told from its payload, which names the package and the advisories its public view may
+   * withhold: by the time an agent runs, the work item's issue has named them (`#openIssue`), and every word of it is
+   * a fixed field the schema bounds, never an advisory's text. Of a dependency's signals only the newest is told: triage
+   * joins a changed target or changed findings as a later signal, and the move is to that one (`#moveOf`).
+   */
   async #signals(workItem: string): Promise<Signal[]> {
     const rows = await this.#o.sql<
       { payload: PayloadOf<'signal.received'>; public: { payload: PayloadOf<'signal.received'> } }[]

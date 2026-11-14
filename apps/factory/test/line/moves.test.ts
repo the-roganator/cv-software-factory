@@ -219,6 +219,22 @@ describe('a move’s issue and prompts, while its public views withhold the pack
   });
 });
 
+/** The store's appends, refusing the first `issue.opened` as though the store failed then. */
+function refusingTheRecordOnce() {
+  const failing = {
+    refused: false,
+    append: (async (batch: Parameters<typeof events.append>[0]) => {
+      const list = Array.isArray(batch) ? batch : [batch];
+      if (!failing.refused && list.some((e) => e.type === 'issue.opened')) {
+        failing.refused = true;
+        throw new Error('The store refused the append');
+      }
+      return events.append(batch);
+    }) as typeof events.append,
+  };
+  return failing;
+}
+
 describe('a move’s disclosure, as its issue opens', () => {
   it('records what the issue named in `issue.opened`, before the line goes on to the planner', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
@@ -269,21 +285,11 @@ describe('a move’s disclosure, as its issue opens', () => {
 
   it('opens no second issue when its record fails, and records the first before the planner starts', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
-    let refused = false;
-    const failing = {
-      append: (async (batch: Parameters<typeof events.append>[0]) => {
-        const list = Array.isArray(batch) ? batch : [batch];
-        if (!refused && list.some((e) => e.type === 'issue.opened')) {
-          refused = true;
-          throw new Error('The store refused the append');
-        }
-        return events.append(batch);
-      }) as typeof events.append,
-    };
+    const failing = refusingTheRecordOnce();
     const { pass, github } = line({ planner }, failing);
     await pass();
     await pass();
-    expect(refused).toBe(true);
+    expect(failing.refused).toBe(true);
     expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
     const recorded = await types(workItem);
     expect(recorded.indexOf('issue.opened')).toBeGreaterThan(0);
@@ -293,22 +299,12 @@ describe('a move’s disclosure, as its issue opens', () => {
 
   it('records what the issue named on a later pass, though a newer scan came in since', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
-    let refused = false;
-    const failing = {
-      append: (async (batch: Parameters<typeof events.append>[0]) => {
-        const list = Array.isArray(batch) ? batch : [batch];
-        if (!refused && list.some((e) => e.type === 'issue.opened')) {
-          refused = true;
-          throw new Error('The store refused the append');
-        }
-        return events.append(batch);
-      }) as typeof events.append,
-    };
+    const failing = refusingTheRecordOnce();
     const { pass, github } = line({ planner }, failing);
     await pass();
     await events.append([event(workItem, 'signal.received', signal('2.0.2', 'GHSA-0000-0000-0002'), 'triage')]);
     await pass();
-    expect(refused).toBe(true);
+    expect(failing.refused).toBe(true);
     const { body } = (github.acts.find((a) => a.action === 'openIssue')?.args ?? { body: '' }) as { body: string };
     expect(body).toContain('`2.0.1`');
     expect(body).not.toContain('GHSA-0000-0000-0002');
@@ -316,6 +312,27 @@ describe('a move’s disclosure, as its issue opens', () => {
       to: '2.0.1',
       findings: [expect.objectContaining({ advisory: 'GHSA-0000-0000-0001' })],
     });
+  });
+
+  it('records the package alone on a later pass when its issue had no signal, though one is joined since', async () => {
+    const workItem = await moveTicket();
+    const failing = refusingTheRecordOnce();
+    const { pass } = line({ planner }, failing);
+    await pass();
+    await events.append([event(workItem, 'signal.received', signal('2.0.1'), 'triage')]);
+    await pass();
+    expect(failing.refused).toBe(true);
+    expect((await payloads(workItem, 'issue.opened'))[0]?.move).toEqual({ name: 'invented-pkg', ecosystem: 'npm' });
+  });
+
+  it('records from the newest signal on a row named before the line kept its issue’s', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    const failing = refusingTheRecordOnce();
+    const { pass } = line({ planner }, failing);
+    await pass();
+    await database.owner`update line set issue_signal = null where work_item = ${workItem}`;
+    await pass();
+    expect((await payloads(workItem, 'issue.opened'))[0]?.move).toMatchObject({ to: '2.0.1', pins: PINS });
   });
 
   it('records nothing for a dry run’s issue, which GitHub never had', async () => {

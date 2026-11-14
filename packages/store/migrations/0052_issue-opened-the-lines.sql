@@ -8,6 +8,7 @@ create or replace function line_only_event(type text) returns boolean language s
 $$;
 
 -- The dependency signal a move's issue was written from, set with the issue in one update: the record of the issue,
--- on the pass that opened it or a later one, discloses what the issue named, never a newer scan's.
-alter table line add column issue_signal bigint;
+-- on the pass that opened it or a later one, discloses what the issue named, never a newer scan's. 0 when the move
+-- had none; null for any other work item, and for a move's row named before this column.
+alter table line add column issue_signal bigint check (issue_signal >= 0);
 grant update (issue_signal) on line to factory_line;

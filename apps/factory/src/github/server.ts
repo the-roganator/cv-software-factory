@@ -514,7 +514,6 @@ const STATUS: Record<GitHubError['kind'], number> = {
   network: 502,
   'read-only': 503,
   malformed: 502,
-  'read-again': 409,
 };
 
 export interface WorkerServerOptions {

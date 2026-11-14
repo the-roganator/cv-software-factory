@@ -16,7 +16,6 @@ import type { Logger } from 'pino';
 import type { Sql } from 'postgres';
 import type { DependencyPull } from '../github/dependabot.ts';
 import type { Moves } from '../github/scanning.ts';
-import { GitHubWorkerError, READ_AGAIN } from '../github/worker-client.ts';
 import type { Outbox } from '../outbox.ts';
 import { compare } from './compare.ts';
 import { type Day, dayOf, type RepositoryRead, sameDay, scannedOf } from './day.ts';
@@ -35,11 +34,6 @@ export type Pass =
   | { pass: 'appended'; day: Day }
   | { pass: 'unchanged'; day: Day }
   | { pass: 'failed'; failed: string[] }
-  /**
-   * The worker asked for the moves read again (`READ_AGAIN`): a scan finished during it. Nothing failed, and nothing
-   * is appended.
-   */
-  | { pass: 'again'; why: string[] }
   /**
    * The GitHub worker's door refused the connection to every read that failed: it is still starting, as it is for a
    * moment when a deploy restarts it and the sense together. Nothing is appended.
@@ -63,14 +57,8 @@ interface SenseOptions {
 }
 
 /**
- * Whether the worker asked for the read again: a scan finished while its alerts were read. By its kind alone: GitHub's
- * own 409, which the worker relays as `conflict`, is a failed read.
- */
-const readAgain = (error: unknown) => error instanceof GitHubWorkerError && error.kind === READ_AGAIN;
-
-/**
- * Whether the connection was refused: nothing listened at the address. `fetch` gives it as its error's cause, and
- * `node:http` as the error itself.
+ * Whether the connection was refused: nothing listened at the address. `fetch` gives it as its error's cause, and a
+ * socket of the store's as the error itself.
  */
 export function refused(error: unknown): boolean {
   for (let e = error, depth = 0; e && depth < 4; e = (e as { cause?: unknown }).cause, depth++)
@@ -85,17 +73,11 @@ export function refused(error: unknown): boolean {
  */
 export const MOST_REFUSED = 21;
 
-/** How many reads to take again in a row before they count as a failure: the sixth some fifty minutes after the
- * first, at ten minutes apart. */
-export const MOST_AGAIN = 6;
-
 /**
- * When the next pass is, after this one (`schedule.ts`), and why when it is sooner than the day's: a read to take
- * again,
- * a read that failed, or a day read from yesterday's scan.
+ * When the next pass is, after this one (`schedule.ts`), and why when it is sooner than the day's: a pass refused, a
+ * read that failed, or a day read from yesterday's scan.
  */
-export function nextAfter(result: Pass, now: number): { next: Next; why?: 'again' | 'refused' | 'failed' | 'stale' } {
-  if (result.pass === 'again') return { next: 'soon', why: 'again' };
+export function nextAfter(result: Pass, now: number): { next: Next; why?: 'refused' | 'failed' | 'stale' } {
   if (result.pass === 'refused') return { next: 'shortly', why: 'refused' };
   if (result.pass === 'failed') return { next: 'hour', why: 'failed' };
   if (result.pass === 'not-real') return { next: 'daily' };
@@ -105,11 +87,10 @@ export function nextAfter(result: Pass, now: number): { next: Next; why?: 'again
 }
 
 /**
- * What `factory patching --once` exits with: 0 for a day read, 1 for a read that failed, 75 for one to take again or
- * refused.
+ * What `factory patching --once` exits with: 0 for a day read, 1 for a read that failed, 75 for a pass refused.
  */
 export function exitCode(result: Pass): number {
-  return result.pass === 'failed' ? 1 : result.pass === 'again' || result.pass === 'refused' ? 75 : 0;
+  return result.pass === 'failed' ? 1 : result.pass === 'refused' ? 75 : 0;
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -122,8 +103,6 @@ export class PatchingSense {
   readonly #repositories: readonly string[];
   readonly #log: Logger;
   readonly #now: () => Date;
-  /** How many passes in a row have been reads to take again. */
-  #again = 0;
   /** How many passes in a row the worker's door has refused. */
   #refused = 0;
 
@@ -144,12 +123,11 @@ export class PatchingSense {
   }
 
   async pass(): Promise<Pass> {
-    // Reads to take again count only in a row: any other pass, a throw included, starts the count again.
+    // Refused passes count only in a row: any other pass starts the count again.
     let result: Pass;
     try {
       result = await this.#pass();
     } catch (error) {
-      this.#again = 0;
       // The store refused the connection, as a new pod's are until the network policy admits it: taken again shortly,
       // as the worker's door is.
       if (!refused(error) || this.#refused + 1 >= MOST_REFUSED) {
@@ -161,18 +139,16 @@ export class PatchingSense {
       this.#log.info({ why }, 'patching: the store refused the connection, so the day is read again shortly');
       return { pass: 'refused', why };
     }
-    if (result.pass !== 'again') this.#again = 0;
     if (result.pass !== 'refused') this.#refused = 0;
     return result;
   }
 
   async #pass(): Promise<Pass> {
     if ((await storeKind(this.#sql)) === 'sample') return { pass: 'not-real' };
-    const asked: { what: string; moves?: true; worker?: true; read: () => Promise<unknown> }[] = [
+    const asked: { what: string; worker?: true; read: () => Promise<unknown> }[] = [
       ...this.#repositories.flatMap((repo) => [
         {
           what: `the moves of ${repo}`,
-          moves: true as const,
           worker: true as const,
           read: () => this.#senses.moves(repo),
         },
@@ -201,23 +177,8 @@ export class PatchingSense {
       );
       return { pass: 'refused', why: failed };
     }
-    // The moves read asked for again is no failure: the scan finished while the alerts were read, and the next read
-    // takes it whole. Any other read's refusal is a failure, a `conflict` from GitHub too, and so are the moves read's
-    // asks once they have come an hour in a row.
-    const again =
-      failed.length > 0 &&
-      answers.every((answer, i) => answer.status === 'fulfilled' || (asked[i]?.moves && readAgain(answer.reason)));
-    if (again && this.#again + 1 < MOST_AGAIN) {
-      this.#again++;
-      this.#log.info({ why: failed }, 'patching: a scan finished during the read, so the day is read again soon');
-      return { pass: 'again', why: failed };
-    }
     if (failed.length) {
-      const why = again
-        ? `, asked for again ${MOST_AGAIN} times in a row`
-        : doorRefused
-          ? `, refused by the GitHub worker's door ${MOST_REFUSED} times in a row`
-          : '';
+      const why = doorRefused ? `, refused by the GitHub worker's door ${MOST_REFUSED} times in a row` : '';
       this.#log.error({ failed }, `patching: ${failed.length} of the reads failed${why}, so the day is not appended`);
       return { pass: 'failed', failed };
     }

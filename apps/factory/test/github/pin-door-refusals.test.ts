@@ -188,7 +188,6 @@ describe('the door’s guard, and the shapes a number can take', () => {
       new GitHubError('network', 'GET timed out'),
       new GitHubError('conflict', 'GET answered 422', 422),
       new GitHubError('malformed', 'GET answered with something else'),
-      new GitHubError('read-again', 'again'),
       new Error('anything else'),
       new BranchRefused('a read that throws the guard’s own error'),
     ];

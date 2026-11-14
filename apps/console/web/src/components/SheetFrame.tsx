@@ -68,10 +68,14 @@ export function SheetFrame({
     if (!dialog.current?.contains(document.activeElement)) heading.current?.focus({ preventScroll: true });
   }, []);
 
+  // A close waits for the sheet to sink; one that has not ended when the sheet goes, replaced or closed, is dropped.
+  const sinking = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(sinking.current), []);
   const close = () => {
     if (!motion) return onClose();
     setRisen(false);
-    setTimeout(onClose, 420);
+    clearTimeout(sinking.current);
+    sinking.current = setTimeout(onClose, 420);
   };
 
   // Escape closes; Tab stays inside while the sheet is open.
@@ -135,11 +139,21 @@ export function SheetFrame({
 
 /**
  * Brings a row a panel's sheet opened at into view, just under the sheet's head, and gives it focus, as an address or a
- * card in Needs you asks: the sheet moves, not the page under it.
+ * card in Needs you asks: the sheet moves, not the page under it. What is above the row can still change as the sheet
+ * settles (a stylesheet or a font arriving), so it is lined up again then, unless the viewer has scrolled meanwhile.
  */
 export function bringIntoSheet(row: HTMLElement | null | undefined) {
   if (!row) return;
   const scroller = row.closest('.sheet-scroll');
-  if (scroller) scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24;
   row.focus({ preventScroll: true });
+  if (!scroller) return;
+  let placed = -1;
+  const align = () => {
+    if (placed >= 0 && scroller.scrollTop !== placed) return;
+    scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24;
+    placed = scroller.scrollTop;
+  };
+  align();
+  requestAnimationFrame(() => requestAnimationFrame(align));
+  void document.fonts?.ready.then(align);
 }

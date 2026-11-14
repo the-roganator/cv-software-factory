@@ -22,6 +22,31 @@ interface LaterProps {
   children: ReactNode;
 }
 
+/** The notice in a part's place: what couldn't be shown, and how it may come back. */
+export function NotLoaded({
+  what,
+  again,
+  onDismiss,
+}: {
+  what: string;
+  /** How it may come back: "Reloading the page may bring them back." */
+  again: string;
+  /** For a sheet: the notice stands over the page, and Close takes it away. */
+  onDismiss?: (() => void) | undefined;
+}) {
+  return (
+    <p className={onDismiss ? 'notice over' : 'notice'} role="status">
+      <span className="label">Not loaded</span>
+      {what} couldn’t be shown. {again}
+      {onDismiss && (
+        <button type="button" className="linkish" onClick={onDismiss}>
+          Close
+        </button>
+      )}
+    </p>
+  );
+}
+
 export class Later extends Component<LaterProps, { failed: boolean }> {
   override state = { failed: false };
 
@@ -37,15 +62,11 @@ export class Later extends Component<LaterProps, { failed: boolean }> {
     const { what, one = false, along = false, onDismiss, children } = this.props;
     if (this.state.failed)
       return (
-        <p className={onDismiss ? 'notice over' : 'notice'} role="status">
-          <span className="label">Not loaded</span>
-          {what} couldn’t be shown. Reloading the page may bring {one ? 'it' : 'them'} back.
-          {onDismiss && (
-            <button type="button" className="linkish" onClick={onDismiss}>
-              Close
-            </button>
-          )}
-        </p>
+        <NotLoaded
+          what={what}
+          again={`Reloading the page may bring ${one ? 'it' : 'them'} back.`}
+          onDismiss={onDismiss}
+        />
       );
     if (along) return children;
     // Nothing holds their place while their chunks arrive: they draw under everything above them, so nothing moves.

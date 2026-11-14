@@ -14,7 +14,7 @@ import { Bird } from './components/Bird.tsx';
 import { Canary } from './components/Canary.tsx';
 import { Footer } from './components/Footer.tsx';
 import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
-import { Later } from './components/Later.tsx';
+import { Later, NotLoaded } from './components/Later.tsx';
 import { Line } from './components/Line.tsx';
 import { LogoSymbols } from './components/Logos.tsx';
 import { PreviewBanner } from './components/Preview.tsx';
@@ -25,24 +25,12 @@ import { factoryOf } from './profile.ts';
 import { foldOf, project, settingsAt } from './projection/index.ts';
 import { useRefusalChecks } from './refusals.ts';
 import { type Theme, ticks, useMotion, useTheme, useTime } from './settings.ts';
+import { loadSheet, sheetCode } from './sheet-chunks.ts';
 import { askedSheet, type SheetAsk } from './sheets.ts';
 import { type Origin, origin, useEvents } from './source.ts';
 import { useHeld } from './use-held.ts';
 
 const params = new URLSearchParams(location.search);
-
-/**
- * The sheet's code, its stylesheet and its projection arrive when the first sheet opens: the first view needs none. A
- * panel's sheet, Patching's or Guardrails', arrives in a chunk of its own when it first opens, with none of a work
- * item's, and the frame they share in one of its own.
- */
-const Sheet = lazy(() => import('./components/Sheet.tsx').then((module) => ({ default: module.Sheet })));
-const PatchingSheet = lazy(() =>
-  import('./components/Patching.tsx').then((module) => ({ default: module.PatchingSheet })),
-);
-const GuardrailsSheet = lazy(() =>
-  import('./components/Guardrails.tsx').then((module) => ({ default: module.GuardrailsSheet })),
-);
 
 /** The doors' code, and the passkey ceremonies', arrive only on a door. */
 const Doors = lazy(() => import('./components/Doors.tsx').then((module) => ({ default: module.Doors })));
@@ -181,11 +169,32 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   const openPatching = useCallback(() => setSheet({ kind: 'patching' }), []);
   const openGuardrails = useCallback(() => setSheet({ kind: 'guardrails' }), []);
   const openRow = useCallback((row: string) => setSheet({ kind: 'patching', row }), []);
-  // Whether a sheet was open as the page last drew: one that takes its place is there at once, rather than rising.
-  const sheetShown = useRef(false);
+  // The sheet drawn: the one asked for once its code is in (`sheet-chunks.ts`), and until then the one before, so one
+  // sheet hands over to the next with no moment between them where neither is drawn.
+  const [, setArrived] = useState(0);
+  const [failed, setFailed] = useState<SheetAsk | undefined>(undefined);
+  const before = useRef<SheetAsk | undefined>(undefined);
+  const drawn = !sheet ? undefined : sheetCode(sheet.kind) ? sheet : before.current;
+  // Whether a sheet was drawn as the page last drew: one that takes its place is there at once, rather than rising.
   useEffect(() => {
-    sheetShown.current = sheet !== undefined;
+    before.current = drawn;
   });
+  useEffect(() => {
+    if (!sheet || sheetCode(sheet.kind)) return;
+    let current = true;
+    loadSheet(sheet.kind).then(
+      () => current && setArrived((n) => n + 1),
+      (error: unknown) => {
+        console.error(`${SHEET_NAME[sheet.kind]}:`, error);
+        if (current) setFailed(sheet);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [sheet]);
+  // A sheet closes only itself: a close it started does not close one opened in its place meanwhile.
+  const closing = useCallback((shown: SheetAsk) => () => setSheet((now) => (now === shown ? undefined : now)), []);
   const atNow = useRef(true);
   const resting = Math.max(0, Math.min(n - 1, centre ?? n - 1));
 
@@ -233,6 +242,62 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
     window.scrollTo(0, 0);
     // Back to admin takes its button away: focus goes to the account button, whose menu has Preview as visitor.
     if (!on) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.account-btn')?.focus());
+  };
+
+  /** A sheet whose code is in: a work item's, or a panel's whole. */
+  const drawSheet = (shown: SheetAsk, rise: boolean, onClose: () => void) => {
+    if (shown.kind === 'item') {
+      const Sheet = sheetCode('item');
+      return (
+        Sheet && (
+          <Sheet
+            view={view}
+            item={shown.item}
+            motion={motion}
+            rise={rise}
+            onStep={(index) => {
+              onCentre(index);
+              setOpen(view.cards[index]?.number);
+            }}
+            onClose={onClose}
+            app={factory.app}
+            admin={admin}
+            onMoved={held.refresh}
+          />
+        )
+      );
+    }
+    if (shown.kind === 'patching') {
+      const PatchingSheet = sheetCode('patching');
+      return (
+        PatchingSheet && (
+          <PatchingSheet
+            view={view}
+            admin={admin}
+            row={shown.row}
+            onOpen={setOpen}
+            motion={motion}
+            rise={rise}
+            onClose={onClose}
+          />
+        )
+      );
+    }
+    const GuardrailsSheet = sheetCode('guardrails');
+    return (
+      GuardrailsSheet && (
+        <GuardrailsSheet
+          view={view.guardrails}
+          now={view.t}
+          admin={admin}
+          row={shown.row}
+          onOpen={setOpen}
+          motion={motion}
+          rise={rise}
+          onClose={onClose}
+        />
+      )
+    );
   };
 
   if (settingsPage || auditPage || privacyPage) {
@@ -400,47 +465,22 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
         </div>
       </main>
       <Footer signIn={signedIn.kind === 'visitor'} />
-      {sheet && (
-        // A sheet's chunk that never comes says so over the page, with Close; the next sheet opened tries again.
-        <Later key={sheet.kind} what={SHEET_NAME[sheet.kind]} one onDismiss={() => setSheet(undefined)}>
-          {sheet.kind === 'item' ? (
-            <Sheet
-              view={view}
-              item={sheet.item}
-              motion={motion}
-              rise={!sheetShown.current}
-              onStep={(index) => {
-                onCentre(index);
-                setOpen(view.cards[index]?.number);
-              }}
-              onClose={() => setSheet(undefined)}
-              app={factory.app}
-              admin={admin}
-              onMoved={held.refresh}
-            />
-          ) : sheet.kind === 'patching' ? (
-            <PatchingSheet
-              view={view}
-              admin={admin}
-              row={sheet.row}
-              onOpen={setOpen}
-              motion={motion}
-              rise={!sheetShown.current}
-              onClose={() => setSheet(undefined)}
-            />
-          ) : (
-            <GuardrailsSheet
-              view={view.guardrails}
-              now={view.t}
-              admin={admin}
-              row={sheet.row}
-              onOpen={setOpen}
-              motion={motion}
-              rise={!sheetShown.current}
-              onClose={() => setSheet(undefined)}
-            />
-          )}
+      {drawn && (
+        // A sheet that throws as it draws says so over the page too.
+        <Later key={drawn.kind} what={SHEET_NAME[drawn.kind]} one onDismiss={() => setSheet(undefined)}>
+          {drawSheet(drawn, before.current === undefined, closing(drawn))}
         </Later>
+      )}
+      {/* A sheet's chunk that never came says so over the page, with Close; opening it again asks for it again. */}
+      {failed && failed === sheet && (
+        <NotLoaded
+          what={SHEET_NAME[failed.kind]}
+          again="Close this and open it again to try again."
+          onDismiss={() => {
+            setFailed(undefined);
+            setSheet(undefined);
+          }}
+        />
       )}
     </OriginContext.Provider>
   );

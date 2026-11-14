@@ -9,15 +9,15 @@
  * figures for the findings no row can clear.
  *
  * It is a chunk of its own, with its stylesheet, which the console loads when the sheet first opens: neither the first
- * view nor the summary carries it. The view is the summary's (`use-patching.ts`), kept while what it reads is the same,
- * so an event that changes nothing here renders nothing here.
+ * view nor the summary carries it. The view is the summary's, worked out once for both (`patching-view.ts`), kept while
+ * what it reads is the same, so an event that changes nothing here renders nothing here.
  *
  * A visitor reads all of it, read-only, with "Martin" for "you", no link into code scanning, and a lockfile's package
  * withheld until its pull request is open, as the public view withholds it.
  */
 import { memo, useEffect, useId, useRef, useState } from 'react';
 import type { Admin } from '../admin.ts';
-import { clock, count, dayLabel, plural, startOfDay, when } from '../format.ts';
+import { clock, count, plural, when } from '../format.ts';
 import type { View } from '../projection/index.ts';
 import {
   APP_REPOSITORY,
@@ -32,9 +32,9 @@ import {
 import { renders } from '../renders.ts';
 import { CountsHead, SeverityCounts, severityWords } from './Counts.tsx';
 import { Glyph, type GlyphName } from './Glyph.tsx';
-import { movesWords, waitWords } from './panel-words.ts';
+import { movesWords, onDay, runningWords, waitWords, you } from './panel-words.ts';
+import { patchingNow } from './patching-view.ts';
 import { bringIntoSheet, SheetFrame } from './SheetFrame.tsx';
-import { usePatching } from './use-patching.ts';
 import '../styles/patching.css';
 
 const FACTORY = 'https://github.com/the-roganator/cv-software-factory';
@@ -45,7 +45,6 @@ const repoUrl = (repository: string | undefined) =>
 interface Who {
   martin: boolean;
 }
-const you = ({ martin }: Who) => (martin ? 'you' : 'Martin');
 const your = ({ martin }: Who) => (martin ? 'Your' : 'Martin’s');
 const yours = ({ martin }: Who) => (martin ? 'your' : 'Martin’s');
 
@@ -75,7 +74,7 @@ function reads(row: PatchingRow, who: Who): [word: string, tone: string, glyph: 
   const state: MoveState = row.state;
   switch (state.kind) {
     case 'waits':
-      return [`Waits on ${you(who)}`, 'attn', 'ring'];
+      return [`Waits on ${you(who.martin)}`, 'attn', 'ring'];
     case 'opened':
       return ['Opened', 'signal', 'ring'];
     case 'stage':
@@ -321,9 +320,6 @@ function Row({
   );
 }
 
-/** "today", or the day it was, as the line says when the scan ran. */
-const onDay = (at: number, t: number) => (startOfDay(at) === startOfDay(t) ? 'today' : `on ${dayLabel(at)}`);
-
 /** A count in the day's line: a zero muted, a count above zero in `attn` where it asks for a look. */
 const Figure = ({ n, warm = false }: { n: number; warm?: boolean }) => (
   <span className={n === 0 ? 'zero' : warm ? 'tone-attn' : undefined}>{count(n)}</span>
@@ -385,13 +381,7 @@ function DayLine({ view, t }: { view: Extract<PatchingView, { state: 'read' }>; 
 
 /** What the head says: how many moves, the rows the sense made, and how many wait. */
 function headWords(view: Extract<PatchingView, { state: 'read' }>) {
-  const { running } = view;
-  return [
-    movesWords(view.moves),
-    running['unlisted-image'] > 0 && `${plural(running['unlisted-image'], 'unscanned image')} running`,
-    running['unscanned-digest'] > 0 && `${plural(running['unscanned-digest'], 'digest')} no scan read`,
-    running['not-running'] > 0 && `${plural(running['not-running'], 'pin')} not running yet`,
-  ].filter(Boolean) as string[];
+  return [movesWords(view.moves), ...runningWords(view)];
 }
 
 /** The sheet's kicker: how many moves, the rows the sense made, and how many wait on Martin. */
@@ -570,7 +560,7 @@ export function PatchingSheet({
   rise: boolean;
   onClose: () => void;
 }) {
-  const { view, t } = usePatching(drawn);
+  const { view, t } = patchingNow(drawn);
   const martin = admin.kind === 'martin';
   return (
     <SheetFrame

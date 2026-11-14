@@ -1325,10 +1325,18 @@ async function settingsPage(page: Page, theme: 'paper' | 'ink' = 'paper') {
   await page.evaluate(() => document.fonts.ready);
 }
 
+/** The sheet settled: its fonts in, and the row it opened at lined up again once they are (`bringIntoSheet`). */
+async function settled(page: Page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  });
+}
+
 /**
- * Task 22: Guardrails' sheet, opened at a row (`?open=`), for a visitor or for Martin: from the samples, where no attack
- * can be launched, or from the attacks' test data with every attack available, as the flag will make them. The sheet
- * holds the row in view; the snapshot is the screen.
+ * Task 22: Guardrails' sheet, opened at a row (`?open=`), for a visitor or for Martin: from the samples, where no
+ * attack can be launched, or from the attacks' test data with every attack available, as the flag will make them. The
+ * sheet holds the row in view; the snapshot is the screen.
  */
 async function guardrailsAt(
   page: Page,
@@ -1346,7 +1354,7 @@ async function guardrailsAt(
   await ready(page);
   const panel = page.locator('#guardrails');
   await panel.locator('.more').waitFor();
-  await page.evaluate(() => document.fonts.ready);
+  await settled(page);
   return panel;
 }
 
@@ -1448,7 +1456,7 @@ async function patchingAt(page: Page, as: 'martin' | 'visitor', theme: 'paper' |
   const panel = page.locator('#patching');
   await panel.locator('.pm').first().waitFor();
   if (move) await panel.locator('.pm .more').waitFor();
-  await page.evaluate(() => document.fonts.ready);
+  await settled(page);
   return panel;
 }
 

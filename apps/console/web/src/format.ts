@@ -145,8 +145,9 @@ const oneDecimal = (n: number) => n.toFixed(1).replace(/\.0$/, '');
 
 /**
  * A count as it is read at a glance, never wider than four characters: up to 999 as it is, then 1.4K (one decimal, a
- * `.0` dropped) to 9.9K, 11K to 999K, 1.2M to 9.9M and 11M on. Each is rounded to the nearest, and a count that rounds up to the
- * next unit is written in it (9,960 is 10K, 999,600 is 1M). The exact count goes beside it, as its title and in words.
+ * `.0` dropped) to 9.9K, 11K to 999K, 1.2M to 9.9M and 11M on. Each is rounded to the nearest, and a count that rounds
+ * up to the next unit is written in it (9,960 is 10K, 999,600 is 1M). The exact count goes beside it, as its title and
+ * in words.
  */
 export function glance(n: number): string {
   if (n < 1000) return String(n);

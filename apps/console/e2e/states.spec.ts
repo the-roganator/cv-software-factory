@@ -194,20 +194,31 @@ test('the bottom row draws when the summaries can’t, and says what is missing 
   await expect(page.locator('#guardrails-summary')).toHaveCount(0);
 });
 
-test('a panel’s sheet whose chunk never arrives says so over the page, and Close takes it away', async ({ page }) => {
-  await page.route('**/assets/Patching-*.js', (route) => route.fulfill({ status: 404 }));
+test('a panel’s sheet whose chunk never arrives says so over the page, and opening it again asks again', async ({
+  page,
+}) => {
+  // Patching's sheet's code fails to come, as on a poor connection, until the notice has said so (the page asks for it
+  // twice each time: a preload, then the import); then it is answered.
+  let failing = true;
+  let answered = 0;
+  await page.route('**/assets/Patching-*.js', (route) => {
+    if (failing) return route.fulfill({ status: 404 });
+    answered++;
+    return route.continue();
+  });
   await page.goto(consoleUrl());
-  await page
-    .locator('#patching-summary')
-    .getByRole('button', { name: /^All \d+ moves$/ })
-    .click();
+  const open = page.locator('#patching-summary').getByRole('button', { name: /^All \d+ moves$/ });
+  await open.click();
   const notice = page.locator('.notice.over');
-  await expect(notice).toContainText('Patching’s sheet couldn’t be shown. Reloading the page may bring it back.');
+  await expect(notice).toContainText('Patching’s sheet couldn’t be shown. Close this and open it again to try again.');
   await expect(notice).toBeInViewport();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await notice.getByRole('button', { name: 'Close' }).click();
   await expect(notice).toHaveCount(0);
-  // Guardrails' sheet has its own chunk, and opens.
-  await page.locator('#guardrails-summary').getByRole('button', { name: 'All eleven guardrails' }).click();
-  await expect(page.getByRole('dialog', { name: 'Guardrails' })).toBeVisible();
+  failing = false;
+  // Opened again, it asks again, and opens.
+  await open.click();
+  await expect(page.getByRole('dialog', { name: 'Patching' })).toBeVisible();
+  expect(answered).toBeGreaterThan(0);
+  await expect(notice).toHaveCount(0);
 });

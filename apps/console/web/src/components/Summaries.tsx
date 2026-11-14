@@ -4,21 +4,32 @@
  * panel whole in a sheet of its own (`Patching.tsx`, `Guardrails.tsx`), whose code arrives only then.
  *
  * One needs Martin when a move waits on him, a deadline is within a day or past, the scan failed, or a guardrail did
- * not hold: then it takes Needs you's `attn` rule down its left edge, and each reason is in `attn`, in words. A Critical
- * count and a guardrail not proved yet are not reasons. The same for a visitor, with "Martin" for "you"; a summary holds
- * no control, so it carries no "Read only".
+ * not hold: then it takes Needs you's `attn` rule down its left edge, and each reason is in `attn`, in words. A
+ * Critical count and a guardrail not proved yet are not reasons. The same for a visitor, with "Martin" for "you"; a
+ * summary holds no control, so it carries no "Read only".
  *
  * A chunk of its own, with its stylesheet and Patching's projection, loaded with the bottom row's and drawn with it.
  */
 import { memo, type ReactNode } from 'react';
-import { ago, clock, dayLabel, plural, startOfDay } from '../format.ts';
+import { ago, clock, plural } from '../format.ts';
 import type { GuardrailsView, View } from '../projection/index.ts';
 import { dueSoon, dueWords, nextDue, type PatchingRow, type PatchingView } from '../projection/patching.ts';
 import { renders } from '../renders.ts';
 import { CountsHead, SeverityCounts } from './Counts.tsx';
 import { Glyph, type GlyphName } from './Glyph.tsx';
-import { heldWords, LAST_RUN, movesWords, READS, waitWords } from './panel-words.ts';
-import { usePatching } from './use-patching.ts';
+import {
+  countsLabel,
+  heldWords,
+  LAST_RUN,
+  lastAttack,
+  lastProof,
+  movesWords,
+  onDay,
+  READS,
+  runningWords,
+  waitWords,
+} from './panel-words.ts';
+import { patchingNow } from './patching-view.ts';
 import '../styles/summaries.css';
 
 /** One line of a summary: a glyph and a few words, in a tone. */
@@ -30,9 +41,6 @@ function Line({ glyph, tone, children }: { glyph: GlyphName; tone?: string | und
     </li>
   );
 }
-
-/** "today", or the day it was. */
-const onDay = (at: number, t: number) => (startOfDay(at) === startOfDay(t) ? 'today' : `on ${dayLabel(at)}`);
 
 /** A move's name as the summary says it: a lockfile's package the public view withholds is the file's. */
 const nameOf = (row: PatchingRow) => row.name ?? 'a package in a lockfile';
@@ -76,12 +84,11 @@ const PatchingCard = memo(function PatchingCard({
   const { day } = view;
   const next = nextDue(view.rows);
   const soon = next !== undefined && dueSoon(next.deadline, t);
-  const unscanned = view.running['unlisted-image'];
   const failed = !day.passed;
   // Each row the sense made waits on Martin, so an unscanned image running is counted among those that wait.
   const needs = view.waiting > 0 || soon || failed;
   const clears = view.clears;
-  const nothing = clears.critical + clears.high + clears.medium + clears.low + clears.unknown === 0;
+  const clearsLabel = countsLabel('The moves clear', clears);
   return (
     <article
       className={needs ? 'panel summary attn' : 'panel summary'}
@@ -106,20 +113,25 @@ const PatchingCard = memo(function PatchingCard({
           <CountsHead />
         </div>
         <div>
-          <span>All open</span>
+          <span>{countsLabel('All open', view.open)}</span>
           <SeverityCounts counts={view.open} words="All open:" />
         </div>
         <div>
-          <span>{nothing ? 'Nothing to clear' : 'The moves clear'}</span>
-          <SeverityCounts counts={clears} words={nothing ? 'Nothing to clear:' : 'The moves clear'} cleared />
+          <span>{clearsLabel}</span>
+          <SeverityCounts
+            counts={clears}
+            words={clearsLabel.startsWith('Nothing') ? 'Nothing to clear:' : 'The moves clear'}
+            cleared
+          />
         </div>
       </div>
       <ul className="sum-lines">
-        {unscanned > 0 && (
-          <Line glyph="ring" tone="attn">
-            {plural(unscanned, 'unscanned image')} running
+        {/* What the sense found running, each kind a row that waits on Martin, in the sheet's kicker's words. */}
+        {runningWords(view).map((words) => (
+          <Line key={words} glyph="ring" tone="attn">
+            {words}
           </Line>
-        )}
+        ))}
         {next?.deadline !== undefined ? (
           <Line glyph="ring" tone={soon ? 'attn' : undefined}>
             Next due {nextWords(next.deadline, t)}
@@ -158,12 +170,9 @@ export function PatchingSummary({
   /** Opens Patching's sheet. */
   onSheet: () => void;
 }) {
-  const { view, t } = usePatching(drawn);
+  const { view, t } = patchingNow(drawn);
   return <PatchingCard view={view} t={t} martin={martin} onSheet={onSheet} />;
 }
-
-/** The newest of some times, if any. */
-const newest = (times: readonly number[]) => (times.length ? Math.max(...times) : undefined);
 
 /** Guardrails' summary: how many hold, the eleven as a strip, the last proof and the last attack. */
 export function GuardrailsSummary({
@@ -180,13 +189,9 @@ export function GuardrailsSummary({
   onSheet: () => void;
 }) {
   const failed = view.rows.filter((row) => row.state === 'not-held');
-  // The newest proof that held: one that did not is on a line of its own.
-  const proved = newest(view.rows.flatMap((row) => (row.state === 'held' && row.proof ? [row.proof.at] : [])));
-  const attacks = view.rows.flatMap((row) => (row.attack?.available && row.attack.last ? [row.attack] : []));
-  const last = attacks.reduce<(typeof attacks)[number] | undefined>(
-    (latest, attack) => (!latest?.last || (attack.last && attack.last.at > latest.last.at) ? attack : latest),
-    undefined,
-  );
+  // The newest proof, whatever it showed: a guardrail that did not hold has its own line, above it.
+  const proved = lastProof(view);
+  const last = lastAttack(view);
   return (
     <article
       className={failed.length ? 'panel summary attn' : 'panel summary'}
@@ -224,8 +229,8 @@ export function GuardrailsSummary({
             {martin ? 'You were' : 'Martin was'} paged.
           </Line>
         ))}
-        <Line glyph={proved === undefined ? 'dash' : 'check'}>
-          {proved === undefined ? 'Not proved yet' : `Last proved ${ago(proved, now)}`}
+        <Line glyph={proved === undefined ? 'dash' : proved.held ? 'check' : 'cross'}>
+          {proved === undefined ? 'Not proved yet' : `Last proved ${ago(proved.at, now)}`}
           {view.unproved > 0 && (
             <>
               {' · '}
@@ -233,7 +238,7 @@ export function GuardrailsSummary({
             </>
           )}
         </Line>
-        {last?.last ? (
+        {last ? (
           <Line glyph={LAST_RUN[last.last.verdict][2]} tone={LAST_RUN[last.last.verdict][1]}>
             {last.last.verdict === 'running'
               ? `An attack is running: ${last.name}`

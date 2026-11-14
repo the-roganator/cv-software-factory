@@ -1,10 +1,10 @@
 /*
  * Patching's sheet, for everyone. One row for each move, what waits on Martin first, then by deadline. A row is
  * Guardrails' row with more columns: state, what and its pin, from and to, what it clears, due, who moves it; All open
- * under the rows, in the Clears column, as its total. Critical is the one severity with a colour: a Critical count above
- * zero is in `attn`. Otherwise `attn` marks a row that waits on Martin (its left rule, whatever its deadline) and a
- * deadline within a day or past (its due). It arrives with the sheet's chunk, so neither the first view's stylesheet nor
- * the summary's carries it.
+ * under the rows, in the Clears column, as its total. Critical is the one severity with a colour: a Critical count
+ * above zero is in `attn`. Otherwise `attn` marks a row that waits on Martin (its left rule, whatever its deadline) and
+ * a deadline within a day or past (its due). It arrives with the sheet's chunk, so neither the first view's stylesheet
+ * nor the summary's carries it.
  */
 .patching {
   display: flex;

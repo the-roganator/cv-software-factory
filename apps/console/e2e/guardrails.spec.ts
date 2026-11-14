@@ -91,6 +91,59 @@ test('with attacks run, the summary says the last attack, and Martin reads that 
   await expect(lines.last()).toHaveText('An attack is running: Shipping an image it built itself');
 });
 
+test('a work item’s link hands the sheet over with no gap, while the work item’s code is still on its way', async ({
+  page,
+}) => {
+  // The work item's sheet's code, slow to come.
+  await page.route('**/assets/Sheet-*.js', async (route) => {
+    await new Promise((done) => setTimeout(done, 800));
+    await route.continue();
+  });
+  await page.goto(`${consoleUrl()}&open=7`);
+  await expect(sheet(page)).toBeVisible();
+  // From here on, any moment with no sheet, or with the page behind it free to scroll, is recorded.
+  await page.evaluate(() => {
+    const scope = globalThis as unknown as { sfGap: boolean };
+    scope.sfGap = false;
+    const look = () => {
+      if (!document.body.classList.contains('locked') || !document.querySelector('[role="dialog"]')) scope.sfGap = true;
+    };
+    new MutationObserver(look).observe(document.body, { subtree: true, childList: true, attributes: true });
+  });
+  await panel(page).locator('.more .reflist').getByRole('button', { name: '#1319' }).click();
+  // The checklist stays while the work item's code comes, then the work item's sheet takes its place.
+  await expect(sheet(page)).toBeVisible();
+  await expect(page.getByRole('dialog', { name: /The wishlist empties itself/ })).toBeVisible();
+  await expect(sheet(page)).toHaveCount(0);
+  expect(await page.evaluate(() => (globalThis as unknown as { sfGap: boolean }).sfGap)).toBe(false);
+});
+
+test('a close the checklist started does not close the work item’s sheet that took its place', async ({ page }) => {
+  // With motion, a close waits for the sheet to sink before it ends.
+  await page.goto(`${consoleUrl({ motion: true })}&open=7`);
+  await expect(sheet(page)).toBeVisible();
+  // The work item's code first, so the handover is at once.
+  await page.locator('#guardrails .more .reflist').getByRole('button', { name: '#1319' }).click();
+  const item = page.getByRole('dialog', { name: /The wishlist empties itself/ });
+  await expect(item).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await summary(page).getByRole('button', { name: 'All eleven guardrails' }).click();
+  await rowButton(page, 7).click();
+  // Escape starts the checklist's close, and the work item's link is pressed before it has sunk.
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    [...document.querySelectorAll<HTMLButtonElement>('#guardrails .reflist button')]
+      .find((button) => button.textContent === '#1319')
+      ?.click();
+  });
+  await expect(item).toBeVisible();
+  // Well past the close's 420 ms, the work item's sheet is still open.
+  await page.waitForTimeout(1000);
+  await expect(item).toBeVisible();
+});
+
 test('the address opens the sheet at a guardrail: opened, scrolled to and focused', async ({ page }) => {
   await page.goto(`${consoleUrl()}&open=9`);
   await expect(sheet(page)).toBeVisible();

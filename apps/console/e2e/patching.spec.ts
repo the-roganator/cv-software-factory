@@ -1,11 +1,11 @@
 /**
- * Patching (milestone 7, task 32), from the samples' day: its summary in the bottom row, every open finding and what the
- * moves clear under C, H, M and L, read at a glance, and why it needs Martin; and its sheet, which the summary opens.
- * What waits on Martin first, then by deadline; a row opens in place, one at a time; All open under the rows; a visitor
- * reads it read-only, a lockfile's package withheld until its pull request is open, and Martin reads it whole, with code
- * scanning a link away. An event neither reads renders nothing in either, while a new day renders each once, and a day
- * from a scan that did not count every open finding shows a dash. Each move that waits on Martin is a card in Needs you
- * too, which opens the sheet at its row. Snapshots are `visual.spec.ts`'s.
+ * Patching (milestone 7, task 32), from the samples' day: its summary in the bottom row, every open finding and what
+ * the moves clear under C, H, M and L, read at a glance, and why it needs Martin; and its sheet, which the summary
+ * opens. What waits on Martin first, then by deadline; a row opens in place, one at a time; All open under the rows; a
+ * visitor reads it read-only, a lockfile's package withheld until its pull request is open, and Martin reads it whole,
+ * with code scanning a link away. An event neither reads renders nothing in either, while a new day renders each once,
+ * and a day from a scan that did not count every open finding shows a dash. Each move that waits on Martin is a card in
+ * Needs you too, which opens the sheet at its row. Snapshots are `visual.spec.ts`'s.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

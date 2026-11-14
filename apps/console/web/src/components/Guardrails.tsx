@@ -1,10 +1,10 @@
 /**
  * Guardrails' sheet: spec 6's eleven as a checklist, whole, for everyone, opened from its summary in the bottom row
- * (`Summaries.tsx`), from Controls, or at a row by the address (`?open=`). Its kicker says how many hold; each row is one line and a button, Held or Did not hold, the guardrail's number and name, and how old its last
- * proof is, in two columns from 1180 up and one below. One row opens at a time, in place under it, with
- * `aria-expanded`: what holds it, its last proof, what it refused in the last seven days, and, for the five a red-team
- * attack proves, that attack with its last run and Launch (`projection/guardrails.ts` and `projection/refusals.ts` read
- * each from the events).
+ * (`Summaries.tsx`), from Controls, or at a row by the address (`?open=`). Its kicker says how many hold; each row is
+ * one line and a button, Held or Did not hold, the guardrail's number and name, and how old its last proof is, in two
+ * columns from 1180 up and one below. One row opens at a time, in place under it, with `aria-expanded`: what holds it,
+ * its last proof, what it refused in the last seven days, and, for the five a red-team attack proves, that attack with
+ * its last run and Launch (`projection/guardrails.ts` and `projection/refusals.ts` read each from the events).
  *
  * Its refusals are the last three, a line each: when, the mechanism in `attn` mono, what was refused in a few words,
  * and its work item, which opens its sheet, or the audit log where it has none. Their own words are on the work item,

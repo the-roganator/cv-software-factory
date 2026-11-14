@@ -913,3 +913,22 @@ describe('a story’s end', () => {
     );
   });
 });
+
+describe('a move the line pushed with no coder', () => {
+  const push = {
+    number: 55,
+    title: 'fix(deps): move protobufjs to 7.6.6',
+    branch: 'factory/1-move-protobufjs',
+    attempt: 1,
+    testsFirst: false,
+    files: [{ path: 'pnpm-lock.yaml', added: 4, removed: 4 }],
+    whole: [{ path: 'pnpm-lock.yaml', added: 4, removed: 4 }],
+  };
+
+  it('is Build’s round, as a coder’s push is, and Dependabot’s is not', () => {
+    const line = foldItem(work('1').open().add(0, 'pull-request.pushed', 'factory', push).events);
+    expect(line && attempts(line)).toMatchObject([{ attempt: 1 }]);
+    const dependabot = foldItem(work('2').open().add(0, 'pull-request.pushed', 'dependabot', push).events);
+    expect(dependabot && attempts(dependabot)).toEqual([]);
+  });
+});

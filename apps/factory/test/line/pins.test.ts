@@ -1,7 +1,7 @@
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import { commitTitle } from '../../src/line/agents/agent.ts';
-import { MOVED_UNCHANGED } from '../../src/line/agents/coder.ts';
+import { MOVED_UNCHANGED, MOVED_UNTESTED } from '../../src/line/agents/coder.ts';
 import {
   CODED,
   database,
@@ -184,15 +184,18 @@ describe('a dependency’s move on the line', () => {
     expect(steps.requests.some((r) => 'move' in r)).toBe(false);
   });
 
-  it('pushes the pins alone when the coder needs to change nothing more, and sends back an unchanged one', async () => {
-    await moveTicket();
+  it('refuses a coder’s own title for no change on a move whose criterion asks for a test, and an unchanged one', async () => {
+    const { failures, justOne } = await import('./harness.ts');
+    const titled = await moveTicket();
     const { pass, github } = line({
       planner,
       coder: () => ({ kind: 'handed-back', handback: handback(CODED), pins: PINS }),
     });
+    await justOne(titled);
     await pass();
     await pass();
-    expect(github.acts.find((a) => a.action === 'applyPatch')?.args).toMatchObject({ patch: '', pins: PINS });
+    expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
+    expect((await failures(titled))?.failure).toBe(MOVED_UNTESTED);
 
     const workItem = await moveTicket();
     const { pass: again } = line({
@@ -203,7 +206,6 @@ describe('a dependency’s move on the line', () => {
         pins: PINS,
       }),
     });
-    const { failures, justOne } = await import('./harness.ts');
     // This one alone, past the others' work in hand.
     await justOne(workItem);
     await again();
@@ -262,18 +264,44 @@ describe('a dependency’s move on the line', () => {
     expect(last?.prompt).toMatch(/came back from gates/);
   });
 
-  it('takes {"moved": true} from a coder with nothing to add to a move, titling and noting it the line’s way', async () => {
-    await moveTicket();
+  it('takes {"moved": true} from a coder on a version 5 spec’s move, titling and noting it the line’s way', async () => {
+    const workItem = await moveTicket();
+    // A spec written before criteria said what shows them, as one in the store may be: no criterion asks for a test.
+    await events.append([
+      event(
+        workItem,
+        'spec.written',
+        {
+          ...SPEC,
+          criteria: [{ given: 'the move', when: 'the gates run', expect: 'each passes', from: 'the ticket' }],
+        },
+        'planner',
+      ),
+    ]);
+    const { pass, github, steps } = line({
+      planner,
+      coder: () => ({ kind: 'handed-back', handback: handback({ moved: true }), pins: PINS }),
+    });
+    await pass();
+    await pass();
+    expect(steps.requests.find((r) => r.agent === 'coder')).not.toHaveProperty('pinsOnly');
+    const applied = github.acts.find((a) => a.action === 'applyPatch')?.args as { patch: string; message: string };
+    expect(applied).toMatchObject({ patch: '', pins: PINS });
+    expect(applied.message).toMatch(/^fix\(deps\): move vitest to 5\.1\.0\n\nThe pin step moved vitest/);
+    expect(applied.message).toContain('The coder found nothing more the criteria need of it');
+  });
+
+  it('refuses {"moved": true} from a coder whose spec asks for a test', async () => {
+    const workItem = await moveTicket();
     const { pass, github } = line({
       planner,
       coder: () => ({ kind: 'handed-back', handback: handback({ moved: true }), pins: PINS }),
     });
     await pass();
     await pass();
-    const applied = github.acts.find((a) => a.action === 'applyPatch')?.args as { patch: string; message: string };
-    expect(applied).toMatchObject({ patch: '', pins: PINS });
-    expect(applied.message).toMatch(/^fix\(deps\): move vitest to 5\.1\.0\n\nThe pin step moved vitest/);
-    expect(applied.message).toContain('The coder found nothing more the criteria need of it');
+    expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
+    const { failures } = await import('./harness.ts');
+    expect((await failures(workItem))?.failure).toMatch(/does not fit its schema/);
   });
 
   it('fails the step, saying why, when the pins resolve the package below the move’s floor, and titles no guess', async () => {

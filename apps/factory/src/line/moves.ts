@@ -136,11 +136,19 @@ export class UnreadMove extends Error {
 /**
  * The version the pin step wrote, read from its patch: for a package, the version the lockfile's importers resolve it
  * to (the lowest, where they differ), or, for one no importer names, the versions its patch adds to the lockfile's
- * packages; for Node or an image, the move's own target, which the pin step writes as it is. Throws `UnreadMove` when
+ * packages; for Node or an image, the move's own target, which the pin step writes as it is, once a line the patch
+ * adds has it. Throws `UnreadMove` when
  * the patch names none, or one below the move's floor: the line never titles a guess.
  */
 export function writtenVersion(move: PinnedMove, pins: string): string {
-  if (move.ecosystem !== 'npm') return move.to;
+  // Node's and an image's are written as they are: one the patch does not add is not one it wrote.
+  if (move.ecosystem !== 'npm') {
+    const added = pins.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++'));
+    if (!added.some((line) => line.includes(move.to))) {
+      throw new UnreadMove(`The pin step’s patch does not write ${move.name} ${move.to}`);
+    }
+    return move.to;
+  }
   const named = move.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const importer: string[] = [];
   const added: string[] = [];

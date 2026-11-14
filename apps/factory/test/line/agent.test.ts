@@ -40,6 +40,12 @@ describe('a result’s problem, as the next attempt is told it', () => {
       'title: a Conventional Commit title of 80 characters at most (it had 94)',
       'unchanged: Too big: expected string to have <=200 characters (it had 241)',
     ]);
+    // As the rule counts it, whitespace too.
+    const padded = { title: 'fix(deps): ok', unchanged: ` ${'u'.repeat(200)} ` };
+    const [issue] = z.object({ unchanged: z.string().max(200) }).safeParse(padded).error?.issues ?? [];
+    expect(issue && problemOf(issue, padded)).toBe(
+      'unchanged: Too big: expected string to have <=200 characters (it had 202)',
+    );
   });
 });
 

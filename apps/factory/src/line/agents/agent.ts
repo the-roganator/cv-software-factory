@@ -228,7 +228,8 @@ export function problemOf(issue: z.core.$ZodIssue, result: unknown): string {
     result,
   );
   const counted = typeof value === 'string' && /characters/.test(issue.message);
-  const length = counted ? ` (it had ${value.trim().length})` : '';
+  // As the rule counts it: every character, whitespace too.
+  const length = counted ? ` (it had ${value.length})` : '';
   return `${field}: ${issue.message}${length}`;
 }
 

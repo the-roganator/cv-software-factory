@@ -529,7 +529,7 @@ function first(input: CoderInput): string[] {
     ...contradictedLines(input.spec),
     '',
     ...RESULT,
-    ...(input.move ? [MOVED] : mayChangeNothingAbove(input) ? [] : [NOTHING_TO_FIX]),
+    ...(input.move ? (mayMove(input) ? [MOVED] : []) : mayChangeNothingAbove(input) ? [] : [NOTHING_TO_FIX]),
     needsLine(input),
   ];
 }
@@ -572,6 +572,21 @@ function firstImprovement(input: CoderInput): string[] {
     needsLine(input),
   ];
 }
+
+/**
+ * Whether a coder on a dependency's move may say the move is the whole change: only while no criterion of its spec
+ * asks for a test (a version 5 spec's said nothing, so none does), which the move alone could not meet.
+ */
+const mayMove = ({ move, spec }: CoderInput) =>
+  Boolean(move) && !spec.criteria.some((criterion) => criterion.shownBy === 'test');
+
+/** Why a coder that titled a move it added nothing to is sent back: the line titles the move. */
+export const MOVED_TITLED =
+  'The coder handed back a title and a note for the move with no change of its own: write exactly {"moved": true}, and the line titles the move';
+
+/** Why a coder that added nothing to a move whose criteria ask for a test is sent back. */
+export const MOVED_UNTESTED =
+  'The coder handed back no change, but a criterion asks for a test the move alone does not give: write it';
 
 /** How a coder on a dependency's move says the move is the whole change: the line titles and notes it. */
 const MOVED =
@@ -639,7 +654,7 @@ function again(input: CoderInput): string[] {
         ...needing,
         // A move is written again under the checkout: a step that carries its session is reminded of it, and how to say
         // it adds nothing; one without its session is told it all again below, as a first step is.
-        ...(resumed(input) && input.move ? [...movedLines(input), MOVED] : []),
+        ...(resumed(input) && input.move ? [...movedLines(input), ...(mayMove(input) ? [MOVED] : [])] : []),
       ]
     : declineAll
       ? ['Take what you take inside the same scope.', ...recheck]
@@ -716,7 +731,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       alone: suggestionsAlone(input),
       title: titleFor(input.asked),
       narrowed: pressed(input),
-      moved: Boolean(input.move),
+      moved: mayMove(input),
     }),
   prompt: (input) => [...(later(input) ? again(input) : first(input)), ...failedLines(input)].join('\n'),
   apply: async (result, handback, input, context) => {
@@ -795,6 +810,11 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     } else {
       ({ title, note } = result);
       declined = result.declined ?? [];
+    }
+    // On a move, a change of nothing is the move alone, which the line titles: a coder's title for it is refused, and so
+    // is no change where a criterion asks for a test.
+    if (!patch && pins && !('moved' in result)) {
+      throw new StepFailed(mayMove(input) ? MOVED_TITLED : MOVED_UNTESTED);
     }
     // A move the pin step wrote is the change when the criteria need nothing more of the coder's.
     if (!patch && !pins) {

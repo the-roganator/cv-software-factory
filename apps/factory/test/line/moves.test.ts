@@ -210,7 +210,12 @@ describe('a move that needs no coder', () => {
       ),
     ).toThrow(/names no version of @grpc\/grpc-js/);
     // Node's and an image's are what the pin step writes.
-    expect(writtenVersion({ ecosystem: 'node', name: 'node', from: '24.11.0', to: '24.11.1' }, '')).toBe('24.11.1');
+    const node = { ecosystem: 'node' as const, name: 'node', from: '24.11.0', to: '24.11.1' };
+    const mise = (to: string) =>
+      `diff --git a/mise.toml b/mise.toml\n--- a/mise.toml\n+++ b/mise.toml\n@@ -1 +1 @@\n-node = "24.11.0"\n+node = "${to}"\n`;
+    expect(writtenVersion(node, mise('24.11.1'))).toBe('24.11.1');
+    // One the patch does not add is not one it wrote.
+    expect(() => writtenVersion(node, mise('24.11.2'))).toThrow('The pin step’s patch does not write node 24.11.1');
   });
 
   it('leaves out an importer the move left as it was, shown only as context', () => {

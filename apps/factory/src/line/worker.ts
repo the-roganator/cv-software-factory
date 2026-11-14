@@ -149,7 +149,7 @@ import type {
 } from '../github/server.ts';
 import { GitHubWorkerError, issueGone } from '../github/worker-client.ts';
 import type { PictureIndex } from '../pictures/index.ts';
-import type { Step, StepOutcome, StepRequest } from '../runners/steps.ts';
+import { EMPTY_PINS, type Step, type StepOutcome, type StepRequest } from '../runners/steps.ts';
 import { verifyRefusal } from '../signed-refusals.ts';
 import { ATTRIBUTES as A, inSpan } from '../spans.ts';
 import {
@@ -1891,8 +1891,7 @@ export class Line {
       }
       if (outcome.kind === 'pinned') {
         if (!outcome.pins) {
-          const reason = 'The pin step wrote nothing for the move: the pins are where it moves them already';
-          return await this.#failed(workItem, agent, outcome.job, [], reason);
+          return await this.#failed(workItem, agent, outcome.job, [], EMPTY_PINS);
         }
         this.#o.log.info({ workItem, agent, job: outcome.job }, 'the move asks for nothing but its pins: no coder');
         // The move is the whole change, as a coder says it (`{"moved": true}`): the line titles and notes it.

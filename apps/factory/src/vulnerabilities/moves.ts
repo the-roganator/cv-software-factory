@@ -359,8 +359,9 @@ export interface MovesFile {
   /**
    * How many results have a fix and are not excepted, how many moves, and the moves in each lane; and the day's counts
    * the scan's log prints (`DayCounts`), plain numbers, by no package or advisory; and every open result (not excepted)
-   * by severity, as the log's line of deadlines gives them, fix or none. A file a scan wrote before it counted them has
-   * no `open`, and a reader reads it still: `MOVES_VERSION` did not move for it.
+   * by severity, as the log's line of deadlines gives them, fix or none. It is optional, under the same `MOVES_VERSION`,
+   * so a file from a scan that predates it (the app's, at an older commit of the workflow) reads as it did; a reader
+   * built before it refuses a file that has it, so the worker reads this repository's moves again once it is deployed.
    */
   totals: { fixed: number; moves: number; lanes: Record<Lane, number>; open?: Counts } & DayCounts;
   moves: PublicMove[];

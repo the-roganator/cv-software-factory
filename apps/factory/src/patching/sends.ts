@@ -67,15 +67,6 @@ function targetWord(target: Target | undefined): string | undefined {
   }
 }
 
-/** The versions a finding's fix names, as a signal's finding gives them. */
-function fixedOf(fix: string): string | undefined {
-  const target = readTarget(fix);
-  if (target?.kind === 'version') return target.versions.join(', ');
-  if (target?.kind === 'image') return target.tag;
-  if (target?.kind === 'tool') return target.version;
-  return undefined;
-}
-
 /** A read move as the signal names it, or why it cannot be sent: it has no target to move to, or no ecosystem. */
 function moveOf(repository: string, read: ReadMove): Move | string {
   if (read.lockfile) {
@@ -119,8 +110,11 @@ function scanOf(
   return { evidence: { kind: 'scan', findings, rest }, misfits };
 }
 
-function findingOf(finding: MoveFinding): Scan['findings'][number] {
-  const fixed = fixedOf(finding.fix);
+/**
+ * A finding as a signal names it: of the advisory only what its alert says, its id, package, rating and the versions
+ * that fix it. The move's target is the move's `to`, never a finding's `fixed`: for an image they differ.
+ */
+function findingOf({ fixed, ...finding }: MoveFinding): Scan['findings'][number] {
   return {
     advisory: finding.advisory,
     package: finding.package,

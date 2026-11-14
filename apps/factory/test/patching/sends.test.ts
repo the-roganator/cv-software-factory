@@ -10,7 +10,13 @@ import { APP, appMoves, digest } from './fixtures.ts';
 
 const zero = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
 
-const found = (n: number, severity: MoveFinding['severity'], fix = 'version 1.2.4'): MoveFinding => ({
+/** A finding its alert gives: the move's target (`fix`), and the advisory's own fixed versions, null for none. */
+const found = (
+  n: number,
+  severity: MoveFinding['severity'],
+  fix = 'version 1.2.4',
+  fixed: string | null = '1.2.4',
+): MoveFinding => ({
   alert: n,
   advisory: `CVE-2026-${1000 + n}`,
   severity,
@@ -18,6 +24,7 @@ const found = (n: number, severity: MoveFinding['severity'], fix = 'version 1.2.
   installed: '1.2.3',
   file: 'pnpm-lock.yaml',
   line: 812,
+  ...(fixed && { fixed }),
   fix,
   firstSeen: '2026-11-10T04:59:00Z',
 });
@@ -51,7 +58,7 @@ const image: ReadMove = {
   to: `image 24.11.1-alpine@${digest(7)}`,
   lockfile: false,
   leaves: { ...zero, LOW: 2 },
-  findings: [found(3, 'CRITICAL', `image 24.11.1-alpine@${digest(7)}`)],
+  findings: [found(3, 'CRITICAL', `image 24.11.1-alpine@${digest(7)}`, '3.5.1')],
 };
 const node: ReadMove = {
   ...image,
@@ -61,7 +68,7 @@ const node: ReadMove = {
   from: '24.11.0',
   to: 'version 24.11.1',
   leaves: zero,
-  findings: [found(4, 'HIGH', 'version 24.11.1')],
+  findings: [found(4, 'HIGH', 'version 24.11.1', '24.11.1')],
 };
 
 const read = (moves: ReadMove[]): Moves => ({ ...appMoves(), moves });
@@ -118,6 +125,24 @@ describe("the sense's sends", () => {
     expect(sends[1]?.signal.evidence?.[0]).toMatchObject({ rest: { low: 2 } });
   });
 
+  it('gives a finding’s fixed versions as its advisory gives them, never the move’s target in their place', () => {
+    // An image moves to its tag; its packages' advisories are fixed in their own versions, or not yet.
+    const findings = [found(3, 'CRITICAL', image.to, '3.5.1, 3.6.0'), found(5, 'HIGH', image.to, null)];
+    const [send] = sendsOf(read([{ ...image, findings }]), '2026-11-11T04:59:00Z').sends;
+    expect(send?.signal.move?.to).toBe(`24.11.1-alpine@${digest(7)}`);
+    expect(send?.signal.evidence?.[0]).toMatchObject({
+      findings: [
+        { advisory: 'CVE-2026-1003', package: 'left-pad', severity: { scanner: 'critical' }, fixed: '3.5.1, 3.6.0' },
+        { advisory: 'CVE-2026-1005', package: 'left-pad', severity: { scanner: 'high' } },
+      ],
+    });
+    const scan = send?.signal.evidence?.[0];
+    expect(scan?.kind === 'scan' ? scan.findings[1] : undefined).not.toHaveProperty('fixed');
+    // The tag is the move's, and in no finding.
+    expect(JSON.stringify(scan)).not.toContain('24.11.1-alpine');
+    expect(validateSignal(send?.signal)).toEqual({ ok: true });
+  });
+
   it('sends nothing for another lane, or a move with no target', () => {
     const none = [
       { ...image, lane: 'worker' as const },
@@ -162,7 +187,7 @@ describe("the sense's sends", () => {
         to: 'version 2.0.1',
         pins: [{ file: 'pnpm-lock.yaml', line: 900 }],
       },
-      findings: [found(9, 'CRITICAL', 'version 2.0.1')],
+      findings: [found(9, 'CRITICAL', 'version 2.0.1', '2.0.1')],
     };
     const { sends, skipped } = sendsOf(read([lockfile, second]), '2026-11-11T04:59:00Z');
     expect(skipped).toEqual([]);

@@ -82,6 +82,7 @@ describe('the files a release changes', () => {
       'scripts/critical-fix-readers.ts',
       'scripts/critical-fix.adversarial.test.ts',
       'scripts/critical-fix.read-2.test.ts',
+      'scripts/critical-fix.read-3.test.ts',
       'scripts/critical-fix.test.ts',
       'scripts/critical-fix.ts',
       // flagd's evaluation library's own package.json, as for the test above.

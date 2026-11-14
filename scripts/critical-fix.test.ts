@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -20,7 +21,7 @@ import {
   type Scan,
   scansShow,
 } from './critical-fix.ts';
-import { pinnedPnpm, scanOf } from './critical-fix-readers.ts';
+import { cleanGit, pinnedPnpm, scanOf } from './critical-fix-readers.ts';
 import type { Run } from './pin-move-ran.ts';
 import { ROOT } from './pin-move-shared.ts';
 
@@ -731,6 +732,21 @@ describe('a Critical fix: the derived lockfile’s own trust, each held', () => 
         'package.json': FIXED_MANIFEST.replace('"name": "shop",', '"name": "shop",\n  "pnpm": {},'),
       }),
     ).toMatch(/^pins only: the lockfile is not the one this move writes/);
+  });
+
+  it('the derivation’s git has pnpm’s clean environment, so the job’s token is not in its reach', async () => {
+    const saved = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = 'the-jobs-token';
+    try {
+      const env = { PATH: process.env.PATH ?? '', HOME: tmpdir() };
+      const seen = await cleanGit(env)(tmpdir(), '-c', 'alias.env=!env', 'env');
+      expect(seen).not.toContain('the-jobs-token');
+      expect(seen).not.toMatch(/^GH_TOKEN=/m);
+      expect(seen).toContain(`HOME=${env.HOME}`);
+    } finally {
+      if (saved === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = saved;
+    }
   });
 
   it('the derivation’s pnpm is the gate’s own mise.lock’s, found from the gate’s checkout', async () => {

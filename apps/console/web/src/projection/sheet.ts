@@ -192,6 +192,8 @@ export interface Sheet {
   captures: Capture[];
   /** Each release that carried it, newest first, with its verification. */
   shipped: Shipped[];
+  /** Its issue in the app's repository, linked as its pull request is. */
+  issue: ItemState['issue'];
   /** For an improvement out behind its flag: the flag, in place of Release and Verify. */
   flag: FlagSheet | undefined;
   /**
@@ -1121,6 +1123,7 @@ export function sheet(
           }
         : undefined,
     request: item.request,
+    issue: item.issue,
     story:
       item.story ??
       (item.attack

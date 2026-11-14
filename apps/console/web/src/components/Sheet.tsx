@@ -449,6 +449,21 @@ function Raised({ sheet, index, count, motion, rise, onStep, onClose, app, admin
                 from {shortVersion(card.reopened.version)}
               </Fact>
             )}
+            {sheet.issue && (
+              <Fact name="Issue">
+                {/* As the pull request's: a sample's issue never existed, so it links nowhere. */}
+                {card.sample ? (
+                  `#${sheet.issue.number}`
+                ) : (
+                  <>
+                    <ToolMark name="github" />{' '}
+                    <a href={`https://github.com/${sheet.issue.repository}/issues/${sheet.issue.number}`}>
+                      #{sheet.issue.number} on GitHub
+                    </a>
+                  </>
+                )}
+              </Fact>
+            )}
             {card.pullRequest && (
               <Fact name="Pull request">
                 {/* A sample's pull request never existed, so it links nowhere, and has no mark: GitHub holds none. */}

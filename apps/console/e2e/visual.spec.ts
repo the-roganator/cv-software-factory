@@ -23,10 +23,12 @@
  * refused, running), and a sheet's refusals whole. Task 32's Patching from the samples' day, in its sheet, in Paper and
  * Ink at all three widths, for Martin and for a visitor, a row opened, and All open under the rows; its summary in the
  * right column where it is narrowest, beside Needs you; and its cards in Needs you, a held pin's for Martin and a
- * running pod's for a visitor, the same. The summaries themselves are in the bottom row's.
+ * running pod's for a visitor, the same. The summaries themselves are in the bottom row's. Part D's move of the app's
+ * lockfile beside the samples, its card and sheet before its issue opened and after, in Paper and Ink.
  */
 import type { Page } from '@playwright/test';
 import { STAGES as KINDS } from '@software-factory/events';
+import { NAMED_AT, WITHHELD_AT, withTheMove } from './disclosure.ts';
 import { AT_CHECKS, heldAs, RELEASED_OFF, TURNED_OFF } from './flags.ts';
 import {
   ATTACKS_END,
@@ -1539,3 +1541,33 @@ for (const width of ['laptop', 'phone'] as const) {
     }
   });
 }
+
+/**
+ * Part D's disclosure: a vulnerable lockfile move beside the samples (`disclosure.ts`), its card and sheet before its
+ * issue opened, the package withheld, and after, named with its versions and its issue in the facts, in Paper and Ink.
+ */
+test.describe('desktop, a move’s disclosure', () => {
+  test.use({ viewport: WIDTHS.desktop });
+
+  for (const theme of THEMES) {
+    for (const [moment, at] of [
+      ['withheld', WITHHELD_AT],
+      ['named', NAMED_AT],
+    ] as const) {
+      test(`its card and sheet, ${moment}, in ${theme}`, async ({ page }) => {
+        await withTheMove(page);
+        await page.goto(consoleUrl({ theme, item: '1335', at }));
+        await ready(page);
+        const card = page.locator('.card[data-place="centre"]');
+        await card.scrollIntoViewIfNeeded();
+        await picturesShown(card);
+        await expect(card).toHaveScreenshot(`part-d-move-card-${moment}-${theme}.png`);
+        await page.goto(consoleUrl({ theme, item: '1335', sheet: true, at }));
+        await page.getByRole('dialog').locator('.facts-dl').waitFor();
+        await page.evaluate(() => document.fonts.ready);
+        await page.waitForLoadState('networkidle');
+        await expect(page).toHaveScreenshot(`part-d-move-sheet-${moment}-${theme}.png`);
+      });
+    }
+  }
+});

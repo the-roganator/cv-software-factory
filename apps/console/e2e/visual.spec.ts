@@ -38,6 +38,7 @@ import {
   consoleUrl,
   END,
   emptyStore,
+  endAdminService,
   expect,
   fixtureUrl,
   MERGE_WAITING,
@@ -971,7 +972,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
     test('the Flags panel, for Martin and for a visitor', async ({ page }) => {
       await withFlags(page, 'martin');
       await expect(flagsGroup(page)).toHaveScreenshot(`m07-flags-${width}.png`);
-      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await endAdminService(page);
       await withFlags(page, 'visitor');
       await expect(flagsGroup(page)).toHaveScreenshot(`m07-flags-visitor-${width}.png`);
     });
@@ -1388,7 +1389,7 @@ for (const [width, viewport] of Object.entries(WIDTHS)) {
       await page.getByRole('dialog', { name: 'Data to an outside URL' }).waitFor();
       await page.evaluate(() => document.fonts.ready);
       await expect(page).toHaveScreenshot(`m07-attack-dialog-${width}.png`);
-      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await endAdminService(page);
       const panel = await guardrailsAt(page, 'visitor', 5, { from: 'attacks' });
       await panel.locator('.more .gr-attack .ro').click();
       await page.getByRole('dialog', { name: 'Data to an outside URL' }).waitFor();

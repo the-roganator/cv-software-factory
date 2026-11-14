@@ -14,10 +14,11 @@ import {
   criticalFix,
   type Finding,
   gatesPass,
+  MOST_MOVES,
+  movesOf,
   NOT_DERIVED,
   type Scan,
   scansShow,
-  theMove,
 } from './critical-fix.ts';
 import { pinnedPnpm, scanOf } from './critical-fix-readers.ts';
 import type { Run } from './pin-move-ran.ts';
@@ -200,24 +201,23 @@ const image = (packages: Scan['packages'], findings: Finding[] = [], node?: stri
 });
 const OS = [{ name: 'libc6', version: '2.41-12' }];
 
-/** The registry's versions of each package. */
-const REGISTRY: Record<string, string[]> = {
-  protobufjs: ['7.6.4', '7.6.5', '7.6.6', '7.7.0', '8.0.0'],
-  pino: ['10.4.0', '10.4.1'],
-};
-/** What the pin step's derivation writes on the base, by the move's `name@from>to`. */
+/**
+ * What the pin step's derivation writes on the base, by the move's `name@from>to`: for protobufjs to 7.6.5, its fix,
+ * pnpm takes 7.6.6, the newest release its range admits, and writes the range with it.
+ */
 const DERIVED: Record<string, Record<string, string>> = {
-  'protobufjs@7.6.4>7.6.6': { 'pnpm-lock.yaml': FIXED_LOCK, 'package.json': FIXED_MANIFEST },
+  'protobufjs@7.6.4>7.6.5': { 'pnpm-lock.yaml': FIXED_LOCK, 'package.json': FIXED_MANIFEST },
 };
 /** The app's ruleset's required checks: its gates, and the review. */
 const REQUIRED = [...Object.keys(APP_GATES), 'review'];
 
 interface Fakes {
   advisories?: Record<string, Finding[]>;
-  registry?: Record<string, string[]>;
   derived?: Record<string, Record<string, string> | Error>;
   /** Each move the gate asked the derivation for. */
   moves?: string[];
+  /** How many times the proof read the head's lockfile and manifest, by the one reader that gives them. */
+  reads?: { head: number };
   required?: string[];
   images?: Record<string, Scan>;
   node?: Record<string, Finding[]>;
@@ -228,9 +228,23 @@ interface Fakes {
   status?: Record<string, string>;
 }
 
-/** The change, file by file, against BASE, and the fakes it is read with. */
+/** The files whose head the proof may read only through `head`, to compare with its own. */
+const COMPARED = new Set(['pnpm-lock.yaml', 'package.json']);
+
+/**
+ * The change, file by file, against BASE, and the fakes it is read with. The diff gives the head's lockfile and
+ * manifest as a getter that throws, so every case here fails if the proof reads them but through `head`.
+ */
 function io(change: Record<string, string>, fakes: Fakes = {}): CriticalFixIO {
-  const files = Object.entries(change).map(([path, after]) => ({ path, before: BASE[path] ?? '', after }));
+  const files = Object.entries(change).map(([path, after]) => {
+    const before = BASE[path] ?? '';
+    if (!COMPARED.has(path)) return { path, before, after };
+    return Object.defineProperty({ path, before }, 'after', {
+      get() {
+        throw new Error(`the proof read the head's ${path} outside the comparison`);
+      },
+    });
+  });
   const raw = files
     .map(
       ({ path }) =>
@@ -239,6 +253,10 @@ function io(change: Record<string, string>, fakes: Fakes = {}): CriticalFixIO {
     .join('\n');
   return {
     diff: async () => ({ raw, files }),
+    head: async () => {
+      if (fakes.reads) fakes.reads.head++;
+      return Object.fromEntries(Object.entries(change).filter(([path]) => COMPARED.has(path)));
+    },
     lockfile: async (text) => scanLockfile(text, fakes.advisories ?? ADVISORIES),
     image: async (reference) => {
       const scan = fakes.images?.[reference];
@@ -246,7 +264,6 @@ function io(change: Record<string, string>, fakes: Fakes = {}): CriticalFixIO {
       return scan;
     },
     node: async (version) => fakes.node?.[version] ?? [],
-    versions: async (name) => (fakes.registry ?? REGISTRY)[name] ?? [],
     derive: async (move) => {
       const key = `${move.name}@${move.from}>${move.to}`;
       fakes.moves?.push(key);
@@ -300,15 +317,15 @@ describe('a Critical fix: what passes', () => {
     expect('title' in said && said.title).toBe(
       "A Critical vulnerability's fix: protobufjs's CVE-2026-1 gone from pnpm-lock.yaml, at or above its fix, nothing new at High, every gate passed",
     );
-    // The move is the gate's own: the package the base's scan rates Critical, and the version the head's range names.
+    // The move is the gate's own: the package the base's scan rates Critical, and the fix the scan gives it.
     const moves: string[] = [];
     await criticalFix(io(PACKAGE_FIX, { moves }), HEAD);
-    expect(moves).toEqual(['protobufjs@7.6.4>7.6.6']);
-    // The lockfile alone, with no range moved in package.json, passes too, its version read from the lockfile's keys.
+    expect(moves).toEqual(['protobufjs@7.6.4>7.6.5']);
+    // The lockfile alone, with no range moved in package.json, passes too, when it is what the move writes.
     const alone = FIXED_LOCK.replace('^7.6.6', '^7.6.4');
     expect(
       await criticalFix(
-        io({ 'pnpm-lock.yaml': alone }, { derived: { 'protobufjs@7.6.4>7.6.6': { 'pnpm-lock.yaml': alone } } }),
+        io({ 'pnpm-lock.yaml': alone }, { derived: { 'protobufjs@7.6.4>7.6.5': { 'pnpm-lock.yaml': alone } } }),
         HEAD,
       ),
     ).toHaveProperty('title');
@@ -339,7 +356,7 @@ describe("a Critical fix: the plan's five, each held for Martin", () => {
       'protobufjs@7.6.4': [{ ...((ADVISORIES['protobufjs@7.6.4'] as Finding[])[0] as Finding), fixed: '7.6.9' }],
     };
     expect(await held(PACKAGE_FIX, { advisories: early })).toBe(
-      'pins only: protobufjs 7.6.6 is not at or above 7.6.9, its fix for CVE-2026-1',
+      `pins only: ${NOT_DERIVED} (the pin step would not write protobufjs 7.6.9: the fake writes no protobufjs@7.6.4>7.6.9)`,
     );
   });
 
@@ -360,13 +377,13 @@ describe("a Critical fix: the plan's five, each held for Martin", () => {
       .replace('  protobufjs@7.6.4:\n    resolution: {integrity: sha512-p764}\n\n', '')
       .replace('  protobufjs@7.6.4:\n    dependencies:\n      long: 5.3.2\n', '');
     expect(await held({ 'pnpm-lock.yaml': removed })).toBe(
-      'pins only: the head gives protobufjs no version its base does not have',
+      `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, the move changes package.json, and the head does not)`,
     );
     const renamed = LOCK.replaceAll('protobufjs', 'protobufjs-fixed');
     expect(await held({ 'pnpm-lock.yaml': renamed })).toMatch(/^pins only:/);
     const aliased = FIXED_LOCK.replace('version: 7.6.6', 'version: protobufjs-fork@7.6.6');
     expect(await held({ ...PACKAGE_FIX, 'pnpm-lock.yaml': aliased })).toMatch(
-      /^pins only: the lockfile is not the one this move writes \(pnpm-lock\.yaml differs from the gate's own at line \d+\)$/,
+      /^pins only: the lockfile is not the one this move writes \(for protobufjs 7\.6\.4 to 7\.6\.5, pnpm-lock\.yaml differs from the gate's own at line \d+\)$/,
     );
     const swapped = DOCKERFILE.replace(RUNTIME, `gcr.io/distroless/static-debian13:nonroot@${D('5')}`);
     expect(await held({ Dockerfile: swapped })).toMatch(
@@ -397,7 +414,7 @@ describe("a Critical fix: the plan's five, each held for Martin", () => {
       .replace('  pino@10.4.0: {}', '  pino@10.4.1: {}');
     const manifest = FIXED_MANIFEST.replace('"pino": "^10.4.0"', '"pino": "^10.4.1"');
     expect(await held({ 'pnpm-lock.yaml': bundled, 'package.json': manifest })).toMatch(
-      /^pins only: the lockfile is not the one this move writes \(package\.json differs/,
+      /^pins only: the lockfile is not the one this move writes \(for protobufjs 7\.6\.4 to 7\.6\.5, package\.json differs/,
     );
     // Within the lockfile alone too, and a package added that the new version does not require.
     const extra = FIXED_LOCK.replace(
@@ -405,13 +422,13 @@ describe("a Critical fix: the plan's five, each held for Martin", () => {
       '  left-pad@1.3.0:\n    resolution: {integrity: sha512-lp}\n\n  long@5.3.2:\n',
     );
     expect(await held({ ...PACKAGE_FIX, 'pnpm-lock.yaml': extra })).toMatch(/^pins only: the lockfile is not the one/);
-    // And a group: two packages' Criticals fixed at once.
+    // And a group: two packages' Criticals fixed at once is no one move the gate writes.
     const both = {
       ...ADVISORIES,
       'pino@10.4.0': [{ id: 'CVE-2026-8', pkg: 'pino', version: '10.4.0', fixed: '10.4.1', severity: 'CRITICAL' }],
     };
     expect(await held({ 'pnpm-lock.yaml': bundled, 'package.json': manifest }, { advisories: both })).toMatch(
-      /^a group: it moves pino and protobufjs/,
+      /^pins only: the lockfile is not the one this move writes \(the pin step would not write pino 10\.4\.1: .*; for protobufjs 7\.6\.4 to 7\.6\.5, /,
     );
   });
 
@@ -420,7 +437,7 @@ describe("a Critical fix: the plan's five, each held for Martin", () => {
       'protobufjs@7.6.4': [{ id: 'CVE-2026-1', pkg: 'protobufjs', version: '7.6.4', fixed: '7.6.5', severity: 'HIGH' }],
     };
     expect(await held(PACKAGE_FIX, { advisories: high })).toBe(
-      "the scans show no Critical fixed: the worst it fixes is protobufjs's CVE-2026-1, which the gate's scanner rates HIGH",
+      "the scans show no fix: the gate's scanner rates no package Critical, with a fix, in the base's pnpm-lock.yaml",
     );
     // The reader keeps Trivy's own rating, never the publisher's VendorSeverity.
     const read = scanOf([
@@ -466,7 +483,7 @@ describe('a Critical fix: the threat model, each held', () => {
       );
     const sneaky = FIXED_MANIFEST.replace('"name": "shop"', '"name": "shop", "scripts": {"postinstall": "sh x"}');
     expect(await held({ ...PACKAGE_FIX, 'package.json': sneaky })).toBe(
-      `pins only: ${NOT_DERIVED} (package.json differs from the gate's own at line 2)`,
+      `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, package.json differs from the gate's own at line 2)`,
     );
   });
 
@@ -500,7 +517,7 @@ describe('a Critical fix: the threat model, each held', () => {
       `${FIXED_LOCK} `,
     ])
       expect(await held({ ...PACKAGE_FIX, 'pnpm-lock.yaml': lock })).toMatch(
-        /^pins only: the lockfile is not the one this move writes \(pnpm-lock\.yaml differs from the gate's own/,
+        /^pins only: the lockfile is not the one this move writes \(for protobufjs 7\.6\.4 to 7\.6\.5, pnpm-lock\.yaml differs from the gate's own/,
       );
     // A scan that cannot read the base's lockfile throws, and the job holds it saying what it could not read.
     const unread = io(PACKAGE_FIX);
@@ -513,32 +530,28 @@ describe('a Critical fix: the threat model, each held', () => {
       .replace('pino@10.4.0:\n    resolution', 'pino@10.3.0:\n    resolution')
       .replace('pino@10.4.0: {}', 'pino@10.3.0: {}');
     expect(await held({ 'pnpm-lock.yaml': back })).toBe(
-      "the scans show no fix: it moves no package the gate's scanner rates Critical in the base's pnpm-lock.yaml (protobufjs)",
+      `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, the move changes package.json, and the head does not)`,
     );
   });
 
-  it('the move: what the pin step would not write, a version off the registry, back, below its fix, across a major', async () => {
-    const range = (to: string) => ({ ...PACKAGE_FIX, 'package.json': MANIFEST.replace('"^7.6.4"', `"${to}"`) });
+  it('the move: what the pin step would not write, and any version but the gate’s own target', async () => {
+    const range = (to: string) => ({ ...PACKAGE_FIX, 'package.json': FIXED_MANIFEST.replace('"^7.6.6"', `"${to}"`) });
     expect(
-      await held(PACKAGE_FIX, { derived: { 'protobufjs@7.6.4>7.6.6': new PinsHeld('pnpm-workspace.yaml', 'x') } }),
-    ).toBe(`pins only: ${NOT_DERIVED} (the pin step would not write protobufjs 7.6.6: x)`);
-    expect(await held(PACKAGE_FIX, { registry: { protobufjs: ['7.6.4'] } })).toBe(
-      'pins only: 7.6.6 is not a version the registry publishes of protobufjs',
-    );
-    expect(await held(range('^7.6.3'))).toBe('pins only: protobufjs goes from 7.6.4 to 7.6.3, not forward');
+      await held(PACKAGE_FIX, { derived: { 'protobufjs@7.6.4>7.6.5': new PinsHeld('pnpm-workspace.yaml', 'x') } }),
+    ).toBe(`pins only: ${NOT_DERIVED} (the pin step would not write protobufjs 7.6.5: x)`);
+    // Back, another major, a range the pin step never writes, a prerelease: each is not the gate's bytes.
+    for (const to of ['^7.6.3', '^8.0.0', '>=7.6.6', '^7.6.7-rc.1', '~7.6.6'])
+      expect(await held(range(to))).toBe(
+        `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, package.json differs from the gate's own at line 12)`,
+      );
+    // A later fix in the advisory moves the gate's target with it; the head's own say moves nothing.
     const finding = ADVISORIES['protobufjs@7.6.4']?.[0] as Finding;
     expect(await held(PACKAGE_FIX, { advisories: { 'protobufjs@7.6.4': [{ ...finding, fixed: '7.6.9' }] } })).toBe(
-      'pins only: protobufjs 7.6.6 is not at or above 7.6.9, its fix for CVE-2026-1',
-    );
-    expect(await held(range('^8.0.0'))).toBe(
-      'pins only: protobufjs goes from 7.6.4 to 8.0.0, across a major its fix for CVE-2026-1 does not need',
-    );
-    expect(await held(range('>=7.6.6'))).toBe(
-      'pins only: package.json gives protobufjs >=7.6.6, not a version the pin step moves a range to',
+      `pins only: ${NOT_DERIVED} (the pin step would not write protobufjs 7.6.9: the fake writes no protobufjs@7.6.4>7.6.9)`,
     );
     // A derivation that fails otherwise is no hold of the rule's: the job holds it saying what it could not read.
     await expect(
-      criticalFix(io(PACKAGE_FIX, { derived: { 'protobufjs@7.6.4>7.6.6': new Error('pnpm exited 1') } }), HEAD),
+      criticalFix(io(PACKAGE_FIX, { derived: { 'protobufjs@7.6.4>7.6.5': new Error('pnpm exited 1') } }), HEAD),
     ).rejects.toThrow('pnpm exited 1');
   });
 
@@ -661,32 +674,32 @@ describe('a Critical fix: the derived lockfile’s own trust, each held', () => 
       .replace('  pino@10.4.0: {}', '  pino@10.4.1: {}');
     const moves: string[] = [];
     expect(await held({ 'pnpm-lock.yaml': pino }, { moves })).toBe(
-      "the scans show no fix: it moves no package the gate's scanner rates Critical in the base's pnpm-lock.yaml (protobufjs)",
+      `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, the move changes package.json, and the head does not)`,
     );
-    expect(moves).toEqual([]);
+    expect(moves).toEqual(['protobufjs@7.6.4>7.6.5']);
+    // With no Critical in the base, no move is written at all.
+    const none: string[] = [];
+    expect(await held({ 'pnpm-lock.yaml': pino }, { moves: none, advisories: {} })).toBe(
+      "the scans show no fix: the gate's scanner rates no package Critical, with a fix, in the base's pnpm-lock.yaml",
+    );
+    expect(none).toEqual([]);
   });
 
-  it('a version that is not the registry’s, or not a version at all', async () => {
-    expect(await held(PACKAGE_FIX, { registry: { protobufjs: ['7.6.4', '7.6.5'] } })).toBe(
-      'pins only: 7.6.6 is not a version the registry publishes of protobufjs',
-    );
+  it('a version the head chose, in its range or its lockfile: never read, only compared', async () => {
     for (const range of ['^7.6.6+evil', 'latest', '^7.6.6 || ^8', 'npm:protobufjs@7.6.6'])
-      expect(
-        await held({ ...PACKAGE_FIX, 'package.json': MANIFEST.replace('"^7.6.4"', JSON.stringify(range)) }),
-      ).toMatch(/^pins only: package\.json gives protobufjs .*not a version the pin step moves a range to/);
+      expect(await held({ ...PACKAGE_FIX, 'package.json': MANIFEST.replace('"^7.6.4"', JSON.stringify(range)) })).toBe(
+        `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, package.json differs from the gate's own at line 12)`,
+      );
   });
 
   it('a package.json range moved more than the move needs: another operator, a later version, another package', async () => {
     const manifest = (from: string, to: string) => ({ ...PACKAGE_FIX, 'package.json': MANIFEST.replace(from, to) });
-    expect(await held(manifest('"^7.6.4"', '"~7.6.6"'))).toBe(
-      `pins only: ${NOT_DERIVED} (package.json differs from the gate's own at line 12)`,
-    );
-    // A later version than the fix needs is a move the pin step was never asked for, so it writes none.
-    expect(await held(manifest('"^7.6.4"', '"^7.7.0"'))).toBe(
-      `pins only: ${NOT_DERIVED} (the pin step would not write protobufjs 7.7.0: the fake writes no protobufjs@7.6.4>7.7.0)`,
-    );
+    const at = (line: number) =>
+      `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, package.json differs from the gate's own at line ${line})`;
+    expect(await held(manifest('"^7.6.4"', '"~7.6.6"'))).toBe(at(12));
+    expect(await held(manifest('"^7.6.4"', '"^7.7.0"'))).toBe(at(12));
     expect(await held({ ...PACKAGE_FIX, 'package.json': FIXED_MANIFEST.replace('"^10.4.0"', '"^10.4.1"') })).toBe(
-      `pins only: ${NOT_DERIVED} (package.json differs from the gate's own at line 11)`,
+      at(11),
     );
   });
 
@@ -710,7 +723,7 @@ describe('a Critical fix: the derived lockfile’s own trust, each held', () => 
   it('pnpm’s version from the head’s packageManager: the head’s manifest is never what pnpm runs as', async () => {
     const manifest = FIXED_MANIFEST.replace('pnpm@12.16.1', 'pnpm@12.16.2');
     expect(await held({ ...PACKAGE_FIX, 'package.json': manifest })).toBe(
-      `pins only: ${NOT_DERIVED} (package.json differs from the gate's own at line 3)`,
+      `pins only: ${NOT_DERIVED} (for protobufjs 7.6.4 to 7.6.5, package.json differs from the gate's own at line 3)`,
     );
     expect(
       await held({
@@ -724,6 +737,77 @@ describe('a Critical fix: the derived lockfile’s own trust, each held', () => 
     const path = await pinnedPnpm();
     const locked = lockedPnpm(readFileSync(join(ROOT, 'mise.lock'), 'utf-8'), 'linux-x64').version;
     expect(execFileSync(path, ['--version'], { encoding: 'utf-8' }).trim()).toBe(locked);
+  });
+});
+
+describe('the closed check: the head is read once, by one reader, only to be compared', () => {
+  /** The lockfile and manifest with protobufjs at a version, as a head might give it or the gate write it. */
+  const at = (version: string) => ({
+    'pnpm-lock.yaml': LOCK.replaceAll('protobufjs@7.6.4', `protobufjs@${version}`).replace(
+      'specifier: ^7.6.4\n        version: 7.6.4',
+      `specifier: ^${version}\n        version: ${version}`,
+    ),
+    'package.json': MANIFEST.replace('"^7.6.4"', `"^${version}"`),
+  });
+  const advisories = (fixed: string) => ({
+    'protobufjs@7.6.4': [{ id: 'CVE-2026-1', pkg: 'protobufjs', version: '7.6.4', fixed, severity: 'CRITICAL' }],
+  });
+
+  it('passes a head on the gate’s own target, and holds the same head at any other version of the package', async () => {
+    const derived = { 'protobufjs@7.6.4>7.6.5': at('7.6.5') };
+    expect(await criticalFix(io(at('7.6.5'), { derived, advisories: advisories('7.6.5') }), HEAD)).toHaveProperty(
+      'title',
+    );
+    for (const other of ['7.6.6', '7.7.0', '8.0.0', '9.1.0', '7.6.5-rc.1', '7.6.6-beta.0', '7.6.4', '0.9.0'])
+      expect(await held(at(other), { derived, advisories: advisories('7.6.5') })).toMatch(
+        /^pins only: the lockfile is not the one this move writes \(for protobufjs 7\.6\.4 to 7\.6\.5, (pnpm-lock\.yaml|package\.json) differs from the gate's own at line \d+\)$/,
+      );
+    // The read's two shapes: a fix only on a later major moves to its lowest, never past it; a 0.x fix stays on its line.
+    const major = { 'protobufjs@7.6.4>8.0.1': at('8.0.1') };
+    expect(
+      await criticalFix(io(at('8.0.1'), { derived: major, advisories: advisories('8.0.1, 9.0.0') }), HEAD),
+    ).toHaveProperty('title');
+    expect(await held(at('9.0.0'), { derived: major, advisories: advisories('8.0.1, 9.0.0') })).toMatch(
+      /^pins only: the lockfile is not the one this move writes \(for protobufjs 7\.6\.4 to 8\.0\.1, /,
+    );
+  });
+
+  it('reads the head’s lockfile and package.json through `head` alone, once, whatever the verdict', async () => {
+    // The fake's diff throws if the proof reads either file's head there: each case below would reject.
+    for (const [change, fakes] of [
+      [PACKAGE_FIX, {}],
+      [{ ...PACKAGE_FIX, 'package.json': MANIFEST.replace('"^7.6.4"', '"^8.0.0"') }, {}],
+      [{ 'pnpm-lock.yaml': FIXED_LOCK }, {}],
+      [
+        PACKAGE_FIX,
+        {
+          advisories: {
+            ...ADVISORIES,
+            'pino@10.4.0': [
+              { id: 'CVE-2026-8', pkg: 'pino', version: '10.4.0', fixed: '10.4.1', severity: 'CRITICAL' },
+            ],
+          },
+        },
+      ],
+      [PACKAGE_FIX, { derived: { 'protobufjs@7.6.4>7.6.5': new PinsRefused('no') } }],
+    ] as [Record<string, string>, Fakes][]) {
+      const reads = { head: 0 };
+      await criticalFix(io(change, { ...fakes, reads }), HEAD);
+      expect(reads.head).toBe(1);
+    }
+    // Nor before the base names a move: a head with no Critical in its base is never read at all.
+    const reads = { head: 0 };
+    await criticalFix(io(PACKAGE_FIX, { advisories: {}, reads }), HEAD);
+    expect(reads.head).toBe(0);
+  });
+
+  it('gives what `head` read to `asDerived` alone, in the proof’s own code', () => {
+    const source = readFileSync(join(ROOT, 'scripts/critical-fix.ts'), 'utf-8');
+    expect(source.match(/\bio\.head\(/g)).toEqual(['io.head(']);
+    // The bytes are named once and used once, as `asDerived`'s first argument.
+    expect(source.match(/\bheadBytes\b/g)?.length).toBe(2);
+    expect(source).toContain('const headBytes = await io.head();');
+    expect(source).toContain('asDerived(headBytes, written)');
   });
 });
 
@@ -764,27 +848,52 @@ describe('the pieces', () => {
     });
   });
 
-  it('works out the move from the base’s Critical and the head’s words alone', () => {
+  it('works out the move from the base’s scan alone, by the daily scan’s own functions', () => {
     const was = scanLockfile(LOCK, ADVISORIES);
-    expect(theMove(was, { before: LOCK, after: FIXED_LOCK }, { before: MANIFEST, after: FIXED_MANIFEST })).toEqual({
-      ecosystem: 'npm',
-      name: 'protobufjs',
-      from: '7.6.4',
-      to: '7.6.6',
+    expect(movesOf(was)).toEqual([{ ecosystem: 'npm', name: 'protobufjs', from: '7.6.4', to: '7.6.5' }]);
+    // A Medium alone is no move.
+    expect(movesOf(scanLockfile(LOCK, { 'pino@10.4.0': ADVISORIES['pino@10.4.0'] as Finding[] }))).toHaveProperty(
+      'reason',
+    );
+    const finding = (version: string, fixed: string, severity = 'CRITICAL'): Finding => ({
+      id: `CVE-${version}`,
+      pkg: 'a',
+      version,
+      fixed,
+      severity,
     });
-    // A Medium moved is no move.
-    expect(theMove(scanLockfile(LOCK, {}), { before: LOCK, after: FIXED_LOCK })).toHaveProperty('reason');
+    const of = (...findings: Finding[]) => movesOf({ packages: [], findings });
+    // The first fix above each copy, and the furthest of them, every rating's: a Low's later fix is the target.
+    expect(of(finding('1.0.0', '1.0.2, 2.0.1'), finding('1.0.0', '1.0.5', 'LOW'))).toEqual([
+      { ecosystem: 'npm', name: 'a', from: '1.0.0', to: '1.0.5' },
+    ]);
+    // Across a major only when no fix is on its own: 1.9 has none on 1.x past it, so 2.0.1, never 3.x.
+    expect(of(finding('1.9.0', '1.2.8, 2.0.1, 3.0.0'))).toEqual([
+      { ecosystem: 'npm', name: 'a', from: '1.9.0', to: '2.0.1' },
+    ]);
+    // 0.x: the fix on its own line, which the pin step's caret admits.
+    expect(of(finding('0.300.0', '0.300.1, 0.301.0'))).toEqual([
+      { ecosystem: 'npm', name: 'a', from: '0.300.0', to: '0.300.1' },
+    ]);
+    // Two copies whose fixes are on two majors: the pin step moves to one version, so none is written.
+    expect(of(finding('1.0.0', '1.0.1, 2.0.1'), finding('2.0.0', '1.0.1, 2.0.1'))).toEqual([
+      {
+        name: 'a',
+        reason: "the scan's fix for a is 1.0.1 and 2.0.1, one on each major, and the pin step moves to one",
+      },
+    ]);
+    const many = Array.from({ length: MOST_MOVES + 1 }, (_, i) => ({ ...finding('1.0.0', '1.0.1'), pkg: `p${i}` }));
+    expect(of(...many)).toHaveProperty('reason');
   });
 
   it('compares the head’s files with the derivation’s, byte for byte, both ways', () => {
-    const files = [{ path: 'pnpm-lock.yaml', before: LOCK, after: FIXED_LOCK }];
-    expect(asDerived(files, { 'pnpm-lock.yaml': FIXED_LOCK })).toBeUndefined();
-    expect(asDerived(files, { 'pnpm-lock.yaml': `${FIXED_LOCK}\n` })).toMatch(/differs from the gate's own at line/);
-    expect(asDerived(files, { 'pnpm-lock.yaml': FIXED_LOCK, 'package.json': FIXED_MANIFEST })).toBe(
+    const head = { 'pnpm-lock.yaml': FIXED_LOCK };
+    expect(asDerived(head, { 'pnpm-lock.yaml': FIXED_LOCK })).toBeUndefined();
+    expect(asDerived(head, { 'pnpm-lock.yaml': `${FIXED_LOCK}\n` })).toMatch(/differs from the gate's own at line/);
+    expect(asDerived(head, { 'pnpm-lock.yaml': FIXED_LOCK, 'package.json': FIXED_MANIFEST })).toBe(
       'the move changes package.json, and the head does not',
     );
-    const both = [...files, { path: 'package.json', before: MANIFEST, after: FIXED_MANIFEST }];
-    expect(asDerived(both, { 'pnpm-lock.yaml': FIXED_LOCK })).toBe(
+    expect(asDerived({ ...head, 'package.json': FIXED_MANIFEST }, { 'pnpm-lock.yaml': FIXED_LOCK })).toBe(
       'the head changes package.json, and the move does not',
     );
   });

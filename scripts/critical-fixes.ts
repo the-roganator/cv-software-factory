@@ -34,6 +34,8 @@ export async function readCriticalFix(each: Run, pr: PullRequest, github: GitHub
   if (pr.base.ref !== 'main')
     return { reason: `it is into ${pr.base.ref}, and a critical fix is judged into main alone` };
   const closing: { close(): void }[] = [];
+  // Once this pull request is answered, a reader that opens late is closed as it opens, its directory with it.
+  let answered = false;
   try {
     const left = STARTED + CRITICAL_FIXES_MS - Date.now();
     if (left < 60_000) return { reason: 'the critical fix job had no time left to work it out' };
@@ -42,6 +44,8 @@ export async function readCriticalFix(each: Run, pr: PullRequest, github: GitHub
       timer = setTimeout(() => fail(new Error('the critical fix job ran out of time')), left);
       timer.unref?.();
     });
+    // Handled here, so a deadline that passes while GitHub's reads below are still out does not end the job.
+    expired.catch(() => {});
     try {
       const events = await github.paged<{ event: string }>(`/repos/${each.repo}/issues/${pr.number}/events`, each.read);
       if (events.some((e) => RETARGETED.has(e.event)))
@@ -76,45 +80,46 @@ export async function readCriticalFix(each: Run, pr: PullRequest, github: GitHub
       const base = compare.base_commit?.sha;
       if (!mergeBase || !base || ![mergeBase, base].every((sha) => /^[0-9a-f]{40}$/.test(sha)))
         return { reason: 'GitHub named no tip and merge base to judge the fix from' };
-      const reader = await Promise.race([
-        realCriticalFixIO({
-          repo: each.repo,
-          base,
-          mergeBase,
-          head: pr.head.sha,
-          // The checks the app's ruleset requires of main, as GitHub gives them: read, never assumed.
-          required: async () => {
-            const rules = await github.api<
-              { type: string; parameters?: { required_status_checks?: { context: string }[] } }[]
-            >('GET', `/repos/${each.repo}/rules/branches/main`, each.read);
-            return rules
-              .filter((rule) => rule.type === 'required_status_checks')
-              .flatMap((rule) => (rule.parameters?.required_status_checks ?? []).map((check) => check.context));
-          },
-          runs: async () => {
-            const [checks, workflows] = await Promise.all([
-              github.paged<CheckRun>(
-                `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
-                each.read,
-                'check_runs',
-              ),
-              github.paged<WorkflowRun>(
-                `/repos/${each.repo}/actions/runs?head_sha=${pr.head.sha}&event=pull_request`,
-                each.read,
-                'workflow_runs',
-              ),
-            ]);
-            return workflowsOf(checks, workflows, each.repo, {
-              number: pr.number,
-              ref: pr.head.ref,
-              created: pr.created_at as string,
-              open: pr.state === 'open',
-            });
-          },
-        }),
-        expired,
-      ]);
-      closing.push(reader);
+      const opening = realCriticalFixIO({
+        repo: each.repo,
+        base,
+        mergeBase,
+        head: pr.head.sha,
+        // The checks the app's ruleset requires of main, as GitHub gives them: read, never assumed.
+        required: async () => {
+          const rules = await github.api<
+            { type: string; parameters?: { required_status_checks?: { context: string }[] } }[]
+          >('GET', `/repos/${each.repo}/rules/branches/main`, each.read);
+          return rules
+            .filter((rule) => rule.type === 'required_status_checks')
+            .flatMap((rule) => (rule.parameters?.required_status_checks ?? []).map((check) => check.context));
+        },
+        runs: async () => {
+          const [checks, workflows] = await Promise.all([
+            github.paged<CheckRun>(
+              `/repos/${each.repo}/commits/${pr.head.sha}/check-runs?filter=all`,
+              each.read,
+              'check_runs',
+            ),
+            github.paged<WorkflowRun>(
+              `/repos/${each.repo}/actions/runs?head_sha=${pr.head.sha}&event=pull_request`,
+              each.read,
+              'workflow_runs',
+            ),
+          ]);
+          return workflowsOf(checks, workflows, each.repo, {
+            number: pr.number,
+            ref: pr.head.ref,
+            created: pr.created_at as string,
+            open: pr.state === 'open',
+          });
+        },
+      });
+      opening.then(
+        (reader) => (answered ? reader.close() : closing.push(reader)),
+        () => {},
+      );
+      const reader = await Promise.race([opening, expired]);
       const result = await Promise.race([criticalFix(reader, pr.head.sha), expired]);
       return 'title' in result ? { title: result.title } : result;
     } finally {
@@ -124,6 +129,7 @@ export async function readCriticalFix(each: Run, pr: PullRequest, github: GitHub
     console.log(`::warning::${cause(error).replace(/::/g, ': :')}`);
     return { reason: `the gate could not read what it proves a critical fix by (${cause(error)})` };
   } finally {
+    answered = true;
     for (const each of closing) each.close();
   }
 }

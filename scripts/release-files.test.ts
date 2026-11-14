@@ -77,10 +77,11 @@ describe('the files a release changes', () => {
       // own, written for a scratch repository to try it on.
       'scripts/check-kind.sh',
       'scripts/check-kind.test.ts',
-      // The review gate's Critical fix, which reads a dependency's range in package.json and has the pin step write it
-      // on the base, and its tests.
+      // The review gate's Critical fix, which has the pin step write package.json on the base and compares the head's
+      // with it, and its tests.
       'scripts/critical-fix-readers.ts',
       'scripts/critical-fix.adversarial.test.ts',
+      'scripts/critical-fix.read-2.test.ts',
       'scripts/critical-fix.test.ts',
       'scripts/critical-fix.ts',
       // flagd's evaluation library's own package.json, as for the test above.

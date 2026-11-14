@@ -26,9 +26,8 @@ import {
 } from '../apps/factory/src/vulnerabilities/scan.ts';
 import { trivyPin } from '../apps/factory/src/vulnerabilities/trivy-pin.ts';
 import { lockedPnpm } from '../apps/runner/scripts/install-pnpm.ts';
-import { git } from '../apps/runner/src/git.ts';
 import { pnpmIn, writePins } from '../apps/runner/src/pins.ts';
-import type { CriticalFixIO, Finding, Scan } from './critical-fix.ts';
+import { type CriticalFixIO, type Finding, LOCKFILE, MANIFEST, type Scan } from './critical-fix.ts';
 import { formatOf } from './critical-fix-versions.ts';
 import { type RealOptions, realPinMoveIO, removeWork } from './pin-move-readers.ts';
 import { ROOT } from './pin-move-shared.ts';
@@ -85,6 +84,30 @@ function trivyImage() {
 const exec = promisify(execFile);
 
 /**
+ * Git for the derivation, with no variable of the job's: the clean environment pnpm has (`PATH` and a home of its
+ * own), so the job's token is not in its reach, with no settings but these and no hook.
+ */
+export function cleanGit(env: { PATH: string; HOME: string }) {
+  return async (cwd: string, ...args: string[]): Promise<string> =>
+    (
+      await exec('git', args, {
+        cwd,
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 5 * 60_000,
+        env: {
+          ...env,
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'core.hooksPath',
+          GIT_CONFIG_VALUE_0: '/dev/null',
+        },
+      })
+    ).stdout;
+}
+
+/**
  * The pnpm the pin step runs: the version the gate's own mise.lock holds, which is the runner image's
  * (`install-pnpm.ts`), found by mise from the gate's checkout and never from the app's, so neither the app's
  * `packageManager` nor its mise.toml picks it, and refused unless it says it is that version.
@@ -123,34 +146,42 @@ export async function realCriticalFixIO(
     if (typeof age !== 'number' || age > DB_MAX_AGE_MS)
       throw new Error(`the advisory database is refused: ${typeof age === 'string' ? age : 'it is too old'}`);
   };
-  let lockfiles = 0;
+  let [lockfiles, derivations] = [0, 0];
+  // The head's lockfile and manifest, kept from the diff for `head` alone, which gives them once.
+  let head: Record<string, string> | undefined;
+  let headRead = false;
   return {
     close: () => {
       commits.close();
       removeWork(work);
     },
-    diff: () => commits.diff(),
-    tags: (repository) => commits.tags(repository),
-    // The registry's own list of a package's versions, read anonymously.
-    async versions(name) {
-      const path = name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name);
-      const answer = await tools.retry(async () => {
-        const response = await fetch(`https://registry.npmjs.org/${path}`, {
-          headers: { accept: 'application/vnd.npm.install-v1+json' },
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (!response.ok) throw new Error(`the registry answered ${response.status} for ${name}`);
-        return (await response.json()) as { versions?: unknown };
+    async diff() {
+      const { raw, files } = await commits.diff();
+      head = {};
+      const sides = files.map((file) => {
+        if (file.path !== LOCKFILE && file.path !== MANIFEST) return file;
+        (head as Record<string, string>)[file.path] = file.after;
+        return { path: file.path, before: file.before };
       });
-      if (!answer.versions || typeof answer.versions !== 'object') throw new Error(`the registry lists no ${name}`);
-      return Object.keys(answer.versions);
+      return { raw, files: sides };
     },
+    async head() {
+      if (!head) throw new Error('the head is read after the diff');
+      if (headRead) throw new Error('the head is read once');
+      headRead = true;
+      return head;
+    },
+    tags: (repository) => commits.tags(repository),
     // The pin step's own derivation (apps/runner/src/pins.ts), on a checkout of the base alone, by the pin step's pnpm,
-    // with no secret in its environment and a home of its own: the base's package.json and pnpm-workspace.yaml, its
-    // .npmrc moved aside as the pin step moves it, and the registry on the command line.
+    // with no secret in its environment and a home of its own, git's too: the base's package.json and
+    // pnpm-workspace.yaml, its .npmrc moved aside as the pin step moves it, and the registry on the command line.
     async derive(move) {
-      const [repo, dir, aside, home] = ['derive-repo', 'derive', 'aside', 'home'].map((d) => join(work, d)) as string[];
-      for (const d of [repo, aside, home]) mkdirSync(d as string);
+      const at = join(work, `derive-${++derivations}`);
+      const [repo, dir, aside, home] = ['repo', 'base', 'aside', 'home'].map((d) => join(at, d)) as string[];
+      for (const d of [at, repo, aside, home]) mkdirSync(d as string);
+      const pnpm = await pinnedPnpm();
+      const env = { PATH: `${dirname(pnpm)}:${process.env.PATH ?? ''}`, HOME: home as string };
+      const git = cleanGit(env);
       await git(repo as string, 'init', '--quiet');
       await git(
         repo as string,
@@ -162,8 +193,6 @@ export async function realCriticalFixIO(
         options.base,
       );
       await git(repo as string, 'worktree', 'add', '--quiet', '--detach', dir as string, options.base);
-      const pnpm = await pinnedPnpm();
-      const env = { PATH: `${dirname(pnpm)}:${process.env.PATH ?? ''}`, HOME: home as string };
       await writePins(dir as string, move, { pnpm: pnpmIn(env), get: fetch, aside: aside as string });
       await git(dir as string, 'add', '--all');
       const changed = await git(dir as string, 'diff', '--cached', '--name-only', '--no-renames', '-z');

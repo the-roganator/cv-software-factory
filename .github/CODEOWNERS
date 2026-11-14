@@ -11,6 +11,16 @@
 /scripts/pin-move*.ts        @mrogan
 # A Critical fix's proof, its readers, the job that runs it and its tests
 /scripts/critical-fix*.ts    @mrogan
+# What that proof runs beyond its own files: the pin step that writes the lockfile it compares, with its git and the pnpm
+# it installs, and the daily scan's code that chooses the move's target and reads the scans
+/apps/runner/src/pins.ts                        @mrogan
+/apps/runner/src/git.ts                         @mrogan
+/apps/runner/scripts/install-pnpm.ts            @mrogan
+/apps/factory/src/vulnerabilities/deadlines.ts  @mrogan
+/apps/factory/src/vulnerabilities/moves.ts      @mrogan
+/apps/factory/src/vulnerabilities/scan.ts       @mrogan
+/apps/factory/src/vulnerabilities/node.ts       @mrogan
+/apps/factory/src/vulnerabilities/trivy-pin.ts  @mrogan
 /scripts/copilot-held-runs.ts @mrogan
 /AGENTS.md                   @mrogan
 

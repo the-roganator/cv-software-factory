@@ -127,7 +127,7 @@ const passedGates = (): Run[] =>
   }));
 
 function io(lock: string): CriticalFixIO {
-  return {
+  const fake: CriticalFixIO = {
     diff: async () => ({
       raw: ':100644 100644 1111111 2222222 M\tpnpm-lock.yaml',
       files: [{ path: 'pnpm-lock.yaml', before: LOCK, after: lock }],
@@ -144,13 +144,21 @@ function io(lock: string): CriticalFixIO {
     runs: async () => passedGates(),
     // Changed from the read: the registry's manifests are no longer read. The registry lists protobufjs's versions,
     // and the pin step's derivation of protobufjs 7.6.4 to 7.6.6 on the base writes the honest fix's lockfile.
-    versions: async (name) => (name === 'protobufjs' ? ['7.6.4', '7.6.5', '7.6.6', '8.0.0'] : []),
+    // Changed again: the registry's versions are no longer read; the move's target is the gate's, the same 7.6.6.
     derive: async (move) => {
       if (`${move.name}@${move.from}>${move.to}` !== 'protobufjs@7.6.4>7.6.6') throw new Error('no such move');
       return { 'pnpm-lock.yaml': FIXED_LOCK };
     },
+    // Changed from the read: the head's lockfile and manifest are read by a reader of their own, from the same files.
+    head: async () =>
+      Object.fromEntries(
+        (await fake.diff()).files
+          .filter((f) => f.path === 'pnpm-lock.yaml' || f.path === 'package.json')
+          .map((f) => [f.path, f.after as string]),
+      ),
     required: async () => [...Object.keys(APP_GATES), 'review'],
   };
+  return fake;
 }
 
 const said = async (lock: string) => {

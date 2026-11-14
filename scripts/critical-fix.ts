@@ -9,10 +9,12 @@
  *    changes is one of the app's pins, modified in place, regular, with its mode: `pnpm-lock.yaml` and `package.json`;
  *    the `Dockerfile`'s `FROM` lines, each its image's tag and digest alone, in the same repository; `mise.toml`'s Node,
  *    with its entry in `mise.lock` (the version, the checksums and nodejs.org's download URLs for that version), forward
- *    on its major. A package's move is never read from the head's lockfile: the gate works out the move (`theMove`: a
- *    package its scanner rates Critical in the base's lockfile, and the version the head gives it, two words, checked),
- *    writes the lockfile for it on the base with the pin step's own code and pnpm (`CriticalFixIO.derive`), and passes
- *    only a head whose `pnpm-lock.yaml` and `package.json` are those bytes (`asDerived`).
+ *    on its major. A package's move is the gate's alone, and nothing of it is read from the head (`movesOf`): a package
+ *    its scanner rates Critical in the base's lockfile, and the target the daily scan gives it from the same findings,
+ *    every finding of that package, by the scan's own functions (`firstFixed`, `furthest`). The gate writes the lockfile
+ *    for that move on the base with the pin step's own code and pnpm (`CriticalFixIO.derive`), and passes only a head
+ *    whose `pnpm-lock.yaml` and `package.json` are those bytes (`asDerived`): the head's are read once (`head`), to be
+ *    compared, and no other way.
  * 2. **Forward on its line.** Each `FROM` it moves is the same tag at its index digest now, or the newest tag on its line
  *    at its index digest now (`imageForward`, as a pin move's), never a major and never back.
  * 3. **The scans show the fix.** The gate's pinned Trivy, on a fresh database, on the lockfile at both sides and on each
@@ -36,12 +38,15 @@
  *
  * It trusts nothing the pull request says of itself (its title, label, description, branch or advisory): the fix is
  * read from the gate's own scans of its two commits, and the code that reads them is main's. Its head is data: no
- * line of it is run, built or installed, and only a package's name and a version cross from it into what runs, pnpm
- * on the base. A fact that could not be read holds.
+ * line of it is run, built or installed, and nothing of it crosses into what runs, pnpm on the base. A fact that could
+ * not be read holds.
  */
 
+import { firstFixed } from '../apps/factory/src/vulnerabilities/deadlines.ts';
+import type { Target as ScanTarget } from '../apps/factory/src/vulnerabilities/fixes.ts';
+import { furthest } from '../apps/factory/src/vulnerabilities/moves.ts';
 import { repositoryOf } from '../apps/factory/src/vulnerabilities/scan.ts';
-import { compareVersions, lockedVersions, type Move, PinsHeld, PinsRefused } from '../apps/runner/src/pins.ts';
+import { compareVersions, type Move, PinsHeld, PinsRefused } from '../apps/runner/src/pins.ts';
 import { compareIn } from './critical-fix-versions.ts';
 import { imageForward } from './pin-move-forward.ts';
 import { ACTIONS, type Run } from './pin-move-ran.ts';
@@ -72,18 +77,30 @@ export interface Scan {
   node?: string;
 }
 
+/**
+ * A file the change modifies: its text at main's tip, and at the merge but for `pnpm-lock.yaml` and `package.json`,
+ * whose head is read by `head` alone.
+ */
+export type Side = Omit<Rewritten, 'after'> & { after?: string };
+
 /** Everything the rule reads, so the tests give it answers instead. Each may throw: a fact not read holds. */
 export interface CriticalFixIO {
-  /** The change from main's tip to the merge: git's `--raw` list, and each modified file's text at both commits. */
-  diff(): Promise<{ raw: string; files: Rewritten[] }>;
+  /**
+   * The change from main's tip to the merge: git's `--raw` list, and each modified file's text at both commits, the
+   * lockfile's and the manifest's at main's tip alone.
+   */
+  diff(): Promise<{ raw: string; files: Side[] }>;
+  /**
+   * The head's `pnpm-lock.yaml` and `package.json`, those of the two the change modifies: the only bytes of a package's
+   * move the gate takes from the head, read once, and compared with its own (`asDerived`), never read to decide.
+   */
+  head(): Promise<Record<string, string>>;
   /** The pinned Trivy's scan of a lockfile's text; throws when it cannot read it whole. */
   lockfile(text: string): Promise<Scan>;
   /** The pinned Trivy's scan of an image on one platform; throws when it cannot pull or read it. */
   image(reference: string, platform: string): Promise<Scan>;
   /** Node's own advisories that a Node version has, from Node's database, as the daily scan reads them. */
   node(version: string): Promise<Finding[]>;
-  /** The versions the registry publishes of a package. */
-  versions(name: string): Promise<string[]>;
   /**
    * The pin step's own derivation of a move on the base (`writePins`, apps/runner/src/pins.ts, run by the same pnpm):
    * each file it changes, with the text it writes. Throws `PinsRefused` or `PinsHeld` where the pin step would.
@@ -135,9 +152,9 @@ const sev = (severity: string) => severity.toUpperCase();
 
 /** The pins the change writes, read from its files' text. */
 export interface Pins {
-  /** The lockfile and the manifest, each as text: proved only by being what the gate writes itself (`asDerived`). */
-  lockfile?: { before: string; after: string };
-  manifest?: { before: string; after: string };
+  /** The lockfile and the manifest at main's tip: the head's are proved only by being what the gate writes (`asDerived`). */
+  lockfile?: { before: string };
+  manifest?: { before: string };
   /** Each `FROM` the Dockerfile moves, by line, and how many `FROM` lines it has. */
   images: { line: number; from: string; to: string }[];
   froms: number;
@@ -249,7 +266,7 @@ export function miseLockNode(before: string, after: string): { from: string; to:
 }
 
 /** The pins a change writes, or why it is not a change of pins alone. */
-export function pinsOnly(raw: string, files: readonly Rewritten[]): Pins | Reason {
+export function pinsOnly(raw: string, files: readonly Side[]): Pins | Reason {
   const entries = raw.split('\n').filter((line) => line.startsWith(':'));
   if (!entries.length) return no('it changes no file');
   const pins: Pins = { images: [], froms: 0 };
@@ -264,15 +281,25 @@ export function pinsOnly(raw: string, files: readonly Rewritten[]): Pins | Reaso
       return no(`${path} changes its mode, or is not a regular file`);
     const file = files.find((f) => f.path === path);
     if (!file) return no(`the gate did not read ${path} at both commits`);
-    if (file.before.includes('\0') || file.after.includes('\0')) return no(`${path} is binary`);
-    if (path === LOCKFILE) pins.lockfile = { before: file.before, after: file.after };
-    else if (path === MANIFEST) pins.manifest = { before: file.before, after: file.after };
-    else if (path === DOCKERFILE) {
-      const moved = dockerfileMoves(file.before, file.after);
+    if (file.before.includes('\0')) return no(`${path} is binary`);
+    // The head's lockfile and manifest are not read here: they are compared, whole, with the gate's own (`asDerived`).
+    if (path === LOCKFILE) {
+      pins.lockfile = { before: file.before };
+      continue;
+    }
+    if (path === MANIFEST) {
+      pins.manifest = { before: file.before };
+      continue;
+    }
+    const after = file.after;
+    if (after === undefined) return no(`the gate did not read ${path} at both commits`);
+    if (after.includes('\0')) return no(`${path} is binary`);
+    if (path === DOCKERFILE) {
+      const moved = dockerfileMoves(file.before, after);
       if ('reason' in moved) return moved;
       Object.assign(pins, moved);
     } else {
-      const moved = path === MISE ? miseNode(file.before, file.after) : miseLockNode(file.before, file.after);
+      const moved = path === MISE ? miseNode(file.before, after) : miseLockNode(file.before, after);
       if ('reason' in moved) return moved;
       if (path === MISE) node = moved;
       else locked = moved;
@@ -294,107 +321,62 @@ export function pinsOnly(raw: string, files: readonly Rewritten[]): Pins | Reaso
 /** The hold's words when the head's lockfile is not the gate's own. */
 export const NOT_DERIVED = 'the lockfile is not the one this move writes';
 
-/** A package's move, as the pin step takes one: the words that cross from the head, each checked. */
+/** A package's move, as the pin step takes one: the gate's own, from its scan of the base. */
 export type PackageMove = Move & { ecosystem: 'npm' };
 
-/** A version as the pin step moves to one: numbers, and a prerelease after them, never a build or a range. */
-const MOVE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-/** The fields of package.json whose range pins what is installed, as the pin step moves them. */
-const PINNED = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
-
-/** The range package.json gives a package, where it gives one: a word, read from JSON, never a fact about the graph. */
-function rangeOf(manifest: string | undefined, name: string): string | undefined {
-  if (manifest === undefined) return undefined;
-  let json: Record<string, unknown>;
-  try {
-    json = JSON.parse(manifest) as Record<string, unknown>;
-  } catch {
-    return undefined;
-  }
-  for (const field of PINNED) {
-    const range = record(json[field])[name];
-    if (typeof range === 'string') return range;
-  }
-  return undefined;
-}
-
-const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-
-/** The fixed versions an advisory names on a version's major, as the scanner writes them. */
-const fixesOnMajor = (fixed: string, version: string) =>
-  fixed
-    .split(/[\s,|]+/)
-    .map((v) => v.replace(/^(>=|\^|~|=|v)+/, ''))
-    .filter((v) => VERSION.test(v) && majorOf(v) !== undefined && majorOf(v) === majorOf(version));
+/** The most packages rated Critical in the base whose moves the gate writes, each to compare with the head. */
+export const MOST_MOVES = 5;
 
 /**
- * The one move a package's change makes, worked out by the gate: a package its own scanner rates Critical in the base's
- * lockfile, with a fix, and the version the head gives it, from its manifest's range where that moves and its
- * lockfile's keys where it does not (`lockedVersions`, the pin step's own reading). Only those two words cross from the
- * head, and each is checked here: a version as the pin step takes one, forward, at or above every Critical's fix, never
- * across a major the fix does not need. They steer the derivation and decide nothing: the head passes only if its files
- * are what the derivation writes (`asDerived`).
+ * The moves the gate would make, one for each package its own scanner rates Critical in the base's lockfile, with a
+ * fix: the move the daily scan gives that package, by the scan's own functions on the same findings. Each finding of the
+ * package, at every rating, gives the first fixed version above the copy it was found at (`firstFixed`); the move is
+ * to the furthest of them (`furthest`), which must be one version, on one major, as the pin step moves to one. It
+ * moves from the lowest copy found. Nothing of the head is read: the head passes only if it is, byte for byte, what
+ * one of these moves writes (`asDerived`). A package with no such target says why, in the hold if no other passes.
  */
-export function theMove(
-  was: Scan,
-  lock: { before: string; after: string },
-  manifest?: { before: string; after: string },
-): PackageMove | Reason {
-  const criticals = new Map<string, Finding[]>();
-  for (const f of was.findings)
-    if (sev(f.severity) === 'CRITICAL' && f.fixed && (f.format ?? 'npm') === 'npm')
-      criticals.set(f.pkg, [...(criticals.get(f.pkg) ?? []), f]);
-  const moves = (name: string) =>
-    !same(lockedVersions(lock.before, name), lockedVersions(lock.after, name)) ||
-    rangeOf(manifest?.before, name) !== rangeOf(manifest?.after ?? manifest?.before, name);
-  const moved = [...criticals.keys()].filter(moves);
-  // The scanner's rating alone: a package it rates High, whatever its publisher says, is no Critical's move.
-  const high = was.findings.find((f) => sev(f.severity) === 'HIGH' && f.fixed && moves(f.pkg));
-  if (!moved.length && high)
+export function movesOf(was: Scan): (PackageMove | { name: string; reason: string })[] | Reason {
+  const npm = was.findings.filter((f) => (f.format ?? 'npm') === 'npm');
+  const critical = [...new Set(npm.filter((f) => sev(f.severity) === 'CRITICAL' && f.fixed).map((f) => f.pkg))].sort();
+  if (!critical.length)
     return no(
-      `the scans show no Critical fixed: the worst it fixes is ${high.pkg}'s ${high.id}, which the gate's scanner rates HIGH`,
+      `the scans show no fix: the gate's scanner rates no package Critical, with a fix, in the base's ${LOCKFILE}`,
     );
-  if (!moved.length)
+  if (critical.length > MOST_MOVES)
     return no(
-      `the scans show no fix: it moves no package the gate's scanner rates Critical in the base's ${LOCKFILE}${criticals.size ? ` (${[...criticals.keys()].join(', ')})` : ''}`,
+      `pins only: ${critical.length} packages are Critical in the base's ${LOCKFILE}, more than the ${MOST_MOVES} the gate writes a move for`,
     );
-  if (moved.length > 1) return no(`a group: it moves ${moved.join(' and ')}, each Critical, one move at a time`);
-  const name = moved[0] as string;
-  const findings = criticals.get(name) ?? [];
-  const from = findings.map((f) => f.version).sort(compareVersions)[0] ?? '';
-  const range = rangeOf(manifest?.after, name);
-  let to: string | undefined;
-  if (range !== undefined && range !== rangeOf(manifest?.before, name)) {
-    to = /^[\^~]?(.*)$/.exec(range)?.[1];
-    if (!to || !MOVE_VERSION.test(to))
-      return no(`pins only: ${MANIFEST} gives ${name} ${short(range)}, not a version the pin step moves a range to`);
-  } else {
-    const base = new Set(lockedVersions(lock.before, name));
-    to = lockedVersions(lock.after, name).find((v) => !base.has(v));
-    if (!to) return no(`pins only: the head gives ${name} no version its base does not have`);
-  }
-  if (!MOVE_VERSION.test(from)) return no(`pins only: ${name} is found at ${short(from)}, not a version it moves from`);
-  if (compareVersions(to, from) <= 0) return no(`pins only: ${name} goes from ${from} to ${to}, not forward`);
-  for (const f of findings) {
-    if (!atOrAbove(to, f.fixed as string))
-      return no(`pins only: ${name} ${to} is not at or above ${short(f.fixed as string)}, its fix for ${f.id}`);
-    if (fixesOnMajor(f.fixed as string, from).length && !sameMajor(to, from))
-      return no(`pins only: ${name} goes from ${from} to ${to}, across a major its fix for ${f.id} does not need`);
-  }
-  return { ecosystem: 'npm', name, from, to };
+  return critical.map((name) => {
+    const findings = npm.filter((f) => f.pkg === name);
+    const targets = findings.flatMap((f): ScanTarget[] => {
+      const version = firstFixed(f.version, f.fixed);
+      return version ? [{ kind: 'version', versions: [version] }] : [];
+    });
+    const target = furthest(targets);
+    if (target?.kind !== 'version' || !target.versions.length)
+      return { name, reason: `the scan gives ${name} no version to move to` };
+    if (target.versions.length > 1)
+      return {
+        name,
+        reason: `the scan's fix for ${name} is ${target.versions.join(' and ')}, one on each major, and the pin step moves to one`,
+      };
+    const from = findings.map((f) => f.version).sort(compareVersions)[0] ?? '';
+    return { ecosystem: 'npm', name, from, to: target.versions[0] as string };
+  });
 }
 
 /**
  * Whether the head's lockfile files are, byte for byte, those the pin step's derivation wrote from the base for the
  * move: every one either changes is changed by both, to the same text. A lockfile or manifest of any other kind is no
- * pin (`pinsOnly`), so with this the only lockfile that passes is the gate's own.
+ * pin (`pinsOnly`), so with this the only lockfile that passes is the gate's own. The one place the head's bytes are
+ * read, and only to be compared: past the first difference, they say where it is.
  */
-export function asDerived(files: readonly Rewritten[], derived: Readonly<Record<string, string>>): string | undefined {
-  const head = new Map(files.filter((f) => f.path === LOCKFILE || f.path === MANIFEST).map((f) => [f.path, f.after]));
-  for (const path of new Set([...head.keys(), ...Object.keys(derived)].sort())) {
-    const [ours, theirs] = [derived[path], head.get(path)];
+export function asDerived(
+  head: Readonly<Record<string, string>>,
+  derived: Readonly<Record<string, string>>,
+): string | undefined {
+  for (const path of new Set([...Object.keys(head), ...Object.keys(derived)].sort())) {
+    const [ours, theirs] = [derived[path], head[path]];
     if (ours === undefined) return `the head changes ${path}, and the move does not`;
     if (theirs === undefined) return `the move changes ${path}, and the head does not`;
     if (ours === theirs) continue;
@@ -599,26 +581,38 @@ export async function criticalFix(io: CriticalFixIO, head: string): Promise<Crit
   const targets: Target[] = [];
   let move: PackageMove | undefined;
   if (pins.lockfile) {
-    // The base's scan names the move; the gate writes the lockfile for it; the head passes only as those bytes.
+    // The base's scan names each move the gate would make; it writes the lockfile for each; the head passes only as
+    // the bytes of one. The head's lockfile and manifest are read here, once, and only by `asDerived`.
     const was = await io.lockfile(pins.lockfile.before);
-    const found = theMove(was, pins.lockfile, pins.manifest);
-    if ('reason' in found) return found;
-    move = found;
-    if (!(await io.versions(move.name)).includes(move.to))
-      return no(`pins only: ${move.to} is not a version the registry publishes of ${move.name}`);
-    let derived: Record<string, string>;
-    try {
-      derived = await io.derive(move);
-    } catch (error) {
-      if (!(error instanceof PinsRefused || error instanceof PinsHeld)) throw error;
-      return no(
-        `pins only: ${NOT_DERIVED} (the pin step would not write ${move.name} ${move.to}: ${short(error.message)})`,
-      );
+    const moves = movesOf(was);
+    if ('reason' in moves) return moves;
+    const headBytes = await io.head();
+    const tried: string[] = [];
+    let derived: Record<string, string> | undefined;
+    for (const each of moves) {
+      if ('reason' in each) {
+        tried.push(each.reason);
+        continue;
+      }
+      let written: Record<string, string>;
+      try {
+        written = await io.derive(each);
+      } catch (error) {
+        if (!(error instanceof PinsRefused || error instanceof PinsHeld)) throw error;
+        tried.push(`the pin step would not write ${each.name} ${each.to}: ${short(error.message)}`);
+        continue;
+      }
+      const differs = asDerived(headBytes, written);
+      if (!differs) {
+        [move, derived] = [each, written];
+        break;
+      }
+      tried.push(`for ${each.name} ${each.from} to ${each.to}, ${differs}`);
     }
-    const differs = asDerived(files, derived);
-    if (differs) return no(`pins only: ${NOT_DERIVED} (${differs})`);
-    // The head's lockfile is now the gate's own bytes: the scan reads what pnpm wrote, and no hand shaped.
-    targets.push({ label: LOCKFILE, was, now: await io.lockfile(pins.lockfile.after) });
+    const lockfile = derived?.[LOCKFILE];
+    if (!move || lockfile === undefined) return no(`pins only: ${NOT_DERIVED} (${tried.join('; ')})`);
+    // The head's lockfile is the gate's own bytes: the scan reads those, which pnpm wrote and no hand shaped.
+    targets.push({ label: LOCKFILE, was, now: await io.lockfile(lockfile) });
   }
   const scanned = await Promise.all(
     pins.images.flatMap(({ from, to }) =>

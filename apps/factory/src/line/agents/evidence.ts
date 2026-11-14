@@ -19,6 +19,7 @@ import {
   SECURITY_HEADER_ASKS,
 } from '@software-factory/events';
 import { CANARY_ANY_ROUTE } from '@software-factory/triage/events';
+import { targetWords } from '../moves.ts';
 import { count } from './agent.ts';
 
 /** A sense's signal as an agent sees it: everything but a visitor's report. */
@@ -222,7 +223,7 @@ export function seen(signal: Signal): string[] {
   const symptom = signal.symptom ? `, ${signal.symptom}` : '';
   const { move } = signal;
   const where = move
-    ? `${move.name} (${move.ecosystem}) in ${move.repository}, from ${move.from} to ${move.to}, on ${move.pins.map((pin) => `${pin.file}:${pin.line}`).join(', ')}`
+    ? `${move.name} (${move.ecosystem}) in ${move.repository}, from ${move.from} to ${targetWords(move)}, on ${move.pins.map((pin) => `${pin.file}:${pin.line}`).join(', ')}`
     : signal.route === undefined || signal.route === '*'
       ? signal.sense === 'canary'
         ? CANARY_ANY_ROUTE

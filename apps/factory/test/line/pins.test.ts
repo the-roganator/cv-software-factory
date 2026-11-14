@@ -67,10 +67,15 @@ const planner = () =>
  * criteria the scans and the required checks show, and none a test.
  */
 const GRPC = { name: '@grpc/grpc-js', ecosystem: 'npm' as const, from: '1.14.4', to: '1.14.5' };
-const GRPC_PINS = [
-  'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-    "@grpc/grpc-js": "1.14.4",\n+    "@grpc/grpc-js": "1.14.5",\n',
-  "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1 +1 @@\n-  '@grpc/grpc-js@1.14.4':\n+  '@grpc/grpc-js@1.14.5':\n",
-].join('');
+/** #1036's pins as the pin step wrote them: `~1.14.4` admits the floor, so pnpm took the newest in range, 1.14.7. */
+const grpcPins = (version: string) =>
+  [
+    'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n',
+    `-    "@grpc/grpc-js": "~1.14.4",\n+    "@grpc/grpc-js": "~${version}",\n`,
+    'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1,3 +1,3 @@\n',
+    `       '@grpc/grpc-js':\n-        specifier: ~1.14.4\n-        version: 1.14.4\n+        specifier: ~${version}\n+        version: ${version}\n`,
+  ].join('');
+const GRPC_PINS = grpcPins('1.14.7');
 
 async function grpcTicket(): Promise<string> {
   const workItem = await nextWorkItem(database.as.triage);
@@ -221,12 +226,14 @@ describe('a dependency’s move on the line', () => {
     expect(applied[0]?.args).toMatchObject({ patch: '', pins: GRPC_PINS });
     const { message } = (applied[0]?.args ?? { message: '' }) as { message: string };
     const [title, , note] = message.split('\n');
-    expect(title).toBe('fix(deps): move @grpc/grpc-js to 1.14.5');
+    expect(title).toBe('fix(deps): move @grpc/grpc-js to 1.14.7');
     expect(commitTitle.safeParse(title).success).toBe(true);
-    expect(note).toContain('from 1.14.4 to 1.14.5, in package.json, pnpm-lock.yaml');
+    expect(note).toContain(
+      'from 1.14.4 to 1.14.7, the newest release its range admits at or above 1.14.5, in package.json, pnpm-lock.yaml.',
+    );
     expect(note).not.toMatch(/CVE|GHSA/);
     expect(await payloads(workItem, 'pull-request.pushed')).toEqual([
-      expect.objectContaining({ title: 'fix(deps): move @grpc/grpc-js to 1.14.5', testsFirst: false }),
+      expect.objectContaining({ title: 'fix(deps): move @grpc/grpc-js to 1.14.7', testsFirst: false }),
     ]);
     const [pushed] = await database.as.line<{ actor: string }[]>`
       select actor from events where work_item = ${workItem} and type = 'pull-request.pushed'`;
@@ -267,5 +274,20 @@ describe('a dependency’s move on the line', () => {
     expect(applied).toMatchObject({ patch: '', pins: PINS });
     expect(applied.message).toMatch(/^fix\(deps\): move vitest to 5\.1\.0\n\nThe pin step moved vitest/);
     expect(applied.message).toContain('The coder found nothing more the criteria need of it');
+  });
+
+  it('fails the step, saying why, when the pins resolve the package below the move’s floor, and titles no guess', async () => {
+    const workItem = await grpcTicket();
+    const { pass, github } = line({
+      planner: gatesOnly,
+      coder: () => ({ kind: 'handed-back', handback: handback(CODED, PATCH), pins: grpcPins('1.14.4') }),
+    });
+    await pass();
+    await pass();
+    expect(github.acts.some((a) => a.action === 'applyPatch')).toBe(false);
+    const { failures } = await import('./harness.ts');
+    expect((await failures(workItem))?.failure).toBe(
+      'The pin step’s patch resolves @grpc/grpc-js to 1.14.4, below the move’s 1.14.5',
+    );
   });
 });

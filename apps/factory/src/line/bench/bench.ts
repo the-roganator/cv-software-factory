@@ -46,10 +46,9 @@ import type { Fenced } from '../../runners/scope.ts';
 import { oneRunWorkItem } from '../../runners/smoke.ts';
 import { type AgentDefinition, stepFrom } from '../agents/agent.ts';
 import { type CoderInput, coderInputAfterRefusal, fenceFor } from '../agents/coder.ts';
-import type { Signal } from '../agents/evidence.ts';
 import { AGENTS } from '../agents/index.ts';
 import { LIMITS, type LineAgent } from '../machine.ts';
-import { movesAlone, moveTitle } from '../moves.ts';
+import { movesAlone } from '../moves.ts';
 import { APP_REPOSITORY } from '../worker.ts';
 import type { Fixture, InputOf } from './fixtures.ts';
 
@@ -99,9 +98,9 @@ export interface Benched {
   lockfile?: string;
   /**
    * For a planner's spec of a move: what Build does with it, as the line decides (`movesAlone`). `pins` is the pin
-   * step alone, with no agent and no model call, and the commit the line would title; `coder` runs the coder.
+   * step alone, with no agent and no model call; `coder` runs the coder.
    */
-  build?: { by: 'pins'; title: string } | { by: 'coder' };
+  build?: { by: 'pins' | 'coder' };
   again?: Benched;
 }
 
@@ -204,19 +203,11 @@ export async function bench<A extends LineAgent>(o: BenchOptions<A>): Promise<Be
 
 /** What Build does with a planner's spec of a move, as the line decides it: nothing for any other step. */
 function buildOf(input: unknown, result: Benched['result']): Benched['build'] {
-  const { asked, signals } = input as {
-    asked?: { kind: string; ticket?: { fingerprint: object } };
-    signals?: Signal[];
-  };
+  const { asked } = input as { asked?: { kind: string; ticket?: { fingerprint: object } } };
   const spec = result.fits ? (result.value as { spec?: PayloadOf<'spec.written'> }).spec : undefined;
   if (!spec || asked?.kind !== 'ticket' || !asked.ticket || !('ecosystem' in asked.ticket.fingerprint))
     return undefined;
-  const move = signals?.findLast((signal) => signal.move)?.move;
-  if (!movesAlone(spec)) return { by: 'coder' };
-  return {
-    by: 'pins',
-    title: moveTitle(move ?? { name: (asked.ticket.fingerprint as unknown as { name: string }).name, to: '' }),
-  };
+  return { by: movesAlone(spec) ? 'pins' : 'coder' };
 }
 
 /** The last line the runner printed with a message, as JSON. */

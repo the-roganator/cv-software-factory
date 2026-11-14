@@ -488,6 +488,111 @@ const PINO_PIN = `diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
        atomic-sleep: 1.0.0
 `;
 
+/**
+ * The pin step's move of pino above its floor: the signal asks for 10.4.1 or later, and `^10.4.0` admits 10.4.2, the
+ * newest release past the age rule, which pnpm takes. The integrity is invented.
+ */
+const PINO_ABOVE_PIN = `diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -198,7 +198,7 @@ importers:
+         version: 0.300.0(@opentelemetry/api@1.10.0)
+       pino:
+         specifier: ^10.4.0
+-        version: 10.4.0
++        version: 10.4.2
+     devDependencies:
+       '@biomejs/biome':
+         specifier: ^2.6.3
+@@ -1056,8 +1056,8 @@ packages:
+   pino-std-serializers@7.1.0:
+     resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
+ 
+-  pino@10.4.0:
+-    resolution: {integrity: sha512-bk1ZMTwG/Vymx+zPoa28MhNzucFvXJWp3csrSuxuHPSMeUettaCoQ5Jvg07mtC4JGNpcfTwz41oVCnNgBK9+vA==}
++  pino@10.4.2:
++    resolution: {integrity: sha512-d7Kq2mWv9XpL3sTfR8nYc4ZbHg6uJ1eA0oQxVz5iNyPwMtBkE7rCsDlFhGjU2aOq3bIe9WnXk4YvT6pRm8sLdA==}
+     hasBin: true
+ 
+   postcss@8.5.32:
+@@ -1909,7 +1909,7 @@ snapshots:
+ 
+   pino-std-serializers@7.1.0: {}
+ 
+-  pino@10.4.0:
++  pino@10.4.2:
+     dependencies:
+       '@pinojs/redact': 0.4.0
+       atomic-sleep: 1.0.0
+`;
+
+/** The pino move, and postcss moved as well, which pino's new version does not require. The integrities are invented. */
+const PINO_AND_POSTCSS_PIN = `diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -198,7 +198,7 @@ importers:
+         version: 0.300.0(@opentelemetry/api@1.10.0)
+       pino:
+         specifier: ^10.4.0
+-        version: 10.4.0
++        version: 10.4.1
+     devDependencies:
+       '@biomejs/biome':
+         specifier: ^2.6.3
+@@ -1056,12 +1056,12 @@ packages:
+   pino-std-serializers@7.1.0:
+     resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
+ 
+-  pino@10.4.0:
+-    resolution: {integrity: sha512-bk1ZMTwG/Vymx+zPoa28MhNzucFvXJWp3csrSuxuHPSMeUettaCoQ5Jvg07mtC4JGNpcfTwz41oVCnNgBK9+vA==}
++  pino@10.4.1:
++    resolution: {integrity: sha512-d7Kq2mWv9XpL3sTfR8nYc4ZbHg6uJ1eA0oQxVz5iNyPwMtBkE7rCsDlFhGjU2aOq3bIe9WnXk4YvT6pRm8sLdA==}
+     hasBin: true
+ 
+-  postcss@8.5.32:
+-    resolution: {integrity: sha512-LJlKCCAUFKOuZxipUdYw1NzIITEsPcgyOG9LkvRJvuKj/bRzbuRY0ARXvL0pWGpsZvn8jku+LMep2eU0seHp8g==}
++  postcss@8.5.33:
++    resolution: {integrity: sha512-Qm4tYc8LsVw2RpXn7KfHb3J0aZgEuD6oNi1W9xBvTeSq5rMdPyl0UkGhAcj2zFn4XoVt8LbYmRwEs3iQpKu7dA==}
+     engines: {node: ^10 || ^12 || >=14}
+ 
+   process-warning@5.1.0:
+@@ -1909,7 +1909,7 @@ snapshots:
+ 
+   pino-std-serializers@7.1.0: {}
+ 
+-  pino@10.4.0:
++  pino@10.4.1:
+     dependencies:
+       '@pinojs/redact': 0.4.0
+       atomic-sleep: 1.0.0
+@@ -1923,7 +1923,7 @@ snapshots:
+       sonic-boom: 4.2.1
+       thread-stream: 4.2.0
+ 
+-  postcss@8.5.32:
++  postcss@8.5.33:
+     dependencies:
+       nanoid: 3.3.20
+       picocolors: 1.1.1
+@@ -2045,7 +2045,7 @@ snapshots:
+     dependencies:
+       lightningcss: 1.33.0
+       picomatch: 4.0.7
+-      postcss: 8.5.32
++      postcss: 8.5.33
+       rolldown: 1.2.16
+       tinyglobby: 0.2.17
+     optionalDependencies:
+`;
+
+/** The line's commit message for a move no coder ran on, as `moveTitle` and `moveNote` write it. */
+const lineMoved = (version: string, floor: boolean) =>
+  [
+    `fix(deps): move pino to ${version}`,
+    '',
+    `The pin step moved pino (npm) from 10.4.0 to ${version}${floor ? ', the newest release its range admits at or above 10.4.1,' : ''} in pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.`,
+  ].join('\n');
+
 /** The planner's spec for the pino move, its criteria quoting the signal's lines as its prompt asks. */
 const PINO_SPEC: PayloadOf<'spec.written'> = {
   outcome: 'pino moves from 10.4.0 to 10.4.1, which fixes the scan’s two findings with a fix, and every gate passes.',
@@ -498,6 +603,7 @@ const PINO_SPEC: PayloadOf<'spec.written'> = {
       expect: 'neither finding the move fixes is found',
       from: 'signal 1',
       quote: 'GHSA-9x2c-q4m7-r8vw in pino: high, high by its publisher; fixed in 10.4.1',
+      shownBy: 'gates',
     },
     {
       given: 'the change',
@@ -505,6 +611,7 @@ const PINO_SPEC: PayloadOf<'spec.written'> = {
       expect: 'each passes',
       from: 'signal 1',
       quote: 'pino (npm) in the-roganator/cv-worlds-worst-website, from 10.4.0 to 10.4.1',
+      shownBy: 'gates',
     },
   ],
   scope: ['src/log.ts', 'test/logging.test.ts'],
@@ -1956,6 +2063,40 @@ export const FIXTURES: { [A in LineAgent]: Record<string, Fixture<A>> } = {
     },
   },
   reviewer: {
+    'move-above-floor': {
+      about:
+        'the line’s move of pino, its floor 10.4.1, which the pin step wrote at 10.4.2, the newest its range admits: the pin step’s files are in scope by rule, so one to approve',
+      commit: APP_MAIN,
+      change: { patch: PINO_ABOVE_PIN, message: lineMoved('10.4.2', true) },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PINO_TICKET },
+        signals: PINO_SIGNALS,
+        answers: [],
+        spec: PINO_SPEC,
+        pullRequest: 106,
+        title: 'fix(deps): move pino to 10.4.2',
+        round: 1,
+        move: { ecosystem: 'npm', name: 'pino', from: '10.4.0', to: '10.4.1' },
+      },
+    },
+    'move-and-more': {
+      about:
+        'the line’s move of pino to 10.4.1, with postcss moved as well, which pino’s new version does not require: one to escalate',
+      commit: APP_MAIN,
+      change: { patch: PINO_AND_POSTCSS_PIN, message: lineMoved('10.4.1', false) },
+      input: {
+        workItem: FIXTURE_WORK_ITEM,
+        asked: { kind: 'ticket', ticket: PINO_TICKET },
+        signals: PINO_SIGNALS,
+        answers: [],
+        spec: PINO_SPEC,
+        pullRequest: 107,
+        title: 'fix(deps): move pino to 10.4.1',
+        round: 1,
+        move: { ecosystem: 'npm', name: 'pino', from: '10.4.0', to: '10.4.1' },
+      },
+    },
     'price-fixed': {
       about: "the coder's fix for the wrong price: every criterion met, inside the scope, so one to approve",
       commit: APP_MAIN,

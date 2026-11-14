@@ -74,7 +74,16 @@ import { GitHubWorkerError } from '../../github/worker-client.ts';
 import { type Fenced, fence } from '../../runners/scope.ts';
 import type { Draft } from '../gates.ts';
 import { type GateFailure, needsHold, type Rebuild, unchangedHold, type WorkItemState } from '../machine.ts';
-import { moveNote, moveTitle, type PinnedMove, replacedFor, replacesLine } from '../moves.ts';
+import {
+  moveNote,
+  moveTitle,
+  type PinnedMove,
+  replacedFor,
+  replacesLine,
+  targetWords,
+  UnreadMove,
+  writtenVersion,
+} from '../moves.ts';
 import { answerThreads, cites, type Finding, lineage, threadAnswers } from '../review.ts';
 import {
   answerOf,
@@ -583,7 +592,7 @@ const LOCKFILE =
 const movedLines = ({ move }: CoderInput) =>
   move
     ? [
-        `The line moved ${move.name} (${move.ecosystem}) from ${move.from} to ${move.to} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
+        `The line moved ${move.name} (${move.ecosystem}) from ${move.from} to ${targetWords(move)} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
       ]
     : [];
 
@@ -769,8 +778,16 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       const { move } = input;
       if (patch) throw new StepFailed('The coder said the move is the whole change, but handed back a change');
       if (!pins || !move) throw new StepFailed('The coder said the move is the whole change, but there is no move');
-      title = moveTitle(move);
-      note = moveNote(move, pins, !context.pinned?.alone);
+      // The version the pin step wrote, from its patch: the newest its range admits, at or above the move's floor.
+      let version: string;
+      try {
+        version = writtenVersion(move, pins);
+      } catch (error) {
+        if (error instanceof UnreadMove) throw new StepFailed(error.message);
+        throw error;
+      }
+      title = moveTitle(move.name, version);
+      note = moveNote(move, version, pins, !context.pinned?.alone);
     } else {
       ({ title, note } = result);
       declined = result.declined ?? [];

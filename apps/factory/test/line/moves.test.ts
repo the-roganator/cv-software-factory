@@ -19,6 +19,9 @@ import {
   moveTitle,
   pinChanges,
   replacedPull,
+  targetWords,
+  UnreadMove,
+  writtenVersion,
 } from '../../src/line/moves.ts';
 import {
   CODED,
@@ -143,29 +146,99 @@ describe('a move that needs no coder', () => {
   });
 
   it('is titled by the line within the title’s rule, however long the package’s name or its target', () => {
-    expect(moveTitle({ name: '@grpc/grpc-js', to: '1.14.5' })).toBe('fix(deps): move @grpc/grpc-js to 1.14.5');
-    const long = [
-      { name: '@an-invented-scope/an-invented-package-with-a-long-name', to: '12.34.56-beta.7' },
-      { name: '@a-scope-long-enough-to-crowd-the-title/a-package-name-as-long-as-it-may-be', to: '1.0.0' },
-      { name: `@s/${'p'.repeat(150)}`, to: '1.0.0' },
-      { name: 'node', to: `24.11.1@sha256:${'a'.repeat(64)}` },
+    expect(moveTitle('@grpc/grpc-js', '1.14.7')).toBe('fix(deps): move @grpc/grpc-js to 1.14.7');
+    const long: [string, string][] = [
+      ['@an-invented-scope/an-invented-package-with-a-long-name', '12.34.56-beta.7'],
+      ['@a-scope-long-enough-to-crowd-the-title/a-package-name-as-long-as-it-may-be', '1.0.0'],
+      [`@s/${'p'.repeat(150)}`, '1.0.0'],
+      ['node', `24.11.1@sha256:${'a'.repeat(64)}`],
     ];
-    for (const move of long) {
-      const title = moveTitle(move);
+    for (const [name, version] of long) {
+      const title = moveTitle(name, version);
       expect(commitTitle.safeParse(title).success, title).toBe(true);
       expect(title.length).toBeLessThanOrEqual(80);
     }
-    expect(moveTitle(long[1] as (typeof long)[number])).toBe(
+    expect(moveTitle(...(long[1] as [string, string]))).toBe(
       'fix(deps): move a-package-name-as-long-as-it-may-be to 1.0.0',
     );
   });
 
-  it('is noted by the line with what moved and where, and no advisory', () => {
-    const pins =
-      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1 +1 @@\n-a\n+b\n';
-    const note = moveNote({ name: 'pino', ecosystem: 'npm', from: '10.4.0', to: '10.4.1' }, pins, false);
-    expect(note).toBe(
-      'The pin step moved pino (npm) from 10.4.0 to 10.4.1, in pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
+  /** #1036's pins as the pin step wrote them: `~1.14.4` admits the floor, and pnpm took the newest in range. */
+  const GRPC = { name: '@grpc/grpc-js', ecosystem: 'npm' as const, from: '1.14.4', to: '1.14.5' };
+  const grpcPins = (version: string) =>
+    [
+      'diff --git a/package.json b/package.json',
+      '--- a/package.json',
+      '+++ b/package.json',
+      '@@ -18,3 +18,3 @@',
+      '   "dependencies": {',
+      '-    "@grpc/grpc-js": "~1.14.4",',
+      `+    "@grpc/grpc-js": "~${version}",`,
+      '     "@openfeature/flagd-provider": "^0.18.0",',
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+      '--- a/pnpm-lock.yaml',
+      '+++ b/pnpm-lock.yaml',
+      '@@ -167,5 +167,5 @@ importers:',
+      '   .:',
+      '     dependencies:',
+      "       '@grpc/grpc-js':",
+      '-        specifier: ~1.14.4',
+      '-        version: 1.14.4',
+      `+        specifier: ~${version}`,
+      `+        version: ${version}`,
+      '@@ -287,3 +287,3 @@ packages:',
+      ' ',
+      "-  '@grpc/grpc-js@1.14.4':",
+      `+  '@grpc/grpc-js@${version}':`,
+      ' ',
+      '',
+    ].join('\n');
+
+  it('reads the version the pin step wrote from its patch: the newest in range, at or above the floor', () => {
+    expect(writtenVersion(GRPC, grpcPins('1.14.7'))).toBe('1.14.7');
+    expect(writtenVersion(GRPC, grpcPins('1.14.5'))).toBe('1.14.5');
+    // Below the floor, or nothing the line can read: it never titles a guess.
+    expect(() => writtenVersion(GRPC, grpcPins('1.14.4'))).toThrow(UnreadMove);
+    expect(() => writtenVersion(GRPC, grpcPins('1.14.4'))).toThrow(
+      /resolves @grpc\/grpc-js to 1\.14\.4, below the move’s 1\.14\.5/,
+    );
+    expect(() =>
+      writtenVersion(
+        GRPC,
+        'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n',
+      ),
+    ).toThrow(/names no version of @grpc\/grpc-js/);
+    // Node's and an image's are what the pin step writes.
+    expect(writtenVersion({ ecosystem: 'node', name: 'node', from: '24.11.0', to: '24.11.1' }, '')).toBe('24.11.1');
+  });
+
+  it('reads a package no importer names from the versions its patch adds to the lockfile’s packages', () => {
+    const pins = [
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+      '--- a/pnpm-lock.yaml',
+      '+++ b/pnpm-lock.yaml',
+      '@@ -10,3 +10,3 @@ packages:',
+      ' ',
+      '-  invented-pkg@2.0.0:',
+      '+  invented-pkg@2.0.4:',
+      ' ',
+      '',
+    ].join('\n');
+    expect(writtenVersion({ ecosystem: 'npm', name: 'invented-pkg', from: '2.0.0', to: '2.0.3' }, pins)).toBe('2.0.4');
+  });
+
+  it('says a package’s target as a floor, and Node’s or an image’s as it is, before the pins exist', () => {
+    expect(targetWords({ ecosystem: 'npm', to: '1.14.5' })).toBe('1.14.5 or later');
+    expect(targetWords({ ecosystem: 'node', to: '24.11.1' })).toBe('24.11.1');
+  });
+
+  it('is noted by the line with what moved, to the version written against its floor, and no advisory', () => {
+    const pins = grpcPins('1.14.7');
+    expect(moveNote(GRPC, '1.14.7', pins, false)).toBe(
+      'The pin step moved @grpc/grpc-js (npm) from 1.14.4 to 1.14.7, the newest release its range admits at or above 1.14.5, in package.json, pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
+    );
+    expect(moveNote(GRPC, '1.14.5', pins, true)).toBe(
+      'The pin step moved @grpc/grpc-js (npm) from 1.14.4 to 1.14.5 in package.json, pnpm-lock.yaml. The coder found nothing more the criteria need of it: the move is the whole change.',
     );
   });
 });

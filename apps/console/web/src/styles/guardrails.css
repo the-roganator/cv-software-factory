@@ -149,6 +149,8 @@ html[data-motion="on"] .gr .chev {
   color: var(--attn);
 }
 .reflist .go {
+  /* It ends where the row's age does, short of its chevron, so its last letter stays inside the column. */
+  margin-right: 26px;
   font-size: 12px;
   white-space: nowrap;
   color: var(--text);
@@ -262,6 +264,9 @@ html[data-motion="on"] .gr .chev {
   .reflist > li {
     grid-template-columns: 58px minmax(0, 1fr) auto;
     gap: 8px;
+  }
+  .reflist .go {
+    margin-right: 20px;
   }
   .gr-attack {
     grid-template-columns: 1fr;

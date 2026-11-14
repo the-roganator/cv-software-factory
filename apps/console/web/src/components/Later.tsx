@@ -8,7 +8,67 @@
  * it arrives, and only its failure is its own. A sheet's notice stands over the page, where the sheet would have risen,
  * with Close.
  */
-import { Component, type ReactNode, Suspense, useEffect, useRef } from 'react';
+import {
+  Component,
+  type ComponentType,
+  createElement,
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+
+/** A part whose code arrives in a chunk of its own: `load` asks for it, once, and settles when it came or didn't. */
+export type Chunk<P> = ComponentType<P> & { load: () => Promise<void> };
+
+/**
+ * A part in a chunk of its own, drawn once its code is in. Unlike `lazy`, its code can be asked for before it is drawn
+ * (`load`, or `useChunks` for several), so a part drawn after that never suspends; one drawn before suspends as a
+ * lazy part does. A chunk that never came throws what its fetch failed with as the part draws, which its `Later`
+ * shows as not loaded.
+ *
+ * Parts that arrive together are asked for this way, not left to suspend together under one boundary: Preact, which
+ * runs the console, unmounts the parts parked under a boundary if what is around it draws again while they wait,
+ * counts them as arrived, and draws them again detached from the page, each throwing an error nothing catches.
+ */
+export function chunk<P extends object>(loader: () => Promise<ComponentType<P>>): Chunk<P> {
+  let code: ComponentType<P> | undefined;
+  let failed: { error: unknown } | undefined;
+  let asked: Promise<void> | undefined;
+  const load = () =>
+    (asked ??= loader().then(
+      (loaded) => {
+        code = loaded;
+      },
+      (error: unknown) => {
+        failed = { error };
+      },
+    ));
+  // biome-ignore lint/correctness/noComponentHookFactories: made once for each chunk, at the module's top, as `lazy` makes its part
+  function Part(props: P) {
+    if (failed) throw failed.error;
+    if (!code) throw load();
+    return createElement(code, props);
+  }
+  return Object.assign(Part, { load });
+}
+
+/** Whether every one of these parts' chunks has arrived or failed, asking for them once `now` is true. */
+export function useChunks(parts: readonly { load: () => Promise<void> }[], now: boolean): boolean {
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    if (!now || done) return;
+    let current = true;
+    void Promise.all(parts.map((part) => part.load())).then(() => {
+      if (current) setDone(true);
+    });
+    return () => {
+      current = false;
+    };
+  }, [parts, now, done]);
+  return done;
+}
 
 interface LaterProps {
   /** What the part is, in the notice's words: "Needs you, Controls, Flags, Patching, Guardrails and Spend". */

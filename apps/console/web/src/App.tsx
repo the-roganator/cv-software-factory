@@ -14,7 +14,7 @@ import { Bird } from './components/Bird.tsx';
 import { Canary } from './components/Canary.tsx';
 import { Footer } from './components/Footer.tsx';
 import { Header, LineStatus, Scoreboard } from './components/Header.tsx';
-import { Later, NotLoaded } from './components/Later.tsx';
+import { chunk, Later, NotLoaded, useChunks } from './components/Later.tsx';
 import { Line } from './components/Line.tsx';
 import { LogoSymbols } from './components/Logos.tsx';
 import { PreviewBanner } from './components/Preview.tsx';
@@ -47,19 +47,16 @@ const AuditLog = lazy(() => import('./components/AuditLog.tsx').then((module) =>
  * bottom row, Needs you, and Controls, Flags, the summaries of Patching and Guardrails, and Spend beside it (Controls
  * and Spend from one module and so one chunk, which the settings page shares; the two summaries from another, with
  * Patching's projection). The first view is the header, the intro, the line, the canary and the reel, and its entry
- * chunk carries none of theirs. The bottom row draws once all of its chunks have come, so nothing in it moves as one
- * arrives (`Later`, which says so if a chunk never comes).
+ * chunk carries none of theirs. The bottom row draws once all of its chunks have come or failed, so nothing in it moves
+ * as one arrives (`useChunks`), and a part whose chunk never came says so (`Later`).
  */
-const NeedsYou = lazy(() => import('./components/NeedsYou.tsx').then((module) => ({ default: module.NeedsYou })));
-const Controls = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.Controls })));
-const FlagsPanel = lazy(() => import('./components/Flags.tsx').then((module) => ({ default: module.FlagsPanel })));
-const SpendPanel = lazy(() => import('./components/Controls.tsx').then((module) => ({ default: module.SpendPanel })));
-const PatchingSummary = lazy(() =>
-  import('./components/Summaries.tsx').then((module) => ({ default: module.PatchingSummary })),
-);
-const GuardrailsSummary = lazy(() =>
-  import('./components/Summaries.tsx').then((module) => ({ default: module.GuardrailsSummary })),
-);
+const NeedsYou = chunk(() => import('./components/NeedsYou.tsx').then((module) => module.NeedsYou));
+const Controls = chunk(() => import('./components/Controls.tsx').then((module) => module.Controls));
+const FlagsPanel = chunk(() => import('./components/Flags.tsx').then((module) => module.FlagsPanel));
+const SpendPanel = chunk(() => import('./components/Controls.tsx').then((module) => module.SpendPanel));
+const PatchingSummary = chunk(() => import('./components/Summaries.tsx').then((module) => module.PatchingSummary));
+const GuardrailsSummary = chunk(() => import('./components/Summaries.tsx').then((module) => module.GuardrailsSummary));
+const BOTTOM_ROW = [NeedsYou, Controls, FlagsPanel, SpendPanel, PatchingSummary, GuardrailsSummary] as const;
 
 /** The privacy page's too. */
 const Privacy = lazy(() => import('./components/Privacy.tsx').then((module) => ({ default: module.Privacy })));
@@ -156,6 +153,8 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
   useEffect(() => setReel(n > 0), [n]);
   // The store has answered at least once: an empty one is empty, not loading.
   const settled = source.connection === 'live' || source.connection === 'recorded' || source.events.length > 0;
+  // The bottom row's chunks, asked for once the store has answered; the row draws when each has come or failed.
+  const bottomRow = useChunks(BOTTOM_ROW, settled);
 
   // The reel rests on the latest work item unless the viewer moves it, or asked for one in the address.
   const item = params.get('item');
@@ -385,7 +384,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
           {/* Under the reel, once the store has answered and the first view has shown: the bottom row once its chunks
               have arrived, so nothing above it moves as it does; only the footer under it does. Until then nothing
               holds its place. */}
-          {settled && (
+          {bottomRow && (
             <Later what="Needs you, Controls, Flags, Patching, Guardrails and Spend">
               <section
                 className="bottom"

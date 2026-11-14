@@ -60,17 +60,16 @@ type ScanFinding = Extract<NonNullable<SignalPayload['evidence']>[number], { kin
 
 /**
  * A dependency's signal as anyone may see it: a lockfile move with its package, its versions and its lines withheld,
- * named by its files as `patching.read`'s row is; and every finding without its advisory or its package, and a lockfile
- * move's without the version that fixes it, which would name the package beside the public lockfile.
+ * named by its files as `patching.read`'s row is; and every finding without its advisory, its package, or the versions
+ * that fix it, which name the package to anyone who looks them up (an image's finding is a package inside it).
  */
 function withheldSignal(payload: SignalPayload): SignalPayload {
   const { move } = payload;
   if (!move) return payload;
-  const lockfile = lockfileMove(move);
   const files = [...new Set(move.pins.map((pin) => pin.file))];
   return {
     ...payload,
-    move: lockfile
+    move: lockfileMove(move)
       ? {
           ...move,
           name: `${WITHHELD_PACKAGE} in ${files.map((file) => `\`${file}\``).join(' and ')}`,
@@ -85,8 +84,7 @@ function withheldSignal(payload: SignalPayload): SignalPayload {
           ? {
               ...evidence,
               findings: evidence.findings.map(
-                ({ advisory: _advisory, package: _package, fixed, ...finding }) =>
-                  ({ ...finding, ...(fixed && !lockfile && { fixed }) }) as ScanFinding,
+                ({ advisory: _advisory, package: _package, fixed: _fixed, ...finding }) => finding as ScanFinding,
               ),
             }
           : evidence,
@@ -144,7 +142,7 @@ export const PUBLIC_VIEWS = {
   'attack.finished': redacted,
   'signal.received': (event) => {
     const { report, ...payload } = event.payload;
-    // A dependency's: its findings' advisories and packages, and a lockfile move's package, withheld.
+    // A dependency's: its findings' advisories, packages and fixed versions, and a lockfile move's package, withheld.
     if (payload.move) return redacted({ ...event, payload: withheldSignal(event.payload) });
     if (!report) return redacted(event);
     // A report's summary is replaced as well as its text, so a careless summary cannot quote the report. A planner's

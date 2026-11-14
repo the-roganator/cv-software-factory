@@ -2,7 +2,9 @@ import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { EventType } from '@software-factory/events';
 import { readLogEvents } from '@software-factory/events/log';
+import { publicView } from '@software-factory/events/public';
 import { DiskArtifacts, EventWriter } from '@software-factory/store';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type Database, freshDatabase } from '../../../packages/store/test/database.ts';
@@ -10,6 +12,8 @@ import { endingAt, exportItem, load, play, readLog } from '../src/events.ts';
 
 const SAMPLES = fileURLToPath(new URL('../../../packages/samples/log', import.meta.url));
 const NOW = Date.parse('2026-10-03T12:00:00Z');
+
+type LogEvent = { summary: string; payload: unknown };
 
 let database: Database;
 const artifacts = new DiskArtifacts(mkdtempSync(join(tmpdir(), 'artifacts-')));
@@ -33,6 +37,41 @@ describe('factory events', () => {
     >`select max(ts) as last from events`;
     expect(last.getTime()).toBe(NOW);
     expect(readdirSync(artifacts.dir).length).toBe(result.artifacts);
+  });
+
+  it('loads each sample as a real event is appended: its payload, and the public view the store made of it, the log’s', async () => {
+    // As the previous test loaded them: every sample but #1302.
+    const rows = await database.owner<
+      {
+        id: string;
+        type: EventType;
+        summary: string;
+        payload: unknown;
+        public: { summary: string; payload: unknown };
+      }[]
+    >`select id, type, summary, payload, public from events`;
+    const logged = new Map(
+      readLogEvents(SAMPLES).map((raw) => [(raw as unknown as { id: string }).id, raw as never as LogEvent]),
+    );
+    expect(rows.length).toBe(readLog(SAMPLES, { except: ['1302'] }).length);
+    for (const row of rows) {
+      const log = logged.get(row.id);
+      if (!log) throw new Error(`the store holds ${row.id}, which the log does not`);
+      expect({ summary: row.public.summary, payload: row.public.payload }, `${row.type} ${row.id}`).toEqual({
+        summary: log.summary,
+        payload: log.payload,
+      });
+      const view = publicView(row.type, { summary: row.summary, payload: row.payload, artifacts: [] } as never);
+      expect(row.public.payload).toEqual(view.payload);
+    }
+    // A move withheld until its issue: the store holds #1335's package, and its public views name it only from then.
+    const move = await database.owner<{ type: string; payload: unknown; public: { payload: unknown } }[]>`
+      select type, payload, public from events where work_item = '1335' order by seq`;
+    const disclosed = move.findIndex((row) => row.type === 'issue.opened');
+    expect(disclosed).toBeGreaterThan(0);
+    expect(JSON.stringify(move[0]?.payload)).toContain('@example/parser');
+    for (const row of move.slice(0, disclosed)) expect(JSON.stringify(row.public)).not.toContain('@example/parser');
+    expect(JSON.stringify(move[disclosed]?.public)).toContain('@example/parser');
   });
 
   it('refuses events the store already holds', async () => {

@@ -267,6 +267,28 @@ describe('a move’s disclosure, as its issue opens', () => {
     });
   });
 
+  it('opens no second issue when its record fails: the move stays withheld in public instead', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    let refused = false;
+    const failing = {
+      append: (async (batch: Parameters<typeof events.append>[0]) => {
+        const list = Array.isArray(batch) ? batch : [batch];
+        if (!refused && list.some((e) => e.type === 'issue.opened')) {
+          refused = true;
+          throw new Error('The store refused the append');
+        }
+        return events.append(batch);
+      }) as typeof events.append,
+    };
+    const { pass, github } = line({ planner }, failing);
+    await pass();
+    await pass();
+    expect(refused).toBe(true);
+    expect(github.acts.filter((a) => a.action === 'openIssue')).toHaveLength(1);
+    expect(await types(workItem)).not.toContain('issue.opened');
+    expect(await types(workItem)).toContain('spec.written');
+  });
+
   it('records nothing for a dry run’s issue, which GitHub never had', async () => {
     const workItem = await moveTicket(signal('2.0.1'));
     const { pass, github } = line({ planner });

@@ -515,7 +515,9 @@ describe('the filters, the caption and Show older', () => {
     expect(coder.length).toBeGreaterThan(0);
     expect(coder.every((row) => row.actor === 'coder')).toBe(true);
     const senses = shown(auditView(all, filter({ actor: 'senses' }), END, Number.NEGATIVE_INFINITY));
-    expect(new Set(senses.map((row) => row.actor))).toEqual(new Set(['probe', 'logs', 'metrics', 'canary']));
+    expect(new Set(senses.map((row) => row.actor))).toEqual(
+      new Set(['probe', 'logs', 'metrics', 'canary', 'dependency']),
+    );
     const martin = shown(auditView(all, filter({ actor: 'martin' }), END, Number.NEGATIVE_INFINITY));
     expect(martin.every((row) => row.martin)).toBe(true);
     // Who is in none of the choices still shows under Everyone.

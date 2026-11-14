@@ -24,6 +24,11 @@ export { MERGE_WAITING } from '../test/projection/support.ts';
 
 export const END = Date.parse((JSON.parse(lines.at(-1) ?? '{}') as { ts: string }).ts);
 
+/** #1335, the samples' vulnerable lockfile move: before its issue opened (at 05:13:40), its package withheld. */
+export const MOVE_WITHHELD = Date.parse('2026-10-06T05:13:30Z');
+/** And at the samples' end, named from its issue, its pull request waiting for Martin's merge. */
+export const MOVE_NAMED = END;
+
 const fixtureLog = fileURLToPath(new URL('../test/fixture/log/events.ndjson', import.meta.url));
 const fixtureLines = readFileSync(fixtureLog, 'utf-8').trim().split('\n');
 

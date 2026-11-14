@@ -214,3 +214,32 @@ describe('a move named by its issue', () => {
     });
   });
 });
+
+describe('a disclosed move reopened', () => {
+  it('reads its reopening with the name its issue gave, whichever came first', () => {
+    const reopened = {
+      sense: 'dependency',
+      check: 'the vulnerability scan',
+      move: { name: 'a package', ecosystem: 'npm' },
+      version: 'a'.repeat(40),
+      reason: 'The day’s scan found the move again',
+      dryRun: false,
+    } as const;
+    const issue = {
+      repository: 'the-roganator/cv-worlds-worst-website',
+      number: 78,
+      move: { name: 'left-pad', ecosystem: 'npm' },
+    } as const;
+    const after = work('1503')
+      .open('dependency-update')
+      .add(1, 'issue.opened', 'factory', issue)
+      .add(2, 'work-item.closed', 'factory', { outcome: 'verified', reason: 'Gone from the scan' })
+      .add(3, 'work-item.reopened', 'triage', reopened);
+    expect(foldItem(after.events)?.reopened?.move?.name).toBe('left-pad');
+    const before = work('1504')
+      .open('dependency-update')
+      .add(1, 'work-item.reopened', 'triage', reopened)
+      .add(2, 'issue.opened', 'factory', issue);
+    expect(foldItem(before.events)?.reopened?.move?.name).toBe('left-pad');
+  });
+});

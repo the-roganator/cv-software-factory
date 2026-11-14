@@ -1,12 +1,11 @@
 /**
- * A move's one moment of disclosure, from #1335 beside the samples (`disclosure.ts`): before the line opens its issue,
+ * A move's one moment of disclosure, from the samples' #1335: before the line opens its issue,
  * its card and sheet read “a package” with no versions and link no issue; from `issue.opened` on, they name the
  * package and its versions, and the sheet links the issue as it does the pull request (a sample's names it only).
  * Snapshots are `visual.spec.ts`'s.
  */
 import type { Page } from '@playwright/test';
-import { NAMED_AT, WITHHELD_AT, withTheMove } from './disclosure.ts';
-import { consoleUrl, expect, ready, test, WIDTHS } from './support.ts';
+import { consoleUrl, expect, MOVE_NAMED, MOVE_WITHHELD, ready, test, WIDTHS } from './support.ts';
 
 test.use({ viewport: WIDTHS.desktop });
 
@@ -14,13 +13,12 @@ const facts = (page: Page) => page.getByRole('dialog').locator('.facts-dl');
 const fact = (page: Page, name: string) => facts(page).locator(`dt:text-is("${name}") + dd`);
 
 test('a move’s card and sheet withhold its package until its issue opens', async ({ page }) => {
-  await withTheMove(page);
-  await page.goto(consoleUrl({ item: '1335', at: WITHHELD_AT }));
+  await page.goto(consoleUrl({ item: '1335', at: MOVE_WITHHELD }));
   await ready(page);
   const card = page.locator('.card[data-place="centre"]');
   await expect(card.locator('.pkg .name')).toHaveText('a package');
   await expect(card).not.toContainText('@example/parser');
-  await page.goto(consoleUrl({ item: '1335', sheet: true, at: WITHHELD_AT }));
+  await page.goto(consoleUrl({ item: '1335', sheet: true, at: MOVE_WITHHELD }));
   const sheet = page.getByRole('dialog', { name: /^Move a package in/ });
   await sheet.waitFor();
   await expect(sheet).not.toContainText('@example/parser');
@@ -32,8 +30,7 @@ test('a move’s card and sheet withhold its package until its issue opens', asy
 test('from its issue on, a move’s card and sheet name the package and its versions, and the sheet its issue', async ({
   page,
 }) => {
-  await withTheMove(page);
-  await page.goto(consoleUrl({ item: '1335', sheet: true, at: NAMED_AT }));
+  await page.goto(consoleUrl({ item: '1335', sheet: true, at: MOVE_NAMED }));
   const sheet = page.getByRole('dialog', { name: '@example/parser moves past a critical finding' });
   await sheet.waitFor();
   await expect(facts(page)).toContainText('@example/parser · npm');

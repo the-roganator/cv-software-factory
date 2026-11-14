@@ -127,7 +127,7 @@ test('events from a newer factory are left out, with a note', async ({ page, req
   });
   await page.goto(consoleUrl());
   await expect(page.getByText('One event was written by a newer version of the factory')).toBeVisible();
-  await expect(page.locator('.transport .count')).toHaveText('28 of 28');
+  await expect(page.locator('.transport .count')).toHaveText('29 of 29');
   // The stream carries on after the event left out, so it is never sent, or counted, twice.
   await expect.poll(() => after).toBe(String(last.seq + 1));
 });

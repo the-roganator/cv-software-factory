@@ -443,6 +443,8 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
   let rebuilding = false;
   /** Whether the change has merged since the work item last went back to Plan: a release before it carries nothing. */
   let merged = false;
+  // The move's name as its issue disclosed it, which the events after it are read with.
+  let disclosed: string | undefined;
   for (const event of events) {
     // A look of a canary's background analysis lands every minute and changes nothing of the work item's: its time is
     // not the work item's latest.
@@ -581,6 +583,9 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         if (state.ticket && 'ecosystem' in state.ticket.fingerprint) {
           state.ticket = { ...state.ticket, fingerprint: { ...state.ticket.fingerprint, name: move.name } };
         }
+        disclosed = move.name;
+        if (state.reopened?.move)
+          state.reopened = { ...state.reopened, move: { ...state.reopened.move, name: move.name } };
         break;
       }
       case 'ticket.rated':
@@ -795,7 +800,11 @@ export function foldItem(events: readonly PublicEvent[]): ItemState | undefined 
         state.releaseStopped = false;
         state.versions = { from: undefined, to: undefined, rolledBack: false, stopped: undefined, live: false };
         state.evidence.verified = undefined;
-        state.reopened = { ...event.payload, at: time };
+        state.reopened = {
+          ...event.payload,
+          ...(event.payload.move && disclosed && { move: { ...event.payload.move, name: disclosed } }),
+          at: time,
+        };
         break;
     }
     if (event.type === 'judgement.made') {

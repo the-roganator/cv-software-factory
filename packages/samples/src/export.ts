@@ -6,14 +6,25 @@
  *     node packages/samples/src/export.ts            # write it
  *     node packages/samples/src/export.ts --check    # fail if it is out of date (make check, CI)
  *
- * Every event is validated as the store would validate it, and written as its public view, so the log holds
- * nothing a visitor may not see: no report text, no visitor's key. Each carries the role that would append it.
+ * Every event is validated as the store would validate it, and written as its public view, so events.ndjson holds
+ * nothing a visitor may not see: no report text, no visitor's key, no withheld package. Each carries the role that
+ * would append it. Beside it, log/private.ndjson holds each event's own summary and payload where its public view
+ * changes them, so `make samples` appends a sample as a real event is appended: its payload checked against its
+ * schema, and its public view made at the append, never read from the log. The samples are invented, so the private
+ * half holds nothing private to anyone; the export refuses one that holds anything shaped like a secret or an address.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { PublicEvent } from '@software-factory/events';
-import { EVENTS_FILE, formatLog, writeLogEvents } from '@software-factory/events/log';
-import { publicView } from '@software-factory/events/public';
+import {
+  EVENTS_FILE,
+  formatLog,
+  formatPrivate,
+  PRIVATE_FILE,
+  type PrivateHalf,
+  writeLogEvents,
+} from '@software-factory/events/log';
+import { publicView, redactDeep } from '@software-factory/events/public';
 import { validate } from '@software-factory/events/schemas';
 import { checkRecord, publicKeyOf, REFUSAL_CHECKS_FILE, signedPayloadOf } from '@software-factory/events/signed-check';
 import { ARTIFACTS, LOG } from './captures.ts';
@@ -41,6 +52,31 @@ export function publicSamples(): PublicEvent[] {
   });
 }
 
+/** The secrets the samples make up for the redactor to take out, which a sample's private half may hold. */
+const INVENTED_SECRETS = ['password=hunter2'];
+
+/** An address, a URL with credentials, or anything else that would be real in a sample: none may be in its private half. */
+const REAL = /[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z][a-z0-9+.-]*:\/\/[^\s/]*@/i;
+
+/**
+ * Each sample's own summary and payload where its public view changes them, in the log's order. Refused when one holds
+ * anything the redactor would take out, or an address: invented data has neither.
+ */
+export function privateHalves(): PrivateHalf[] {
+  return sampleEvents().flatMap((event) => {
+    const shown = publicView(event.type, event);
+    const summary = shown.summary === event.summary ? undefined : event.summary;
+    const changed = summary !== undefined || JSON.stringify(shown.payload) !== JSON.stringify(event.payload);
+    if (!changed) return [];
+    const half = { id: event.id, ...(summary !== undefined && { summary }), payload: event.payload };
+    const text = INVENTED_SECRETS.reduce((out, secret) => out.replaceAll(secret, ''), JSON.stringify(half));
+    if (JSON.stringify(redactDeep(JSON.parse(text))) !== text || REAL.test(text)) {
+      throw new Error(`#${event.work_item} ${event.type} holds something a sample may not: ${text.slice(0, 200)}`);
+    }
+    return [half];
+  });
+}
+
 if (import.meta.main) {
   const events = publicSamples();
   const file = join(LOG, EVENTS_FILE);
@@ -57,6 +93,8 @@ if (import.meta.main) {
   );
   const written = new Map<string, Uint8Array | string>([
     [join(LOG, REFUSAL_CHECKS_FILE), `${JSON.stringify(checks, null, 2)}\n`],
+    // Invented, so public as it is: the private half `make samples` loads (above).
+    [join(LOG, PRIVATE_FILE), formatPrivate(privateHalves())],
   ]);
   const same = (path: string, body: Uint8Array | string) =>
     existsSync(path) && Buffer.from(readFileSync(path)).equals(Buffer.from(body));

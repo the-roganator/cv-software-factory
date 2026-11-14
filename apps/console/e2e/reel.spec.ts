@@ -122,7 +122,7 @@ test.describe('the reel', () => {
     await page.clock.resume();
     await expect(page.locator('.reel')).not.toHaveClass(/dragging/);
     // A card and a third to the left, and half a card more for the flick.
-    await expect(page.locator('.transport .count')).toHaveText('26 of 28');
+    await expect(page.locator('.transport .count')).toHaveText('27 of 29');
     await expect(page.locator('.card[data-place="centre"]')).toHaveCount(1);
   });
 
@@ -142,7 +142,7 @@ test.describe('the reel', () => {
   test('brings a neighbour to the centre when it is clicked, and opens the centre card', async ({ page }) => {
     await page.goto(consoleUrl());
     await ready(page);
-    await page.locator('.card[data-index="26"]').click({ position: { x: 300, y: 40 } });
+    await page.locator('.card[data-index="27"]').click({ position: { x: 300, y: 40 } });
     await expect.poll(() => centre(page)).toBe('The second page of search results repeats the first’s last');
     await page.locator('.card[data-place="centre"]').click({ position: { x: 300, y: 40 } });
     await expect(
@@ -342,14 +342,14 @@ test.describe('opening the console', () => {
     await page.goto(consoleUrl({ motion: true }));
     await ready(page);
     const count = page.locator('.transport .count');
-    await expect(count).toHaveText('28 of 28');
+    await expect(count).toHaveText('29 of 29');
     expect((await page.locator('.reel').boundingBox())?.y).toBeGreaterThan(560);
     // Nothing to play the history with.
     await expect(page.locator('.transport').getByRole('button', { name: /play|pause/i })).toHaveCount(0);
 
     await page.locator('.reel').scrollIntoViewIfNeeded();
     await page.clock.runFor(10_000);
-    await expect(count).toHaveText('28 of 28');
+    await expect(count).toHaveText('29 of 29');
   });
 });
 

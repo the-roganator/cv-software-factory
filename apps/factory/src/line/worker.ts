@@ -954,9 +954,11 @@ export class Line {
         const { number: issue, move } = state.request
           ? { number: await this.#openImprovementIssue(workItem), move: undefined }
           : await this.#openIssue(workItem, state);
-        // The issue is the disclosure: recorded before the row names it, so a crash in between opens another and
-        // records that, never an issue the store does not know. A dry run's, which GitHub never had, records nothing;
-        // the line running live opens a real one, and records that.
+        // The row names the issue first, so a pass after a failure here goes on with it and never opens a second
+        // public issue. Then the disclosure is recorded: an append that fails leaves the move withheld in public,
+        // never named. A dry run's issue, which GitHub never had, records nothing; the line running live opens a real
+        // one, and records that.
+        await this.#queue.setIssue(workItem, issue);
         if (issue < DRY_RUN_NUMBERS_FROM) {
           await this.#append(workItem, [
             {
@@ -967,7 +969,6 @@ export class Line {
             },
           ]);
         }
-        await this.#queue.setIssue(workItem, issue);
         this.#o.log.info({ workItem, issue }, 'opened the work item’s issue');
         return;
       }

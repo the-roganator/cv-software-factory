@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buffer } from 'node:stream/consumers';
 import { type NewEvent, type PublicEvent, type RawEvent, upcast } from '@software-factory/events';
-import { logArtifactPath, readLogEvents, writeLogEvents } from '@software-factory/events/log';
+import { logArtifactPath, readLogEvents, readLogPrivate, writeLogEvents } from '@software-factory/events/log';
 import { type ArtifactStore, EventWriter, readPublic, storeKind } from '@software-factory/store';
 import type { Sql } from 'postgres';
 
@@ -17,10 +17,19 @@ export interface Selection {
   except?: string[] | undefined;
 }
 
-/** A log's events, upcast, in order, without the seqs and roles the store will give them afresh. */
+/**
+ * A log's events, upcast, in order, without the seqs and roles the store will give them afresh. A sample log's events
+ * are given back their private summaries and payloads (`private.ndjson`), so the store checks each as it would a real
+ * one and makes its public view itself.
+ */
 export function readLog(dir: string, { only, except }: Selection = {}): NewEvent[] {
+  const halves = readLogPrivate(dir);
   return readLogEvents(dir)
-    .map((raw: RawEvent) => {
+    .map((logged: RawEvent) => {
+      const half = halves.get((logged as RawEvent & { id?: string }).id ?? '');
+      const raw = half
+        ? { ...logged, ...(half.summary !== undefined && { summary: half.summary }), payload: half.payload }
+        : logged;
       const result = upcast(raw);
       if (!result.ok)
         throw new Error(`${dir} holds an event this factory does not understand: ${raw.type} v${raw.version}`);

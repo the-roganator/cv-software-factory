@@ -1,6 +1,5 @@
-import { type PublicEvent, STAGES } from '@software-factory/events';
+import { STAGES } from '@software-factory/events';
 import { describe, expect, it } from 'vitest';
-import { withheldMoveEvents } from '../../../../packages/samples/src/withheld-move.ts';
 import { project, upTo } from '../../web/src/projection/index.ts';
 import { projectSheet } from '../../web/src/projection/sheet.ts';
 import { END, SAMPLES, work } from './support.ts';
@@ -97,7 +96,7 @@ describe('the samples, projected', () => {
     // Build works on another item beside the two it holds: at work, with its beacon lit.
     expect(station('build')).toMatchObject({ status: 'working', beacon: 'needs-you', figure: '2 held' });
     expect(station('gates')).toMatchObject({ status: 'blocked', figure: '1 held' });
-    expect(station('review')).toMatchObject({ status: 'blocked', figure: '2 waiting' });
+    expect(station('review')).toMatchObject({ status: 'blocked', figure: '3 waiting' });
   });
 
   it('say how far each item got, and where it stopped', () => {
@@ -392,12 +391,8 @@ describe('replay', () => {
   });
 });
 
-describe('a move of the app’s lockfile, #1335, beside the samples', () => {
-  // Not one of the samples, which load into a store that refuses a withheld view (`withheld-move.ts`): its public views
-  // after them, opened a minute past their end.
-  const start = END + 60_000;
-  const events = withheldMoveEvents(new Date(start).toISOString(), SAMPLES.at(-1)?.seq ?? 0);
-  const all = [...SAMPLES, ...events] as PublicEvent[];
+describe('the samples’ move of the app’s lockfile, #1335', () => {
+  const events = SAMPLES.filter((e) => e.work_item === '1335');
   const opened = events.find((e) => e.type === 'issue.opened');
   if (!opened) throw new Error('#1335 has no issue opened');
   const at = Date.parse(opened.ts);
@@ -415,12 +410,12 @@ describe('a move of the app’s lockfile, #1335, beside the samples', () => {
   });
 
   it('reads “a package” on its ticket line and its picture until then, and the move named from its issue on', () => {
-    const sheetAt = (t: number) => projectSheet(project(all, t), '1335');
+    const sheetAt = (t: number) => projectSheet(project(SAMPLES, t), '1335');
     const before = sheetAt(at - 1000);
     expect(before?.facts.ticket?.fingerprint).toBe('a package · npm');
     expect(before?.evidence).toMatchObject({ type: 'package', dependency: { name: 'a package', from: '', to: '' } });
     expect(before?.issue).toBeUndefined();
-    const after = sheetAt(start + 15 * 60_000);
+    const after = sheetAt(END);
     expect(after?.facts.ticket?.fingerprint).toBe('@example/parser · npm');
     expect(after?.evidence).toMatchObject({
       type: 'scan',
@@ -429,7 +424,7 @@ describe('a move of the app’s lockfile, #1335, beside the samples', () => {
     expect(after?.issue).toEqual({ repository: 'the-roganator/cv-worlds-worst-website', number: 1336 });
   });
 
-  it('leaves the samples’ #1325 its issue, with no move', () => {
+  it('leaves #1325 its issue, with no move', () => {
     expect(projectSheet(view, '1325')?.issue).toEqual({
       repository: 'the-roganator/cv-worlds-worst-website',
       number: 1333,

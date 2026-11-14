@@ -3,10 +3,12 @@
  * issue from the private payload, the Dependabot pull request named, and the description's figures, each read from
  * the signal, the pull request's diff and the gates' notices, never from an advisory's or a pull request's words.
  */
+import { readFileSync } from 'node:fs';
 import type { PayloadOf } from '@software-factory/events';
 import { nextWorkItem } from '@software-factory/store';
 import { describe, expect, it } from 'vitest';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
+import { joined, type ScanRun } from '../../src/github/scanning.ts';
 import { moveIssue, moveSection, pinChanges, replacedPull } from '../../src/line/moves.ts';
 import { CODED, database, event, events, handback, justOne, line, PATCH, SPEC, withLineStore } from './harness.ts';
 
@@ -41,7 +43,9 @@ const signal = (to: string, advisory = 'GHSA-0000-0000-0001'): PayloadOf<'signal
 });
 
 /** A move's work item, its ticket and its signals, as triage opens and joins them. */
-async function moveTicket(...signals: PayloadOf<'signal.received'>[]): Promise<string> {
+const moveTicket = (...signals: PayloadOf<'signal.received'>[]) => openMove(TICKET, signals);
+
+async function openMove(ticket: PayloadOf<'ticket.opened'>, signals: PayloadOf<'signal.received'>[]): Promise<string> {
   const workItem = await nextWorkItem(database.as.triage);
   await events.append([
     event(
@@ -56,7 +60,7 @@ async function moveTicket(...signals: PayloadOf<'signal.received'>[]): Promise<s
       },
       'triage',
     ),
-    event(workItem, 'ticket.opened', TICKET, 'triage'),
+    event(workItem, 'ticket.opened', ticket, 'triage'),
     ...signals.map((s) => event(workItem, 'signal.received', s, 'triage')),
   ]);
   return workItem;
@@ -449,5 +453,141 @@ describe('an advisory’s words', () => {
       unread: [],
     };
     expect(await prompts([pull])).toEqual(await prompts([]));
+  });
+});
+
+describe('a move’s ticket as triage now rates and reopens it', () => {
+  const SCANNED = 'c'.repeat(40);
+  const RUNNING = `sha256:${'2'.repeat(64)}`;
+
+  /** The move merged and its release promoted, live, on the commit the recorded scan is of. */
+  async function released(workItem: string) {
+    await events.append([
+      event(workItem, 'pull-request.merged', { number: 30, commit: SCANNED, by: 'martin' }, 'martin'),
+    ]);
+    await database.owner`insert into line (work_item, stage, issue) values (${workItem}, 'release', 29)`;
+    const promoted = {
+      release: 'f00dfeed01',
+      version: SCANNED,
+      previous: 'e'.repeat(40),
+      commit: SCANNED,
+      watched: true,
+    };
+    await events.append([
+      event(
+        workItem,
+        'release.started',
+        { ...promoted, dryRun: false, steps: null, image: { digest: RUNNING, signed: true, admitted: true } },
+        'rollouts',
+      ),
+      event(workItem, 'release.promoted', { ...promoted, dryRun: false }, 'rollouts'),
+    ]);
+  }
+
+  it('tells the agents a move’s ticket rated broken after opening degraded as broken, its package from its payload', async () => {
+    const workItem = await openMove({ ...TICKET, severity: 'degraded' }, [signal('2.0.1')]);
+    await events.append([event(workItem, 'ticket.rated', { severity: 'broken', was: 'degraded' }, 'triage')]);
+    await withholdPublic(workItem);
+    const { pass, steps, github } = line({ planner });
+    await pass();
+    const prompt = steps.requests[0]?.prompt ?? '';
+    expect(prompt).toContain(`Plan the move for ticket #${workItem}: Move invented-pkg, in npm.`);
+    expect(prompt).toContain('It is the move of invented-pkg, in npm, to whatever version fixes it.');
+    expect(prompt).toContain('Category security, severity broken.');
+    expect(prompt).not.toContain('a package');
+    const issue = github.acts.find((a) => a.action === 'openIssue')?.args as { body: string };
+    expect(issue.body).toContain('- Severity: broken');
+  });
+
+  it('takes a move’s reopening, naming its move and no route, to the planner’s move prompt', async () => {
+    const workItem = await moveTicket(signal('2.0.1'));
+    await released(workItem);
+    const scan = {
+      kind: 'scan' as const,
+      commit: SCANNED,
+      before: { critical: 0, high: 1, medium: 0, low: 1, unknown: 0 },
+    };
+    await events.append([
+      event(
+        workItem,
+        'verification.finished',
+        {
+          outcome: 'cleared',
+          check: 'vulnerabilities',
+          version: SCANNED,
+          against: 'e'.repeat(40),
+          evidence: { ...scan, after: { critical: 0, high: 0, medium: 0, low: 1, unknown: 0 } },
+          pages: [],
+          dryRun: false,
+        },
+        'factory',
+      ),
+      event(
+        workItem,
+        'work-item.closed',
+        { outcome: 'verified', reason: 'The scan shows none of its findings' },
+        'factory',
+      ),
+    ]);
+    await database.owner`update line set stage = 'ended', moved_at = clock_timestamp() - interval '2 minutes'`;
+    const later = 'd'.repeat(40);
+    await events.append([
+      event(
+        workItem,
+        'work-item.reopened',
+        {
+          sense: 'dependency',
+          check: 'vulnerabilities',
+          move: { name: 'invented-pkg', ecosystem: 'npm' },
+          version: later,
+          reason: 'The day’s scan found the move again',
+          dryRun: false,
+        },
+        'triage',
+      ),
+    ]);
+    const { pass, steps, github } = line({ planner });
+    await pass();
+    expect(github.acts.find((a) => a.action === 'reopenIssue')?.args).toMatchObject({
+      number: 29,
+      comment: expect.stringContaining('on the move of `invented-pkg`, in npm'),
+    });
+    const prompt = steps.requests.at(-1)?.prompt ?? '';
+    expect(steps.requests.at(-1)).toMatchObject({ agent: 'planner', workItem });
+    expect(prompt).toContain('Plan the move for ticket');
+    expect(prompt).toContain(
+      `A move for this ticket was verified in production before, and the scan saw the move again:\n- “vulnerabilities” again on ${later}.`,
+    );
+  });
+
+  it('sends a move the scan still shows back to Plan as persisting, and reopens nothing for the same scan', async () => {
+    const FIXTURES = new URL('../github/fixtures/scanning/', import.meta.url);
+    const fixture = <T>(name: string): T => JSON.parse(readFileSync(new URL(name, FIXTURES), 'utf8')) as T;
+    const run: ScanRun = {
+      id: 42000000001,
+      event: 'schedule',
+      conclusion: 'success',
+      headSha: SCANNED,
+      updatedAt: '2026-11-10T06:20:00Z',
+      url: `https://github.com/${REPO}/actions/runs/42000000001`,
+    };
+    const read = { repository: REPO, run, ...joined(REPO, run, fixture('moves.json'), fixture('alerts.json')) };
+    const scans = { moves: async () => read, carries: async () => false };
+    const workItem = await moveTicket(signal('2.0.1'));
+    await released(workItem);
+    const { pass, steps } = line({ planner }, events, { verify: { scans } });
+    await pass();
+    await pass();
+    await pass();
+    const typed = async (type: string) =>
+      (
+        await database.as.line<{ payload: { outcome?: string } }[]>`
+          select payload from events where work_item = ${workItem} and type = ${type} order by seq`
+      ).map((r) => r.payload);
+    expect(await typed('verification.finished')).toEqual([expect.objectContaining({ outcome: 'persists' })]);
+    expect(await typed('work-item.reopened')).toEqual([]);
+    const prompt = steps.requests.findLast((r) => r.agent === 'planner')?.prompt ?? '';
+    expect(prompt).toContain('the scan of the release still showed a finding');
+    expect(prompt).not.toContain('verified in production before');
   });
 });

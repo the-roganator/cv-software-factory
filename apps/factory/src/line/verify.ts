@@ -257,7 +257,7 @@ function countedBefore(scan: SignalScan): Required<ScanCounts> {
  * the scan on the app's `main`). It waits for a run of the commit the stable Service runs that read the image it runs,
  * by digest; the line holds the work item for Martin once the policy's wait has passed without one (`waitHours`). Then
  * each finding the move's newest signal listed with a fix is looked for among the scan's open findings, by its advisory
- * and its package: one still open and the move persists, which reopens the ticket as any sense's does. None, and the
+ * and its package: one still open and the move persists, which sends it back to Plan as any sense's does. None, and the
  * canary's journeys passed at the release's last step, and it has cleared. Verify reads the scan's findings, never a
  * version's name, and never an advisory's words: the read gives its id alone. It keeps the counts before and after.
  */

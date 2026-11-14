@@ -122,6 +122,7 @@ describe('migrations', () => {
       { version: 48, name: 'session-one-hour' },
       { version: 49, name: 'admin-step-up-ended' },
       { version: 50, name: 'patching' },
+      { version: 51, name: 'patching-sends' },
     ]);
   });
 });

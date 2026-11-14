@@ -83,6 +83,11 @@ export interface MoveFinding {
   installed: string;
   file: string;
   line: number;
+  /**
+   * The versions that fix the advisory, as the message gives them (`fixed in …`), joined by `, `; absent for `no fix
+   * yet`. The advisory's own, of the package: not the move's target, which for an image is the image's.
+   */
+  fixed?: string | undefined;
   /** What fixes it (fixes.ts's text), and the day that was first seen. */
   fix: string;
   firstSeen: string;
@@ -635,6 +640,7 @@ export function joined(
       installed: message.installed,
       file: alert.most_recent_instance?.location?.path ?? '',
       line: alert.most_recent_instance?.location?.start_line ?? 0,
+      ...(message.fixed && { fixed: message.fixed }),
       fix: targetText(message.fix.target),
       firstSeen: dayText(message.fix.day),
     });

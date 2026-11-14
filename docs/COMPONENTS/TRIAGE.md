@@ -67,7 +67,7 @@ A store it cannot reach, such as Postgres restarting, is waited out, not exited 
 
 ## A move
 
-The [dependency sense](PATCHING.md#the-dependency-sense) sends each of the app's moves for the line as a `dependency` signal: the move (its repository, name, ecosystem, from, to and pins) where every other sense names a route, and the scan's findings as evidence. No model judges it, and nothing of it is held: a day's moves arrive together by design, so the [burst](#a-burst) hold does not count this sense, and it reads nothing [triage looks at](#what-a-sense-reads).
+The [dependency sense](PATCHING.md#what-it-sends-triage) sends each of the app's moves for the line as a `dependency` signal: the move (its repository, name, ecosystem, from, to and pins) where every other sense names a route, and the scan's findings as evidence. No model judges it, and nothing of it is held: a day's moves arrive together by design, so the [burst](#a-burst) hold does not count this sense, and it reads nothing [triage looks at](#what-a-sense-reads).
 
 - **One move, one open ticket.** Its fingerprint is the move's name and ecosystem, with no version and no advisory, so every target and finding of one move is one ticket's. A lockfile's move is named by its package, so each package of the lockfile has a ticket of its own.
 - **Its ticket.** A work item of kind `dependency-update`, with its pin (`dependency`: name, ecosystem, from, to, and whether a vulnerability is why), and its ticket, category `security`, whose severity is the policy's reading of the move's worst finding with a fix (`vulnerableSeverity`: High or Critical `broken`, Medium `degraded`, Low `cosmetic`), from the scan's ratings alone. An advisory's words are never read: only a finding's fixed fields.

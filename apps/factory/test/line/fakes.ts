@@ -62,6 +62,12 @@ export class FakeSteps implements Steps {
     const agent = this.#agents[request.agent];
     if (!agent) throw new Error(`No fake ${request.agent}`);
     const answer = await agent(request);
+    // As the runners do for a move that asks for nothing but its pins: the prepare pod's pins, and no agent, no call.
+    if (request.pinsOnly) {
+      if (typeof answer === 'object' && 'kind' in answer && answer.kind === 'held') return { ...answer, job };
+      const pins = typeof answer === 'object' && 'kind' in answer && answer.kind === 'handed-back' ? answer.pins : '';
+      return { kind: 'pinned', job, pins: pins ?? '' };
+    }
     if (answer === 'works on') {
       let stop = () => {};
       await new Promise<void>((resolve) => {

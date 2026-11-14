@@ -508,7 +508,7 @@ describe('validation', () => {
   it('takes where each criterion of a spec comes from and the words it quotes there, and a spec that never said', () => {
     const criterion = { given: 'a price of 600 pence', when: 'it is shown', expect: 'it reads £6.00' };
     const spec = { outcome: 'Prices show two digits of pence.', scope: ['src/money.ts'], risks: [], rollout: 'Ships.' };
-    const written = { ...opened, type: 'spec.written', version: 5, actor: 'planner' };
+    const written = { ...opened, type: 'spec.written', version: 6, actor: 'planner' };
     const quoted = { ...criterion, from: 'signal 1', quote: 'a price is in pounds and two digits of pence' };
     expect(validate({ ...written, payload: { ...spec, criteria: [quoted] } })).toEqual({ ok: true });
     expect(validate({ ...written, payload: { ...spec, criteria: [{ ...quoted, quote: ' ' }] } }).ok).toBe(false);
@@ -517,9 +517,10 @@ describe('validation', () => {
       [2, { ...criterion, from: 'signal 1' }],
       [3, quoted],
       [4, quoted],
+      [5, quoted],
     ] as const) {
       expect(upcast({ type: 'spec.written', version, payload: { ...spec, criteria: [older] } })).toMatchObject({
-        event: { version: 5, payload: { criteria: [older] } },
+        event: { version: 6, payload: { criteria: [older] } },
       });
     }
   });
@@ -532,7 +533,7 @@ describe('validation', () => {
       risks: ['test-loosening'],
       rollout: 'Ships.',
     };
-    const written = { ...opened, type: 'spec.written', version: 5, actor: 'planner' };
+    const written = { ...opened, type: 'spec.written', version: 6, actor: 'planner' };
     const test = { file: 'test/app.test.ts', test: 'files > keeps nothing of the other files' };
     const valid = (contradicts: unknown) => validate({ ...written, payload: { ...spec, contradicts } }).ok;
     expect(validate({ ...written, payload: spec })).toEqual({ ok: true });
@@ -544,7 +545,23 @@ describe('validation', () => {
     expect(valid([{ file: test.file }])).toBe(false);
     expect(upcast({ type: 'spec.written', version: 4, payload: spec })).toEqual({
       ok: true,
-      event: { type: 'spec.written', version: 5, payload: spec },
+      event: { type: 'spec.written', version: 6, payload: spec },
+    });
+  });
+
+  it('takes what shows each criterion of a spec, the gates or a test, and a spec that never said', () => {
+    const criterion = { given: 'the change', when: 'every required check runs on it', expect: 'each passes' };
+    const spec = { outcome: 'The move is in.', scope: ['test/'], risks: ['dependency-change'], rollout: 'Ships.' };
+    const written = { ...opened, type: 'spec.written', version: 6, actor: 'planner' };
+    const shown = (shownBy: unknown) =>
+      validate({ ...written, payload: { ...spec, criteria: [{ ...criterion, shownBy }] } });
+    expect(shown('gates')).toEqual({ ok: true });
+    expect(shown('test')).toEqual({ ok: true });
+    expect(shown('the reviewer').ok).toBe(false);
+    const older = { ...spec, criteria: [criterion] };
+    expect(upcast({ type: 'spec.written', version: 5, payload: older })).toEqual({
+      ok: true,
+      event: { type: 'spec.written', version: 6, payload: older },
     });
   });
 
@@ -566,7 +583,7 @@ describe('validation', () => {
       flag: 'delivery-dates',
       pages: ['/products/blue-mug', '/'],
     };
-    const written = { ...opened, type: 'spec.written', version: 5, actor: 'planner' };
+    const written = { ...opened, type: 'spec.written', version: 6, actor: 'planner' };
     expect(validate({ ...written, payload: spec })).toEqual({ ok: true });
     const refused = (payload: object) => validate({ ...written, payload: { ...spec, ...payload } }).ok;
     expect(refused({ pages: [] })).toBe(false);

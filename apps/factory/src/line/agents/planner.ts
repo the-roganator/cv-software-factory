@@ -347,6 +347,7 @@ const specWithin = (
   sources: Sources,
   improvement: Improvement | undefined,
   shipped: PayloadOf<'spec.written'> | undefined,
+  move: boolean,
 ) =>
   z.preprocess(
     noneContradicted,
@@ -359,6 +360,8 @@ const specWithin = (
       });
       contradictsProblems(spec, protectedPaths, ctx);
       spec.criteria.forEach((criterion, i) => {
+        const shown = shownProblem(criterion.shownBy, move);
+        if (shown) ctx.addIssue({ code: 'custom', path: ['criteria', i, 'shownBy'], message: shown });
         if (!criterion.from) {
           const message = 'a criterion names what in the ticket or the signals asks for it';
           ctx.addIssue({ code: 'custom', path: ['criteria', i, 'from'], message });
@@ -372,6 +375,17 @@ const specWithin = (
       });
     }),
   );
+
+/**
+ * What is wrong with what a criterion says shows it, if anything. A move's criterion says, since the line reads it to
+ * tell a move that needs a coder from one that needs only its pins (`movesAlone`): `gates`, for what the scans and
+ * the required checks show, or `test`, for one the coder writes. Any other spec's criterion is a test's.
+ */
+function shownProblem(shownBy: 'test' | 'gates' | undefined, move: boolean): string | undefined {
+  if (move && !shownBy) return 'a move’s criterion says what shows it: "gates", or "test" for one the coder writes';
+  if (!move && shownBy === 'gates') return 'only a move’s criterion is shown by the gates: a test shows this one';
+  return undefined;
+}
 
 /**
  * Refuses each criterion of a spec written after its last spec's change merged that repeats one of that spec's: those
@@ -591,12 +605,13 @@ export const plannerResult = (
   improvement?: Improvement,
   asks = true,
   shipped?: PayloadOf<'spec.written'>,
+  move = false,
 ) =>
   z
     .discriminatedUnion('verdict', [
       z.strictObject({
         verdict: z.literal('spec'),
-        spec: specWithin(protectedPaths, sources, improvement, shipped),
+        spec: specWithin(protectedPaths, sources, improvement, shipped, move),
         findings,
       }),
       /**
@@ -856,16 +871,17 @@ function movePrompt(input: PlannerInput, ticket: PayloadOf<'ticket.opened'>): st
     'The spec’s criteria are these, each quoting the lines above that ask for it:',
     ...(findings
       ? [
-          '- “the scans no longer show them”: given the change’s lockfile and images, when the scan gates scan them, then none of the findings the move fixes is found; `from` the signal, `quote` a finding’s line, from the advisory’s id on, word for word (one criterion for each finding the move fixes, or one for all of them quoting the move’s line).',
+          '- “the scans no longer show them”: given the change’s lockfile and images, when the scan gates scan them, then none of the findings the move fixes is found; `from` the signal, `quote` a finding’s line, from the advisory’s id on, word for word (one criterion for each finding the move fixes, or one for all of them quoting the move’s line); `shownBy` "gates".',
         ]
       : []),
-    '- “every gate passes”: given the change, when every required check runs on it, then each passes; `from` the signal, `quote` the move’s words in its first line, such as its name and the versions it moves between.',
-    '- Only if the move breaks something the app’s tests must show (an API it uses that the new version changed): a criterion for that, which a test the coder writes shows, quoting the same move’s words.',
-    'The scan gates and the required checks show the first two, not a test of the coder’s.',
+    '- “every gate passes”: given the change, when every required check runs on it, then each passes; `from` the signal, `quote` the move’s words in its first line, such as its name and the versions it moves between; `shownBy` "gates".',
+    '- Only if the move breaks something the app’s tests must show (an API it uses that the new version changed): a criterion for that, which a test the coder writes shows, quoting the same move’s words; `shownBy` "test".',
+    'The scan gates and the required checks show the first two, not a test of the coder’s. `shownBy` says which shows each criterion: when the gates show every one, the line makes the move’s commit from its pins and no coder runs; a criterion shown by a test sends the move to the coder. If the gates fail on the move, the work comes back to the coder, told what failed.',
     '',
     `Then write the result, one of ${asks ? 'three' : 'two'}, each with its \`findings\`:`,
-    '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the coder will be held to:',
+    '1. {"verdict":"spec","spec":{"outcome","criteria":[{"given","when","expect","from","quote","shownBy"}],"scope":[],"contradicts":[],"risks":[],"rollout"},"findings":[{"page","route","text"}]}, the spec the move is held to:',
     ...SPEC_TEMPLATE.map((line) => `   ${line}`),
+    '   Each criterion’s `shownBy` is "gates" or "test", as above.',
     '   Tag `dependency-change` among the risks: the move updates a dependency.',
     `2. {"verdict":"reject","reason"} when the move cannot be made: the target needs a change only Martin can make, such as ${protectedWords(protectedPaths).join(', ')}, or a major the app cannot take without a decision of his. The reason is one or two short sentences for Martin, at most 300 characters.`,
     ...(asks
@@ -1034,6 +1050,7 @@ export const planner = defineAgent<PlannerInput, PlannerResult>({
       input.asked.kind === 'request' ? { flagsTaken: input.flagsTaken ?? [], keeps: input.lastSpec?.flag } : undefined,
       asksMartin(input),
       input.shipped ? input.lastSpec : undefined,
+      input.asked.kind === 'ticket' && isMove(input.asked.ticket),
     ),
   prompt: (input) =>
     input.asked.kind === 'request'

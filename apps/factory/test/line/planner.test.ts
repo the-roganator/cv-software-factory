@@ -223,6 +223,30 @@ describe('an improvement’s spec', () => {
   });
 });
 
+describe('what shows a criterion', () => {
+  const shown = (move: boolean, ...shownBy: ('test' | 'gates' | undefined)[]) =>
+    plannerResult(PROTECTED, SOURCES, undefined, true, undefined, move).safeParse({
+      verdict: 'spec',
+      spec: { ...SPEC, criteria: shownBy.map((by) => ({ ...SPEC.criteria[0], ...(by ? { shownBy: by } : {}) })) },
+    });
+
+  it('is said of each criterion of a move’s spec: the gates, or a test the coder writes', () => {
+    expect(shown(true, 'gates', 'gates').success).toBe(true);
+    expect(shown(true, 'gates', 'test').success).toBe(true);
+    const unsaid = shown(true, 'gates', undefined);
+    expect(unsaid.success).toBe(false);
+    expect(unsaid.error?.issues[0]?.path).toEqual(['spec', 'criteria', 1, 'shownBy']);
+  });
+
+  it('is a test for any other spec’s criterion, never the gates', () => {
+    expect(shown(false, undefined).success).toBe(true);
+    expect(shown(false, 'test').success).toBe(true);
+    const gates = shown(false, 'gates');
+    expect(gates.success).toBe(false);
+    expect(gates.error?.issues[0]?.path).toEqual(['spec', 'criteria', 0, 'shownBy']);
+  });
+});
+
 describe('the planner’s scope', () => {
   it('may name the app’s own files, folders and patterns', () => {
     expect(scoped('src/money.ts', 'test/', 'src/pages/*.ts', 'src/**/*.ts').success).toBe(true);

@@ -4,12 +4,17 @@
  * findings), from the pin step's patch as the pull request carries it, and from the gates' notices: fixed fields the
  * schemas bound to one word each, never an advisory's or a pull request's words, and no model retypes a figure.
  */
-import { ADVISORY_SEVERITIES, type PayloadOf } from '@software-factory/events';
+import { ADVISORY_SEVERITIES, cutTo, type PayloadOf } from '@software-factory/events';
 import { parsePatch } from 'diff';
+// Types only: the factory image holds no runner, so a value from it would fail to load there (`scripts/image-modules.test.ts`).
+import type { Move as PinnedMove } from '../../../runner/src/pins.ts';
 import type { DependencyPull } from '../github/dependabot.ts';
 import { groupMovesTo } from '../github/dependabot.ts';
+import { filesIn } from '../github/patches.ts';
 import type { StepContext } from './agents/agent.ts';
 import type { Signal } from './agents/evidence.ts';
+
+export type { PinnedMove };
 
 type Move = NonNullable<Signal['move']>;
 type Scan = Extract<NonNullable<Signal['evidence']>[number], { kind: 'scan' }>;
@@ -73,6 +78,51 @@ export function moveIssue(
     'The factory is working on it: its move will come as a pull request that refers here. The issue closes when the move is verified in production, by the scan of the release.',
   ].join('\n');
   return { title: own.title, body };
+}
+
+/**
+ * Whether a move's spec asks for nothing but the move: every criterion is shown by the gates (its scans and its
+ * required checks), none by a test, and it contradicts no test. Then Build is the pin step alone: the line makes the
+ * commit from the pin step's patch, titled and noted from the move (`moveTitle`, `moveNote`), and no model is called.
+ * A criterion that does not say what shows it, as none of a version 5 spec's does, is a test's: the coder runs.
+ */
+export const movesAlone = (spec: PayloadOf<'spec.written'>): boolean =>
+  spec.criteria.every((criterion) => criterion.shownBy === 'gates') && !spec.contradicts?.length;
+
+/** The most a commit's title may be, as the coder's and the describer's (`commitTitle`). */
+const TITLE_CHARS = 80;
+
+/**
+ * A move's commit title, the line's own: `fix(deps): move <name> to <version>`, within the title's rule however long
+ * the name or the version. A version too long to fit is left out, then the name's scope, then the name is cut.
+ */
+export function moveTitle(move: Pick<PinnedMove, 'name' | 'to'>): string {
+  const unscoped = move.name.replace(/^@[^/]+\//, '');
+  const said = [
+    `fix(deps): move ${move.name} to ${move.to}`,
+    `fix(deps): move ${move.name}`,
+    `fix(deps): move ${unscoped} to ${move.to}`,
+    `fix(deps): move ${unscoped}`,
+  ].find((title) => title.length <= TITLE_CHARS);
+  return said ?? cutTo(`fix(deps): move ${unscoped}`, TITLE_CHARS);
+}
+
+/**
+ * A move's commit note, the line's own: what moved, between which versions, and which files the pin step wrote, and
+ * why no coder's change is in it. It names no advisory: the issue is where those are disclosed.
+ */
+export function moveNote(move: PinnedMove, pins: string, coder: boolean): string {
+  const files = [...new Set(filesIn(pins).map(({ path }) => path))];
+  const shown = files.length > 6 ? [...files.slice(0, 5), `${files.length - 5} more files`] : files;
+  return cutTo(
+    [
+      `The pin step moved ${move.name} (${move.ecosystem}) from ${move.from} to ${move.to}, in ${shown.join(', ')}.`,
+      coder
+        ? 'The coder found nothing more the criteria need of it: the move is the whole change.'
+        : 'The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
+    ].join(' '),
+    1000,
+  );
 }
 
 /** What a move's issue discloses, as `issue.opened` records it. */

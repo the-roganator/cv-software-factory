@@ -22,7 +22,7 @@ export const VERSIONS = {
   'ticket.rated': 1,
   // Plan and build
   'issue.opened': 1,
-  'spec.written': 5,
+  'spec.written': 6,
   'pull-request.pushed': 3,
   'suggestions.answered': 1,
   'wait.started': 1,

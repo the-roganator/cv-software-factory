@@ -74,7 +74,7 @@ import { GitHubWorkerError } from '../../github/worker-client.ts';
 import { type Fenced, fence } from '../../runners/scope.ts';
 import type { Draft } from '../gates.ts';
 import { type GateFailure, needsHold, type Rebuild, unchangedHold, type WorkItemState } from '../machine.ts';
-import { replacedFor, replacesLine } from '../moves.ts';
+import { moveNote, moveTitle, type PinnedMove, replacedFor, replacesLine } from '../moves.ts';
 import { answerThreads, cites, type Finding, lineage, threadAnswers } from '../review.ts';
 import {
   answerOf,
@@ -124,6 +124,8 @@ export interface CoderInput {
   dropped?: Criterion[] | undefined;
   /** Why the step's last attempt failed, if it did: a result its schema refused, say, which it is not to hand back again. */
   failure?: string | null | undefined;
+  /** The dependency's move the pin step writes before this step, on a first round: the commit the coder builds on. */
+  move?: PinnedMove | undefined;
 }
 
 type Criterion = PayloadOf<'spec.written'>['criteria'][number];
@@ -194,14 +196,19 @@ export function coderResult({
   alone = false,
   title = commitTitle,
   narrowed = false,
+  moved = false,
 }: {
   suggestions?: number;
   alone?: boolean;
   title?: z.ZodType<string>;
   narrowed?: boolean;
+  /** Whether the pin step moves a dependency before the step: then `{"moved": true}` says the move is the whole change. */
+  moved?: boolean;
 } = {}) {
   return z
     .union([
+      /** The move the pin step wrote is the whole change: the line titles and notes it, and the coder changes nothing. */
+      ...(moved ? [z.strictObject({ moved: z.literal(true) })] : []),
       z.strictObject({
         /** The pull request's title, and its commit's headline, as a Conventional Commit: a fix's, or an improvement's. */
         title,
@@ -228,7 +235,8 @@ export function coderResult({
       // The branch still holds the work of criteria the spec no longer has: a round that leaves it there is not done.
       if (narrowed && !('title' in result) && !('needs' in result && result.needs?.length)) {
         const message = `${NARROWED_REFUSAL}: take their work out, or name the files outside the scope it is in`;
-        ctx.addIssue({ code: 'custom', path: ['unchanged' in result ? 'unchanged' : 'declined'], message });
+        const path = 'unchanged' in result ? 'unchanged' : 'moved' in result ? 'moved' : 'declined';
+        ctx.addIssue({ code: 'custom', path: [path], message });
       }
       // The change is approved: the round is for its suggestions, and declining every one is how it changes nothing.
       if (alone && 'unchanged' in result) {
@@ -252,7 +260,7 @@ export function coderResult({
           ctx.addIssue({ code: 'custom', path, message: `suggestion ${suggestion} is declined twice` });
         }
       });
-      if ('title' in result || 'unchanged' in result) return;
+      if ('title' in result || 'unchanged' in result || 'moved' in result) return;
       if (!alone) {
         const message = 'only a round sent back for suggestions alone may change nothing by declining them';
         ctx.addIssue({ code: 'custom', path: ['declined'], message });
@@ -507,11 +515,12 @@ function first(input: CoderInput): string[] {
     '',
     'Change only what the criteria need. The app is bad on purpose, so you may see other things wrong: leave them, even in a file the scope allows, and mention them in your note. The line refuses a patch that changes any file outside the scope, whole. Leave your changes in the checkout: the line takes them from there.',
     LOCKFILE,
+    ...movedLines(input),
     TEST_INTEGRITY,
     ...contradictedLines(input.spec),
     '',
     ...RESULT,
-    ...(mayChangeNothingAbove(input) ? [] : [NOTHING_TO_FIX]),
+    ...(input.move ? [MOVED] : mayChangeNothingAbove(input) ? [] : [NOTHING_TO_FIX]),
     needsLine(input),
   ];
 }
@@ -555,16 +564,28 @@ function firstImprovement(input: CoderInput): string[] {
   ];
 }
 
+/** How a coder on a dependency's move says the move is the whole change: the line titles and notes it. */
+const MOVED =
+  'If the criteria need nothing of yours beyond the move, change nothing and write exactly {"moved": true} instead, and nothing else: the line titles the move and writes its note itself.';
+
+/** Why a coder that said it changed nothing on a dependency's move is sent back: the move is the change. */
+export const MOVED_UNCHANGED =
+  'The coder said it changed nothing, but the line moved a dependency before its step: if the criteria need nothing more, write exactly {"moved": true}';
+
 /**
  * The coder has no registry, and never writes a lockfile: the pin step does, after its step, from the manifests it
  * changed (`apps/runner/src/pins.ts`), and the fence refuses a patch that changes one.
  */
-/** Why a coder that found nothing to change on a dependency's move is sent back: the move is the change. */
-export const MOVED_UNCHANGED =
-  'The coder said it changed nothing, but the line moved a dependency before its step: hand back a title and a note for the move, with no change of its own';
-
 const LOCKFILE =
-  'Never change a lockfile (pnpm-lock.yaml) or pnpm’s settings (.npmrc, pnpm-workspace.yaml), and do not run pnpm install or pnpm update: there is no registry in reach. If the criteria need a dependency added or moved, change its range in package.json alone, to a version from the npm registry; after your step the line writes the lockfile for it. The line refuses a patch that changes a lockfile, whole. A commit before yours that moves a dependency is the line’s: build on it, and if the criteria need nothing more, hand back a title and a note for it with no change of your own, never that nothing needs changing.';
+  'Never change a lockfile (pnpm-lock.yaml) or pnpm’s settings (.npmrc, pnpm-workspace.yaml), and do not run pnpm install or pnpm update: there is no registry in reach. If the criteria need a dependency added or moved, change its range in package.json alone, to a version from the npm registry; after your step the line writes the lockfile for it. The line refuses a patch that changes a lockfile, whole.';
+
+/** What a coder on a dependency's move is told of it: the line's commit under its own, which it builds on. */
+const movedLines = ({ move }: CoderInput) =>
+  move
+    ? [
+        `The line moved ${move.name} (${move.ecosystem}) from ${move.from} to ${move.to} before your step, in a commit of its own under the checkout: build on it, and never move it back or further.`,
+      ]
+    : [];
 
 /** A later step: why it came back, from review or the gates, from the fence, or both. */
 function again(input: CoderInput): string[] {
@@ -659,7 +680,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
   agent: 'coder',
   maxTurns: 50,
   deadlineSeconds: 30 * 60,
-  input: async ({ workItem, state, round, commit, session, failure, ticket, request, signals, read }) => ({
+  input: async ({ workItem, state, round, commit, session, failure, ticket, request, signals, read, move }) => ({
     workItem,
     asked: await askedOf({ state, ticket, request }),
     signals: await signals(),
@@ -674,6 +695,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     answer: answerOf(state),
     dropped: droppedCriteria(state.builtTo, state.spec),
     failure,
+    move,
   }),
   resume: resumed,
   schema: (input) =>
@@ -682,6 +704,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       alone: suggestionsAlone(input),
       title: titleFor(input.asked),
       narrowed: pressed(input),
+      moved: Boolean(input.move),
     }),
   prompt: (input) => [...(later(input) ? again(input) : first(input)), ...failedLines(input)].join('\n'),
   apply: async (result, handback, input, context) => {
@@ -708,7 +731,7 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       const paths = allowed.map(({ path }) => path).join(', ');
       throw new StepFailed(cutTo(`The coder said it needs ${paths}, which its scope already allows`, 300));
     }
-    if (!('title' in result || 'unchanged' in result || 'declined' in result)) {
+    if (!('title' in result || 'unchanged' in result || 'declined' in result || 'moved' in result)) {
       throw new StepFailed('The coder handed back neither a change nor why it made none');
     }
     if ('unchanged' in result) {
@@ -727,8 +750,8 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     }
     // Declining every suggestion of a round for them alone changes nothing, whether or not it wrote a title and a note.
     if (
-      !('title' in result) ||
-      (!patch && suggestionsAlone(input) && (result.declined?.length ?? 0) === suggestions.length)
+      !('title' in result || 'moved' in result) ||
+      (!patch && 'title' in result && suggestionsAlone(input) && (result.declined?.length ?? 0) === suggestions.length)
     ) {
       if (patch) throw new StepFailed('The coder declined every suggestion, but handed back a change');
       const pullRequest = need(state.pullRequest, 'a pull request').number;
@@ -737,9 +760,23 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       await answerDeclined(context, pullRequest, suggestions, declined);
       return [answeredDraft(pullRequest, suggestions, declined)];
     }
-    const { title, note, declined = [] } = result;
+    // The move alone is the line's to title and note: the pin step's patch, with no change of a model's in it.
+    const pins = context.pinned?.pins;
+    let title: string;
+    let note: string;
+    let declined: Declined = [];
+    if ('moved' in result) {
+      const { move } = input;
+      if (patch) throw new StepFailed('The coder said the move is the whole change, but handed back a change');
+      if (!pins || !move) throw new StepFailed('The coder said the move is the whole change, but there is no move');
+      title = moveTitle(move);
+      note = moveNote(move, pins, !context.pinned?.alone);
+    } else {
+      ({ title, note } = result);
+      declined = result.declined ?? [];
+    }
     // A move the pin step wrote is the change when the criteria need nothing more of the coder's.
-    if (!patch && !context.pinned?.pins) {
+    if (!patch && !pins) {
       // A narrowed round's change that changes nothing is refused as its result would be, so the next attempt is told why.
       if (pressed(input)) throw new StepFailed(`The coder handed back no change, but ${NARROWED_REFUSAL}`);
       throw new StepFailed('The coder handed back no change, and did not say why');
@@ -813,7 +850,9 @@ export const coder = defineAgent<CoderInput, CoderResult>({
       ));
     await context.keepSession(handback.session);
     await answerDeclined(context, number, suggestions, declined);
-    const files = refusing(() => changedFiles(patch));
+    // The push's own files: the pin step's on either side of the coder's, which may have changed none.
+    const lockfile = context.pinned?.lockfile;
+    const files = refusing(() => changedFiles(patch, pins, lockfile));
     // What a merge would bring in, every round together: GitHub's comparison of the new head with main.
     const compared = await context.read('comparison', { base: 'main', head });
     // It may name a file the coder did not write, with a path longer than an event records: that one is cut, and marked.
@@ -821,14 +860,17 @@ export const coder = defineAgent<CoderInput, CoderResult>({
     return [
       {
         type: 'pull-request.pushed',
-        actor: 'coder',
-        summary: `${round > 1 ? `Round ${round}` : 'A fix'} pushed to PR #${number}`,
+        // No agent ran: the line made the move's commit from the pin step's patch.
+        actor: context.pinned?.alone ? 'factory' : 'coder',
+        summary: context.pinned?.alone
+          ? `The move pushed to PR #${number}, with no coder`
+          : `${round > 1 ? `Round ${round}` : 'A fix'} pushed to PR #${number}`,
         payload: {
           number,
           title,
           branch,
           attempt: round,
-          testsFirst: files.some((f) => isTest(f.path)),
+          testsFirst: refusing(() => changedFiles(patch)).some((f) => isTest(f.path)),
           files: files.slice(0, 200),
           whole: whole.slice(0, 200),
         },
@@ -968,14 +1010,18 @@ function pullRequestBody(
 const isTest = (path: string) =>
   /(^|\/)(test|tests|__tests__)\//.test(path) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
 
-/** Each file a patch changes, with the lines it adds and removes. */
-function changedFiles(patch: string): { path: string; added: number; removed: number }[] {
-  return filesIn(patch).map(({ path, patch: file }) => {
-    const lines = file.hunks.flatMap((hunk) => hunk.lines);
-    return {
-      path,
-      added: lines.filter((l) => l.startsWith('+')).length,
-      removed: lines.filter((l) => l.startsWith('-')).length,
-    };
-  });
+/** Each file the patches change, once, with the lines they add and remove. */
+function changedFiles(...patches: (string | undefined)[]): { path: string; added: number; removed: number }[] {
+  const changed = new Map<string, { path: string; added: number; removed: number }>();
+  for (const patch of patches) {
+    if (!patch) continue;
+    for (const { path, patch: file } of filesIn(patch)) {
+      const lines = file.hunks.flatMap((hunk) => hunk.lines);
+      const was = changed.get(path) ?? { path, added: 0, removed: 0 };
+      was.added += lines.filter((l) => l.startsWith('+')).length;
+      was.removed += lines.filter((l) => l.startsWith('-')).length;
+      changed.set(path, was);
+    }
+  }
+  return [...changed.values()];
 }

@@ -10,7 +10,16 @@ import { describe, expect, it } from 'vitest';
 import { DRY_RUN_NUMBERS_FROM } from '../../src/github/actions.ts';
 import type { DependencyPull } from '../../src/github/dependabot.ts';
 import { joined, type ScanRun } from '../../src/github/scanning.ts';
-import { moveIssue, moveSection, pinChanges, replacedPull } from '../../src/line/moves.ts';
+import { commitTitle } from '../../src/line/agents/agent.ts';
+import {
+  moveIssue,
+  moveNote,
+  moveSection,
+  movesAlone,
+  moveTitle,
+  pinChanges,
+  replacedPull,
+} from '../../src/line/moves.ts';
 import {
   CODED,
   database,
@@ -107,11 +116,59 @@ const planner = () =>
           when: 'the scan gates scan it',
           expect: 'the scans no longer show the finding',
           from: 'signal 1',
+          // Shown by a test, so the coder runs, as these tests of the issue and the pull request need.
+          shownBy: 'test',
           quote: 'GHSA-0000-0000-0001 in invented-pkg',
         },
       ],
     },
   });
+
+describe('a move that needs no coder', () => {
+  const criterion = { given: 'the change', when: 'every required check runs on it', expect: 'each passes' };
+  const spec = (...shownBy: ('test' | 'gates' | undefined)[]): PayloadOf<'spec.written'> => ({
+    outcome: 'The move is in.',
+    criteria: shownBy.map((by) => ({ ...criterion, ...(by ? { shownBy: by } : {}) })),
+    scope: ['test/'],
+    risks: ['dependency-change'],
+    rollout: 'Ships as it is.',
+  });
+
+  it('is one whose every criterion the gates show, and that contradicts no test', () => {
+    expect(movesAlone(spec('gates', 'gates', 'gates'))).toBe(true);
+    expect(movesAlone(spec('gates', 'test'))).toBe(false);
+    // A spec written before criteria said what shows them: a test shows each.
+    expect(movesAlone(spec('gates', undefined))).toBe(false);
+    expect(movesAlone({ ...spec('gates'), contradicts: [{ file: 'test/a.test.ts', test: 'a' }] })).toBe(false);
+  });
+
+  it('is titled by the line within the title’s rule, however long the package’s name or its target', () => {
+    expect(moveTitle({ name: '@grpc/grpc-js', to: '1.14.5' })).toBe('fix(deps): move @grpc/grpc-js to 1.14.5');
+    const long = [
+      { name: '@an-invented-scope/an-invented-package-with-a-long-name', to: '12.34.56-beta.7' },
+      { name: '@a-scope-long-enough-to-crowd-the-title/a-package-name-as-long-as-it-may-be', to: '1.0.0' },
+      { name: `@s/${'p'.repeat(150)}`, to: '1.0.0' },
+      { name: 'node', to: `24.11.1@sha256:${'a'.repeat(64)}` },
+    ];
+    for (const move of long) {
+      const title = moveTitle(move);
+      expect(commitTitle.safeParse(title).success, title).toBe(true);
+      expect(title.length).toBeLessThanOrEqual(80);
+    }
+    expect(moveTitle(long[1] as (typeof long)[number])).toBe(
+      'fix(deps): move a-package-name-as-long-as-it-may-be to 1.0.0',
+    );
+  });
+
+  it('is noted by the line with what moved and where, and no advisory', () => {
+    const pins =
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1 +1 @@\n-a\n+b\n';
+    const note = moveNote({ name: 'pino', ecosystem: 'npm', from: '10.4.0', to: '10.4.1' }, pins, false);
+    expect(note).toBe(
+      'The pin step moved pino (npm) from 10.4.0 to 10.4.1, in pnpm-lock.yaml. The spec asks for nothing but the move, which its scans and its required checks show, so no coder ran.',
+    );
+  });
+});
 
 describe('a move’s newest target', () => {
   it('reaches the pin step, and the planner is told only the newest signal', async () => {
@@ -140,7 +197,7 @@ describe('a move’s newest target', () => {
       planner: () =>
         handback({
           verdict: 'spec',
-          spec: { ...SPEC, criteria: [{ ...SPEC.criteria[0], quote: 'Move invented-pkg, in npm' }] },
+          spec: { ...SPEC, criteria: [{ ...SPEC.criteria[0], quote: 'Move invented-pkg, in npm', shownBy: 'test' }] },
         }),
       coder: () => handback(CODED, PATCH),
     });

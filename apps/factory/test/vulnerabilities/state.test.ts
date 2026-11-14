@@ -130,7 +130,7 @@ describe('a state the scan wrote', () => {
 
 describe('the last state kept', () => {
   const runsOf = (event: string) =>
-    `/repos/${REPOSITORY}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=${event}&per_page=20`;
+    `/repos/${REPOSITORY}/actions/workflows/vulnerabilities.yml/runs?branch=main&event=${event}&status=completed&per_page=100`;
   const EVENTS = ['schedule', 'push', 'workflow_dispatch'];
   const run = (id: number, over: Record<string, unknown> = {}) => ({
     id,
@@ -200,6 +200,24 @@ describe('the last state kept', () => {
     expect(await latest(github([run(50)], {}).api, REPOSITORY, 'main')).toBeUndefined();
     const gone = github([run(50)], { 50: [{ id: 5, name: 'state', expired: false }] });
     expect(await latest(gone.api, REPOSITORY, 'main')).toBeUndefined();
+  });
+
+  it('fails on an answer of GitHub’s that is not the list it asked for, and never reads one as no state', async () => {
+    const answers = (runs: unknown, artifacts: unknown): StateApi => ({
+      json: async (path) => (path.includes('/workflows/') ? runs : artifacts),
+      bytes: async () => undefined,
+    });
+    await expect(latest(answers({ message: 'Not Found' }, {}), REPOSITORY, 'main')).rejects.toThrow(
+      "GitHub answered the scan's runs with something other than a list",
+    );
+    await expect(latest(answers(null, {}), REPOSITORY, 'main')).rejects.toThrow('something other than a list');
+    await expect(
+      latest(answers({ workflow_runs: [run(50)] }, { artifacts: 'none' }), REPOSITORY, 'main'),
+    ).rejects.toThrow("GitHub answered the scan's artifacts with something other than a list");
+    // A run GitHub gives no id is passed over, as one that is not the scan's is.
+    expect(
+      await latest(answers({ workflow_runs: [null, { event: 'schedule' }] }, { artifacts: [] }), REPOSITORY, 'main'),
+    ).toBeUndefined();
   });
 
   it('opens the one file of the archive for the run it was on, and refuses any other archive', () => {

@@ -186,8 +186,8 @@ export interface StateApi {
   bytes(path: string): Promise<Buffer | undefined>;
 }
 
-/** The most runs of each event looked through for the last that kept a state. */
-const RUNS_PER_EVENT = 20;
+/** The most runs of each event looked through for the last that kept a state: the most GitHub gives in a page. */
+const RUNS_PER_EVENT = 100;
 
 interface Runs {
   workflow_runs?: {
@@ -209,7 +209,7 @@ export interface Kept {
 
 /**
  * The newest state a run of the scan kept, sealed still: from the scan's own workflow's runs on the default branch,
- * by schedule, push or hand and from the repository itself, before the run given (its own), newest first. Each event's
+ * by schedule, push or hand and from the repository itself, finished, before the run given (its own), newest first. Each event's
  * runs are asked for by that event, so no pull request's run, a fork's from a branch of the same name among them,
  * takes a place among those looked through. Undefined when none of them kept one that is still there.
  */
@@ -221,15 +221,18 @@ export async function latest(
 ): Promise<Kept | undefined> {
   const lists = await Promise.all(
     SCAN_EVENTS.map(async (event) => {
-      const path = `/repos/${repository}/actions/workflows/${SCAN_WORKFLOW}/runs?branch=${encodeURIComponent(branch)}&event=${event}&per_page=${RUNS_PER_EVENT}`;
-      return ((await api.json(path)) as Runs).workflow_runs ?? [];
+      const path = `/repos/${repository}/actions/workflows/${SCAN_WORKFLOW}/runs?branch=${encodeURIComponent(branch)}&event=${event}&status=completed&per_page=${RUNS_PER_EVENT}`;
+      return listOf(((await api.json(path)) as Runs | null)?.workflow_runs, 'runs');
     }),
   );
   const runs = lists
     .flat()
     .filter(
       (run): run is typeof run & { id: number } =>
+        typeof run === 'object' &&
+        run !== null &&
         typeof run.id === 'number' &&
+        Number.isSafeInteger(run.id) &&
         SCAN_EVENTS.includes(run.event ?? '') &&
         run.head_branch === branch &&
         run.head_repository?.full_name === repository &&
@@ -239,14 +242,22 @@ export async function latest(
   for (const run of runs) {
     const listed = (await api.json(
       `/repos/${repository}/actions/runs/${run.id}/artifacts?name=${STATE_ARTIFACT}&per_page=10`,
-    )) as Artifacts;
-    const artifact = listed.artifacts?.find((each) => each.name === STATE_ARTIFACT && !each.expired);
+    )) as Artifacts | null;
+    const artifact = listOf(listed?.artifacts, 'artifacts').find(
+      (each) => typeof each === 'object' && each !== null && each.name === STATE_ARTIFACT && !each.expired,
+    );
     if (typeof artifact?.id !== 'number') continue;
     if ((artifact.size_in_bytes ?? 0) > MAX_SEALED_BYTES) throw new StateError(`run ${run.id}'s state is too large`);
     const archive = await api.bytes(`/repos/${repository}/actions/artifacts/${artifact.id}/zip`);
     if (archive) return { run: String(run.id), archive };
   }
   return undefined;
+}
+
+/** A list GitHub answered with, or an error that says it gave none: its answers are held to their shape here. */
+function listOf<T>(list: T[] | undefined, what: string): T[] {
+  if (!Array.isArray(list)) throw new Error(`GitHub answered the scan's ${what} with something other than a list`);
+  return list;
 }
 
 /** A kept state opened: the one file of its archive, for the repository and the run it was on. */

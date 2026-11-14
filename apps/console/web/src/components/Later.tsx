@@ -54,7 +54,10 @@ export function chunk<P extends object>(loader: () => Promise<ComponentType<P>>)
   return Object.assign(Part, { load });
 }
 
-/** Whether every one of these parts' chunks has arrived or failed, asking for them once `now` is true. */
+/**
+ * Whether every one of these parts' chunks has arrived or failed, asking for them once `now` is true. The parts are a
+ * constant of the module's, the same array on every render: once they are in, the answer stays true.
+ */
 export function useChunks(parts: readonly { load: () => Promise<void> }[], now: boolean): boolean {
   const [done, setDone] = useState(false);
   useEffect(() => {

@@ -384,7 +384,7 @@ function Console({ from, admin: signedIn, theme, onTheme: setTheme, motion, onMo
           {/* Under the reel, once the store has answered and the first view has shown: the bottom row once its chunks
               have arrived, so nothing above it moves as it does; only the footer under it does. Until then nothing
               holds its place. */}
-          {bottomRow && (
+          {settled && bottomRow && (
             <Later what="Needs you, Controls, Flags, Patching, Guardrails and Spend">
               <section
                 className="bottom"

@@ -3,7 +3,7 @@
  * standing in for the server's answer.
  */
 import { AxeBuilder } from '@axe-core/playwright';
-import type { Page } from '@playwright/test';
+import type { Page, Route } from '@playwright/test';
 import { consoleUrl, emptyStore, expect, test } from './support.ts';
 
 const noFindings = async (page: Page) =>
@@ -99,6 +99,20 @@ test('a dropped connection keeps the page, and says when it dropped', async ({ p
   await expect(page.getByRole('status').filter({ hasText: 'The connection to the factory dropped at' })).toBeVisible();
   await expect(page.locator('header .status')).toHaveText('Reconnecting');
   await expect(page.locator('.card[data-place="centre"]')).toBeVisible();
+});
+
+test('an empty store whose connection drops draws no bottom row, as before it answered', async ({ page }) => {
+  await page.route('**/api/events?after=0', (route) => route.fulfill({ json: [] }));
+  const held: Route[] = [];
+  await page.route('**/api/events/stream*', (route) => {
+    held.push(route);
+  });
+  await page.goto(consoleUrl());
+  // The store answered, empty: the bottom row draws once its chunks are in.
+  await expect(page.locator('section.bottom')).toBeVisible();
+  for (const route of held.splice(0)) await route.fulfill({ status: 503, body: '' });
+  await expect(page.locator('header .status')).toHaveText('Reconnecting');
+  await expect(page.locator('section.bottom')).toHaveCount(0);
 });
 
 test('events from a newer factory are left out, with a note', async ({ page, request }) => {

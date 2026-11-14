@@ -360,9 +360,10 @@ export async function keptInEvery(contexts: Iterable<BrowserContext>): Promise<s
 }
 
 /**
- * Every test fails on a policy violation, a request to another origin, an error nothing on the page caught, or
- * anything left on the device but Martin's session cookie, whatever else it checks: in every context and page it opens, its own and popups alike, not only the
- * default page. A context the test closed keeps nothing, so only those still open are read.
+ * Every test fails on a policy violation, a request to another origin, an error nothing on the page caught, or anything
+ * left on the device but Martin's session cookie, whatever else it checks: in every context and page it opens, its own
+ * and popups alike, not only the default page. A context the test closed keeps nothing, so only those still open are
+ * read.
  */
 export const test = base.extend<{ guard: Guard }>({
   guard: [

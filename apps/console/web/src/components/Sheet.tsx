@@ -441,8 +441,12 @@ function Raised({ sheet, index, count, motion, rise, onStep, onClose, app, admin
             {card.reopened && (
               <Fact name="Reopened">
                 {shortWhen(card.reopened.at)} · {card.reopened.sense}, {card.reopened.check} on{' '}
-                {card.reopened.route === '*' ? 'every page' : card.reopened.route} from{' '}
-                {shortVersion(card.reopened.version)}
+                {card.reopened.move
+                  ? `its move, ${card.reopened.move.name}`
+                  : card.reopened.route === '*'
+                    ? 'every page'
+                    : card.reopened.route}{' '}
+                from {shortVersion(card.reopened.version)}
               </Fact>
             )}
             {card.pullRequest && (

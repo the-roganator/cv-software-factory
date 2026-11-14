@@ -133,6 +133,7 @@ import {
   type Stage,
   sameVersion,
   ticketPoints,
+  ticketSeverity,
   touches,
   WORDS_LEAVE_HELD,
 } from '@software-factory/events';
@@ -153,6 +154,7 @@ export type LineEvent = { [K in keyof Payloads]: { type: K; payload: Payloads[K]
 type Payloads = {
   [K in
     | 'ticket.opened'
+    | 'ticket.rated'
     | 'improvement.requested'
     | 'spec.written'
     | 'pull-request.pushed'
@@ -427,6 +429,11 @@ export function fold(events: readonly LineEvent[]): WorkItemState {
     switch (event.type) {
       case 'ticket.opened':
         state.ticket = event.payload;
+        break;
+      // Triage raised the ticket's severity, which only ever rises (`ticketSeverity`).
+      case 'ticket.rated':
+        if (state.ticket)
+          state.ticket = { ...state.ticket, severity: ticketSeverity(state.ticket.severity, [event.payload.severity]) };
         break;
       case 'improvement.requested':
         state.request = event.payload;

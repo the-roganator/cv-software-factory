@@ -299,7 +299,9 @@ export function pinChanges(
   move: Pick<Move, 'name' | 'from' | 'to' | 'pins'>,
   lockfiles: readonly string[],
 ): PinChange[] {
-  const pinned = new Set([...move.pins.map((pin) => pin.file), ...lockfiles]);
+  // The manifests too: the pin step moves a package's range there (`pnpm update` writes it), though a signal that found
+  // the package in a lockfile pins only that.
+  const pinned = new Set([...move.pins.map((pin) => pin.file), ...lockfiles, 'package.json']);
   // Whole words only: `ms` is not in `items` or `@ms/x`, nor 2.1.2 in 12.1.20; a version after `@`, as a lockfile
   // writes it, is.
   const words = [move.name, move.from, move.to].map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
@@ -307,7 +309,8 @@ export function pinChanges(
   const named = (line: string) => pattern.test(line);
   const out: PinChange[] = [];
   for (const file of files) {
-    if (!file.patch || !(pinned.has(file.path) || lockfiles.some((l) => file.path.endsWith(`/${l}`)))) continue;
+    const nested = [...lockfiles, 'package.json'].some((l) => file.path.endsWith(`/${l}`));
+    if (!file.patch || !(pinned.has(file.path) || nested)) continue;
     let hunks: ReturnType<typeof parsePatch>[number]['hunks'];
     try {
       hunks = parsePatch(`--- a/${file.path}\n+++ b/${file.path}\n${file.patch}\n`)[0]?.hunks ?? [];

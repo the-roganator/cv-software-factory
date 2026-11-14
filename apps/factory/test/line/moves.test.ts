@@ -577,6 +577,25 @@ describe('what the line says of a move', () => {
     ]);
   });
 
+  it('takes the manifest’s range of the package too, which the pin step moves though the signal pins only the lockfile', () => {
+    const files = [
+      {
+        path: 'package.json',
+        patch:
+          '@@ -18,3 +18,3 @@\n   "dependencies": {\n-    "@grpc/grpc-js": "~1.14.4",\n+    "@grpc/grpc-js": "~1.14.7",\n     "@openfeature/flagd-provider": "^0.18.0",',
+      },
+      {
+        path: 'pnpm-lock.yaml',
+        patch: "@@ -287,1 +287,1 @@\n-  '@grpc/grpc-js@1.14.4':\n+  '@grpc/grpc-js@1.14.7':",
+      },
+    ];
+    const move = { name: '@grpc/grpc-js', from: '1.14.4', to: '1.14.5', pins: [{ file: 'pnpm-lock.yaml', line: 290 }] };
+    expect(pinChanges(files, move, ['pnpm-lock.yaml'])).toEqual([
+      { file: 'package.json', before: '"@grpc/grpc-js": "~1.14.4",', after: '"@grpc/grpc-js": "~1.14.7",' },
+      { file: 'pnpm-lock.yaml', before: "'@grpc/grpc-js@1.14.4':", after: "'@grpc/grpc-js@1.14.7':" },
+    ]);
+  });
+
   it('writes the spec, the pins and the gates’ counts, with no word of a model’s among the figures', () => {
     const spec = { ...SPEC, risks: ['dependency-change' as const] };
     const section = moveSection(

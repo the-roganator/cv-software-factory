@@ -1,6 +1,6 @@
 {
   "name": "software-factory",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "description": "AI agents and deterministic gates that look after a live web app.",
   "license": "MIT",

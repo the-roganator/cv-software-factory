@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.13.0](https://github.com/the-roganator/cv-software-factory/compare/v0.12.0...v0.13.0) (2026-11-14)
+
+
+### Features
+
+* **admission:** leave the admitted third-party digests out of a refusal record's hash ([#1008](https://github.com/the-roganator/cv-software-factory/issues/1008)) ([1009de8](https://github.com/the-roganator/cv-software-factory/commit/1009de8097984b8705a909c4960deee4b24b28ad))
+* **cluster:** move the local cluster to a new k3s, keeping everything in it ([#999](https://github.com/the-roganator/cv-software-factory/issues/999)) ([98ecaa2](https://github.com/the-roganator/cv-software-factory/commit/98ecaa271e23906a36dc37b0a6aced7b87df8941))
+* **console:** Patching and Guardrails as summaries in the right column, each opening its sheet ([#1096](https://github.com/the-roganator/cv-software-factory/issues/1096)) ([47c2210](https://github.com/the-roganator/cv-software-factory/commit/47c22103d8ec2b96ba7ab3f53a040c9ae9733453))
+* **console:** the Patching panel, one row for each move ([#1017](https://github.com/the-roganator/cv-software-factory/issues/1017)) ([8eb444b](https://github.com/the-roganator/cv-software-factory/commit/8eb444b78edbb3110864a9d642b010ecca3519ff))
+* **deploy:** run the dependency sense, with its account, its list of pods and its fences ([#1043](https://github.com/the-roganator/cv-software-factory/issues/1043)) ([04cdfdc](https://github.com/the-roganator/cv-software-factory/commit/04cdfdc0edb838d13e1e65c7c0c498959e1107df))
+* **events:** a dependency's signal, ticket and work item name a move ([#1014](https://github.com/the-roganator/cv-software-factory/issues/1014)) ([2d57d04](https://github.com/the-roganator/cv-software-factory/commit/2d57d047cb02077ab8dc776099d14608e26906c4))
+* **gates:** fail a pull request whose lockfiles bring in a known vulnerability ([#970](https://github.com/the-roganator/cv-software-factory/issues/970)) ([891f441](https://github.com/the-roganator/cv-software-factory/commit/891f4411d65db973310e887e51169b735539d13d))
+* **gates:** the app's three dependency gates agree on what is excepted ([#1027](https://github.com/the-roganator/cv-software-factory/issues/1027)) ([3d08019](https://github.com/the-roganator/cv-software-factory/commit/3d08019d0c13220024f31506c5d832b0504e5646))
+* **gates:** the scans say what they counted, and the line records it ([#1024](https://github.com/the-roganator/cv-software-factory/issues/1024)) ([a85694a](https://github.com/the-roganator/cv-software-factory/commit/a85694a682768bac9cfe7bb4d96b7167d9d3e7b4))
+* **github:** queue the local profile's deploy pins once the gate passes them ([#986](https://github.com/the-roganator/cv-software-factory/issues/986)) ([ee29db2](https://github.com/the-roganator/cv-software-factory/commit/ee29db2e29ed3e9b14f1e5087de9f53f198f861d))
+* **github:** the App reads the scan's moves and the open dependency pull requests ([#1009](https://github.com/the-roganator/cv-software-factory/issues/1009)) ([cd564c0](https://github.com/the-roganator/cv-software-factory/commit/cd564c0d20a668462904bff5a7a40898edf83614))
+* **github:** the pin watch opens one pull request for each pin move, and writes nothing but the pin ([#1025](https://github.com/the-roganator/cv-software-factory/issues/1025)) ([db02dbe](https://github.com/the-roganator/cv-software-factory/commit/db02dbe1bd872d8f0f0f65e0e80653b538fef994))
+* **github:** the worker queues a pin move the gate passed, and nothing else ([#1026](https://github.com/the-roganator/cv-software-factory/issues/1026)) ([ce01293](https://github.com/the-roganator/cv-software-factory/commit/ce01293fa1cd67574faccc009f9666167814b0ca))
+* **line:** a dependency's move through Plan, Build and Verify by the scan ([#1095](https://github.com/the-roganator/cv-software-factory/issues/1095)) ([cac4c93](https://github.com/the-roganator/cv-software-factory/commit/cac4c9386eb3d53c9802162155cb55c12def5dc4))
+* **patching:** a move that waits on Martin is a card in Needs you, and his phone hears of it once ([#1030](https://github.com/the-roganator/cv-software-factory/issues/1030)) ([f45f2d0](https://github.com/the-roganator/cv-software-factory/commit/f45f2d0dcd2692a64b9ef3307f496c84351efccc))
+* **patching:** the dependency sense appends the day's moves, and what the cluster runs unlisted ([#1016](https://github.com/the-roganator/cv-software-factory/issues/1016)) ([56d22ae](https://github.com/the-roganator/cv-software-factory/commit/56d22ae1ca1af4ec728d9c1c15c2d1084c62aae9))
+* **patching:** the dependency sense sends the app's moves to triage ([#1099](https://github.com/the-roganator/cv-software-factory/issues/1099)) ([20c5943](https://github.com/the-roganator/cv-software-factory/commit/20c59433ab8cd299f93b7e4efe1cd026f4bd0f12))
+* **patching:** the scan counts every open finding by severity, and the day carries it ([#1093](https://github.com/the-roganator/cv-software-factory/issues/1093)) ([cf10442](https://github.com/the-roganator/cv-software-factory/commit/cf10442d303de95ac984ad390fd65b80023b3cca))
+* **review:** a chart's pin move may change its ConfigMaps' data, rendered as Argo CD does ([#1065](https://github.com/the-roganator/cv-software-factory/issues/1065)) ([175e52a](https://github.com/the-roganator/cv-software-factory/commit/175e52a31db2ef4cf11f0ba4ebf05ebafcf5b6eb))
+* **review:** the gate passes a Critical vulnerability's fix it proves from the pull request ([#1094](https://github.com/the-roganator/cv-software-factory/issues/1094)) ([4ae115e](https://github.com/the-roganator/cv-software-factory/commit/4ae115ec68e06a9c54932eb41424d241f746d666))
+* **review:** the gate passes a pin a cluster runs once platform made one from it at its head ([#1057](https://github.com/the-roganator/cv-software-factory/issues/1057)) ([7fda3f1](https://github.com/the-roganator/cv-software-factory/commit/7fda3f1d13e8e8546cfb0bcb59542410882fa95d))
+* **review:** the gate passes a pin move it proves from the pull request ([#1022](https://github.com/the-roganator/cv-software-factory/issues/1022)) ([b0aadd0](https://github.com/the-roganator/cv-software-factory/commit/b0aadd058edb7bb7f3aa6445a9fc636071258177))
+* **runner:** a pin step writes every pin of a move, and the lockfile after a manifest changes ([#1020](https://github.com/the-roganator/cv-software-factory/issues/1020)) ([4642aa2](https://github.com/the-roganator/cv-software-factory/commit/4642aa231042b308ec2b38e20fcb2d3a2ac5e497))
+* **scanning:** every finding has a deadline, and the scan fails when one is missed ([#988](https://github.com/the-roganator/cv-software-factory/issues/988)) ([602d008](https://github.com/the-roganator/cv-software-factory/commit/602d008a6d12b70e21fc7891496b40b3ec9bfe3b))
+* **scanning:** exceptions are Martin's, in policy, for one item each ([#987](https://github.com/the-roganator/cv-software-factory/issues/987)) ([472a995](https://github.com/the-roganator/cv-software-factory/commit/472a9954ebb1787e2bfd4e9fa4070598562d673a))
+* **scanning:** the scan says what fixes each finding, and groups findings into moves ([#1005](https://github.com/the-roganator/cv-software-factory/issues/1005)) ([ff2e758](https://github.com/the-roganator/cv-software-factory/commit/ff2e7589798f2758fb9a08cbb2c748aee43cc47b))
+* **triage:** the app's moves become tickets, a worse finding raises one ([#1098](https://github.com/the-roganator/cv-software-factory/issues/1098)) ([9e90079](https://github.com/the-roganator/cv-software-factory/commit/9e90079ba9fb975740b42ae5c8ba6eade4c818cd))
+* **try-the-line:** a live try begun and ended by a script ([#1007](https://github.com/the-roganator/cv-software-factory/issues/1007)) ([ce8b783](https://github.com/the-roganator/cv-software-factory/commit/ce8b7834aee751293c2e28fb305436e954c76703))
+* **vulnerabilities:** the daily scan of each repository's list ([#948](https://github.com/the-roganator/cv-software-factory/issues/948)) ([35c1a75](https://github.com/the-roganator/cv-software-factory/commit/35c1a754d462f666aaf2b267078ff01bacc46ab8))
+* **vulnerabilities:** the list of what either repository runs or pins ([#947](https://github.com/the-roganator/cv-software-factory/issues/947)) ([a10208d](https://github.com/the-roganator/cv-software-factory/commit/a10208d50116b08dac43416c66e79a6a9b805e59))
+
+
+### Bug Fixes
+
+* **bench:** pin the fixtures to the reset app's main ([#1006](https://github.com/the-roganator/cv-software-factory/issues/1006)) ([1b7b079](https://github.com/the-roganator/cv-software-factory/commit/1b7b079c19c8176f5ee7ea517a6a6209d2c96fa3))
+* **build:** read Syft's version from its one pin, so a bump of it passes alone ([#1003](https://github.com/the-roganator/cv-software-factory/issues/1003)) ([e84d187](https://github.com/the-roganator/cv-software-factory/commit/e84d187291e16687f7be57f17094d72853ee67a9))
+* **deploy:** pass the canary's comparison when there is no stable version ([#959](https://github.com/the-roganator/cv-software-factory/issues/959)) ([a238e2f](https://github.com/the-roganator/cv-software-factory/commit/a238e2fc63e3de0174de2d96cf90753f5eaaf77d))
+* **deploy:** run Grafana's and Loki's sidecar at 2.14.3 ([#995](https://github.com/the-roganator/cv-software-factory/issues/995)) ([bca83e5](https://github.com/the-roganator/cv-software-factory/commit/bca83e59f23546f54b6e918a8cf0ac1729b98cee))
+* **devcontainer:** base the dev container on the versioned noble line ([#998](https://github.com/the-roganator/cv-software-factory/issues/998)) ([092331d](https://github.com/the-roganator/cv-software-factory/commit/092331d1ba60eb8909919d96728699b894e3c526))
+* **devcontainer:** install mise at the workflows' release, checked against its checksum ([#1029](https://github.com/the-roganator/cv-software-factory/issues/1029)) ([846d6b7](https://github.com/the-roganator/cv-software-factory/commit/846d6b7b4c1dc5870f43f01d29a0d05515282597))
+* **gates:** judge an app pull request against the base it would merge into now ([#979](https://github.com/the-roganator/cv-software-factory/issues/979)) ([6e603a1](https://github.com/the-roganator/cv-software-factory/commit/6e603a16df12845a4e1ebee4fbe533e084419aa0))
+* **guardrails:** the stop drill waits only on runner pods that have not finished ([#981](https://github.com/the-roganator/cv-software-factory/issues/981)) ([47a3565](https://github.com/the-roganator/cv-software-factory/commit/47a3565ad11d5d3a1f18fb54fb6284695bb1cd58))
+* **line:** Martin's Reject closes the work item's pull request too ([#992](https://github.com/the-roganator/cv-software-factory/issues/992)) ([235ccd4](https://github.com/the-roganator/cv-software-factory/commit/235ccd4d4086aed08afa90663556f2e9ea22d61b))
+* **line:** record a pod Pod Security refused as admission's refusal ([#957](https://github.com/the-roganator/cv-software-factory/issues/957)) ([807a2a3](https://github.com/the-roganator/cv-software-factory/commit/807a2a3d328df415609fe36c5343cab2f3ab9dcc))
+* **pin-move:** condition 4 reads a version exactly, its major and its order ([#1083](https://github.com/the-roganator/cv-software-factory/issues/1083)) ([33aabdf](https://github.com/the-roganator/cv-software-factory/commit/33aabdfd8fdf00d945052dab16854170337566cb))
+* **platform:** fail the check on a pod that does not run, by name and with its logs ([#1044](https://github.com/the-roganator/cv-software-factory/issues/1044)) ([d95fc00](https://github.com/the-roganator/cv-software-factory/commit/d95fc009f2350f29365283d45aff4847186454ca))
+* **platform:** give a cluster only to what it runs, and stop and say why when one does not come up ([#1036](https://github.com/the-roganator/cv-software-factory/issues/1036)) ([9dec46c](https://github.com/the-roganator/cv-software-factory/commit/9dec46c402cccb244bb5370981ac5daaf897c5dc))
+* **platform:** what starts beside Postgres or the GitHub worker waits for it, bounded ([#1060](https://github.com/the-roganator/cv-software-factory/issues/1060)) ([40a58c7](https://github.com/the-roganator/cv-software-factory/commit/40a58c7c937610d311dabe8ffbb93ea6d01d71ae))
+* **review:** free the gate from a stuck run GitHub cannot cancel ([#968](https://github.com/the-roganator/cv-software-factory/issues/968)) ([d8914ea](https://github.com/the-roganator/cv-software-factory/commit/d8914ea7c73ace0fcbf1dd5aa2579395ec254c4f))
+* **review:** read test integrity only from the judged pull request's own run ([#950](https://github.com/the-roganator/cv-software-factory/issues/950)) ([d448a15](https://github.com/the-roganator/cv-software-factory/commit/d448a1560a1e416dfe96c5e57eb5d3d0d04ef5f7))
+* **runner:** end a step with its agent's result, ending what its tools left running ([#963](https://github.com/the-roganator/cv-software-factory/issues/963)) ([d228675](https://github.com/the-roganator/cv-software-factory/commit/d2286758f1f570b7679c70a4c8d70b1a9580d481))
+* **scanning:** keep Trivy's pin where Dependabot may move it ([#977](https://github.com/the-roganator/cv-software-factory/issues/977)) ([06f60ad](https://github.com/the-roganator/cv-software-factory/commit/06f60ad8b14f2881ed0912a1bdcecb4d773df08d))
+* **vulnerabilities:** scan every lockfile a repository could install from ([#1004](https://github.com/the-roganator/cv-software-factory/issues/1004)) ([d163eee](https://github.com/the-roganator/cv-software-factory/commit/d163eee9ed1de5cd35e72a51589d983f8845a597))
+* **vulnerabilities:** upload every finding, in runs of at most 5,000 ([#962](https://github.com/the-roganator/cv-software-factory/issues/962)) ([ac19619](https://github.com/the-roganator/cv-software-factory/commit/ac19619ac613b0dd58f9078b3f22b07c009d8f5d))
+
+
+### Performance Improvements
+
+* **console:** the first view loads only what it draws ([#1090](https://github.com/the-roganator/cv-software-factory/issues/1090)) ([c3f54ee](https://github.com/the-roganator/cv-software-factory/commit/c3f54eea0b1659839cbd1aeae9f9517963e6b149))
+* **github:** the worker reads the scan's moves once for each scan run ([#1085](https://github.com/the-roganator/cv-software-factory/issues/1085)) ([567ead1](https://github.com/the-roganator/cv-software-factory/commit/567ead1b1800b0390e88b599a502dbf8624374d0))
+* **vulnerabilities:** the scan keeps its layer analysis and the day's lookups between runs ([#1068](https://github.com/the-roganator/cv-software-factory/issues/1068)) ([de05e4a](https://github.com/the-roganator/cv-software-factory/commit/de05e4a1232f1d45c0c3481afd26f707da99ecfe))
+
 ## [0.12.0](https://github.com/the-roganator/cv-software-factory/compare/v0.11.0...v0.12.0) (2026-11-08)
 
 

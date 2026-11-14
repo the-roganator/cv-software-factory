@@ -35,6 +35,14 @@ import { ROOT } from './pin-move-shared.ts';
 import { tagAndDigest } from './pin-move-sides.ts';
 
 /**
+ * A package's version whole, as its findings' `InstalledVersion` writes it: Trivy lists a Debian package's epoch and
+ * revision apart from its upstream version (`Version` 3.5.7, `Release` 1~deb13u3), and dpkg orders all three.
+ */
+function fullVersion(p: { Version?: string; Release?: string | null; Epoch?: number | null }): string {
+  return `${p.Epoch ? `${p.Epoch}:` : ''}${p.Version ?? ''}${p.Release ? `-${p.Release}` : ''}`;
+}
+
+/**
  * What Trivy's report read: every package, every finding by the scanner's own rating, each in the format of the target
  * it was found in (`formatOf`, from the result's class and type), and an image's Node. A finding with no package or no
  * advisory is a report the gate cannot read whole: it throws, and the fix holds.
@@ -44,7 +52,7 @@ export function scanOf(reports: readonly TrivyReport[]): Scan {
   const node = reports.map((r) => nodeInConfig(r.Metadata?.ImageConfig) ?? nodeInPackages(r.Results)).find(Boolean);
   return {
     packages: results.flatMap((result) =>
-      (result.Packages ?? []).flatMap((p) => (p.Name ? [{ name: p.Name, version: p.Version ?? '' }] : [])),
+      (result.Packages ?? []).flatMap((p) => (p.Name ? [{ name: p.Name, version: fullVersion(p) }] : [])),
     ),
     findings: results.flatMap((result) =>
       (result.Vulnerabilities ?? []).map((v): Finding => {

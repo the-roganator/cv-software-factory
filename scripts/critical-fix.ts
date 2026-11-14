@@ -530,6 +530,8 @@ export function onlyTheFix(fixed: Fixed, pins: Pins, move: PackageMove | undefin
   if (pins.lockfile || pins.manifest) return "it moves a package too, which an image's fix does not need";
   if (fixed.pkg === 'node') {
     if (!pins.node) return "Node is fixed in an image, and mise's Node does not move with it";
+    // Every image runs Node: a move that leaves the Dockerfile untouched leaves each of them on the old one.
+    if (!pins.images.length) return "mise's Node moves, and no FROM moves with it: every image runs Node";
     if (pins.images.length !== pins.froms)
       return `it moves ${pins.images.length} of the Dockerfile's ${pins.froms} FROM lines: every image runs Node`;
     return undefined;

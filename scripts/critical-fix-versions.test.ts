@@ -119,6 +119,29 @@ describe('the format, from what Trivy says of the target', () => {
     expect(atOrAbove('not a version', '1.0', 'dpkg')).toBeUndefined();
   });
 
+  it('reads a Debian package’s version whole, as Trivy lists its upstream version and revision apart', () => {
+    // As the pinned Trivy lists distroless nodejs24-debian13's libssl3t64.
+    const read = scanOf([
+      {
+        Results: [
+          {
+            Class: 'os-pkgs',
+            Type: 'debian',
+            Packages: [
+              { Name: 'libssl3t64', Version: '3.5.7', Release: '1~deb13u3', Epoch: null },
+              { Name: 'tzdata', Version: '2025b', Release: '4', Epoch: 1 },
+            ] as never,
+          },
+        ],
+      },
+    ]);
+    expect(read.packages).toEqual([
+      { name: 'libssl3t64', version: '3.5.7-1~deb13u3' },
+      { name: 'tzdata', version: '1:2025b-4' },
+    ]);
+    expect(atOrAbove('3.5.7-1~deb13u4', '3.5.7-1~deb13u4', 'dpkg')).toBe(true);
+  });
+
   it('passes an image’s OS-package Critical gone at the head, in its own order, and holds one it cannot order', () => {
     const report = (type: string, version: string, findings: object[]) =>
       scanOf([

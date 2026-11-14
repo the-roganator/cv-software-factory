@@ -629,6 +629,11 @@ describe('a Critical fix: the threat model, each held', () => {
       'mise.lock': MISE_LOCK.replaceAll('24.22.1', '24.22.0'),
     };
     expect(await held(backward)).toMatch(/not forward on its major/);
+    // mise and its lock alone, the Dockerfile untouched: every image left on the old Node.
+    const miseOnly = { 'mise.toml': NODE_MOVE['mise.toml'], 'mise.lock': NODE_MOVE['mise.lock'] };
+    expect(await held(miseOnly, nodeFakes())).toBe(
+      "only what the fix needs: mise's Node moves, and no FROM moves with it: every image runs Node",
+    );
     // An image left behind, or one that runs another Node than mise pins.
     const oneFrom = { ...NODE_MOVE, Dockerfile: DOCKERFILE.replace(BUILD, `node:24.22.2-alpine3.24@${D('3')}`) };
     expect(await held(oneFrom, nodeFakes())).toMatch(/moves 1 of the Dockerfile's 2 FROM lines/);

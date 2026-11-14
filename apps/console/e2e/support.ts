@@ -289,6 +289,16 @@ export async function adminService(
 }
 
 /**
+ * Takes away what `adminService` stands in, for a page about to be drawn as someone else. The page goes first: one drawn
+ * as Martin asks a second after drawing whether its session is live (`SESSION`'s hour is past), and asked of the test
+ * server it would leave for the sign-in door, aborting the navigation that follows.
+ */
+export async function endAdminService(page: Page): Promise<void> {
+  await page.goto('about:blank');
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+}
+
+/**
  * The full-event stream, standing in for the admin service's: the samples (or the attacks' test data), each visitor's report with its text, and any
  * events a test adds after them, sent once and then held open, as the service's is while nothing new happens. Every other stream is the browser's own.
  */

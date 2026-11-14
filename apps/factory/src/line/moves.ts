@@ -77,19 +77,28 @@ export function moveIssue(
 
 const directoryOf = (file: string) => `/${file.split('/').slice(0, -1).join('/')}`;
 const bare = (name: string) => name.replace(/^@/, '');
+/** The ecosystem, as `dependabot.yml` names it, that moves each kind of move's pin: Node's is an image's. */
+const DEPENDABOT_ECOSYSTEM: Record<Move['ecosystem'], string> = { npm: 'npm', docker: 'docker', node: 'docker' };
 
 /**
  * The Dependabot pull request the line's own replaces: the open one for the same pin, by its branch's dependency in
- * the directory of one of the move's pins, or a group's that rewrites one of the pins' lines. Read from the branch and
- * the lines it changes alone, never its title or body, which are Dependabot's prose. The lowest number when several
- * do; none when none does.
+ * the move's ecosystem and the directory of one of the move's pins, or a group's that rewrites one of the pins' lines.
+ * Read from the branch and the lines it changes alone, never its title or body, which are Dependabot's prose. The
+ * lowest number when several do; none when none does.
  */
-export function replacedPull(move: Pick<Move, 'name' | 'pins'>, pulls: readonly DependencyPull[]): number | undefined {
+export function replacedPull(
+  move: Pick<Move, 'name' | 'ecosystem' | 'pins'>,
+  pulls: readonly DependencyPull[],
+): number | undefined {
   const directories = new Set(move.pins.map((pin) => directoryOf(pin.file).replace(/\/$/, '') || '/'));
   const found = pulls.filter((pull) => {
     if (pull.dependency !== null && pull.directory !== null) {
       const directory = pull.directory.replace(/\/+$/, '') || '/';
-      return bare(pull.dependency) === bare(move.name) && directories.has(directory);
+      return (
+        pull.ecosystem === DEPENDABOT_ECOSYSTEM[move.ecosystem] &&
+        bare(pull.dependency) === bare(move.name) &&
+        directories.has(directory)
+      );
     }
     return move.pins.some((pin) => groupMovesTo(pull, pin) !== undefined);
   });

@@ -253,10 +253,31 @@ describe('what the line says of a move', () => {
       changed: [{ file: 'pnpm-lock.yaml', line: 41, before: '  invented-pkg@2.0.0:', after: '  invented-pkg@2.0.1:' }],
       unread: [],
     };
-    expect(replacedPull({ name: 'invented-pkg', pins: PINS }, [group])).toBe(9);
+    expect(replacedPull({ name: 'invented-pkg', ecosystem: 'npm', pins: PINS }, [group])).toBe(9);
     expect(
-      replacedPull({ name: 'invented-pkg', pins: [{ file: 'pnpm-lock.yaml', line: 7 }] }, [group]),
+      replacedPull({ name: 'invented-pkg', ecosystem: 'npm', pins: [{ file: 'pnpm-lock.yaml', line: 7 }] }, [group]),
     ).toBeUndefined();
+  });
+
+  it('reads a branch’s pin in the move’s ecosystem alone: Node’s is moved by an image’s', () => {
+    const branch = (number: number, ecosystem: string, dependency: string): DependencyPull => ({
+      number,
+      head: { ref: `dependabot/${ecosystem}/${dependency}-24.11.1`, sha: 'e'.repeat(40) },
+      draft: false,
+      createdAt: '2026-11-10T00:00:00Z',
+      ecosystem,
+      directory: '/',
+      dependency,
+      version: '24.11.1',
+      changed: [],
+      unread: [],
+    });
+    const pins = [{ file: 'Dockerfile', line: 1 }];
+    const image = branch(12, 'docker', 'node');
+    expect(replacedPull({ name: 'node', ecosystem: 'npm', pins }, [image])).toBeUndefined();
+    expect(replacedPull({ name: 'node', ecosystem: 'docker', pins }, [image])).toBe(12);
+    expect(replacedPull({ name: 'node', ecosystem: 'node', pins }, [image])).toBe(12);
+    expect(replacedPull({ name: 'node', ecosystem: 'docker', pins }, [branch(13, 'npm', 'node')])).toBeUndefined();
   });
 
   it('takes each pin before and after from the diff, leaving out the coder’s lines', () => {
